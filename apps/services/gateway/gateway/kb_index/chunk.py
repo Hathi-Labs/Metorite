@@ -19,10 +19,10 @@ one embedding call, not thirty. Two parts of one page with the same sha are
 one chunk.
 
 The stored forms of KB-2p (``knowledge_base.md`` §21.7) are HTML fragments
-in the Markdown body: a text colour, a highlight, ``sup`` and ``sub``, a
-status badge, a date, and the ``data-type`` blocks (columns, subpages, a
-page break). :func:`strip_stored_forms` takes their tags off before the
-split and keeps their text. It strips nothing else, so a ``<details>``
+in the Markdown body: a text colour, a highlight, ``sup`` and ``sub``, and
+each fragment with a ``data-type`` attribute (a status badge, a date,
+columns, subpages, a page break). :func:`strip_stored_forms` takes their
+tags off before the split and keeps their text. It strips nothing else, so a ``<details>``
 toggle, an aligned paragraph, an HTML table and every other raw HTML keep
 their bytes and their ``content_sha``.
 """
@@ -101,13 +101,18 @@ def content_sha(heading_path: str | None, raw: str) -> str:
 #: A colour value the editor writes: a name of its list, or a hex colour.
 _COLOR = r'(?:[a-z]{3,10}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})'
 
-#: The inline open tags of the stored forms, each one exact (§21.7).
+#: The ``data-type`` attribute first, then other ``data-`` attributes and
+#: ``datetime``, as the editor writes them.
+_TYPED = r'data-type="[a-z-]+"(?: (?:data-[a-z-]+|datetime)="[^"<>]*")*'
+
+#: The inline open tags of the stored forms (§21.7): the exact colour,
+#: highlight, ``sup`` and ``sub`` tags, and a ``span`` or a ``time`` with a
+#: ``data-type`` (a status, a date).
 _INLINE_OPEN = re.compile(
     r'<span data-color="' + _COLOR + r'">'
     r'|<mark data-color="' + _COLOR + r'">'
     r'|<sup>|<sub>'
-    r'|<span data-type="status" data-color="[a-z]{3,10}">'
-    r'|<time data-type="date" datetime="\d{4}-\d{2}-\d{2}">'
+    r'|<(?:span|time) ' + _TYPED + r'>'
 )
 
 #: Any open or close tag of the four inline names. A raw tag of one of these
@@ -118,14 +123,11 @@ _INLINE_TAG = re.compile(r"<(/?)(span|mark|sup|sub|time)\b[^<>]*>", re.I)
 #: list item, then the rest of the line.
 _PREFIX = re.compile(r"^((?:[ \t]*>)*[ \t]*)(.*)$")
 
-#: The block forms on one line: a subpages list and a page break.
-_BLOCK_LINE = re.compile(
-    r'(?:<div data-type="subpages" data-order="(?:manual|title|recent)"></div>'
-    r'|<div data-type="page-break"></div>)[ \t]*'
-)
+#: A block form on one line, such as a subpages list or a page break.
+_BLOCK_LINE = re.compile(r'<div ' + _TYPED + r'></div>[ \t]*')
 
-#: The open line of columns or of one column, and a close line.
-_DIV_OPEN = re.compile(r'<div data-type="(?:columns" data-count="[2-5]|column)">[ \t]*')
+#: The open line of a block form that holds blocks (columns, one column).
+_DIV_OPEN = re.compile(r'<div ' + _TYPED + r'>[ \t]*')
 _DIV_CLOSE = re.compile(r"</div>[ \t]*")
 _DIV_TAG = re.compile(r"<(/?)div\b[^<>]*>", re.I)
 _CODE_RUN = re.compile(r"`+")

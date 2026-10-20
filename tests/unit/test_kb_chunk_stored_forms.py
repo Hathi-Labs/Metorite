@@ -119,9 +119,8 @@ def test_a_raw_div_keeps_its_tags_and_its_close_pairs_with_it() -> None:
         '<h2 data-align="right">Right</h2>',
         '<span class="x">raw span</span> and <mark>bare mark</mark>',
         '<span data-color="url(x)">not a colour</span>',
-        '<span data-type="other" data-color="green">x</span>',
         '<time datetime="2026-10-19">no type</time>',
-        '<div data-type="columns" data-count="7">\n\nx\n\n</div>',
+        '<div data-type="page-break" class="x"></div>',
         "<table>\n<tr>\n<td colspan=\"2\">cell</td>\n</tr>\n</table>",
         "Press <kbd>Ctrl</kbd> now.",
     ],
@@ -147,6 +146,16 @@ def test_code_keeps_the_tags() -> None:
     assert "```html\n<sup>2</sup> <span data-color=\"blue\">x</span>\n" in stripped
     assert '<div data-type="page-break"></div>\n```' in stripped
     assert stripped.endswith("Inline `<sup>2</sup>` stays, and 3 goes.")
+
+
+def test_any_fragment_with_a_data_type_loses_its_tags() -> None:
+    """The spec strips by the attribute, so a shape the editor does not read
+    (a colour off the list, a count that does not match) is still text."""
+    assert strip_stored_forms('<span data-type="other" data-color="teal">x</span>') == "x"
+    assert strip_stored_forms('<time data-type="date" datetime="2026-02-30">bad</time>') == "bad"
+    body = '<div data-type="columns" data-count="7">\n\nx\n\n</div>'
+    assert strip_stored_forms(body) == "\n\nx\n\n"
+    assert strip_stored_forms('<div data-type="subpages" data-order="newest"></div>') == ""
 
 
 def test_an_unclosed_form_stays() -> None:
