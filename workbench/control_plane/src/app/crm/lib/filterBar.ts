@@ -25,11 +25,14 @@ export const SOURCE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
 
 export type DateFilter = { label: string; from: RangeKey; to: RangeKey };
 
-/** The date ranges an entity offers. Only a deal has a close date. */
-export function dateFilters(entity: EntitySlug, mirror = false): DateFilter[] {
+/**
+ * The date ranges an entity offers. Only a deal has a close date. A generic
+ * module (`null`) offers Updated only: its record keeps no created date.
+ */
+export function dateFilters(entity: EntitySlug | null, mirror = false): DateFilter[] {
   // A synced record keeps no created date, and the gateway refuses the range.
   const out: DateFilter[] = [
-    ...(mirror ? [] : [{ label: "Created", from: "created_from", to: "created_to" } as DateFilter]),
+    ...(mirror || entity === null ? [] : [{ label: "Created", from: "created_from", to: "created_to" } as DateFilter]),
     { label: "Updated", from: "updated_from", to: "updated_to" },
   ];
   if (entity === "deals") out.push({ label: "Closing", from: "close_from", to: "close_to" });

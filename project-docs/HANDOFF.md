@@ -158,6 +158,35 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
+- **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
+- **Why:** owner rule of 2026-10-19, build first and harden later. Four PRs
+  shipped on product tests only. They are #1181 (settings polish), #1180
+  (two-row toolbar and view chips, migration 287) and #1182 (lane stat block
+  and lead win chance, migration 288). The fourth is CRM-U9, the module field
+  filters. No diff-reviewer pass ran on any of them.
+- **Do this:** one PR labelled `harden`. Run diff-reviewer over the four
+  diffs. Then close these known gaps:
+  1. A stale `cf.<key>` chip on a module list stays visible and narrows
+     nothing. Run `pruneFilters` on module lists, as the core lists do.
+  2. The lane total adds amounts across currencies under one rupee icon.
+     Show "N in USD, not added".
+  3. The field-map retry re-reads every failed entity. The error text puts
+     the raw error string inside the sentence.
+  4. A bare `?view=<id>` link to a module view does not resolve, because a
+     module link needs its tab in the URL.
+  5. Module lists have no Export. The export route names the four lists.
+  6. The dead exports of `lib/savedViews.ts` (`activeSavedView`, `deleteCopy`,
+     `viewDiverges`) and the stale comments "v1 has no saved-views table" in
+     `page.tsx` and `urlState.ts`.
+  7. Projects onto the shared view seam (`src/lib/savedViews/`,
+     `src/components/ViewChips.tsx`) when its board is next touched.
+  8. `scripts/ci_local.sh` with no flags exits 2 ("unknown option:"), because
+     an empty flag list becomes one empty argument. Build `args` only when the
+     list has an item.
+- **Authority:** `specs/crm_platform.md` §20.12 and §20.13, review artifact of 2026-10-20
+- **Added:** 2026-10-20 · `crm-module-filters`
+
 ### H-365 · Replay the CRM answer check on stored answers, then decide `on` · [OWNER]
 - **Check:** on the production box, `grep -E '^CRM_ANSWER_CHECK=' /opt/acb/app/.env`
   reads `shadow`, and no replay result is in the round 8 PR. Then this is open.

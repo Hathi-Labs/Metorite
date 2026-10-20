@@ -77,7 +77,7 @@ import { useFieldLayout } from "../lib/useCrmMode";
 import { viewLabel, type SourceLabels } from "../lib/views";
 
 export type FilterBarProps = {
-  /** The list's entity. `null` for a generic module list, which has no field filter. */
+  /** The list's entity. `null` for a generic module list (its `fieldDefs` give the filters). */
   entity: EntitySlug | null;
   /**
    * The source's names of the core entities (CRM-Q17a-2 item 7). The search
@@ -94,7 +94,7 @@ export type FilterBarProps = {
    * record owner who is not a member. `null` while unread or on a failure.
    */
   owners?: ReadonlyArray<CrmOwner> | null;
-  /** Draw the Owner control. A module list has no owner filter. */
+  /** Draw the Owner control. */
   showOwner?: boolean;
   /**
    * Draw the search box (CRM-X1). A list only: the board read takes no `q`,
@@ -134,12 +134,14 @@ export default function FilterBar({
   // CRM-C4b: with the studio on, the bar reads the layout and offers more
   // types. With it off, it offers the picklists of today.
   const { layout } = useFieldLayout(entity);
+  // A module list (CRM-U9) has no layout. Its field definitions come with the
+  // list, and its filters are the studio ones: picklist, checkbox, number, date.
   const custom: CustomFilter[] = !entity
-    ? []
+    ? customFilters(fieldDefs, true)
     : layout?.studio === true
       ? customFilters(layout.fields, true)
       : picklistDefs(fieldDefs).map((def) => ({ def, kind: "options" }));
-  const fields = entity ? filterFields(entity, custom, mirror) : [];
+  const fields = filterFields(entity, custom, entity === null ? true : mirror);
   const chips = activeFilterChips(view, fields);
   const listNoun = entity ? viewLabel(entity, labels) : (noun ?? "records");
   const stageName = entity === "leads" ? "Status" : "Stage";
@@ -224,7 +226,7 @@ export default function FilterBar({
       >
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1 [&_input]:w-full">{searchBox}</div>
-          {entity || showStage ? (
+          {fields.length > 0 || showStage ? (
             <Button
               variant="ghost"
               size="sm"
