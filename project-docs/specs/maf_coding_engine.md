@@ -277,8 +277,10 @@ address, the Docker bridge addresses included.
 
 - `request_confirmation` waits a fixed 3600 s (`ask_tools.py:393`). It has no
   timeout parameter.
-- A dynamic agent's clone carries the GitHub token in its remote URL
-  (`acb_skills/loader.py:78`, `https://x-token:<token>@github.com/...`).
+- A dynamic agent's clone carried the GitHub token in its remote URL
+  until H-363 (2026-10-20). Now the URL holds no token.
+  `acb_common/git_credentials.py` gives the credential to one gateway git
+  process at a time.
 - `.claude/OWNER_GRANTS.md` holds `ALLOW-UNTIL 2026-11-30` lines for the gate
   ids `deploy`, `secrets`, `env-write`, `deploy-write`, `enforcement-flip`
   and `guard-write`.

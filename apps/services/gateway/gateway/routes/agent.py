@@ -18,6 +18,7 @@ POST /agent/webhook/{source}
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import json
@@ -1668,6 +1669,7 @@ async def list_agents(
         clone_path = repos_root / a["name"]
         if not (clone_path / ".git").is_dir():
             continue
+        _pin_registry_clone(a["name"], clone_path)  # H-363
         behind = await _git_behind_count(str(clone_path))
         if behind > 0:
             a["behind_by"] = behind
@@ -1844,7 +1846,10 @@ async def pull_agent(
     except Exception:  # noqa: BLE001
         pass
 
-    # Pull latest
+    # Pull latest. H-363: pin the clone from the registry first, so the
+    # read credential goes to the agent's own repo, never to a rewritten
+    # origin.
+    _pin_registry_clone(agent_name, clone_path)
     pull_info: dict[str, Any] = {"strategy": "skipped"}
     try:
         from acb_skills.loader import _pull_latest  # noqa: PLC0415
@@ -4216,6 +4221,10 @@ async def approve_pending_commit(
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
         new_sha: str | None = None
         if has_remote:
+            # H-363: the push goes to the repo that the REGISTRY names for
+            # this agent. The seam refuses a clone with no pin, so a clone
+            # whose origin a run rewrote cannot take the operator's token.
+            _pin_registry_clone(row.agent_name, clone_dir)
             # Push.  If the fast-forward fails, rebase and retry.
             push_ok, new_sha = await _git_push_with_rebase(clone_dir, commit_sha)
             if not push_ok:
@@ -4702,6 +4711,36 @@ async def dismiss_mutation_event(
 # Git helpers for the approve endpoint
 # ---------------------------------------------------------------------------
 
+def _pin_registry_clone(agent_name: str | None, clone_dir: str | Path) -> bool:
+    """Pin *clone_dir* to the repo that the registry names for *agent_name* (H-363).
+
+    The seam pushes only to a pinned repo, and reads an unpinned clone with
+    no credential, because a run can rewrite the clone's ``origin``. After a
+    gateway restart no clone is pinned until its agent loads, so each route
+    that fetches or pushes pins the clone first, from the REGISTRY. An agent
+    with no registry entry, or a ``local_path`` agent with no repo, gets no
+    pin, so it gets no credential. True when it pinned.
+    """
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    if not agent_name:
+        return False
+    try:
+        entries = _load_dynamic_agents() + list(_AGENT_REGISTRY)
+    except Exception:  # noqa: BLE001
+        entries = list(_AGENT_REGISTRY)
+    entry = next((e for e in entries if e.get("name") == agent_name), None)
+    if entry is None or (entry.get("local_path") and not entry.get("repo_name")):
+        return False
+    from acb_skills.loader import agent_remote  # noqa: PLC0415
+
+    remote = agent_remote(agent_name, entry.get("repo_name"))
+    if remote is None:
+        return False
+    git_auth.pin_remote(clone_dir, remote)
+    return True
+
+
 async def _git_behind_count(clone_dir: str) -> int:
     """Return how many commits the local clone is behind origin/HEAD.
 
@@ -4718,16 +4757,17 @@ async def _git_behind_count(clone_dir: str) -> int:
     if rc != 0:
         return 0
 
-    # Fetch latest (short timeout — non-blocking for the UI)
+    # Fetch latest (short timeout — non-blocking for the UI). H-363: through
+    # the credential seam, so the clone never holds the read credential.
     try:
-        fetch_proc = await asyncio.create_subprocess_exec(
-            "git", "fetch", "origin",
-            cwd=clone_dir,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=child_env(),
+        from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+        fetched = await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(git_auth.fetch, clone_dir, timeout=5)),
+            timeout=8,
         )
-        await asyncio.wait_for(fetch_proc.communicate(), timeout=5)
+        if not fetched.ok:
+            return 0
     except (TimeoutError, Exception):
         return 0  # fetch timed out — return 0, don't block the response
 
@@ -4780,53 +4820,47 @@ async def _git_push_with_rebase(
     """
     import asyncio  # noqa: PLC0415
 
-    # Discover the remote's default branch (HEAD branch from
-    # `git remote show origin`).  Falls back to "master" then "main".
+    # H-363: every network step goes through the credential seam. The clone
+    # holds no token. The push credential reaches ONE git process, in a
+    # gateway temp dir, and only here: the caller is the approve route, which
+    # ``_require_mutation_reviewer`` gates. ``--no-verify`` is in the seam,
+    # because the pre-push hook blocks agent pushes.
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    # Discover the remote's default branch (the remote HEAD).  Falls back to
+    # "master", as before.
     remote_branch = "master"
     try:
-        rb_proc = await asyncio.create_subprocess_exec(
-            "git", "remote", "show", "origin",
-            cwd=clone_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=child_env(),
+        found = await asyncio.wait_for(
+            asyncio.to_thread(git_auth.remote_default_branch, clone_dir), timeout=20,
         )
-        rb_out, _ = await asyncio.wait_for(rb_proc.communicate(), timeout=15)
-        for line in rb_out.decode(errors="replace").splitlines():
-            line = line.strip()
-            if line.startswith("HEAD branch:"):
-                remote_branch = line.split("HEAD branch:", 1)[1].strip()
-                break
+        if found:
+            remote_branch = found
     except Exception:  # noqa: BLE001
         pass
 
-    # Push <commit_sha>:<remote_branch> (or HEAD if no specific sha given)
-    push_src = commit_sha if commit_sha else "HEAD"
-    push_target = f"{push_src}:{remote_branch}"
+    async def _push(src: str) -> git_auth.GitResult:
+        return await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(
+                git_auth.push, clone_dir, src=src, branch=remote_branch,
+                credential=git_auth.push_token(),
+            )),
+            timeout=90,
+        )
 
-    # First attempt — fast-forward.
-    # --no-verify bypasses the pre-push hook (which blocks agent pushes
-    # but also accidentally blocks the legitimate approval push).
-    proc = await asyncio.create_subprocess_exec(
-        "git", "push", "--no-verify", "origin", push_target,
-        cwd=clone_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=child_env(),
-    )
-    _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
-    if proc.returncode == 0:
+    # Push <commit_sha> (or HEAD if no specific sha given) — fast-forward.
+    pushed = await _push(commit_sha if commit_sha else "HEAD")
+    if pushed.ok:
         return True, commit_sha  # SHA unchanged on clean fast-forward
 
-    stderr = stderr_bytes.decode(errors="replace")
     _log.warning(
         "mutation.push_rejected",
-        remote_branch=remote_branch, reason=stderr[:300],
+        remote_branch=remote_branch, reason=pushed.stderr[:300],
     )
 
     # Fetch + rebase on top of the remote branch, then retry.
-    fetch_rc = await _git_exec(clone_dir, ["fetch", "origin"])
-    if fetch_rc != 0:
+    fetched = await asyncio.to_thread(git_auth.fetch, clone_dir)
+    if not fetched.ok:
         return False, None
 
     # ── Stash uncommitted changes so rebase has a clean tree ──────────
@@ -4904,18 +4938,8 @@ async def _git_push_with_rebase(
         pass
 
     # Push the new HEAD (which includes our rebased commit)
-    new_head = new_sha if new_sha else "HEAD"
-    push_target_retry = f"{new_head}:{remote_branch}"
-
-    retry_proc = await asyncio.create_subprocess_exec(
-        "git", "push", "--no-verify", "origin", push_target_retry,
-        cwd=clone_dir,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        env=child_env(),
-    )
-    await asyncio.wait_for(retry_proc.communicate(), timeout=60)
-    success = retry_proc.returncode == 0
+    retried = await _push(new_sha if new_sha else "HEAD")
+    success = retried.ok
     return success, new_sha if success else None
 
 

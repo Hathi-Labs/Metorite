@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from acb_common.child_env import AGENT_PATH_VALUES, child_env
+from acb_common.child_env import AGENT_GIT_VALUES, AGENT_PATH_VALUES, child_env
 
 from acb_skills.write_artifact import (
     artifact_context,
@@ -93,7 +93,9 @@ def _script_env() -> dict[str, str]:
     boundary for the process itself is the Tier-2 container env (MT-0c).
     """
     # WS-49 BH-7 adds its fixed paths in AGENT_PATH_VALUES, not here.
-    extra: dict[str, str | None] = dict(AGENT_PATH_VALUES)
+    # H-363: AGENT_GIT_VALUES make a git push of the script fail at once, as
+    # the script holds no GitHub credential.
+    extra: dict[str, str | None] = {**AGENT_PATH_VALUES, **AGENT_GIT_VALUES}
     declared = _declared_integrations()
     if declared:
         try:
@@ -249,14 +251,18 @@ async def run_script(path: str, args: str = "") -> str:
         AGENT_PUSH_WITHHELD_REASON,
         agent_push_allowed_for_this_run,
         is_git_push_text,
+        note_agent_push_request,
     )
-    if not agent_push_allowed_for_this_run():
-        try:
-            script_text = target.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            script_text = ""
-        if is_git_push_text(script_text):
+    try:
+        script_text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        script_text = ""
+    if is_git_push_text(script_text):
+        if not agent_push_allowed_for_this_run():
             return f"run_script blocked: {AGENT_PUSH_WITHHELD_REASON}."
+        # H-363: the script holds no GitHub credential, so its own push
+        # fails. The gateway pushes this run's commits when the run ends.
+        note_agent_push_request()
     try:
         cmd += shlex.split(args or "")
     except ValueError as exc:
