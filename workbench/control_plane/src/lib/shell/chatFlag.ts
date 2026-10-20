@@ -57,12 +57,15 @@ export function shellChatOn(): boolean {
  * CF-1 is its first piece: the peek strip on a phone.
  *
  * It needs `shellChatOn()`, because every piece of it hangs on the one
- * assistant. The dev override is `cc-chat-first`, as for the other flags.
+ * assistant. The dev override is `cc-shell-chat-first`, as for the other
+ * flags. The key keeps the shell prefix. A key that starts with "cc-" and
+ * then "chat" reads as a chat cache key with no namespace (the grep fence in
+ * `railSessions.test.ts`).
  *
  * Turning it on in production is owner-only (`navigation_shell.md` §13.1).
  * An agent may turn it on in staging.
  */
 export function chatFirstOn(): boolean {
   // The literal member expression, the one form Next inlines (publicFlags.test.ts).
-  return shellChatOn() && flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-chat-first");
+  return shellChatOn() && flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first");
 }

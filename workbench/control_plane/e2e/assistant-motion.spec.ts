@@ -35,7 +35,7 @@ async function install(page: Page, opts: { chatFirst?: boolean; pill?: boolean }
     // The one assistant needs its flag and the full frame (`chatFlag.ts`).
     for (const k of ["cc-shell-chat", "cc-shell-bar", "cc-shell-nav"]) window.localStorage.setItem(k, "1");
     // CF-1: the chat-first flag, through its dev override. Off unless asked.
-    if (chatFirst) window.localStorage.setItem("cc-chat-first", "1");
+    if (chatFirst) window.localStorage.setItem("cc-shell-chat-first", "1");
     const w = window as unknown as Record<string, unknown>;
     let open: (() => void) | null = null;
     w.__release = () => open?.();
