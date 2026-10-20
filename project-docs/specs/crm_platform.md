@@ -11523,3 +11523,53 @@ unbuilt after CRM-C1 to CRM-C7. It writes no contract.
 12. **CRM-Q11, CRM-Q12 and CRM-Q13.**
 13. **Blueprints, approvals, territories and lead scoring (new).** Last,
     because they matter most to large sales teams.
+
+### 20.12 CRM-U8: the two-row toolbar and saved views
+
+*(2026-10-20, owner: the filters are "a little too overloaded". Built.)*
+
+Every list and board has two rows under the app bar. The old stage pills, the second filter row and the Columns band are gone.
+The app bar keeps Refresh and New only.
+
+- **Row 1, which view.** Chips: "All deals" (the default), the private views, then the shared views. At the right end: the pipeline, the List and Board switch, Board options, Columns and Export.
+- **Row 2, what is filtered.** Search, Stage (Status on leads), Owner, one chip for each filter in force, "+ Filter", Clear, and the count. The board has no search, no Stage and no count.
+- **"+ Filter".** One panel lists every field in groups (Dates, Picklists, Numbers, Text, Other). A picklist shows how full it is, and the fullest comes first. A chip reopens its editor.
+- **The dirty rule.** One rule serves every list (`dirtyState`). The default view with a filter, a sort or columns set shows "+ Save view". A saved view that differs shows "Update view" and "Reset". "Update view" needs edit rights.
+- **The chip menu.** A right click, or the "View options" button, opens Rename, Share or Make private (admin) and Delete. The rail no longer nests views.
+- **Columns.** A saved view keeps its columns on the view. The default view keeps them in the browser.
+- **Module lists.** A generic module list has the same two rows. Its scope key is `module:<api_name>`. Migration 287 widens the `crm_views` check, and `views.py` accepts the key. The gateway filters a module list by search and sort only. So a module view saves those two, and the list has no "+ Filter" and no Export.
+- **Phone.** Row 1 scrolls. Row 2 is Search and one "Filters (n)" button that opens a sheet.
+- **The shared seam.** `src/lib/savedViews/` holds the model, `orderViews`, `dirtyState` and the hook. `src/components/ViewChips.tsx` draws row 1. Projects (`pm_views`) is the next user.
+
+**Fences (R7).** `src/lib/savedViews/index.test.ts` holds the order, the dirty rule and the chip list. `crmU8.test.ts` holds the field groups, the fill order, the filter chips, the module key and the app bar. `tests/unit/test_crm_views_entity.py` holds the server key and the migration check. `crmQ8.test.ts` holds the rail without nested views.
+
+### 20.13 CRM-U6: stage order, win chance and the lane stat block
+
+Owner, 2026-10-20: the board order and the win chance are two settings.
+
+1. **The order never follows the probability.** An admin sets the order of
+   the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
+   without an admin order uses the source position, then the pipeline place.
+2. **Every stage has a win chance.** Migration 288 adds `probability` and
+   `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
+   status holds 0, for both kinds (D-CRM-10).
+3. **The lane header shows a stat block.** A deal lane shows the total and
+   the weighted total with the win chance. A won lane says "booked, not
+   forecast". A lost lane says "no forecast". An on-hold lane says "on hold".
+4. **A lead lane shows the count and the expected conversions.** The
+   expected number is count x win chance / 100, with one decimal.
+5. **Settings.** Each row has Up and Down buttons and a plain type label.
+   It also has a "Win chance" box and a labelled Save and Cancel. Delete asks
+   first. The rules of a deal stage fold behind a "Rules" toggle. A strip at
+   the top of each grid shows the stages in board order.
+
+Fences (R7):
+
+- `board.test.ts`: "sorts by the source position in Mirror mode with no admin
+  order, not by probability", and the `expectedLeads` and `dealForecastLine` cases.
+- `boardStages.test.ts`: "the lane stat block (CRM-U6)".
+- `crmU6.test.ts`: the strip, the Up and Down buttons, the disabled win chance,
+  and "keeps the probability out of orderLanes".
+- `test_crm_migration.py::test_the_lead_probability_migration_is_expand_only`.
+- `test_crm_routes.py::test_a_lead_status_carries_a_win_chance` and
+  `test_crm_pipeline.py::test_a_lead_win_chance_keeps_the_won_lost_clamp`.

@@ -63,7 +63,18 @@ def _sub(text: str, ctx: dict[str, str], where: str) -> str:
     return _EXPR.sub(repl, str(text))
 
 
-def render(job_name: str, ctx: dict[str, str], overrides: dict[str, str]) -> str:
+def render(
+    job_name: str,
+    ctx: dict[str, str],
+    overrides: dict[str, str],
+    replace: dict[str, str] | None = None,
+) -> str:
+    """``replace`` swaps literal text in the `run:` bodies, for example
+    ``--splits 6`` for ``--splits 12`` on a PC with more cores. Text that no
+    step contains is an ERROR: a replacement that quietly matched nothing
+    would run 12 groups of a 6-way split."""
+    replace = replace or {}
+    unused = set(replace)
     jobs = load_jobs()
     if job_name not in jobs:
         raise SystemExit(f"steps.py: no job {job_name!r} in pr-check.yml")
@@ -78,6 +89,10 @@ def render(job_name: str, ctx: dict[str, str], overrides: dict[str, str]) -> str
         env = {**job_env, **{k: _sub(v, ctx, f"{job_name}/{name}.env") for k, v in (step.get("env") or {}).items()}}
         env.update(overrides)
         body = _sub(step["run"], ctx, f"{job_name}/{name}")
+        for old, new in replace.items():
+            if old in body:
+                body = body.replace(old, new)
+                unused.discard(old)
         cwd = step.get("working-directory", workdir)
         exports = "".join(f"export {k}={shlex.quote(str(v))}; " for k, v in env.items())
         out.append(f"echo {shlex.quote('== ' + name)}")
@@ -86,6 +101,8 @@ def render(job_name: str, ctx: dict[str, str], overrides: dict[str, str]) -> str
             f"( cd {shlex.quote(cwd)} || exit 1; {exports}"
             f"bash --noprofile --norc -eo pipefail -c {shlex.quote(body)} ) || exit 1"
         )
+    if unused:
+        raise SystemExit(f"steps.py: --replace text not found in job {job_name!r}: {sorted(unused)}")
     out.append('echo "== job ok"')
     return "\n".join(out) + "\n"
 
@@ -95,7 +112,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("job")
     ap.add_argument("--ctx", action="append", default=[], help="expression=value")
     ap.add_argument("--set", action="append", default=[], help="ENV=value override")
+    ap.add_argument("--replace", action="append", default=[], help="OLD=>NEW literal text in run bodies")
     a = ap.parse_args(argv)
+    replace = dict(r.split("=>", 1) for r in a.replace)
     ctx = {
         "github.workspace": str(ROOT),
         "github.event_name": "pull_request",
@@ -105,7 +124,7 @@ def main(argv: list[str]) -> int:
     }
     ctx.update(dict(kv.split("=", 1) for kv in a.ctx))
     overrides = dict(kv.split("=", 1) for kv in a.set)
-    sys.stdout.write(render(a.job, ctx, overrides))
+    sys.stdout.write(render(a.job, ctx, overrides, replace))
     return 0
 
 
