@@ -147,7 +147,10 @@ export default function FilterBar({
   const showStage = stageChoices.length > 0;
 
   // The panel: where it hangs, and what it shows. `list` is the field list.
-  const [panel, setPanel] = useState<{ anchor: HTMLElement; step: string } | null>(null);
+  const [panel, setPanel] = useState<{
+    anchor: HTMLElement;
+    step: string;
+  } | null>(null);
   const [sheet, setSheet] = useState(false);
   const [sheetStep, setSheetStep] = useState("list");
   const root = useRef<HTMLDivElement | null>(null);
@@ -204,7 +207,10 @@ export default function FilterBar({
 
   const countText =
     count !== null && count !== undefined ? (
-      <span className="ml-auto shrink-0 text-xs text-muted-foreground" data-testid="crm-count">
+      <span
+        className="ml-auto shrink-0 text-xs text-muted-foreground"
+        data-testid="crm-count"
+      >
         {count.toLocaleString("en-US")} {listNoun.toLowerCase()}
       </span>
     ) : null;
@@ -212,7 +218,10 @@ export default function FilterBar({
   // ── The phone: Search and one "Filters (n)" button ────────────────────────
   if (isMobile) {
     return (
-      <div className="shrink-0 border-b border-border px-3 py-2" data-testid="crm-filter-bar">
+      <div
+        className="shrink-0 border-b border-border px-3 py-2"
+        data-testid="crm-filter-bar"
+      >
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1 [&_input]:w-full">{searchBox}</div>
           {entity || showStage ? (
@@ -276,7 +285,10 @@ export default function FilterBar({
 
   // ── The desktop row ───────────────────────────────────────────────────────
   return (
-    <div className="shrink-0 border-b border-border px-3 py-2 sm:px-4" data-testid="crm-filter-bar">
+    <div
+      className="shrink-0 border-b border-border px-3 py-2 sm:px-4"
+      data-testid="crm-filter-bar"
+    >
       <div ref={root} className="flex flex-wrap items-center gap-2">
         {searchBox}
         {stage}
@@ -298,14 +310,21 @@ export default function FilterBar({
             aria-expanded={panel?.step === "list"}
             onClick={(e) => {
               const el = e.currentTarget;
-              setPanel((p) => (p?.step === "list" ? null : { anchor: el, step: "list" }));
+              setPanel((p) =>
+                p?.step === "list" ? null : { anchor: el, step: "list" },
+              );
             }}
           >
             Filter
           </Button>
         ) : null}
         {anyFilter(view) ? (
-          <Button variant="ghost" size="sm" icon="X" onClick={() => onChange(clearFilters(view))}>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="X"
+            onClick={() => onChange(clearFilters(view))}
+          >
             Clear
           </Button>
         ) : null}
@@ -314,6 +333,7 @@ export default function FilterBar({
           anchor={panel?.anchor ?? null}
           open={panel !== null}
           maxHeight={360}
+          align="end"
           className="w-72"
           panelProps={{ role: "dialog", "aria-label": "Filter" }}
         >
@@ -393,7 +413,8 @@ function FieldPanel({
   onDone: () => void;
 }) {
   const [words, setWords] = useState("");
-  const field = step === "list" ? null : (fields.find((f) => f.id === step) ?? null);
+  const field =
+    step === "list" ? null : (fields.find((f) => f.id === step) ?? null);
 
   if (!field) {
     const groups = groupFields(fields, words);
@@ -409,10 +430,17 @@ function FieldPanel({
           aria-label="Find a field"
         />
         {groups.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-muted-foreground">No field matches.</p>
+          <p className="px-2 py-3 text-xs text-muted-foreground">
+            No field matches.
+          </p>
         ) : null}
         {groups.map(({ group, items }) => (
-          <div key={group} role="group" aria-label={group} className="flex flex-col">
+          <div
+            key={group}
+            role="group"
+            aria-label={group}
+            className="flex flex-col"
+          >
             <p className="px-2 pb-0.5 pt-2 text-[11px] font-medium uppercase text-muted-foreground">
               {group}
             </p>
@@ -423,10 +451,15 @@ function FieldPanel({
                   key={item.id}
                   variant="ghost"
                   size="sm"
-                  className="w-full justify-between"
+                  // `layout`, not `className`: `justify-center` and
+                  // `justify-between` tie on specificity (DESIGN_SYSTEM §3).
+                  layout="flex w-full items-center justify-between text-left"
                   onClick={() => {
                     if (item.kind === "converted") {
-                      onChange({ ...view, includeConverted: !view.includeConverted });
+                      onChange({
+                        ...view,
+                        includeConverted: !view.includeConverted,
+                      });
                       onDone();
                     } else {
                       setStep(item.id);
@@ -434,7 +467,11 @@ function FieldPanel({
                   }}
                 >
                   <span className="truncate">{item.label}</span>
-                  {fill ? <span className="text-[11px] text-muted-foreground">{fill}</span> : null}
+                  {fill ? (
+                    <span className="text-[11px] text-muted-foreground">
+                      {fill}
+                    </span>
+                  ) : null}
                 </Button>
               );
             })}
@@ -456,7 +493,12 @@ function FieldPanel({
         />
         <p className="text-xs font-medium text-foreground">{field.label}</p>
       </div>
-      <FieldEditor field={field} view={view} onChange={onChange} onDone={onDone} />
+      <FieldEditor
+        field={field}
+        view={view}
+        onChange={onChange}
+        onDone={onDone}
+      />
     </div>
   );
 }
@@ -476,7 +518,11 @@ function FieldEditor({
   if (field.kind === "range" && field.range) {
     const { range } = field;
     return (
-      <div className="flex flex-col gap-2" role="group" aria-label={`${range.label} dates`}>
+      <div
+        className="flex flex-col gap-2"
+        role="group"
+        aria-label={`${range.label} dates`}
+      >
         <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
           From
           <Input
@@ -484,7 +530,9 @@ function FieldEditor({
             inputSize="sm"
             aria-label={`${range.label} from`}
             value={view.ranges[range.from] ?? ""}
-            onChange={(e) => onChange(setRange(view, range.from, e.target.value))}
+            onChange={(e) =>
+              onChange(setRange(view, range.from, e.target.value))
+            }
           />
         </label>
         <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -557,7 +605,9 @@ function FieldEditor({
         { value: ANY, label: `Any ${def.label.toLowerCase()}` },
         ...options,
         // A saved view can name an option that the field no longer lists.
-        ...(known || chosen.length === 0 ? [] : [{ value: chosen[0], label: chosen.join(", ") }]),
+        ...(known || chosen.length === 0
+          ? []
+          : [{ value: chosen[0], label: chosen.join(", ") }]),
       ]}
       onPick={(next) => {
         onChange(setCustom(view, def.key, next));
@@ -576,11 +626,19 @@ function Choices({
 }: {
   label: string;
   value: string;
-  options: ReadonlyArray<{ value: string; label: string; description?: string }>;
+  options: ReadonlyArray<{
+    value: string;
+    label: string;
+    description?: string;
+  }>;
   onPick: (value: string) => void;
 }) {
   return (
-    <div role="group" aria-label={label} className="flex max-h-60 flex-col overflow-y-auto">
+    <div
+      role="group"
+      aria-label={label}
+      className="flex max-h-60 flex-col overflow-y-auto"
+    >
       {options.map((option) => (
         <Button
           key={option.value || "__any"}
@@ -622,18 +680,27 @@ function EqualsFilter({
     setSeen(value);
     setDraft(value);
   }
-  const parsed = kind === "number" ? numberFilterValue(def, draft) : dateFilterValue(draft);
+  const parsed =
+    kind === "number" ? numberFilterValue(def, draft) : dateFilterValue(draft);
   const commit = (next: string | null) => {
     if (next !== null && next !== value) onCommit(next);
   };
   return (
-    <div className="flex items-center gap-1" role="group" aria-label={`${def.label} filter`}>
+    <div
+      className="flex items-center gap-1"
+      role="group"
+      aria-label={`${def.label} filter`}
+    >
       <Input
         inputSize="sm"
         className="w-full"
-        aria-label={kind === "number" ? `${def.label} equals` : `${def.label} on`}
+        aria-label={
+          kind === "number" ? `${def.label} equals` : `${def.label} on`
+        }
         aria-invalid={parsed === null || undefined}
-        {...(kind === "number" ? { inputMode: "text" as const, placeholder: "=" } : { type: "date" })}
+        {...(kind === "number"
+          ? { inputMode: "text" as const, placeholder: "=" }
+          : { type: "date" })}
         value={draft}
         onChange={(e) => {
           setDraft(e.target.value);

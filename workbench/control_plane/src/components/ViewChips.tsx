@@ -98,7 +98,12 @@ export default function ViewChips<V extends SavedView>({
 
   function menuItems(view: V): CtxItem[] {
     const items: CtxItem[] = [
-      { kind: "item", label: "Rename", icon: themedIcon("Pencil"), onSelect: () => setRenaming(view) },
+      {
+        kind: "item",
+        label: "Rename",
+        icon: themedIcon("Pencil"),
+        onSelect: () => setRenaming(view),
+      },
     ];
     if (isAdmin) {
       items.push({
@@ -126,67 +131,94 @@ export default function ViewChips<V extends SavedView>({
       className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 sm:px-4"
       data-testid="crm-view-chips"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1">
-        <div className="min-w-0 shrink">
-          <ScrollStrip label={stripLabel} revealKey={activeId ?? ""} className="gap-1">
-            {chips.map((chip) => (
+      {/* One strip holds the chips AND the dirty controls, so a narrow pane
+          gives the strip its whole width and a phone scrolls to "Save view"
+          instead of cutting the first chip. */}
+      <div className="min-w-0 flex-1">
+        <ScrollStrip
+          label={stripLabel}
+          revealKey={activeId ?? ""}
+          className="gap-1"
+        >
+          {chips.map((chip) => (
+            <Button
+              key={chip.id ?? "__all"}
+              variant="ghost"
+              size="sm"
+              className="shrink-0 whitespace-nowrap"
+              selected={chip.active}
+              icon={chip.shared ? "Users" : undefined}
+              title={chip.shared ? `${chip.label} (shared)` : undefined}
+              onClick={() => onSelect(chip.id ? byId(chip.id) : null)}
+              onContextMenu={(e) => {
+                if (!chip.id) return;
+                const view = byId(chip.id);
+                if (!view || !canEditView(view, isAdmin)) return;
+                e.preventDefault();
+                setMenu({
+                  id: view.id,
+                  x: e.clientX,
+                  y: e.clientY,
+                  keyboard: false,
+                });
+              }}
+            >
+              {chip.label}
+            </Button>
+          ))}
+          {active && canEditView(active, isAdmin) ? (
+            <span ref={optionsSlot} className="inline-flex shrink-0">
               <Button
-                key={chip.id ?? "__all"}
+                variant="ghost"
+                size="icon-xs"
+                icon="MoreHorizontal"
+                aria-label={`View options for ${active.name}`}
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMenu({
+                    id: active.id,
+                    x: r.left,
+                    y: r.bottom + 2,
+                    keyboard: true,
+                  });
+                }}
+              />
+            </span>
+          ) : null}
+          {dirty === "unsaved" ? (
+            <SaveButton isAdmin={isAdmin} busy={busy} onSave={onSave} />
+          ) : null}
+          {dirty === "changed" && active ? (
+            <>
+              {canEditView(active, isAdmin) ? (
+                <Button
+                  size="sm"
+                  icon="Save"
+                  className="shrink-0 whitespace-nowrap"
+                  loading={busy}
+                  title={`${active.name} has unsaved changes`}
+                  onClick={() => void onUpdate()}
+                >
+                  Update view
+                </Button>
+              ) : null}
+              <Button
                 variant="ghost"
                 size="sm"
-                selected={chip.active}
-                icon={chip.shared ? "Users" : undefined}
-                title={chip.shared ? `${chip.label} (shared)` : undefined}
-                onClick={() => onSelect(chip.id ? byId(chip.id) : null)}
-                onContextMenu={(e) => {
-                  if (!chip.id) return;
-                  const view = byId(chip.id);
-                  if (!view || !canEditView(view, isAdmin)) return;
-                  e.preventDefault();
-                  setMenu({ id: view.id, x: e.clientX, y: e.clientY, keyboard: false });
-                }}
+                icon="RotateCcw"
+                className="shrink-0 whitespace-nowrap"
+                onClick={onReset}
               >
-                {chip.label}
+                Reset
               </Button>
-            ))}
-          </ScrollStrip>
-        </div>
-        {active && canEditView(active, isAdmin) ? (
-          <span ref={optionsSlot} className="inline-flex">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon="MoreHorizontal"
-              aria-label={`View options for ${active.name}`}
-              aria-haspopup="menu"
-              onClick={(e) => {
-                const r = e.currentTarget.getBoundingClientRect();
-                setMenu({ id: active.id, x: r.left, y: r.bottom + 2, keyboard: true });
-              }}
-            />
-          </span>
-        ) : null}
-        {dirty === "unsaved" ? <SaveButton isAdmin={isAdmin} busy={busy} onSave={onSave} /> : null}
-        {dirty === "changed" && active ? (
-          <>
-            {canEditView(active, isAdmin) ? (
-              <Button
-                size="sm"
-                icon="Save"
-                loading={busy}
-                title={`${active.name} has unsaved changes`}
-                onClick={() => void onUpdate()}
-              >
-                Update view
-              </Button>
-            ) : null}
-            <Button variant="ghost" size="sm" icon="RotateCcw" onClick={onReset}>
-              Reset
-            </Button>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </ScrollStrip>
       </div>
-      {trailing ? <div className="flex shrink-0 items-center gap-1">{trailing}</div> : null}
+      {trailing ? (
+        <div className="flex shrink-0 items-center gap-1">{trailing}</div>
+      ) : null}
 
       {menu && menuView ? (
         <ContextMenu
@@ -196,7 +228,8 @@ export default function ViewChips<V extends SavedView>({
           autoFocus={menu.keyboard}
           onClose={() => {
             setMenu(null);
-            if (menu.keyboard) optionsSlot.current?.querySelector("button")?.focus();
+            if (menu.keyboard)
+              optionsSlot.current?.querySelector("button")?.focus();
           }}
         />
       ) : null}
@@ -261,10 +294,22 @@ function SaveButton({
 
   return (
     <>
-      <Button variant="ghost" size="sm" icon="Plus" onClick={() => setOpen(true)}>
+      <Button
+        variant="ghost"
+        size="sm"
+        icon="Plus"
+        className="shrink-0 whitespace-nowrap"
+        onClick={() => setOpen(true)}
+      >
         Save view
       </Button>
-      <Modal open={open} onClose={() => setOpen(false)} title="Save view" icon="Bookmark" size="sm">
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Save view"
+        icon="Bookmark"
+        size="sm"
+      >
         <form className="flex flex-col gap-3 p-4" onSubmit={submit}>
           <Input
             autoFocus
@@ -286,10 +331,20 @@ function SaveButton({
             </label>
           ) : null}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => setOpen(false)}
+            >
               Cancel
             </Button>
-            <Button type="submit" size="sm" loading={working || busy} disabled={!name.trim()}>
+            <Button
+              type="submit"
+              size="sm"
+              loading={working || busy}
+              disabled={!name.trim()}
+            >
               Save
             </Button>
           </div>
@@ -316,7 +371,13 @@ function RenameDialog({
   const name = draft?.name ?? "";
 
   return (
-    <Modal open={view !== null} onClose={onClose} title="Rename view" icon="Pencil" size="sm">
+    <Modal
+      open={view !== null}
+      onClose={onClose}
+      title="Rename view"
+      icon="Pencil"
+      size="sm"
+    >
       <form
         className="flex flex-col gap-3 p-4"
         onSubmit={(e) => {
@@ -328,7 +389,9 @@ function RenameDialog({
           autoFocus
           inputSize="sm"
           value={name}
-          onChange={(e) => setDraft((d) => (d ? { ...d, name: e.target.value } : d))}
+          onChange={(e) =>
+            setDraft((d) => (d ? { ...d, name: e.target.value } : d))
+          }
           aria-label="View name"
           maxLength={120}
         />
