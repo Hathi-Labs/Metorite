@@ -63,6 +63,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # `bucket` group by one field, and `field_filters` filters a module.
     # `group_by` is no longer required, because a call gives group_by OR
     # group_field. Every argument that existed keeps its name and type.
+    # WS-53 §18.16 part 4: `term`, the member's own word for a figure. A new
+    # optional argument, so no call breaks.
     'crm_aggregate': {'params': {'bucket': 'string',
                                  'close_from': 'string', 'close_to': 'string',
                                  'created_from': 'string', 'created_to': 'string',
@@ -72,7 +74,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                                  'measure': 'string',
                                  'owner': 'string', 'page': 'integer',
                                  'pipeline_id': 'string',
-                                 'q': 'string', 'status': 'string',
+                                 'q': 'string', 'status': 'string', 'term': 'string',
                                  'updated_from': 'string', 'updated_to': 'string'},
                       'required': ['entity']},
     'crm_deal_contacts': {'params': {'deal_id': 'string', 'page': 'integer'},

@@ -69,6 +69,9 @@ dev = [
     # No module under apps/ or packages/ imports it, except that engine.
     "duckdb==1.5.6",
     "pytest-split>=0.11.0",
+    # The CI shards rerun a failed test once (`--reruns 1`). Of 70 red runs on
+    # 15-19 Oct, 18 were timing flakes or infrastructure, not the PR's code.
+    "pytest-rerunfailures>=15.0",
 ]
 
 [tool.uv.workspace]

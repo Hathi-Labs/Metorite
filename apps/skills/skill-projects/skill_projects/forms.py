@@ -959,6 +959,37 @@ def _confirm_card(
     return card
 
 
+def _same_name(a: str, b: str) -> bool:
+    """Two project names that a member reads as one name."""
+    return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
+
+
+def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
+    """The refusal for a plan named like its parent project (review of #1160).
+
+    The owner's plan "Personalization & Memory System" came "Under
+    Personalization & Memory System." ``propose_plan`` always POSTs a NEW
+    project, so the batch made a second project of that name inside the
+    first one, and put every task there. The model meant to fill the project
+    that exists. ``propose_plan`` cannot target an existing project, so the
+    refusal names the tool that can: ``create_tasks`` with its ``full_id``.
+    """
+    from .refusals import refusal_text
+
+    return refusal_text(GatewayRefusal(
+        f"propose_plan makes a NEW project, and the plan is named like its parent "
+        f"project {data(parent_label)}. It would make a second {data(label)} inside "
+        "it, so nothing was created. To add the tasks to the project that exists, "
+        f"call create_tasks with project_id {parent_id}. Map each plan task to a "
+        "create_tasks row: title stays title, owner becomes assignees, effort_mins "
+        "becomes estimate_mins, and start and due stay. Leave out key, after and "
+        "phase, because create_tasks refuses them. Then make each waits-on link in "
+        "a second call, link_tasks_batch (link_tasks for 1 or 2), with type blocks "
+        "and the task ids from the receipt. For a new sub-project, give the plan "
+        "its own name."
+    ))
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @agent_assignee_refusal_as_text
 async def propose_plan(
@@ -1002,6 +1033,10 @@ async def propose_plan(
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         parent_label = _plain(parent.get("name"))
+        # Only a PROJECT: a folder named like the plan is a fair place for a
+        # new project, and create_tasks refuses a folder (review of #1160).
+        if parent.get("kind", "project") == "project" and _same_name(label, parent_label):
+            return _plan_fills_parent(label, parent_label, parent_id)
     soft, unresolved = await _soft_owners(rows)
     checks, warnings, capacity_line = _capacity(rows, await _preview(rows, soft), unresolved)
     values = await _ask(

@@ -82,6 +82,17 @@ def _load_agents():
 
 agents = _load_agents()
 
+
+@pytest.fixture(autouse=True)
+def _open_run() -> None:
+    """An open run, as the executor binds for each chat turn. With no run
+    context, a rule tool holds its outward part, because H-236 fails closed.
+    The held run has its own fence: ``test_no_egress_tool_audit.py``."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=False)
+
+
 # Ids shaped like the real ones, so a stray ``id=<uuid>`` in a question would
 # match ``RULE_ID_RE`` of the rule card.
 BOX_A = "0a0a0a0a-0000-4000-8000-00000000000a"

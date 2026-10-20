@@ -16,7 +16,11 @@ import { CrmError } from "./api";
 
 // ── The wire ───────────────────────────────────────────────────────────────
 
-export type QuestionKind = "purpose" | "key_field" | "slot" | "stage_value" | "revenue";
+/**
+ * `term` (WS-53 §18.16): which field the org's own word for a figure means.
+ * The chat opens it when two fields give different totals for the word.
+ */
+export type QuestionKind = "purpose" | "key_field" | "slot" | "stage_value" | "revenue" | "term";
 
 /** `open` (not asked), `unsure`, `stale` (the field is gone), or `answered` (in use). */
 export type QuestionReason = "open" | "unsure" | "stale" | "answered";
@@ -411,6 +415,14 @@ export function questionCopy(q: Question): QuestionCopy {
         question: `Which module holds your ${noun}?`,
         why: `${q.label} holds no records in your Zoho, so Metorite looks for another module that can take its place.`,
         changes: `That module then shows as ${q.label} in the CRM and in reports. Nothing changes in Zoho.`,
+      };
+    }
+    case "term": {
+      const word = q.value ?? "";
+      return {
+        question: `When someone says "${word}", which field of ${q.label} do they mean?`,
+        why: `"${word}" matches more than one field, and the fields give different totals. A member asked the chat about this term. Your answer tells the chat how to read it.`,
+        changes: `Every answer that uses "${word}" reads the field you choose, for everyone.`,
       };
     }
     case "stage_value": {

@@ -77,6 +77,24 @@ function grouped(n, system) {
 }
 
 /**
+ * A number written out in full, with the system's grouping and a fixed
+ * count of decimals: 12,34,567.5 (indian) or 1,234,567.5 (international).
+ * A stat tile shows the exact value, so it groups and never shortens.
+ * @param {number} v
+ * @param {unknown} [system]  a number system; anything else is the default
+ * @param {number} [decimals]  0 to 20
+ * @returns {string}
+ */
+export function groupedNumber(v, system, decimals = 0) {
+  if (!Number.isFinite(v)) return `${v}`;
+  const places = Math.min(20, Math.max(0, Math.trunc(decimals) || 0));
+  return new Intl.NumberFormat(numberSystem(system) === "indian" ? "en-IN" : "en-US", {
+    minimumFractionDigits: places,
+    maximumFractionDigits: places,
+  }).format(v);
+}
+
+/**
  * A short number in the given system. The sign is an ASCII "-": the caller
  * places it (the chart engine draws the typographic minus, the CRM puts it
  * before the currency sign).

@@ -53,6 +53,10 @@ class Case:
     asks: bool = False
     #: The facts the app publishes (``useAssistantFacts``), as data lines.
     facts: tuple[str, ...] = ()
+    #: The in-app path the orchestrator should open with ``show_in_app``
+    #: (WS-62 CF-3, ``chat_first_surface.md`` §4.4), or None. Then ``expected``
+    #: is None too: the orchestrator opens the page itself, and no specialist runs.
+    opens: str | None = None
     #: Why this case is here, for a reader of the table.
     note: str = ""
 
@@ -123,16 +127,19 @@ CASES: tuple[Case, ...] = (
          "/projects", "crm-assistant", facts=_PROJECT,
          note="cross-app: asked in Projects, about the pipeline"),
 
-    # ── My Tasks and Calendar → task-manager ───────────────────────────────
+    # ── My Tasks and Calendar → projects-assistant ─────────────────────────
+    # One task store, three lenses (D52, D53, D54). task-manager runs on the
+    # retired Copilot runtime, so it is no specialist (D84, D92).
     Case("T1", "Capture a to-do: renew the domain before the 30th.",
-         "/tasks", "task-manager", facts=_MY_TASKS),
+         "/tasks", "projects-assistant", facts=_MY_TASKS,
+         note="a private task (ALSO_SERVES keeps the page in My Tasks)"),
     Case("T2", "What should I work on next?",
-         "/tasks", "task-manager", facts=_MY_TASKS),
+         "/tasks", "projects-assistant", facts=_MY_TASKS),
     Case("T3", "Block two hours tomorrow morning to write the board report.",
-         "/calendar", "task-manager",
+         "/calendar", "projects-assistant",
          note="Calendar has no agent of its own (ALSO_SERVES in assistant.ts)"),
     Case("T4", "Remind me to call Acme back on Thursday.",
-         "/crm", "task-manager",
+         "/crm", "projects-assistant",
          note="cross-app: a personal to-do asked in CRM"),
 
     # ── My WhatsApp → whatsapp-assistant ───────────────────────────────────
@@ -149,12 +156,26 @@ CASES: tuple[Case, ...] = (
          "/integrations", "apis-config"),
     Case("B1", "Build me a small app that tracks visitor sign-ins at the front desk.",
          "/chat", "app-builder",
-         note="App Workshop is a preview pane, so the page does not move"),
+         note="App Workshop is a preview pane, so the page does not move. "
+              "app-builder is the one Copilot specialist left (owner, 2026-10-19)"),
 
     # ── orchestrator answers itself ────────────────────────────────────────
     Case("N1", "What can you do?", "/chat", None),
     Case("N2", "Good morning!", None, None, note="from My Day"),
     Case("N3", "Thanks, that is all for now.", "/people", None),
+
+    # ── The chat guides: show_in_app (WS-62 CF-3) ──────────────────────────
+    # The member asks to SEE a page, a list or a record. The orchestrator
+    # opens it with show_in_app and says what they will see. No specialist.
+    Case("S1", "Show me the board for Website relaunch.", None, None,
+         opens=f"/projects?project={PROJECT_ID}",
+         note="from My Day: a project board, named in the words"),
+    Case("S2", "Open task #12.", "/tasks", None, facts=_MY_TASKS,
+         opens=f"/projects?task={TASK_ID}",
+         note="a record: the task opens in Projects, the one task store"),
+    Case("S3", "Take me to my inbox.", "/projects", None, facts=_PROJECT,
+         opens="/email",
+         note="cross-app: asked in Projects, a page of My Email"),
 
     # ── Ambiguous: ask the member first ────────────────────────────────────
     Case("A1", "Move it to next week.", None, None, asks=True,

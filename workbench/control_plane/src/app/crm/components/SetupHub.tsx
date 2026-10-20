@@ -106,9 +106,34 @@ export function SetupHubView({
       className="rounded-xl border border-border bg-card/40"
       aria-label="CRM setup"
     >
-      <header className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">Setup and sync</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">{hubNote(state)}</p>
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">Setup and sync</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{hubNote(state)}</p>
+          {plan.main.map((action) => (
+            <p key={action.id} className="mt-0.5 text-[11px] text-muted-foreground">
+              {action.explain}
+            </p>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {plan.main.map((action) => (
+            <Button
+              key={action.id}
+              variant="primary"
+              size="sm"
+              loading={
+                (action.id === "sync-now" && (busy.syncing || running)) ||
+                ((action.id === "reconnect-zoho" || action.id === "connect-zoho") &&
+                  busy.connecting)
+              }
+              disabled={busy.syncing || busy.connecting || (action.id === "sync-now" && running)}
+              onClick={() => onAction(action)}
+            >
+              {action.label}
+            </Button>
+          ))}
+        </div>
       </header>
 
       <dl className="divide-y divide-border/60">
@@ -134,29 +159,6 @@ export function SetupHubView({
         {mirror && lastError && <Row label="Last error">{lastError}</Row>}
         <Row label="Records">{countsSummary(counts)}</Row>
       </dl>
-
-      {plan.main.length > 0 && (
-        <div className="flex flex-wrap gap-4 border-t border-border px-4 py-3">
-          {plan.main.map((action) => (
-            <div key={action.id} className="flex min-w-0 max-w-sm flex-col items-start gap-1">
-              <Button
-                variant="primary"
-                size="sm"
-                loading={
-                  (action.id === "sync-now" && (busy.syncing || running)) ||
-                  ((action.id === "reconnect-zoho" || action.id === "connect-zoho") &&
-                    busy.connecting)
-                }
-                disabled={busy.syncing || busy.connecting || (action.id === "sync-now" && running)}
-                onClick={() => onAction(action)}
-              >
-                {action.label}
-              </Button>
-              <p className="text-[11px] text-muted-foreground">{action.explain}</p>
-            </div>
-          ))}
-        </div>
-      )}
 
       {plan.other.length > 0 && (
         <ul className="divide-y divide-border/60 border-t border-border" aria-label="Other actions">

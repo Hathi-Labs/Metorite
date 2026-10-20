@@ -156,11 +156,14 @@ REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply 
 
 #: The channel instruction (§5.5 "The scope rule", D-WAC-5). Advisory: no unit
 #: test can prove a model's refusal (§9). It goes to the run as
-#: ``system_context``, which the executor puts before the turn.
+#: ``system_context``, which the executor puts before the turn. It names email
+#: and the CRM since 2026-10-19 (WS-47 parity): a rule that named tasks,
+#: projects and the calendar only steered a billing question away from the CRM.
 SCOPE_RULE = (
     "You are answering a member of this organization on WhatsApp. Answer only "
-    "about this member's work in Metorite: their tasks, projects, calendar and "
-    "the other data of their organization in Metorite. If the member asks about "
+    "about this member's work in Metorite: their tasks, projects, calendar, "
+    "email, the CRM and the other data of their organization in Metorite. If "
+    "the member asks about "
     "any other topic, refuse in one line. Keep each reply short. Write plain "
     "text, with no tables and no headings. This chat cannot show a "
     "confirmation card, so you cannot change data from WhatsApp. When the "
@@ -172,8 +175,9 @@ SCOPE_RULE = (
 #: and when to call ``whatsapp_ui``. Advisory, like ``SCOPE_RULE``.
 SCOPE_RULE_NATIVE = (
     "You are answering a member of this organization on WhatsApp. Answer only "
-    "about this member's work in Metorite: their tasks, projects, calendar and "
-    "the other data of their organization in Metorite. If the member asks about "
+    "about this member's work in Metorite: their tasks, projects, calendar, "
+    "email, the CRM and the other data of their organization in Metorite. If "
+    "the member asks about "
     "any other topic, refuse in one line.\n"
     "Write for a phone screen: short paragraphs, one idea each, and no "
     "greeting. WhatsApp shows plain text with its own marks only: *bold*, "
@@ -1406,7 +1410,8 @@ def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
 
 def build_payload(message: str, history: list[dict[str, str]],
                   member_email: str, *, native: bool = False,
-                  writes: bool = False, documents: bool = False) -> dict[str, Any]:
+                  writes: bool = False, documents: bool = False,
+                  memory_context: str = "") -> dict[str, Any]:
     """The event payload of one run.
 
     ``_history_loader`` makes the batch executor take its STRUCTURED path on
@@ -1414,14 +1419,15 @@ def build_payload(message: str, history: list[dict[str, str]],
     message, and never text folded into the member's turn
     (``executor._run_with_maf_agent``). *native* picks the scope rule of the
     WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4. *documents*
-    adds :data:`DOCUMENTS_RULE` (WAC-12).
+    adds :data:`DOCUMENTS_RULE` (WAC-12). *memory_context* is the member's
+    pre-read memory (WAC-P2, :func:`_memory_preread`), the web route's block.
     """
     prior = [model_turn(m) for m in history]
     rule = (SCOPE_RULE_WRITES if native and writes
             else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
     if native and documents:
         rule = f"{rule}\n{DOCUMENTS_RULE}"
-    return {
+    payload: dict[str, Any] = {
         "mode": "chat",
         "message": message,
         "messages": prior,
@@ -1433,6 +1439,32 @@ def build_payload(message: str, history: list[dict[str, str]],
         "user_email": member_email,
         "source": SOURCE,
     }
+    if memory_context:
+        payload["memory_context"] = memory_context
+    return payload
+
+
+async def _memory_preread(req: RunRequest, message: str, *, shared: bool) -> str:
+    """The member's pre-read memory for this turn (WS-47 WAC-P2).
+
+    The web chat route's block (``gateway.memory_preread``): Mem0, the
+    member's preferences, the agent's and the org's memory, and the
+    knowledge graph. It reads as the LINK's member, in the link's org, which
+    ``run_message`` bound from the link row. A shared room or a group reads
+    nothing at all (no run reads a room). A fault reads nothing: memory is
+    advice, and the turn still runs."""
+    if shared:
+        return ""
+    try:
+        from gateway.memory_preread import memory_preread
+
+        return await memory_preread(
+            user_id=req.member_email, agent_name=AGENT,
+            thread_id=req.chat_session_id, message=message, shared=False)
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.run.memory_failed",
+                     error_type=type(exc).__name__)
+        return ""
 
 
 async def _answer(req: RunRequest, attempt: _Attempt) -> None:
@@ -1466,25 +1498,31 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         # "yes" must never void the act AND save a CRM rule, so the CRM's
         # pending ask waits while an act is pending.
         act_pending = writes and not shared and await acts.has_pending(req)
-        settled = (await acts.settle(req, message)
+        outcome = (await acts.settle(req, message)
                    if writes and not shared else None)
+        # WAC-P4: the Confirm of one egress call runs the model again, and
+        # only that call gets the yes. Anything else that settle gives is
+        # the reply.
+        approved = outcome if isinstance(outcome, acts.Approved) else None
+        settled = outcome if isinstance(outcome, str) else None
         # WS-53 CRM-Q33 part 2: the member's reply to the CRM's one question
         # ("2", a label, or YES to save a rule), matched by code and never by
         # the model. A reply that matches nothing runs as a normal message.
-        if settled is None and not shared and not act_pending:
+        if outcome is None and not shared and not act_pending:
             settled = await _crm_text_answer(req, message)
         # WAC-10c: a quick command ("today", "calendar", a menu tap) is
         # answered by code, with no AI call. A view that fails falls back
         # to the assistant, so it never costs the member an answer.
         view = (await _quick_answer(req, message, history)
-                if native and settled is None else None)
+                if native and settled is None and approved is None else None)
         if settled is not None:
             reply = settled
         elif view is not None:
             reply, ui = view.text, list(view.ui)
         else:
             answered = await _model_answer(req, message, history, attempt, run_id,
-                                           native=native, writes=writes)
+                                           native=native, writes=writes,
+                                           approved=approved, shared=shared)
             if answered is None:
                 return
             reply, ui = answered
@@ -1593,19 +1631,28 @@ async def _crm_follow_up(req: RunRequest, holder: Any, reply: str = "",
 async def _model_answer(req: RunRequest, message: str,
                         history: list[dict[str, str]], attempt: _Attempt,
                         run_id: str, *, native: bool, writes: bool,
+                        approved: Any = None, shared: bool = False,
                         ) -> tuple[str, list[Any]] | None:
     """Run the assistant for one message. Returns the reply and its elements.
 
     None when the run failed: the row is closed and the member got the
     failure text once.
+
+    *approved* (WAC-P4, ``acts.Approved``) is the Confirm of one egress
+    call. The run then holds the yes for that ONE call, and the act closes
+    after it. *shared* is True for a room, which reads no memory (WAC-P2).
     """
     from acb_skills.ask_tools import refuse_cards
+    from acb_skills.whatsapp_acts import approving
     from acb_skills.whatsapp_ui import whatsapp_run
-    from gateway.routes.whatsapp_channel import views
+    from gateway.routes.whatsapp_channel import acts, views
 
     documents = native and flags.documents_enabled()
-    payload = build_payload(message, history, req.member_email,
-                            native=native, writes=writes, documents=documents)
+    turn = acts.approved_message(message, approved) if approved is not None else message
+    payload = build_payload(turn, history, req.member_email,
+                            native=native, writes=writes, documents=documents,
+                            memory_context=await _memory_preread(req, message,
+                                                                 shared=shared))
     if native:
         await _show_typing(req)
     _WAITING_ON_MODEL[req.message_id] = req
@@ -1613,8 +1660,10 @@ async def _model_answer(req: RunRequest, message: str,
     # WS-53 CRM-Q33 part 2: the holder of the CRM's one text question. The
     # run's tasks copy the context, so they share this one holder.
     crm_asks = _open_crm_asks(req.organization_id)
+    yes: Any = None
     try:
-        with refuse_cards(), (whatsapp_run(
+        with refuse_cards(), (approving(approved.card) if approved is not None
+                              else contextlib.nullcontext()) as yes, (whatsapp_run(
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
                 notify=_notifier(req), writes=writes,
@@ -1663,6 +1712,10 @@ async def _model_answer(req: RunRequest, message: str,
     finally:
         _WAITING_ON_MODEL.pop(req.message_id, None)
         crm_holder = _close_crm_asks(crm_asks)
+        if approved is not None:
+            # WAC-P4: the act is done when the run made the confirmed call,
+            # and void when it did not. Its yes closed with the run.
+            await acts.finish(approved, bool(yes is not None and yes.used))
     _OUTAGE["answered"] = time.time()
 
     reply = final_text(result).strip()

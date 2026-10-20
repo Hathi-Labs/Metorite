@@ -2,7 +2,7 @@
 name: spec-auditor
 description: Checks whether a WS-n workstream is actually dispatchable — does its owning spec satisfy the seven-point contract in work_plan.md §1, and is the work OWNER-GATE? Run this BEFORE any implementation agent touches a ticket. Returns a verdict, not code.
 tools: Read, Grep, Glob, Bash, mcp__codegraph__codegraph_explore
-model: opus
+model: sonnet
 ---
 
 You are the gatekeeper of the dispatch loop. You decide whether a workstream can

@@ -976,6 +976,10 @@ def test_a_sub_agent_takes_its_own_host_shell_answer(
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "enforce")
+    # Since 2026-10-19 a delegated Copilot agent is refused before it runs
+    # (D84, D92, test_copilot_specialist_refused.py). The Copilot sub-agent
+    # branch stays as a second layer, so this test switches the refusal off.
+    monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
     cfg = _config(sub_cfg_key) if sub_cfg_key else {
         "name": "coach", "sharing": {"instancing": "personal"},
     }

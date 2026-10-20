@@ -241,12 +241,19 @@ def annotate(
     destructive: bool = False,
     idempotent: bool = False,
     open_world: bool | None = None,
+    card_bound_reply: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering risk annotations for an agent-defined tool.
 
     ``open_world`` has no default (H-236). A tool that omits it carries no
     ``open_world`` key, and ``acb_skills.egress`` then counts it as able to
     send data off the platform. So every tool states it.
+
+    ``card_bound_reply`` (EM-CR, ``email_app_master_plan.md`` §18) marks a
+    send that the member confirms on its reply card. The mark alone keeps
+    nothing in a held run: ``egress.is_card_bound_reply`` also needs the
+    tool's name on its list and its pinned parameters. The key is set only
+    when it is true, so every other tool's hints stay as they were.
 
     Example::
 
@@ -260,6 +267,8 @@ def annotate(
     }
     if open_world is not None:
         hints["open_world"] = bool(open_world)
+    if card_bound_reply:
+        hints["card_bound_reply"] = True
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         TOOL_ANNOTATIONS[fn.__name__] = hints

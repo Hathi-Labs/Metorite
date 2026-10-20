@@ -127,6 +127,14 @@ def _no_fit_stats_leak():
     last_fit_stats.reset(token)
 
 
+@pytest.fixture(autouse=True)
+def _no_date_line(monkeypatch):
+    """The golden strings predate the date line (WS-53 §18.16 part 1), whose
+    text changes each day. Its own fence is test_crm_answer_consistency.py,
+    so here it is empty and the rest stays byte for byte."""
+    monkeypatch.setattr("acb_common.today.today_line", lambda *_a, **_k: "")
+
+
 @pytest.fixture
 def _flag_on(monkeypatch):
     from acb_common import get_settings

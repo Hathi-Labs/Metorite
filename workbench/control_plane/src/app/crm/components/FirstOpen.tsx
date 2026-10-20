@@ -112,7 +112,7 @@ export default function FirstOpen({
       <div className="mx-auto w-full max-w-3xl p-4 sm:p-8">
         <h2 className="text-lg font-semibold text-foreground">Set up your CRM</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Choose where your leads, deals and contacts live. You can do this once.
+          Choose where your leads, deals and contacts live. You can change this later in Settings.
         </p>
 
         <div className={`mt-5 grid gap-4 ${withMirror ? "md:grid-cols-2" : ""}`}>
