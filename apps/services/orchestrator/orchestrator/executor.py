@@ -2693,6 +2693,42 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
         return False
 
 
+async def _push_reviewed_run(agent_name: str, agent_dir: str, run_id: str) -> bool:
+    """Push HEAD of *agent_dir* to its branch on origin, as the gateway (H-363).
+
+    The ONLY caller is :func:`_detect_agent_commits`, after
+    :func:`_agent_push_allowed` said yes for this run. The credential is the
+    push token, and it reaches one git process in a gateway temp dir
+    (``acb_common.git_credentials.push``). The agent's shell never sees it.
+    It pushes the current branch, as ``git push origin HEAD`` did. A
+    detached HEAD, a sandbox dir or a failed push pushes nothing, and the
+    commit stays pending for a reviewer. True on a push.
+    """
+    if not _host_git_ok(agent_dir):
+        return False
+    from acb_common import git_credentials as git_auth
+
+    branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
+    if not branch:
+        _log.warning("executor.agent_push_no_branch", agent=agent_name, run_id=run_id)
+        return False
+    result = await asyncio.to_thread(
+        functools.partial(
+            git_auth.push, agent_dir, src="HEAD", branch=branch,
+            credential=git_auth.push_token(),
+        ),
+    )
+    if result.ok:
+        _log.info("executor.agent_push_done", agent=agent_name, run_id=run_id, branch=branch)
+    else:
+        _log.warning(
+            "executor.agent_push_failed",
+            agent=agent_name, run_id=run_id, branch=branch,
+            stderr=result.stderr.strip()[:300],
+        )
+    return result.ok
+
+
 async def _install_push_guard(agent_dir: str) -> None:
     """Install git hooks for commit-gate workflow.
 
@@ -2802,6 +2838,14 @@ async def _detect_agent_commits(
     #   * flag ON + NO tenant    → None → fail closed: the read falls back to an
     #                              empty dedup set, the writes SKIP + log.
     _pc_open = _graph_session_opener(thread_id)
+
+    # H-363: did this run ask for a push? Taken once, first, so a run with
+    # nothing new to record leaves no request behind.
+    try:
+        from acb_skills.permission_policy import take_agent_push_request
+        _asked_push = take_agent_push_request(run_id)
+    except Exception:
+        _asked_push = False
 
     try:
         # ── Load existing commit SHAs for dedup ─────────────────────────
@@ -2985,6 +3029,24 @@ async def _detect_agent_commits(
         # The push gate's answer, asked once per pass and only for a pushed
         # commit of this run: ``(allowed, why)`` of ``_agent_push_allowed``.
         _push_gate: tuple[bool, str] | None = None
+
+        # H-363: the shell of the run holds no GitHub credential, so its own
+        # ``git push`` failed. When the run asked for a push, the GATEWAY
+        # pushes here, and only after the reviewer rule says yes again, from
+        # the run binding. A run whose member is not a reviewer gets no
+        # credential and no push. Fence: tests/unit/test_clone_token_h363.py.
+        if _asked_push and _this_run_shas:
+            try:
+                _push_gate = await _agent_push_allowed()
+            except Exception as exc:
+                _push_gate = (False, f"the push check failed: {str(exc)[:120]}")
+            if _push_gate[0]:
+                await _push_reviewed_run(agent_name, agent_dir, run_id)
+            else:
+                _log.warning(
+                    "executor.agent_push_request_refused",
+                    agent=agent_name, run_id=run_id, reason=_push_gate[1],
+                )
 
         for raw_line in all_lines:
             parts = raw_line.split("|", 1)

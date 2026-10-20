@@ -1263,26 +1263,6 @@ line — never reclaim a number by deleting the other entry.
   residuals) · D12
 - **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
 
-### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
-- **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
-  A hit means this is open.
-- **What happens.** `_build_github_url` (`loader.py:75-79`) puts
-  `GITHUB_TOKEN` in the clone URL, so the token lands in each clone's
-  `.git/config`. The token has `repo` scope (`loader.py:16`). The mutation
-  container mounts the clone at `/workspace/repo`, and it has a network. So
-  code that the model writes in that container can read the token and send
-  it out.
-- **Do.**
-  1. Clone and pull with a credential helper or `GIT_ASKPASS` that reads the
-     token from the environment. Then `.git/config` holds a URL with no
-     token.
-  2. Rewrite the remote URL of each existing clone once, in the loader.
-  3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
-- ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
-  a private repo on a dev box before the merge.
-- **Authority:** `specs/maf_coding_engine.md` §15.3 and §7.1 rule 5
-- **Added:** 2026-10-03 · the D84 spec session
-
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
   No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
@@ -6030,21 +6010,33 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/crm_platform.md` §18.16.10, owner 2026-10-19
 - **Added:** 2026-10-19
 
-### H-363 · 🔴 The operator's GitHub token sits in each agent clone's remote URL · [AGENT] · finding
-- **Check:** read `loader._refresh_remote_auth` in `packages/acb_skills/acb_skills/loader.py`.
-  If it still writes the token into the remote URL of the clone, this is open.
-- **Why.** #1168 stops a member who is not a reviewer from running `git push`. But
-  the token is plain text in `.git/config` of the clone. A run with a host shell
-  can read it, then push with another command or call the GitHub API directly.
-  The record step of #1168 then marks the commit pending, but the push already
-  happened. A regex cannot close this path. Only the absence of the token can.
-- **Do this:** take the token out of the remote URL. Give it to `git` only through
-  a credential helper that the gateway controls, and only for a push that the
-  reviewer rule allows (`acb_auth.agent_operator.may_review_agent_commits`).
-  Keep clones and pulls working for a read-only token. Add a fence that reads
-  each clone's `.git/config` and fails on any token.
-- **Authority:** review of #1168, H-236, D85
-- **Added:** 2026-10-19
+### H-366 · A host shell can still reach a GitHub token outside the clone · [OWNER] · security
+- **Check:** on the box, run
+  `grep -cE '^(GITHUB_READ_TOKEN|COPILOT_GITHUB_TOKEN)=.' /opt/acb/app/.env`.
+  A count below 2 means steps 1 and 2 are open.
+- **Why.** H-363 took the token out of each clone's `.git/config`, and out of
+  the env of every agent child. Three paths stay. They are not in the clone,
+  so H-363 could not close them.
+  1. A read falls back to `GITHUB_TOKEN`, which has `repo` scope, when
+     `GITHUB_READ_TOKEN` is not set. The read runs in a gateway temp dir,
+     but the token in that one process can push.
+  2. The Copilot CLI holds `COPILOT_SDK_AUTH_TOKEN`. The SDK reads
+     `COPILOT_GITHUB_TOKEN` first, then `GITHUB_TOKEN`. So with no
+     `COPILOT_GITHUB_TOKEN`, a shell under the CLI can read the `repo` token
+     (the BH-1 residual in `specs/box_hardening.md` §5).
+  3. A host shell runs as `acb`. It can read `/opt/acb/app/.env` and
+     `/proc/<gateway pid>/environ`. H-271, H-225 and BH-5 own that path.
+- **Do this:**
+  1. [OWNER] Make a fine-grained token with read access to the agent and
+     skill repos only. An agent adds `GITHUB_READ_TOKEN` to `allowed_keys`
+     of the `app-env` entry in `deploy/secrets/manifest.json`, and pushes it
+     with `scripts/secrets.sh`.
+  2. [OWNER] Make a token with the Copilot permission only, and push it as
+     `COPILOT_GITHUB_TOKEN` in the same way.
+  3. After 1 and 2, `GITHUB_TOKEN` is the push token only. The gateway gives
+     it to a reviewer's push (`acb_common/git_credentials.py`, rule 5).
+- **Authority:** H-363 · `specs/box_hardening.md` §5 BH-1 · H-271
+- **Added:** 2026-10-20 · H-363
 
 # DONE — deleted, not archived
 

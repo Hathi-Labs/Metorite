@@ -210,21 +210,31 @@ async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
     if not _host_git_ok(agent_dir):
         return False
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "push", "origin", "HEAD",
-            cwd=agent_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=child_env(),
+        # H-363: the gateway pushes through the credential seam. The clone
+        # holds no token, and the push credential reaches one git process in
+        # a gateway temp dir. The gate is the operator's MUTATION_AUTO_PUSH.
+        import functools  # noqa: PLC0415
+
+        from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+        branch = await asyncio.to_thread(git_auth.current_branch, agent_dir)
+        if not branch:
+            _log.warning("mutation.auto_push_no_branch", agent_dir=agent_dir)
+            return False
+        pushed = await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(
+                git_auth.push, agent_dir, src="HEAD", branch=branch,
+                credential=git_auth.push_token(), timeout=30,
+            )),
+            timeout=45,
         )
-        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode == 0:
+        if pushed.ok:
             return True
         _log.warning(
             "mutation.auto_push_failed",
             agent_dir=agent_dir,
             commit_sha=commit_sha[:8],
-            stderr=stderr_bytes.decode(errors="replace")[:300],
+            stderr=pushed.stderr[:300],
         )
         return False
     except Exception as exc:  # noqa: BLE001
@@ -787,8 +797,12 @@ async def _stash_pull_before_mutation(
     if stashed:
         _log.info("mutation.stashed_changes", agent=agent_name)
 
-    # 2. Fetch latest from origin
-    rc, _, stderr = await _git(["fetch", "origin"])
+    # 2. Fetch latest from origin. H-363: through the credential seam, so
+    # the clone never holds the read credential.
+    from acb_common import git_credentials as git_auth  # noqa: PLC0415
+
+    fetched = await asyncio.to_thread(git_auth.fetch, agent_dir, timeout=30)
+    rc, stderr = fetched.returncode, fetched.stderr
     if rc != 0:
         _log.warning(
             "mutation.fetch_failed",
