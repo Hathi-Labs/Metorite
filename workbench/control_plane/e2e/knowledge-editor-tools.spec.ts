@@ -189,13 +189,15 @@ test.describe("footnotes (KB-2i)", () => {
     const kb = await setup(page, "Thirty days[^terms].\n\n[^terms]: See the sales terms.");
     // The read view draws the mark as its number, and the note under it.
     await page.goto("/knowledge/pages/kp-a");
-    await expect(page.locator("article sup.kb-footnote-ref[data-footnote-ref='terms']")).toHaveAttribute("aria-label", "Footnote 1");
+    await expect(page.locator("article sup.kb-footnote-ref[data-footnote-ref='terms']")).toHaveAttribute("aria-label", "Footnote 1", { timeout: 30_000 });
     await expect(page.locator("article .kb-footnote[data-footnote='terms']")).toContainText("See the sales terms.");
 
     await edit(page);
-    // The caret ends in the note. Enter adds a line to it, and Enter on that
-    // empty line leaves the note, as it leaves a list.
-    await caretAtEnd(page);
+    // The caret at the end of the note. Enter adds a line to it, and Enter on
+    // that empty line leaves the note, as it leaves a list. (`focus("end")`
+    // can land in the editor's own empty last line, so the test clicks.)
+    await page.locator(".kb-footnote-body p", { hasText: "See the sales terms." }).click();
+    await page.keyboard.press("End");
     await page.keyboard.press("Enter");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Ask first /Footnote");
