@@ -45,10 +45,13 @@ HELD = frozenset({"projects", "tasks", "email", "chat"})
 # ── 1. The pure checks ──────────────────────────────────────────────────────
 
 def _nav_panes() -> dict[str, str | None]:
-    """The literal ``href`` entries of ``nav.ts`` and their ``feature``.
+    """The LIVE literal ``href`` entries of ``nav.ts`` and their ``feature``.
 
-    Admin-only panes are left out, as ``PANES`` leaves them out. A template
-    href (the Centers) is not literal, so it is not here either (D49).
+    ``launch_surface.md`` §2 is the allowlist of record, and ``nav.ts``
+    mirrors it (``nav.test.ts``). A preview pane is left out, as ``PANES``
+    leaves it out (review of #1197, P2). So is an admin page: the admin-only
+    pane and every ``/settings/…`` page, which the tool never opens. A
+    template href (the Centers) is not literal, so it is not here (D49).
     """
     text = NAV_TS.read_text(encoding="utf-8")
     out: dict[str, str | None] = {}
@@ -58,19 +61,28 @@ def _nav_panes() -> dict[str, str | None]:
             continue
         end = part.find("\n      },")
         body = part[:end] if end > 0 else part
-        if re.search(r"adminOnly:\s*true", body):
+        if not re.search(r'\blaunch:\s*"live"', body):
+            continue
+        if re.search(r"adminOnly:\s*true", body) or href.group(1).startswith("/settings"):
             continue
         feature = re.search(r'\bfeature:\s*"([^"]+)"', body)
         out[href.group(1)] = feature.group(1) if feature else None
-    assert len(out) >= 20, "nav.ts parse found too few panes"
+    assert len(out) >= 10, "nav.ts parse found too few live panes"
     return out
 
 
-def test_panes_mirror_nav_ts() -> None:
-    """One list, on both sides. A pane that joins or leaves ``nav.ts`` must
-    join or leave ``PANES`` in the same PR."""
+def test_panes_mirror_nav_ts_live_entries() -> None:
+    """One list, on both sides. A pane that goes live or dark in ``nav.ts``
+    must join or leave ``PANES`` in the same PR."""
     ours = {p.href: p.feature for p in iap.PANES if p.href != "/"}
     assert ours == _nav_panes()
+
+
+def test_no_preview_or_admin_pane_is_in_the_allowlist() -> None:
+    hrefs = {p.href for p in iap.PANES}
+    for dark in ("/dashboard", "/notes", "/memory", "/workflows", "/build/apps", "/build/agents",
+                 "/agents", "/observability", "/settings/organization", "/settings/appearance"):
+        assert dark not in hrefs, dark
 
 
 def test_the_root_is_a_pane_every_member_holds() -> None:
@@ -86,7 +98,7 @@ def test_the_root_is_a_pane_every_member_holds() -> None:
     ("/people/me", "/people/me"),
     ("/people/me/edit", "/people/me"),
     ("/tasks#today", "/tasks"),
-    ("/build/apps", "/build/apps"),
+    ("/%70rojects", "/projects"),
 ])
 def test_pane_of_takes_the_longest_href(path: str, href: str) -> None:
     pane = iap.pane_of(path)
@@ -94,7 +106,9 @@ def test_pane_of_takes_the_longest_href(path: str, href: str) -> None:
 
 
 @pytest.mark.parametrize("path", ["/nowhere", "/project", "/centers/sales",
-                                  "/settings/organization", "/peoplex"])
+                                  "/settings/organization", "/settings/appearance",
+                                  "/peoplex", "/build/apps", "/connect/authorize",
+                                  "/signup", "/_next/static/x.js", "/projects/../crm"])
 def test_pane_of_knows_no_other_path(path: str) -> None:
     assert iap.pane_of(path) is None
 
@@ -107,9 +121,45 @@ def test_pane_of_knows_no_other_path(path: str) -> None:
     ("/nowhere", "no page of this app at that path"),
     ("/crm", "the member does not hold /crm"),
     ("/settings/organization", "no page of this app at that path"),
+    ("/settings/appearance", "no page of this app at that path"),
+    ("/connect/authorize", "no page of this app at that path"),
+    ("/signup", "no page of this app at that path"),
+    ("/_next/static/x.js", "not a path inside this app"),
+    ("/api/projects", "not a path inside this app"),
 ])
 def test_refusal_names_the_reason(path: str, reason: str) -> None:
     assert iap.refusal(path, HELD) == reason
+
+
+#: The P0 of the review of #1197: each one resolved to another page in the
+#: browser, and ``refusal`` let it through because ``pane_of`` read the raw
+#: prefix. Seen red before the fix: every row returned None.
+DOT_SEGMENT_PATHS = (
+    "/projects/../crm",
+    "/projects/../../settings/organization",
+    "/projects/%2e%2e/crm",
+    "/projects/%2E%2E/crm",
+    "/projects/.%2e/crm",
+    "/projects/..%2fcrm",
+    "/projects/%252e%252e/crm",
+    "/projects/../centers/sales",
+    "/projects/../api/x",
+    "/people/me/../../crm",
+)
+
+
+@pytest.mark.parametrize("path", DOT_SEGMENT_PATHS)
+def test_a_dot_segment_never_leaves_the_pane(path: str) -> None:
+    assert iap.refusal(path, frozenset({"projects", "crm"})) == "not a path inside this app"
+    assert iap.pane_of(path) is None
+
+
+def test_path_segments_decodes_once_and_refuses_the_tricks() -> None:
+    assert iap.path_segments("/") == []
+    assert iap.path_segments("/projects/caf%C3%A9") == ["projects", "café"]
+    for bad in ("/projects/", "/projects//x", "/projects/%2fx", "/projects/%5cx",
+                "/projects/%09x", "/projects/%ff", "/projects/%zz", "/a/./b", "/a/../b"):
+        assert iap.path_segments(bad) is None, bad
 
 
 @pytest.mark.parametrize("path", ["/", "/projects?task=42", "/tasks#today",
@@ -181,17 +231,40 @@ def test_a_pane_the_member_lacks_is_refused_and_sends_nothing(run: _Queue) -> No
     assert run.events == []
 
 
+#: The result of a good call. The note makes the model hedge: the client
+#: moves nothing while the assistant is closed or another chat is in front.
+NOTE = "the page opens only while the member watches this chat"
+
+
+def _opened(path: str) -> dict[str, str]:
+    return {"opened": path, "note": NOTE}
+
+
 def test_a_good_call_sends_one_navigate_and_returns_opened(run: _Queue) -> None:
     out = _call("/projects?task=42", "Here is task #42.")
-    assert out == {"opened": "/projects?task=42"}
+    assert out == _opened("/projects?task=42")
     assert run.events == [{
         "type": "CUSTOM", "name": "navigate",
         "value": {"path": "/projects?task=42", "why": "Here is task #42."},
     }]
 
 
+@pytest.mark.parametrize("path", DOT_SEGMENT_PATHS)
+def test_a_dot_segment_is_refused_and_sends_nothing(run: _Queue, path: str) -> None:
+    """The P0 of the review of #1197, at the tool."""
+    assert _call(path) == {"error": "not a path inside this app"}
+    assert run.events == []
+
+
+@pytest.mark.parametrize("path", ["/connect/authorize", "/signup", "/settings/appearance",
+                                  "/settings/organization", "/centers/sales", "/build/apps"])
+def test_a_path_off_the_allowlist_is_refused_and_sends_nothing(run: _Queue, path: str) -> None:
+    assert _call(path) == {"error": "no page of this app at that path"}
+    assert run.events == []
+
+
 def test_a_second_call_in_the_turn_is_refused_and_sends_nothing(run: _Queue) -> None:
-    assert _call("/projects") == {"opened": "/projects"}
+    assert _call("/projects") == _opened("/projects")
     assert _call("/email") == {"error": "already opened a page this turn"}
     assert _call("/projects") == {"error": "already opened a page this turn"}
     assert len(_navigates(run)) == 1
@@ -201,8 +274,67 @@ def test_a_refused_call_does_not_spend_the_turn(run: _Queue) -> None:
     """A bad path first, then a good one: the good one still opens."""
     assert _call("//evil.example")["error"]
     assert _call("/crm")["error"]
-    assert _call("/projects") == {"opened": "/projects"}
+    assert _call("/projects") == _opened("/projects")
     assert len(_navigates(run)) == 1
+
+
+def test_a_nested_run_opens_nothing(run: _Queue) -> None:
+    """Review of #1197, P2: a specialist calls the orchestrator, and that run
+    sees the parent's queue. The delegation chain names an ancestor, so the
+    tool refuses and sends nothing."""
+    from acb_skills.agent_tools import _delegation_chain
+
+    token = _delegation_chain.set(("email-assistant",))
+    try:
+        assert _call("/projects") == {"error": "only the member's own assistant opens a page"}
+    finally:
+        _delegation_chain.reset(token)
+    assert run.events == []
+    # The member's own run, with no ancestor, still opens it.
+    assert _call("/projects") == _opened("/projects")
+    assert len(_navigates(run)) == 1
+
+
+def _hermetic_tools(monkeypatch: pytest.MonkeyPatch, chat_first: bool) -> list[str]:
+    """The names of the orchestrator's own tools, as its factory builds them."""
+    from acb_common import get_settings
+    from orchestrator import agents as pkg
+
+    mod = pkg._mod
+
+    class _FakeAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(mod, "Agent", _FakeAgent)
+    monkeypatch.setattr(mod, "_make_openai_client", lambda *a, **k: object())
+    monkeypatch.setattr(mod, "_load_specialist_agents_as_tools", lambda: [])
+    monkeypatch.setattr(get_settings(), "chat_first_tools", chat_first, raising=False)
+    agent = mod.build_orchestrator_agent(with_history=False)
+    return [getattr(t, "__name__", "") for t in agent.kwargs["tools"]]
+
+
+def test_the_tool_is_dark_until_chat_first_tools_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #1197, P1: CHAT_FIRST_TOOLS off (the default) offers no
+    show_in_app. On, it joins after search_timeline, and nothing else moves."""
+    pytest.importorskip("agent_framework", reason="MAF not installed")
+    off = _hermetic_tools(monkeypatch, False)
+    on = _hermetic_tools(monkeypatch, True)
+    assert "show_in_app" not in off
+    assert "show_in_app" in on
+    assert [n for n in on if n != "show_in_app"] == off
+    assert on.index("show_in_app") == on.index("search_timeline") + 1
+
+
+def test_the_flag_reader_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_first_tools", False, raising=False)
+    assert iap.chat_first_tools_enabled() is False
+    monkeypatch.setattr(get_settings(), "chat_first_tools", True, raising=False)
+    assert iap.chat_first_tools_enabled() is True
+    monkeypatch.setattr(get_settings(), "chat_first_tools", "yes", raising=False)
+    assert iap.chat_first_tools_enabled() is False
 
 
 def test_a_new_turn_may_open_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -216,9 +348,9 @@ def test_a_new_turn_may_open_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(iap, "member_features", _features)
     first, second = _Queue(), _Queue()
     monkeypatch.setattr(executor, "resolve_run_queue", lambda key=None: first)
-    assert _call("/projects") == {"opened": "/projects"}
+    assert _call("/projects") == _opened("/projects")
     monkeypatch.setattr(executor, "resolve_run_queue", lambda key=None: second)
-    assert _call("/email") == {"opened": "/email"}
+    assert _call("/email") == _opened("/email")
     assert len(_navigates(first)) == 1 and len(_navigates(second)) == 1
 
 
@@ -244,7 +376,8 @@ def test_the_tool_is_the_orchestrators_and_no_specialists(monkeypatch: pytest.Mo
     }
     assert agents.show_in_app.__tool_risk__ == ta.TOOL_ANNOTATIONS["show_in_app"]
     src = (REPO / "apps" / "services" / "orchestrator" / "orchestrator" / "agents.py").read_text(encoding="utf-8")
-    assert re.search(r"core_tools: list\[Any\] = \[[^\]]*\bshow_in_app,", src, re.S)
+    assert "page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []" in src
+    assert re.search(r"core_tools: list\[Any\] = \[[^\]]*\*page_tools,", src, re.S)
     for path in (REPO / "apps" / "agents").glob("*/agents.py"):
         assert "show_in_app" not in path.read_text(encoding="utf-8"), path
 
@@ -378,3 +511,48 @@ def test_a_pane_the_member_lacks_moves_nothing_in_the_real_run() -> None:
     assert not [e for e in record.events if e.get("type") == "CUSTOM" and e.get("name") == "navigate"]
     results = _tool_results(model)
     assert all("does not hold /projects" in r for r in results), results
+
+
+def test_a_specialist_that_calls_the_orchestrator_moves_nothing() -> None:
+    """Review of #1197, P2, through the real runs. projects-assistant is the
+    member's run. It holds call_agent, and calls the orchestrator. That
+    nested orchestrator sees the parent's queue, and its show_in_app refuses:
+    no navigate event reaches the stream."""
+    pytest.importorskip("agent_framework", reason="MAF not installed")
+    pytest.importorskip("skill_projects", reason="skill-projects not installed")
+    from evals.routing import dataset as ds
+    from evals.routing import shell
+    from evals.routing.harness import (
+        ORCHESTRATOR,
+        ReplyModel,
+        RoutingHarness,
+        text_turn,
+        tool_turn,
+    )
+
+    pa = "projects-assistant"
+    words = "Show me the board for Website relaunch."
+    with RoutingHarness() as harness:
+
+        async def _features() -> frozenset[str]:
+            return frozenset({"projects", "tasks", "chat"})
+
+        harness._mp.setattr(iap, "member_features", _features)
+        orchestrator = ReplyModel([
+            tool_turn("show_in_app", {"path": "/projects", "why": "Here is the board."}),
+            text_turn("The board is in Projects."),
+        ])
+        harness.models = {
+            pa: ReplyModel([tool_turn("call_agent", {"agent_name": ORCHESTRATOR, "message": words}),
+                            text_turn("Done.")]),
+            ORCHESTRATOR: orchestrator,
+        }
+        record = asyncio.run(harness.drive(
+            words, shell.system_context("/projects", ds.case("P1").facts),
+            member=ds.MEMBER, org=ds.ORG, timeout=45.0, agent=pa,
+        ))
+    assert record.error is None, record.error
+    assert orchestrator.bodies, "the nested orchestrator never ran"
+    assert not [e for e in record.events if e.get("type") == "CUSTOM" and e.get("name") == "navigate"]
+    results = _tool_results(orchestrator)
+    assert results and all("only the member's own assistant opens a page" in r for r in results), results

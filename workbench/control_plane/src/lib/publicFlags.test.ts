@@ -114,6 +114,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_SHELL_CHAT",
       // WS-58 MD-1b: My Day draws the live feed.
       "NEXT_PUBLIC_MY_DAY_FEED",
+      // WS-62 CF-3: the chat opens a page, and later the peek strip.
+      "NEXT_PUBLIC_CHAT_FIRST",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

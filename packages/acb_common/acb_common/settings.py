@@ -551,6 +551,15 @@ class Settings(BaseSettings):
     # §13). Fence: tests/unit/test_company_search_tool.py.
     company_search_enabled: bool = False
 
+    # ── The chat opens a page (WS-62 CF-3, chat_first_surface.md §4.4) ──────
+    #
+    # ON gives the orchestrator `show_in_app` in its core tools. OFF leaves
+    # the tool list byte-identical. The client side is `NEXT_PUBLIC_CHAT_FIRST`
+    # (`chatFlag.ts`), and both must be on for the page to move. The one
+    # reader is `orchestrator.in_app_path.chat_first_tools_enabled`. Fence:
+    # tests/unit/test_show_in_app.py.
+    chat_first_tools: bool = False
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,

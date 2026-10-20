@@ -32,6 +32,27 @@
     { "path": "/projects\u007fx", "ok": false, "why": "a DEL byte" },
     { "path": "/api/projects", "ok": false, "why": "an API route, not a page" },
     { "path": "/api", "ok": false, "why": "the API root" },
-    { "path": " /projects", "ok": false, "why": "a leading space" }
+    { "path": "/_next/static/x.js", "ok": false, "why": "a build asset, not a page" },
+    { "path": " /projects", "ok": false, "why": "a leading space" },
+    { "path": "/projects/../crm", "ok": false, "why": "a dot segment walks out of the pane (review of #1197, P0)" },
+    { "path": "/projects/../../settings/organization", "ok": false, "why": "dot segments reach an admin page" },
+    { "path": "/projects/%2e%2e/crm", "ok": false, "why": "an encoded dot segment" },
+    { "path": "/projects/%2E%2E/crm", "ok": false, "why": "an encoded dot segment, upper case" },
+    { "path": "/projects/.%2e/crm", "ok": false, "why": "a half-encoded dot segment" },
+    { "path": "/projects/..%2fcrm", "ok": false, "why": "an encoded slash after a dot segment" },
+    { "path": "/projects/%252e%252e/crm", "ok": false, "why": "a double-encoded dot segment: a percent survives the decode" },
+    { "path": "/projects/../centers/sales", "ok": false, "why": "dot segments reach a withdrawn Center" },
+    { "path": "/projects/../api/x", "ok": false, "why": "dot segments reach the API" },
+    { "path": "/people/me/../../crm", "ok": false, "why": "two dot segments from a nested pane" },
+    { "path": "/projects/./board", "ok": false, "why": "a single-dot segment" },
+    { "path": "/projects//board", "ok": false, "why": "an empty segment inside" },
+    { "path": "/projects/", "ok": false, "why": "a trailing empty segment" },
+    { "path": "/projects/%2fboard", "ok": false, "why": "an encoded slash" },
+    { "path": "/projects/%5cboard", "ok": false, "why": "an encoded backslash" },
+    { "path": "/projects/%09board", "ok": false, "why": "an encoded tab" },
+    { "path": "/projects/%ff", "ok": false, "why": "not valid UTF-8 after the decode" },
+    { "path": "/projects/%zz", "ok": false, "why": "a broken percent escape" },
+    { "path": "/projects/caf%C3%A9", "ok": true, "why": "a valid encoded segment stays a page" },
+    { "path": "/projects?back=/projects/../crm", "ok": true, "why": "dot segments in the query do not move the page" }
   ]
 }

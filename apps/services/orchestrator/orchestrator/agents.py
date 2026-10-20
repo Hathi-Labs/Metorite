@@ -337,6 +337,17 @@ async def show_in_app(path: str, why: str) -> dict:
 
     path = str(path or "").strip()
     why = str(why or "").strip()
+    # Review of #1197, P2: a specialist that holds call_agent can call the
+    # orchestrator, and that nested run sees the parent's queue. Only the
+    # member's own run, the one with no ancestor, moves the page.
+    try:
+        from acb_skills.agent_tools import _delegation_chain
+
+        nested = bool(_delegation_chain.get())
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        nested = False
+    if nested:
+        return {"error": "only the member's own assistant opens a page"}
     if not _iap.is_in_app_path(path):
         return {"error": "not a path inside this app"}
     # The queue IS the run's state: one queue per turn, made by the run
@@ -360,7 +371,9 @@ async def show_in_app(path: str, why: str) -> dict:
         "name": "navigate",
         "value": {"path": path, "why": why},
     })
-    return {"opened": path}
+    # The note makes the model hedge: a closed assistant, or another chat
+    # in front, moves nothing on the client.
+    return {"opened": path, "note": "the page opens only while the member watches this chat"}
 
 
 # H-236: open_world, because the container it starts has a network and a
@@ -753,11 +766,15 @@ def build_orchestrator_agent(
         retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
+    # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
+    # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
+    # tests/unit/test_show_in_app.py, test_company_search_tool.py.
+    from orchestrator.in_app_path import chat_first_tools_enabled
+    page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
     core_tools: list[Any] = [
         *retrieval_tools,
         search_timeline,
-        # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
-        show_in_app,
+        *page_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,

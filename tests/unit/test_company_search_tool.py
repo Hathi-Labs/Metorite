@@ -92,10 +92,14 @@ def _names(agent: _FakeAgent) -> list[str]:
 
 MAIN_TOOLS = [
     "retrieve_entity_context", "retrieve_sales_context", "search_timeline",
-    # WS-62 CF-3: the orchestrator's own page tool (test_show_in_app.py).
-    "show_in_app",
     "spawn_copilot_agent", "delegate_to_agent",
     "remember", "recall_timeline", "save_memory", "save_episode",
+]
+
+#: WS-62 CF-3: with CHAT_FIRST_TOOLS on, the orchestrator's own page tool
+#: joins after search_timeline (test_show_in_app.py). Off, the list is MAIN_TOOLS.
+MAIN_TOOLS_CHAT_FIRST = [
+    *MAIN_TOOLS[:3], "show_in_app", *MAIN_TOOLS[3:],
 ]
 
 
@@ -116,6 +120,19 @@ class TestFlagOff:
     def test_the_tool_list_is_mains(self, flag, monkeypatch, state):
         flag(state)
         assert _names(_build(monkeypatch)) == MAIN_TOOLS
+
+    def test_chat_first_tools_adds_show_in_app_only(self, flag, monkeypatch):
+        """WS-62 CF-3: the page tool joins with its own flag, and nothing else moves."""
+        from acb_common.settings import get_settings
+
+        flag(None)
+        monkeypatch.setenv("CHAT_FIRST_TOOLS", "true")
+        get_settings.cache_clear()
+        try:
+            assert _names(_build(monkeypatch)) == MAIN_TOOLS_CHAT_FIRST
+        finally:
+            monkeypatch.delenv("CHAT_FIRST_TOOLS", raising=False)
+            get_settings.cache_clear()
 
     @pytest.mark.parametrize("state", [None, False])
     def test_the_persona_is_mains_byte_for_byte(self, flag, monkeypatch, state):

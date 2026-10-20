@@ -33,7 +33,7 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import { agentSlug } from "@/lib/agentName";
-import { isInAppPath } from "@/lib/inAppLink";
+import { inAppPathname } from "@/lib/inAppLink";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { chatKey, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
@@ -56,11 +56,18 @@ export const ASSISTANT_PERSONA = [
   "Each app has a specialist, and you call it as a tool.",
   "Use the app the member is in to choose the workflow. It is a hint, not a limit.",
   "When the request is about another app, call that app's specialist. The page moves to that app on its own, so do not tell the member to open it.",
-  "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.",
   "Give the specialist every id it needs from the page context below.",
   "When you cannot tell which record, project, task or mailbox the member means, ask one short question with ask_questions before you act. Do not guess.",
   "Confirm before an action that changes data. Be concise and direct.",
 ].join(" ");
+
+/**
+ * The line that joins the persona when the chat-first surface is on
+ * (WS-62 CF-3, `chat_first_surface.md` §4.4, flag `chatFirstOn`). The dock
+ * joins it, so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const CHAT_FIRST_PERSONA_LINE =
+  "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
 
 // ── The forms ────────────────────────────────────────────────────────────────
 
@@ -139,29 +146,43 @@ export function onChatLink(a: { phone: boolean }): "close" | null {
  * event per turn, and the client only acts.
  *
  * - `push`: the route moves. Only while the member watches that chat, as for
- *   a delegation, and only to a path inside the app (`isInAppPath`, checked
- *   again here). A closed assistant moves nothing.
+ *   a delegation, and only to a path inside the app (`inAppPathname`, checked
+ *   again here) whose pane the member holds (`paneAt` over `sections`, their
+ *   visible set), or the root. A closed assistant moves nothing, and so does
+ *   `/connect`, `/signup`, `/settings` or a pane they lack (review of #1197).
  * - `dock`: a desktop full view becomes the side panel, so the page shows
  *   beside the chat.
  * - `close`: a phone's sheet covers the page, so it gives way (`onChatLink`).
  *   CF-1 turns this into the peek strip.
+ *
+ * `pane` is the pane the path opens, for the toast's label. Null for the root.
  */
 export function navigateAct(a: {
   open: boolean;
   threadId: string | undefined;
   activeId: string | null | undefined;
   path: string | undefined;
+  sections: readonly NavSection[];
   phone: boolean;
   form: AssistantMode;
   canDock: boolean;
-}): { push: boolean; dock: boolean; close: boolean } {
-  const none = { push: false, dock: false, close: false };
+}): { push: boolean; dock: boolean; close: boolean; pane: NavPane | null } {
+  const none = { push: false, dock: false, close: false, pane: null };
   if (!a.open || !a.threadId || a.threadId !== a.activeId) return none;
-  if (!isInAppPath(a.path)) return none;
+  const pathname = inAppPathname(a.path);
+  if (pathname === null) return none;
+  const pane = paneAt(pathname, a.sections);
+  if (pathname !== "/") {
+    // The allowlist is the control, as `PANES` is on the server: a LIVE pane
+    // the member holds, and never an admin page or a settings page.
+    if (!pane || pane.launch !== "live" || pane.adminOnly) return none;
+    if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
+  }
   return {
     push: true,
     dock: !a.phone && a.form === "full" && a.canDock,
     close: onChatLink({ phone: a.phone }) === "close",
+    pane,
   };
 }
 

@@ -87,11 +87,13 @@ import {
   type ChatSession,
 } from "@/lib/sessions";
 
+import { chatFirstOn } from "./chatFlag";
 import {
   dockFloats,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
   DOCK_MAX,
   DOCK_MIN,
   closeAssistant,
@@ -412,7 +414,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const active = chat.active;
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
-  const persona = agent === ASSISTANT_AGENT ? `${ASSISTANT_PERSONA}\n\n${context}` : context;
+  // WS-62 CF-3: the page line joins only with the chat-first flag on.
+  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
   useEffect(() => {
@@ -525,10 +529,12 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
     // the server's rule. The client checks the path again and acts.
     onNavigate: ({ path, why, threadId }) => {
+      // Dark until the chat-first flag is on (review of #1197, P1).
+      if (!chatFirstOn()) return;
       const live = liveRef.current;
       const act = navigateAct({
-        open: live.open, threadId, activeId: live.activeId, path, phone,
-        form: live.form, canDock: live.canDock,
+        open: live.open, threadId, activeId: live.activeId, path, sections: live.sections,
+        phone, form: live.form, canDock: live.canDock,
       });
       if (!act.push || !path) return;
       const back = live.pathname ?? "/";
@@ -540,7 +546,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         closeAssistant();
         return;
       }
-      const label = paneAt(path.split(/[?#]/)[0], live.sections)?.label;
+      const label = act.pane?.label;
       toast.show({
         key: `assistant-open-${path}`,
         variant: "success",

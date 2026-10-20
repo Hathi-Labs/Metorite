@@ -50,3 +50,14 @@ export function shellChatOn(): boolean {
     flag(process.env.NEXT_PUBLIC_SHELL_NAV, "cc-shell-nav")
   );
 }
+
+/**
+ * Whether the chat-first surface is on (WS-62, `chat_first_surface.md` §7,
+ * flag `NEXT_PUBLIC_CHAT_FIRST`). It needs the one assistant (`shellChatOn`),
+ * because every piece of it lives in that assistant: the page the chat
+ * opens (CF-3), the peek strip (CF-1) and the phone that opens on the chat
+ * (CF-2). Turning it on in production is owner-only (§9.1).
+ */
+export function chatFirstOn(): boolean {
+  return shellChatOn() && flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first");
+}

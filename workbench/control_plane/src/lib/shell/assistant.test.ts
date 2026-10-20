@@ -18,6 +18,7 @@ import { bindChatScope } from "@/lib/sessions";
 import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
@@ -47,7 +48,7 @@ import {
   surfaceContext,
   switchTarget,
 } from "./assistant";
-import { shellChatOn } from "./chatFlag";
+import { chatFirstOn, shellChatOn } from "./chatFlag";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -365,28 +366,36 @@ describe("the app switch (owner, 2026-10-12)", () => {
 });
 
 describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
-  const live = { open: true, threadId: "t1", activeId: "t1", path: "/projects?task=42", phone: false, form: "dock" as const, canDock: true };
+  const live = {
+    open: true, threadId: "t1", activeId: "t1", path: "/projects?task=42", sections: SECTIONS,
+    phone: false, form: "dock" as const, canDock: true,
+  };
+  const projects = paneAt("/projects", SECTIONS);
+  const none = { push: false, dock: false, close: false, pane: null };
 
-  it("the persona says when to call it, and what to say after", () => {
-    expect(ASSISTANT_PERSONA).toContain("call show_in_app with its path");
-    expect(ASSISTANT_PERSONA).toContain("Then say what they will see, in one sentence.");
+  it("the page line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind chatFirstOn", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("show_in_app");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
   });
 
   it("a desktop pushes the route and keeps the panel", () => {
-    expect(navigateAct(live)).toEqual({ push: true, dock: false, close: false });
+    expect(navigateAct(live)).toEqual({ push: true, dock: false, close: false, pane: projects });
   });
 
   it("a desktop full view becomes the panel, so the page shows", () => {
-    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, close: false });
-    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false });
+    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, close: false, pane: projects });
+    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false, pane: projects });
   });
 
   it("a phone pushes the route and the sheet gives way (CF-1: the peek strip)", () => {
-    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: true });
+    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: true, pane: projects });
   });
 
   it("moves nothing while the assistant is closed, or for another chat", () => {
-    const none = { push: false, dock: false, close: false };
     expect(navigateAct({ ...live, open: false })).toEqual(none);
     expect(navigateAct({ ...live, threadId: "other" })).toEqual(none);
     expect(navigateAct({ ...live, threadId: undefined })).toEqual(none);
@@ -394,11 +403,31 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
   });
 
   it("checks the path again, and refuses one that leaves the app", () => {
-    const none = { push: false, dock: false, close: false };
     for (const path of ["https://evil.example", "//evil.example", "/\\evil.example", "/api/x", "", undefined]) {
       expect(navigateAct({ ...live, path }), String(path)).toEqual(none);
     }
     expect(navigateAct({ ...live, path: "/tasks#today" }).push).toBe(true);
+  });
+
+  it("refuses a dot segment that walks out of the pane (review of #1197, P0)", () => {
+    for (const path of ["/projects/../crm", "/projects/../../settings/organization", "/projects/%2e%2e/crm",
+      "/projects/../centers/sales", "/projects/../api/x", "/people/me/../../crm", "/projects/%252e%252e/crm"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+  });
+
+  it("the allowlist is the control: no pane, no move, except the root", () => {
+    for (const path of ["/connect/authorize", "/signup", "/settings/appearance", "/settings/organization", "/_next/x", "/centers/sales", "/nowhere"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, dock: false, close: false, pane: null });
+    expect(navigateAct({ ...live, path: "/people/me" }).pane?.href).toBe("/people/me");
+  });
+
+  it("never moves to a pane the member does not hold", () => {
+    const noProjects = visibleSections(ALL.filter((f) => f !== "projects"), true);
+    expect(navigateAct({ ...live, sections: noProjects })).toEqual(none);
+    expect(navigateAct({ ...live, sections: noProjects, path: "/email" }).push).toBe(true);
   });
 
   it("the live loop emits onNavigate once, and the replay loop never does", () => {
@@ -418,6 +447,32 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     expect(dock).toMatch(/if \(act\.dock\) setAssistantMode\("dock"\);/);
     expect(dock).toMatch(/if \(act\.close\) \{[\s\S]{0,200}?closeAssistant\(\);/);
     expect(dock).toMatch(/title: label \? `Opened \$\{label\}` : "Opened a page"/);
+  });
+});
+
+describe("the chat-first flag needs the one assistant (WS-62, review of #1197 P1)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is on with the four, and off without its own flag or without the assistant", () => {
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({});
+    expect(chatFirstOn()).toBe(false);
+  });
+
+  it("its dev override key is the one CF-1 writes too", () => {
+    expect(read("lib/shell/chatFlag.ts")).toContain('flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first")');
   });
 });
 

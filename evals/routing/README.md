@@ -54,7 +54,8 @@ and a delegation loads two. `harness.py` is a harness for many agents. It reuses
 - Live: the specialists. A stand-in records the agent and the message, and
   answers with a fixed line. No specialist runs, writes or spends.
 - The panes the member holds, for `show_in_app` (WS-62 CF-3). The stand-in
-  holds every pane. The real read is `acb_auth.resolve_access`.
+  holds every pane. The real read is `acb_auth.resolve_access`. The harness
+  also turns `CHAT_FIRST_TOOLS` on, because production ships the tool dark.
 
 Two reads still try the database: the member's access and the tier
 overrides. With no database, as in CI, each one fails closed and logs a
