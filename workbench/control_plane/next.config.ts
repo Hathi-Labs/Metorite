@@ -34,6 +34,12 @@ const nextConfig: NextConfig = {
   // Next tries to parse the executable as source and dies on its non-UTF8 bytes.
   // Keeping it external makes the route `require` it at runtime instead.
   serverExternalPackages: ["esbuild"],
+  // The browser suite sets E2E_NO_TURBOPACK_CACHE (`playwright.config.ts`), so
+  // its dev server writes no Turbopack disk cache. Plain `next dev` keeps the
+  // cache. Fence: `src/lib/e2eGate.test.ts`.
+  experimental: {
+    turbopackFileSystemCacheForDev: process.env.E2E_NO_TURBOPACK_CACHE !== "1",
+  },
   images: {
     remotePatterns: [
       // Clearbit logo API — high-quality company logos

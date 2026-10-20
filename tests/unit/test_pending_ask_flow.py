@@ -484,6 +484,9 @@ def test_needs_input_survives_a_restart(flag_on, ask_db, liveness, monkeypatch):
     assert rows == [{
         "threadId": "t-restart", "agentName": "orchestrator", "title": "a chat",
         "startedAt": None, "state": "needs_input", "askKind": "questions",
+        # §4.10: no run runs, so the question is parked, and has no run id.
+        "live": False,
+        "runId": None,
         # WS-51 S3: a question has no live step.
         "lastStep": None,
     }]
@@ -514,8 +517,11 @@ def test_a_live_run_that_asks_is_needs_input_and_others_run(
         ))
     _seed_open_row(ask_db, _ORG_A, "t-asks", _ALICE)
 
-    states = {r["threadId"]: r["state"] for r in _list(_user(_ALICE, _ORG_A))}
+    rows = _list(_user(_ALICE, _ORG_A))
+    states = {r["threadId"]: r["state"] for r in rows}
     assert states == {"t-asks": "needs_input", "t-works": "running"}
+    # §4.10: both runs run, so the question waits on a LIVE run, not parked.
+    assert {r["threadId"]: r["live"] for r in rows} == {"t-asks": True, "t-works": True}
 
 
 def test_with_the_flag_off_no_row_is_read(ask_db, liveness, db_down, monkeypatch):

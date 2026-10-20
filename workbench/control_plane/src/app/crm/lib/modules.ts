@@ -19,7 +19,7 @@ import { LIST_PAGE_SIZE, type ListQuery } from "./filters";
 import { dateTime, shortDate } from "./format";
 import type { CrmColumn } from "./columns";
 import type { EntitySlug, TimelineEntry } from "./types";
-import { MODULE_NAME, isModuleName } from "./urlState";
+import { MODULE_NAME, isModuleName, type CrmView } from "./urlState";
 
 type Row = Record<string, unknown>;
 
@@ -147,11 +147,26 @@ export const MODULE_PAGE_SIZE = LIST_PAGE_SIZE;
 
 /** The request of one page of a module list. */
 export function moduleListQuery(
-  view: { q: string; sort: string | null; dir: "asc" | "desc" },
+  view: {
+    q: string;
+    sort: string | null;
+    dir: "asc" | "desc";
+    owner?: string | null;
+    ranges?: CrmView["ranges"];
+    custom?: CrmView["custom"];
+  },
   page = 1,
 ): ListQuery {
   const query: ListQuery = { page, page_size: MODULE_PAGE_SIZE };
   if (view.q.trim()) query.q = view.q.trim();
+  // The field filters (CRM-U9). A module record keeps no created date and no
+  // close date, so only the Updated range goes out.
+  if (view.owner) query.owner = view.owner;
+  if (view.ranges?.updated_from) query.updated_from = view.ranges.updated_from;
+  if (view.ranges?.updated_to) query.updated_to = view.ranges.updated_to;
+  for (const [key, items] of Object.entries(view.custom ?? {})) {
+    if (items.length > 0) query[`custom.${key}.in`] = items.join(",");
+  }
   if (view.sort && (MODULE_SORTS as readonly string[]).includes(view.sort)) {
     query.sort = view.sort;
     query.dir = view.dir;

@@ -96,6 +96,10 @@ and streams chat responses as AG-UI events.
    - The retry does not resolve the member's authority again. It gets only the credential names of the first try (`_BatchRunInputs.integrations`). When the first try resolved none, the retry gets none and a closed memory gate.
    - The first try binds `run_tools` once, from the assembly. The retry always binds its own part of that set, and an empty set when the first try bound none. So a delegated child never answers `run_holds_tool` from its parent's set.
    - Do not build or inject agents for a retry anywhere else. Fence: `tests/unit/test_anneal_retry_scope.py`.
+20b. **Each turn carries today's date, and a follow-up card parks at once** (WS-53, `project-docs/specs/crm_platform.md` §18.16).
+   - `_context_preamble_parts` adds `acb_common.today.today_line()` LAST, so the web stream and the WhatsApp batch path both get it.
+   - `wait_user_future(park_after=)` parks sooner than `CHAT_ASK_PARK_SECONDS`. `ask_tools` passes it only for a CRM follow-up card. A refused early park tries once more at the normal window.
+   - Fence: `tests/unit/test_crm_answer_consistency.py`.
 21. **The orchestrator's per-turn context carries the Knowledge index block** (WS-61 KB-4a, `project-docs/specs/knowledge_base.md` §6.5).
    - `_context_preamble_parts` puts it after the Organisation and integrations lines, and before `memory_context`. Only the agent `orchestrator` gets it.
    - The block is absent unless `COMPANY_SEARCH_ENABLED` is on and the run's org is on `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. It is also absent when the member can read no published page.

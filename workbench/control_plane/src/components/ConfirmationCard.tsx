@@ -44,6 +44,7 @@ import { useEffect, useRef, useState } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import FencedText from "@/components/FencedText";
+import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
@@ -52,6 +53,7 @@ import Icon from "@/components/Icon";
 import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
+import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -68,6 +70,8 @@ export const ARM_MS = 400;
 export const CONFIRM_TITLE = "Approval";
 /** The line beside Approve and Reject. */
 export const CONFIRM_HINT = "The assistant waits for your decision.";
+/** The title row of a reply card (EM-CR). Its summary names the sender. */
+export const REPLY_TITLE = "Reply";
 
 export interface CardField {
   /** The key as the tool printed it (`due_at`, `task 1`). */
@@ -252,6 +256,14 @@ interface ConfirmationCardProps {
   fenced?: boolean;
   /** The roll-up's id: stable for the card's life (its queue key). */
   id?: string;
+  /**
+   * EM-CR (`email_app_master_plan.md` §18): the reply form of a reply card.
+   * The card then draws `ReplyCardForm` in place of its body and of Approve
+   * and Reject. `null` is a form the card could not read.
+   */
+  reply?: ReplyForm | null;
+  /** Send or Save to Drafts on a reply card: the whole answer. */
+  onReply?: (answer: ReplyApproval) => void;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -271,6 +283,8 @@ export default function ConfirmationCard({
   position,
   fenced = false,
   id,
+  reply,
+  onReply,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -307,8 +321,15 @@ export default function ConfirmationCard({
   const approve = () => {
     if (armed && approvable) onApprove();
   };
+  const isReply = reply !== undefined;
   return (
-    <RollupCard id={id ?? "confirm"} title={CONFIRM_TITLE} icon="ShieldCheck" header="own" pending>
+    <RollupCard
+      id={id ?? "confirm"}
+      title={isReply ? REPLY_TITLE : CONFIRM_TITLE}
+      icon={isReply ? "Reply" : "ShieldCheck"}
+      header="own"
+      pending
+    >
     <section
       aria-label={fenced ? unfenced(summary) : summary}
       data-confirmation-card=""
@@ -344,6 +365,9 @@ export default function ConfirmationCard({
       </div>
 
       <RollupBody className="space-y-2 pt-1.5">
+        {/* A reply card draws its own summary: who gets the reply NOW, as the
+            member toggles Reply and Reply all (review of #1191). */}
+        {!isReply && (
         <div className="min-w-0">
           <p className="break-words text-xs font-medium leading-relaxed text-foreground">
             <CardText text={summary} fenced={fenced} />
@@ -354,7 +378,18 @@ export default function ConfirmationCard({
             </p>
           )}
         </div>
-      {hasBody && (
+        )}
+      {isReply && (
+        <ReplyCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+        />
+      )}
+      {!isReply && hasBody && (
         <div className="space-y-2">
           {hasRows && (
             <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
@@ -441,6 +476,7 @@ export default function ConfirmationCard({
         </div>
       )}
 
+      {!isReply && (
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -463,6 +499,7 @@ export default function ConfirmationCard({
         </Button>
         <span className="text-[10px] text-muted-foreground">{CONFIRM_HINT}</span>
       </div>
+      )}
       </RollupBody>
     </section>
     </RollupCard>

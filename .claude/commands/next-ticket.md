@@ -36,12 +36,47 @@ Owner decision, 2026-10-16. Say the tier and the reason in one line.
 - **HIGH**: tenancy, RLS, auth, identity, a migration, money, credits,
   secrets, a member or role write, or the deploy path. Verifier, then
   reviewer. At most two repair rounds.
-- **STANDARD**: other product code. Verifier, then reviewer. One repair
-  round. After it, record in `HANDOFF.md` each finding that cannot reach a
-  customer, and land the slice.
+- **STANDARD**: other product code. Verifier only while the feature is in
+  build (step 1d). One repair round. The reviewer runs ONCE, on the whole
+  feature, in the hardening pass. Record each deferred guardrail in
+  `project-docs/hardening_backlog.md`, and land the slice.
 - **LOW**: tooling, tests, docs, or a style change with no data path.
   Verifier only. Skip the reviewer. One repair round.
 If you are not sure, take the higher tier. The verifier is never skipped.
+
+**1c — Pick the model for each dispatch.** Owner directive, 2026-10-19:
+Sonnet does the work, and Opus is for the hard cases. The agent files default
+to Sonnet. Pass `model: "opus"` on the Agent call only where this table says
+so. Say the models in the same line as the tier.
+
+| Role | LOW | STANDARD | HIGH |
+|---|---|---|---|
+| `spec-auditor` | sonnet | sonnet | sonnet |
+| `ws-implementer` | sonnet | sonnet | **opus** |
+| `ws-verifier` | sonnet | sonnet | **opus** |
+| `diff-reviewer` | skipped | **opus**, at the hardening pass | **opus** |
+
+Two escalations override the table:
+- **A repair round after a FAIL on the same finding**: dispatch the next
+  `ws-implementer` with `model: "opus"`. Sonnet already missed it once.
+- **A slice that crosses three or more services, or a concurrency, cache or
+  ordering bug**: take `opus` for the implementer, at any tier.
+
+Use `model: "haiku"` for a pure lookup with no judgement (find a file, list
+callers, count rows). Never use haiku to build, verify or review.
+
+**1d — Build or harden.** Owner directive, 2026-10-19. The contract is
+`project-docs/specs/engineering_practice.md` §7a.
+- **Build** (the default): ship working slices fast. Process fences and STE
+  lint are advisory. Skip the visual review, the board-row note, the spec
+  header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh` (or
+  `bash scripts/prepush.sh` when the PC is busy) before each push.
+- **Harden** (when the feature works): one PR, labelled `harden`. Run
+  `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
+  `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the
+  deferred fences and the backlog items. Update the board row and the spec
+  header.
+- A HIGH-tier slice keeps the full loop in both modes.
 
 **2 — Audit.** Dispatch `spec-auditor` on that WS.
 - `NO-GO` → stop the cycle. If the blocker is documentation, that *is* the next
@@ -66,16 +101,18 @@ second implementer to route around a block.
   fails, stop, leave the branch in place, and report what is unresolved. A loop
   that grinds on a stuck ticket burns budget and produces nothing.
 
-**6 — Review.** Skip this step for a LOW slice. Otherwise dispatch `diff-reviewer`.
+**6 — Review.** Skip this step for a LOW slice, and for a STANDARD slice in
+build (1d). Otherwise dispatch `diff-reviewer`.
 - Any `P0` → repair round (counts against the same tier budget).
 - `P1`/`P2` → carry into the PR body as known findings; do not block on them.
 
 **7 — Land.**
-- Update the WS row in `work_plan.md` §2: state, and a dated note saying what
-  shipped and what remains. This is the handoff to the next cycle — write it for
-  an agent with no memory of this one.
-- Confirm the implementer updated the owning spec's status header (R4). If it
-  did not, do it now.
+- In build (1d), a one-line note on the WS row is enough: what shipped. The
+  full row note and the spec header (R4) wait for the hardening pass.
+- In harden, update the WS row in `work_plan.md` §2: state, and a dated note
+  saying what shipped and what remains. This is the handoff to the next
+  cycle — write it for an agent with no memory of this one. Confirm the
+  owning spec's status header (R4) is current. If it is not, do it now.
 - Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.

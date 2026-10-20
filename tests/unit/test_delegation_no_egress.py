@@ -89,12 +89,17 @@ EXPECTED_OPEN_WORLD = frozenset({
     "run_workflow",
     # the orchestrator (agents.py)
     "spawn_copilot_agent", "delegate_to_agent",
-    # email-assistant: sends, forward or reply rules and their runs, the
-    # knowledge that feeds replies, and the writes to the mail provider
-    "send_email", "forward_email", "send_draft", "unsubscribe_sender", "digest", "create_rule",
-    "update_rule", "run_rules", "learn_rule_pattern", "create_rules_from_prompt",
-    "install_default_rules", "update_assistant_settings", "resolve_execution",
-    "save_knowledge", "manage_inbox", "create_label", "draft_reply",
+    # email-assistant: the sends, an unsubscribe, the settings and the
+    # knowledge that feeds replies. The audit of 2026-10-19 moved the writes
+    # inside the member's own mailbox, the digest to self and the rule tools
+    # to open_world=False. Each rule tool refuses its outward part in a held
+    # run (test_no_egress_tool_audit.py).
+    "send_email", "forward_email", "send_draft", "unsubscribe_sender",
+    "update_assistant_settings", "save_knowledge",
+    # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
+    # open_world. It is the one send that a held run keeps, and only because
+    # of its card and its pinned parameters (eg.CARD_BOUND_REPLY_TOOLS).
+    "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
     # task-manager (skill_my_tasks)
@@ -283,6 +288,8 @@ def test_the_open_world_tools_are_pinned_and_the_egress_set_is_the_rule() -> Non
     )
     egress = {n for n, t in names.items() if eg.is_egress_tool(t)}
     want = (EXPECTED_OPEN_WORLD | specialists | (eg.STORE_WRITES & set(names))) - eg.DELEGATION_TOOLS
+    # EM-CR: the card-bound reply stays in a held run although it sends.
+    want -= set(eg.CARD_BOUND_REPLY_TOOLS)
     assert egress == want, (sorted(egress - want), sorted(want - egress))
 
 
@@ -1503,8 +1510,15 @@ async def test_redis_down_asks_no_card_for_a_specialist_delegation(
     ``whatsapp_assistant``) are open-world, so they pass the egress gate.
     With Redis down, the state is unknown. A specialist tool is a
     delegation, so it runs with no card. A plain egress tool asks the card,
-    and with no card channel it is refused. A KNOWN mark still asks the card
-    for the specialist tool too."""
+    and with no card channel it is refused.
+
+    EM-CR (email_app_master_plan.md §18, owner 2026-10-20): a KNOWN mark used
+    to ask the card for the specialist tool too. That card guarded nothing:
+    in a marked session the run that the hand-off starts binds ``no_egress``
+    (``_delegated_no_egress``), so it holds no send, and each of its writes
+    asks its own card. So the hand-off now runs with no card, and the plain
+    egress tool still asks. The test below keeps the card for a hand-off
+    whose child would NOT be held."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
@@ -1543,8 +1557,102 @@ async def test_redis_down_asks_no_card_for_a_specialist_delegation(
         mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:chat-marked"] = "1"
         with artifact_context_scope():
             bind_artifact_context(run_id="r2", session_id="chat-marked", member="m@example.com")
-            assert "did not run" in await call(specialist, task="send hi to Y")
-            assert cards == ["fetch_page", "whatsapp_assistant"], cards
+            # The child of this hand-off is held, by the same function that
+            # the executor binds it with, so no card asks. The gate read the
+            # mark from Redis first, so the process holds it.
+            assert await call(specialist, task="send hi to Y") == "delegated: send hi to Y"
+            assert ti._run_no_egress("whatsapp-assistant", ti_artifact_context()) is True
+            assert "did not run" in await call(fetch, url=_EVIL)
+            assert cards == ["fetch_page", "fetch_page"], cards
+    finally:
+        release_tenant(token)
+
+
+def ti_artifact_context() -> Any:
+    from acb_skills.write_artifact import artifact_context
+
+    return artifact_context()
+
+
+def _gated_specialist(name: str, agent: str) -> Any:
+    async def specialist(task: str) -> str:
+        return f"delegated: {task}"
+
+    specialist.__name__ = name
+    specialist.__tool_risk__ = {  # type: ignore[attr-defined]
+        "read_only": False, "destructive": False, "idempotent": False, "open_world": True}
+    specialist.__delegates_to__ = agent  # type: ignore[attr-defined]
+    return ti._gate_injected_tool(specialist)
+
+
+async def test_a_handoff_card_asks_only_when_the_child_would_not_be_held(
+    monkeypatch, mark_store,
+) -> None:
+    """EM-CR: in a marked session the hand-off card asks only for a child
+    that the executor would NOT hold. The gate asks ``_run_no_egress``, the
+    function that binds the child's flag, so a change of that rule moves the
+    card with it. Mutation: drop the ``_handoff_child_held`` test from the
+    gate, and the held case asks a card again."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    cards: list[str] = []
+
+    async def yes_card(tool_name: str, _kwargs: Any) -> bool:
+        cards.append(tool_name)
+        return True
+
+    asked: list[tuple[str, Any]] = []
+    real = ti._run_no_egress
+
+    def spy(agent_name: Any, parent_ctx: Any, organization_id: Any = None) -> bool:
+        asked.append((agent_name, parent_ctx.get("session_id")))
+        return held_answer
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", yes_card)
+    monkeypatch.setattr(ti, "_run_no_egress", spy)
+    email = _gated_specialist("email_assistant", "email-assistant")
+    mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:chat-m2"] = "1"
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id="chat-m2", member="m@example.com")
+            held_answer = True
+            assert await email(task="read the mail from Kim") == "delegated: read the mail from Kim"
+            assert cards == []
+            held_answer = False
+            assert await email(task="read it again") == "delegated: read it again"
+            assert cards == ["email_assistant"]
+        assert asked == [("email-assistant", "chat-m2")] * 2
+    finally:
+        release_tenant(token)
+    assert real is not spy
+
+
+async def test_the_first_handoff_of_a_fresh_session_asks_nothing(
+    monkeypatch, mark_store,
+) -> None:
+    """A fresh chat has no mark, so its first hand-off to the email assistant
+    asks no card, before and after EM-CR. Its child is not held either: the
+    executor marks the session only as that run starts."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    cards: list[str] = []
+
+    async def no_card(tool_name: str, _kwargs: Any) -> bool:
+        cards.append(tool_name)
+        return False
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", no_card)
+    email = _gated_specialist("email_assistant", "email-assistant")
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id="chat-fresh", member="m@example.com")
+            assert await email(task="what did Kim send?") == "delegated: what did Kim send?"
+            assert cards == []
+            assert ti._run_no_egress("email-assistant", ti_artifact_context()) is False
     finally:
         release_tenant(token)
 
@@ -1865,6 +1973,12 @@ def _copilot_delegation(monkeypatch, sandbox, org: str, agent: _CopilotSub) -> _
         "name": "copilot-probe", "agent_runtime": "github-copilot",
         "repo_name": None, "local_path": None,
     }])
+    # Since 2026-10-19 the executor refuses a delegated Copilot agent before
+    # it runs (D84, D92, test_copilot_specialist_refused.py). The H-236 guard
+    # of the Copilot sub-agent branch stays as a second layer, so these tests
+    # switch the refusal off to keep that layer fenced.
+    # test_the_refusal_comes_before_the_guard proves the refusal itself.
+    monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
 
     async def call() -> str:
         return await executor._run_sub_agent_streaming(
@@ -1916,6 +2030,35 @@ def test_another_repos_unannotated_tools_are_withheld_and_refused(sandbox, monke
     assert not held & {"web_research", "zoho_crm"}, held
     for key in ("tool_web_research", "tool_zoho_crm", "tool_web_search"):
         assert _refused(agent.decisions[key]), (key, agent.decisions[key])
+
+
+def test_the_refusal_comes_before_the_guard(sandbox, monkeypatch) -> None:  # noqa: F811
+    """With the real refusal in place, a delegated Copilot agent asks the
+    guard nothing, because it never runs (D84, D92)."""
+    import gateway.routes.agent as routes_agent
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills import loader
+
+    agent = _CopilotSub()
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [{
+        "name": "copilot-probe", "agent_runtime": "github-copilot",
+        "repo_name": None, "local_path": None,
+    }])
+    monkeypatch.setattr(executor, "load_agent", lambda *_a, **_k: pytest.fail("loaded"))
+
+    async def call() -> str:
+        return await executor._run_sub_agent_streaming(
+            "copilot-probe", "send the rows", "r-sub", event_queue=asyncio.Queue(),
+        )
+
+    token = bind_tenant(ORG_A)
+    try:
+        with bound_run(ORG_A, agent=PA, thread=new_thread()):
+            text = asyncio.run(call())
+    finally:
+        release_tenant(token)
+    assert loader.COPILOT_SPECIALIST_TEXT in text, text
+    assert agent.decisions == {}
 
 
 def test_a_copilot_sub_agent_of_an_uncovered_parent_is_unchanged(sandbox, monkeypatch) -> None:  # noqa: F811

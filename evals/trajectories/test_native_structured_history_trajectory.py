@@ -105,8 +105,12 @@ def test_flag_on_the_model_reads_turns_and_memory_in_the_system_message(monkeypa
         ("user", "yes"),
     ]
     system = messages[0]["content"]
+    # WS-53 §18.16 part 1: the per-turn context ends with today's date.
+    from acb_common.today import today_line
+
     assert system == (
         f"{_INSTRUCTIONS}\n{CACHE_BREAK}\n## Memory from past conversations\n{_MEMORY}"
+        f"\n{today_line()}"
     )
     # The gateway's one caching transform strips the sentinel for a
     # non-Anthropic model, so the model reads the memory and never the marker.

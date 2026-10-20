@@ -1065,9 +1065,10 @@ def _gate_injected_tool(fn: Any) -> Any:
             allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
-            if _after_untrusted_answer(reason, marked) and not await _untrusted_answer_card(
-                    tool_name, kwargs):
-                return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+            if _after_untrusted_answer(reason, marked) and not _handoff_child_held(fn):
+                held = await _untrusted_answer_hold(tool_name, kwargs)
+                if held is not None:
+                    return held
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
             # outside a WhatsApp run with writes on.
             with _whatsapp_tool_call(fn, args, kwargs):
@@ -1079,11 +1080,89 @@ def _gate_injected_tool(fn: Any) -> Any:
         allowed, reason = _gate(kwargs)
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
-        if _after_untrusted_answer(reason):
-            # A sync tool cannot wait for a card, so it is refused.
-            return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+        if _after_untrusted_answer(reason) and not _handoff_child_held(fn):
+            # A sync tool cannot wait for a card, so it is refused. A
+            # WhatsApp run waits for no card (WS-47 WAC-P4): it parks the
+            # call, or runs the call that the member confirmed.
+            held = _untrusted_answer_hold_sync(tool_name, kwargs)
+            if held is not None:
+                return held
         return _with_steer(fn(*args, **kwargs))
     return _register_platform_wrapper(fn, _sgated)
+
+
+#: The answers of :func:`_whatsapp_untrusted_answer` (``whatsapp_acts``).
+_WA_APPROVED = "approved"
+_WA_PARKED = "parked"
+_WA_TOO_LONG = "too_long"
+
+#: The most characters of the call's view on the web card: the context limit
+#: of ``ask_tools.request_confirmation``. Review P1-1.
+WEB_CALL_VIEW_CHARS = 4000
+
+
+def _whatsapp_hold_text(verdict: str | None, tool_name: str) -> str | None:
+    """The tool's answer for a WhatsApp verdict that holds the call, or None
+    when the verdict does not hold it (approved, or no WhatsApp form)."""
+    if verdict == _WA_PARKED:
+        return _whatsapp_parked_text()
+    if verdict == _WA_TOO_LONG:
+        from acb_skills.whatsapp_acts import EGRESS_TOO_LONG_TEXT
+
+        return EGRESS_TOO_LONG_TEXT.format(tool=tool_name)
+    return None
+
+
+async def _untrusted_answer_hold(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
+    """Why an egress call after an untrusted answer does not run, or None.
+
+    WS-47 WAC-P4: a WhatsApp run asks with its Confirm buttons where the web
+    asks with a card. The call that the member confirmed runs (None). A
+    call that now waits for the buttons answers the parked text. Every other
+    run asks the card (:func:`_untrusted_answer_card`), and a no refuses."""
+    verdict = _whatsapp_untrusted_answer(tool_name, call_kwargs)
+    if verdict == _WA_APPROVED:
+        return None
+    held = _whatsapp_hold_text(verdict, tool_name)
+    if held is not None:
+        return held
+    if await _untrusted_answer_card(tool_name, call_kwargs):
+        return None
+    return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
+
+
+def _untrusted_answer_hold_sync(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
+    """:func:`_untrusted_answer_hold` for a sync tool, which cannot wait for
+    a card: only the WhatsApp answer can let it run."""
+    verdict = _whatsapp_untrusted_answer(tool_name, call_kwargs)
+    if verdict == _WA_APPROVED:
+        return None
+    return (_whatsapp_hold_text(verdict, tool_name)
+            or UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name))
+
+
+def _whatsapp_untrusted_answer(tool_name: str, call_kwargs: dict[str, Any]) -> str | None:
+    """The WhatsApp form of the untrusted-answer card (WS-47 WAC-P4).
+
+    ``whatsapp_acts.answer_egress``: "approved" for the one call that the
+    member confirmed, "parked" for a call that now waits for the Confirm
+    buttons, else None, and the caller refuses as before. Outside a
+    WhatsApp run it is None at once. A fault is None, so it fails closed."""
+    try:
+        from acb_skills.whatsapp_acts import answer_egress
+
+        verdict = answer_egress(tool_name, call_kwargs)
+    except Exception:  # fail closed: the card path refuses
+        return None
+    if verdict is not None:
+        _log.info("permission.untrusted_answer_whatsapp", tool=tool_name, outcome=verdict)
+    return verdict
+
+
+def _whatsapp_parked_text() -> str:
+    from acb_skills.whatsapp_acts import EGRESS_PARKED_TEXT
+
+    return EGRESS_PARKED_TEXT
 
 
 def _run_reads_mail_itself() -> bool:
@@ -1127,6 +1206,39 @@ UNTRUSTED_ANSWER_REFUSED = (
 )
 
 
+def _handoff_child_held(fn: Any) -> bool:
+    """True when *fn* hands work to a specialist whose run will be held (EM-CR).
+
+    The owner asked on 2026-10-20 that the agent may read an email with no
+    permission prompt. The untrusted-answer card on a hand-off guarded
+    nothing in a marked session: the run that the hand-off starts binds
+    ``no_egress`` there (:func:`_delegated_no_egress`), so it holds no send,
+    and each write of it asks its own card. So a hand-off whose child will be
+    held asks no card.
+
+    The answer comes from :func:`_run_no_egress`, the ONE function that the
+    executor binds the child's flag with (``_run_sub_agent_streaming`` and
+    the batch run), with the same context, so the two cannot disagree. Only
+    a specialist tool of the orchestrator (``__delegates_to__``) qualifies.
+    A direct egress tool, such as ``fetch_page``, still asks its card, and so
+    does a hand-off whose child would NOT be held. A fault reads False, so
+    the card asks. Fence: ``tests/unit/test_delegation_no_egress.py``.
+    """
+    child = getattr(fn, "__delegates_to__", None)
+    if not isinstance(child, str) or not child:
+        return False
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        held = _run_no_egress(child, artifact_context())
+    except Exception:  # fail closed: the card asks
+        return False
+    if held:
+        _log.info("permission.untrusted_answer_skipped", tool=getattr(fn, "__name__", ""),
+                  reason="child_held")
+    return bool(held)
+
+
 def _after_untrusted_answer(reason: str, marked: bool = False) -> bool:
     """True when the decision was the untrusted-answer card. A gate fault in a
     marked session counts too, so a bug never opens the control."""
@@ -1162,22 +1274,30 @@ def _untrusted_answer_card_refusal() -> str | None:
 async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) -> bool:
     """The member's card for one egress call after an untrusted answer. True
     only when the member approved it. A run that cannot show a card, and a
-    fault, are a no at once (round 3)."""
-    import json
+    fault, are a no at once (round 3).
 
+    WS-47 review P1-1: the card shows the call through
+    ``egress.egress_call_view``, the one builder that WhatsApp uses too. The
+    recipients, the subject and the attachments come first and whole. A call
+    whose key fields do not fit gets no card, and so a no."""
     refusal = _untrusted_answer_card_refusal()
     if refusal is not None:
         _log.info("permission.untrusted_answer_refused", tool=tool_name, outcome=refusal)
         return False
     try:
         from acb_skills.ask_tools import request_confirmation
+        from acb_skills.egress import egress_call_view
 
-        shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
+        view = egress_call_view(tool_name, call_kwargs, WEB_CALL_VIEW_CHARS)
+        if view is None:
+            _log.info("permission.untrusted_answer_refused", tool=tool_name,
+                      outcome="view_too_long")
+            return False
         answer = await request_confirmation(
             f"Run {tool_name}? It reaches outside Metorite",
             "This chat read an answer from the email assistant, which reads "
             "outside email. A mail could ask for this call.",
-            f"{tool_name} {shown}",
+            view,
         )
         return answer is True
     except asyncio.CancelledError:
@@ -1341,12 +1461,16 @@ def _build_registry_block() -> str:
     """
     agent_lines: list[str] = []
     try:
+        from acb_skills.loader import may_delegate_to
         from gateway.routes.agent import _AGENT_REGISTRY  # noqa: PLC0415
         from gateway.routes.agent import _load_dynamic_agents
         all_agents = _load_dynamic_agents() + _AGENT_REGISTRY
         for a in all_agents:
             name = a.get("name", "")
-            if name:
+            # D84, D92: a Copilot agent does not run as a specialist
+            # (loader.refuse_copilot_specialist), so no run is told to call it.
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
+            if name and may_delegate_to(name, a.get("agent_runtime")):
                 agent_lines.append(_registry_line(name, a.get("description", "")))
     except Exception:  # noqa: BLE001
         pass
@@ -1527,7 +1651,8 @@ async def _add_crm_facts_block(
 ) -> frozenset[str]:
     """Add the CRM facts block to a run that holds a CRM tool (WS-53
     CRM-Q32-5, ``crm_platform.md`` §18.14.4): the answered facts of the money
-    modules and of the stages, at most 12 lines, at the END of the prompt,
+    modules and of the stages, at most 13 lines with the CRM routing line
+    (``org_facts_tools.CRM_ROUTING_LINE``), at the END of the prompt,
     so the stable prefix stays byte-stable.
 
     It reads ``GET /org/facts?app=crm`` as the run's member

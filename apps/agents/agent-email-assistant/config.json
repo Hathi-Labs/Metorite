@@ -62,6 +62,7 @@
     "list_labels",
     "create_label",
     "draft_reply",
+    "compose_reply",
     "send_email",
     "forward_email",
     "send_draft",

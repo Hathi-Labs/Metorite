@@ -551,6 +551,15 @@ class Settings(BaseSettings):
     # §13). Fence: tests/unit/test_company_search_tool.py.
     company_search_enabled: bool = False
 
+    # ── The chat opens a page (WS-62 CF-3, chat_first_surface.md §4.4) ──────
+    #
+    # ON gives the orchestrator `show_in_app` in its core tools. OFF leaves
+    # the tool list byte-identical. The client side is `NEXT_PUBLIC_CHAT_FIRST`
+    # (`chatFlag.ts`), and both must be on for the page to move. The one
+    # reader is `orchestrator.in_app_path.chat_first_tools_enabled`. Fence:
+    # tests/unit/test_show_in_app.py.
+    chat_first_tools: bool = False
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -891,7 +900,12 @@ class Settings(BaseSettings):
     # git pull on each event (no full re-clone per run).
 
     # -- Auth: PAT (simple, use for dev / small teams) --
-    github_token: str = ""                    # PAT with `repo` scope; used in clone URL + remote set-url
+    # H-363: no token is ever written into a clone URL. acb_common.git_credentials
+    # gives a token to ONE git process at a time, through a credential helper.
+    github_token: str = ""                    # PAT with `repo` scope; the PUSH credential (gated)
+    # A read-only token for clone, fetch and ls-remote of private agent and
+    # skill repos. Blank falls back to github_token. A public repo needs none.
+    github_read_token: str = ""
 
     # -- OAuth App (used by Control Plane Device Flow UI only) --
     # Register at: github.com/settings/applications/new  (Callback URL: http://localhost)

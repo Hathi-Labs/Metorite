@@ -936,11 +936,15 @@ async def test_a_new_lane_is_appended_not_prepended(db: FakeCrmDB) -> None:
     assert created.position > 10
 
 
-async def test_a_lead_status_cannot_carry_a_probability(db: FakeCrmDB) -> None:
-    """That column is deal-only; accepting it would silently drop the value."""
+async def test_a_lead_status_carries_a_win_chance(db: FakeCrmDB) -> None:
+    """CRM-U6, migration 288: the lead statuses have a probability column now."""
+    created = await crm_admin.create_status(
+        "lead", crm_admin.StatusIn(name="Pilot", probability=50), USER,
+    )
+    assert created.probability == 50
     with pytest.raises(HTTPException) as exc:
         await crm_admin.create_status(
-            "lead", crm_admin.StatusIn(name="Pilot", probability=50), USER,
+            "lead", crm_admin.StatusIn(name="Wild", probability=150), USER,
         )
     assert exc.value.status_code == 422
 
@@ -1192,13 +1196,19 @@ async def test_reordering_a_terminal_lane_does_not_trip_the_clamp(
 async def test_a_lead_status_never_reaches_the_probability_clamp(
     db: FakeCrmDB,
 ) -> None:
-    """``crm_lead_statuses`` has no probability column, so a won lead status is
-    not a contradiction — it is a lane with no forecast at all."""
+    """CRM-U6: a lead status meets the same won=100 and lost=0 clamp as a deal
+    stage (D-CRM-10). Migration 288 gave it the column."""
     created = await crm_admin.create_status(
-        "lead", crm_admin.StatusIn(name="Qualified", type="won"), USER,
+        "lead", crm_admin.StatusIn(name="Qualified", type="won", probability=100), USER,
     )
     assert created.type == "won"
-    assert created.probability is None
+    assert created.probability == 100
+    with pytest.raises(HTTPException) as raised:
+        await crm_admin.create_status(
+            "lead", crm_admin.StatusIn(name="Closed", type="lost", probability=30), USER,
+        )
+    assert raised.value.status_code == 422
+    assert "D-CRM-10" in str(raised.value.detail)
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────────
@@ -1369,9 +1379,8 @@ async def test_a_nullable_column_can_still_be_cleared(db: FakeCrmDB) -> None:
 async def test_a_lead_status_rejects_a_null_probability_too(
     db: FakeCrmDB,
 ) -> None:
-    """``crm_lead_statuses`` has no probability column at all, so an explicit
-    null would reach an INSERT naming a column that does not exist. The rule
-    is keyed on the field being PRESENT, not on it being non-null."""
+    """``probability`` is NOT NULL DEFAULT 0 on the lead statuses (migration
+    285), so an explicit null is a 422 and never a driver error."""
     with pytest.raises(HTTPException) as raised:
         await crm_admin.create_status(
             "lead",
@@ -1381,7 +1390,6 @@ async def test_a_lead_status_rejects_a_null_probability_too(
             USER,
         )
     assert raised.value.status_code == 422
-    assert "deal-only" in str(raised.value.detail)
 
 
 def test_the_null_guard_sits_on_the_shared_write_path() -> None:

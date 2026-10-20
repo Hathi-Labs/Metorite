@@ -205,3 +205,54 @@ def test_read_sql_reads_its_own_org_only(db, app_engine) -> None:  # noqa: F811
     for named in (db.org_a, db.org_b):
         row = read(db.org_b, named)
         assert (row[0], row[1]) == (None, None)
+
+
+# ── WS-47 follow-up of #1154: the member in any case ────────────────────────
+
+
+def _rows_of(db, address: str) -> list[tuple[str, str | None]]:
+    with db.admin_engine.connect() as c:
+        return [tuple(r) for r in c.execute(text(
+            "SELECT user_id, number_system FROM user_settings "
+            "WHERE organization_id = CAST(:o AS uuid) AND lower(user_id) = lower(:u) "
+            "ORDER BY user_id"), {"o": db.org_a, "u": address}).all()]
+
+
+async def test_a_mixed_case_row_is_read_and_a_save_changes_it_in_place(db) -> None:
+    """The gateway once wrote the session's address as it came. The run
+    reads its member in lower case, so it missed that row."""
+    stored = f"Num.{uuid.uuid4().hex[:6].upper()}@NumSys.Test"
+    lower = stored.lower()
+    db.made += [stored, lower]
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, number_system) "
+            "VALUES (CAST(:o AS uuid), :u, 'international')"), {"o": db.org_a, "u": stored})
+    # The run's read: the member in lower case.
+    assert (await _get(db, db.org_a, _user(lower))).member == "international"
+    assert (await _get(db, db.org_a, _user(stored))).member == "international"
+    saved = await _put_me(db, db.org_a, _user(lower), "indian")
+    assert (saved.member, saved.resolved) == ("indian", "indian")
+    assert _rows_of(db, stored) == [(stored, "indian")], "a save added a second row"
+
+
+async def test_a_new_row_holds_the_address_in_lower_case(db) -> None:
+    given = f"New.{uuid.uuid4().hex[:6].upper()}@NumSys.Test"
+    db.made += [given, given.lower()]
+    await _put_me(db, db.org_a, _user(given), "international")
+    assert _rows_of(db, given) == [(given.lower(), "international")]
+
+
+def test_of_two_rows_of_one_member_the_one_with_a_value_wins(db, app_engine) -> None:  # noqa: F811
+    stored = f"Two.{uuid.uuid4().hex[:6].upper()}@NumSys.Test"
+    db.made += [stored, stored.lower()]
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, number_system) "
+            "VALUES (CAST(:o AS uuid), :u, 'international'), (CAST(:o AS uuid), :l, NULL)"),
+            {"o": db.org_a, "u": stored, "l": stored.lower()})
+    with app_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": db.org_a})
+        row = c.execute(text(ns.READ_SQL), {"org": db.org_a, "uid": stored.lower()}).first()
+        found = c.execute(text(ns.ROW_SQL), {"org": db.org_a, "uid": stored.lower()}).first()
+    assert row[1] == "international" and found[0] == stored

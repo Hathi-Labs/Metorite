@@ -123,12 +123,15 @@ def drift() -> list[str]:
         "the data line": f'"{DATA_LINE}"',
         "the fact line": "`- ${f}`",
         "the join": 'lines.join("\\n")',
-        "the dock's join": "${ASSISTANT_PERSONA}\\n\\n${context}",
+        # WS-62 CF-3: the dock joins the page line behind chatFirstOn(). The
+        # eval sends the base persona, as a build with the flag off does.
+        "the dock's join": "${personaText}\\n\\n${context}",
+        "the dock's page line": "chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA",
     }
     dock = _read(ASSISTANT_TS.parent / "AssistantDock.tsx")
     out: list[str] = []
     for what, literal in wanted.items():
-        source = dock if what == "the dock's join" else text
+        source = dock if what.startswith("the dock's") else text
         if literal not in source:
             out.append(f"surfaceContext drifted: {what} ({literal}) is not in the shell's source")
     return out

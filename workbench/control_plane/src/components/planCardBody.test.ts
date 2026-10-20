@@ -72,10 +72,32 @@ describe("the plan card at rest", () => {
     expect(html).toMatch(/font-weight:600;color:var\(--foreground\)">Plan<\/span>/);
   });
 
-  it("draws the timeline strip, one bar per ticked task (change 4)", () => {
+  it("draws the timeline strip, one row per ticked task, hidden from a screen reader (change 4)", () => {
     const html = plan();
-    expect(html).toContain('aria-label="Timeline: 4 tasks, 22 Oct to 28 Oct"');
-    expect(html.match(/rounded-full bg-/g) ?? []).toHaveLength(4);
+    expect(html).toContain('data-plan-timeline="" aria-hidden="true"');
+    expect(html.match(/data-plan-bar="/g) ?? []).toHaveLength(4);
+    // A mark is a small marker, never the bar's fill (owner report, 2026-10-19).
+    expect(html.match(/data-plan-bar-mark=""/g) ?? []).toHaveLength(2);
+    expect(html).not.toMatch(/rounded-full bg-warning"[^>]*width/);
+  });
+
+  it("draws the owner's plan, every row marked, with no warning colour on the strip", () => {
+    // 19 tasks, one owner, every one a "Skill gap", most with a due date only.
+    const tasks = Array.from({ length: 19 }, (_, i) => ({
+      key: `t${i + 1}`, title: `Task ${i + 1}`, owner: "vj@x.io", effort_mins: 600,
+      ...(i % 3 === 0 ? { start: `2026-11-${String(i + 1).padStart(2, "0")}` } : {}),
+      due: `2026-11-${String(i + 3).padStart(2, "0")}`, marks: ["no skill match"],
+    }));
+    const html = plan(tasks);
+    expect(html.match(/data-plan-bar="/g) ?? []).toHaveLength(19);
+    expect(html).not.toContain("data-plan-bar-mark");
+    expect(html.match(/data-plan-bar-kind="derived"/g) ?? []).toHaveLength(12);
+    // The badges in the list still say it, once per row.
+    expect(html.match(/>Skill gap<\/span>/g) ?? []).toHaveLength(19);
+  });
+
+  it("draws no strip when it says nothing", () => {
+    expect(plan(TASKS.slice(0, 2))).not.toContain("data-plan-timeline");
   });
 
   it("groups the rows under folding phases (change 5)", () => {

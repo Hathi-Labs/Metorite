@@ -297,7 +297,9 @@ describe("every rail mounts the shared chat, so the trail is the same one", () =
   });
 
   it("the shared chat's working line names the step through the one vocabulary", () => {
-    expect(read("components/AgentChat.tsx")).toMatch(/describeToolStep\(running\)\.label/);
+    // §4.10: the step comes from the one run state, which names it here.
+    expect(read("lib/runStep.ts")).toMatch(/describeToolStep\(t\)\.label/);
+    expect(read("components/AgentChat.tsx")).toContain("useSteadyRunView(run)");
   });
 });
 

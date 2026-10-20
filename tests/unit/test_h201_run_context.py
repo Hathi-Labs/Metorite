@@ -433,6 +433,10 @@ def _sub_agent_wiring(disk, monkeypatch, agent_name: str, agent) -> None:  # noq
     monkeypatch.setattr(executor, "_inject_agent_tools", lambda *_a, **_k: None)
     monkeypatch.setattr(executor, "_apply_own_tool_scope", lambda *_a, **_k: None)
     monkeypatch.setattr(executor, "_apply_agent_md_overrides", lambda *_a, **_k: None)
+    # Since 2026-10-19 a delegated Copilot agent is refused before it runs
+    # (D84, D92, test_copilot_specialist_refused.py). The Copilot sub-agent
+    # branch stays as a second layer, so these tests switch the refusal off.
+    monkeypatch.setattr(executor, "refuse_copilot_specialist", lambda *_a, **_k: None)
     yield
 
 

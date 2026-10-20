@@ -39,9 +39,13 @@
 >
 > **Built 2026-10-18 on `crm-q33-answer-first`, not merged, dark:** CRM-Q33, answer first and clarify over time (§18.15). A total that depends on an open question answers on the best assumption, with a note of how, and asks one question after it. Business rules, a WhatsApp answer by number, a change in the chat, and the evidence of GST and TDS. Migration 283 adds `crm_business_rules`. It ships behind `CRM_ANSWER_FIRST_ORGS`, which is empty.
 >
+> **Built 2026-10-19 on `crm-answer-consistency`, PR open, not merged:** §18.16, CRM answers are consistent and fast. Today's date reaches each chat run. The card of a follow-up question never holds a run. A run has a budget of CRM reads. The org's own word for a figure maps to one field each time. The chat asks first only when two fields give totals that differ by more than 5%. A text filter counts each spelling of a value. No migration, and no new flag.
+>
 > **Built 2026-10-18 on `crm-q32-8`, not merged:** CRM-Q32-8, the chat tells each member with CRM access what is not clear and asks before it answers. An admin answers, and each other member proposes an answer that an admin confirms (owner direction 2026-10-18, two parts). No migration. It ships behind `CRM_QUESTIONS_ORGS`. It merges after CRM-Q32-9a (#1138) and CRM-Q32-9b (#1139).
 >
 > **Built 2026-10-18 on `crm-q32-9b`, not merged:** CRM-Q32-9b, the picker of a sum (§18.14.10). The amount card offers "These fields add up to the amount", and the picker shows the coverage line and the warning of the sum check. "Your answers" shows a sum, with Change and "Let Metorite choose". Frontend only. No migration. CRM-Q32-8 adds the proposals of the members to the picker, each with Confirm.
+>
+> **Built 2026-10-19, not merged:** CRM-Q32-10, "Re-run AI analysis" on demand (§18.14.14). An admin starts the analysis of a sync run now, through the same steps and caps. The same change binds the read cache to the org of the session. No migration and no new flag.
 >
 > **Built 2026-10-18, merged as #1138:** CRM-Q32-9a, the backend of an amount as the sum of 2 to 5 fields (§18.14.10). No migration. The screens wait for CRM-Q32-9b, but a CRM admin of an org on `CRM_QUESTIONS_ORGS` can already store a sum through `PUT /crm/catalogue/{module}` or the answer route. Do not revert CRM-Q32-9a after that (§18.14.13).
 >
@@ -83,8 +87,8 @@
 > weekly digest on `tier-powerful`, dark behind `CRM_DIGEST_ORGS` (branch
 > `crm-q28-digest`, migration 281). CRM-Q29, the number check of each CRM
 > answer, with two fix rounds, dark (`CRM_ANSWER_CHECK` is `off`, branch
-> `crm-answer-check`, no migration). CRM-Q29 fix round 3 is built on
-> 2026-10-17 on `crm-answer-check-r3`, not merged. CRM-Q30, a founder question set for CRM
+> `crm-answer-check`, no migration). CRM-Q29 fix round 3 is merged as #1120.
+> Fix rounds 4 to 7 are merged as #1133. Fix round 8, a note that explains, asks one question or says how, is built 2026-10-20 on `crm-check-explain`, PR open, not merged. CRM-Q30, a founder question set for CRM
 > insights, and CRM-Q30b, the read tools say when Zoho holds more (branch
 > `crm-founder-evals`, no migration). See §18.11.
 >
@@ -1294,7 +1298,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q26** | Labels on notes, on the decide tier, in shadow. §18.11 | P1 |
 | **CRM-Q27** | 🔨 built 2026-10-16 on `crm-batch-i`, merged (#1111), dark. Search of note text by meaning. §18.11 | P2 |
 | **CRM-Q28** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-q28-digest`, migration 281), not merged, dark. A weekly digest on the powerful tier. §18.11 | P2 |
-| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 built 2026-10-17 on `crm-answer-check-r3`, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
+| **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 to 7 merged as #1133. Fix round 8 built 2026-10-20 on `crm-check-explain`, PR open, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
@@ -3718,8 +3722,8 @@ merged (#1100, migration 278), dark. CRM-Q25b, CRM-Q25c and CRM-Q27
 (`d72f92184`). CRM-Q28 (migration 281, dark), CRM-Q29 (two fix rounds,
 dark, `CRM_ANSWER_CHECK` is `off`, no migration), CRM-Q30 and CRM-Q30b (no
 migration): built on 2026-10-17 in the batch branch `crm-batch-i2`, and
-merged as #1116. CRM-Q29 fix round 3: built on 2026-10-17 on
-`crm-answer-check-r3`, not merged. CRM-Q28 uses the one number check of
+merged as #1116. CRM-Q29 fix round 3: merged as #1120. CRM-Q29 fix round
+4 to 7: merged as #1133. CRM-Q29 fix round 8: built on 2026-10-20 on `crm-check-explain`, not merged. CRM-Q28 uses the one number check of
 CRM-Q29. Verified against
 code at `origin/main` `a8ef53c93`.
 
@@ -4473,7 +4477,10 @@ Done when:
    not the packed prompt string, which holds the earlier answers, and not the
    answer of a delegated agent. (Fix round, 2026-10-17.) The ledger adds
    each tool result to its sources when the result arrives, so a check never
-   parses the results of the run again. (Fix round 3.)
+   parses the results of the run again. (Fix round 3.) The report of
+   `code_task` and the output of a script of the model are no source,
+   because a model wrote them (`MODEL_WRITTEN_TOOLS`). A CSV row and compact
+   JSON are sources. (Fix round 4.)
 5. **The arm.** The check arms when the run records the result of a CRM tool:
    a name in `CRM_TOOL_NAMES`, or one of the four reads of `crm-assistant`. A
    run that reads no CRM tool is not checked and not changed.
@@ -4493,10 +4500,21 @@ Done when:
    `write_artifact`) shows its arguments to the member. So the check reads
    the shown text of its arguments too. A failed card fails the whole
    answer, as a failed text does, and the card never ships. (Fix round.)
+   *(Changed in fix round 7, owner direction: give the number with a
+   caveat, never lose the answer.)* The one retry stays. When the retried
+   answer still fails, or when the run has used its retry, the answer goes
+   out with its cards. The server then adds one short note: "I could not
+   check these figures against the CRM data: <figures>. Please verify them
+   before you rely on them." The note names 5 figures at most, in plain
+   words. The fallback stays only for an answer with no text. `shadow` does
+   not change.
    A WhatsApp element (`whatsapp_ui`) is a display call too. The check
    removes the text of a failed step only when the step shows the member
    nothing. A failed step that calls a display tool or `share_artifact`
-   fails, and gets the retry or the fallback. (Fix round 3.)
+   fails, and gets the retry or the fallback. (Fix round 3.) The text of a
+   failed step goes out only when each call is a CRM read or a memory read
+   (`QUIET_TOOLS`). Each other call fails the step. The question and
+   confirmation cards are display calls. (Fix round 4.)
 8. **A derived figure** *(changed in fix round 2, 2026-10-17, from the 31
    founder questions of CRM-Q30)*. A founder asks for a figure that two tool
    results give, for example net cash flow, received minus paid (Q21). So a
@@ -4515,6 +4533,14 @@ Done when:
    as a figure of its own. A derived figure gets the room of its stated
    precision and no more. "About" gives room only to a figure that a source
    holds. So Q21 of CRM-Q30 states received and paid out with the net.
+   *(Changed in fix round 4.)* The two operands come from the citing
+   figures next to the derived figure in its sentence: the nearest two
+   before it and the nearest one after it. A word of derivation must stand
+   near it. Two cited percents give a sum or a difference. *(Changed in fix
+   round 5.)* The window is the block, up to a blank line, with two citing
+   figures on each side. A percent in brackets or a table cell right after
+   a figure is its share, the whole of a stated share derives, and so does
+   an average.
 9. **The seam.** `_inject_agent_tools` puts the check provider on the per-run
    view of each native MAF agent that holds a CRM tool, after the H-236 step.
    That covers the stream run, the batch run and the sub-agent. No second
@@ -4559,9 +4585,11 @@ Verify: `uv run pytest tests/unit/test_number_check.py tests/unit/test_number_ch
 and `uv run python scripts/affected_tests.py --base origin/main`.
 
 **Built as (2026-10-17).** Branch `crm-answer-check`, with two fix rounds,
-merged in Batch I2 (#1116). Fix round 3 is built on 2026-10-17 on the
-branch `crm-answer-check-r3`, not merged. No migration, dark
-(`CRM_ANSWER_CHECK` is `off`).
+merged in Batch I2 (#1116). Fix round 3 is merged as #1120. Fix rounds 4
+to 7 are merged as #1133. Fix round 8 is built on 2026-10-20 on the branch
+`crm-check-explain`, not merged. No migration. The owner set
+`CRM_ANSWER_CHECK` to `shadow` on production on 2026-10-20, until round 8
+ships and its replay shows under 1 in 20.
 
 - **The shared API, for CRM-Q28 item 9.** `acb_common.number_check` gives
   `find_figures(text) -> list[Figure]`, `Sources()` with `add_text(text)` and
@@ -4641,6 +4669,49 @@ branch `crm-answer-check-r3`, not merged. No migration, dark
      `test_prose_with_a_code_word_is_still_checked`.
   7. Q21 of CRM-Q30 asks for what came in and what went out, and its answer
      states both operands of the net. Fence: `test_crm_founder_questions.py`.
+- **Fix round 4 (2026-10-17, the adversarial review of round 3).** The
+  review said "shadow yes, on no". Nine changes, each with a fence:
+  1. A failed step goes out without its text only when EACH call is in
+     `QUIET_TOOLS`: the CRM reads (`ARM_TOOLS`) and the memory reads
+     (`RECALL_TOOLS`). Any other call fails the step, so an unknown tool
+     fails closed. `ask_questions` and `request_confirmation` are display
+     tools, so the check reads the numbers of their cards. Fence:
+     `test_crm_answer_check.py`.
+  2. After a currency sign, `m`, `mm` and `b` are a scale ("₹19.2m",
+     "$4.5b"). A no-break space can come before a scale word. A currency
+     sign before digits glued to letters ("₹19.2xy") gives a figure that
+     always fails, so a figure after a currency sign never disappears.
+     Fence: `TestFixRound4Scale`.
+  3. **The choice for code.** A text that a model wrote, or that a script of
+     the model printed, is NO source. `MODEL_WRITTEN_TOOLS` holds the
+     delegations, `code_task`, `run_script`, `run_command` and
+     `code_task_run_command`. A number that only such a result holds fails,
+     and the model gets the figure again from a CRM tool. Fence:
+     `test_text_that_a_model_wrote_is_no_source`.
+  4. A derived figure takes its operands only from the citing figures next
+     to it in its sentence: the nearest two before it and the nearest one
+     after it. A word of derivation ("total", "net", "minus", "gap",
+     "difference", "change", "share", "of", "more than", "less than", "so"
+     and the other words of `_DERIVE_WORDS`) must stand near it. Fences:
+     `TestFixRound4Derivation` and the k corpus of
+     `test_number_check_invented.py`.
+  5. Two cited percents give a gap: "45% and 35.2%, a gap of 9.8 points". A
+     percent pool gives only a sum or a difference, never a share. Fence:
+     `test_a_gap_of_two_percents_passes`.
+  6. The win-loss and owners reports of `crm_report` say "The window is the
+     last 90 days.", so "in the last 90 days" has a source. Fence:
+     `test_the_win_loss_report_says_its_window`.
+  7. "About" gives a percent 1 point at most (`APPROX_PERCENT_POINTS`), so
+     "nearly 66%" fails against 60%. Fence: `TestFixRound4Approx`.
+  8. A CSV row ("region,1234567,88") and compact JSON
+     (`{"target":1234567}`) are sources. A CSV row holds only numbers,
+     dates and fields with no digit, so a grouped number in prose gives no
+     parts. A new value waits in a list, and the book sorts once, not on
+     each insert. The ledger reads a result over 20,000 characters on a
+     worker thread, and sorts the book there. Fences: `TestFixRound4Sources`
+     and `test_a_large_result_is_read_off_the_event_loop`.
+  9. "4:1", "17/29", "7th" and "#9" are known limits (below). "3x" is the
+     figure 3. Fence: `TestFixRound4Limits`.
 - **The measured rate (fix round 3).** `test_number_check_invented.py` builds
   70 answers with a seeded generator. Each of them holds two true figures
   of the tool results and one invented figure in seven forms: whole lakh, lakh with one
@@ -4651,8 +4722,179 @@ branch `crm-answer-check-r3`, not merged. No migration, dark
   percent), and 0 of 70 pass after round 3. With 50 groups, 52 of 70 passed
   (74 percent), and 0 of 70 pass now. The fence holds the rate under 10
   percent.
+- **The measured rate (fix round 4).** The review found a fault in the
+  generator: a form with one decimal could print "₹10 lakh" for 10.0. Round
+  4 prints each such form with its decimal. A second corpus cites k true
+  figures in one sentence, in the shape of the review's probe: 200 answers
+  for each k. With the rule of round 3, 7.0 percent passed at k = 4, 9.0
+  percent at k = 6 and 14.0 percent at k = 10. With the rule of round 4, 0
+  of 200 pass at each k. The fence holds the rate under 5 percent at each k.
+- **Fix round 5 (2026-10-18, the final review of round 4).** The review said
+  NOT-ON-READY. Round 4 failed 7 of 25 true founder answers and 6 of 7
+  breakdown shapes, and a question card failed on "Last 90 days". Changes:
+  1. **The window of a derived figure is its block**, up to a blank line. A
+     paragraph, a list and a markdown table are each one block. Two citing
+     figures on EACH side of the figure give its operands. A percent in
+     brackets or in a table cell right after a figure is the share of that
+     figure in a figure of the block, with no derive word ("₹7.06 crore
+     (52%)", "| ₹13.53 crore | 100% |"). The whole of a stated share
+     derives ("12 of 20 closed deals, a 60% win rate"), and so does a money
+     figure over a count near "average", "per", "each" or "over". "more",
+     "less", "higher", "lower", "between" and "that is" are derive words.
+     Fences: `TestFixRound5TrueShapes`, with 13 true shapes and 6 of the same
+     shapes with a wrong figure, and the k corpus of round 4.
+  2. **A choice is no claim.** In an option of `ask_questions`, a figure
+     right after a choice word ("top", "last", "next", "first", "above",
+     "below", "over", "under", "at least", "at most", "more than", "less
+     than", "within", "up to") is skipped. "Proposal (Rs 5.9 crore)" is still
+     checked, and so is the question text. Fences:
+     `test_a_choice_in_an_option_label_is_not_checked` and
+     `test_a_claim_in_a_question_card_is_still_checked`.
+  3. **The retry note states the rule**: state BOTH tool numbers in the same
+     paragraph, next to the result, with a word of derivation. Fence:
+     `test_the_retry_note_states_the_rule_of_the_check`.
+  4. Cheap fixes, all done: both ends of a range are read with the shared
+     unit ("₹3-25 lakh", "5-17 deals"). A scale word on the next line joins
+     ("₹14" and a new line "crore"), and a scale letter still does not. A
+     percent never quotes a plain count ("down 12%" against a count of 12).
+     A JSON or CSV value can still stand for a percent. Fence:
+     `TestFixRound5Parse`.
+- **The measured rate (fix round 5).** The review's 25 true founder answers:
+  7 failed with round 4, 0 fail now. Its 7 breakdown shapes: 6 failed, 0
+  fail now. Its 40 invented figures: 7 passed with round 4, 4 pass now (a
+  sign that is not compared, numbers in words, a CSV table in an answer,
+  and "₹14 crore" that rounds to the true ₹13.53 crore). The k corpus stays
+  at 0 of 200 at k = 4, 6 and 10. The review's probe4 at k = 10: 1 percent
+  for all forms, 2 percent for a whole percent and 4 percent for a crore
+  with one decimal, as in round 4.
+- **Fix round 6 (2026-10-18, the review of round 5, NOT-READY).**
+  1. **A total with its parts is a sum**, with no derive word. The parts
+     stand in brackets or after a colon right after the total ("27 (20 won,
+     7 lost)", "27 deals: 20 won and 7 lost", "25 deals (12 + 8 + 5)"), or
+     before it with a colon, "=", "make" or "together" ("Won (20) and Lost
+     (7): 27"). Each part must cite a tool figure, never the member's words.
+     Two to 8 parts add up to the total at its stated precision, so "28 (20
+     won, 7 lost)" fails. Fence: `TestFixRound6Parts`.
+  2. **A ratio of two cited figures** ("₹13.53 crore is 6x ₹2.245 crore",
+     "6 times") derives, with the two figures next to it in its block.
+     Fence: `TestFixRound6Ratio`. A rank, a limit, a rate and a share of a
+     whole that the answer does not state stay unchecked by any rule. The
+     retry note now tells the model to state the whole, or to cite the
+     figure as the tool gave it.
+  3. **A failed check never loses the turn.** In `on` mode a check that
+     raises logs `answer_check.check_failed` and sends the answer unchanged.
+     A spec nested too deep gives its raw text or nothing, and never raises.
+     Fences: `test_a_check_that_raises_lets_the_answer_through` and the
+     deep spec tests.
+  4. **Both numbers of a fraction are read.** "Won 25/40" fails. The second
+     number passes when it is the first plus ANOTHER source value, so "Won
+     20/27" passes (20 won and 7 lost) and "Won 20/40" fails. A month or a
+     year ("07/2026", "2025/26") is no fraction. Fence:
+     `TestFixRound6Fraction`.
+  5. **The book takes its lock** to add, sort, match and cite. Fence:
+     `test_a_match_takes_the_lock_of_the_book`.
+- **The measured rate (fix round 6).** The review's true answers (p1, p6
+  and p8, 95 answers): 32 failed at the first try with round 5, and 23 fail
+  now. Each of the 23 states a figure that no tool gave and that no
+  figure of the answer gives: a share or a rate of a whole that the answer
+  does not state, a rank, a limit, a window that the member asked for, a
+  ratio with no figures, or a sum with no derive word or parts shape. The
+  review's invented figures: 3 of 20 pass (each states a true tool figure
+  in a false context), and "Won 25/40" now fails. Probes 1 to 11 are as in
+  round 5.
+- **Fix round 7 (2026-10-19, the review of round 6, NOT-READY).**
+  1. A day and a month ("15/11", "3/11") and a set phrase ("24/7",
+     "50/50") are no fraction. "Won 25/40" still fails, and "Won 20/27"
+     still passes. Fence: `TestFixRound7Fractions`.
+  2. A total is the sum of EVERY listed part of its kind, not of any first
+     two. "₹2.4 crore (₹1.84 crore, ₹0.59 crore, ₹7.06 crore)" and "Open: 20
+     (12, 8, 5)" fail. Fence: `TestFixRound7Parts`.
+  3. The whole of a fraction passes only when it is a source figure, or
+     when its first number and the rest are two counts of ONE line of a
+     tool result ("won 20, lost 7" makes 27). So "Won 20/23" fails beside
+     "Closed with no date: 3".
+  4. Counts and money in one bracket each add up on their own: "Open: 25
+     deals, ₹9.49 crore (Qualification 12 · ₹1.84 Cr, …)". A ratio ("5x")
+     is never a quote of a count 5.
+  5. The answer is never replaced (item 7 above). Fences:
+     `test_two_failures_deliver_the_answer_with_a_caveat`,
+     `test_the_caveat_names_at_most_five_figures_in_plain_words` and
+     `test_an_answer_with_no_text_still_gets_the_fallback`.
+- **The measured rate (fix round 7).** The review's true answers (p1, p6,
+  p8 and the 13 of p9, 108 answers): 29 failed at the first try with
+  round 6, and 24 fail now. Of the 13 true answers of p9, 1 fails, and its
+  parts add up to ₹9.49 crore, not to the ₹13.53 crore that it states. With
+  round 7 none of these answers is lost: a failed one goes out with the
+  caveat. Invented figures of p5, p8 and p9 (39): 13 passed with round 6,
+  10 pass now. Each of the 10 is true arithmetic of true tool figures under
+  a false label, a day and a month, or a ratio that rounds.
+- **Fix round 8 (2026-10-20, owner, after a true answer in production got a
+  confusing note).** A web answer about one module added three sums, took
+  one from another, and showed a table in lakh with no unit. The note named
+  "₹10.62 crore, ₹32.92 crore, ₹22.30 crore, 959.8, 592.6 and 41 more".
+  `tests/unit/test_crm_answer_check_explain.py` rebuilds the run, and the
+  check of round 7 fails the same figures in the same order. Four causes,
+  each with a fence:
+  1. **A derived figure was no operand.** "₹32.92 crore" passed as a sum of
+     three tool figures. So "the other ₹10.62 crore (₹32.92 crore less
+     ₹22.30 crore)" failed, and each figure that stated a sum again failed
+     too. Now a derived figure of three significant digits or more is an
+     operand of the next pass (three passes at most), and a figure that
+     states it again passes. "other" is a derive word. A money figure takes
+     the plain pool too, because a module total has no currency sign.
+  2. **A table cell had no unit.** A bare number of a markdown table takes
+     the unit of its column: from its header cell ("Amount (₹ lakh)"), from
+     the line above the table ("in crore"), or from the scale, lakh or
+     crore, at which the column matches the tool values and not as it
+     stands. The whole column takes one scale. A column of row totals takes
+     the scale of the other columns. A count column keeps its counts.
+  3. **A row total had no rule.** A cell that is the sum of the other cells
+     of its row with the same unit derives, and so does a cell of a "Total"
+     row that adds up its column.
+  4. **A count of groups had no source.** The count of the lines of a list
+     of three lines or more, and that count less its empty groups, are
+     sources. So "the 11 tagged regions" passes beside 12 groups with one
+     "(none)".
+  5. **The note.** It never lists raw figures alone (`note_text`). A failed
+     figure that is the sum or the difference of two figures of the answer
+     gets one sentence: "₹4.80 crore is ₹13.99 crore less ₹9.19 crore."
+     More than 3 failed figures, or 2 or more that are over 30 percent of
+     the figures, are a limit of the check. The note then names no figure,
+     and adds "How I got these numbers": one line for each CRM read, from
+     the head line that the server wrote, with its filters. An empty group
+     that holds a tenth of its total or more, and whose value the answer
+     states in the sentence or the table row of a failed figure, gives ONE
+     question: "In Deals, 69% of the sum of Amount has no
+     Region. Should I show those records as their own group, "No Region",
+     or group them by another field?" An open CRM question of the run gives
+     a line that points to it. One to three failed figures each get a
+     reason and an action: "I could not find ₹4.10 lakh in the CRM results.
+     It may be my own calculation. Ask me how I got it, or check it in the
+     CRM." A figure within 10 percent of a CRM figure names it as the
+     nearest, and a percent asks which figures it compares.
+  6. **The log** names the kind of the note (`note=none`, `explained`,
+     `named`, `how` or `question`), in `shadow` too. It never holds a figure
+     or a text. `scripts/crm_answer_check_replay.py` counts the kinds of the
+     journal and replays stored answers offline.
+- **The measured rate (fix round 8).** The rebuilt run: 61 figures, 46
+  failed with round 7, 0 fail now, in four forms of the unit. Probes p1 to
+  p11 of the round 5 review give the same output before and after, so no
+  invented figure passes that failed before. The journal of the gateway
+  for the 7 days to 2026-10-20 holds 15 armed runs. With the counts of
+  round 7 alone, 5 final answers fail (33 percent), 4 with a named note
+  and 1 with "How I got these numbers". That is an upper bound, because a
+  count cannot show what round 8 passes. The rebuild of one of the 5 now
+  gets no note. A replay of the stored answers needs the chat
+  rows of the runs, which only an operator reads. Until that replay shows
+  under 1 in 20, `CRM_ANSWER_CHECK` stays `shadow`.
+- **Not done in round 8.** The question of an empty group is text in the
+  note. It does not go through the CRM-Q32 store, the card on the web or
+  `text_asks` on WhatsApp yet, because no question kind holds a group field
+  with no value, and the spec records no decision of what its answer
+  changes.
 - **Mutations.** 13 mutations in the build, 12 more in fix round 1, 9 in
-  fix round 2 and 21 in fix round 3, one or more for each fix. The suites
+  fix round 2, 21 in fix round 3, 21 in fix round 4, 15 in fix round 5,
+  11 in fix round 6 and 9 in fix round 7, one or more for each fix. The suites
   kill each one. The rules: the room for rounding, money against a percent, a
   date, an exact scaled number, the arm, the model's text as a source, no
   extra request on a pass, one retry for each run, no draft in the fallback,
@@ -4672,16 +4914,28 @@ branch `crm-answer-check-r3`, not merged. No migration, dark
   can read, so its numbers are not checked. A card's number under a layout
   key (`width`, `size`, `level` and others) is not checked. An approximation
   word gives a room of 10 percent, so "about ₹5 lakh" passes against
-  4,60,000. The second number of a range ("10-20") is not checked. A made-up
-  number can still pass when it is equal by chance to a sum, a difference or
-  a percent of two figures that the answer also states. A derive pool holds
+  4,60,000. On a percent the room is 1 point at most. A made-up number can
+  still pass when it is equal by chance to a sum, a difference or a percent
+  of two figures next to it in its block. A true derived figure fails when
+  its operands stand in another block or with no word of derivation, and
+  the model then writes it again. A table or a CSV in an answer with no
+  spaces after its commas ("Proposal,10,43000000") holds no figure that the
+  check reads. A figure that only a script of the model printed fails,
+  also when it is true. A derive pool holds
   the newest 500 figures of each kind, and 200 of one result at most. Each
   figure stays a direct source. `share_artifact` shows a file that another
   tool made, and its arguments hold only a path, so the check cannot read
   the numbers of that file. The parser blanks a citation such as "[3]", so a
   count in square brackets is not checked. A four-digit count from 1900 to
   2100 after "by", "from", "(" or "'" still reads as a year. A count glued
-  to a colon ("Count:2047") is no figure.
+  to a colon ("Count:2047") is no figure. A ratio ("4:1"), a fraction
+  ("17/29"), an ordinal ("7th") and a number after "#" ("#9") are no
+  figures, so their numbers are not checked. A multiplier that is a ratio
+  of two tool figures ("1.9x") fails, because no rule derives it. The shown
+  text of a card skips prose with an arrow ("Proposal => Negotiation") and
+  "return (" as code. `write_artifact` shows the text of `.md`, `.txt`,
+  `.html`, `.htm` and `.csv` only, so the numbers of a `.svg`, a `.json` or
+  a `.markdown` file are not checked.
 
 **CRM-Q30 · A founder question set for CRM insights (2026-10-17).**
 
@@ -4978,7 +5232,7 @@ CRM-Q25b, CRM-Q25c and CRM-Q27 were built on the batch branch
 (`d72f92184`). Batch I2: CRM-Q28 (migration 281), CRM-Q29 with its two
 fix rounds, CRM-Q30 and CRM-Q30b were built on 2026-10-17. They are in the
 batch branch `crm-batch-i2`, merged as #1116, and dark. CRM-Q29 fix round 3
-is built on `crm-answer-check-r3`, not merged. The owner flip of
+is merged as #1120, and fix rounds 4 to 7 are built on `crm-answer-check-r4`, not merged. The owner flip of
 CRM-Q26 is not done. Batch M: CRM-Q17a-1b, CRM-Q17a-2, CRM-Q18-1b, CRM-Q18-2, CRM-Q18-3,
 CRM-Q19 and CRM-Q20-1 are built on the batch branch `crm-batch-m`, and
 CRM-Q20-2 on `crm-q20-2-suggestions` from it. None is merged. CRM-Q20-3 is
@@ -6229,6 +6483,11 @@ of its app as rows of one shape:
   of `GET /crm/mode` (`_tool_injection.py:1456-1490`). This amends
   "How the catalogue reaches the model" of §18.13.4 for answered facts
   only. The rest of the catalogue stays in `crm_list_modules`.
+  *(Amended 2026-10-19, WS-47 parity.)* The block holds 13 lines at most.
+  Its second line, `CRM_ROUTING_LINE`, sends business figures (billing,
+  invoices, collections, payments, circles, sites, revenue and amounts) to
+  the CRM tools. It says that `search_company` finds documents, not CRM
+  records. The facts keep their 11 lines.
 
 **3. People see the facts in Knowledge.** When Knowledge is on for the org,
 the CRM writes one read-only page, "How our CRM data is organised", in the
@@ -7421,6 +7680,45 @@ change of the first, and runs the verification of both again.
   first put each sum back with `"@auto"` or one field, then revert. No flag
   guards this, on purpose (the SQL review of 2026-10-18).
 
+#### 18.14.14 Re-run the analysis on demand (CRM-Q32-10, 2026-10-19)
+
+**Owner request, 2026-10-19:** "Would it be possible to rerun the analysis on
+demand?" Built 2026-10-19. No migration and no new flag.
+
+**What the admin sees.** The Open questions and Suggestions sections show a
+"Re-run AI analysis" button. A press shows "Analysing…" and a progress line.
+At the end, the page reads every CRM key again and shows the result in a toast.
+The button hides when no step of the analysis can run for the org.
+
+**What runs.** `POST /crm/analysis/rerun` calls
+`crm_sync/scheduler.start_analysis`. It starts the same steps as the end of a
+sync run: `start_mapping`, `start_labels`, and `start_questions` after the
+mapping. There is no second pipeline. So each cap, each cost limit, each
+`crm.map_*` mode and the payer rule still bind. The pipeline never replaces a
+part with `by: admin`.
+
+**One at a time.** A second press while an analysis runs returns that run with
+`started: false`. A step that a sync run started is waited for, and is not
+started twice. `GET /crm/analysis/status` returns the last run of the gateway
+process and `allowed`.
+
+**Guards.** The guards of the Field map apply: the CRM switch, `CRM_MIRROR`,
+`admin:access:manage` and Mirror mode. The org comes from the session (R5,
+R11). With no step to run, the route returns 404 `analysis_off`.
+
+**The read cache fix of the same change.** `lib/dataCache.ts` now binds the
+member and the org of the session (`bindIdentity(member, org)`). A
+change of org empties the cache. Before this fix, a cached 404 `questions_off`
+of org A hid the Open questions of org B in the same tab.
+
+**Fences:** `tests/unit/test_crm_analysis_rerun.py`,
+`tests/unit/test_crm_analysis_rerun_r8.py` (R8),
+`src/app/crm/components/crmQ32_10.test.ts` and `src/lib/dataCache.test.ts`.
+
+**Known limit.** The pipeline keeps a hash of the schema of each key. When the
+data did not change, a re-run asks the AI nothing and rebuilds the questions
+from the stored answers.
+
 ### 18.15 Answer first, clarify over time (CRM-Q33, 2026-10-18)
 
 **Status (2026-10-18).** Built on `crm-q33-answer-first` as one batch, not
@@ -7670,6 +7968,190 @@ Fences: `tests/unit/test_crm_answer_first.py`,
 `tests/unit/test_crm_answer_first_fix1.py` and
 `tests/unit/test_crm_answer_first_r8.py`. Six mutations, one for each rule,
 each fail a test.
+
+### 18.16 CRM answers are consistent and fast (2026-10-19)
+
+**Status (2026-10-19).** Built on `crm-answer-consistency` as one batch, PR
+open, not merged. No migration and no new flag. The term questions and the
+alias facts reach only an org on `CRM_QUESTIONS_ORGS`. The WhatsApp
+question needs `CRM_ANSWER_FIRST_ORGS`, as CRM-Q33 part 2 does.
+
+**The incident (production, web chat, 2026-10-19).** A member asked twice
+for the total of one fee for one region "for the month of September". The
+chat gave two different answers, and both were wrong.
+
+- The first run took 890 s and made 48 tool calls. It filtered on a field
+  that the member did not name, and it summed a sparse field.
+- The second run was fast, used the right field, and read the year before.
+
+**The cause of the 890 s.** The gateway log gives each time in UTC. The
+run wrote the answer at 11:04:51 UTC. Then `ask_questions` waited 419 s
+for the member's click on the follow-up card of CRM-Q33. The wait ran from
+11:04:52 UTC to 11:11:51 UTC. The run did two more rounds after the click.
+
+Before the answer, 22 model rounds of reads took 337 seconds. They made 24
+`crm_aggregate` calls and 10 `crm_list_fields` calls, 4 of them in one
+round for one module. They also made 9 `crm_get_module_record` and 7
+`crm_list_module_records` calls.
+
+**Owner directives (2026-10-19, in chat).**
+
+- "Generic, for every future org." No org's name, field, word or value
+  goes in product code, prompts or guidance. Each comes from the org's own
+  catalogue, labels, values and facts at run time.
+- "Ask when the AI is genuinely unsure." The confidence rule of part 4
+  takes the place of "always answer first" for a word of the member.
+
+#### 18.16.1 Part 1: today's date in each chat run
+
+- `acb_common.today.today_line` gives one line: "Today is Monday, 19
+  October 2026 (Asia/Kolkata)."
+- `executor._context_preamble_parts` adds it last. That builder serves the
+  web stream and the batch path of WhatsApp, so both channels get it.
+- Metorite keeps no zone for an org, so each org reads `Asia/Kolkata` until
+  an org zone exists.
+- The CRM guidance gains `addendum.CRM_PERIOD_LINE`. A month or a quarter
+  with no year is the most recent one that has started. The answer names
+  the year. This rule decides the year, so a month with no year is never a
+  question.
+
+#### 18.16.2 Part 2: a follow-up card never holds the run
+
+- `CrmAsks.follow_ups` records each card that the tool offered AFTER an
+  answer (`_follow_up`).
+- For such a card, `ask_questions` passes `park_after` of 2 s
+  (`FOLLOW_UP_PARK_SECONDS`) to `executor.wait_user_future`. The run parks
+  and ends, and the member's later pick takes the late path of CRM-Q32-8.
+- The run adds the missing note of the answer before the card. A parked
+  run never reaches the add before RUN_FINISHED.
+- A refused early park tries once more at the normal window
+  (`CHAT_ASK_PARK_SECONDS`). A card that asks BEFORE the answer still
+  waits. With `CHAT_DURABLE_ASKS` off, the wait is as before, because no
+  late path exists.
+
+#### 18.16.3 Part 3: a cache and a budget of reads
+
+- The holder of the run (`CrmAsks` on the web, `TextAsks` on WhatsApp)
+  keeps `RunReads`.
+- A second `crm_list_fields` of one module and one page reads nothing. It
+  answers the first list and the line `FIELDS_CACHED_NOTE`.
+- The budget: 8 `crm_aggregate` calls (`AGGREGATE_BUDGET`) and 20 CRM reads
+  of all the read tools together (`READ_BUDGET`). A read past it reads
+  nothing and answers "Answer with what you have, and state the
+  assumption".
+- A run with no holder (a batch run off the answer-first list) has no
+  cache and no budget, as before.
+
+#### 18.16.4 Part 4: the org's own word for a figure
+
+- `crm_aggregate` takes `term`, the member's own word for a figure, on a
+  module. The tool reads `GET /crm/terms/resolve` first.
+- `crm_sync/terms.candidates` gives the money fields of the module that
+  match the term. A field matches when its label or key holds each word of
+  the term that is not a general word of money. The most filled field comes
+  first, and at most 3 come back. A field with a tax part in its name drops
+  while another one is left. So does a field that the arithmetic marks as
+  including GST.
+- Who decides, in this order:
+  1. An admin's answer of the term question.
+  2. A business rule that names the term and one field.
+  3. The member's own pick.
+  4. Another member's pick, which is the proposed org answer.
+  5. The one field that matches.
+
+**The confidence rule.** With nothing that decides, the tool reads the
+total of each of the first 2 fields, with the call's filters.
+
+| Case | When | What the chat does |
+|---|---|---|
+| Clear | One field decides, or the totals are within 5% of each other (`CLOSE_SHARE`), or the member kept the best guess | Answer first, with "How I got this", each filter, and the total of one other field |
+| Unsure | The totals differ by more than 5%, and nothing decides | Ask FIRST, one question, with the total of each option |
+
+- On the web the question is a card (`ASK FIRST`). On WhatsApp the gateway
+  asks it in numbered text, with each total (`text_asks.with_figures`).
+- The pick goes through `questions.reply_as`. An admin's pick is the org
+  answer. Each other member's pick is the member's own preference, and the
+  proposed org answer, so the next member is not asked.
+- The question carries the totals, so the pick needs no other read.
+  WhatsApp answers the pick with its total.
+- One question in a turn. A run that asked a question gives the best guess
+  for each other word.
+- The question lives in the CRM-Q32 store as the kind `term`, with the id
+  `term:<Module>:<slug>`. The terms that the chat met, and the admin's
+  answers, live in the cursor row `zoho:questions` (no migration).
+- The facts provider gives each word as the subject `term:<word>`, and the
+  CRM facts block keeps it.
+
+#### 18.16.5 Part 5: the amount pick prefers the field that excludes GST
+
+- `catalogue.amount_evidence_fields` weighs the currency fields filled 50%
+  or more that hold no tax part. A total "with tax" stays, so the
+  arithmetic can compare it with the amount.
+- At each sync, `map_pipeline._ex_gst_amounts` reads the evidence of GST
+  (`field_sql.gst_check`) and picks the most filled field that excludes
+  GST. It writes the pick with `by: code`, at 0 tokens.
+- An admin's amount is never replaced, and a sum of fields stays.
+- **The real case.** The approved plan of the incident's org already held
+  the fully filled ex-GST amount (version 2, by the AI, 2026-10-18). So the
+  sparse sum of the first run came from the model's own field choice and
+  filter, and parts 4 and 7 fix it. Part 5 holds the rule for each org.
+
+#### 18.16.6 Part 6: each spelling of a value
+
+- A filter on a text or a select field of a module matches in any case.
+- `field_sql.text_matches` reads the distinct values of the field, and
+  `terms.value_matches` counts each spelling of the value and each short
+  form of it.
+- A short form counts only when it starts ONE longer value and holds 3
+  letters or more. The initials of a value of 2 words or more count too. A
+  code of 4 letters or less that a member asks for reads the value that it
+  stands for.
+- The aggregate gives `matched`, and the tool names each counted value.
+- An alias set of 2 values or more is kept as the org's value-alias fact,
+  subject `value:<Module>.<key>`, in `zoho:questions`.
+
+#### 18.16.7 Part 7: never a filter that nobody asked for
+
+- `addendum.CRM_FILTER_LINE`: filter only on what the question names, and
+  state each filter in "How I got this".
+- `crm_tools.filters_line` writes each filter of a module total, with the
+  values that each one counted.
+
+#### 18.16.8 Done when
+
+| # | Criterion | Fence (R7) |
+|---|---|---|
+| 1 | Each channel gets the date line, and the guidance holds the period rule | `test_a_web_turn_carries_the_date_line_last`, `test_a_whatsapp_turn_carries_the_date_line`, `test_the_crm_guidance_holds_the_period_the_filter_and_the_term_lines` |
+| 2 | A follow-up card parks the run at once, and a card before an answer waits | `test_ask_questions_parks_a_follow_up_and_waits_on_a_clarify`, `test_an_early_park_ends_the_wait_at_once`, `test_a_refused_early_park_waits_for_the_normal_window` |
+| 3 | The run keeps the field list, and the budget stops the reads | `test_a_second_field_list_of_one_module_reads_nothing`, `test_the_ninth_aggregate_answers_the_budget_line`, `test_the_total_budget_stops_every_read` |
+| 4 | Unsure: the chat asks first with two totals. A rule: the chat answers first | `test_the_replay_with_no_rule_asks_first_with_the_two_totals` (R8), `test_the_replay_with_the_rule_answers_79_42_lakh_for_sep_2026` (R8), `test_a_member_s_pick_answers_them_and_the_next_member_is_not_asked` (R8) |
+| 5 | The amount pick prefers the ex-GST field, and never moves an admin's | `test_the_sync_moves_a_sparse_ai_amount_to_the_ex_gst_field`, `test_the_sync_never_replaces_an_admin_amount`, `test_the_evidence_moves_the_sparse_amount_to_the_ex_gst_field` (R8) |
+| 6 | A filter counts each spelling and names them | `test_a_value_counts_its_case_and_its_one_short_form`, `test_a_text_filter_counts_each_spelling_and_seeds_the_alias_fact` (R8) |
+| 7 | The tool states each filter | `test_the_filter_line_states_each_filter_and_its_counted_values` |
+| 8 | No word of one org in product code | `test_no_added_line_of_product_code_names_a_word_of_one_org`, `test_the_new_product_files_name_no_word_of_one_org` |
+
+The acceptance replay is a fake model's script of 2 CRM calls:
+`crm_list_modules`, then `crm_aggregate` with `term`. Its fixture is the
+incident's shape with synthetic values, in
+`tests/unit/test_crm_answer_consistency_r8.py`.
+
+#### 18.16.9 Verification
+
+- Start a private ladder database, as `engineering_practice.md` §1.1 says.
+- `uv run pytest tests/unit/test_crm_answer_consistency.py tests/unit/test_crm_answer_consistency_r8.py -q`,
+  with no test skipped.
+- `npx tsc --noEmit && npx vitest run src/app/crm` in
+  `workbench/control_plane`.
+
+#### 18.16.10 Not done in this batch
+
+- Metorite keeps no zone for an org. Each org reads `Asia/Kolkata`.
+- An admin cannot yet edit or remove a value alias.
+- The overlay path of a core entity keeps its case-sensitive filter.
+- A batch run off `CRM_ANSWER_FIRST_ORGS` opens no holder, so it has no
+  read budget.
+- No mutation tests and no adversarial review ran, by the owner's
+  direction. HANDOFF lists the hardening.
 
 ---
 
@@ -11041,3 +11523,92 @@ unbuilt after CRM-C1 to CRM-C7. It writes no contract.
 12. **CRM-Q11, CRM-Q12 and CRM-Q13.**
 13. **Blueprints, approvals, territories and lead scoring (new).** Last,
     because they matter most to large sales teams.
+
+### 20.12 CRM-U8: the two-row toolbar and saved views
+
+*(2026-10-20, owner: the filters are "a little too overloaded". Built.)*
+
+Every list and board has two rows under the app bar. The old stage pills, the second filter row and the Columns band are gone.
+The app bar keeps Refresh and New only.
+
+- **Row 1, which view.** Chips: "All deals" (the default), the private views, then the shared views. At the right end: the pipeline, the List and Board switch, Board options, Columns and Export.
+- **Row 2, what is filtered.** Search, Stage (Status on leads), Owner, one chip for each filter in force, "+ Filter", Clear, and the count. The board has no search, no Stage and no count.
+- **"+ Filter".** One panel lists every field in groups (Dates, Picklists, Numbers, Text, Other). A picklist shows how full it is, and the fullest comes first. A chip reopens its editor.
+- **The dirty rule.** One rule serves every list (`dirtyState`). The default view with a filter, a sort or columns set shows "+ Save view". A saved view that differs shows "Update view" and "Reset". "Update view" needs edit rights.
+- **The chip menu.** A right click, or the "View options" button, opens Rename, Share or Make private (admin) and Delete. The rail no longer nests views.
+- **Columns.** A saved view keeps its columns on the view. The default view keeps them in the browser.
+- **Module lists.** A generic module list has the same two rows. Its scope key is `module:<api_name>`. Migration 287 widens the `crm_views` check, and `views.py` accepts the key. CRM-U9 gave it the field filters (below). It has no Export.
+- **Phone.** Row 1 scrolls. Row 2 is Search and one "Filters (n)" button that opens a sheet.
+- **The shared seam.** `src/lib/savedViews/` holds the model, `orderViews`, `dirtyState` and the hook. `src/components/ViewChips.tsx` draws row 1. Projects (`pm_views`) is the next user.
+
+**Fences (R7).** `src/lib/savedViews/index.test.ts` holds the order, the dirty rule and the chip list. `crmU8.test.ts` holds the field groups, the fill order, the filter chips, the module key and the app bar. `tests/unit/test_crm_views_entity.py` holds the server key and the migration check. `crmQ8.test.ts` holds the rail without nested views.
+
+#### Module field filters (CRM-U9)
+
+*(2026-10-20. Built.)* A generic module list has the "+ Filter" panel, the chips, Clear and the Owner picker of the four core lists.
+
+- **Gateway.** `GET /crm/modules/{module}/records` takes `owner` (`me` is the caller), `updated_from`, `updated_to` and `custom.<key>=<value>` or `custom.<key>.in=a,b`. The values match the `fields` JSONB by equality, or by one item of a stored array.
+- **One seam.** `core.custom_value_clauses` builds the SQL for the core lists and the module lists. Every key and value is a bound parameter.
+- **Unknown keys.** A custom key with no definition is ignored. A bad day is a 422. A module record keeps no created date, so only the Updated range exists.
+- **Definitions.** The list response already carries `field_defs`. No new endpoint was needed. The bar offers the picklist, checkbox, number and date fields.
+- **URL and views.** The URL carries `cf.<key>` on a module tab. A saved module view holds `filters` as the core views do.
+
+**Fences (R7).** `tests/unit/test_crm_modules_routes_r8.py::test_the_record_list_filters_by_field_owner_and_updated_day` holds the gateway rules and the tenant scope. `crmU9.test.ts` holds the field list, the chips, the request and the URL.
+
+### 20.13 CRM-U6: stage order, win chance and the lane stat block
+
+Owner, 2026-10-20: the board order and the win chance are two settings.
+
+1. **The order never follows the probability.** An admin sets the order of
+   the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
+   without an admin order uses the source position, then the pipeline place.
+2. **Every stage has a win chance.** Migration 288 adds `probability` and
+   `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
+   status holds 0, for both kinds (D-CRM-10).
+3. **The lane header shows a stat block.** A deal lane shows the total and
+   the weighted total with the win chance. A won lane says "booked, not
+   forecast". A lost lane says "no forecast". An on-hold lane says "on hold".
+4. **A lead lane shows the count and the expected conversions.** The
+   expected number is count x win chance / 100, with one decimal.
+5. **Settings.** Each row has Up and Down buttons and a plain type label.
+   It also has a "Win chance" box and a labelled Save and Cancel. Delete asks
+   first. The rules of a deal stage fold behind a "Rules" toggle. A strip at
+   the top of each grid shows the stages in board order.
+
+Fences (R7):
+
+- `board.test.ts`: "sorts by the source position in Mirror mode with no admin
+  order, not by probability", and the `expectedLeads` and `dealForecastLine` cases.
+- `boardStages.test.ts`: "the lane stat block (CRM-U6)".
+- `crmU6.test.ts`: the strip, the Up and Down buttons, the disabled win chance,
+  and "keeps the probability out of orderLanes".
+- `test_crm_migration.py::test_the_lead_probability_migration_is_expand_only`.
+- `test_crm_routes.py::test_a_lead_status_carries_a_win_chance` and
+  `test_crm_pipeline.py::test_a_lead_win_chance_keeps_the_won_lost_clamp`.
+
+### 20.14 CRM-U10: the CRM's tabs in the phone's bottom bar
+
+Owner, 2026-10-20: the phone had no way to move across the whole CRM from the
+bottom bar. It held only "Menu". A member had to tap the title, find a row in
+the drawer, and tap again.
+
+1. **The bar names three lists and "More".** Three slots go to the lists that
+   hold data. First come the built-in lists that hold records, in the order
+   Deals, Leads, Contacts, Companies. Then come the custom modules, the
+   biggest first. The built-in lists that hold nothing come last. So an org
+   that lives in custom modules sees them in the bar. A built-in list that a
+   module plays keeps the list's label and opens the module. The labels are
+   the source's labels.
+2. **"More" opens the whole rail.** It opens the same drawer as the title. The
+   drawer holds Companies, the generic modules, Reports and CRM settings.
+3. **"More" lights for any view that has no tab,** such as Reports, settings
+   or a module. It shows the open-questions count of an admin.
+4. **The page owns the list.** The page emits `cc-crm-nav` with the tabs, the
+   active tab and the count. It emits `null` when it unmounts. `AppShell`
+   draws what it gets, so the shell knows no CRM rule. A tap goes back as
+   `cc-mobile-nav` with `crm:<id>`, and the page answers through `chooseView`.
+5. **A tab is the current page for a screen reader.** `TaskTab` sets
+   `aria-current="page"` on the active tab.
+
+Fences (R7): `crmU10.test.ts` holds the tab rule, the wire and the three
+source fences. It checks that `AppShell` draws only what the page emits.

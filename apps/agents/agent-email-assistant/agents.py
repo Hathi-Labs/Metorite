@@ -2,7 +2,7 @@
 
 A MAF agent that checks the inbox, categorizes mail, manages automation rules,
 takes inbox actions, and drafts context-aware replies — handing off to the
-sales / task-manager agents and reading memory when an email needs their
+sales / projects agents and reading memory when an email needs their
 context. Modeled on inbox-zero's (elie222/inbox-zero) assistant tool surface.
 
 Registered as a MAF agent (name "email-assistant"); build_agents() is the
@@ -42,15 +42,30 @@ from acb_common.tool_refusals import (
 from acb_skills.untrusted import UntrustedFrame
 
 # H-236: every tool states ``open_world``, and a tool that omits it counts as
-# a send (``acb_skills.egress`` fails closed). ``True`` marks a tool that can
-# carry text that the model chose off the platform: a send, a forward or reply
-# or webhook rule, a rule run that applies those, a signature on outgoing
-# mail, the approval of a pending send, and the knowledge base that feeds
-# replies to outside senders. ``manage_inbox``, ``create_label`` and
-# ``draft_reply`` write to the mail provider (a label or folder name, a saved
-# draft one click from a send), so they say ``True`` too. Reads, the
-# Reply-Zero state and the rules' own housekeeping say ``False``. A run that
-# a covered Projects run calls keeps only the ``False`` tools.
+# a send (``acb_skills.egress`` fails closed). A ``no_egress`` run keeps only
+# the ``False`` tools: a run that a covered Projects run calls, and each run
+# of a chat session that read stranger mail (EM-G11d).
+#
+# The audit of 2026-10-19 (``email_app_master_plan.md`` §12.3.13.8.1) sorts
+# each tool by what it does, not by its name:
+#
+# * (A) ``False``: it acts only in the member's own mailbox and names no new
+#   outside recipient. ``manage_inbox``, ``create_label``, ``draft_reply`` (the
+#   route addresses the sender of the mail and writes the body, and the model
+#   chooses neither), ``digest`` (the route sends it to the mailbox's own
+#   address), the reads and the Reply-Zero state.
+# * (A) with a held part, ``False``: the rule tools. A rule that labels,
+#   moves, archives or drafts a reply to the sender stays in the mailbox. A
+#   rule that forwards, calls a webhook or drafts to an address that it names
+#   opens an outbound path. So in a ``no_egress`` run each rule tool refuses
+#   that part at call time (:func:`_egress_held`), and does the rest.
+# * (B) ``True``: a send, a forward, a send of a draft, an unsubscribe (a mail
+#   or a request to a URL from the mail), and the settings (a signature, the
+#   text about the member, auto-run).
+# * (C) ``True``: the knowledge base, a store that feeds each later reply.
+# * (D) ``True`` and ``card_bound_reply``: ``compose_reply`` (EM-CR, §18). It
+#   sends, and a held run keeps it only because of its card and its pinned
+#   parameters (``acb_skills.egress.CARD_BOUND_REPLY_TOOLS``).
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -60,6 +75,31 @@ except ImportError:  # older platform without the annotations registry
         return _wrap
 
 _log = get_logger("agent.email_assistant")
+
+
+def _egress_held() -> bool:
+    """True when this run may not open a path out of the mailbox (H-236).
+
+    It reads the ONE reader, ``acb_skills.egress.no_egress_for_this_run``,
+    which fails closed: a frame with no run context reads as held. An older
+    platform with no reader reads as held too. A rule tool asks it only for
+    its outward part, so an inward rule never reads it."""
+    try:
+        from acb_skills.egress import no_egress_for_this_run
+    except ImportError:
+        return True
+    return no_egress_for_this_run()
+
+
+def _egress_held_answer(act: str) -> str:
+    """The answer of a rule tool that refuses its outward part in a held run.
+    It starts "Nothing changed.", so the chat card draws an act that did not
+    happen, and it says why, for this run."""
+    try:
+        from acb_skills.egress import egress_held_answer
+    except ImportError:
+        return f"Nothing changed. {act} is off in this run."
+    return "Nothing changed. " + egress_held_answer(act)
 
 
 async def _confirm_destructive(title: str, detail: str, context: str = "") -> bool:
@@ -1556,7 +1596,7 @@ async def _inbox_card(
     return await _card_refusal(title, detail, cancelled, context)
 
 
-@_annotate_risk(destructive=True, open_world=True)
+@_annotate_risk(destructive=True, open_world=False)
 async def manage_inbox(
     action: str,
     message_ids: list[str],
@@ -1626,7 +1666,7 @@ async def manage_inbox(
     return f"{action}: affected {res.get('affected', 0)} message(s)."
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str:
     """Draft a context-aware reply to an email. Set save=true to also create a
     provider draft in the user's Drafts folder, after a card. The draft is
@@ -1680,6 +1720,122 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
         f"Draft from {sender} (mailbox {account_id}){note}:\n\n"
         f"{res.get('draft', '')}"
     )
+
+
+# ── The reply card: one reply, confirmed and done in the chat (EM-CR) ────────
+#
+# ``email_app_master_plan.md`` §18, owner request of 2026-10-20: "the entire
+# interaction to occur within the chat". ``compose_reply`` shows ONE card, the
+# confirmation card with a reply form (``ask_tools.request_confirmation``).
+# The member sends, saves or discards there, and the tool then does it.
+#
+# It may send in a held run (H-236), and only because of four limits. The
+# gateway enforces each one (``gateway/routes/email/automation/reply_card.py``):
+#
+# 1. The model names no recipient. The gateway derives To and Cc from the
+#    original mail and the Reply all choice that the MEMBER set on the card.
+# 2. The body that leaves is the one the member submitted. The gateway sends
+#    it only when its record of the card answer matches, once.
+# 3. No file, no forward, no new recipient: ``send_email`` and
+#    ``forward_email`` keep those, and a held run holds neither.
+# 4. With no card (WhatsApp, a batch or scheduled run) it drafts, saves and
+#    sends nothing.
+#
+# ``acb_skills.egress.CARD_BOUND_REPLY_TOOLS`` pins its parameters. A new
+# parameter makes it an egress tool again. Fence:
+# ``tests/unit/test_email_chat_reply.py``.
+
+#: The answer of a reply card that the member discarded.
+_REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent or saved."
+
+
+def _addr_text(addrs: Any) -> str:
+    return ", ".join(str(a) for a in (addrs or []) if a)
+
+
+def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
+    """The card's reply form, from the gateway's ``/email/reply-card``."""
+    rec = prep.get("recipients") or {}
+    body = str(prep.get("body") or "")
+    return {
+        "message_id": prep.get("message_id") or "",
+        "notices": list(prep.get("notices") or []),
+        "mailbox": prep.get("mailbox") or "",
+        "subject": prep.get("subject") or "",
+        "original": prep.get("original") or {},
+        "recipients": {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}},
+        "reply_all": bool(reply_all),
+        "body": body,
+        "note": ("" if body.strip() else
+                 "The assistant did not write a draft for this mail. Write the reply below."),
+    }
+
+
+#: The longest card title that ``request_confirmation`` keeps whole.
+_REPLY_TITLE_MAX = 120
+
+
+def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
+    """The card title: who the reply goes TO, as the server derived it.
+
+    Security review of #1191, P2: the title named the sender, and a Reply-To
+    can send the reply elsewhere. An address is never cut: a title that does
+    not fit counts the recipients, and the card lists each one in full."""
+    rec = (form.get("recipients") or {}).get("reply_all" if reply_all else "reply") or {}
+    to = [str(a) for a in rec.get("to") or [] if a]
+    title = f"Reply to {', '.join(to)}?"
+    if to and len(title) <= _REPLY_TITLE_MAX:
+        return title
+    return f"Reply to {len(to)} recipients?" if len(to) != 1 else "Reply to 1 recipient?"
+
+
+@_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
+async def compose_reply(email_id: str, account_id: str, reply_all: bool = False) -> str:
+    """Reply to one email in the chat. The tool drafts the reply and shows the
+    member ONE card: the email it answers, who gets the reply, a Reply or
+    Reply all toggle, the text to edit, and Send, Save to Drafts and Discard.
+    The member decides on the card, and the tool then does it and returns
+    what happened. The card is the question, so do not ask in text first.
+
+    Set ``reply_all=true`` when the member asked to answer everyone on the
+    email. The member can change it on the card. The reply always goes from
+    the mailbox that received the email, whatever ``account_id`` says. You
+    choose no recipient and write no text here: the server derives the
+    recipients, and the member edits the text. Where no card can show, the
+    tool drafts, saves and sends nothing."""
+    _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
+    try:
+        from acb_skills import ask_tools
+    except ImportError:  # an older platform with no reply card
+        return _NO_CARD_CHANNEL
+    if not ask_tools.reply_card_channel_open():
+        return _NO_CARD_CHANNEL
+    prep = await _post("/email/reply-card", {"message_id": email_id})
+    form = _reply_form(prep, reply_all)
+    answer = await ask_tools.request_confirmation(
+        title=_reply_title(form, reply_all),
+        detail=_card_text(
+            f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
+        reply=form,
+    )
+    if not isinstance(answer, ask_tools.ReplyAnswer):
+        return _REPLY_DISCARDED if _card_channel_open() else _NO_CARD_CHANNEL
+    member = _current_user_email().strip().lower()
+    if answer.responder and member and answer.responder.strip().lower() != member:
+        return ("Nothing was sent or saved. Another member answered this card, "
+                "and only the member who asked can send this reply.")
+    res = await _post("/email/reply-card/act", {
+        "message_id": email_id,
+        "card_request_id": answer.request_id,
+        "card_thread_id": answer.thread_id,
+        "answer": answer.answer,
+    })
+    to, cc = _addr_text(res.get("to")), _addr_text(res.get("cc"))
+    copy = f", with a copy to {cc}" if cc else ""
+    box = res.get("mailbox") or form["mailbox"]
+    if res.get("action") == "send":
+        return f"Sent to {to}{copy}, from {box}."
+    return f"Saved in Drafts of {box}, to {to}{copy}. Nothing was sent."
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -1801,6 +1957,18 @@ _OUTWARD_RULE_TYPES = frozenset({"FORWARD", "CALL_WEBHOOK"})
 _OUTWARD_RULE_FIELDS = ("to_address", "cc_address", "bcc_address", "url")
 
 
+#: The act that a held run refuses in each rule tool (the audit of 2026-10-19).
+_HELD_RULE_ACT = (
+    "A rule that forwards mail, calls a webhook, drafts to an address that it "
+    "names, or puts a subject, a body or a file that the assistant chose in a "
+    "draft"
+)
+_HELD_RULE_STILL_WORKS = (
+    " A rule that only labels, moves, archives, or lets the drafter write a "
+    "reply to the sender still works here."
+)
+
+
 def _is_outward_action(action: dict[str, Any]) -> bool:
     """True when a rule action sends anything out of the mailbox (EM-T13a)."""
     a_type = action.get("type")
@@ -1820,6 +1988,57 @@ def _has_outward_action(actions: Any) -> bool:
     )
 
 
+#: The draft actions of the rule engine (``actions.py``). Each one writes a
+#: draft to the sender of each later mail that matches.
+_DRAFT_RULE_TYPES = frozenset({"REPLY", "DRAFT_EMAIL"})
+#: The fields of a draft action that hold no text of the model, by an
+#: ALLOWLIST (security review of #1173, P1). ``RuleActionModel`` in
+#: ``rules.py`` forbids an unknown key, and it also has ``subject``,
+#: ``content``, ``label``, the addresses, ``url``, ``attachments``,
+#: ``label_ai`` and ``content_manual``. A subject such as "Re: OTP 482910"
+#: carries data to each later sender as surely as a body does. So a held run
+#: holds a draft action that fills ANY field outside this set, a field that a
+#: later schema adds included.
+_HELD_DRAFT_SAFE_FIELDS = frozenset({"id", "type", "delay_minutes"})
+
+
+def _filled(value: Any) -> bool:
+    """True for a value that says something: not None, "", False, 0 or empty."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _draft_carries_model_text(action: dict[str, Any]) -> bool:
+    """True when a draft action fills a field outside the allowlist."""
+    return any(
+        _filled(value) for key, value in action.items()
+        if key not in _HELD_DRAFT_SAFE_FIELDS
+    )
+
+
+def _held_in_no_egress(actions: Any) -> bool:
+    """True when a held run may not save a rule with these actions.
+
+    An outward action (:func:`_is_outward_action`), and also a REPLY or a
+    DRAFT_EMAIL that fills any field outside :data:`_HELD_DRAFT_SAFE_FIELDS`:
+    a subject, a body, a label, an attachment. Such a draft carries what the
+    model chose to each later sender. ``draft_reply`` stays in a held run
+    because the model chooses neither the text nor the recipient, so a rule
+    draft keeps the same terms: the drafter writes all of it, or the rule is
+    held. A value that is not a list fails closed."""
+    if actions is None:
+        return False
+    if not isinstance(actions, list):
+        return True
+    for a in actions:
+        if not isinstance(a, dict) or _is_outward_action(a):
+            return True
+        if a.get("type") in _DRAFT_RULE_TYPES and _draft_carries_model_text(a):
+            return True
+    return False
+
+
 # The card of an outward rule (EM-T13a review round 1). ``request_confirmation``
 # cuts ``detail`` at 500 characters and ``context`` at 4000, with no marker.
 # So ``detail`` holds a short count, and ``context`` holds each target on its
@@ -1831,17 +2050,29 @@ _CARD_DETAIL_LIMIT = 500
 _CARD_CONTEXT_LIMIT = 4000
 
 
+def _is_invisible(ch: str) -> bool:
+    """THE one test of hidden text, ``acb_skills.reply_card.is_invisible_char``
+    (security review of #1191): category C, each Default_Ignorable_Code_Point
+    and the blank fillers. An older platform falls back to category C."""
+    try:
+        from acb_skills.reply_card import is_invisible_char
+    except ImportError:
+        return unicodedata.category(ch)[0] == "C"
+    return is_invisible_char(ch)
+
+
 def _is_hidden_char(ch: str) -> bool:
-    return ch.isspace() or unicodedata.category(ch)[0] == "C"
+    return ch.isspace() or _is_invisible(ch)
 
 
 def _card_text(value: Any, limit: int) -> str:
-    """Text that the card shows: each control or format character out, and
-    each run of whitespace as one space, so nothing can hide in the text."""
+    """Text that the card shows: each invisible character out, and each run
+    of whitespace as one space, so nothing can hide in the text. The reply
+    card reads the same rule (``reply_card.clean_reply_body``)."""
     kept = "".join(
         " " if ch.isspace() else ch
         for ch in str(value)
-        if ch.isspace() or unicodedata.category(ch)[0] != "C"
+        if ch.isspace() or not _is_invisible(ch)
     )
     return " ".join(kept.split())[:limit]
 
@@ -2009,7 +2240,14 @@ async def _outward_rule_refusal(
     No outward action: None, with no card. A bad address or URL, or a list too
     long for the card: a refusal with no card. Else the card asks. A refusal
     answers ``cancelled``, and a run with no live chat answers
-    ``_NO_CARD_CHANNEL``. ``request_confirmation`` fails closed in both."""
+    ``_NO_CARD_CHANNEL``. ``request_confirmation`` fails closed in both.
+
+    The audit of 2026-10-19: a held run (:func:`_egress_held`) keeps the rule
+    tools for the rules that stay in the mailbox. It refuses each rule with an
+    outward action, or with a draft whose text the model wrote
+    (:func:`_held_in_no_egress`), with no card (H-236)."""
+    if any(_held_in_no_egress(r.get("actions")) for r in rules) and _egress_held():
+        return _egress_held_answer(_HELD_RULE_ACT) + _HELD_RULE_STILL_WORKS
     outward = [r for r in rules if _has_outward_action(r.get("actions"))]
     if not outward:
         return None
@@ -2069,9 +2307,39 @@ def _rule_acts(actions: Any) -> str:
     return " and ".join(words) or "does nothing"
 
 
+def _draft_field_lines(actions: Any) -> list[str]:
+    """One line for each filled field of each draft action, in full.
+
+    Security review of #1173, P1: the card named a draft rule "drafts a
+    reply", and it hid the subject that went to each later sender. So the
+    card shows each field that a draft action fills, outside the allowlist
+    (:data:`_HELD_DRAFT_SAFE_FIELDS`), in every run. The text is folded to
+    one line (:func:`_card_text`), and a caller refuses a card that it cannot
+    show whole (:func:`_rule_card_fits`)."""
+    lines: list[str] = []
+    for a in actions or []:
+        if not isinstance(a, dict) or a.get("type") not in _DRAFT_RULE_TYPES:
+            continue
+        kind = "draft email" if a.get("type") == "DRAFT_EMAIL" else "reply draft"
+        for key in sorted(a, key=str):
+            value = a[key]
+            if key in _HELD_DRAFT_SAFE_FIELDS or not _filled(value):
+                continue
+            if key == "attachments" and isinstance(value, list):
+                shown = ", ".join(
+                    _card_text((v.get("name") or v.get("path") or v.get("artifact_id"))
+                               if isinstance(v, dict) else v, 200)
+                    for v in value)
+            else:
+                shown = _card_text(value, _CARD_CONTEXT_LIMIT)
+            lines.append(f"  - {kind} {_card_name(key)}: {shown}")
+    return lines
+
+
 def _rule_lines(rules: list[dict[str, Any]]) -> str:
     """The ``context`` of an inward rule card: each rule, what it matches and
-    what it does, one line each."""
+    what it does, one line each. Under each rule, each filled field of each
+    draft action, in full (:func:`_draft_field_lines`)."""
     lines: list[str] = []
     for rule in rules:
         conds = [
@@ -2083,7 +2351,59 @@ def _rule_lines(rules: list[dict[str, Any]]) -> str:
             f"{_rule_acts(rule.get('actions'))}"
             + (f" ({'; '.join(conds)})" if conds else "")
         )
+        lines.extend(_draft_field_lines(rule.get("actions")))
     return "\n".join(lines)
+
+
+#: The answer of a rule tool whose card cannot show the rule whole.
+_RULE_CARD_TOO_LONG = (
+    "Not saved. The text of this rule is too long to show on one card, so "
+    "the user could not see what it saves. Ask the user for a shorter subject "
+    "or body."
+)
+
+
+def _rule_card_fits(listing: str) -> bool:
+    """True when the card can show *listing* whole. ``request_confirmation``
+    cuts ``context`` at :data:`_CARD_CONTEXT_LIMIT` with no marker."""
+    return len(listing) <= _CARD_CONTEXT_LIMIT
+
+
+async def _inward_rule_card(
+    title: str, detail: str, cancelled: str, rules: list[dict[str, Any]],
+    *, widens: bool = False,
+) -> str | None:
+    """The card of a rule that sends nothing out, with each rule listed whole
+    (:func:`_rule_lines`). None when the member approves. A list that the card
+    cannot show whole asks no card, and saves nothing. *widens* says that the
+    change widens a saved rule, and then a held run refuses a rule that it may
+    not save (:func:`_held_widening_refusal`)."""
+    for rule in rules if widens else []:
+        held = _held_widening_refusal(rule, widens)
+        if held:
+            return held
+    listing = _rule_lines(rules)
+    if not _rule_card_fits(listing):
+        return _RULE_CARD_TOO_LONG
+    return await _card_refusal(title, detail, cancelled, listing)
+
+
+def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
+    """True for a change that only pauses a rule in a run that is not held.
+
+    EM-G11c1: a pause turns a write off, so it asks no card. Security review
+    of #1173, P2: in a held run it asks the card, because a mail can ask the
+    model to pause the rule that warns the member (a NOTIFY_ME alert)."""
+    return enabled is False and not widens and not _egress_held()
+
+
+def _held_widening_refusal(rule: dict[str, Any], widens: bool) -> str | None:
+    """Security review of #1173, P1: a wider condition or a re-enable of a
+    rule that a held run may not save sends what it carries to more senders.
+    A held run refuses it, as it refuses a new one. Else None."""
+    if widens and _held_in_no_egress(rule.get("actions")) and _egress_held():
+        return _egress_held_answer(_HELD_RULE_ACT) + _HELD_RULE_STILL_WORKS
+    return None
 
 
 @_annotate_risk(open_world=False)
@@ -2113,7 +2433,7 @@ async def get_rules_and_settings(account_id: str) -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def create_rule(
     account_id: str | None = None,
     *,
@@ -2205,10 +2525,10 @@ async def create_rule(
         return refusal
     if not _has_outward_action(actions):
         box = await _named(account_id)
-        refusal = await _card_refusal(
+        refusal = await _inward_rule_card(
             f'Save the rule "{_card_name(name)}" that {_rule_acts(actions)}?',
             f"Mailbox: {box}. The rule acts on each new email that matches.",
-            cancelled, _rule_lines([rule]),
+            cancelled, [rule],
         )
         if refusal:
             return refusal
@@ -2239,31 +2559,46 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
     return f"Deleted rule {rule_id}."
 
 
+def _rule_must_show(rule: dict[str, Any]) -> bool:
+    """True for a rule that a run card may never leave out: one that sends
+    email out, or one whose draft action fills a field (a subject, a body, a
+    label, a file), which the card shows (:func:`_draft_field_lines`)."""
+    actions = rule.get("actions")
+    return _has_outward_action(actions) or bool(_draft_field_lines(actions))
+
+
 def _run_rules_listing(rules: list[dict[str, Any]]) -> str | None:
     """The ``context`` of a rule run card, or None when it cannot be honest.
 
     Round 2: each rule that sends email out comes first, and the card never
     cuts one. None when those alone do not fit. The other rules follow until
-    the card is full, and a last line counts the rest, so no cut is silent."""
-    outward = [r for r in rules if _has_outward_action(r.get("actions"))]
-    inward = [r for r in rules if not _has_outward_action(r.get("actions"))]
-    lines = _rule_lines(outward).split("\n") if outward else []
+    the card is full, and a last line counts the rest, so no cut is silent.
+
+    Re-review of #1173: a rule can take more than one line now, so the card
+    adds each rule as one block, never cuts inside a block, and counts
+    RULES. A rule whose draft fills a field must show, as an outward rule
+    must (:func:`_rule_must_show`). When those do not fit, the card is None,
+    and the run asks nothing and runs nothing."""
+    first = [r for r in rules if _rule_must_show(r)]
+    rest = [r for r in rules if not _rule_must_show(r)]
+    lines = _rule_lines(first).split("\n") if first else []
     if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
         return None
     # Keep room for the last line, which is at most about 60 characters.
     budget = _CARD_CONTEXT_LIMIT - 80
     shown = 0
-    for line in _rule_lines(inward).split("\n") if inward else []:
-        if len("\n".join([*lines, line])) > budget:
+    for rule in rest:
+        block = _rule_lines([rule]).split("\n")
+        if len("\n".join([*lines, *block])) > budget:
             break
-        lines.append(line)
+        lines.extend(block)
         shown += 1
-    if shown < len(inward):
-        lines.append(f"+{len(inward) - shown} more rules that send no email out")
+    if shown < len(rest):
+        lines.append(f"+{len(rest) - shown} more rules that send no email out")
     return "\n".join(lines)
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def run_rules(
     account_id: str | None = None,
     scope: str = "new",
@@ -2301,17 +2636,26 @@ async def run_rules(
                 + ("" if include_read else ", unread only")
                 + ", that no rule has read" if past
                 else f"up to {max(1, min(limit, 50))} new emails that no rule has read")
+        read_ok = True
         try:
             rules = [r for r in (await _get(
                 "/email/rules", {"account_id": account_id})).get("rules", [])
                 if isinstance(r, dict) and r.get("enabled")]
         except Exception:  # the card then names no rule
-            rules = []
+            rules, read_ok = [], False
+        # The audit of 2026-10-19: a run of the rules applies each rule that
+        # is on, so one rule that sends out makes the whole run outward. A
+        # held run refuses it, and also when it could not read the rules.
+        if (not read_ok or any(_held_in_no_egress(r.get("actions")) for r in rules)) \
+                and _egress_held():
+            return _egress_held_answer(
+                "A run of the rules, while a rule that sends mail out is on,")
         listing = _run_rules_listing(rules)
         if listing is None:
             return (
-                "Nothing changed. Too many rules that send email out are on to "
-                "show on one card. Run them from the rules screen of the Email app."
+                "Nothing changed. Too many rules that send email out, or that "
+                "write a draft text, are on to show on one card. Run them from "
+                "the rules screen of the Email app."
             )
         refusal = await _card_refusal(
             f"Apply the rules to {what} in {box}?",
@@ -2348,7 +2692,7 @@ async def run_rules(
     )
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def update_rule(
     account_id: str,
     rule_id: str,
@@ -2406,8 +2750,10 @@ async def update_rule(
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
     # EM-G11c1: each change asks a card, except a pause of the rule, which
-    # turns a write off. One call shows one card.
-    pause_only = enabled is False and not widens
+    # turns a write off. One call shows one card. Security review of #1173,
+    # P2: in a held run a pause asks the card too, because a mail can ask the
+    # model to pause a rule that warns the member (a NOTIFY_ME alert).
+    pause_only = _pause_asks_no_card(enabled, widens)
     cancelled = f"Cancelled — the rule '{rule.get('name')}' was not changed."
     carded = False
     if added_outward or (was_outward and widens):
@@ -2418,12 +2764,12 @@ async def update_rule(
             return refusal
         carded = True
     elif not pause_only:
-        refusal = await _card_refusal(
+        refusal = await _inward_rule_card(
             f'Change the rule "{_card_name(rule.get("name") or rule_id)}"?',
             f"Mailbox: {await _named(account_id)}. After the change the rule "
             f"{_rule_acts(rule.get('actions'))}"
             + (", and it is on." if rule.get("enabled") else ", and it is off."),
-            cancelled, _rule_lines([rule]),
+            cancelled, [rule], widens=widens,
         )
         if refusal:
             return refusal
@@ -2447,7 +2793,7 @@ async def update_rule(
     return f"Updated rule '{rule.get('name')}'."
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def learn_rule_pattern(
     account_id: str | None = None, *, rule_id: str, sender: str = "",
     exclude: bool = False, subject_keyword: str = "",
@@ -2490,6 +2836,13 @@ async def learn_rule_pattern(
     except Exception:  # the card then names the id
         rules = []
     rule = next((r for r in rules if isinstance(r, dict) and r.get("id") == rule_id), None)
+    # The audit of 2026-10-19: an "always match" pattern on a rule that sends
+    # mail out sends more mail out. A held run refuses it, and also when it
+    # cannot read the rule. A "never match" pattern only narrows the rule.
+    if not exclude and (rule is None or _held_in_no_egress(rule.get("actions"))) \
+            and _egress_held():
+        return _egress_held_answer(
+            "A pattern that widens a rule that sends mail out")
     shown = _card_name(rule.get("name")) if rule else rule_id
     box = await _named(account_id)
     refusal = await _card_refusal(
@@ -2882,7 +3235,7 @@ def _preset_present(name: str, have: set[str]) -> bool:
     return key in have or bool(have & _PRESET_LEGACY.get(key, set()))
 
 
-@_annotate_risk(destructive=True, open_world=True)
+@_annotate_risk(destructive=True, open_world=False)
 async def install_default_rules(
     account_id: str | None = None, reset: bool = False,
 ) -> str:
@@ -3079,7 +3432,7 @@ async def list_labels(account_id: str) -> str:
     return "Labels: " + ", ".join(n for n in names if n)
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def create_label(account_id: str, name: str) -> str:
     """Create (or reuse) a label/folder on the account. It shows the user a
     card first."""
@@ -4119,7 +4472,7 @@ async def _history_row(execution_id: str) -> tuple[dict[str, Any], str] | None:
     return None
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def resolve_execution(execution_id: str, decision: str) -> str:
     """Act on a rule execution from list_rule_history:
 
@@ -4148,8 +4501,17 @@ async def resolve_execution(execution_id: str, decision: str) -> str:
             "Call list_rule_history for the id."
         )
     row, box = found
-    actions = [a for a in (row.get("rule_actions") or []) if isinstance(a, dict)] or [
+    full = [a for a in (row.get("rule_actions") or []) if isinstance(a, dict)]
+    actions = full or [
         {"type": t} for t in (row.get("actions") or []) if isinstance(t, str)]
+    # The audit of 2026-10-19: an approve applies the pending actions, and a
+    # forward or a webhook among them goes out. A bare type name hides the
+    # address of a draft action, so a held run needs the full actions to
+    # approve, and refuses when one of them sends out. Reject and undo send
+    # nothing.
+    if d == "approve" and (not full or _held_in_no_egress(full)) and _egress_held():
+        return _egress_held_answer(
+            "Approving a rule run that sends mail out, or whose actions it cannot read,")
     hooks = [a for a in actions if a.get("type") == "CALL_WEBHOOK"]
     hook_line = ""
     if hooks and d != "reject":
@@ -4223,7 +4585,7 @@ def _fmt_digest_sections(sections: Any) -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(destructive=True, open_world=True)
+@_annotate_risk(destructive=True, open_world=False)
 async def digest(account_id: str, period: str = "day", send: bool = False) -> str:
     """Preview OR send the inbox digest for ``period`` ('day' | 'week').
 
@@ -4352,6 +4714,26 @@ async def _pattern_row(
     return None
 
 
+async def _rule_by_id(rule_id: str) -> dict[str, Any] | None:
+    """The saved rule with *rule_id* in any mailbox of the member, or None.
+    A read that fails returns None, so a caller that holds fails closed."""
+    if not rule_id:
+        return None
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return None
+    for a in accounts:
+        try:
+            rules = (await _get("/email/rules", {"account_id": a["id"]})).get("rules", [])
+        except Exception:
+            continue
+        for rule in rules or []:
+            if isinstance(rule, dict) and str(rule.get("id")) == rule_id:
+                return rule
+    return None
+
+
 @_annotate_risk(open_world=False)
 async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
     """Forget a learned pattern by id. ``kind`` selects which store it's from:
@@ -4369,6 +4751,14 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
             f"of yours has the id {pattern_id}. Call list_patterns for the id."
         )
     row, box = found
+    # Re-review of #1173: a "never match" pin narrows its rule, so to forget
+    # it widens the rule. A held run refuses that for a rule that it may not
+    # save, and also when it cannot read the rule.
+    if is_rule and row.get("exclude") and _egress_held():
+        rule = await _rule_by_id(str(row.get("rule_id") or ""))
+        if rule is None or _held_in_no_egress(rule.get("actions")):
+            return _egress_held_answer(
+                "Forgetting a pin that keeps mail out of a rule that sends mail out")
     if is_rule:
         verb = "never match" if row.get("exclude") else "always match"
         shown = (f"{_card_name(row.get('pattern_type'))} "
@@ -4452,7 +4842,7 @@ _PROMPT_RULES_NOT_READY = (
 )
 
 
-@_annotate_risk(open_world=True)
+@_annotate_risk(open_world=False)
 async def create_rules_from_prompt(
     account_id: str | None = None, *, prompt: str,
 ) -> str:
@@ -4567,7 +4957,7 @@ async def test_rule_match(
 # ── Tool registry ────────────────────────────────────────────────────────────
 
 # Tools attached to the MAF agent. call_agent and remember are injected by the
-# executor, so the agent can hand off to the sales / task-manager agents and
+# executor, so the agent can hand off to the sales / projects agents and
 # read memory without listing them here. The executor withholds save_memory and
 # each other store write from this agent (WS-17 EM-G11f3), so no mail text
 # reaches a memory store.
@@ -4588,6 +4978,7 @@ _TOOLS = [
     create_label,
     # Drafting / sending
     draft_reply,
+    compose_reply,
     send_email,
     forward_email,
     send_draft,
@@ -4654,6 +5045,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     # Sorted by the EM-G11c1 audit: each changes what the assistant does later.
     "save_knowledge", "delete_knowledge", "generate_writing_style",
     "forget_pattern",
+    # EM-CR (§18): the reply card. Its card is the reply form.
+    "compose_reply",
 })
 
 #: The registered tools that call a gateway POST and still ask no card, with

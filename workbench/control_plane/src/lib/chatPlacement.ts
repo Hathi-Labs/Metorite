@@ -251,6 +251,8 @@ const WRITE: readonly string[] = [
   "move_to_folder",
   "create_label",
   "send_email",
+  // EM-CR: the reply card. Its card waits in the flow, and its receipt is a write.
+  "compose_reply",
   "forward_email",
   "send_reply",
   "send_draft",
@@ -324,6 +326,46 @@ export function placementOf(name: string): Placement | undefined {
 /** True for a read: its receipt draws in the trail, under its step. */
 export function isEvidenceTool(name: string): boolean {
   return placementOf(name) === "evidence";
+}
+
+// ── The five card families (spec §29, owner 2026-10-19) ───────────────────
+
+/**
+ * The family of a card in the chat. It decides where the card sits, whether
+ * it folds or closes, and what happens after it is answered:
+ *
+ * 1. `waits` — a question, a form, an option picker, a plan, an approval.
+ *    It sits where the reply asks, which is the end of the reply, because
+ *    the run stops there. "Not now" closes it (#1152). Answered or declined,
+ *    it folds to one line that says what happened (`lib/askOutcome.ts`).
+ * 2. `result` — a table, a board, a chart, a report, a timeline. It sits at
+ *    its place in the reply's text (`genUiFlow`). It folds and never
+ *    closes, because it is the record of the answer. A long one opens cut,
+ *    with "Show all" (`lib/cardRollup.ts` `clampShows`).
+ * 3. `receipt` — a write that happened. A compact line after the reply's
+ *    text, that opens for detail.
+ * 4. `notice` — information only. A slim line that the member dismisses.
+ * 5. `progress` — the to-do list and the tool steps, in the reply's step
+ *    area. The trail folds when the reply ends.
+ */
+export type CardFamily = "waits" | "result" | "receipt" | "notice" | "progress";
+
+export const CARD_FAMILIES: readonly CardFamily[] = ["waits", "result", "receipt", "notice", "progress"];
+
+/** The family of a tool's card, from its placement. A read is a result that
+ *  draws in its step, and a tool the map does not name has no card. */
+export function familyOf(name: string): CardFamily | undefined {
+  switch (placementOf(name)) {
+    case "ask":
+      return "waits";
+    case "answer":
+    case "evidence":
+      return "result";
+    case "write":
+      return "receipt";
+    default:
+      return undefined;
+  }
 }
 
 // ── Generative UI: an ask or an answer ─────────────────────────────────────
@@ -492,4 +534,10 @@ export function genUiFlow(
   }
   pushCards(cutoffs.map((c, i) => [c, i] as const).filter(([c]) => !stamped(c)).map(([, i]) => i));
   return blocks;
+}
+
+/** The family of a generative-UI card: it waits when the member must act on
+ *  it (`genUiPlacement`), and it is a result otherwise. */
+export function genUiFamily(spec: unknown): "waits" | "result" {
+  return genUiPlacement(spec) === "ask" ? "waits" : "result";
 }

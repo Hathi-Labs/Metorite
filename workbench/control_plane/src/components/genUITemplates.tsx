@@ -52,17 +52,20 @@ import {
   reportMeta,
 } from "@/lib/report";
 import { resolveIcon } from "@/lib/icons";
+import { groupedNumber } from "@/lib/numberFormat.mjs";
+import { useNumberSystem } from "@/lib/numberSystem";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
+import { sentFormValues } from "@/lib/askOutcome";
 import { cardExit, isDeclinedAnswer } from "@/lib/declineAnswer";
 import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import { clipWords, plainTitle } from "@/lib/fencedText";
-import { templateTitle } from "@/lib/chatPlacement";
+import { type CardFamily, templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import {
   CollapsibleCardBody,
@@ -119,6 +122,13 @@ export interface TemplateSpec {
   summary: string;
   /** Human-readable data shape, mirrored into GENUI_TEMPLATE_SHAPES (backend). */
   data: string;
+  /**
+   * The card's family in the chat (spec `projects_ai_chat.md` §29): it says
+   * where the card sits, whether it folds, and what happens after it is
+   * answered. A template that the member fills in and sends WAITS. Every
+   * other template is a RESULT. Fence: `chatCardPolicy.test.ts`.
+   */
+  family: CardFamily;
 }
 
 export const TEMPLATE_CATALOG: TemplateSpec[] = [
@@ -126,92 +136,111 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "weatherCard",
     summary: "Current conditions + multi-day forecast, animated sky icon.",
     data: "{ location, tempC|tempF, condition('sunny'|'cloudy'|'rain'|'snow'|'storm'), highC?, lowC?, humidity?, wind?, forecast?:[{day,condition,high,low}] }",
+    family: "result",
   },
   {
     name: "statDashboard",
     summary: "Row of KPI stat tiles with delta arrows and animated count-up.",
     data: "{ title?, stats:[{ label, value, unit?, delta?:number, icon?(Lucide name e.g. 'trending-up') }] }",
+    family: "result",
   },
   {
     name: "barChart",
     summary: "Horizontal bar chart with animated grow-in bars.",
     data: "{ title?, unit?, bars:[{ label, value, tone?('primary'|'success'|'warning'|'danger') }] }",
+    family: "result",
   },
   {
     name: "sparkTrend",
     summary: "Single metric with an inline SVG sparkline trend.",
     data: "{ label, value, unit?, delta?:number, series:number[] }",
+    family: "result",
   },
   {
     name: "comparison",
     summary: "Side-by-side option comparison with a highlighted winner.",
     data: "{ title?, options:[{ name, recommended?:bool, rows:[{ label, value }] }] }",
+    family: "result",
   },
   {
     name: "progressTracker",
     summary: "Ordered steps with done/active/pending states and a progress bar.",
     data: "{ title?, steps:[{ label, state('done'|'active'|'pending') }] }",
+    family: "result",
   },
   {
     name: "recipeCard",
     summary: "Recipe with meta chips, ingredient checklist, numbered steps.",
     data: "{ title, description?, servings?, prepMinutes?, cookMinutes?, calories?, ingredients:[{item,amount?}], steps:[string], tags?:[string], tip? }",
+    family: "result",
   },
   {
     name: "flightStatus",
     summary: "Flight route card with animated progress, gates and status badge.",
     data: "{ airline?, flightNo, status('scheduled'|'boarding'|'departed'|'in-air'|'landed'|'delayed'|'cancelled'), from:{code,city?,time?,terminal?,gate?}, to:{code,city?,time?,terminal?,gate?}, progressPct?, durationMin?, date?, note? }",
+    family: "result",
   },
   {
     name: "trainStatus",
     summary: "Train journey card with stops timeline, platforms and delay badge.",
     data: "{ operator?, trainNo?, line?, status('scheduled'|'boarding'|'departed'|'arrived'|'delayed'|'cancelled'), from:{station,time?,platform?}, to:{station,time?,platform?}, stops?:[{station,time?,state?('done'|'active'|'pending')}], delayMin?, note? }",
+    family: "result",
   },
   {
     name: "formCard",
     summary: "Schema-driven form (text/number/select/slider/toggle/checkbox/date/textarea) that submits values back — pair with hitl.",
     data: "{ title?, description?, submitLabel?, fields:[{ name, label, type('text'|'number'|'select'|'slider'|'toggle'|'checkbox'|'date'|'textarea'), placeholder?, value?, required?, options?:[string], min?, max?, step?, unit?, hint? }] }",
+    family: "waits",
   },
   {
     name: "optionPicker",
     summary: "Rich choice cards (single or multi select) that submit the pick back — pair with hitl.",
     data: "{ title?, description?, multi?:bool, options:[{ id, label, description?, icon?, badge?, recommended?:bool }] }",
+    family: "waits",
   },
   // ── The Projects chat's views (WS-27bm S4) ───────────────────────────────
   {
     name: "timeline",
     summary: "A record's activity feed, newest first: comments, field changes, system notes, who and when.",
     data: "{ title?, taskId?, total?, rows:[{ id?, at, type, actor, body?, field?, before?, after?, via? }] }",
+    family: "result",
   },
   {
     name: "taskBoard",
     summary: "A kanban board: one column per lane, task cards with assignees and due dates; a card opens the task.",
     data: "{ title?, total?, columns:[{ id?, name, category?, tasks:[{ id, number?, title, assignees?:[string], due?, due_at?, importance?, leveraged?:bool, done?:bool }] }] }",
+    family: "result",
   },
   {
     name: "dataGrid",
     summary: "A sortable table of rows; a row with an id opens `openBase + id`.",
     data: "{ title?, columns:[string], rows:[{ id?, cells:[string|number] }], openBase? }",
+    family: "result",
   },
   {
     name: "reportCard",
     summary: "A saved report: headline tiles plus one table per section.",
     data: "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }] }",
+    family: "result",
   },
   {
     name: "planCard",
     summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score in the open row; the owner's fit, hours and marks read-only) that submits the ticked rows back — pair with hitl. An empty owner is an unassigned task: no fit, no hours. A phase groups rows under a fold, and is never sent back.",
     data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner?, effort_mins, start?, due, after?:[key], phase?, important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
-  },  {
+    family: "waits",
+  },
+  {
     name: "chart",
     summary: "A live chart in Metorite's chart language (13 kinds), with a tooltip and a legend. The WhatsApp bot sends the same spec as an image.",
     data: "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
+    family: "result",
   },
   // ── A report the agent makes (owner directive, 2026-10-16) ───────────────
   {
     name: "report",
     summary: "A report make_report wrote: KPI tiles, a summary, sections with their charts and tables, the sources and a PDF. Opens in full in the side panel.",
     data: "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
+    family: "result",
   },
 ];
 
@@ -477,6 +506,9 @@ function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
   const target = tileNumber(s.value);
   const animated = useCountUp(target ?? 0);
   const decimals = target === null ? 0 : (String(target).split(".")[1]?.length ?? 0);
+  // The member's number system (lakh and crore by default), through the ONE
+  // formatter. The browser's locale grouped it before (WS-47 follow-up).
+  const numbering = useNumberSystem();
   return (
     <div data-stat-tile={dense ? "dense" : ""} style={{
       flex: 1, minWidth: dense ? 0 : 110, padding: dense ? "6px 8px" : 12, borderRadius: dense ? 8 : 12,
@@ -492,7 +524,7 @@ function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
       <div style={{ fontSize: dense ? TYPE.base : TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums",
         ...(dense ? { overflowWrap: "anywhere" as const } : {}) }}>
         {target !== null
-          ? animated.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+          ? groupedNumber(animated, numbering, decimals)
           : str(s.value)}
         {s.unit != null && str(s.unit) !== "" && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
       </div>
@@ -916,9 +948,17 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       init[name] = f.value ?? (str(f.type) === "toggle" || str(f.type) === "checkbox" ? false
         : str(f.type) === "slider" ? num(f.min, 0) : "");
     }
+    // A form with an answer shows the values it SENT, never its defaults
+    // (review of #1160), as the picker and the plan card do.
+    const sent = sentFormValues(ctx?.answered);
+    if (sent) for (const name of Object.keys(init)) if (name in sent) init[name] = sent[name];
     return init;
   });
-  const [submitted, setSubmitted] = useState(false);
+  // An answer the run already got locks the form after a remount and a
+  // reload, as the option picker does. Without it a reloaded form took a
+  // second submit (spec `projects_ai_chat.md` §29 rule 1). A decline is no
+  // submit: `declined` below locks it.
+  const [submitted, setSubmitted] = useState(() => !!ctx?.answered && !isDeclinedAnswer(ctx?.answered));
   // "Not now" (`lib/declineAnswer.ts`): the card reads its decline from the
   // answer the chat holds, so a remount and a reload keep it declined.
   const declined = isDeclinedAnswer(ctx?.answered);

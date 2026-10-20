@@ -11,6 +11,13 @@
  * place in the tree, so `AgentChat` never remounts on a switch: a running
  * reply, the draft and the scroll stay. On a phone it is a full-screen sheet.
  *
+ * **The peek strip** (CF-1, `chat_first_surface.md` §4.1, flag
+ * `NEXT_PUBLIC_CHAT_FIRST`). On a phone the sheet can drop to a 56 px strip
+ * above the bottom nav: the chevron, a drag down on the handle, a pill link,
+ * or a delegation that moves the page. A tap on the strip opens the sheet.
+ * The strip is the same element, and the chat stays laid out under it,
+ * hidden and inert, so the scroll and the draft stay.
+ *
  * **The motion** (owner, 2026-10-14). The panel opens and closes as the left
  * sidebar folds: the same tokens, from the right, and the page reflows
  * beside it (`lib/panelMotion.ts`). The switch to the full view and back is a
@@ -40,7 +47,7 @@
  */
 
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -48,14 +55,17 @@ import AgentChat from "@/components/AgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
 import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import Icon from "@/components/Icon";
+import { useSteadyRunView } from "@/components/RunStatusRow";
 import Button from "@/components/ui/Button";
 import { PillNavigateContext } from "@/components/ui/EntityPill";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
+import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { useAgentEvents } from "@/lib/agentEvents";
+import { getSessionState, subscribeSession } from "@/lib/chatStore";
 import { visibleSections } from "@/lib/nav";
 import {
   formDurationMs,
@@ -77,6 +87,7 @@ import {
   type RailPick,
 } from "@/lib/railSessions";
 import { CHAT_GONE_NOTICE } from "@/lib/runActivity";
+import { IDLE_RUN, runViewText, type RunStatus } from "@/lib/runStatus";
 import {
   deleteSession,
   enrichSession,
@@ -87,11 +98,13 @@ import {
   type ChatSession,
 } from "@/lib/sessions";
 
+import { chatFirstOn } from "./chatFlag";
 import {
   dockFloats,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
   DOCK_MAX,
   DOCK_MIN,
   closeAssistant,
@@ -99,14 +112,17 @@ import {
   consumeDraft,
   effectiveMode,
   focusAssistant,
+  navigateAct,
   onChatLink,
   onPageChange,
   openAssistant,
   paneAt,
+  raiseOnNeed,
   setAssistantMode,
   setAssistantSession,
   setDockWidth,
   barMayJoin,
+  stripText,
   surfaceContext,
   switchTarget,
   useAssistant,
@@ -358,6 +374,136 @@ function ResizeEdge({ width }: { width: number }) {
   );
 }
 
+// ── The peek strip (CF-1) ────────────────────────────────────────────────────
+
+/** The attribute on <html> that lifts the page and the toasts above the strip (globals.css). */
+export const PEEK_ATTR = "data-assistant-peek";
+/** A drag down on the sheet's handle longer than this drops it to the strip. */
+export const PEEK_DRAG_PX = 48;
+
+/** The run state of one chat, live. An empty id reads the idle state. */
+function useChatRun(threadId: string): RunStatus {
+  return useSyncExternalStore(
+    (l) => (threadId ? subscribeSession(threadId, l) : () => {}),
+    () => (threadId ? getSessionState(threadId).run ?? IDLE_RUN : IDLE_RUN),
+    () => IDLE_RUN,
+  );
+}
+
+/**
+ * The strip's row: the mark, one line, the way up and the X. A tap anywhere
+ * but the X opens the sheet. It mounts only while the strip shows, so its
+ * clock and its watch on the card run only then.
+ */
+function PeekStrip({
+  threadId,
+  lastPreview,
+  onOpen,
+  onRaise,
+}: {
+  threadId: string;
+  lastPreview: string | undefined;
+  onOpen: () => void;
+  onRaise: () => void;
+}) {
+  const run = useChatRun(threadId);
+  // The status row's own view, with its no-flash rule, so the strip and the
+  // chat say the same thing at the same moment.
+  const view = useSteadyRunView(run);
+  const line = stripText({ phase: run.phase, statusText: view ? runViewText(view) : null, lastPreview });
+
+  // A card that waits for the member raises the sheet (WS-51 S2). The run
+  // state of this tab and the server's shared list are the two existing
+  // sources. Only a wait that BEGINS while the strip shows raises it.
+  const serverNeeds = useThreadNeedsInput(threadId || null);
+  const needsInput = serverNeeds || run.phase === "waiting_for_you" || run.phase === "parked";
+  const wasNeeding = useRef(needsInput);
+  useEffect(() => {
+    const began = needsInput && !wasNeeding.current;
+    wasNeeding.current = needsInput;
+    if (began && raiseOnNeed({ phone: true, form: "peek", needsInput }) === "full") onRaise();
+  }, [needsInput, onRaise]);
+
+  const rowRef = useRef<HTMLDivElement>(null);
+  // Focus was in the sheet, which is inert now. It goes to the way back up.
+  useEffect(() => {
+    const at = document.activeElement;
+    if (!at || at === document.body || !at.isConnected || at.closest("[inert]")) {
+      rowRef.current?.querySelector<HTMLElement>("[data-assistant-unpeek]")?.focus({ preventScroll: true });
+    }
+  }, []);
+
+  return (
+    <div
+      ref={rowRef}
+      data-assistant-strip=""
+      onClick={onOpen}
+      className="flex h-14 w-full cursor-pointer items-center gap-2 px-3"
+    >
+      <Icon name="Sparkles" size={18} className="shrink-0 text-primary" />
+      <span data-assistant-strip-text="" className="min-w-0 flex-1 truncate text-sm text-foreground" title={line}>
+        {line}
+      </span>
+      <Button
+        data-assistant-unpeek=""
+        variant="ghost"
+        size="icon-sm"
+        icon="ChevronUp"
+        aria-label="Open the chat"
+        title="Open"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen();
+        }}
+      />
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        icon="X"
+        aria-label={`Close ${ASSISTANT_NAME}`}
+        title="Close"
+        onClick={(e) => {
+          e.stopPropagation();
+          closeAssistant();
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * The sheet's drag handle, as the shell drawer draws it. A drag down longer
+ * than `PEEK_DRAG_PX`, or a tap, drops the sheet to the strip. The header's
+ * chevron is the way for a keyboard, so the handle stays out of the tab order.
+ */
+function SheetHandle({ onPeek }: { onPeek: () => void }) {
+  const start = useRef<number | null>(null);
+  const end = (y: number) => {
+    if (start.current === null) return;
+    const moved = y - start.current;
+    start.current = null;
+    // A tap, or a drag down. A drag up does nothing.
+    if (moved > PEEK_DRAG_PX || Math.abs(moved) < 8) onPeek();
+  };
+  return (
+    <div
+      aria-hidden
+      data-assistant-handle=""
+      className="flex shrink-0 cursor-grab touch-none justify-center pt-2 pb-1"
+      onPointerDown={(e) => {
+        start.current = e.clientY;
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      }}
+      onPointerUp={(e) => end(e.clientY)}
+      onPointerCancel={() => {
+        start.current = null;
+      }}
+    >
+      <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
+    </div>
+  );
+}
+
 // ── The assistant ────────────────────────────────────────────────────────────
 
 export default function AssistantDock({ phone = false }: { phone?: boolean }) {
@@ -377,6 +523,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const st = useAssistant();
   const vw = useViewportWidth();
   const form: AssistantMode = effectiveMode(st.mode, vw, phone);
+  // Read once, as the other shell flags are. Off, a phone has no strip.
+  const [chatFirst] = useState(() => chatFirstOn());
+  const strip = phone && form === "peek";
   // Every desktop has the side panel. Below the floor it floats over the
   // page instead of sitting beside it (owner, 2026-10-14).
   const canDock = !phone;
@@ -402,8 +551,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
   const [fileUpdates, setFileUpdates] = useState<FileEntry[]>([]);
   const rootRef = useRef<HTMLElement>(null);
-  // The motion form: a phone draws the sheet, whatever the mode says.
-  const motionForm: PanelForm = phone ? "sheet" : form;
+  // The motion form: a phone draws the sheet or the strip.
+  const motionForm: PanelForm = phone ? (form === "peek" ? "peek" : "sheet") : form;
   const { phase, settle } = usePanelPhase(st.open, formDurationMs(motionForm));
   const shown = isShown(phase);
   const moving = isMoving(phase);
@@ -411,7 +560,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const active = chat.active;
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
-  const persona = agent === ASSISTANT_AGENT ? `${ASSISTANT_PERSONA}\n\n${context}` : context;
+  // WS-62 CF-3: the page line joins only with the chat-first flag on.
+  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
   useEffect(() => {
@@ -485,17 +636,41 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     else if (act === "close") closeAssistant();
   }, [pathname]);
   // A task pill in the chat opens its page. On a phone the sheet covers it,
-  // so the sheet closes first (`onChatLink`, review of PR #1156).
+  // so the sheet drops to the strip with the flag on, and closes with it off
+  // (`onChatLink`, review of PR #1156, CF-1).
   const beforePillNavigate = useCallback(() => {
-    if (onChatLink({ phone }) === "close") closeAssistant();
-  }, [phone]);
+    const act = onChatLink({ phone, chatFirst });
+    if (act === "peek") setAssistantMode("peek");
+    else if (act === "close") closeAssistant();
+  }, [phone, chatFirst]);
+
+  // ── The strip ───────────────────────────────────────────────────────────
+  // The page's last row and the toasts move up while the strip shows.
+  const stripShown = st.open && strip;
+  useEffect(() => {
+    if (!stripShown || typeof document === "undefined") return;
+    document.documentElement.setAttribute(PEEK_ATTR, "");
+    return () => document.documentElement.removeAttribute(PEEK_ATTR);
+  }, [stripShown]);
+  const toPeek = useCallback(() => {
+    setPickerOpen(false);
+    setAssistantMode("peek");
+  }, []);
+  // A tap on the strip: the sheet, with the cursor in the composer.
+  const fromPeek = useCallback(() => {
+    setAssistantMode("full");
+    focusAssistant();
+  }, []);
+  // A card raises the sheet. The member answers it with a tap, so the
+  // keyboard does not open.
+  const raise = useCallback(() => setAssistantMode("full"), []);
 
   // ── The app switch ──────────────────────────────────────────────────────
   const movedRef = useRef<Set<string>>(new Set());
-  const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock });
+  const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock, phone, chatFirst });
   useEffect(() => {
-    liveRef.current = { open: st.open, activeId: chat.activeId, pathname, sections, form, canDock };
-  }, [st.open, chat.activeId, pathname, sections, form, canDock]);
+    liveRef.current = { open: st.open, activeId: chat.activeId, pathname, sections, form, canDock, phone, chatFirst };
+  }, [st.open, chat.activeId, pathname, sections, form, canDock, phone, chatFirst]);
   useAgentEvents({
     onRunStarted: ({ threadId }) => {
       if (threadId === liveRef.current.activeId) movedRef.current = new Set();
@@ -513,11 +688,49 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       router.push(target.href);
       // A full view hides the app it just opened.
       if (live.form === "full" && live.canDock) setAssistantMode("dock");
+      // On a phone the sheet hides it too. With the flag on it drops to the
+      // strip, so the member sees the app the run opened (CF-1). With the
+      // flag off nothing changes: the sheet stays.
+      if (onChatLink({ phone: live.phone, chatFirst: live.chatFirst }) === "peek") setAssistantMode("peek");
       toast.show({
         key: `assistant-switch-${target.href}`,
         variant: "success",
         title: `Opened ${target.label}`,
         description: `${ASSISTANT_NAME} is working in ${target.label}.`,
+        action: { label: "Go back", onClick: () => router.push(back) },
+      });
+    },
+    // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
+    // the server's rule. The client checks the path again and acts.
+    onNavigate: ({ path, why, threadId }) => {
+      // Dark until the chat-first flag is on (review of #1197, P1).
+      if (!chatFirstOn()) return;
+      const live = liveRef.current;
+      const act = navigateAct({
+        open: live.open, threadId, activeId: live.activeId, path, sections: live.sections,
+        phone, chatFirst: live.chatFirst, form: live.form, canDock: live.canDock,
+      });
+      if (!act.push || !path) return;
+      const back = live.pathname ?? "/";
+      router.push(path);
+      if (act.dock) setAssistantMode("dock");
+      if (act.peek) {
+        // The sheet drops to the peek strip, so the page shows and the
+        // chat stays one tap away (CF-1). The strip shows the reply.
+        setAssistantMode("peek");
+        return;
+      }
+      if (act.close) {
+        // With the flag off a phone has no strip, so the sheet gives way.
+        closeAssistant();
+        return;
+      }
+      const label = act.pane?.label;
+      toast.show({
+        key: `assistant-open-${path}`,
+        variant: "success",
+        title: label ? `Opened ${label}` : "Opened a page",
+        description: why || undefined,
         action: { label: "Go back", onClick: () => router.push(back) },
       });
     },
@@ -532,7 +745,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // rides in from the right in the side form, fades in the full form, and
   // rises as the shell's drawer does on a phone.
   const shape = phone
-    ? "fixed inset-0 z-50 flex flex-col bg-background pt-safe pb-safe"
+    ? strip
+      ? // The strip: a row on the bottom nav. The sheet's body stays under it.
+        "assistant-peek-bottom fixed inset-x-0 z-40 overflow-hidden border-t border-border bg-card"
+      : "fixed inset-0 z-50 flex flex-col bg-background pt-safe pb-safe"
     : form === "full"
       ? "absolute inset-0 z-20 flex flex-col bg-background"
       : floats
@@ -601,7 +817,20 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       }}
     >
       {st.open && form === "dock" && !phone ? <ResizeEdge width={st.width} /> : null}
+      {/* Follow-up: the notes RecordingDock sits at this same height above the nav, and nobody has looked at the two together. */}
+      {strip ? (
+        <PeekStrip threadId={chat.activeId} lastPreview={active?.lastPreview} onOpen={fromPeek} onRaise={raise} />
+      ) : null}
 
+      {/* The sheet's body. Under the strip it stays laid out, hidden and
+          inert, so the chat keeps its scroll and its draft. The wrapper is
+          there in every form, so `AgentChat` never remounts. */}
+      <div
+        data-assistant-body=""
+        inert={strip}
+        className={strip ? "assistant-peek-body invisible absolute inset-x-0 flex flex-col" : "flex min-h-0 flex-1 flex-col"}
+      >
+      {phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}
       <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-2">
         <Button
           variant="ghost"
@@ -668,6 +897,16 @@ function AssistantSurface({ phone }: { phone: boolean }) {
               swapPanelForm(rootRef.current, () => setAssistantMode(next));
               focusAssistant();
             }}
+          />
+        ) : null}
+        {phone && chatFirst ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon="ChevronDown"
+            aria-label="Show as a strip"
+            title="Minimize"
+            onClick={toPeek}
           />
         ) : null}
         <Button
@@ -763,6 +1002,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             artifactUpdates={fileUpdates}
           />
         ) : null}
+      </div>
       </div>
 
       {viewerEntry ? (

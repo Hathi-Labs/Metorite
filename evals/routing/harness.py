@@ -331,6 +331,9 @@ class RoutingHarness:
         settings = get_settings()
         mp.setattr(settings, "agents_clone_dir", str(self._root))
         mp.setattr(settings, "maf_coding_scope", "", raising=False)
+        # WS-62 CF-3: the eval runs with the page tool on, so S1 to S3 can
+        # drive it. Production ships it dark (settings.chat_first_tools).
+        mp.setattr(settings, "chat_first_tools", True, raising=False)
         mp.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
         mp.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
         # WS-17 EM-G11d: the upward-egress mark in memory, as in the unit
@@ -339,6 +342,18 @@ class RoutingHarness:
         from tests.unit._egress_mark_store import install_memory_mark_store
 
         install_memory_mark_store(mp)
+        # WS-62 CF-3: the panes the member holds, for show_in_app. The real
+        # read is acb_auth.resolve_access, and CI has no database, so it
+        # would fail closed and refuse every page. The stand-in holds every
+        # live pane's feature. A test that wants less sets its own.
+        from orchestrator import in_app_path
+
+        held = frozenset(p.feature for p in in_app_path.PANES if p.feature)
+
+        async def _member_features() -> frozenset[str]:
+            return held
+
+        mp.setattr(in_app_path, "member_features", _member_features)
         ti._build_registry_block.cache_clear()
         ti._build_injected_tools_addendum.cache_clear()
         self._registry = registry()
@@ -453,11 +468,14 @@ class RoutingHarness:
         question_answer: str = NO_ANSWER,
         timeout: float = 120.0,
         shows_cards: bool = True,
+        agent: str = ORCHESTRATOR,
     ) -> RunRecord:
         """One chat turn of the one assistant, through ``run_agent_stream``.
 
         *shows_cards* is what the caller declares. The web chat draws cards,
-        so it is True by default."""
+        so it is True by default. *agent* is the run's own agent: the
+        orchestrator, or a specialist when a test needs a specialist that
+        calls the orchestrator (``test_show_in_app.py``)."""
         from acb_common.db import bind_tenant, release_tenant
         from acb_skills.write_artifact import bind_artifact_context
         from orchestrator import executor
@@ -472,7 +490,7 @@ class RoutingHarness:
 
         async def consume() -> None:
             async for line in executor.run_agent_stream(
-                ORCHESTRATOR, payload, run_id=str(uuid.uuid4()),
+                agent, payload, run_id=str(uuid.uuid4()),
                 thread_id=record.thread_id, model=tier, organization_id=org,
                 session_user=member, shows_cards=shows_cards,
             ):

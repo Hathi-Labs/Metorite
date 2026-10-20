@@ -277,8 +277,10 @@ address, the Docker bridge addresses included.
 
 - `request_confirmation` waits a fixed 3600 s (`ask_tools.py:393`). It has no
   timeout parameter.
-- A dynamic agent's clone carries the GitHub token in its remote URL
-  (`acb_skills/loader.py:78`, `https://x-token:<token>@github.com/...`).
+- A dynamic agent's clone carried the GitHub token in its remote URL
+  until H-363 (2026-10-20). Now the URL holds no token.
+  `acb_common/git_credentials.py` gives the credential to one gateway git
+  process at a time.
 - `.claude/OWNER_GRANTS.md` holds `ALLOW-UNTIL 2026-11-30` lines for the gate
   ids `deploy`, `secrets`, `env-write`, `deploy-write`, `enforcement-flip`
   and `guard-write`.
@@ -4549,6 +4551,19 @@ would hide the loss of the Copilot CLI's own shell and file tools.
    HTTP 400 at registration.
 2. Until WS-43r, a loaded Copilot agent still runs, and the loader logs one
    deprecation line that names it.
+   ⚠️ **Since 2026-10-19 it runs only as the agent of its own app.** A run
+   that delegates to it gets `AgentRuntimeUnsupported` from
+   `acb_skills.loader.refuse_copilot_specialist`. The executor reads the
+   label before the load, so the agent is not cloned or imported, and then
+   the object after the build. The two delegation paths are
+   `_run_sub_agent_streaming` and a batch run with a parent context. The
+   caller gets the error text as the answer of the sub-task. The
+   orchestrator does not list a Copilot agent as a specialist.
+   `app-builder` is the one exception until its port (owner call,
+   2026-10-19, `loader.COPILOT_SPECIALIST_ALLOWED`). Why: on
+   2026-10-18 production delegated inbox work to `task-manager`, and the
+   sub-run started the Copilot CLI. Fence:
+   `tests/unit/test_copilot_specialist_refused.py`.
 3. After WS-43r, the loader raises `acb_skills.loader.AgentRuntimeUnsupported`,
    with the migration text.
 4. The rows of `dynamic_agents` keep their old label. The executor decides by
@@ -5033,6 +5048,15 @@ decision inside D86, after review: the control fails closed.
   `agents.json`. `annotate()` has no default for `open_world`. An agent's own
   tool carries its annotation on the function. So a tool of another repo
   that only shares a name with one of ours still fails closed.
+- **The audit of 2026-10-19 sorts each tool by what it does.** The owner
+  reported that the chat refused to save a reply draft. The rule did not
+  change. The annotation of 11 email tools changed to `open_world=False`,
+  because they act only in the member's own mailbox. Each rule tool refuses
+  its outward part at call time in a held run. A held run also gets a note
+  that says what it holds, and why. The table and the residual risks are in
+  `email_app_master_plan.md` §12.3.13.8.1. Fence:
+  `tests/unit/test_no_egress_tool_audit.py`, which pins the withheld set of
+  each in-repo agent.
 - **The flag is decided once, at the start of each run.** Each run boundary
   computes it before anything can fail, and binds it at once:
   `_tool_injection._run_no_egress`. It is set when the parent was

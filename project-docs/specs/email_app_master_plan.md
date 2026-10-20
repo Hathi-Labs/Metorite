@@ -14905,6 +14905,142 @@ before any send, because a model draft is never sent by itself.
 5. **The fallback text of the `read_thread` card.** When the card cannot fetch the thread, it
    shows the raw result with its note and its marker lines.
 
+###### 12.3.13.8.1 The no_egress tool audit (2026-10-19)
+
+**Result.** In a held run, the email assistant can again save a reply draft, make a label,
+archive and move mail. It can also save a rule that stays in the mailbox. A send, a forward, a send of a draft
+and an unsubscribe stay withheld. The rule of H-236 did not change (`maf_coding_engine.md`
+§16.3). Only the classification of each tool changed.
+
+**The report.** The owner asked the main chat for a reply to an email. The chat wrote the text,
+signed it "[your name]", and said that it could not save it in Drafts. It also said "ask again
+from the Email app".
+
+The gateway log of run `7d2b2a32` showed why. The session read the answer of `email-assistant`,
+so EM-G11d marked it. Each later run of `email-assistant` in that session bound `no_egress`, and
+that run withheld `draft_reply`. The log shows the same list withheld in a run with `app=email`.
+So the advice of the chat was a guess that the run could not check. A top-level chat of the
+Email app is not held (below), but a run that it calls can be.
+
+**A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
+Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
+keeps only the delegation tools, the sandbox tools and the tools that say `open_world=False`.
+
+**The three classes.** The audit sorts each tool by what its code does, not by its name.
+
+- **(A) It stays in the member's own space.** It writes only to Metorite data that the member
+  can change, or to the member's own mailbox. It names no new outside recipient, and it opens
+  no standing outbound path. It says `open_world=False`, so a held run keeps it. Each write
+  still asks its card (EM-G11c1).
+- **(B) It sends, or it opens an outbound path.** It sends to a third party, or it makes a
+  later automatic send possible. It says `open_world=True`, so a held run does not get it.
+- **(C) It writes a store that a later run reads.** It stays withheld (`egress.STORE_WRITES`).
+
+**The rule tools have an (A) part and a (B) part.** We did not split them into two tools. Each
+rule tool keeps `open_world=False`, and it refuses the (B) part at call time in a held run. The
+reader is `egress.no_egress_for_this_run`, which fails closed. The call-time refusal of the guard
+(`RefuseEgressTools`) reads only the tool name, so it cannot see an argument or a stored rule.
+
+**The email assistant.**
+
+| Tool | Class | Why |
+|---|---|---|
+| `draft_reply` | A | The route addresses the sender of the mail (`to=[email["from"]]`), and the drafter writes the body. The model chooses neither. The draft stays in Drafts, and the member sends it. |
+| `create_label` | A | It makes a label in the member's own mailbox. |
+| `manage_inbox` | A | Archive, trash, read, unread, star, unstar, move and label. The bulk route accepts only those acts. |
+| `digest` | A | The route sends the digest to the mailbox's own address (`sess.owner_email`). |
+| `install_default_rules` | A | Each preset labels, moves, archives or drafts a reply to the sender. |
+| `create_rule`, `update_rule`, `create_rules_from_prompt` | A, with a held part | A held run refuses a rule that forwards, calls a webhook or drafts to an address that it names. It also refuses a draft action that fills any field outside an allowlist (`id`, `type`, `delay_minutes`): a subject, a body, a label or a file (`_held_in_no_egress`). It refuses a change that widens such a rule. A pause asks the card. |
+| `learn_rule_pattern` | A, with a held part | A held run refuses an "always match" pattern on a rule that sends out. A "never match" pattern only narrows the rule. |
+| `run_rules` | A, with a held part | A run applies each rule that is on. A held run refuses it while a rule that sends out is on, or when it cannot read the rules. A preview runs. |
+| `resolve_execution` | A, with a held part | A held run refuses to approve a pending run that sends out, or one whose full actions it cannot read. Reject and undo run. |
+| `send_email`, `forward_email`, `send_draft` | B | Each one sends mail to a recipient that the model names. |
+| `unsubscribe_sender` | B | It sends a mail, or it calls a URL that the stranger's mail gave. |
+| `update_assistant_settings` | B | It sets the signature, the text about the member and auto-run. Each later reply carries that text out. |
+| `save_knowledge` | C | The knowledge base feeds each later reply. |
+
+**The other agents.** No other (A) tool was withheld. The fence pins each withheld set.
+
+| Agent | Withheld in a held run | Class |
+|---|---|---|
+| `crm-assistant` | `create_lead`, `update_deal_status`, `log_activity`, `convert_lead` | B. Per D-CRM-9, an agent write queues for the live Zoho tenant, and Zoho can run its own workflows on it. |
+| `task-manager` | `my_tasks_delegate` | B. An assigned agent starts a run of its own, and that run has no hold. |
+| `orchestrator` | Each specialist tool, `spawn_copilot_agent` | B. Each one starts a run that the hold does not reach. |
+| Each agent | `web_search`, `fetch_page`, `run_workflow`, `code_task`, `run_script`, `install_dependency`, `github_search`, `github_repo_search`, `decide` | B. A query or a URL can carry data out, and a workflow node can call a URL. |
+| Each agent | `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory`, `save_note` | C. |
+
+`projects-assistant`, `whatsapp-assistant`, `app-builder` and `apis-config` lose only the
+platform tools of the last two rows. `draft_whatsapp_reply` already says `open_world=False`.
+
+**What the model reads.** Two texts changed, because the old ones were not true.
+
+1. A held run starts with a note, from `EgressGuardProvider`. Each cause has its own note:
+   `egress.EGRESS_HOLD_NOTE_MAIL` and `egress.EGRESS_HOLD_NOTE_SANDBOX`. The mail note gives
+   the cause: another assistant called this run, and the conversation read outside email. It
+   names the two true ways on. The member does it by hand, or asks in a new conversation that
+   read no outside email. It tells the model not to say that another app can or cannot do it.
+2. The answer to a held call (`egress.egress_held_answer`) has the same terms. The text for a
+   covered Projects run stays as it was. The Copilot guard uses the same choice of reason.
+
+**Only a called run is held.** A chat in the Email app is a top-level run of
+`email-assistant` (`EmailAssistantChat.tsx`), and `_tool_injection._run_no_egress` does not
+hold it. So no text says that the hold binds the Email app, or every app (security review of
+#1173). The first version of these texts said so, and that claim was as false as the claim of
+the report.
+
+**The card of a draft rule.** In every run, the rule card lists each filled field of each
+draft action in full, under its rule (`_draft_field_lines`). Before, the card said only
+"drafts a reply", and it hid a subject that went to each later sender. A rule that the card
+cannot show whole asks no card and saves nothing (`_RULE_CARD_TOO_LONG`).
+
+**The member's name.** The per-turn context of `email-assistant` and `orchestrator` now names
+the member (`executor._member_name_line`). The name comes from `app_user.display_name` for the
+run's tenant and its verified member, never from the payload (R5). The line forbids a
+placeholder such as "[your name]". It also says that the mailbox adds its own signature at save
+and at send.
+
+**Residual risks.** The owner accepts these risks, or a slice after this one closes them.
+
+1. **A saved draft is one click from a send.** In a held run, `draft_reply` can save a reply to
+   the sender of any mail of the member. A member who sends without reading sends what the
+   drafter wrote. The drafter reads the context of the company, and its consults bind `no_egress`.
+2. **A label name and a folder name reach the provider.** The model chooses the name. Only the
+   member's own mailbox holds it.
+3. **An inward rule acts later, with no hold.** A held run can save a rule that labels. It can
+   also save a rule that lets the drafter reply to each later sender. That rule runs later.
+   Its drafts still wait for the member. The model chooses no field of such a draft.
+
+**How this composes with WAC-P4 (#1169).** WAC-P4 asks the member to confirm each egress call
+after an untrusted answer: a card on the web, the Confirm button on WhatsApp. It picks a call
+with `is_egress_tool` (`permission_policy._reaches_out`). So a tool that this audit moved to
+`open_world=False` no longer asks that confirm. No act loses its confirm, for three reasons:
+
+1. Each write of a moved tool asks its own EM-G11c1 card first. A run with no card channel, as
+   on WhatsApp, saves nothing.
+2. The outward part of a rule tool asks the EM-T13a card in a run that is not held. That card
+   lists each address and each URL in full. A held run refuses the part.
+3. A send, a forward and an unsubscribe stay egress tools, so WAC-P4 still asks for each one.
+
+Fence: `test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool` in
+`tests/unit/test_no_egress_tool_audit.py`.
+
+**Proposal for the owner (not built): the WAC-P4 confirm for a (B) act in a held run.** Today a
+held run never gets a (B) tool. The proposal adds no second approval path. A held run would keep
+its (B) tools, and each (B) call would ask the WAC-P4 confirm, with the view of
+`egress.egress_call_view`. That view shows each recipient, each URL host and each attachment in
+full, and then the body.
+
+The risks are three:
+
+1. A member who approves cards by habit approves a steered send.
+2. A body longer than the view can hide data. A held run would need the full text on the card.
+3. A delegated run must reach the member's card channel.
+
+The owner decides if a held run gets this confirm. Until then, (B) stays withheld.
+
+Fence: `tests/unit/test_no_egress_tool_audit.py` (the pinned set of each agent, the held parts,
+the texts, the name line) and `EXPECTED_OPEN_WORLD` in `tests/unit/test_delegation_no_egress.py`.
+
 ##### 12.3.13.9 EM-G11f1 and EM-G11f2 — deletion (PR-G7, PR-G8)
 
 **EM-G11f1 scope (PR-G7).**
@@ -20126,3 +20262,162 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 None blocks the build. `shadow` and `on` of `email.context_select` are gate
 `enforcement-flip`, while fence C5 holds. If a later change puts a body into the state, the
 flip waits for the owner answer to D-EM-62 open (a).
+
+## 18. Reply in the chat: one card, then done (2026-10-20)
+
+**Work id: EM-CR.** Owner request of 2026-10-20. The owner wrote: "All future app workflows
+should be executable entirely through the chat interface, without requiring the UI."
+
+### 18.1 The chat-first rule
+
+Each act of an app can complete in the chat. The member asks, the assistant answers, one
+card collects the decision, and the act then completes. The member opens no app to finish
+it. A card is the only permission, so the assistant never asks in text and then shows a
+card for the same act. A read asks no permission. A write or a send asks one card.
+
+### 18.2 The flow
+
+1. The member asks about an email. The assistant reads it with no card. It says who sent
+   the email, what it says, and what it asks of the member, and by when.
+2. If the member only asked to read, the assistant ends with one offer: "Want me to draft a
+   reply?". It shows no card.
+3. The member asks to reply, or says yes. The assistant says the gist of the reply in one or
+   two lines. Then `compose_reply` shows ONE reply card.
+4. The card shows the email it answers (the sender, the subject, the time and an excerpt),
+   the recipients, a Reply or Reply all toggle, the text to edit, and three buttons: Send,
+   Save to Drafts and Discard.
+5. The member chooses. The tool does what the member chose, and the chat says "Sent to
+   ...", "Saved in Drafts ..." or "Reply discarded ...".
+
+**A change from the request.** The owner listed "ask permission to draft" and "a card that
+shows the draft" as two steps. They are one card here. A draft that only shows in the
+chat writes nothing, so it needs no permission. The card shows the draft, and it is the
+permission to save or to send it. Two prompts for one act would ask twice.
+
+**Why the card describes the email too.** The email assistant runs as a delegated batch
+run, so its text reaches the chat after its last tool ends. That is after the card. So the
+card shows what it answers, in the sender's own words, and the text of the assistant comes
+after the card.
+
+### 18.3 No card for a read
+
+The orchestrator asked the untrusted-answer card on a hand-off to the email assistant in a
+chat that had read mail (WS-47 WAC-P4). That card guarded nothing. In such a chat the run
+of the hand-off binds `no_egress` (H-236), so it holds no send, and each of its writes
+asks its own card.
+
+`_handoff_child_held` in `orchestrator/_tool_injection.py` skips the card for a hand-off
+whose child run will be held. It asks `_run_no_egress`, the one function that the executor
+binds the child with, so the two cannot disagree. A direct egress tool, such as
+`fetch_page`, still asks its card. So does a hand-off whose child would not be held. The
+first hand-off of a fresh chat asks nothing, as before.
+
+### 18.4 The reply card
+
+- **The one card.** The card is the confirmation card of `request_confirmation`, with a
+  `reply` form. No second card mechanism exists. `ConfirmationCard` draws the form through
+  `ReplyCardForm`. Each surface that mounts `AgentChat` draws it: `/chat`, the dock, the
+  rails, the phone sheet and the Email pane. A delegated call shows its card on the
+  stream of the parent, as the send card did.
+- **Why this seam.** The confirmation card already parks the run, closes on
+  `confirmation_resolved`, replays after a remount, refuses in a run with no card, and
+  keeps a WhatsApp run out. A generative-UI template has none of those, and the model can
+  draw any template.
+- **The answer.** Send and Save to Drafts answer `APPROVE {"reply": {...}}`, with exactly
+  the keys `action`, `reply_all`, `body`, `to` and `cc`. `to` and `cc` are the lists the
+  card showed. Discard answers `REJECT`. `acb_skills/reply_card.py` and
+  `lib/replyCard.ts` hold the shape, and a test holds the two in step.
+- **The draft.** `POST /email/reply-card` drafts with the one drafter
+  (`draft_reply_smart`, with `create_draft` off). It takes out each placeholder line with
+  `strip_placeholder_lines`, the one placeholder rule.
+
+### 18.5 A send in a held run, and its limits
+
+A chat that read outside mail holds its runs (H-236), so `send_email` is withheld. The
+owner wants confirm-then-done in such a chat too. So `compose_reply` may send there, and
+only because of four limits. The gateway enforces each one.
+
+1. **The model names no recipient.** `derive_reply_recipients` in
+   `gateway/routes/email/automation/reply_card.py` derives To and Cc from the original
+   email and the Reply all choice of the member. Reply goes to the Reply-To, else to the
+   sender. Reply all adds each To and Cc of the email. Each list leaves out each mailbox
+   address of the member. The act route derives them again, and refuses when they differ
+   from the lists the card showed.
+2. **The body is the body the member posted.** `POST /agent/respond-input` records a digest
+   of a reply answer, keyed by the card and bound to the member, before the run goes on.
+   `POST /email/reply-card/act` sends only an answer whose digest matches that record, and
+   it takes the record once (`GETDEL`). The act request has no recipient field and no body
+   field of its own, and an extra field is a 422.
+3. **No file, no forward, no new recipient.** Those stay with `send_email` and
+   `forward_email`, and a held run holds neither.
+4. **No card, no act.** A WhatsApp run, a batch run and a scheduled run draft, save and send
+   nothing. The tool says so.
+
+`acb_skills.egress.CARD_BOUND_REPLY_TOOLS` pins the parameters of `compose_reply`:
+`email_id`, `account_id` and `reply_all`. The tool also carries the annotation
+`card_bound_reply`. A held run keeps the tool only while both hold. A new parameter makes
+it an egress tool again.
+
+### 18.6 Fences
+
+| Rule | Fence |
+|---|---|
+| The hand-off card asks only for a child that is not held | `tests/unit/test_delegation_no_egress.py` |
+| The recipients, the record of the answer, the act route, the parameter pin, no card | `tests/unit/test_email_chat_reply.py` |
+| The real SQL of both routes, under FORCE RLS | `TestReplyCardRealSql` in the same file (R8) |
+| The card, its answer and the one renderer | `src/lib/replyCard.test.ts` |
+| The flow in the main chat | `e2e/email-chat-reply.spec.ts` |
+| A card before each write | `tests/unit/test_email_agent_write_cards.py` |
+
+### 18.7 Open items
+
+- **An IMAP mail with no stored Message-ID** gets no Reply-To read, so its reply goes to
+  the sender (§18.8 item 2).
+- **A failed answer post loses the edits.** The card comes back after a network fault with
+  the draft of the tool, not the text the member typed.
+- **A card that a restart parks** answers as a chat message after the restart, as each
+  parked card does. The model then shows a new card. Nothing acts on the old answer.
+- **The durable ask row holds the draft**, as the send card's row holds its body. The row
+  expires with the other asks.
+
+### 18.8 Fix round of the security review (2026-10-20)
+
+The review of #1191 found four holes. Each fix has a fence in
+`tests/unit/test_email_chat_reply.py`, and a mutation of each fix fails it.
+
+1. **Hidden text in the body.** The drafter reads member data, so a mail could make it
+   hide data in text that the member does not see. `clean_reply_body` in
+   `acb_skills/reply_card.py` is the one cleaning. It removes each control and format
+   character but a new line, a tab and an emoji joiner, and it makes each run of blank
+   lines one blank line. `POST /email/reply-card` cleans the draft. The act route refuses
+   a submitted body with a tag character or a bidi control, and cleans the rest before
+   the send. The card grows its text box to the whole text and counts the lines. It also
+   says what the send adds: the signature, and the quote that Outlook adds.
+2. **IMAP read the wrong mail.** An IMAP UID is unique in one folder only. The read now
+   selects the stored folder, and it uses the Reply-To only when the Message-ID matches.
+   Else the reply goes to the sender.
+3. **The title named the sender.** The title and the summary of the card now name the
+   derived To in full. A Reply-To that is not the sender shows as a notice: "Reply goes to
+   X, not to the sender Y."
+4. **A viewer could block the Send.** respond-input now records an answer only after the
+   thread that owns the card took it, and the key names that thread. The act waits up to
+   3 seconds for the record. The answer names the email (`message_id`), so a record of
+   one card cannot act on another email.
+
+**Round 2 of item 1 (re-review, 2026-10-20).** The first rule removed category C only. A
+mail could still hide data in variation selectors after a letter ("emoji smuggling"), in
+the Hangul and Braille blank fillers, or in other code points of Unicode
+`Default_Ignorable_Code_Point`. Now one rule, `is_invisible_char`, reads
+`INVISIBLE_CODE_POINTS` in `acb_skills/reply_card.py`. That list holds each code point of
+that property in Unicode 15.1, plus U+2800, and a test holds it to the property of the
+`regex` package. The email agent's card text (`_card_text`) reads the same rule.
+
+- One presentation selector (VS15 or VS16) stays only right after a real pictograph, or in
+  a keycap. A joiner stays only between two real pictographs.
+- The act refuses a tag character, a variation selector 17 to 256, a stray selector, a
+  bidi control, and a run of more than four combining marks on one letter.
+- A space that only looks like a space (category Zs: NBSP, U+2000 to U+200A, U+202F, U+205F,
+  U+3000) changes to a plain space. The blank notehead U+1D159 leaves (P2 of the review).
+- The backstop is the mark run, not a share of marks. A share of marks would refuse fully
+  vowelled Arabic, which has more marks than letters. Hindi, Tamil, Thai, Arabic and
+  Vietnamese text, flags, joined families, skin tones and keycaps stay unchanged.
