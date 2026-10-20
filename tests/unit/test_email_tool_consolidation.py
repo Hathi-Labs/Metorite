@@ -132,8 +132,12 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # read_email_attachment (WS-17 EM-T11, the text of a file of a mail),
     # +1 for query_insights (WS-17 EM-T14c, the facts of Insights), +1 for
     # forward_email (2026-10-09, a mail and its files to new people).
-    # 46 since ``compose_reply`` (EM-CR, 2026-10-20), the reply card.
-    assert len(tools) == 46
+    # 46 since ``compose_reply`` (EM-CR, 2026-10-20), the reply card. 50
+    # since the chat assistant tools (owner, 2026-10-20): edit_draft,
+    # snooze_email, find_contact and bulk_manage_inbox. Each has a route of
+    # the Email app that the chat could not reach, and none merges into an
+    # existing tool without a mode switch the model gets wrong.
+    assert len(tools) == 50
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",
