@@ -11542,3 +11542,34 @@ The app bar keeps Refresh and New only.
 - **The shared seam.** `src/lib/savedViews/` holds the model, `orderViews`, `dirtyState` and the hook. `src/components/ViewChips.tsx` draws row 1. Projects (`pm_views`) is the next user.
 
 **Fences (R7).** `src/lib/savedViews/index.test.ts` holds the order, the dirty rule and the chip list. `crmU8.test.ts` holds the field groups, the fill order, the filter chips, the module key and the app bar. `tests/unit/test_crm_views_entity.py` holds the server key and the migration check. `crmQ8.test.ts` holds the rail without nested views.
+
+### 20.13 CRM-U6: stage order, win chance and the lane stat block
+
+Owner, 2026-10-20: the board order and the win chance are two settings.
+
+1. **The order never follows the probability.** An admin sets the order of
+   the boards. A stage at 90% can sit before a stage at 10%. Mirror mode
+   without an admin order uses the source position, then the pipeline place.
+2. **Every stage has a win chance.** Migration 288 adds `probability` and
+   `ui_probability` to `crm_lead_statuses`. A won status holds 100 and a lost
+   status holds 0, for both kinds (D-CRM-10).
+3. **The lane header shows a stat block.** A deal lane shows the total and
+   the weighted total with the win chance. A won lane says "booked, not
+   forecast". A lost lane says "no forecast". An on-hold lane says "on hold".
+4. **A lead lane shows the count and the expected conversions.** The
+   expected number is count x win chance / 100, with one decimal.
+5. **Settings.** Each row has Up and Down buttons and a plain type label.
+   It also has a "Win chance" box and a labelled Save and Cancel. Delete asks
+   first. The rules of a deal stage fold behind a "Rules" toggle. A strip at
+   the top of each grid shows the stages in board order.
+
+Fences (R7):
+
+- `board.test.ts`: "sorts by the source position in Mirror mode with no admin
+  order, not by probability", and the `expectedLeads` and `dealForecastLine` cases.
+- `boardStages.test.ts`: "the lane stat block (CRM-U6)".
+- `crmU6.test.ts`: the strip, the Up and Down buttons, the disabled win chance,
+  and "keeps the probability out of orderLanes".
+- `test_crm_migration.py::test_the_lead_probability_migration_is_expand_only`.
+- `test_crm_routes.py::test_a_lead_status_carries_a_win_chance` and
+  `test_crm_pipeline.py::test_a_lead_win_chance_keeps_the_won_lost_clamp`.

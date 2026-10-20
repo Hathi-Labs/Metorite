@@ -419,12 +419,12 @@ class StatusModel(BaseModel):
     #: names it ("Pipeline", "Closed Won"). ``None`` for a native stage.
     forecast_category: str | None = None
     #: CRM-C3: the values the source gave — Zoho in Mirror mode, the admin in
-    #: Native mode. ``source_probability`` is ``None`` on a lead status.
+    #: Native mode. ``source_probability`` is the stored value on both kinds.
     source_position: int = 0
     source_probability: int | None = None
     source_color: str = "gray"
     #: CRM-C3: the overlay as stored. ``None`` means "not set", so the source
-    #: value applies. ``ui_probability`` is ``None`` on a lead status.
+    #: value applies. ``ui_probability`` is ``None`` until an admin sets it.
     ui_position: int | None = None
     ui_probability: int | None = None
     ui_color: str | None = None
@@ -863,11 +863,14 @@ def _effective_columns(table: str, *, deal: bool) -> str:
         "ELSE s.position END AS position",
         "COALESCE(s.ui_color, s.color) AS color",
     ]
+    # Both kinds carry a win chance since migration 288 (CRM-U6).
+    columns += [
+        "s.ui_probability", "s.probability AS source_probability",
+        "COALESCE(s.ui_probability, s.probability) AS probability",
+    ]
     if deal:
         columns += [
             "s.required_fields", "s.max_dwell_days", "s.forecast_category",
-            "s.ui_probability", "s.probability AS source_probability",
-            "COALESCE(s.ui_probability, s.probability) AS probability",
         ]
     return ", ".join(columns)
 
@@ -1679,7 +1682,7 @@ NOT_NULL_DEFAULTED: dict[str, frozenset[str]] = {
     "crm_deals": frozenset({"source", "currency", "status_changed_at"}),
     # CRM-C3 (migration 257): `hidden` on the three settings tables. An admin
     # PATCHes it from the settings grid, in both modes.
-    "crm_lead_statuses": frozenset({"color", "is_default", "hidden"}),
+    "crm_lead_statuses": frozenset({"color", "is_default", "hidden", "probability"}),
     # `required_fields` arrives by ALTER in the WS-26h migration rather than in
     # 144's CREATE TABLE, and it is here for the same reason the others are: the
     # settings grid PATCHes it, so an explicit `null` is a request a client can
@@ -1820,7 +1823,9 @@ MIRROR_OVERLAY_COLUMNS: dict[str, frozenset[str]] = {
     "crm_deal_statuses": frozenset({
         "hidden", "ui_position", "ui_probability", "ui_color", "max_dwell_days",
     }),
-    "crm_lead_statuses": frozenset({"hidden", "ui_position", "ui_color"}),
+    "crm_lead_statuses": frozenset({
+        "hidden", "ui_position", "ui_probability", "ui_color",
+    }),
     "crm_lost_reasons": frozenset({"hidden"}),
 }
 
