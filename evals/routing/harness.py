@@ -339,6 +339,18 @@ class RoutingHarness:
         from tests.unit._egress_mark_store import install_memory_mark_store
 
         install_memory_mark_store(mp)
+        # WS-62 CF-3: the panes the member holds, for show_in_app. The real
+        # read is acb_auth.resolve_access, and CI has no database, so it
+        # would fail closed and refuse every page. The stand-in holds every
+        # live pane's feature. A test that wants less sets its own.
+        from orchestrator import in_app_path
+
+        held = frozenset(p.feature for p in in_app_path.PANES if p.feature)
+
+        async def _member_features() -> frozenset[str]:
+            return held
+
+        mp.setattr(in_app_path, "member_features", _member_features)
         ti._build_registry_block.cache_clear()
         ti._build_injected_tools_addendum.cache_clear()
         self._registry = registry()

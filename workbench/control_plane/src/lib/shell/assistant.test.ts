@@ -35,6 +35,7 @@ import {
   dataText,
   dockFloats,
   effectiveMode,
+  navigateAct,
   onPageChange,
   openAssistant,
   paneAt,
@@ -360,6 +361,63 @@ describe("the app switch (owner, 2026-10-12)", () => {
   it("never moves to an app the member does not hold", () => {
     const noProjects = visibleSections(ALL.filter((f) => f !== "projects"), true);
     expect(switchTarget({ name: "projects_assistant", pathname: "/crm", sections: noProjects, done: new Set() })).toBeNull();
+  });
+});
+
+describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
+  const live = { open: true, threadId: "t1", activeId: "t1", path: "/projects?task=42", phone: false, form: "dock" as const, canDock: true };
+
+  it("the persona says when to call it, and what to say after", () => {
+    expect(ASSISTANT_PERSONA).toContain("call show_in_app with its path");
+    expect(ASSISTANT_PERSONA).toContain("Then say what they will see, in one sentence.");
+  });
+
+  it("a desktop pushes the route and keeps the panel", () => {
+    expect(navigateAct(live)).toEqual({ push: true, dock: false, close: false });
+  });
+
+  it("a desktop full view becomes the panel, so the page shows", () => {
+    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, close: false });
+    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: false });
+  });
+
+  it("a phone pushes the route and the sheet gives way (CF-1: the peek strip)", () => {
+    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: true, dock: false, close: true });
+  });
+
+  it("moves nothing while the assistant is closed, or for another chat", () => {
+    const none = { push: false, dock: false, close: false };
+    expect(navigateAct({ ...live, open: false })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: "other" })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: undefined })).toEqual(none);
+    expect(navigateAct({ ...live, activeId: null })).toEqual(none);
+  });
+
+  it("checks the path again, and refuses one that leaves the app", () => {
+    const none = { push: false, dock: false, close: false };
+    for (const path of ["https://evil.example", "//evil.example", "/\\evil.example", "/api/x", "", undefined]) {
+      expect(navigateAct({ ...live, path }), String(path)).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/tasks#today" }).push).toBe(true);
+  });
+
+  it("the live loop emits onNavigate once, and the replay loop never does", () => {
+    const hook = read("hooks/useAgentChat.ts");
+    expect((hook.match(/emitAgentEvent\("onNavigate"/g) ?? []).length).toBe(1);
+    const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
+    expect(reconnect).toBeGreaterThan(0);
+    expect(hook.indexOf('emitAgentEvent("onNavigate"')).toBeLessThan(reconnect);
+    // The event draws nothing in the transcript, on both loops.
+    expect((hook.match(/evtName !== NAVIGATE_EVENT/g) ?? []).length).toBe(2);
+  });
+
+  it("the dock acts through navigateAct, pushes the route and offers Go back", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{[\s\S]{0,400}?navigateAct\(/);
+    expect(dock).toMatch(/if \(!act\.push \|\| !path\) return;\s*const back = live\.pathname \?\? "\/";\s*router\.push\(path\);/);
+    expect(dock).toMatch(/if \(act\.dock\) setAssistantMode\("dock"\);/);
+    expect(dock).toMatch(/if \(act\.close\) \{[\s\S]{0,200}?closeAssistant\(\);/);
+    expect(dock).toMatch(/title: label \? `Opened \$\{label\}` : "Opened a page"/);
   });
 });
 

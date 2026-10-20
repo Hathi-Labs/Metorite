@@ -92,6 +92,8 @@ def _names(agent: _FakeAgent) -> list[str]:
 
 MAIN_TOOLS = [
     "retrieve_entity_context", "retrieve_sales_context", "search_timeline",
+    # WS-62 CF-3: the orchestrator's own page tool (test_show_in_app.py).
+    "show_in_app",
     "spawn_copilot_agent", "delegate_to_agent",
     "remember", "recall_timeline", "save_memory", "save_episode",
 ]

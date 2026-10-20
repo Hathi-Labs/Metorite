@@ -305,6 +305,64 @@ async def search_timeline(entity_name: str, query: str) -> str:
     return await search_entity_timeline(entity_name, query)
 
 
+# WS-62 CF-3 (chat_first_surface.md §4.4). The one tool that moves the page.
+# Only the orchestrator holds it (§9.2 Q3), so the page moves once and from
+# one place. read_only: it changes no data, it only tells the client where to
+# look. open_world=False: nothing leaves the platform.
+# Fence: tests/unit/test_show_in_app.py.
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def show_in_app(path: str, why: str) -> dict:
+    """Open a page of the app for the member, and say why in one sentence.
+
+    Use it when the member asks to see a page, a list or a record. The
+    page opens beside the chat. Then tell the member what they will see, in
+    one sentence. Call it at most once per reply.
+
+    Args:
+        path: An in-app path. It starts with one "/" and names a pane:
+            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
+            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
+            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
+            URL, and never another site.
+        why: One short sentence the member reads, such as "Here is the
+            board for Website relaunch."
+
+    Returns:
+        ``{"opened": path}`` when the page opens. ``{"error": reason}`` when
+        it does not: a bad path, a pane the member does not hold, or a
+        second call in the same reply. Then say so in words and move on.
+    """
+    from orchestrator import in_app_path as _iap
+    from orchestrator.executor import resolve_run_queue
+
+    path = str(path or "").strip()
+    why = str(why or "").strip()
+    if not _iap.is_in_app_path(path):
+        return {"error": "not a path inside this app"}
+    # The queue IS the run's state: one queue per turn, made by the run
+    # frame. MAF runs each tool call in a COPY of the context
+    # (agent_framework/_tools.py, copy_context().run(create_task)), so a
+    # ContextVar set here never reaches the next call. A mark on the queue
+    # does, and it dies with the turn. No module state is needed.
+    queue = resolve_run_queue()
+    if queue is None:
+        return {"error": "no page to open from here"}
+    if getattr(queue, "_show_in_app_done", False):
+        return {"error": "already opened a page this turn"}
+    reason = _iap.refusal(path, await _iap.member_features())
+    if reason is not None:
+        return {"error": reason}
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
+    # The same channel artifact_created uses. The client's live loop acts on
+    # it, and the replay loop does not (useAgentChat.ts).
+    await queue.put({
+        "type": "CUSTOM",
+        "name": "navigate",
+        "value": {"path": path, "why": why},
+    })
+    return {"opened": path}
+
+
 # H-236: open_world, because the container it starts has a network and a
 # GitHub token, and it pushes. A run that a covered Projects run delegates
 # to does not get it (``acb_skills.egress``).
@@ -698,6 +756,8 @@ def build_orchestrator_agent(
     core_tools: list[Any] = [
         *retrieval_tools,
         search_timeline,
+        # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
+        show_in_app,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
@@ -808,6 +868,7 @@ __all__ = [
     "retrieve_entity_context",
     "retrieve_sales_context",
     "search_timeline",
+    "show_in_app",
     "spawn_copilot_agent",
     "delegate_to_agent",
 ]

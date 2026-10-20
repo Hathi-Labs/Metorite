@@ -53,6 +53,10 @@ class Case:
     asks: bool = False
     #: The facts the app publishes (``useAssistantFacts``), as data lines.
     facts: tuple[str, ...] = ()
+    #: The in-app path the orchestrator should open with ``show_in_app``
+    #: (WS-62 CF-3, ``chat_first_surface.md`` §4.4), or None. Then ``expected``
+    #: is None too: the orchestrator opens the page itself, and no specialist runs.
+    opens: str | None = None
     #: Why this case is here, for a reader of the table.
     note: str = ""
 
@@ -159,6 +163,19 @@ CASES: tuple[Case, ...] = (
     Case("N1", "What can you do?", "/chat", None),
     Case("N2", "Good morning!", None, None, note="from My Day"),
     Case("N3", "Thanks, that is all for now.", "/people", None),
+
+    # ── The chat guides: show_in_app (WS-62 CF-3) ──────────────────────────
+    # The member asks to SEE a page, a list or a record. The orchestrator
+    # opens it with show_in_app and says what they will see. No specialist.
+    Case("S1", "Show me the board for Website relaunch.", None, None,
+         opens=f"/projects?project={PROJECT_ID}",
+         note="from My Day: a project board, named in the words"),
+    Case("S2", "Open task #12.", "/tasks", None, facts=_MY_TASKS,
+         opens=f"/projects?task={TASK_ID}",
+         note="a record: the task opens in Projects, the one task store"),
+    Case("S3", "Take me to my inbox.", "/projects", None, facts=_PROJECT,
+         opens="/email",
+         note="cross-app: asked in Projects, a page of My Email"),
 
     # ── Ambiguous: ask the member first ────────────────────────────────────
     Case("A1", "Move it to next week.", None, None, asks=True,

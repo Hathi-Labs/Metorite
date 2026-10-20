@@ -99,6 +99,7 @@ import {
   consumeDraft,
   effectiveMode,
   focusAssistant,
+  navigateAct,
   onChatLink,
   onPageChange,
   openAssistant,
@@ -518,6 +519,33 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         variant: "success",
         title: `Opened ${target.label}`,
         description: `${ASSISTANT_NAME} is working in ${target.label}.`,
+        action: { label: "Go back", onClick: () => router.push(back) },
+      });
+    },
+    // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
+    // the server's rule. The client checks the path again and acts.
+    onNavigate: ({ path, why, threadId }) => {
+      const live = liveRef.current;
+      const act = navigateAct({
+        open: live.open, threadId, activeId: live.activeId, path, phone,
+        form: live.form, canDock: live.canDock,
+      });
+      if (!act.push || !path) return;
+      const back = live.pathname ?? "/";
+      router.push(path);
+      if (act.dock) setAssistantMode("dock");
+      if (act.close) {
+        // The sheet covers the page, so it gives way. CF-1 turns this into
+        // the peek strip, with `why` as its line.
+        closeAssistant();
+        return;
+      }
+      const label = paneAt(path.split(/[?#]/)[0], live.sections)?.label;
+      toast.show({
+        key: `assistant-open-${path}`,
+        variant: "success",
+        title: label ? `Opened ${label}` : "Opened a page",
+        description: why || undefined,
         action: { label: "Go back", onClick: () => router.push(back) },
       });
     },
