@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import { HIGHLIGHT_COLORS, TEXT_COLORS, hexStyle, isHexColor, isHighlightColor, isTextColor } from "./colors";
 import { readColumns, writeColumns } from "./columns";
 import { dateLabel, isIsoDate, readDate, todayIso, writeDate } from "./date";
+import { needsHtmlTable, readHtmlTable } from "./htmlTable";
 import { escapeHtmlText, escapeInlineText, findClose, unescapeInlineText } from "./htmlFragment";
 import { readStatus, writeStatus } from "./status";
 import { sortSubpages, writeSubpages } from "./subpages";
@@ -201,5 +202,48 @@ describe("the block forms", () => {
   it("keeps a page break, subpages and columns out of a GFM paragraph", () => {
     const doc = parseBody('Text\n<div data-type="page-break"></div>');
     expect(doc.content?.map((n) => n.type)).toEqual(["paragraph", "pageBreak"]);
+  });
+});
+
+describe("the table that GFM cannot hold", () => {
+  const cell = (type: string, attrs: Record<string, unknown> = {}, content: JSONContent[] = [{ type: "paragraph" }]) => ({
+    type,
+    attrs,
+    content,
+  });
+  const table = (...rows: JSONContent[][]) => ({ type: "table", content: rows.map((c) => ({ type: "tableRow", content: c })) });
+
+  it("keeps a plain table GFM, and needs HTML for each feature GFM lacks", () => {
+    const head = [cell("tableHeader"), cell("tableHeader")];
+    const body = [cell("tableCell"), cell("tableCell")];
+    expect(needsHtmlTable(table(head, body))).toBe(false);
+    expect(needsHtmlTable(table(head, body.map((c) => ({ ...c, attrs: { align: "right" } }))))).toBe(false);
+    expect(needsHtmlTable(table([cell("tableHeader", { colspan: 2 })], body))).toBe(true);
+    expect(needsHtmlTable(table(head, [cell("tableCell", { rowspan: 2 }), cell("tableCell")]))).toBe(true);
+    expect(needsHtmlTable(table(head, [cell("tableHeader"), cell("tableCell")]))).toBe(true);
+    expect(needsHtmlTable(table([cell("tableHeader"), cell("tableCell")], body))).toBe(true);
+    expect(needsHtmlTable(table(head, [cell("tableCell", { background: "blue" }), cell("tableCell")]))).toBe(true);
+    const aligned = [{ type: "paragraph", attrs: { align: "center" }, content: [{ type: "text", text: "x" }] }];
+    expect(needsHtmlTable(table(head, [cell("tableCell", {}, aligned), cell("tableCell")]))).toBe(true);
+  });
+
+  it("writes a plain table as GFM, and a merged one as HTML", () => {
+    expect(normaliseBody("| a | b |\n| --- | --- |\n| c | d |")).toBe("| a | b |\n| --- | --- |\n| c | d |");
+    const merged = GOLDEN.cases.find((c) => c.name === "kb2p-table-merged");
+    expect(merged?.saved.startsWith("<table>\n<tr>\n<th colspan=\"2\">")).toBe(true);
+  });
+
+  it("reads only the exact shape: one tag a line and a blank line around each cell", () => {
+    expect(readHtmlTable("<table>\n<tr>\n<td>\n\nx\n\n</td>\n</tr>\n</table>")?.rows[0][0].body).toBe("x");
+    expect(readHtmlTable("<table>\n<tr>\n<td>\nx\n</td>\n</tr>\n</table>")).toBeNull();
+    expect(readHtmlTable("<table>\n<tr><td>x</td></tr>\n</table>")).toBeNull();
+    expect(readHtmlTable('<table>\n<tr>\n<td data-color="url(x)"></td>\n</tr>\n</table>')).toBeNull();
+    expect(readHtmlTable('<table>\n<tr>\n<td class="x"></td>\n</tr>\n</table>')).toBeNull();
+    expect(readHtmlTable("<table>\n<tr>\n<td></td>\n</tr>")).toBeNull();
+  });
+
+  it("has a case for a merged cell, a header column and a cell colour", () => {
+    const names = new Set(GOLDEN.cases.map((c) => c.name));
+    for (const name of ["kb2p-table-merged", "kb2p-table-header-column", "kb2p-table-cell-color"]) expect(names).toContain(name);
   });
 });

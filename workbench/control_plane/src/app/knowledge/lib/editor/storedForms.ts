@@ -10,6 +10,7 @@ import type { AnyExtension, NodeViewRenderer } from "@tiptap/core";
 import { Column, createColumns } from "./columns";
 import { createDate } from "./date";
 import { Highlight } from "./highlight";
+import { KbHtmlTable } from "./htmlTable";
 import { PageBreak } from "./pageBreak";
 import { createStatus } from "./status";
 import { createSubpages } from "./subpages";
@@ -39,5 +40,6 @@ export function storedFormExtensions(views: StoredFormViews = {}): AnyExtension[
     Column,
     createSubpages(views.subpages),
     PageBreak,
+    KbHtmlTable,
   ];
 }

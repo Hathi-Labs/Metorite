@@ -2020,6 +2020,81 @@
         "text"
       ],
       "marks": []
+    },
+    {
+      "name": "kb2p-table-merged",
+      "md": "<table>\n<tr>\n<th colspan=\"2\">\n\nQuarter\n\n</th>\n</tr>\n<tr>\n<td>\n\nQ1\n\n</td>\n<td rowspan=\"2\">\n\n**Ten** units\n\n</td>\n</tr>\n<tr>\n<td>\n\nQ2\n\n</td>\n</tr>\n</table>\n\nAfter.",
+      "saved": "<table>\n<tr>\n<th colspan=\"2\">\n\nQuarter\n\n</th>\n</tr>\n<tr>\n<td>\n\nQ1\n\n</td>\n<td rowspan=\"2\">\n\n**Ten** units\n\n</td>\n</tr>\n<tr>\n<td>\n\nQ2\n\n</td>\n</tr>\n</table>\n\nAfter.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "kb2p-table-header-column",
+      "md": "<table>\n<tr>\n<th>\n\nName\n\n</th>\n<th>\n\nRole\n\n</th>\n</tr>\n<tr>\n<th>\n\nAsha\n\n</th>\n<td data-align=\"right\">\n\nLead\n\n</td>\n</tr>\n<tr>\n<th></th>\n<td></td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr>\n<th>\n\nName\n\n</th>\n<th>\n\nRole\n\n</th>\n</tr>\n<tr>\n<th>\n\nAsha\n\n</th>\n<td data-align=\"right\">\n\nLead\n\n</td>\n</tr>\n<tr>\n<th></th>\n<td></td>\n</tr>\n</table>",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-cell-color",
+      "md": "<table>\n<tr>\n<th data-color=\"yellow\">\n\nState\n\n</th>\n<th>\n\nNote\n\n</th>\n</tr>\n<tr>\n<td data-color=\"#fde68a\">\n\nOpen\n\n</td>\n<td>\n\n- one\n- two\n\n</td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr>\n<th data-color=\"yellow\">\n\nState\n\n</th>\n<th>\n\nNote\n\n</th>\n</tr>\n<tr>\n<td data-color=\"#fde68a\">\n\nOpen\n\n</td>\n<td>\n\n- one\n- two\n\n</td>\n</tr>\n</table>",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-aligned-block",
+      "md": "<table>\n<tr>\n<td>\n\n<p data-align=\"center\">Centred</p>\n\n</td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr>\n<td>\n\n<p data-align=\"center\">Centred</p>\n\n</td>\n</tr>\n</table>",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-raw-shapes",
+      "md": "<table>\n<tr><td>one line</td></tr>\n</table>\n\n<table>\n<tr>\n<td style=\"color:red\">\n\nx\n\n</td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr><td>one line</td></tr>\n</table>\n\n<table>\n<tr>\n<td style=\"color:red\">\n\nx\n\n</td>\n</tr>\n</table>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
     }
   ]
 }

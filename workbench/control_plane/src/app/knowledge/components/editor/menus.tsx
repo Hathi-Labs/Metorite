@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
 import FormatExtras from "./FormatExtras";
+import TableExtras from "./TableExtras";
 
 import {
   LINK_REFUSED,
@@ -348,6 +349,7 @@ export function TableTools({ editor, scrollTarget }: { editor: Editor; scrollTar
             onClick={() => a.run(editor)}
           />
         ))}
+        <TableExtras editor={editor} />
         <span className="mx-1 h-5 w-px bg-border" aria-hidden />
         <Button
           variant="ghost"

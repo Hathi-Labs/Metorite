@@ -782,6 +782,57 @@ test.describe("the block editor", () => {
     await expect(list.getByRole("link")).toHaveText(["Apple rules", "Zebra rules"]);
   });
 
+  test("a merged cell, a header column and a cell colour save the table as HTML", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    const body = await openEditor(page);
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("/Table");
+    await expect(page.getByRole("listbox", { name: "Blocks" }).getByRole("option").first()).toHaveText("Table");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Quarter");
+
+    // A drag across the first two header cells selects them, and a bubble
+    // offers Merge cells.
+    const heads = body.locator("th");
+    const a = await heads.nth(0).boundingBox();
+    const b = await heads.nth(1).boundingBox();
+    if (!a || !b) throw new Error("no header cells");
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const cells = page.getByRole("toolbar", { name: "Selected cells" });
+    await expect(cells).toBeVisible();
+    await cells.getByRole("button", { name: "Merge cells" }).click();
+    await expect(body.locator("th[colspan='2']")).toHaveCount(1);
+
+    // The caret in a body cell: the table tools add a header column and a colour.
+    await body.locator("td").first().click();
+    const tools = page.getByRole("toolbar", { name: "Table" });
+    await expect(tools).toBeVisible();
+    await tools.getByRole("button", { name: "Turn the header column on or off" }).click();
+    await body.locator("td").first().click();
+    await tools.getByRole("button", { name: "Cell colour" }).click();
+    await tools.getByRole("button", { name: "Blue cell" }).click();
+    await expect(body.locator("td[data-color='blue']")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect.poll(() => kb.writes.length).toBe(1);
+    const saved = (kb.writes[0].body as { body_md: string }).body_md;
+    expect(saved.startsWith("Start.\n\n<table>\n<tr>\n")).toBe(true);
+    expect(saved).toContain('<th colspan="2">\n\nQuarter\n\n</th>');
+    expect(saved).toContain('<td data-color="blue"></td>');
+    expect(saved).toMatch(/<\/tr>\n<tr>\n<th><\/th>\n/);
+    expect(saved.endsWith("</table>")).toBe(true);
+    // The read view draws the same table from the stored HTML form.
+    const read = page.locator("article .kb-editor");
+    await expect(read.locator("th[colspan='2']")).toHaveText("Quarter");
+    await expect(read.locator("td[data-color='blue']")).toHaveCount(1);
+  });
+
   test("the bubble menu sets each mark, and the editor binds no Ctrl+K", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await setup(page);

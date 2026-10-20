@@ -58,6 +58,7 @@ import {
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
 import { storedFormExtensions, type StoredFormViews } from "./storedForms";
+import { withHtmlTable } from "./htmlTable";
 import { withAlign } from "./textAlign";
 
 export { escapeLineStart, markdownDestination } from "./inline";
@@ -895,7 +896,7 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     withView(KnowledgeCodeBlock, views.codeBlock),
     withView(KnowledgeImage, views.image),
     TableKit.configure({ table: false }),
-    KnowledgeTable.configure({ resizable: false }),
+    withHtmlTable(KnowledgeTable).configure({ resizable: false }),
     KnowledgeTaskList,
     TaskItem.configure({ nested: true }),
     withView(Callout, views.callout),

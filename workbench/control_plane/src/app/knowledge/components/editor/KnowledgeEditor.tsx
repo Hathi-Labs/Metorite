@@ -48,6 +48,7 @@ import type { Space } from "../../lib/types";
 import { FormatBubble, ImageDialog, TableTools, scrollParent } from "./menus";
 import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews";
 import { storedFormViews } from "./storedFormViews";
+import { TableCellTools } from "./TableExtras";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
 /**
@@ -436,6 +437,7 @@ export default function KnowledgeEditor({
             scrollTarget={scroller}
           />
           <TableTools editor={editor} scrollTarget={scroller} />
+          <TableCellTools editor={editor} scrollTarget={scroller} />
           <OptionList
             id="kb-slash-menu"
             label="Blocks"
