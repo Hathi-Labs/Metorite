@@ -72,8 +72,9 @@ S16 went with their tests. Two mutations put an arm back:
 * H1. ``A/deps.py`` branch 0: accept ``actor_via_for(client_origin,
   client_id=None)`` beside the new stamp.
   ``test_n4_branch_0_refuses_the_legacy_stamp_of_the_row``.
-* H2. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: match ``r.client_via =
-  :legacy`` of the same connection too.
+* H2. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: match the host stamp of the
+  caller's stamp too, ``OR r.client_via = split_part(:via, ':', 1) || ':'
+  || split_part(:via, ':', 2)``.
   ``test_n5_an_open_legacy_run_is_not_found_and_a_new_run_opens``.
 """
 from __future__ import annotations
