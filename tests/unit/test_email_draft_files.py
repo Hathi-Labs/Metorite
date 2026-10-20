@@ -189,3 +189,63 @@ async def test_an_image_goes_as_an_image_part_with_a_vision_task(monkeypatch) ->
     assert text_part["type"] == "text" and "cell.jpg" in text_part["text"]
     assert image_part == {"type": "image_url",
                           "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+
+
+# ── "Draft with AI" in the Email app reads the files too ─────────────────────
+#
+# A NEW reply in the composer goes through the same drafter, so it gets the
+# files of the mail. A text that the owner typed is improved in place, and it
+# reads no file. Mutation: drop the load in ``_compose_assist_run``.
+
+
+class _Step:
+    def __init__(self, req: Any) -> None:
+        self.phased = None
+        self.about, self.signature = "", ""
+        self.ctx = {"subject": "BQ", "body": "See attached.", "thread_id": "t1"}
+
+    async def block_1(self, *a: Any) -> None:
+        return None
+
+    def body_fetch(self) -> None:
+        return None
+
+    def needs_side(self) -> bool:
+        return False
+
+    def context(self) -> dict[str, Any]:
+        return self.ctx
+
+    def sender(self, ctx: Any) -> str:
+        return ""
+
+
+@pytest.mark.parametrize(("body", "reads"), [("", True), ("My own words.", False)])
+async def test_draft_with_ai_reads_the_files_of_a_new_reply(monkeypatch, body, reads) -> None:
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    files = df.DraftFiles(texts=[("spec.pdf", "Payload 3 kg.", False)])
+    loaded: list[str] = []
+
+    async def load(db, mid, user, **kw):
+        loaded.append(mid)
+        return files
+
+    seen: list[Any] = []
+
+    async def compose(req, user_email, ctx, *a, **kw):
+        seen.append(ctx)
+        return {"draft": "x"}, ""
+
+    monkeypatch.setattr(dr, "_ComposeStep", _Step)
+    monkeypatch.setattr(dr, "_tenant_session", session)
+    monkeypatch.setattr(dr, "load_draft_files", load)
+    monkeypatch.setattr(dr, "_compose_draft", compose)
+    req = dr.ComposeAssistRequest(account_id="a1", mode="reply", message_id="m1", body=body)
+    await dr._compose_assist_run(req, USER)
+    assert (loaded == ["m1"]) is reads
+    assert (seen[0].get("_files") is files) is reads

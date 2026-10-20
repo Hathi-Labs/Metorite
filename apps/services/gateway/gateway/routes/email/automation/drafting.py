@@ -2372,6 +2372,11 @@ class ComposeAssistRequest(BaseModel):
     subject: str = ""
 
 
+#: The seconds that "Draft with AI" may spend on the files of a mail. The
+#: member waits at the composer, so it is shorter than the reply card's.
+COMPOSE_FILES_BUDGET_S = 8.0
+
+
 class _ComposeStep:
     """What the context step of ``_compose_assist_run`` holds (WS-17 EM-T17
     PR-A1, ``email_app_master_plan.md`` §17.3.7). Each session block stays
@@ -2526,6 +2531,17 @@ async def _compose_assist_run(
     # the COMPOSE tier. Our code chooses it, and no stored choice changes it
     # (D-EM-61).
     ctx = step.context()
+    # A new reply reads the files of the mail, as /draft-reply does
+    # (``draft_files``). The read has its own short budget, because the member
+    # waits at the composer. Improve-in-place works on the owner's own words.
+    if (ctx is not None and req.mode == "reply" and req.message_id
+            and not strip_signature_text(step.signature or "", req.body or "").strip()):
+        try:
+            async with _tenant_session() as db:
+                ctx["_files"] = await load_draft_files(
+                    db, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S)
+        except Exception as exc:  # a draft goes on without the files
+            _log.warning("email.compose_files_failed", error=type(exc).__name__)
     result, store_thread = await _compose_draft(
         req, user_email, ctx, step.about or "", step.signature or "",
         sender=step.sender(ctx), model=EMAIL_TASK_TIERS["compose"],
