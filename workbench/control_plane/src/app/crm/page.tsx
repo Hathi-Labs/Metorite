@@ -158,6 +158,7 @@ import {
 } from "./lib/settingsSections";
 import { convertSkippedNote } from "./lib/convertMapping";
 import { emptyListLine, landing, landingPlan, railEntries, viewLabel, type Landing } from "./lib/views";
+import { MORE_TAB, phoneNav, readNavDetail } from "./lib/phoneNav";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -718,6 +719,53 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     questions: questions.gate === "on" ? railCount(questionsOpen) : null,
   };
 
+  /** The whole rail, in the shell's drawer. The title and "More" both open it. */
+  function openViews(): void {
+    openDrawer(
+      <nav aria-label="CRM views" className="p-2">
+        <CrmRail
+          tab={view.tab}
+          onSelect={chooseView}
+          modules={railModules}
+          settings={railSettings}
+          labels={labels}
+          overlays={overlays}
+          states={coreStates}
+        />
+      </nav>
+    );
+  }
+
+  // CRM-U10: the CRM's tabs in the phone's bottom bar. The page owns the list
+  // (mode, labels, rows the source turned off) and the shell draws it.
+  const navBadge = questions.gate === "on" ? railCount(questionsOpen) : null;
+  useEffect(() => {
+    if (!isMobile) return;
+    const detail = phoneNav(railEntries(modules, labels, overlays, coreStates), view.tab, navBadge);
+    window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail }));
+  }, [isMobile, modules, labels, overlays, coreStates, view.tab, navBadge]);
+  useEffect(
+    () => () => {
+      window.dispatchEvent(new CustomEvent("cc-crm-nav", { detail: null }));
+    },
+    []
+  );
+  // A tap on a tab. The handler reads the latest closures through a ref, so
+  // the listener stays one for the life of the page.
+  const tabTap = useRef<(id: string) => void>(() => {});
+  tabTap.current = (id: string) => {
+    if (id === MORE_TAB) openViews();
+    else chooseView(id as CrmView["tab"]);
+  };
+  useEffect(() => {
+    const h = (e: Event) => {
+      const id = readNavDetail((e as CustomEvent<unknown>).detail);
+      if (id) tabTap.current(id);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
   // The app's verb sits next to its name, as Capture does in My Tasks. It is
   // the quick-create entry the old header held, at the bar's size.
   // In Mirror mode a record is made in Zoho, so the verb is gone (spec §3.3).
@@ -779,21 +827,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           isMobile ? (
             <button
               type="button"
-              onClick={() =>
-                openDrawer(
-                  <nav aria-label="CRM views" className="p-2">
-                    <CrmRail
-                      tab={view.tab}
-                      onSelect={chooseView}
-                      modules={railModules}
-                      settings={railSettings}
-                      labels={labels}
-                      overlays={overlays}
-                      states={coreStates}
-                    />
-                  </nav>
-                )
-              }
+              onClick={openViews}
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
               <span className="truncate">

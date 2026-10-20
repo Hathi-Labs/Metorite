@@ -19,7 +19,8 @@ against the ONE case file ``tests/fixtures/agent_client_names.json``, which
 **R8 (a real database, as a NON-privileged role, on a phase-4-promoted
 catalog of its own).** The edge calls the REAL gateway app through
 ``httpx.ASGITransport`` (EA3-20). It proves N1 on the row, N4 at branch 0 and
-N5 on the open-run read of EA12-6.
+N5 on the open-run read of EA12-6. Since H-356, N4 and N5 refuse the legacy
+host stamp.
 
 Run::
 
@@ -48,10 +49,6 @@ Run::
 * S6. ``E/gateway_client.py``: ``client_id=None``.
   ``test_n1_an_edge_write_stamps_the_row_with_the_slug`` (branch 0 refuses
   the host stamp).
-* S7. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: drop the legacy arm.
-  ``test_n5_an_open_legacy_run_is_found_and_no_second_run_opens``.
-* S8. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: the legacy arm without the
-  connection check. ``test_a_legacy_run_of_another_connection_is_not_found``.
 * S9. ``G/agent_runs.py`` ``start_agent_run``: the member's start stamps
   ``client_id=None``. ``test_a_member_start_stamps_the_connections_slug``.
 * S10. ``A/agent_oauth.py`` ``client_label``: the host fallback returns the
@@ -60,20 +57,25 @@ Run::
 * S11. ``A/agent_oauth.py`` ``CLIENT_LABELS``: drop ``claude.ai``.
   ``test_n6_a_legacy_row_reads_claude`` and the map test.
 
-Fix round 1 (the deploy window, the IPv6 host and the preferred run):
+Fix round 1 (the IPv6 host):
 
-* S12. ``A/deps.py`` branch 0: drop the legacy arm (``actor_via !=
-  expected_via``).
-  ``test_n4_for_one_release_branch_0_accepts_the_legacy_stamp_of_the_row``.
-* S13. ``A/deps.py`` branch 0: the scope takes the SIGNED stamp, not the new
-  one. ``test_a_call_signed_with_the_legacy_stamp_binds_the_new_stamp``.
 * S14. ``A/agent_oauth.py`` ``actor_via_for``: a slug on an IPv6 host.
   ``test_an_ipv6_host_gets_no_slug_and_reads_whole``.
 * S15. ``A/agent_oauth.py`` ``client_label``: split an IPv6 body at its first
   colon. ``test_an_ipv6_host_gets_no_slug_and_reads_whole`` and the
   case-file test.
-* S16. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: no ``ORDER BY``.
-  ``test_with_a_legacy_and_a_new_open_run_the_read_takes_the_new_one``.
+
+H-356 (2026-10-20) closed the deploy window of fix round 1. Branch 0 and the
+open-run read no longer accept the legacy host stamp. S7, S8, S12, S13 and
+S16 went with their tests. Two mutations put an arm back:
+
+* H1. ``A/deps.py`` branch 0: accept ``actor_via_for(client_origin,
+  client_id=None)`` beside the new stamp.
+  ``test_n4_branch_0_refuses_the_legacy_stamp_of_the_row``.
+* H2. ``G/agent_runs.py`` ``_OPEN_RUN_SQL``: match the host stamp of the
+  caller's stamp too, ``OR r.client_via = split_part(:via, ':', 1) || ':'
+  || split_part(:via, ':', 2)``.
+  ``test_n5_an_open_legacy_run_is_not_found_and_a_new_run_opens``.
 """
 from __future__ import annotations
 
@@ -252,7 +254,7 @@ def _claude_connection(a) -> tuple[str, str]:
 @pytest.fixture(scope="module")
 def world():
     """A private promoted catalog: one tenant, one member, one project, and
-    two connections of Claude Code."""
+    one connection of Claude Code."""
     if not w._URL:
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
@@ -298,7 +300,6 @@ def world():
     # `write` is the generic connection that `tw.live` warms up with.
     world_.c["write"], world_.tok["write"] = a.connection(scopes=w.WRITE_SCOPES)
     world_.c["claude"], world_.tok["claude"] = _claude_connection(a)
-    world_.c["claude2"], world_.tok["claude2"] = _claude_connection(a)
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -392,38 +393,29 @@ class TestTheStampOnARealDatabase:
             r = await _signed(live, "claude", "GET", path, wrong)
             assert r.status_code == 401, (wrong, r.text)
 
-    async def test_n4_for_one_release_branch_0_accepts_the_legacy_stamp_of_the_row(
-            self, live):
-        """Fix round 1. The deploy restarts the gateway before the edge, and the
-        old edge signs the host stamp. Branch 0 accepts the host stamp OF THE
-        ROW for one release. The stamp of another row still gets 401."""
-        task = live.task(live.team, live.s.todo, "n4 legacy")
+    async def test_n4_branch_0_refuses_the_legacy_stamp_of_the_row(self, live, runs_on):
+        """H-356. The window of EA-13a fix round 1 is closed. A call signed
+        with the host stamp OF THE ROW gets 401, a read and a write alike, and
+        the write opens no run."""
+        task = live.task(live.team, live.s.doing, "n4 legacy refused")
         path = f"/projects/tasks/{task}"
-        assert (await _signed(live, "claude", "GET", path, LEGACY)).status_code == 200
-        # `write` is a connection of client.example. Its host stamp is not the
-        # host stamp of the Claude Code row.
-        assert (await _signed(live, "claude", "GET", path, "mcp:client.example")
-                ).status_code == 401
+        assert agent_oauth.actor_via_for(CLAUDE_ORIGIN, client_id=None) == LEGACY
+        r = await _signed(live, "claude", "GET", path, LEGACY)
+        assert r.status_code == 401, r.text
+        r = await _signed(live, "claude", "POST", f"{path}/agent-runs", LEGACY,
+                          body={"idempotency_key": "legacy-refused-1"})
+        assert r.status_code == 401, r.text
+        assert _runs(live, task) == []
+        # The new stamp of the same row still passes, so the 401 is the stamp.
+        assert (await _signed(live, "claude", "GET", path, NEW)).status_code == 200
 
-    async def test_a_call_signed_with_the_legacy_stamp_binds_the_new_stamp(
+    async def test_a_second_open_run_on_one_task_is_refused_by_the_index(
             self, live, runs_on):
-        """Fix round 1. The scope keeps the NEW stamp, so a run that an old
-        edge starts in the deploy window reads "Claude Code"."""
-        task = live.task(live.team, live.s.doing, "legacy signed start")
-        r = await _signed(live, "claude", "POST", f"/projects/tasks/{task}/agent-runs",
-                          LEGACY, body={"idempotency_key": "legacy-signed-1"})
-        assert r.status_code == 201, r.text
-        assert r.json()["run"]["client_via"] == NEW
-        assert [row.client_via for row in _runs(live, task)] == [NEW]
-
-    async def test_a_legacy_and_a_new_open_run_cannot_both_exist_on_one_task(
-            self, live, runs_on):
-        """Fix round 1 was about a deploy window that left a legacy run and a
-        new run open on one task. EA-14a (migration 289) allows ONE open run
-        for each task, so the window cannot leave two. The index refuses the
-        second insert, and the start finds the first run."""
+        """EA-14a (migration 289) allows ONE open run for each task, so two
+        open runs under two stamps cannot exist. The index refuses the second
+        insert."""
         task = live.task(live.team, live.s.doing, "two open runs")
-        legacy = _legacy_run(live, task, live.c["claude"])
+        _legacy_run(live, task, live.c["claude"])
         with pytest.raises(Exception, match="pm_agent_runs_one_open_per_task"):
             live.seeder.one(
                 "INSERT INTO pm_agent_runs (organization_id, task_id, member_email,"
@@ -432,37 +424,23 @@ class TestTheStampOnARealDatabase:
                 " CAST(:t AS uuid), :m, CAST(:c AS uuid), :v, 'in_progress', :v,"
                 " now(), now()) RETURNING id",
                 o=live.org, t=task, m=MEMBER, c=live.c["claude"], v=NEW)
-        result = await tw._mcp(live, "claude", "start_agent_run", {
-            "task_id": task, "idempotency_key": "two-open-1"})
-        assert result["isError"] is False, result
-        assert result["structuredContent"]["run"]["id"] == legacy
 
-    async def test_n5_an_open_legacy_run_is_found_and_no_second_run_opens(
+    async def test_n5_an_open_legacy_run_holds_the_task_and_no_new_run_opens(
             self, live, runs_on):
+        """H-356 with EA-14a. The own-run read matches the caller's stamp only,
+        so a legacy run of the SAME connection is not its own. It is an open
+        run, so it HOLDS the task for everyone: the start is refused with
+        ``task_held``, and only the legacy run exists."""
+        from agent_edge import tools
+
         task = live.task(live.team, live.s.doing, "n5")
         legacy = _legacy_run(live, task, live.c["claude"])
         result = await tw._mcp(live, "claude", "start_agent_run", {
             "task_id": task, "idempotency_key": "n5-start-1"})
-        assert result["isError"] is False, result
-        body = result["structuredContent"]
-        assert body["created"] is False
-        assert body["run"]["id"] == legacy
-        assert [str(r.id) for r in _runs(live, task)] == [legacy]
-
-    async def test_a_legacy_run_of_another_connection_is_not_found(self, live, runs_on):
-        """The legacy arm matches the SAME connection only. A legacy run of a
-        second Claude Code connection is that connection's run. EA-14a: that
-        run still HOLDS the task, so the first connection's start is refused
-        with ``task_held`` and no second run opens."""
-        from agent_edge import tools
-
-        task = live.task(live.team, live.s.doing, "n5 other")
-        legacy = _legacy_run(live, task, live.c["claude2"])
-        result = await tw._mcp(live, "claude", "start_agent_run", {
-            "task_id": task, "idempotency_key": "n5-start-2"})
         assert result["isError"] is True, result
         assert result["content"][0]["text"] == tools.TEXT_TASK_HELD
-        assert [str(r.id) for r in _runs(live, task)] == [legacy]
+        assert [(str(r.id), r.client_via, r.status) for r in _runs(live, task)] == [
+            (legacy, LEGACY, "in_progress")]
 
     async def test_a_member_start_stamps_the_connections_slug(self, live, runs_on):
         """A member names the connection. The run's stamp is the one that

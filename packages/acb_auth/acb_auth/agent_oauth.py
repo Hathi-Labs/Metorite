@@ -641,8 +641,13 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     gives ``""``, which matches no pattern, so branch 0 refuses it (step 7).
 
     *client_id* is keyword-only and has no default, so a caller names it.
-    ``client_id=None`` gives the legacy host stamp, which the open-run read
-    of ``routes/projects/agent_runs.py`` matches for one release.
+    ``client_id=None`` gives the legacy host stamp. When the row's client id
+    gives a slug, branch 0 and the open-run read of
+    ``routes/projects/agent_runs.py`` refuse that host stamp (H-356). When it
+    gives no slug (a DCR client, a client id that is not a URL, an IPv6 host,
+    or a client id at another host), ``mcp:<host>`` IS the row's stamp, and
+    both accept it. The label of an old row reads it, through
+    :data:`CLIENT_LABELS`.
     """
     origin = (client_origin or "").strip()
     if not origin:

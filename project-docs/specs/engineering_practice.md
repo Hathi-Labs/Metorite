@@ -421,6 +421,13 @@ cannot drift. Set it up once with `bash scripts/ci_pc/setup.sh`.
 - The distro cannot read the Windows drives and cannot start a Windows
   program. The code reaches it through `git`, never through a mount.
 - It is not the merge gate. pr-check on GitHub is.
+- It shares ONE WSL2 VM with Docker Desktop and every distro. So it sizes its
+  shards by free memory, caps each container, and refuses to start below
+  8 GB free. On 2026-10-20 an uncapped run hung the VM for every session.
+- When WSL or Docker hangs, run `bash scripts/ci_pc/doctor.sh` from
+  Windows. `--fix` repairs it in a known order: `wsl --shutdown`, then the
+  WSL service (one UAC prompt), then Docker Desktop and only its own distro,
+  then the containers that were running.
 - Fence: `tests/unit/test_ci_pc.py`.
 
 ## 8. What to fix before customer #1 — in order

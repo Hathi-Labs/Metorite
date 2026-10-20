@@ -130,6 +130,35 @@ def test_a_bare_ci_local_call_passes_no_empty_argument():
     assert '[ ${#pass[@]} -gt 0 ] && args="$(printf' in text
 
 
+def test_run_suite_refuses_a_starved_vm():
+    assert re.search(r'if \[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
+
+
+_DOCTOR = (_ROOT / "scripts/ci_pc/doctor.sh").read_text(encoding="utf-8")
+
+
+def test_every_doctor_probe_has_a_timeout():
+    # A doctor that hangs on the thing it checks is no use on the day it
+    # matters. Every wsl.exe and docker call goes through `timeout`.
+    for line in _DOCTOR.splitlines():
+        code = line.split("#", 1)[0]
+        for tool in ("wsl.exe ", "docker info", "docker ps", "docker start"):
+            if tool in code:
+                assert "timeout " in code, f"no timeout: {line.strip()}"
+
+
+def test_the_doctor_repairs_in_the_order_that_worked():
+    # 2026-10-20: `wsl --shutdown` did not stop the stuck VM. The WSL service
+    # restart (UAC) did. Docker Desktop then needed its OWN distro
+    # terminated, and the containers without a restart policy needed a start.
+    body = _DOCTOR.split("restart_wsl() {")[1]
+    assert body.index("wsl.exe --shutdown") < body.index("Start-Service WSLService")
+    assert "wsl.exe --terminate docker-desktop" in _DOCTOR
+    assert "restore_containers" in _DOCTOR.split('if restart_docker_desktop; then')[1].split("\n")[0]
+    # It changes nothing without --fix.
+    assert 'FIX=false; [ "${1:-}" = "--fix" ] && FIX=true' in _DOCTOR
+
+
 def test_the_distro_is_locked_down():
     prov = (_ROOT / "scripts/ci_pc/provision.sh").read_text(encoding="utf-8")
     conf = prov.split("cat > /etc/wsl.conf <<'CONF'")[1].split("CONF")[0]

@@ -1109,8 +1109,7 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     return True
 
 
-async def _gate_task(db: Any, task_id: str, me: str, *, via: str, legacy: str,
-                     connection_id: str | None) -> Any | None:
+async def _gate_task(db: Any, task_id: str, me: str, *, via: str) -> Any | None:
     """The ONE gate of EA-14a, before any run opens on *task_id*.
 
     * The caller's own open run (same member, same client, EA12-6): that run.
@@ -1129,7 +1128,7 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str, legacy: str,
     """
     own = (await db.execute(
         text(_OPEN_RUN_SQL),
-        _open_run_args(task_id, me, via, legacy=legacy, connection_id=connection_id),
+        _open_run_args(task_id, me, via),
     )).fetchone()
     if own is not None:
         return own
@@ -1175,33 +1174,22 @@ _INSERT_RUN_SQL = (
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
 #: client stamp. The start, the archive request and the claim read it.
 #:
-#: ⚠️ EA-13a, for one release (spec §12.2 item 1). The stamp changed from
-#: ``mcp:<host>`` to ``mcp:<host>:<slug>``. A run that opened before the
-#: deploy holds the old host stamp, so the read also matches that stamp, for
-#: the SAME connection only. Then a start after the deploy finds the run, and
-#: no second run opens. A run under the new stamp comes first. Remove the
-#: legacy arm in the release after EA-13a.
+#: It matches the stamp of the caller only. When the connection's client id
+#: gives a slug, an open run under its legacy host stamp ``mcp:<host>`` is not
+#: found (H-356 closed the window of EA-13a fix round 1, spec §12.2 item 1).
+#: When it gives no slug, ``mcp:<host>`` is the caller's own stamp, so the
+#: read finds that run.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
-    "   AND r.status = ANY(:open) "
-    "   AND (r.client_via = :via "
-    "        OR (r.client_via = :legacy AND r.connection_id = CAST(:cid AS uuid))) "
-    " ORDER BY (r.client_via = :via) DESC, r.created_at DESC LIMIT 1"
+    "   AND r.status = ANY(:open) AND r.client_via = :via "
+    " ORDER BY r.created_at DESC LIMIT 1"
 )
 
 
-def _open_run_args(task_id: str, me: str, via: str, *, legacy: str,
-                   connection_id: str | None) -> dict[str, Any]:
-    """The binds of :data:`_OPEN_RUN_SQL`. *legacy* is the host stamp of the
-    connection (``actor_via_for(origin, client_id=None)``)."""
-    return {"tid": task_id, "me": me, "via": via, "legacy": legacy,
-            "cid": connection_id, "open": list(AGENT_RUN_OPEN_STATUSES)}
-
-
-def _legacy_via(user: UserContext) -> str:
-    """The host stamp that an agent's connection had before EA-13a."""
-    agent = getattr(user, "agent", None)
-    return actor_via_for(getattr(agent, "client_origin", None), client_id=None)
+def _open_run_args(task_id: str, me: str, via: str) -> dict[str, Any]:
+    """The binds of :data:`_OPEN_RUN_SQL`."""
+    return {"tid": task_id, "me": me, "via": via,
+            "open": list(AGENT_RUN_OPEN_STATUSES)}
 
 
 async def _replay_start(db: Any, me: str, key: str | None, task_id: str) -> dict | None:
@@ -1252,7 +1240,6 @@ async def start_agent_run(
         await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
-            legacy = _legacy_via(user)
         else:
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
@@ -1270,7 +1257,6 @@ async def start_agent_run(
                 actor_via_for(origin, client_id=getattr(conn, "client_id", None))
                 if conn else ""
             )
-            legacy = actor_via_for(origin, client_id=None) if conn else ""
             if conn is None or not ACTOR_VIA_PATTERN.fullmatch(client_via):
                 raise HTTPException(
                     status_code=422, detail="Name one of your own live agent connections.",
@@ -1284,8 +1270,7 @@ async def start_agent_run(
 
         # EA-14a: ONE AI for each task. The gate returns this caller's own
         # open run, or None for a free task, or it raises 409 `task_held`.
-        existing = await _gate_task(db, task_id, me, via=client_via, legacy=legacy,
-                                    connection_id=connection_id)
+        existing = await _gate_task(db, task_id, me, via=client_via)
         if existing is None:
             ts = await _clock(db)
             made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -1303,8 +1288,7 @@ async def start_agent_run(
                 if replay is not None:
                     response.status_code = 200
                     return replay
-                existing = await _gate_task(db, task_id, me, via=client_via, legacy=legacy,
-                                            connection_id=connection_id)
+                existing = await _gate_task(db, task_id, me, via=client_via)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
         if existing is not None:
@@ -1620,12 +1604,9 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     comment. The id is None only when a concurrent start won the open-run
     index and then rolled back, which the caller answers as a retry.
     """
-    legacy = _legacy_via(user)
-    connection_id = str(user.agent.connection_id)  # type: ignore[union-attr]
     # EA-14a: the gate returns the caller's own open run, None for a free
     # task, or raises 409 `task_held`. A lease that ended is taken over.
-    existing = await _gate_task(db, task_id, me, via=via, legacy=legacy,
-                                connection_id=connection_id)
+    existing = await _gate_task(db, task_id, me, via=via)
     if existing is not None:
         return str(existing.id), False
     ts = await _clock(db)
@@ -1638,8 +1619,7 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
         return str(made.id), True
     # A concurrent start won the open-run index. Its run is the answer when it
     # is this caller's own. Another member's run is `task_held`.
-    existing = await _gate_task(db, task_id, me, via=via, legacy=legacy,
-                                connection_id=connection_id)
+    existing = await _gate_task(db, task_id, me, via=via)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -1663,8 +1643,8 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
     * Only for a signed agent claim (``UserContext.agent``) while
       ``agent_runs_enabled`` is on. A member's claim opens no run, and None
       comes back.
-    * With an open run of this task, member and stamp (EA12-6, and the legacy
-      stamp of EA-13a), it writes nothing and returns that run. Else it
+    * With an open run of this task, member and stamp (EA12-6), it writes
+      nothing and returns that run. Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
