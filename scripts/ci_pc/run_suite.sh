@@ -40,6 +40,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 E2E=auto
 avail_gb=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
+# Below 8 GB free, even 2 shards plus the other jobs could stall the VM that
+# Docker Desktop and every distro share. Refuse, and say why.
+if [ "$avail_gb" -lt 8 ]; then
+  echo "local CI: the WSL VM has only ${avail_gb} GB free. Something else holds it." >&2
+  echo "Wait for it, or check with: bash scripts/ci_pc/doctor.sh (from Windows)" >&2
+  exit 3
+fi
 SHARDS=$(( (avail_gb - 10) * 2 / 5 ))
 [ "$SHARDS" -gt $(( $(nproc) / 2 )) ] && SHARDS=$(( $(nproc) / 2 ))
 [ "$SHARDS" -gt 12 ] && SHARDS=12
