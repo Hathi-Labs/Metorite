@@ -55,6 +55,7 @@ __all__ = [
     "ReplyChoice",
     "clean_reply_body",
     "is_invisible_char",
+    "is_lookalike_space",
     "looks_like_reply_answer",
     "parse_reply_answer",
     "record_reply_answer",
@@ -114,8 +115,9 @@ _TAKE_STEP_S = 0.1
 #: Each code point a reader cannot see, as inclusive ranges. THE one list.
 #:
 #: Source: Unicode 15.1, ``DerivedCoreProperties.txt``, the property
-#: ``Default_Ignorable_Code_Point``, plus U+2800 BRAILLE PATTERN BLANK, a
-#: blank filler that the property leaves out. The standard library has no
+#: ``Default_Ignorable_Code_Point``, plus two blank fillers that the property
+#: leaves out: U+2800 BRAILLE PATTERN BLANK and U+1D159 MUSICAL SYMBOL NULL
+#: NOTEHEAD. The standard library has no
 #: table of the property. ``tests/unit/test_email_chat_reply.py`` holds this
 #: list to ``\p{Default_Ignorable_Code_Point}`` of the ``regex`` package where
 #: the test environment has it, so a newer Unicode cannot leave a hole.
@@ -136,6 +138,7 @@ INVISIBLE_CODE_POINTS: tuple[tuple[int, int], ...] = (
     (0xFFA0, 0xFFA0),    # HALFWIDTH HANGUL FILLER
     (0xFFF0, 0xFFF8),    # unassigned specials
     (0x1BCA0, 0x1BCA3),  # SHORTHAND FORMAT CONTROLS
+    (0x1D159, 0x1D159),  # MUSICAL SYMBOL NULL NOTEHEAD (a blank So, not in the property)
     (0x1D173, 0x1D17A),  # MUSICAL SYMBOL BEGIN BEAM to END PHRASE
     (0xE0000, 0xE0FFF),  # the tags and VARIATION SELECTORS 17-256
 )
@@ -165,6 +168,15 @@ def is_invisible_char(ch: str) -> bool:
     if ch in _KEEP:
         return False
     return _in_ranges(ord(ch)) or unicodedata.category(ch).startswith("C")
+
+
+def is_lookalike_space(ch: str) -> bool:
+    """True for a character that a reader sees as a space and that is not
+    U+0020: Unicode category Zs (NBSP, U+2000 to U+200A, U+202F, U+205F,
+    U+3000, and the Ogham space mark). A body that swaps some plain spaces
+    for these hides a few bits per word (review of #1191, P2), so
+    :func:`clean_reply_body` makes each one a plain space."""
+    return ch != " " and unicodedata.category(ch) == "Zs"
 
 
 def _is_pictograph(ch: str) -> bool:
@@ -197,8 +209,9 @@ def clean_reply_body(text: str) -> str:
       line and a tab. A zero-width joiner stays only between two real
       pictographs, and one presentation selector (VS15 or VS16) stays only
       right after a real pictograph, or in a keycap.
-    * A line separator is a new line. The spaces at the end of a line leave,
-      so a line of spaces is a blank line.
+    * A space that only looks like a space (:func:`is_lookalike_space`) is a
+      plain space, U+0020. A line separator is a new line. The spaces at the
+      end of a line leave, so a line of spaces is a blank line.
     * A run of blank lines is one blank line, and the text is trimmed.
     """
     raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -206,6 +219,8 @@ def clean_reply_body(text: str) -> str:
     for i, ch in enumerate(raw):
         if ch in _LINE_BREAKS:
             out.append("\n")
+        elif is_lookalike_space(ch):
+            out.append(" ")
         elif ch in _PRESENTATION or ch == _ZWJ:
             if _kept_join(raw, i, out):
                 out.append(ch)
