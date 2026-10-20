@@ -20371,11 +20371,35 @@ it an egress tool again.
 
 ### 18.7 Open items
 
-- **IMAP reads the Reply-To in INBOX only**, as `get_message` does. A reply to a mail in
-  another IMAP folder goes to the sender.
+- **An IMAP mail with no stored Message-ID** gets no Reply-To read, so its reply goes to
+  the sender (§18.8 item 2).
 - **A failed answer post loses the edits.** The card comes back after a network fault with
   the draft of the tool, not the text the member typed.
 - **A card that a restart parks** answers as a chat message after the restart, as each
   parked card does. The model then shows a new card. Nothing acts on the old answer.
 - **The durable ask row holds the draft**, as the send card's row holds its body. The row
   expires with the other asks.
+
+### 18.8 Fix round of the security review (2026-10-20)
+
+The review of #1191 found four holes. Each fix has a fence in
+`tests/unit/test_email_chat_reply.py`, and a mutation of each fix fails it.
+
+1. **Hidden text in the body.** The drafter reads member data, so a mail could make it
+   hide data in text that the member does not see. `clean_reply_body` in
+   `acb_skills/reply_card.py` is the one cleaning. It removes each control and format
+   character but a new line, a tab and an emoji joiner, and it makes each run of blank
+   lines one blank line. `POST /email/reply-card` cleans the draft. The act route refuses
+   a submitted body with a tag character or a bidi control, and cleans the rest before
+   the send. The card grows its text box to the whole text and counts the lines. It also
+   says what the send adds: the signature, and the quote that Outlook adds.
+2. **IMAP read the wrong mail.** An IMAP UID is unique in one folder only. The read now
+   selects the stored folder, and it uses the Reply-To only when the Message-ID matches.
+   Else the reply goes to the sender.
+3. **The title named the sender.** The title and the summary of the card now name the
+   derived To in full. A Reply-To that is not the sender shows as a notice: "Reply goes to
+   X, not to the sender Y."
+4. **A viewer could block the Send.** respond-input now records an answer only after the
+   thread that owns the card took it, and the key names that thread. The act waits up to
+   3 seconds for the record. The answer names the email (`message_id`), so a record of
+   one card cannot act on another email.
