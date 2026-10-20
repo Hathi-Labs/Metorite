@@ -6054,6 +6054,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** H-363 · `specs/box_hardening.md` §5 BH-1 · H-271
 - **Added:** 2026-10-20 · H-363
 
+### H-369 · Accept, amend or refuse D-CF-1 to D-CF-7, the chat-first proposals · [OWNER] · product
+- **Check:** `grep -c "Decided: owner" project-docs/specs/chat_first_surface.md`
+  returns 1 or more. If it does, delete this entry.
+- **Why:** the owner asked on 2026-10-20 for a chat-first design, with the
+  phone first. `specs/chat_first_surface.md` §5 proposes seven decisions,
+  each with a default. An agent builds to the defaults, dark, behind
+  `NEXT_PUBLIC_CHAT_FIRST`. The owner's answer changes the shape before the
+  flag goes on.
+- **Do this (owner):** read §5 of the spec. For each row, say "accept",
+  "amend" with the new default, or "refuse". The two that change the most
+  are D-CF-1 (no peek strip on a desktop) and D-CF-3 (the phone opens on the
+  chat once per browser session, never on a deep link).
+- **Then (agent):** write the answers into §5 with "Decided: owner,
+  <date>", mint the D number in `work_plan.md` §3, and update CF-1 and CF-2
+  if D-CF-1 or D-CF-2 changed. Then turn the flag on in staging and ask the
+  owner to try the phone flow on dev.metorite.com.
+- **Authority:** `specs/chat_first_surface.md` §5 and §9
+- **Added:** 2026-10-20 · WS-62 design session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
