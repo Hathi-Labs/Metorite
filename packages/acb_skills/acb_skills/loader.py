@@ -1225,6 +1225,12 @@ def _ensure_repo(
     lock = _get_repo_lock(local_name)
     with lock:
         clone_dir = cache_root / local_name
+        # H-363: record the repo from the registry, in gateway memory. A push
+        # goes to this repo, never to an ``origin`` that a run rewrote.
+        try:
+            git_auth.pin_remote(clone_dir, git_auth.GitHubRemote(org, repo_name))
+        except ValueError:
+            pass
         if clone_dir.exists() and (clone_dir / ".git").exists():
             # Already cloned — scrub any token from the clone's config and
             # set the public URL (H-363), then pull through the seam.

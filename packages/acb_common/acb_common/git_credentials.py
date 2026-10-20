@@ -71,6 +71,8 @@ __all__ = [
     "fetch",
     "find_clone_secrets",
     "parse_github_remote",
+    "pin_remote",
+    "pinned_remote",
     "public_url",
     "push",
     "push_token",
@@ -396,6 +398,31 @@ def _seed_haves(bare: Path, clone_dir: Path, tmp: Path) -> None:
         )
 
 
+# ── The repo of each clone, as the loader recorded it ────────────────────────
+
+#: ``resolved clone dir -> GitHubRemote``. The loader writes it when it clones
+#: or refreshes a clone (``_ensure_repo``), from the registry, never from the
+#: clone. It lives in the gateway's memory, which no agent shell can write.
+_PINNED: dict[str, GitHubRemote] = {}
+
+
+def _pin_key(clone_dir: Path | str) -> str:
+    try:
+        return str(Path(clone_dir).resolve())
+    except OSError:
+        return str(clone_dir)
+
+
+def pin_remote(clone_dir: Path | str, remote: GitHubRemote) -> None:
+    """Record that *clone_dir* is a clone of *remote*. The loader calls it."""
+    _PINNED[_pin_key(clone_dir)] = remote
+
+
+def pinned_remote(clone_dir: Path | str) -> GitHubRemote | None:
+    """The loader's record of the repo of *clone_dir*, or ``None``."""
+    return _PINNED.get(_pin_key(clone_dir))
+
+
 # ── The four network acts ────────────────────────────────────────────────────
 
 #: A sentinel: "resolve the read credential from the settings".
@@ -428,6 +455,7 @@ def fetch(
     clone_dir: Path | str,
     *,
     credential: str | None = _READ,
+    remote: GitHubRemote | None = None,
     timeout: float = 60,
 ) -> GitResult:
     """Update ``refs/remotes/origin/*`` of *clone_dir* from its remote.
@@ -436,9 +464,12 @@ def fetch(
     (rule 3), then the clone fetches from it with no credential. Any other
     remote (a local path in a test or on a dev box) gets a plain
     ``git fetch origin``, and no credential exists for it.
+
+    *remote* pins the repo (the loader's record, :func:`pin_remote`). Without
+    it, the clone's ``origin`` names the repo.
     """
     clone_dir = Path(clone_dir)
-    remote = clone_remote(clone_dir)
+    remote = remote or pinned_remote(clone_dir) or clone_remote(clone_dir)
     if remote is None:
         return _run(["fetch", "origin"], cwd=clone_dir, timeout=timeout)
     cred = read_token() if credential == _READ else credential
@@ -464,11 +495,12 @@ def remote_default_branch(
     clone_dir: Path | str,
     *,
     credential: str | None = _READ,
+    remote: GitHubRemote | None = None,
     timeout: float = 15,
 ) -> str | None:
     """The branch that the remote's HEAD names, or ``None``."""
     clone_dir = Path(clone_dir)
-    remote = clone_remote(clone_dir)
+    remote = remote or pinned_remote(clone_dir) or clone_remote(clone_dir)
     if remote is None:
         result = _run(["ls-remote", "--symref", "origin", "HEAD"], cwd=clone_dir, timeout=timeout)
     else:
@@ -492,6 +524,7 @@ def push(
     src: str,
     branch: str,
     credential: str | None,
+    remote: GitHubRemote | None = None,
     timeout: float = 60,
 ) -> GitResult:
     """Push commit *src* of *clone_dir* to ``refs/heads/<branch>`` of its remote.
@@ -500,6 +533,12 @@ def push(
     runs from a gateway bare repo that sees the clone's objects (rule 3), with
     ``--no-verify``. On success the clone's ``origin/<branch>`` moves too, so
     ``git branch -r --contains`` sees the pushed commit.
+
+    The TARGET repo is the loader's record of the clone (:func:`pin_remote`),
+    not the clone's ``origin``: a run can rewrite ``origin``, and a push with
+    the operator's token must not go to a repo that the run chose. Only a
+    clone with no record (a gateway restart before its agent loaded again)
+    falls back to ``origin``, and that is logged.
     """
     clone_dir = Path(clone_dir)
     if not _BRANCH.fullmatch(branch or "") or ".." in branch or branch.startswith(("-", "/")):
@@ -509,7 +548,10 @@ def push(
     if not resolved.ok or not re.fullmatch(r"[0-9a-f]{40,64}", sha):
         return GitResult(2, "", f"no commit {src!r} in the clone")
     target = f"{sha}:refs/heads/{branch}"
-    remote = clone_remote(clone_dir)
+    pinned = remote or pinned_remote(clone_dir)
+    remote = pinned or clone_remote(clone_dir)
+    if remote is not None and pinned is None:
+        _log.warning("git_credentials.push_target_from_origin", clone=clone_dir.name)
     if remote is None:
         result = _run(["push", "--no-verify", "origin", target], cwd=clone_dir, timeout=timeout)
     else:

@@ -60,6 +60,12 @@ def _commit(repo: Path, name: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+@pytest.fixture(autouse=True)
+def _no_pins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test starts with no loader record of a clone's repo."""
+    monkeypatch.setattr(gc, "_PINNED", {})
+
+
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A home dir of the test's own, so no real store or config is touched."""
@@ -124,7 +130,13 @@ def fake_github(origin: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str,
             if a == "-c" and i + 1 < len(argv) and argv[i + 1] == "protocol.allow=never":
                 skip = True
                 continue
-            mapped.append(str(origin) if ours.fullmatch(a) else a)
+            if ours.fullmatch(a):
+                a = str(origin)
+            elif re.match(r"https://([^@/\s]+@)?github\.com/", a):
+                # Any other GitHub repo: a path that does not exist, so a
+                # test never reaches the network, and the act fails.
+                a = str(origin.parent / "no-such-remote.git")
+            mapped.append(a)
         result = real(mapped, cwd=cwd, extra=extra, timeout=timeout, stdin=stdin)
         url = next((a for a in argv if ours.fullmatch(a)), None)
         if result.ok and "clone" in argv and url:
@@ -449,6 +461,26 @@ def test_a_reviewer_push_gets_the_credential_in_one_process(
     assert row["status"] == "approved" and row["reviewed_by"] == "chat:autopush"
     _assert_no_token(clone.parent, FAKE)
     _no_store_written(home)
+
+
+def test_a_reviewer_push_goes_to_the_pinned_repo_not_to_origin(
+    monkeypatch: pytest.MonkeyPatch, tokens: dict, origin: Path, fake_github: list,
+    agent_clone: tuple[Path, str, str],
+) -> None:
+    """A run rewrote ``origin`` to another repo. The push uses the loader's record."""
+    from acb_skills import permission_policy as pp
+
+    clone, base, head = agent_clone
+    gc.pin_remote(clone, gc.GitHubRemote(OWNER, REPO))
+    other = "https://github.com/FracktalWorks/Metorite.git"
+    _git(clone, "remote", "set-url", "origin", other)
+    with _run_scope("run-pin", push_allowed=True):
+        assert pp.note_agent_push_request() is True
+    _detect(monkeypatch, clone, base, "run-pin", (True, ""))
+    pushes = [c for c in _credentialed(fake_github) if "push" in c["argv"]]
+    assert len(pushes) == 1 and GH_URL in pushes[0]["argv"]
+    assert all(other not in a for c in fake_github for a in c["argv"])
+    assert _git(origin, "rev-parse", "main") == head
 
 
 def test_no_push_request_means_no_push(
