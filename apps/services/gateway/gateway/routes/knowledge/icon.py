@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/knowledge_base.md`` §21.7, the KB-2f row.
 
 A page icon is one emoji, or nothing. It is stored in ``kb_pages.icon``,
-which a CHECK of migration 287 keeps to 16 characters. It is not the icon
+which a CHECK of migration 290 keeps to 16 characters. It is not the icon
 NAME of a space (``kb_spaces.icon``, a Lucide name).
 
 ``PATCH /knowledge/pages/{id}`` takes ``icon``. A PATCH that changes ONLY the
@@ -25,7 +25,7 @@ from fastapi import HTTPException
 from gateway.routes.knowledge import core
 from sqlalchemy import text
 
-#: The longest icon, in characters. The CHECK of migration 287 holds the same.
+#: The longest icon, in characters. The CHECK of migration 290 holds the same.
 MAX_ICON = 16
 
 #: The one emoji that starts with an ASCII mark: a keycap, such as "1️⃣".

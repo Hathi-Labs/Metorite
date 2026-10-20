@@ -1,5 +1,5 @@
 -- ============================================================================
--- 287_kb_page_icon_favorites.sql — the icon of a Knowledge page, and the
+-- 290_kb_page_icon_favorites.sql — the icon of a Knowledge page, and the
 -- favourites of a member.
 --
 -- What: one new column, one new table and two indexes.
@@ -35,9 +35,10 @@
 -- <table>_org_fk`, because generated phase 3 adds that name. The gateway
 -- takes `member_email` from the session (`core.viewer_email`), never from a
 -- request body.
--- The number is taken at build time (R1). On 2026-10-19 main held 284, PR
--- #1162 held 286, and a branch held 285. Check it again at merge. The tests
--- find this file by CONTENT, never by number.
+-- The number is taken at build time (R1). On 2026-10-20 main held 288, PR
+-- #1192 held 289, PR #1162 held 286, and a branch held 285. The spec named
+-- 287, which main took first. Check it again at merge. The tests find this
+-- file by CONTENT, never by number.
 -- ============================================================================
 
 SET lock_timeout = '5s';
