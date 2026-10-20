@@ -11537,11 +11537,23 @@ The app bar keeps Refresh and New only.
 - **The dirty rule.** One rule serves every list (`dirtyState`). The default view with a filter, a sort or columns set shows "+ Save view". A saved view that differs shows "Update view" and "Reset". "Update view" needs edit rights.
 - **The chip menu.** A right click, or the "View options" button, opens Rename, Share or Make private (admin) and Delete. The rail no longer nests views.
 - **Columns.** A saved view keeps its columns on the view. The default view keeps them in the browser.
-- **Module lists.** A generic module list has the same two rows. Its scope key is `module:<api_name>`. Migration 287 widens the `crm_views` check, and `views.py` accepts the key. The gateway filters a module list by search and sort only. So a module view saves those two, and the list has no "+ Filter" and no Export.
+- **Module lists.** A generic module list has the same two rows. Its scope key is `module:<api_name>`. Migration 287 widens the `crm_views` check, and `views.py` accepts the key. CRM-U9 gave it the field filters (below). It has no Export.
 - **Phone.** Row 1 scrolls. Row 2 is Search and one "Filters (n)" button that opens a sheet.
 - **The shared seam.** `src/lib/savedViews/` holds the model, `orderViews`, `dirtyState` and the hook. `src/components/ViewChips.tsx` draws row 1. Projects (`pm_views`) is the next user.
 
 **Fences (R7).** `src/lib/savedViews/index.test.ts` holds the order, the dirty rule and the chip list. `crmU8.test.ts` holds the field groups, the fill order, the filter chips, the module key and the app bar. `tests/unit/test_crm_views_entity.py` holds the server key and the migration check. `crmQ8.test.ts` holds the rail without nested views.
+
+#### Module field filters (CRM-U9)
+
+*(2026-10-20. Built.)* A generic module list has the "+ Filter" panel, the chips, Clear and the Owner picker of the four core lists.
+
+- **Gateway.** `GET /crm/modules/{module}/records` takes `owner` (`me` is the caller), `updated_from`, `updated_to` and `custom.<key>=<value>` or `custom.<key>.in=a,b`. The values match the `fields` JSONB by equality, or by one item of a stored array.
+- **One seam.** `core.custom_value_clauses` builds the SQL for the core lists and the module lists. Every key and value is a bound parameter.
+- **Unknown keys.** A custom key with no definition is ignored. A bad day is a 422. A module record keeps no created date, so only the Updated range exists.
+- **Definitions.** The list response already carries `field_defs`. No new endpoint was needed. The bar offers the picklist, checkbox, number and date fields.
+- **URL and views.** The URL carries `cf.<key>` on a module tab. A saved module view holds `filters` as the core views do.
+
+**Fences (R7).** `tests/unit/test_crm_modules_routes_r8.py::test_the_record_list_filters_by_field_owner_and_updated_day` holds the gateway rules and the tenant scope. `crmU9.test.ts` holds the field list, the chips, the request and the URL.
 
 ### 20.13 CRM-U6: stage order, win chance and the lane stat block
 

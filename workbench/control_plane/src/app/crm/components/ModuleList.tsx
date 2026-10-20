@@ -29,6 +29,7 @@ import {
   moduleListQuery,
   type ModuleFieldDef,
 } from "../lib/modules";
+import { useOwners } from "../lib/useCrmMode";
 import { applySort, type CrmView } from "../lib/urlState";
 import type { ViewActions } from "../lib/useViewActions";
 import CrmViewBar from "./CrmViewBar";
@@ -67,7 +68,8 @@ function message(err: unknown): string {
 function useModuleList(module: string, view: CrmView, reloadToken: number) {
   const [state, setState] = useState<ListState>(START);
   const latest = useRef(0);
-  const key = `${module}|${view.q}|${view.sort ?? ""}|${view.dir}|${reloadToken}`;
+  const filters = JSON.stringify([view.owner, view.ranges, view.custom]);
+  const key = `${module}|${view.q}|${view.sort ?? ""}|${view.dir}|${filters}|${reloadToken}`;
 
   useEffect(() => {
     const asked = ++latest.current;
@@ -153,13 +155,14 @@ export default function ModuleList({
   onColumnsPicked: (keys: string[]) => void;
 }) {
   const list = useModuleList(module, view, reloadToken);
+  const owners = useOwners(true);
   const [choosing, setChoosing] = useState(false);
   const canChoose = pickable(list.defs).length > 0;
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Two rows, as every list has them (CRM-U8). A module list has no
-          field filter yet: the gateway reads only the search and the sort.
-          Export is left out too, because the export routes name the four lists. */}
+      {/* Two rows, as every list has them (CRM-U8). The filter bar reads the
+          field definitions of the list (CRM-U9). Export is left out, because
+          the export routes name the four lists. */}
       <CrmViewBar
         allLabel={`All ${label.toLowerCase()}`}
         actions={actions}
@@ -173,7 +176,8 @@ export default function ModuleList({
         view={view}
         onChange={onChange}
         search
-        showOwner={false}
+        owners={owners}
+        mirror
         fieldDefs={list.defs}
         count={list.loading ? null : list.total}
       />
