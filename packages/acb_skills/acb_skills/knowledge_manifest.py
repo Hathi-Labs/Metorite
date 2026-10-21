@@ -107,6 +107,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/knowledge/favorites", "", "X", reason=_FAVORITE_REASON),
     Route("POST", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
     Route("DELETE", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
+    # KB-2g: one old version with its body, for the history modal.
+    Route("GET", "/knowledge/pages/{page_id}/versions/{version}", "", "A", planned="KB-5"),
     # ── Search ── `search_company` already asks Knowledge (§20). The
     # Knowledge-only tool waits (§8.1, `search_knowledge` is deferred).
     Route("GET", "/knowledge/search", "", "A", planned="search_knowledge, deferred (§8.1)"),

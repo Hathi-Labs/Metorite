@@ -852,6 +852,29 @@ select optgroup {
 .kb-editor + .ProseMirror-dropcursor { background: var(--primary); }
 .kb-editor .ProseMirror-gapcursor::after { border-top-color: var(--foreground); }
 
+/* KB-2g: the marks of a compare in the page history (`lib/historyDiff.ts`).
+   An added word takes a tint of --success, and a removed word shows struck
+   through in --destructive: the status vocabulary, never a palette class. */
+.kb-diff-added {
+  background: color-mix(in srgb, var(--success) 20%, transparent);
+  color: var(--foreground);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.kb-diff-removed {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 2px;
+  margin-right: 0.25em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.kb-diff-node-added { outline: 2px solid var(--success); outline-offset: 2px; border-radius: 4px; }
+.kb-diff-current { box-shadow: 0 0 0 2px var(--primary); }
+
 /* Task lists: the box, then the item's own blocks. */
 .kb-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.25em; }
 .kb-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 0.5em; padding-left: 0; }

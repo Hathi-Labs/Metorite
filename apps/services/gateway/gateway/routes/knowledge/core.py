@@ -97,6 +97,10 @@ ME_PURPOSE = "Your private drafts. Only you can see them."
 #: The days from a publish to the review date (§4.2).
 REVIEW_DAYS = 180
 
+#: The highest version number. ``kb_page_versions.version`` is int4, so a
+#: route refuses a bigger number with 422 before it reaches the driver.
+MAX_VERSION = 2_147_483_647
+
 #: The page columns that each page read returns. ``p.icon`` is one emoji, or
 #: NULL (KB-2f). It is not the icon NAME of a space.
 PAGE_COLUMNS = (
