@@ -25,6 +25,10 @@ import { expect, test, type Page } from "@playwright/test";
  *   per browser session and never on a deep link. A member who never wrote
  *   sees one nudge: under the field on a desktop, above the Ask tab on a
  *   phone. The first message and the X retire it, on the server.
+ * - With the flag on (CF-8), the sheet has one header row above the
+ *   messages, no Share button, no model picker, and Send. The "…" control
+ *   at the composer's end holds Share and the effort choice. With the flag
+ *   off, the agent row and the Share row still show.
  *
  * The vitest twin is `src/lib/panelMotion.test.ts`. No gateway runs here:
  * each request the page makes has a stub, or fails at once.
@@ -363,6 +367,12 @@ test.describe("the assistant opens, closes and goes full screen as one element",
     // Flag off (CF-1): the sheet has no way down, and no handle.
     await expect(panel(page).getByRole("button", { name: "Show as a strip" })).toHaveCount(0);
     await expect(panel(page).locator("[data-assistant-handle]")).toHaveCount(0);
+    // Flag off (CF-8): the agent row and the Share row still show, and the
+    // chat has no "…" control.
+    await expect(panel(page).locator("[data-chat-agent-row]")).toBeVisible();
+    await expect(panel(page).locator("[data-chat-room-row]")).toBeVisible();
+    await expect(panel(page).getByRole("button", { name: "Share" })).toBeVisible();
+    await expect(panel(page).locator("[data-chat-more]")).toHaveCount(0);
     await panel(page).getByRole("button", { name: "Close Metorite" }).click();
     await expect(panel(page)).toHaveAttribute("data-panel-phase", "closed");
     await expect(panel(page)).toBeHidden();
@@ -403,6 +413,55 @@ test.describe("the assistant opens, closes and goes full screen as one element",
     await expect(panel(page)).toHaveAttribute("data-panel-phase", "closed");
     await expect(panel(page)).toBeHidden();
     await expect.poll(() => page.evaluate(() => document.documentElement.hasAttribute("data-assistant-peek"))).toBe(false);
+  });
+
+  test("the phone sheet shows one header row, one field and one send, with the flag on (CF-8)", async ({ page }) => {
+    await openHome(page, 390, 844, { chatFirst: true });
+    await openSheet(page);
+    const sheet = panel(page);
+
+    // One header row above the messages: the dock's. The chat's agent row
+    // and its Share row are gone.
+    await expect(sheet.locator("header")).toHaveCount(1);
+    await expect(sheet.locator("[data-chat-agent-row]")).toHaveCount(0);
+    await expect(sheet.locator("[data-chat-room-row]")).toHaveCount(0);
+    await expect(sheet.getByRole("button", { name: "Share" })).toHaveCount(0);
+    // The row's five controls, at the phone's tap size, and no Files.
+    for (const name of ["Your chats", "New chat", "Show as a strip", "Close Metorite"]) {
+      const b = sheet.getByRole("button", { name, exact: true });
+      await expect(b).toBeVisible();
+      const box = (await b.boundingBox())!;
+      expect(Math.round(box.height), name).toBeGreaterThanOrEqual(44);
+      expect(Math.round(box.width), name).toBeGreaterThanOrEqual(44);
+    }
+    await expect(sheet.getByRole("button", { name: "Open this chat's files in Artifacts" })).toHaveCount(0);
+
+    // One field, one send: no model picker, no effort picker in the box.
+    await expect(sheet.locator("[data-chat-pickers]")).toHaveCount(0);
+    await expect(sheet.locator("[data-chat-composer-ring]")).toHaveCount(0);
+    const send = sheet.getByRole("button", { name: "Send", exact: true });
+    await expect(send).toBeVisible();
+    const sendBox = (await send.boundingBox())!;
+    expect(Math.round(sendBox.height)).toBeGreaterThanOrEqual(44);
+
+    // The "…" control holds Share, the files and the effort choice.
+    const more = sheet.locator("[data-chat-more]");
+    await expect(more).toBeVisible();
+    await more.click();
+    const menu = page.getByRole("menu", { name: "More" });
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "Share this conversation" })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "This chat's files" })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: /^Auto/ })).toBeVisible();
+    await expect(menu.locator("[data-chat-more-context]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+
+    // The reading width: the thread's gutter is 16 px each side at 390.
+    const thread = sheet.locator("[data-assistant-chat] .overflow-y-auto").first();
+    await expect
+      .poll(() => thread.evaluate((el) => [getComputedStyle(el).paddingLeft, getComputedStyle(el).paddingRight]))
+      .toEqual(["16px", "16px"]);
   });
 
   test("a pill link in the chat drops the sheet to the strip, and the page shows (CF-1)", async ({ page }) => {
