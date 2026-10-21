@@ -381,6 +381,37 @@ class Settings(BaseSettings):
     # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
     artifact_registry_enabled: bool = False
 
+    # ── The object store (MT-1g-1, D108, 2026-10-20) ─────────────────────────
+    #
+    # `object_store_enabled` turns on the one seam to object storage,
+    # `acb_common.object_store`, default OFF. Off, every caller keeps its old
+    # place (a column or the box's disk). The store is Supabase Storage
+    # through its S3 endpoint, one private bucket for each environment.
+    #
+    # Two ways to sign in, and the seam picks by what is set:
+    #   * Supabase (production, staging): `object_store_supabase_url`,
+    #     `object_store_auth_email` and `object_store_auth_password` name the
+    #     files user. The seam asks Supabase Auth for a JWT and sends it as
+    #     the S3 session token. `object_store_access_key_id` holds the project
+    #     ref and `object_store_secret_access_key` the anon key, as BH-4 does.
+    #   * A plain key pair (a local MinIO, the tests): only the two key
+    #     fields. The seam refuses this on a `*.supabase.co` endpoint,
+    #     because a Supabase S3 key opens every bucket, backups too (D108).
+    # The password and the keys are secrets: `scripts/secrets.sh`, never chat.
+    # Spec: project-docs/specs/saas_multitenancy.md MT-1g. Fence:
+    # tests/unit/test_object_store.py.
+    object_store_enabled: bool = False
+    object_store_endpoint: str = ""
+    object_store_region: str = "us-east-1"
+    object_store_bucket: str = ""
+    object_store_access_key_id: str = ""
+    object_store_secret_access_key: str = ""
+    object_store_supabase_url: str = ""
+    object_store_auth_email: str = ""
+    object_store_auth_password: str = ""
+    # The largest object one put accepts. A caller may set a lower cap.
+    object_store_max_object_mb: int = 512
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.

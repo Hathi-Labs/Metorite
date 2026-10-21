@@ -5416,6 +5416,42 @@ replaces the rule of §21.1 of 2026-10-18, "ideas only, never code".
 **The owner may overrule it.** It changes no price. It changes the licence
 position of the repo, which is why part 4 names the owner.
 
+### D108 — File bytes go to Supabase Storage through one seam, and an artifact owner gets 5 GB for each seat (2026-10-20)
+
+Owner decision, 2026-10-20, in chat: "Go ahead with your recommendations."
+The recommendations were the store of `saas_multitenancy.md` MT-1g and the
+quota of `artifact_management.md` §13 Q3. Board: **WS-29** (MT-1g) and
+**WS-60** (AM-5). Owning specs: **`specs/saas_multitenancy.md` MT-1g** and
+**`specs/artifact_management.md` §7.5**.
+
+1. **One store for file bytes: Supabase Storage, through its S3 endpoint.**
+   One private bucket for each environment: `metorite-files` for production
+   and `metorite-files-staging` for staging. The backup bucket
+   `metorite-backups` stays separate.
+2. **One seam.** `acb_common.object_store` is the only code that talks to
+   the store. Keys are `<organization_id>/<app>/<object id>`. The tenant
+   comes from the bound context, never from request input (R5). The seam
+   refuses a key of another organization.
+3. **No project-wide S3 key.** A Supabase S3 access key opens every bucket
+   of the project, the backups included (H-271). So the app signs in as its
+   own Supabase Auth user and sends the short-lived JWT as the S3 session
+   token, as BH-4 does for the backup. Storage policies limit that user to
+   the files bucket of its environment.
+4. **The order of the moves is MT-1g's.** Files with one copy on the box's
+   disk move first, then `agent_blob`, then large text, one table at a time.
+   New upload paths write to the store from the day the seam is on.
+   **The files bucket gets its own backup before `agent_blob` moves.** Those
+   bytes then leave the nightly `pg_dump`, and the files user can delete. So
+   MT-1g-2 adds a nightly copy of the files bucket to the off-box backup,
+   written by the insert-only backup writer of BH-4.
+5. **Artifact quota: 5 GB for each member, and 5 GB × `seats_purchased`
+   for each organization, pooled.** A membership row is not a seat (D32.5). A write past either limit is refused with a
+   reason, and a delete always works. This answers §13 Q3. The organization
+   number becomes a plan fact when WS-31 holds one.
+
+**The owner may overrule it.** It adds a storage cost of about $0.02 per GB
+each month on Supabase, and it moves no price.
+
 ---
 
 ## 4. Single-owner registry (who owns duplicated work)

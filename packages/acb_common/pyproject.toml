@@ -18,6 +18,10 @@ dependencies = [
     # dependency of this package and is declared as one.
     "sqlalchemy[asyncio]>=2.1",
     "asyncpg>=0.30",
+    # acb_common.object_store — the one seam to file bytes (MT-1g-1, D108).
+    # Imported inside the calls, so a process that never stores a file does
+    # not load it. It was already in the lock through litellm.
+    "boto3>=1.35",
 ]
 
 [build-system]
