@@ -6194,29 +6194,6 @@ line — never reclaim a number by deleting the other entry.
   `gateway/routes/email/automation/draft_files.py`
 - **Added:** 2026-10-21 · email chat collaboration session
 
-### H-377 · Let a rule draft and a follow-up draft read the files of the mail · [AGENT]
-- **Check:** `git grep -n "load_draft_files" origin/main -- apps/services/gateway/gateway/routes/email/automation/actions.py apps/services/gateway/gateway/routes/email/automation/followups.py`
-  prints nothing. Then it is still open.
-- **Why:** a draft that a rule writes in the background runs with no member
-  session, so `load_draft_files` gets no user and reads no file. Only an
-  interactive draft reads the files of the mail.
-- **Do this:** build a `UserContext` for the mailbox owner inside the bound
-  tenant, as the rule job already binds it. Never take it from request input
-  (R5). Then pass it to `load_draft_files`, and add a test.
-- **Authority:** `gateway/routes/email/automation/draft_files.py`
-- **Added:** 2026-10-21 · email chat collaboration session
-
-### H-378 · Fit "improve my text" in Draft with AI to the window of its tier · [AGENT]
-- **Check:** `git grep -n "plan_draft(" origin/main -- apps/services/gateway/gateway/routes/email/automation/drafting.py`
-  prints one line, the call in `_llm_draft_reply`. Then it is still open.
-- **Why:** #1203 fits a NEW reply to the tier's window (`draft_budget`). The
-  improve path of the composer keeps its fixed caps. A very long thread there
-  can still reach the generic fitter, and that fitter cuts the middle.
-- **Do this:** call `plan_draft` in `_llm_compose_assist` for the thread and
-  the replied mail. Never cut the owner's own text. Add a test.
-- **Authority:** `gateway/routes/email/automation/draft_budget.py`
-- **Added:** 2026-10-21 · email chat collaboration session
-
 ### H-379 · Turn on send later: staging first, then production · [OWNER]
 - **Check:** an agent cannot read the box's settings without the `secrets`
   grant. The owner confirms that `EMAIL_SEND_LATER` is `true` in the gateway's
