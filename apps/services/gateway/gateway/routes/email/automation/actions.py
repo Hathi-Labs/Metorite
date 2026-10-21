@@ -488,6 +488,38 @@ async def _notify_me(
 _NO_MAILBOX_ACTIONS = frozenset({"CALL_WEBHOOK", "NOTIFY_ME"})
 
 
+#: The seconds that a rule draft may spend on the files of a mail. No member
+#: waits at a card, so it is longer than an interactive draft's.
+RULE_FILES_BUDGET_S = 20.0
+
+
+async def _rule_draft_files(db: Any, message_id: str, owner: str) -> Any:
+    """The files of the mail for a rule draft (H-377), or None.
+
+    A rule runs with no member session. The member is the OWNER of the
+    mailbox, from its row (``user_email`` of the job), and the tenant is the
+    one that the job bound. Neither comes from request input (R5). Each read
+    proves ownership again (``attachment_text``). With no bound tenant or no
+    owner, nothing is read. A follow-up nudge reads no file: it answers the
+    member's own last mail, whose files the member sent."""
+    from acb_auth.roles import UserContext, UserRole  # noqa: PLC0415
+    from acb_common.db import current_tenant  # noqa: PLC0415
+    from gateway.routes.email.automation.draft_files import (  # noqa: PLC0415
+        load_draft_files,
+    )
+
+    org = current_tenant()
+    if not owner or not org:
+        return None
+    member = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=str(org))
+    try:
+        return await load_draft_files(db, message_id, member, budget_s=RULE_FILES_BUDGET_S,
+                                      vision=None)
+    except Exception as exc:  # noqa: BLE001 - a rule draft still writes
+        _log.warning("email.rule_draft_files_failed", error=type(exc).__name__)
+        return None
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -633,6 +665,10 @@ async def _apply_rule_actions(
                             "attachments": (await _attachment_summaries(
                                 db, [message_id])).get(str(message_id), ""),
                         }
+                    # The files of the mail, as an interactive draft reads them
+                    # (H-377). No member waits, so the budget is longer.
+                    draft_email["_files"] = await _rule_draft_files(
+                        db, str(message_id), user_email)
                     body = await _agent_draft_reply(
                         draft_email, about, signature, user_email, use_agent=True,
                         confidence=draft_conf,

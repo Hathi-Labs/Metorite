@@ -1422,23 +1422,44 @@ async def _llm_compose_assist(
                 parts.append(f"Recipient: {recipient}\n")
             if subject:
                 parts.append(f"Subject: {subject}\n")
+        # Fit the replied mail and the thread to the window of the tier, or
+        # move to a tier with a larger window (``draft_budget``, H-378). The
+        # owner's own text and instruction are never cut: they count as fixed.
+        owner_text = current_body[:_DRAFT_BODY_MAX_CHARS] if improving else ""
+        plan = plan_draft(
+            model,
+            DraftParts(latest=reply_to_body[:_DRAFT_BODY_MAX_CHARS],
+                       thread=thread[:_DRAFT_THREAD_MAX_CHARS]),
+            fixed_chars=(len(sys_prompt) + len(voice_prompt("email")) + len(ctx)
+                         + len(owner_text) + len(instruction or "")
+                         + len(recipient) + len(subject) + _PROMPT_FRAME_CHARS),
+            larger=_LARGER_DRAFT_TIERS,
+        )
+        if plan.model != model:
+            _log.info("email.compose_tier_raised", frm=model, to=plan.model)
+            model = plan.model
+        if plan.left_out:
+            _log.info("email.compose_parts_left_out", parts=plan.left_out)
+            parts.append("\nTo fit, these parts are not shown: "
+                         + "; ".join(plan.left_out)
+                         + ". Write from what is shown, and do not mention it.\n")
         # The message being replied to — the immediate email to address, and
         # the form it may give, distinct from the earlier thread.
-        if reply_to_body.strip():
+        if plan.parts.latest.strip():
             parts.append(
                 "\nThe email you are replying to — read it in full, answer its "
                 "questions and fill any form it gives:\n"
-                f"{frame.wrap('REPLIED EMAIL', reply_to_body[:_DRAFT_BODY_MAX_CHARS])}\n"
+                f"{frame.wrap('REPLIED EMAIL', plan.parts.latest)}\n"
             )
-        if thread:
+        if plan.parts.thread:
             parts.append(
                 "\nEarlier in the thread, for context only (do NOT quote it):\n"
-                f"{frame.wrap('EARLIER THREAD', thread[:_DRAFT_THREAD_MAX_CHARS])}\n"
+                f"{frame.wrap('EARLIER THREAD', plan.parts.thread)}\n"
             )
         if improving:
             parts.append(
                 "\nThe owner's current draft — improve THIS, keeping their "
-                f"meaning:\n{current_body[:_DRAFT_BODY_MAX_CHARS]}\n"
+                f"meaning:\n{owner_text}\n"
             )
         guide = (instruction or "").strip()
         if guide:
