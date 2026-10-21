@@ -341,22 +341,34 @@ def test_the_fence_sees_every_import_form() -> None:
     assert _s3_imports("import json\nfrom acb_common import object_store") == []
 
 
+def _tracked(*patterns: str) -> list[Path]:
+    """The tracked files that match, from git. A walk of the tree would
+    descend into every ``node_modules`` first, and took 60 s."""
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", *patterns], cwd=_REPO, check=True, capture_output=True,
+    ).stdout.decode("utf-8")
+    return [_REPO / name for name in out.split("\0") if name]
+
+
 def test_no_module_but_the_seam_imports_an_s3_client() -> None:
     """D108 part 2. A second S3 client is a second seam, and it would skip
     the tenant check. Tests may use one to set up a bucket."""
     offenders: list[str] = []
-    for py in _REPO.rglob("*.py"):
+    for py in _tracked("*.py"):
         rel = py.relative_to(_REPO)
-        if py == _SEAM or _SKIP_PARTS.intersection(rel.parts) or rel.parts[0].startswith("."):
+        if py == _SEAM or _SKIP_PARTS.intersection(rel.parts) or not py.is_file():
             continue
         if _s3_imports(py.read_text(encoding="utf-8", errors="ignore")):
             offenders.append(str(rel))
-    for pkg in _REPO.rglob("package.json"):
+    for pkg in _tracked("package.json", "*/package.json"):
         rel = pkg.relative_to(_REPO)
-        if _SKIP_PARTS.intersection(rel.parts):
+        if _SKIP_PARTS.intersection(rel.parts) or not pkg.is_file():
             continue
         if _S3_PACKAGES.search(pkg.read_text(encoding="utf-8", errors="ignore")):
             offenders.append(str(rel))
+    assert len(_tracked("*.py")) > 500, "git ls-files found too few files to trust"
     assert offenders == []
 
 
