@@ -342,3 +342,81 @@ async def test_a_saved_reply_draft_keeps_every_to(monkeypatch) -> None:
     assert out == {"created": True, "id": "local-1"}
     assert made[0]["to"] == ["ravi@contoso.test", "priya@contoso.test"]
     assert upserts[0]["to_addresses"] == ["ravi@contoso.test", "priya@contoso.test"]
+
+
+# ── H-377: a rule draft reads the files of the mail ──────────────────────────
+#
+# A rule runs with no member session. ``_rule_draft_files`` builds the member
+# from the OWNER of the mailbox and the tenant that the job bound, never from
+# request input (R5). Mutation: drop the call in ``_apply_rule_actions``, or
+# read with no bound tenant.
+
+
+async def test_a_rule_draft_reads_the_files_as_the_mailbox_owner(monkeypatch) -> None:
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes.email.automation import actions
+
+    seen: list[Any] = []
+
+    async def load(db, mid, user, **kw):
+        seen.append((mid, user, kw))
+        return df.DraftFiles(texts=[("spec.pdf", "Payload 3 kg.", False)])
+
+    monkeypatch.setattr(df, "load_draft_files", load)
+    token = bind_tenant("00000000-0000-4000-8000-0000000000b2")
+    try:
+        files = await actions._rule_draft_files(object(), "m1", "dana@fracktal.test")
+    finally:
+        release_tenant(token)
+    [(mid, user, kw)] = seen
+    assert mid == "m1" and user.email == "dana@fracktal.test"
+    assert user.organization_id == "00000000-0000-4000-8000-0000000000b2"
+    assert kw["budget_s"] == actions.RULE_FILES_BUDGET_S
+    assert files.texts[0][0] == "spec.pdf"
+
+
+async def test_a_rule_draft_with_no_tenant_reads_nothing(monkeypatch) -> None:
+    from gateway.routes.email.automation import actions
+
+    async def load(*a, **kw):
+        raise AssertionError("no read with no bound tenant")
+
+    monkeypatch.setattr(df, "load_draft_files", load)
+    assert await actions._rule_draft_files(object(), "m1", "dana@fracktal.test") is None
+    assert await actions._rule_draft_files(object(), "m1", "") is None
+
+
+async def test_the_rule_path_hands_the_files_to_the_drafter(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from gateway.routes.email.automation import actions
+
+    files = df.DraftFiles(texts=[("spec.pdf", "Payload 3 kg.", False)])
+    got: list[Any] = []
+
+    async def build(*a, **kw):
+        return {"from": "ravi@navy.test", "subject": "BQ", "body": "See attached.",
+                "thread_id": ""}
+
+    async def rule_files(db, mid, owner):
+        return files
+
+    async def drafter(email, *a, **kw):
+        got.append(email)
+        return "Dear Ravi,\n\nThanks."
+
+    async def no(*a, **kw):
+        return False
+
+    monkeypatch.setattr(actions, "_build_reply_context", build)
+    monkeypatch.setattr(actions, "_rule_draft_files", rule_files)
+    monkeypatch.setattr(actions, "_agent_draft_reply", drafter)
+    monkeypatch.setattr(actions, "_skip_for_paired_mailbox", no)
+    db, provider = AsyncMock(), AsyncMock()
+    db.execute.return_value.fetchone = lambda: None
+    await actions._apply_rule_actions(
+        db, provider, "m1", "pm1", [{"type": "DRAFT_EMAIL", "to_address": "ravi@navy.test"}],
+        {"from": "ravi@navy.test", "subject": "BQ", "body": "See attached.", "thread_id": ""},
+        user_email="dana@fracktal.test", account_id="",
+    )
+    assert got and got[0]["_files"] is files
