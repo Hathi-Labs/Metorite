@@ -192,7 +192,11 @@ def _iso(value: Any) -> str | None:
 
 
 def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
-    """One hit. *reviewed* adds ``review_at`` (CX-1). Off, the KB-3 keys."""
+    """One hit. *reviewed* adds ``review_at`` (CX-1). Off, the KB-3 keys.
+
+    A row read through :data:`_COLUMNS` also gives ``icon``, the page icon
+    of KB-2f, or None.
+    """
     page_id = str(row["page_id"])
     hit = {
         "page_id": page_id,
@@ -207,6 +211,10 @@ def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
     }
     if reviewed:
         hit["review_at"] = _iso(row.get("review_at"))
+    if "icon" in row:
+        # KB-2f: the page icon, for `GET /knowledge/search` and its view. The
+        # company retrieval builds its own `Hit` and never reads this key.
+        hit["icon"] = row["icon"]
     return hit
 
 
@@ -216,7 +224,7 @@ def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
 _COLUMNS = (
     "c.id AS chunk_id, p.id AS page_id, p.space_id, s.name AS space_name, "
     "p.title, c.heading_path, c.raw, c.valid_from, p.updated_at, p.review_at, "
-    "c.source_kind"
+    "c.source_kind, p.icon"
 )
 
 

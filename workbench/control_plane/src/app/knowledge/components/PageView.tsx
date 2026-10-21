@@ -78,6 +78,8 @@ import type { PageDetail, PageVersion } from "../lib/types";
 import ArchivedBanner from "./ArchivedBanner";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
 import HeadingAnchors from "./HeadingAnchors";
+import { FavoriteStar } from "./Favorites";
+import { PageIconControl } from "./PageIcon";
 import { useKnowledge } from "./KnowledgeContext";
 import PageBreadcrumbs from "./PageBreadcrumbs";
 import PageByline from "./PageByline";
@@ -511,7 +513,12 @@ export default function PageView({ pageId }: { pageId: string }) {
             </div>
           ) : (
             <>
-              <h2 className="break-words text-xl font-semibold text-foreground">{page.title}</h2>
+              {/* KB-2f: the page icon and the star, around the title. */}
+              <div className="group mt-1 flex items-center gap-2">
+                <PageIconControl page={page} editable={writable} />
+                <h2 className="min-w-0 flex-1 break-words text-xl font-semibold text-foreground">{page.title}</h2>
+                <FavoriteStar page={page} />
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
                   {stateLabel(page.state)}

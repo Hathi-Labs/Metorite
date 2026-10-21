@@ -46,11 +46,14 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
-import { pageIcon, spaceIcon } from "../lib/labels";
+import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
 import { applyMove, dropZoneAt, planDrop, targetFor, type PageDropTarget } from "../lib/treeDrop";
 import type { PageSummary, Space } from "../lib/types";
+import { favoriteMenuItem, useFavoriteToggle } from "./Favorites";
+import { PageGlyph } from "./PageIcon";
+import SpaceSwitcher from "./SpaceSwitcher";
 
 const ICON = "h-3.5 w-3.5 shrink-0";
 
@@ -99,6 +102,8 @@ export default function KnowledgeRail({
 }: KnowledgeRailProps) {
   return (
     <div className="flex flex-col gap-0.5" onKeyDown={moveRailFocus}>
+      {/* KB-2f: the searchable space switcher. */}
+      <SpaceSwitcher spaces={spaces} selectedSpaceId={selectedSpaceId} onNavigate={onNavigate} />
       <RailRow
         label="Search"
         tier="group"
@@ -400,6 +405,8 @@ function PageBranch({
   const selected = page.id === selectedPageId;
   const [menu, setMenu] = useState<{ x: number; y: number; keyboard: boolean } | null>(null);
   const menuButton = useRef<HTMLButtonElement | null>(null);
+  // KB-2f: the star of the row's menu. Only a row with a menu reads it.
+  const favorite = useFavoriteToggle(page, acts !== null);
 
   const dragging = drag?.draggingId === page.id;
   const over = drag?.over ?? null;
@@ -465,6 +472,7 @@ function PageBranch({
           icon: themedIcon("Link"),
           onSelect: () => acts.copyLink(page),
         },
+        favoriteMenuItem(favorite.starred, () => void favorite.toggle()),
         ...(acts.newSubPage
           ? [
               {
@@ -532,7 +540,7 @@ function PageBranch({
           tree
           selected={selected && !litInto}
           className={`${dragging ? "opacity-40" : ""} ${litInto ? "ring-1 ring-primary" : ""}`}
-          icon={<Icon name={pageIcon(page)} className={ICON} />}
+          icon={<PageGlyph page={page} className={ICON} />}
           meta={page.state === "draft" ? <span className="text-[10px]">Draft</span> : null}
           expand={children.length ? { expanded, onToggle: () => onToggle(page.id) } : undefined}
           buttonProps={{ "aria-current": selected ? "page" : undefined }}

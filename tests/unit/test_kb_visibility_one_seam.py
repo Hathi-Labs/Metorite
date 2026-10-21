@@ -30,6 +30,14 @@ vector, for the embed job and the embed sweep, which apply no member's
 clause. None returns a page or a chunk to a caller. Each is
 listed in ``_INTEGRITY_READS`` with its reason, and the list fails when it
 goes stale.
+
+Favourites (KB-2f, §21.7). Each read of ``kb_favorites`` must JOIN
+``kb_pages`` and put in the clause, so a page that becomes hidden drops out
+of the favourites at once. This rule sweeps the WHOLE gateway package, not
+only the Knowledge modules, because a provider elsewhere (My Day, the
+command bar) could read the table too. No favourites read is an integrity
+read. ``DELETE FROM kb_favorites`` removes the caller's own row, and it is
+not a read.
 """
 from __future__ import annotations
 
@@ -51,10 +59,26 @@ _READS_CHUNKS = re.compile(r"\b(?:FROM|JOIN)\s+kb_chunks\b", re.IGNORECASE)
 _DELETES_CHUNKS = re.compile(r"\bDELETE\s+FROM\s+kb_chunks\b", re.IGNORECASE)
 
 
+#: A statement that reads the favourites of a member (KB-2f).
+_READS_FAVORITES = re.compile(r"\b(?:FROM|JOIN)\s+kb_favorites\b", re.IGNORECASE)
+
+#: The unstar. It names ``FROM kb_favorites`` and reads nothing.
+_DELETES_FAVORITES = re.compile(r"\bDELETE\s+FROM\s+kb_favorites\b", re.IGNORECASE)
+
+#: The join a favourites read must hold.
+_JOINS_PAGES = re.compile(r"\bJOIN\s+kb_pages\b", re.IGNORECASE)
+
+
+def _reads_favorites(sql: str) -> bool:
+    """True when *sql* reads ``kb_favorites``. The unstar is no read."""
+    return bool(_READS_FAVORITES.search(_DELETES_FAVORITES.sub("", sql)))
+
+
 def _reads_kb(sql: str) -> bool:
-    """True when *sql* reads a page or a chunk."""
+    """True when *sql* reads a page, a chunk or a favourite."""
     return bool(_READS_PAGES.search(sql)
-                or _READS_CHUNKS.search(_DELETES_CHUNKS.sub("", sql)))
+                or _READS_CHUNKS.search(_DELETES_CHUNKS.sub("", sql))
+                or _reads_favorites(sql))
 
 #: The one predicate.
 _CLAUSE = "visible_pages_clause"
@@ -325,4 +349,100 @@ def test_a_chunk_read_through_the_clause_passes() -> None:
 
 def test_the_indexer_delete_is_not_a_read() -> None:
     src = "SQL = 'DELETE FROM kb_chunks WHERE source_id = CAST(:p AS uuid)'\n"
+    assert _page_reads(src) == []
+
+
+# ── KB-2f: each read of the favourites joins the pages under the clause ────
+
+def _favorite_reads(source: str) -> list[tuple[str, int, bool]]:
+    """``(function, line, ok)`` for each read of ``kb_favorites`` in *source*.
+
+    ``ok`` holds when the statement JOINs ``kb_pages`` and puts in the
+    clause bound in the same function. :func:`_page_reads` gives the second
+    half. A favourites read with no page join cannot meet the clause.
+    """
+    tree = ast.parse(source)
+    found: list[tuple[str, int, bool]] = []
+    clause_ok = {(func, line): ok for func, line, ok in _page_reads(source)}
+    inside_fstring: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for part in node.values:
+                inside_fstring.add(id(part))
+    for node in ast.walk(tree):
+        if id(node) in inside_fstring:
+            continue
+        if not isinstance(node, (ast.Constant, ast.JoinedStr)):
+            continue
+        sql = _text_of(node)
+        if not _reads_favorites(sql):
+            continue
+        hits = [k for k in clause_ok if k[1] == node.lineno]
+        func = hits[0][0] if hits else "<module>"
+        ok = bool(_JOINS_PAGES.search(sql)) and bool(hits) and clause_ok[hits[0]]
+        found.append((func, node.lineno, ok))
+    return found
+
+
+def _gateway_favorite_reads() -> dict[tuple[str, str, int], bool]:
+    found: dict[tuple[str, str, int], bool] = {}
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "kb_favorites" not in source:
+            continue
+        rel = str(path.relative_to(_GATEWAY))
+        for func, line, ok in _favorite_reads(source):
+            found[(rel, func, line)] = ok
+    return found
+
+
+def test_the_favorites_reads_exist() -> None:
+    """Not vacuous: the sweep finds the reads of KB-2f in ``home.py``."""
+    reads = _gateway_favorite_reads()
+    assert any(rel.endswith("home.py") for rel, _f, _l in reads), reads
+
+
+def test_every_favorites_read_joins_the_pages_under_the_clause() -> None:
+    bad = [
+        f"  {rel}:{line} in {func}()"
+        for (rel, func, line), ok in sorted(_gateway_favorite_reads().items())
+        if not ok
+    ]
+    assert not bad, (
+        "These statements read kb_favorites without a JOIN of kb_pages under "
+        "visible_pages_clause. A favourite of a page the member no longer "
+        "sees must drop out (knowledge_base.md §21.7, KB-2f):\n" + "\n".join(bad)
+    )
+
+
+def test_the_fence_flags_a_favorites_read_with_no_page_join() -> None:
+    src = (
+        "async def favorites(db, user):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT f.page_id FROM kb_favorites f WHERE {vis}'\n"
+    )
+    assert _favorite_reads(src) == [("favorites", 3, False)]
+
+
+def test_the_fence_flags_a_favorites_join_with_no_clause() -> None:
+    src = (
+        "async def favorites(db, user):\n"
+        "    return 'SELECT p.title FROM kb_favorites f JOIN kb_pages p ON p.id = f.page_id'\n"
+    )
+    assert _favorite_reads(src) == [("favorites", 2, False)]
+
+
+def test_a_favorites_read_through_the_join_and_the_clause_passes() -> None:
+    src = (
+        "async def favorites(db, user):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT p.title FROM kb_favorites f JOIN kb_pages p "
+        "ON p.id = f.page_id WHERE {vis}'\n"
+    )
+    assert _favorite_reads(src) == [("favorites", 3, True)]
+
+
+def test_the_unstar_is_not_a_read() -> None:
+    src = "SQL = 'DELETE FROM kb_favorites WHERE page_id = CAST(:p AS uuid)'\n"
+    assert _favorite_reads(src) == []
     assert _page_reads(src) == []

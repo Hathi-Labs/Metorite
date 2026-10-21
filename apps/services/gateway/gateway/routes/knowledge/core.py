@@ -97,12 +97,13 @@ ME_PURPOSE = "Your private drafts. Only you can see them."
 #: The days from a publish to the review date (§4.2).
 REVIEW_DAYS = 180
 
-#: The page columns that each page read returns.
+#: The page columns that each page read returns. ``p.icon`` is one emoji, or
+#: NULL (KB-2f). It is not the icon NAME of a space.
 PAGE_COLUMNS = (
     "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
     "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
     "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from, "
-    "p.archived_from_state"
+    "p.archived_from_state, p.icon"
 )
 
 #: The space columns that each space read returns.
@@ -497,6 +498,7 @@ def page_dict(
         "parent_id": str(row.parent_id) if row.parent_id else None,
         "position": position,
         "title": row.title,
+        "icon": row.icon,
         "state": row.state,
         "author_email": row.author_email,
         "reviewers": list(row.reviewers or []),

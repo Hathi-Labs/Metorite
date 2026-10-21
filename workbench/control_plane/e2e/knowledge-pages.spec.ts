@@ -1035,7 +1035,7 @@ test.describe("the tree (KB-2e)", () => {
     expect(kb.writes[0].body).toEqual({ space_id: SPACE_ID, parent_id: "kp-r", title: "Exceptions" });
   });
 
-  test("the … holds Copy link, New sub-page and Archive", async ({ page, context }) => {
+  test("the … holds Copy link, the star, New sub-page and Archive", async ({ page, context }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await setup(page);
     const kb = await mockKnowledge(page, { level: "manage", pages: treePages() });
@@ -1048,7 +1048,8 @@ test.describe("the tree (KB-2e)", () => {
       return page.getByRole("menu");
     };
     let menu = await openMenu();
-    await expect(menu.getByRole("menuitem")).toHaveText(["Copy link", "New sub-page", "Archive"]);
+    // KB-2f added the star after Copy link.
+    await expect(menu.getByRole("menuitem")).toHaveText(["Copy link", "Add to favourites", "New sub-page", "Archive"]);
     await menu.getByRole("menuitem", { name: "Copy link" }).click();
     await expect(page.getByText("Link copied")).toBeVisible();
     const copied = await page.evaluate(() => navigator.clipboard.readText());
@@ -1070,7 +1071,7 @@ test.describe("the tree (KB-2e)", () => {
     await expect(row(page, "kp-t")).toBeVisible({ timeout: 30_000 });
     await row(page, "kp-t").hover();
     await page.getByRole("button", { name: "Actions for Travel" }).click();
-    await expect(page.getByRole("menu").getByRole("menuitem")).toHaveText(["Copy link", "New sub-page"]);
+    await expect(page.getByRole("menu").getByRole("menuitem")).toHaveText(["Copy link", "Add to favourites", "New sub-page"]);
   });
 
   test("the arrow keys walk the rows, and open and close a row", async ({ page }) => {
