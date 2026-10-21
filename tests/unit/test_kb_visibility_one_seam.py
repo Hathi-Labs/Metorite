@@ -107,6 +107,12 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "carries a stored position: each gives the rank among the siblings "
         "the caller sees (pages._rank, page_dict)."
     ),
+    ("backlinks.py", "sync_page_links"): (
+        "KB-2h: the write of a page keeps its page links, and a target must be "
+        "a page of the same org. The statement is an INSERT ... SELECT of "
+        "ids. It returns no row to the caller. The read side, get_backlinks, "
+        "applies the clause to the SOURCE page."
+    ),
     ("index.py", "select_pending"): (
         "The embed job of KB-3 reads the chunks of one page, already loaded "
         "and written by the route, that have no vector. It runs after the "

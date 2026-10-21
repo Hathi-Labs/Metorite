@@ -165,6 +165,20 @@ export function getVersion(pageId: string, n: number): Promise<PageVersionBody> 
   return call<PageVersionBody>(`/pages/${encodeURIComponent(pageId)}/versions/${n}`);
 }
 
+/** One page that links to the open page (KB-2h). */
+export interface Backlink {
+  id: string;
+  title: string;
+  icon: string | null;
+  space_name: string;
+}
+
+/** The published pages the member can see that link to this page (KB-2h). */
+export async function getBacklinks(pageId: string): Promise<Backlink[]> {
+  const out = await call<{ backlinks: Backlink[] }>(`/pages/${encodeURIComponent(pageId)}/backlinks`);
+  return out.backlinks;
+}
+
 /** The hits of one search. The view asks for the most the gateway gives. */
 export const SEARCH_K = 20;
 
@@ -198,4 +212,9 @@ export function archivedPagesKey(spaceId: string): string {
 
 export function pageKey(pageId: string): string {
   return `knowledge/page/${pageId}`;
+}
+
+/** The pages that link to one page (KB-2h). Under the prefix, so a write re-reads it. */
+export function backlinksKey(pageId: string): string {
+  return `knowledge/page/${pageId}/backlinks`;
 }

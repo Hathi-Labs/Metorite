@@ -86,6 +86,7 @@ import { useKnowledge } from "./KnowledgeContext";
 import PageBreadcrumbs from "./PageBreadcrumbs";
 import PageByline from "./PageByline";
 import PageMenu from "./PageMenu";
+import LinkedFrom from "./LinkedFrom";
 import PageSidePanel from "./PageSidePanel";
 import { usePageHeadings } from "./usePageHeadings";
 import VersionList from "./VersionList";
@@ -586,6 +587,7 @@ export default function PageView({ pageId }: { pageId: string }) {
             stats={outline.stats}
             onJump={(i) => outline.jump(i, { smooth: true })}
           />
+          <LinkedFrom pageId={pageId} />
           <section>
             <div className="mb-1 flex items-center justify-between gap-2">
               <h3 className="text-xs font-medium text-foreground">Versions</h3>
