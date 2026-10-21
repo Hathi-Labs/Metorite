@@ -45,14 +45,25 @@ export function homeQuery(opts: { cursor?: string | null; limit?: number; mine?:
   return text ? `?${text}` : "";
 }
 
+/**
+ * A home list as the gateway sent it, or a throw. A body with no `pages`
+ * array (an older gateway, a proxy page) must reach the list's own "did not
+ * load" state, and never crash the whole home. Pure, so the test reads it.
+ */
+export function asHomeList(raw: unknown): HomeList {
+  const list = raw as Partial<HomeList> | null;
+  if (!list || !Array.isArray(list.pages)) throw new Error("The list came back in a shape this app cannot read.");
+  return { pages: list.pages, next_cursor: typeof list.next_cursor === "string" ? list.next_cursor : null };
+}
+
 /** Recently updated: the live pages the member sees, newest change first. */
 export function listRecent(opts: { cursor?: string | null; mine?: boolean } = {}): Promise<HomeList> {
-  return call<HomeList>(`/recent${homeQuery({ ...opts, limit: RECENT_PAGE })}`);
+  return call<unknown>(`/recent${homeQuery({ ...opts, limit: RECENT_PAGE })}`).then(asHomeList);
 }
 
 /** The member's favourites that the member still sees, newest star first. */
 export function listFavorites(): Promise<HomeList> {
-  return call<HomeList>(`/favorites${homeQuery({ limit: FAVORITES_LIMIT })}`);
+  return call<unknown>(`/favorites${homeQuery({ limit: FAVORITES_LIMIT })}`).then(asHomeList);
 }
 
 /** Star a page. A second star changes nothing. */

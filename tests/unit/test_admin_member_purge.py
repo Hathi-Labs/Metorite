@@ -469,6 +469,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
         "crm_member_rules": 0,
+        # WS-61 KB-2f: the fake holds no star of the member.
+        "knowledge_favorites": 0,
         "member_record": 1,
     }
     assert out.kept == {

@@ -196,7 +196,15 @@ test.describe("footnotes (KB-2i)", () => {
     // The caret at the end of the note. Enter adds a line to it, and Enter on
     // that empty line leaves the note, as it leaves a list. (`focus("end")`
     // can land in the editor's own empty last line, so the test clicks.)
-    await page.locator(".kb-footnote-body p", { hasText: "See the sales terms." }).click();
+    // The editor draws its node views just after it mounts, so a click in
+    // that moment can miss. Click again until the caret is in the note.
+    const note = page.locator(".kb-footnote-body p", { hasText: "See the sales terms." });
+    await expect(async () => {
+      await note.click();
+      expect(await page.evaluate(() => window.getSelection()?.anchorNode?.textContent ?? "")).toContain(
+        "See the sales terms.",
+      );
+    }).toPass({ timeout: 10_000 });
     await page.keyboard.press("End");
     await page.keyboard.press("Enter");
     await page.keyboard.press("Enter");
@@ -278,7 +286,7 @@ test.describe("the : emoji insert (KB-2i)", () => {
     await edit(page);
     await caretAtEnd(page);
     await page.keyboard.press("Enter");
-    await page.keyboard.type("Launch :rock");
+    await page.keyboard.type("Launch :rocke");
     const list = page.getByRole("listbox", { name: "Emoji" });
     await expect(list.getByRole("option").first()).toContainText("rocket");
     await page.keyboard.press("Enter");

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildGroups } from "../lib/emoji";
 import {
+  asHomeList,
   favoriteIds,
   homeQuery,
   listFavorites,
@@ -79,6 +80,14 @@ describe("the home client", () => {
       "/api/knowledge/favorites?limit=500",
     ]);
     expect(homeQuery({})).toBe("");
+  });
+
+  it("refuses a list with no pages array, so the list shows its own error and the home stays up", async () => {
+    expect(() => asHomeList({})).toThrow();
+    expect(() => asHomeList(null)).toThrow();
+    expect(asHomeList({ pages: [] })).toEqual({ pages: [], next_cursor: null });
+    stubFetch(200, {});
+    await expect(listRecent()).rejects.toThrow();
   });
 
   it("stars, unstars and sets the icon with the member from the session", async () => {

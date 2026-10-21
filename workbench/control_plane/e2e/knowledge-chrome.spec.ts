@@ -95,8 +95,9 @@ test.describe("Knowledge page chrome", () => {
 
     await outline.getByRole("button", { name: "Who may ask" }).click();
     await expect(outline.getByRole("button", { name: "Who may ask" })).toHaveAttribute("aria-current", "location");
-    const box = await page.getByRole("heading", { name: "Who may ask", exact: true }).boundingBox();
-    expect(box?.y ?? 9999).toBeLessThan(300);
+    // The jump is a smooth scroll, so the heading arrives over a few frames.
+    const heading = page.getByRole("heading", { name: "Who may ask", exact: true });
+    await expect.poll(async () => (await heading.boundingBox())?.y ?? 9999).toBeLessThan(300);
   });
 
   test("Details shows the author, the last editor, the counts, the review date and the state", async ({ page }) => {
@@ -279,7 +280,7 @@ test.describe("Knowledge page chrome", () => {
 
   test("a reader sees no Move, Archive or Restore, and no Archived view", async ({ page }) => {
     await open(page, "kp-one", { [COMPANY]: "read", [OPS]: "read" });
-    expect(await menuItems(page)).toEqual(["Copy link", "Copy as Markdown", "Download as .md", "Print", "Full width"]);
+    expect(await menuItems(page)).toEqual(["Copy link", "Copy as Markdown", "Download as .md", "Print", "Full width", "Favourite"]);
 
     await page.goto("/knowledge/pages/kp-old");
     const banner = page.locator("[data-archived-banner]");
