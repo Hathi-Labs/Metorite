@@ -580,7 +580,7 @@ from `md`).
 **Fences.** `oneBar.test.ts` or a new `askField.test.ts` for the line map.
 `e2e/shell-bar.spec.ts` for the chip at 1024.
 
-### CF-8 · The phone chat chrome — AGENT-SAFE · BUILT 2026-10-21 (#1204), dark
+### CF-8 · The phone chat chrome — AGENT-SAFE · BUILT 2026-10-21 (#1205), dark
 
 **Files.**
 
