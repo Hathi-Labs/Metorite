@@ -75,6 +75,7 @@ import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import ChatMoreMenu from "@/components/ChatMoreMenu";
 import ChatSendButton from "@/components/ChatSendButton";
 import {
   STEER_CAPTION,
@@ -91,6 +92,7 @@ import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
+import { ShareSheet } from "@/components/room/ShareSheet";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
@@ -132,6 +134,12 @@ const MODELS_FALLBACK: UnifiedModel[] = [
 // scroll-up.
 const HISTORY_PAGE_SIZE = 30;
 const HISTORY_LOADER_DELAY_MS = 300;
+/**
+ * CF-8: on a phone the context ring joins the composer from this share of
+ * the window. It is the floor of the auto-compaction band (75 to 80 %), so
+ * the ring shows where the member may want to act on it, and nowhere else.
+ */
+export const PHONE_RING_PCT = 75;
 
 // ── Suggestion pills (CopilotKit-style starter prompts) ─────────────────
 
@@ -268,6 +276,20 @@ interface AgentChatProps {
    */
   compact?: boolean;
   /**
+   * The chat's chrome on a phone (WS-62 CF-8, `chat_first_surface.md` §4.8).
+   * The host draws the one header row, so the agent row and the Share row
+   * go. The composer keeps the field, Attach and Send, and the effort
+   * choice, the context ring and the model picker move into one "…" control
+   * (`ChatMoreMenu`). Share and the status live there too. Unlike `compact`,
+   * it keeps the room on, because Share is a room act.
+   */
+  phoneChrome?: boolean;
+  /**
+   * CF-8: acts the host lends to the phone's "…" control, such as the
+   * dock's "This chat's files". Read only with `phoneChrome`.
+   */
+  moreActs?: readonly { icon: string; label: string; onClick: () => void }[];
+  /**
    * One-shot text to drop into the composer (not auto-sent) — used by the email
    * Assistant's "Fix" flow to hand a correction prompt to the user for review.
    * Changing this value injects it; `onPendingInputConsumed` fires once applied.
@@ -322,6 +344,8 @@ export default function AgentChat({
   model: forcedModel,
   lockModel,
   compact,
+  phoneChrome = false,
+  moreActs,
   pendingInput,
   onPendingInputConsumed,
   autoSend,
@@ -2052,6 +2076,9 @@ export default function AgentChat({
   // object, so solo chat is exactly the surface it has always been.
   // `viewerEmail` and `isRoom` are read above, by the card answers.
   const [railOpen, setRailOpen] = useState(false);
+  // CF-8: Share from the phone's "…" control. The Share row's own sheet
+  // is gone on a phone, so the chat raises the same sheet here.
+  const [sharing, setSharing] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
   // An earlier one would fork, and another person's is not theirs to edit.
@@ -2071,14 +2098,23 @@ export default function AgentChat({
     (mailboxes?.length ?? 0) > 0 ||
     (!lockModel && modelPlan.showPicker) ||
     controls.showEffort;
+  // CF-8: on the phone the ring shows in the composer only once it matters,
+  // at 75 %, where the compaction band begins. Below that it waits in the
+  // "…" control. The row above the box goes when it has nothing to say.
+  const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;
+  const steerShown = primary === "send" && isRunActive && !!input.trim();
+  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown;
+  // The phone's tap size, on Attach and on Send (CF-8).
+  const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
 
   return (
     <div className="flex h-full bg-background">
     <div className="flex flex-col h-full flex-1 min-w-0 bg-background">
       {/* Agent header — VS Code-style minimal bar (hidden in compact embeds,
-          where the host provides its own toolbar). */}
-      {!compact && (
-      <div className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
+          where the host provides its own toolbar, and on a phone with the
+          chat-first flag on, where the "…" control carries the status). */}
+      {!compact && !phoneChrome && (
+      <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0">
         <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
         <span className="text-xs font-medium text-foreground truncate">{currentAgentLabel}</span>
@@ -2104,8 +2140,8 @@ export default function AgentChat({
 
       {/* Who is in this conversation, and what it costs the agents. Renders a
           lone Share button while you are alone — see RoomHeader. */}
-      {!compact && (
-        <div className="shrink-0 border-b border-border bg-card/20 px-4 py-2">
+      {!compact && !phoneChrome && (
+        <div data-chat-room-row="" className="shrink-0 border-b border-border bg-card/20 px-4 py-2">
           <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
         </div>
       )}
@@ -2120,7 +2156,8 @@ export default function AgentChat({
       )}
 
       {/* Message thread */}
-      <div ref={threadRef} className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 relative scrollbar-thin">
+      {/* CF-8: a 16 px gutter on the phone sheet, the full width between. */}
+      <div ref={threadRef} className={`flex-1 overflow-y-auto ${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin`}>
         {/* Scroll-to-bottom floating button */}
         {showScrollBtn && (
           <button onClick={scrollToBottom}
@@ -2305,7 +2342,7 @@ export default function AgentChat({
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
-      <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-card/40 px-3 sm:px-4 pt-2 pb-safe-full">
+      <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
         {/* VS Code-style Todos panel — latest assistant turn's todo list */}
         {(() => {
           for (let i = messages.length - 1; i >= 0; i--) {
@@ -2328,18 +2365,19 @@ export default function AgentChat({
             status on the left, and the context ring always on the right, in
             one place. It used to sit in a second row INSIDE the message box,
             and took its bottom from the message. */}
+        {composerRowShown && (
         <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {runView ? (
               <RunStatusRow view={runView} placement="composer" />
-            ) : !compact ? (
+            ) : !compact && !phoneChrome ? (
               <span className="hidden sm:inline text-[10px]">
                 <kbd className="text-muted-foreground">{sendKeys}</kbd> send · <kbd className="text-muted-foreground">⏎</kbd> new line
               </span>
             ) : null}
           </div>
           {/* A send during a run adds to the reply. Said once, short. */}
-          {primary === "send" && isRunActive && !!input.trim() && (
+          {steerShown && (
             <span data-steer-caption className="shrink-0 text-[10px] text-primary">
               {STEER_CAPTION}
             </span>
@@ -2359,7 +2397,8 @@ export default function AgentChat({
               className="shrink-0"
             />
           )}
-          <span className="shrink-0">
+          {ringInComposer && (
+          <span className="shrink-0" data-chat-composer-ring="">
             <ContextRing
               pct={contextUsage.pct}
               usedTokens={contextUsage.usedTokens}
@@ -2369,7 +2408,9 @@ export default function AgentChat({
               modelId={modelPlan.covered ? undefined : currentModel}
             />
           </span>
+          )}
         </div>
+        )}
 
         <div className="max-w-3xl mx-auto">
           {/* One note from the parent, for example the email chat after the
@@ -2444,9 +2485,9 @@ export default function AgentChat({
                   setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
                   inputRef.current?.focus();
                 }}
-                className="shrink-0 flex h-8 w-8 items-center justify-center" />
-            {hasComposerControls && (
-            <div className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
+                className={`shrink-0 flex ${tap} items-center justify-center`} />
+            {hasComposerControls && !phoneChrome && (
+            <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
@@ -2646,6 +2687,29 @@ export default function AgentChat({
             </div>
             )}
               <span className="flex-1" aria-hidden="true" />
+              {/* CF-8: the phone's one "…" control, at the composer's end.
+                  The status, Share, the effort choice, the context window
+                  and the model picker live in it. */}
+              {phoneChrome && (
+                <ChatMoreMenu
+                  status={{ label: currentAgentLabel, active: isRunActive }}
+                  acts={moreActs}
+                  share={room ? { shared: isRoom, onOpen: () => setSharing(true) } : null}
+                  roomRail={isRoom ? { open: railOpen, onToggle: () => setRailOpen((v) => !v) } : null}
+                  effort={controls.showEffort ? { current: thinkMode, options: THINK_MODES, onPick: setThinkMode } : null}
+                  context={{
+                    pct: contextUsage.pct,
+                    usedTokens: contextUsage.usedTokens,
+                    totalTokens: contextUsage.totalTokens,
+                    compacting,
+                    onCompact: handleCompact,
+                    modelId: modelPlan.covered ? undefined : currentModel,
+                  }}
+                  model={!lockModel && modelPlan.showPicker
+                    ? { label: currentModelLabel, current: currentModel, groups: modelGroups, models: sortedModels, onPick: setCurrentModel }
+                    : null}
+                />
+              )}
               {/* While history loads, the button stays in place and is
                   disabled. It showed a second spinner, beside the one in the
                   thread, which read as two separate things loading. */}
@@ -2653,6 +2717,7 @@ export default function AgentChat({
                 action={primary}
                 onClick={primary === "stop" ? handleStop : undefined}
                 disabled={primary === "send" ? !input.trim() || loadingHistory : false}
+                large={phoneChrome}
               />
             </div>
           </div>
@@ -2679,6 +2744,12 @@ export default function AgentChat({
       {viewerEntry && (
         <ArtifactViewerModal origin="workspace" sessionId={sessionId} entry={viewerEntry}
           onClose={() => setViewerEntry(null)} onDelete={() => setViewerEntry(null)} />
+      )}
+
+      {/* CF-8: the Share sheet, raised from the phone's "…" control. The
+          Share row raises the same sheet on a desktop (RoomHeader). */}
+      {phoneChrome && sharing && room && (
+        <ShareSheet room={room} onClose={() => setSharing(false)} onChanged={refreshRoom} />
       )}
     </div>
 

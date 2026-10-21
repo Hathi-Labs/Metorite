@@ -774,3 +774,63 @@ describe("the strip in the dock's source: phone only, flag only", () => {
     expect(css).toContain('.assistant-panel[data-moving][data-panel-form="peek"]');
   });
 });
+
+describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () => {
+  const dock = () => read("lib/shell/AssistantDock.tsx");
+  const chat = () => read("components/AgentChat.tsx");
+  const menu = () => read("components/ChatMoreMenu.tsx");
+
+  it("the sheet passes the phone prop only with the flag on, and compact stays the side panel's", () => {
+    const src = dock();
+    expect(src).toContain("const phoneChrome = phone && chatFirst;");
+    expect(src).toContain("phoneChrome={phoneChrome}");
+    // `compact` is NOT the way: it turns the room off, and Share is a room act.
+    expect(src).toContain('compact={form === "dock"}');
+    expect(src).not.toMatch(/compact=\{[^}]*phone/);
+  });
+
+  it("the chat drops its agent row and its Share row on the phone, and keeps the room on", () => {
+    const src = chat();
+    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-agent-row=""/);
+    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-room-row=""/);
+    expect(src).toContain("useRoom(sessionId, viewerEmail, { enabled: !compact });");
+  });
+
+  it("one field, one send: the pickers leave the composer for the one \"…\" control", () => {
+    const src = chat();
+    expect(src).toContain("{hasComposerControls && !phoneChrome && (");
+    expect((src.match(/<ChatMoreMenu\b/g) ?? []).length).toBe(1);
+    expect(src).toMatch(/\{phoneChrome && \(\s*<ChatMoreMenu/);
+    // The ring joins the composer only where the compaction band begins.
+    expect(src).toContain("export const PHONE_RING_PCT = 75;");
+    expect(src).toContain("const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;");
+    // The phone's tap size on Attach and Send.
+    expect(src).toContain('const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";');
+    expect(src).toContain("large={phoneChrome}");
+    // Share stays reachable: the same sheet the Share row raises.
+    expect(src).toMatch(/\{phoneChrome && sharing && room && \(\s*<ShareSheet/);
+  });
+
+  it("the \"…\" control is built from the ui primitives only, at the phone's tap size", () => {
+    const src = menu();
+    expect(src).toContain('from "@/components/ui/AnchoredPanel"');
+    expect(src).toContain('from "@/components/ui/Button"');
+    expect(src).not.toMatch(/lucide-react|@base-ui/);
+    expect(src).toContain('const ROW = "min-h-11 w-full gap-3 px-3 text-left text-sm";');
+    expect(src).toContain('className="h-11 w-11"');
+  });
+
+  it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
+    const src = dock();
+    expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11" : "";');
+    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
+    expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
+    expect(src).toMatch(/label: "This chat's files"/);
+    expect(src).toContain("moreActs={moreActs}");
+  });
+
+  it("the reading width: a 16 px gutter on the phone sheet", () => {
+    const src = chat();
+    expect(src).toContain('${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin');
+  });
+});
