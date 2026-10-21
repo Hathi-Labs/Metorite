@@ -769,6 +769,26 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const columnForm = form === "full" && !phone;
   const pickerShown = columnForm ? listOpen : pickerOpen;
   const showFiles = columnForm && filesOpen && Boolean(chat.activeId);
+  // CF-8: the phone's chrome with the flag on. The header's controls take
+  // the phone's tap size, 44 px. Five of them leave the title about 140 px
+  // at 390 px, and six would leave 90, so Files moves into the chat's "…"
+  // control (`chat_first_surface.md` §4.8).
+  const phoneChrome = phone && chatFirst;
+  const phoneTap = phoneChrome ? "h-11 w-11" : "";
+  const moreActs = useMemo(
+    () =>
+      phoneChrome && chat.activeId
+        ? [{
+            icon: "FolderOpen",
+            label: "This chat's files",
+            onClick: () => {
+              closeAssistant();
+              router.push(chatFilesHref(chat.activeId));
+            },
+          }]
+        : [],
+    [phoneChrome, chat.activeId, router],
+  );
   const pickerProps = {
     sessions: chat.sessions,
     activeId: chat.activeId,
@@ -839,6 +859,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           aria-label={pickerShown ? "Hide your chats" : "Your chats"}
           aria-expanded={pickerShown}
           title="Your chats"
+          className={phoneTap}
           onClick={() => {
             if (columnForm) setListOpen((o) => !o);
             else setPickerOpen((o) => !o);
@@ -851,6 +872,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           icon="SquarePen"
           aria-label="New chat"
           title="New chat"
+          className={phoneTap}
           onClick={() => {
             setPickerOpen(false);
             openAssistant({ fresh: true });
@@ -866,10 +888,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             title="Files"
             onClick={() => setFilesOpen((o) => !o)}
           />
-        ) : chat.activeId ? (
+        ) : chat.activeId && !phoneChrome ? (
           // The side panel and the phone have no room for a files column. The
           // chat's files open in Artifacts, and on a desktop the chat stays
-          // open beside them (D99, NS-6 slice 6c).
+          // open beside them (D99, NS-6 slice 6c). With the chat-first flag
+          // on, the phone offers it in the chat's "…" control (CF-8).
           <Button
             variant="ghost"
             size="icon-sm"
@@ -906,6 +929,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             icon="ChevronDown"
             aria-label="Show as a strip"
             title="Minimize"
+            className={phoneTap}
             onClick={toPeek}
           />
         ) : null}
@@ -915,6 +939,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           icon="X"
           aria-label={`Close ${ASSISTANT_NAME}`}
           title="Close"
+          className={phoneTap}
           onClick={closeAssistant}
         />
       </header>
@@ -965,6 +990,13 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 sessionId={active.id}
                 visible={st.open}
                 compact={form === "dock"}
+                // CF-8: the sheet's one header row is this dock's. With the
+                // flag on, the chat draws no agent row and no Share row, and
+                // its composer is one field, Attach, "…" and Send. The
+                // `compact` prop would turn the room off too, so it is not
+                // the way (`chat_first_surface.md` §4.8).
+                phoneChrome={phoneChrome}
+                moreActs={moreActs}
                 persona={persona}
                 memories={memories}
                 memoryUserId={userId ?? undefined}

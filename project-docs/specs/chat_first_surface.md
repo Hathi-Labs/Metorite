@@ -376,6 +376,21 @@ With the flag on, a phone skips step 2 and writes the preset's default pins.
 Step 1, the role question, stays, because it picks the brief's order too. A
 founder's invite step stays.
 
+### 4.8 The chat's chrome on a phone
+
+On a phone the sheet showed three rows above the thread, and three pickers
+beside the field (owner, 2026-10-21). A senior member on a phone needs one
+header row, one field and one Send, so the reading space goes to the thread.
+With the flag on, the sheet keeps the dock's one row: Your chats, the title,
+New chat, Minimize and Close. The composer keeps the field, Attach and Send,
+and one "…" control at its end holds the rest.
+
+That control holds the status, Share, this chat's files, the effort choice
+(D90 keeps it), the context window and the model picker. The context ring
+joins the composer only above 75 %, where the compaction band begins. Every
+control on the phone is 44 px, and the thread keeps a 16 px gutter at 390 px.
+A desktop, and a phone with the flag off, draw what they drew before.
+
 ---
 
 ## 5. Decisions proposed — each with a default an agent builds to
@@ -592,11 +607,47 @@ from `md`).
 **Fences.** `oneBar.test.ts` or a new `askField.test.ts` for the line map.
 `e2e/shell-bar.spec.ts` for the chip at 1024.
 
+### CF-8 · The phone chat chrome — AGENT-SAFE · BUILT 2026-10-21 (#1205), dark
+
+**Files.**
+
+- `src/components/ChatMoreMenu.tsx`: the one "…" control, new. It is
+  `AnchoredPanel` and `Button` rows from `src/components/ui/`, at 44 px.
+- `src/components/AgentChat.tsx`: the `phoneChrome` and `moreActs` props.
+  The agent row and the Share row go, the pickers leave the composer, and
+  the ring waits for 75 %.
+- `src/components/ChatSendButton.tsx`: the `large` size.
+- `src/lib/shell/AssistantDock.tsx`: the prop with the flag, the header's
+  tap size, and Files into the control.
+
+**Done when.**
+
+1. On a phone with the flag on, the sheet has one header row above the
+   thread. The agent row and the Share row are gone. Share, the status and
+   this chat's files sit in the "…" control, so Share stays reachable.
+2. The composer shows the field, Attach, the "…" control and Send. The
+   effort choice, the context ring and the model picker sit in the control.
+   The ring joins the composer at 75 %.
+3. Every control on the phone is 44 px. The thread's gutter is 16 px at
+   390 px, and a turn takes the full width between.
+4. The sheet passes `phoneChrome` only with the flag on. `compact` stays
+   `form === "dock"`, so the room stays on.
+5. A desktop, and a phone with the flag off, draw what they drew before.
+
+**Fences.** `assistant.test.ts` ("the chat's chrome on a phone") reads the
+source: the prop with the flag, `compact` as it was, the two rows, the one
+control, the ring's floor and the tap size. `e2e/assistant-motion.spec.ts`
+gains one phone test with the flag on, and the flag-off test asserts the two
+rows still show. `seams.test.ts` stays at one dock. Mutation, seen to fail
+first: pass `compact={form === "dock" || phone}` in the dock, and the fence
+fails.
+
 ### Order
 
 CF-1, then CF-2 and CF-3 in parallel, then CF-4 and CF-5, then CF-6, then
-CF-7. CF-1 to CF-3 give a phone member the whole loop: open on the chat,
-work in it, see a page, come back. CF-4 to CF-6 make the chat worth opening.
+CF-7. CF-8 follows CF-1, because it builds on the sheet's one row. CF-1 to
+CF-3 give a phone member the whole loop: open on the chat, work in it, see
+a page, come back. CF-4 to CF-6 make the chat worth opening.
 
 ---
 
@@ -664,6 +715,7 @@ at 390 px. A `recordCard` at 390 px and in the panel at 400 px.
 | The in-app link check | `workbench/control_plane/src/lib/inAppLink.ts` |
 | The templates | `workbench/control_plane/src/components/genUITemplates.tsx` |
 | The starter pills | `workbench/control_plane/src/components/AgentChat.tsx`, `src/components/SuggestionPills.tsx` |
+| The phone's "…" control (CF-8) | `workbench/control_plane/src/components/ChatMoreMenu.tsx` |
 | The suggestions route | `workbench/control_plane/src/app/api/chat/suggestions/route.ts` |
 | The welcome dialog | `workbench/control_plane/src/components/WelcomeDialog.tsx`, `src/lib/shell/welcomeSteps.ts` |
 | The shell preferences | `workbench/control_plane/src/lib/shell/shellPrefs.ts` |
