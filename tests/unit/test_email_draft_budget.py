@@ -88,6 +88,21 @@ def test_files_are_cut_before_the_latest_message() -> None:
     assert plan.parts.latest.startswith("L" * db.MIN_LATEST_CHARS)
 
 
+def test_a_language_of_one_token_a_character_is_measured() -> None:
+    """Chinese, Japanese or Hindi text is about a token for each character.
+    The plan counts THIS mail, so it cuts where 3 characters a token would
+    not (review of #1203, P2). Mutation: drop ``_measured_ratio``."""
+    parts = _parts(latest="\u8bf7" * 5000, thread="\u65e7" * 200_000)
+    plan = db.plan_draft("tier-fast", parts, fixed_chars=5000,
+                         window_of=_windows(tier_fast=131_072),
+                         count_tokens=lambda text, model: len(text))
+    assert plan.left_out and len(plan.parts.thread) < 130_000
+    english = db.plan_draft("tier-fast", parts, fixed_chars=5000,
+                            window_of=_windows(tier_fast=131_072),
+                            count_tokens=lambda text, model: len(text) // 4)
+    assert english.left_out == []
+
+
 def test_a_window_that_cannot_be_read_counts_as_small() -> None:
     def broken(m: str) -> int:
         raise RuntimeError("no model")

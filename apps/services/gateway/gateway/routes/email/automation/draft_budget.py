@@ -82,11 +82,43 @@ class DraftPlan:
     escalated: bool = False
 
 
-def budget_chars(window_tokens: int, *, fixed_chars: int, images: int = 0) -> int:
+def budget_chars(window_tokens: int, *, fixed_chars: int, images: int = 0,
+                 chars_per_token: float = CHARS_PER_TOKEN) -> int:
     """The characters that the cuttable parts may take on a window."""
     tokens = min(window_tokens, MAX_PROMPT_TOKENS + REPLY_TOKENS + MARGIN_TOKENS)
     tokens -= REPLY_TOKENS + MARGIN_TOKENS + images * IMAGE_TOKENS
-    return max(0, tokens * CHARS_PER_TOKEN - fixed_chars)
+    return max(0, int(tokens * chars_per_token) - fixed_chars)
+
+
+#: The characters of the mail that :func:`_measured_ratio` counts.
+_SAMPLE_CHARS = 60_000
+
+
+def _count_tokens(text: str, model: str) -> int:
+    from acb_llm.context import count_message_tokens  # noqa: PLC0415
+
+    return int(count_message_tokens([{"role": "user", "content": text}], model))
+
+
+def _measured_ratio(parts: DraftParts, model: str,
+                    count: Callable[[str, str], int] | None) -> float:
+    """Characters for each token of THIS mail, never more than the default.
+
+    Chinese, Japanese or Hindi text is about one token for each character,
+    so 3 would let a mail through that the model cannot take, and the
+    generic fitter would then cut the middle of the prompt (review of #1203,
+    P2). A sample of the mail is counted with the tokenizer of the model."""
+    sample = "\n".join([parts.latest, parts.thread,
+                        *(t for _n, t, _c in parts.files)])[:_SAMPLE_CHARS]
+    if len(sample) < 2000:
+        return CHARS_PER_TOKEN
+    try:
+        tokens = (count or _count_tokens)(sample, model)
+    except Exception:  # noqa: BLE001 - the default is the safe side for English
+        return CHARS_PER_TOKEN
+    if tokens <= 0:
+        return CHARS_PER_TOKEN
+    return max(0.5, min(CHARS_PER_TOKEN, len(sample) / tokens))
 
 
 def _window_of(model: str) -> int:
@@ -103,6 +135,7 @@ def plan_draft(
     images: int = 0,
     larger: Sequence[str] = (),
     window_of: Callable[[str], int] | None = None,
+    count_tokens: Callable[[str, str], int] | None = None,
 ) -> DraftPlan:
     """Fit *parts* to the window of *model*, or of a tier in *larger*.
 
@@ -119,8 +152,14 @@ def plan_draft(
             return 32_000
 
     need = parts.size()
+    ratio = _measured_ratio(parts, model, count_tokens)
+
+    def room_of(w: int) -> int:
+        return budget_chars(w, fixed_chars=fixed_chars, images=images,
+                            chars_per_token=ratio)
+
     own = window(model)
-    if need <= budget_chars(own, fixed_chars=fixed_chars, images=images):
+    if need <= room_of(own):
         return DraftPlan(model, parts)
     best_model, best_window = model, own
     for other in larger:
@@ -129,10 +168,10 @@ def plan_draft(
         w = window(other)
         if w <= best_window:
             continue
-        if need <= budget_chars(w, fixed_chars=fixed_chars, images=images):
+        if need <= room_of(w):
             return DraftPlan(other, parts, escalated=True)
         best_model, best_window = other, w
-    room = budget_chars(best_window, fixed_chars=fixed_chars, images=images)
+    room = room_of(best_window)
     cut, left_out = _cut(parts, room)
     return DraftPlan(best_model, cut, left_out, escalated=best_model != model)
 
