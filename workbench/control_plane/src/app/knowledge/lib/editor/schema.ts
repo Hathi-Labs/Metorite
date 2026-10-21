@@ -57,6 +57,9 @@ import {
   renderInline,
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
+import { storedFormExtensions, type StoredFormViews } from "./storedForms";
+import { withHtmlTable } from "./htmlTable";
+import { withAlign } from "./textAlign";
 
 export { escapeLineStart, markdownDestination } from "./inline";
 
@@ -798,7 +801,7 @@ const Entities = Extension.create({
 // ── The list ────────────────────────────────────────────────────────────────
 
 /** The node views the component plugs in. Each one is optional. */
-export interface KnowledgeViews {
+export interface KnowledgeViews extends StoredFormViews {
   image?: NodeViewRenderer;
   codeBlock?: NodeViewRenderer;
   callout?: NodeViewRenderer;
@@ -851,12 +854,12 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     }),
     KnowledgeBulletList,
     KnowledgeOrderedList,
-    KnowledgeParagraph,
-    KnowledgeHeading.configure({ levels: [...LEVELS] }),
+    withAlign(KnowledgeParagraph),
+    withAlign(KnowledgeHeading).configure({ levels: [...LEVELS] }),
     withView(KnowledgeCodeBlock, views.codeBlock),
     withView(KnowledgeImage, views.image),
     TableKit.configure({ table: false }),
-    KnowledgeTable.configure({ resizable: false }),
+    withHtmlTable(KnowledgeTable).configure({ resizable: false }),
     KnowledgeTaskList,
     TaskItem.configure({ nested: true }),
     withView(Callout, views.callout),
@@ -869,6 +872,8 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     FootnoteReference,
     FootnoteDefinition,
     Entities,
+    // KB-2p: after the raw HTML nodes, so each exact shape wins (`storedForms.ts`).
+    ...storedFormExtensions(views),
   ];
   if (opts.placeholder) {
     list.push(

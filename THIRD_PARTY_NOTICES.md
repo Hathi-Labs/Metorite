@@ -27,4 +27,10 @@ Each line is `path in this repo` and `path in Docmost`.
 - `workbench/control_plane/src/app/knowledge/components/editor/tableDrag.ts` <- `packages/editor-ext/src/lib/table/dnd`
 - `workbench/control_plane/src/app/knowledge/components/editor/TableHandles.tsx` <- `apps/client/src/features/editor/components/table/handle`
 - `workbench/control_plane/src/app/knowledge/components/editor/FindBar.tsx` <- `apps/client/src/features/editor/components/search-and-replace/search-and-replace-dialog.tsx`
+- `workbench/control_plane/src/app/knowledge/lib/editor/status.ts` <- `packages/editor-ext/src/lib/status.ts`
+- `workbench/control_plane/src/app/knowledge/lib/editor/pageBreak.ts` <- `packages/editor-ext/src/lib/page-break/page-break.ts`
+- `workbench/control_plane/src/app/knowledge/lib/editor/subpages.ts` <- `packages/editor-ext/src/lib/subpages/subpages.ts`
+- `workbench/control_plane/src/app/knowledge/lib/editor/columns.ts` <- `packages/editor-ext/src/lib/columns/columns.ts`
+- `workbench/control_plane/src/app/knowledge/components/editor/StatusView.tsx` <- `apps/client/src/features/editor/components/status/status-view.tsx`
+- `workbench/control_plane/src/app/knowledge/components/editor/SubpagesView.tsx` <- `apps/client/src/features/editor/components/subpages/subpages-view.tsx`
 <!-- PORTED-FILES-END -->

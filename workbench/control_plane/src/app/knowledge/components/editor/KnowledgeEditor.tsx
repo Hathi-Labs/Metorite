@@ -59,6 +59,8 @@ import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews"
 import { TableHandlePlugin } from "./tableDrag";
 import { TableHandles } from "./TableHandles";
 import type { TitleLink } from "./TitleField";
+import { storedFormViews } from "./storedFormViews";
+import { TableCellTools } from "./TableExtras";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
 /**
@@ -325,6 +327,7 @@ export default function KnowledgeEditor({
           codeBlock: ReactNodeViewRenderer(CodeBlockView),
           callout: ReactNodeViewRenderer(CalloutView),
           details: ReactNodeViewRenderer(DetailsView),
+          ...storedFormViews(),
         },
       }),
       KnowledgeMenus,
@@ -615,6 +618,7 @@ export default function KnowledgeEditor({
           />
           <TableTools editor={editor} scrollTarget={scroller} />
           <TableHandles editor={editor} container={shell} />
+          <TableCellTools editor={editor} scrollTarget={scroller} />
           <OptionList
             id="kb-slash-menu"
             label="Blocks"

@@ -606,6 +606,234 @@ test.describe("the block editor", () => {
     await expect(page.getByRole("listbox", { name: "Pages" })).toBeVisible();
   });
 
+  test("the / menu inserts each KB-2p block, and a save writes its stored form", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    await page.goto("/knowledge/pages/kp-a");
+    const menu = page.getByRole("listbox", { name: "Blocks" });
+    const body = page.getByRole("textbox", { name: "Page body" });
+    const today = await page.evaluate(() => {
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return { iso: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, label: `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}` };
+    });
+
+    // Each block in an empty body. `act` finishes it, and `saved` is the body.
+    const blocks: Array<{ label: string; selector: string; act?: () => Promise<void>; saved: string }> = [
+      {
+        label: "Status",
+        selector: ".kb-status",
+        act: async () => {
+          const popover = page.getByRole("dialog", { name: "Status" });
+          await expect(popover.getByRole("textbox", { name: "Status text" })).toBeFocused();
+          await page.keyboard.type("Done");
+          await popover.getByRole("button", { name: "Green" }).click();
+          await popover.getByRole("textbox", { name: "Status text" }).press("Enter");
+          await expect(popover).toHaveCount(0);
+        },
+        saved: '<span data-type="status" data-color="green">Done</span>',
+      },
+      {
+        label: "Date",
+        selector: "time.kb-date, .kb-date",
+        act: async () => {
+          const picker = page.getByRole("dialog", { name: "Date" });
+          await expect(picker.getByLabel("Date")).toBeFocused();
+          await page.keyboard.press("Escape");
+          await expect(picker).toHaveCount(0);
+        },
+        saved: `<time data-type="date" datetime="${today.iso}">${today.label}</time>`,
+      },
+      {
+        label: "2 columns",
+        selector: ".kb-columns .kb-column",
+        act: async () => {
+          await page.keyboard.type("Item");
+        },
+        saved: '<div data-type="columns" data-count="2">\n\n<div data-type="column">\n\nItem\n\n</div>\n\n<div data-type="column">\n\n</div>\n\n</div>',
+      },
+      {
+        label: "Sub-pages",
+        selector: ".kb-subpages",
+        saved: '<div data-type="subpages" data-order="manual"></div>',
+      },
+      {
+        label: "Page break",
+        selector: ".kb-page-break",
+        saved: '<div data-type="page-break"></div>',
+      },
+    ];
+    for (const { label, selector, act, saved } of blocks) {
+      await page.getByRole("button", { name: "Edit", exact: true }).click({ timeout: 30_000 });
+      await body.click();
+      await page.keyboard.press("ControlOrMeta+a");
+      await page.keyboard.press("Backspace");
+      await page.keyboard.type(`/${label}`);
+      await expect(menu, label).toBeVisible();
+      await expect(menu.getByRole("option").first(), label).toHaveText(label);
+      await page.keyboard.press("Enter");
+      await expect(menu).toHaveCount(0);
+      await expect(body.locator(selector).first(), label).toBeVisible();
+      if (act) await act();
+      const before = kb.writes.length;
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await expect.poll(() => kb.writes.length, label).toBe(before + 1);
+      await expect(page.getByRole("list", { name: "Versions" }).locator("li")).toHaveCount(before + 2);
+      const last = kb.writes[kb.writes.length - 1].body as { body_md: string };
+      expect(last.body_md, label).toBe(saved);
+    }
+
+    // The count switcher of columns: 2 becomes 3, and a save writes 3.
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await body.click();
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.type("/2 columns");
+    await expect(menu.getByRole("option").first()).toHaveText("2 columns");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Left");
+    await body.getByRole("button", { name: "3 columns" }).click();
+    await expect(body.locator(".kb-column")).toHaveCount(3);
+    const before = kb.writes.length;
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect.poll(() => kb.writes.length).toBe(before + 1);
+    const cols = (kb.writes[kb.writes.length - 1].body as { body_md: string }).body_md;
+    expect(cols).toContain('<div data-type="columns" data-count="3">');
+    expect(cols.match(/<div data-type="column">/g)).toHaveLength(3);
+  });
+
+  test("the bubble menu sets colour, highlight, sup, sub and alignment", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    const body = await openEditor(page);
+    const bubble = page.getByRole("toolbar", { name: "Format the selection" });
+
+    const lines: Array<[string, (b: import("@playwright/test").Locator) => Promise<void>, string]> = [
+      ["Blue words", async (b) => {
+        await b.getByRole("button", { name: "Colour", exact: true }).click();
+        await b.getByRole("button", { name: "Blue text" }).click();
+      }, '<span data-color="blue">Blue words</span>'],
+      ["Marked words", async (b) => {
+        await b.getByRole("button", { name: "Colour", exact: true }).click();
+        await b.getByRole("button", { name: "Yellow highlight" }).click();
+      }, '<mark data-color="yellow">Marked words</mark>'],
+      ["Up words", async (b) => b.getByRole("button", { name: "Superscript" }).click(), "<sup>Up words</sup>"],
+      ["Down words", async (b) => b.getByRole("button", { name: "Subscript" }).click(), "<sub>Down words</sub>"],
+      ["Centre words", async (b) => {
+        await b.getByRole("button", { name: "Alignment", exact: true }).click();
+        await b.getByRole("button", { name: "Align centre" }).click();
+      }, '<p data-align="center">Centre words</p>'],
+    ];
+    // Type every line first: a colour carries on to the next line typed, as
+    // in a word processor, so each line gets its mark after all are typed.
+    for (const [text] of lines) {
+      await newLine(page);
+      await page.keyboard.type(text);
+    }
+    for (const [text, act] of lines) {
+      await body.locator("p", { hasText: text }).selectText();
+      await expect(bubble).toBeVisible();
+      await act(bubble);
+      await page.keyboard.press("ArrowRight");
+      await bubble.waitFor({ state: "hidden" });
+    }
+    await expect(body.locator(".kb-text-color[data-color='blue']")).toHaveText("Blue words");
+    await expect(body.locator("mark.kb-highlight[data-color='yellow']")).toHaveText("Marked words");
+    await expect(body.locator("p[data-align='center']")).toHaveText("Centre words");
+
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Refund policy" })).toBeVisible();
+    const saved = (kb.writes[0].body as { body_md: string }).body_md;
+    for (const [, , form] of lines) expect(saved).toContain(form);
+    // No raw style reaches the page: a colour name draws through its token.
+    const styled = await page.locator("article .kb-editor [style]").count();
+    expect(styled).toBe(0);
+  });
+
+  test("the sub-pages block lists the child pages, and the order changes the list", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    const pages = pageWith('Intro.\n\n<div data-type="subpages" data-order="manual"></div>');
+    const child = (id: string, title: string, position: number): KbPage => ({
+      id, space_id: SPACE_ID, parent_id: "kp-a", title, body_md: "", state: "published", position,
+      versions: [{ version: 1, title, body_md: "", reason: "create" }],
+    });
+    pages.push(child("kp-c", "Zebra rules", 0), child("kp-d", "Apple rules", 1));
+    const kb = await mockKnowledge(page, { level: "write", pages });
+    await page.goto("/knowledge/pages/kp-a");
+    const list = page.locator("article .kb-editor").getByRole("list", { name: "Sub-pages" });
+    await expect(list.getByRole("link")).toHaveText(["Zebra rules", "Apple rules"]);
+    // A click opens the sub-page in place.
+    await list.getByRole("link", { name: "Apple rules" }).click();
+    await expect(page).toHaveURL(/\/knowledge\/pages\/kp-d$/);
+
+    await page.goto("/knowledge/pages/kp-a");
+    await page.getByRole("button", { name: "Edit", exact: true }).click({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Order of the sub-pages" }).click();
+    await page.getByRole("option", { name: "A to Z" }).click();
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect.poll(() => kb.writes.length).toBe(1);
+    expect((kb.writes[0].body as { body_md: string }).body_md).toBe(
+      'Intro.\n\n<div data-type="subpages" data-order="title"></div>',
+    );
+    await expect(list.getByRole("link")).toHaveText(["Apple rules", "Zebra rules"]);
+  });
+
+  test("a merged cell, a header column and a cell colour save the table as HTML", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    const kb = await mockKnowledge(page, { level: "write", pages: pageWith("Start.") });
+    const body = await openEditor(page);
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("/Table");
+    await expect(page.getByRole("listbox", { name: "Blocks" }).getByRole("option").first()).toHaveText("Table");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Quarter");
+
+    // A drag across the first two header cells selects them, and a bubble
+    // offers Merge cells.
+    const heads = body.locator("th");
+    const a = await heads.nth(0).boundingBox();
+    const b = await heads.nth(1).boundingBox();
+    if (!a || !b) throw new Error("no header cells");
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const cells = page.getByRole("toolbar", { name: "Selected cells" });
+    await expect(cells).toBeVisible();
+    await cells.getByRole("button", { name: "Merge cells" }).click();
+    await expect(body.locator("th[colspan='2']")).toHaveCount(1);
+
+    // The caret in a body cell: the table tools add a header column and a colour.
+    await body.locator("td").first().click();
+    const tools = page.getByRole("toolbar", { name: "Table" });
+    await expect(tools).toBeVisible();
+    await tools.getByRole("button", { name: "Turn the header column on or off" }).click();
+    await body.locator("td").first().click();
+    await tools.getByRole("button", { name: "Cell colour" }).click();
+    await tools.getByRole("button", { name: "Blue cell" }).click();
+    await expect(body.locator("td[data-color='blue']")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect.poll(() => kb.writes.length).toBe(1);
+    const saved = (kb.writes[0].body as { body_md: string }).body_md;
+    expect(saved.startsWith("Start.\n\n<table>\n<tr>\n")).toBe(true);
+    expect(saved).toContain('<th colspan="2">\n\nQuarter\n\n</th>');
+    expect(saved).toContain('<td data-color="blue"></td>');
+    expect(saved).toMatch(/<\/tr>\n<tr>\n<th><\/th>\n/);
+    expect(saved.endsWith("</table>")).toBe(true);
+    // The read view draws the same table from the stored HTML form.
+    const read = page.locator("article .kb-editor");
+    await expect(read.locator("th[colspan='2']")).toHaveText("Quarter");
+    await expect(read.locator("td[data-color='blue']")).toHaveCount(1);
+  });
+
   test("the bubble menu sets each mark, and the editor binds no Ctrl+K", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await setup(page);
