@@ -104,7 +104,10 @@ describe("the nudge (WS-62 CF-2)", () => {
       return new Response(JSON.stringify(method === "GET" ? layout : body), { status: 200 });
     });
 
-  const shows = { chatFirst: true, fresh: NEVER, retiredHere: false, retiredInBrowser: false, welcomeOpen: false, assistantOpen: false };
+  const shows = {
+    chatFirst: true, fresh: NEVER, retiredHere: false, retiredInBrowser: false, welcomeOpen: false, assistantOpen: false,
+    hasChats: false as boolean | null,
+  };
 
   it("shows for a member the server says never wrote, and for nobody else", () => {
     expect(nudgeShows(shows)).toBe(true);
@@ -112,6 +115,13 @@ describe("the nudge (WS-62 CF-2)", () => {
     expect(nudgeShows({ ...shows, chatFirst: false })).toBe(false);
     // Not before the server answers: the browser copy of the layout may be old.
     expect(nudgeShows({ ...shows, fresh: undefined })).toBe(false);
+  });
+
+  it("never for a member who already has a chat with a message, and not before the list answers (review of #1206)", () => {
+    // A stored layout from before the mark has no key, so every existing
+    // member reads as null. Their chats say they wrote (§4.7).
+    expect(nudgeShows({ ...shows, hasChats: true })).toBe(false);
+    expect(nudgeShows({ ...shows, hasChats: null })).toBe(false);
   });
 
   it("never shows while the welcome dialog or the assistant is open", () => {
@@ -136,24 +146,36 @@ describe("the nudge (WS-62 CF-2)", () => {
     expect(readNudgeRetired(SCOPE)).toBe(false);
   });
 
-  it("the first message writes the time to the member's layout, and keeps the rest of it", async () => {
-    vi.stubGlobal("fetch", gateway(NEVER));
+  /** A gateway that merges a key-only write into `layout`, as `me.py` does in SQL. */
+  const merging = (layout: StoredShell) =>
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      fetches.push({ method, body });
+      return new Response(JSON.stringify(method === "GET" ? layout : { ...layout, ...body }), { status: 200 });
+    });
+
+  it("the first message sends the time alone, and the server's merged layout keeps the stars (review of #1206)", async () => {
+    // The server holds a star this page never saw. A whole-layout write
+    // would have written it over.
+    vi.stubGlobal("fetch", merging({ ...NEVER, pins: ["/tasks", "/email"] }));
     put(SHELL_PREFS_PATH, { ...NEVER, pins: ["/tasks"] });
     await markChatFirstMessage(SCOPE);
     expect(readNudgeRetired(SCOPE)).toBe(true);
     expect(fetches.map((f) => f.method)).toEqual(["PUT"]);
-    const body = fetches[0].body as StoredShell;
-    expect(body.pins).toEqual(["/tasks"]);
-    expect(body.answered).toBe("skipped");
-    expect(Number.isFinite(Date.parse(body.chat_first_message_at ?? ""))).toBe(true);
-    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data?.chat_first_message_at).toBe(body.chat_first_message_at);
+    const body = fetches[0].body as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(["chat_first_message_at"]);
+    expect(Number.isFinite(Date.parse(String(body.chat_first_message_at)))).toBe(true);
+    const shown = peek<StoredShell>(SHELL_PREFS_PATH)?.data;
+    expect(shown?.chat_first_message_at).toBe(body.chat_first_message_at);
+    expect(shown?.pins).toEqual(["/tasks", "/email"]);
   });
 
-  it("with no layout in the page yet, it reads the server first, so no star is lost", async () => {
-    vi.stubGlobal("fetch", gateway({ ...NEVER, pins: ["/email"] }));
+  it("with no layout in the page yet, it still sends the key alone, and reads nothing first", async () => {
+    vi.stubGlobal("fetch", merging({ ...NEVER, pins: ["/email"] }));
     await markChatFirstMessage(SCOPE);
-    expect(fetches.map((f) => f.method)).toEqual(["GET", "PUT"]);
-    expect((fetches[1].body as StoredShell).pins).toEqual(["/email"]);
+    expect(fetches.map((f) => f.method)).toEqual(["PUT"]);
+    expect(Object.keys(fetches[0].body as object)).toEqual(["chat_first_message_at"]);
   });
 
   it("a layout the server already stamped is left alone, and a second call writes nothing", async () => {

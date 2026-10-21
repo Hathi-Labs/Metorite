@@ -170,16 +170,37 @@ class TestTheNudgeMark:
         fake.stored = params["shell_prefs"]
         assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] == STAMP
 
-    def test_a_layout_save_that_omits_the_mark_keeps_it(self, fake: _FakeDB) -> None:
+    def test_a_layout_save_that_omits_the_mark_keeps_it_in_sql(self, fake: _FakeDB) -> None:
         """The welcome dialog's one write names the layout only. It must
-        not bring the nudge back on every device (§4.7)."""
+        not bring the nudge back on every device (§4.7). The keep is ONE
+        statement, so no read-then-write can race a stamp (review of #1206).
+        The R8 twin proves the value against Postgres."""
         fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": STAMP})
         body = {"preset": "engineer", "answered": "answered", "pins": ["/tasks"]}
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 200, res.text
-        assert res.json()["chat_first_message_at"] == STAMP
-        [(_, params)] = _writes(fake)
-        assert json.loads(params["shell_prefs"])["chat_first_message_at"] == STAMP
+        [(sql, params)] = _writes(fake)
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(EXCLUDED.shell_prefs, "
+                "ARRAY['chat_first_message_at'], "
+                "COALESCE(user_settings.shell_prefs->'chat_first_message_at', "
+                "CAST('null' AS jsonb)), true)") in sql
+        assert sql.endswith("RETURNING shell_prefs")
+        assert json.loads(params["shell_prefs"])["preset"] == "engineer"
+
+    def test_the_mark_alone_merges_into_the_stored_layout(self, fake: _FakeDB) -> None:
+        """`markChatFirstMessage` sends the key alone, so a star another
+        device saved is never written over (review of #1206)."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
+        res = _client(_user()).put("/auth/me/shell", json={"chat_first_message_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"]) == {"chat_first_message_at": STAMP}
+        assert ("DO UPDATE SET shell_prefs = CASE WHEN "
+                "jsonb_typeof(user_settings.shell_prefs) = 'object' "
+                "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END "
+                "|| EXCLUDED.shell_prefs") in sql
+        # A member with no row yet gets one, with the calendar seed.
+        assert "day_start_hour" not in params
 
     def test_an_explicit_null_clears_the_mark(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": STAMP})
@@ -187,7 +208,8 @@ class TestTheNudgeMark:
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 200, res.text
         assert res.json()["chat_first_message_at"] is None
-        [(_, params)] = _writes(fake)
+        [(sql, params)] = _writes(fake)
+        assert "DO UPDATE SET shell_prefs = EXCLUDED.shell_prefs, updated_at" in sql
         assert json.loads(params["shell_prefs"])["chat_first_message_at"] is None
 
     def test_a_member_with_no_row_reads_null(self, fake: _FakeDB) -> None:
@@ -224,8 +246,11 @@ class TestTheWrite:
         _client(_user()).put("/auth/me/shell", json={"pins": ["/tasks"]})
         [(sql, params)] = _writes(fake)
         assert params["day_start_hour"] == 8 and params["day_end_hour"] == 19
-        # An existing row takes the layout only, never the seed.
-        assert sql.endswith("DO UPDATE SET shell_prefs = EXCLUDED.shell_prefs, updated_at = now()")
+        # An existing row takes the layout only, never the seed. The body
+        # omits the nudge mark, so the stored one is kept in SQL (CF-2).
+        assert "DO UPDATE SET shell_prefs = jsonb_set(EXCLUDED.shell_prefs" in sql
+        assert sql.endswith("updated_at = now() RETURNING shell_prefs")
+        assert "day_start_hour = EXCLUDED" not in sql
 
     def test_an_existing_row_gets_no_seed(self, fake: _FakeDB) -> None:
         fake.stored = {"pins": []}

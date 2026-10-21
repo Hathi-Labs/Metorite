@@ -234,7 +234,12 @@ function WelcomeDialogInner() {
     const askedAgain = again;
     const stars = starsToSave(shown, sections, shell.layout);
     next();
-    save({ ...EMPTY_SHELL, preset, answered: "answered", ...stars }, askedAgain);
+    // The nudge mark rides along from the server's answer, so the optimistic
+    // copy never reads null and the bubble never flashes (review of #1206).
+    save(
+      { ...EMPTY_SHELL, preset, answered: "answered", ...stars, chat_first_message_at: shell.fresh?.chat_first_message_at ?? null },
+      askedAgain,
+    );
   };
   // An answer goes to step 2, and saves nothing yet. Asked again with the
   // same answer, the ticks are the member's current stars. Otherwise they

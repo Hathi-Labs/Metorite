@@ -57,6 +57,7 @@ import {
   switchTarget,
 } from "./assistant";
 import { chatFirstOn, shellChatOn } from "./chatFlag";
+import { landingSettled } from "./ChatNudge";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -806,10 +807,22 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
     expect(CHAT_LANDED_KEY.startsWith("cc-chat")).toBe(false);
   });
 
-  it("the shell opens it once, after the layout read settles and the welcome dialog shuts", () => {
+  it("the landing waits for the session, the access read, the layout read, the bound identity and the welcome dialog (review of #1206)", () => {
+    const all = { sessionStatus: "authenticated", accessLoading: false, shellEnabled: true, shellAnswered: true, identityBound: true, welcomeOpen: false };
+    expect(landingSettled(all)).toBe(true);
+    expect(landingSettled({ ...all, sessionStatus: "loading" })).toBe(false);
+    expect(landingSettled({ ...all, accessLoading: true })).toBe(false);
+    // "Not enabled yet" is not settled: the read is off while access loads.
+    expect(landingSettled({ ...all, shellEnabled: false })).toBe(false);
+    expect(landingSettled({ ...all, shellAnswered: false })).toBe(false);
+    expect(landingSettled({ ...all, identityBound: false })).toBe(false);
+    expect(landingSettled({ ...all, welcomeOpen: true })).toBe(false);
+  });
+
+  it("the shell opens it once, from the rule, and marks the session", () => {
     const src = read("lib/shell/ChatNudge.tsx");
-    expect(src).toContain("const settled = !shell.enabled || shell.fresh !== undefined || shell.failed;");
-    expect(src).toContain("if (decided.current || !chatFirst || !phone || !settled || welcome || welcomeOpen()) return;");
+    expect(src).toContain("const settled = landingSettled({");
+    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
     expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
     expect(src).toContain('openAssistant({ mode: "full" });');
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");

@@ -164,6 +164,32 @@ async def test_the_nudge_mark_round_trips_and_a_layout_save_keeps_it(db) -> None
     assert raw["chat_first_message_at"] == stamp
 
 
+async def test_the_mark_alone_merges_and_a_layout_save_keeps_it_in_one_statement(db) -> None:
+    """Review of #1206: the stamp is a key-only merge, and the keep is in
+    SQL. Neither reads the row first, so a stamp and a star save cannot
+    write each other over. Postgres runs the real `||`, `jsonb_set` and
+    `COALESCE` here."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    stamp = "2026-10-21T10:00:00.000Z"
+    async with tenant_engine_scope(_app_dsn(db)):
+        # A new row from the mark alone: the row exists, the rest is null.
+        first = await _put(db.org_a, user, {"chat_first_message_at": stamp})
+        assert (first["chat_first_message_at"], first["pins"]) == (stamp, None)
+        # A star save that omits the mark keeps it, by COALESCE.
+        second = await _put(db.org_a, user, {"preset": "engineer", "answered": "answered",
+                                             "pins": ["/tasks", "/email"]})
+        assert (second["pins"], second["chat_first_message_at"]) == (["/tasks", "/email"], stamp)
+        # The mark alone again, over a full layout: the stars survive the merge.
+        later = "2026-10-22T10:00:00.000Z"
+        third = await _put(db.org_a, user, {"chat_first_message_at": later})
+        assert (third["pins"], third["preset"], third["chat_first_message_at"]) == (
+            ["/tasks", "/email"], "engineer", later)
+        read = await _get(db.org_a, user)
+    assert read == third
+
+
 async def test_the_stars_and_known_round_trip_in_jsonb(db) -> None:
     """The star model (owner, 2026-10-11) stores ``known`` beside ``pins``."""
     email = _address()

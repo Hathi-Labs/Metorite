@@ -407,6 +407,26 @@ EMPTY_SHELL: dict[str, Any] = {
 #: The one key of the layout that a save keeps when the body omits it.
 KEPT_KEYS: tuple[str, ...] = ("chat_first_message_at",)
 
+#: How a write changes an existing row's ``shell_prefs`` (WS-62 CF-2). Each
+#: is ONE statement, so two writes never race through a read-then-write
+#: (review of #1206). ``CAST``, not ``::``, beside a bind
+#: (``test_sql_bindparam_jsonb_cast.py``).
+#:
+#: ``layout``: the body is the whole layout, mark included. It replaces.
+_SET_LAYOUT = "EXCLUDED.shell_prefs"
+#: ``layout-keep``: the body is the whole layout and omits the mark. The
+#: stored mark survives, in SQL.
+_SET_LAYOUT_KEEP = (
+    "jsonb_set(EXCLUDED.shell_prefs, ARRAY['chat_first_message_at'], "
+    "COALESCE(user_settings.shell_prefs->'chat_first_message_at', CAST('null' AS jsonb)), true)"
+)
+#: ``stamp``: the body is the mark alone. It merges into the stored layout.
+_SET_STAMP = (
+    "CASE WHEN jsonb_typeof(user_settings.shell_prefs) = 'object' "
+    "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END || EXCLUDED.shell_prefs"
+)
+_SET_BY_MODE = {"layout": _SET_LAYOUT, "layout-keep": _SET_LAYOUT_KEEP, "stamp": _SET_STAMP}
+
 
 def stored_shell(raw: Any) -> dict[str, Any]:
     """A stored value, as the route answers it. Lenient on purpose.
@@ -469,17 +489,19 @@ async def _read_shell(db: Any, uid: str) -> Any:
 
 
 async def _write_shell(
-    db: Any, uid: str, prefs: dict[str, Any] | None, keep: frozenset[str] = frozenset(),
-) -> dict[str, Any] | None:
-    """Store the layout, or reset it with ``None``. Returns what was stored.
+    db: Any, uid: str, prefs: dict[str, Any] | None, mode: str = "layout",
+) -> Any:
+    """Store the layout, or reset it with ``None``. Returns the stored column.
 
     ⚠️ A member with no row yet gets one here, and `/tasks/settings` reads "no
     row" as "seed the calendar from the People schedule" (D-PC-16). So the
     new row carries that seed, and the calendar opens as it did before. An
     existing row changes in `shell_prefs` only.
 
-    ``keep`` names the keys the body did not send. Each takes the stored
-    value, so a layout save never clears the nudge mark (WS-62 CF-2).
+    ``mode`` picks the one-statement expression for an existing row
+    (``_SET_BY_MODE``). The read before the write decides the seed only. It
+    never carries a value into the write, so a concurrent stamp and a star
+    save cannot write each other over (review of #1206).
     """
     from gateway.routes.tasks.settings import (
         _BOUND_ORG,
@@ -491,13 +513,8 @@ async def _write_shell(
     if prefs is None:
         await db.execute(text(_RESET_SHELL_SQL.format(org=_BOUND_ORG)), {"uid": uid})
         return None
-    row = await _read_shell(db, uid)
-    if row is not None and keep:
-        stored = stored_shell(row[0])
-        for key in keep:
-            prefs[key] = stored.get(key)
     params: dict[str, Any] = {"uid": uid, "shell_prefs": json.dumps(prefs)}
-    if row is None:
+    if await _read_shell(db, uid) is None:
         params.update(await _seed_from_work_schedule(db, uid))
     cols = [k for k in params if k != "uid"]
 
@@ -505,9 +522,10 @@ async def _write_shell(
     def _ph(k: str) -> str:
         return ":shell_prefs ::jsonb" if k == "shell_prefs" else f":{k}"
 
-    await db.execute(
-        text(upsert_settings_sql(cols, _ph, update=["shell_prefs"])), params)
-    return prefs
+    sql = upsert_settings_sql(
+        cols, _ph, update=["shell_prefs"], merge={"shell_prefs": _SET_BY_MODE[mode]})
+    row = (await db.execute(text(f"{sql} RETURNING shell_prefs"), params)).first()
+    return row[0] if row is not None else prefs
 
 
 @me_router.get("/me/shell", summary="The caller's shell layout (NS-7)")
@@ -542,7 +560,7 @@ async def put_my_shell(
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to save a layout")
     prefs: dict[str, Any] | None = None
-    keep: frozenset[str] = frozenset()
+    mode = "layout"
     if body is not None:
         try:
             model = ShellPrefs.model_validate(body)
@@ -553,12 +571,19 @@ async def put_my_shell(
             ) from exc
         if model.answered == "answered" and model.preset is None:
             raise HTTPException(status_code=422, detail="An answer names its preset")
-        prefs = model.model_dump(by_alias=True)
-        # A key the body did not name keeps its stored value (CF-2).
-        keep = frozenset(k for k in KEPT_KEYS if k not in model.model_fields_set)
+        named = model.model_fields_set
+        if named == set(KEPT_KEYS):
+            # The mark alone (`markChatFirstMessage`): merge it, keep the rest.
+            mode = "stamp"
+            prefs = {k: getattr(model, k) for k in KEPT_KEYS}
+        else:
+            prefs = model.model_dump(by_alias=True)
+            # A key the body did not name keeps its stored value (CF-2).
+            if any(k not in named for k in KEPT_KEYS):
+                mode = "layout-keep"
     try:
         async with _tenant_session() as db:
-            stored = await _write_shell(db, uid, prefs, keep)
+            stored = await _write_shell(db, uid, prefs, mode)
     except Exception as exc:
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc

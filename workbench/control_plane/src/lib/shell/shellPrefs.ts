@@ -244,17 +244,27 @@ export function nudgeShows(a: {
   retiredInBrowser: boolean;
   welcomeOpen: boolean;
   assistantOpen: boolean;
+  /**
+   * Whether the member already has a chat with a message. Null until the
+   * session list has answered. A layout stored before the mark existed has
+   * no key, so every existing member reads as null there (review of
+   * #1206): their chats are the fact that they wrote (§4.7).
+   */
+  hasChats: boolean | null;
 }): boolean {
   if (!a.chatFirst || a.welcomeOpen || a.assistantOpen) return false;
   if (a.retiredHere || a.retiredInBrowser) return false;
+  if (a.hasChats !== false) return false;
   return a.fresh !== undefined && a.fresh.chat_first_message_at === null;
 }
 
 /**
  * The member wrote to the assistant, or dismissed the nudge. The browser
- * copy and the page's memory take it at once. The server takes it once, in
- * the member's own layout: a layout the page holds, or the one the server
- * answers now. A layout the server already stamped is left alone.
+ * copy and the page's memory take it at once. The server takes it once, as
+ * a KEY-ONLY write: the body names `chat_first_message_at` and nothing else,
+ * and the gateway merges it into the stored layout in one statement. So a
+ * star another device saved later is never written over (review of #1206).
+ * A layout the page already holds as stamped is left alone.
  *
  * A second call, and every call after the server said yes, does nothing.
  */
@@ -264,17 +274,23 @@ export async function markChatFirstMessage(scope: string | null | undefined): Pr
     nudgeListeners.forEach((l) => l());
   }
   writeNudgeRetired(scope);
-  let base: StoredShell | undefined = latestShell() ?? confirmed;
-  if (!base) {
-    try {
-      base = await readShellPrefs();
-    } catch {
-      return; // no layout to build on: the next device asks the server again
-    }
-  }
-  if (base.chat_first_message_at) return;
+  const latest = latestShell() ?? confirmed;
+  if (latest?.chat_first_message_at) return;
+  const now = new Date().toISOString();
+  // The screen takes the mark at once, so the bubble never comes back
+  // while the write is out. The server's merged answer replaces it.
+  if (latest) put(SHELL_PREFS_PATH, { ...latest, chat_first_message_at: now });
   try {
-    await saveShellPrefs({ ...base, chat_first_message_at: new Date().toISOString() }, { keep: true });
+    const res = await fetch(SHELL_PREFS_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_first_message_at: now }),
+    });
+    if (!res.ok) return;
+    const saved = asLayout(await res.json());
+    if (!saved) return;
+    confirmed = saved;
+    put(SHELL_PREFS_PATH, saved);
   } catch {
     /* the browser copy holds for this device; another device shows it once */
   }
@@ -321,6 +337,13 @@ export interface ShellPrefsState {
   failed: boolean;
   /** False with the shell nav off, or with no workspace. */
   enabled: boolean;
+  /**
+   * True once the read of THIS page has answered, with a layout or a fault,
+   * and no read is out. False while it is out, and false after a clear of
+   * the cache (an identity bind) until the read runs again. The chat-first
+   * landing waits on this (CF-2, review of #1206).
+   */
+  answered: boolean;
 }
 
 /**
@@ -378,5 +401,6 @@ export function useShellPrefs(): ShellPrefsState {
     loading: enabled && stored === undefined && res.loading,
     failed: enabled && stored === undefined && !res.loading && res.error !== null,
     enabled,
+    answered: enabled && !res.loading && (res.data !== undefined || res.error !== null),
   };
 }

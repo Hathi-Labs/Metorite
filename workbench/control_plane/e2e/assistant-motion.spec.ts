@@ -62,10 +62,12 @@ interface InstallOptions {
    * read is refused, as every other request without a stub is.
    */
   shell?: ShellLayout;
+  /** Hold `/api/auth/me` and the layout read this long, so the shell lands before they answer. */
+  delayMs?: number;
 }
 
 async function install(page: Page, opts: InstallOptions = {}) {
-  await page.addInitScript(({ chatFirst, pill, taskId, shell }) => {
+  await page.addInitScript(({ chatFirst, pill, taskId, shell, delayMs }) => {
     window.localStorage.clear();
     // The one assistant needs its flag and the full frame (`chatFlag.ts`).
     for (const k of ["cc-shell-chat", "cc-shell-bar", "cc-shell-nav"]) window.localStorage.setItem(k, "1");
@@ -91,6 +93,9 @@ async function install(page: Page, opts: InstallOptions = {}) {
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/chat/active-sessions")) return json([]);
+      if (delayMs && (url.includes("/api/auth/me/shell") || url.endsWith("/api/auth/me"))) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
       // Before `/api/auth/me`, which this path also contains.
       if (shell && url.includes("/api/auth/me/shell")) {
         const stored = JSON.parse(sessionStorage.getItem(SHELL_KEY) ?? "null") as ShellLayout | null;
@@ -161,7 +166,7 @@ async function install(page: Page, opts: InstallOptions = {}) {
       }
       return orig(input, init);
     };
-  }, { chatFirst: Boolean(opts.chatFirst), pill: Boolean(opts.pill), taskId: TASK_ID, shell: opts.shell ?? null });
+  }, { chatFirst: Boolean(opts.chatFirst), pill: Boolean(opts.pill), taskId: TASK_ID, shell: opts.shell ?? null, delayMs: opts.delayMs ?? 0 });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -209,6 +214,19 @@ async function shellRead(page: Page) {
 
 /** The one nudge, by its placement. */
 const nudge = (page: Page, placement: "field" | "tab") => page.locator(`[data-chat-nudge="${placement}"]`);
+
+/**
+ * No open sheet for this long. The dock mounts lazily, so a count of zero at
+ * one instant proves nothing: this samples until the time is up.
+ */
+async function expectNoOpenSheetFor(page: Page, ms: number) {
+  const open = page.locator('section[data-assistant][data-panel-phase="open"]');
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    expect(await open.count(), "the sheet opened").toBe(0);
+    await page.waitForTimeout(100);
+  }
+}
 
 /** The phone's Ask tab opens the sheet, with the composer ready. */
 async function openSheet(page: Page) {
@@ -518,8 +536,8 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     await expect.poll(async () => (await shellPuts(page)).length, { timeout: 15_000 }).toBe(1);
     const [put] = await shellPuts(page);
     expect(Number.isFinite(Date.parse(put?.chat_first_message_at ?? ""))).toBe(true);
-    // The rest of the layout rode along: the member's answer is still there.
-    expect(put?.answered).toBe("skipped");
+    // The key alone: the server merges it, so no star of another device is written over.
+    expect(Object.keys(put ?? {})).toEqual(["chat_first_message_at"]);
 
     // Closed again: no bubble, and the page's last row is back.
     await panel(page).getByRole("button", { name: "Close Metorite" }).click();
@@ -567,8 +585,9 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     await openHome(page, 390, 844, { chatFirst: true, shell: NEVER_ASKED });
     const question = page.getByRole("dialog", { name: "What will you do most here?" });
     await expect(question).toBeVisible({ timeout: 60_000 });
-    // While it is open: no sheet, and no nudge.
-    await expect(panel(page)).toHaveCount(0);
+    // While it is open: no sheet, and no nudge. Sampled, because the dock
+    // mounts lazily and a count of zero at one instant proves nothing.
+    await expectNoOpenSheetFor(page, 1_500);
     await expect(nudge(page, "tab")).toHaveCount(0);
 
     // Step 1's answer writes the preset and its stars, and there is no step 2.
@@ -585,6 +604,20 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     expect(put && "chat_first_message_at" in put ? put.chat_first_message_at : null).toBeNull();
 
     // The dialog shut, so the landing open runs now.
+    await expectLandedOnChat(page);
+  });
+
+  test("a slow access read and a slow layout read: the question still comes before the sheet", async ({ page }) => {
+    // The shell lands at once, and the reads answer 2 s later. The landing
+    // must wait for both, or the question opens on top of the open sheet
+    // (review of #1206).
+    await openHome(page, 390, 844, { chatFirst: true, shell: NEVER_ASKED, delayMs: 2_000 });
+    const question = page.getByRole("dialog", { name: "What will you do most here?" });
+    await expect(question).toBeVisible({ timeout: 60_000 });
+    await expectNoOpenSheetFor(page, 1_500);
+    expect(await page.evaluate(() => sessionStorage.getItem("cc-shell-chat-landed"))).toBeNull();
+    await question.getByRole("button", { name: /Build and ship the work/ }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await expectLandedOnChat(page);
   });
 });

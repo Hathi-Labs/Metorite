@@ -14,6 +14,11 @@
  *
  * - It shows only when the SERVER says null for this page (`fresh`), never
  *   on the browser copy of the layout.
+ * - A layout stored before the mark existed has no key, so every existing
+ *   member reads as null there. Their chats are the fact that they wrote
+ *   (review of #1206): a member with any chat that holds a message is past
+ *   the nudge, and the mark is stamped for them. Until the session list has
+ *   answered, no nudge.
  * - It never shows while the welcome dialog is open, and never while the
  *   assistant is open: the sheet covers it on a phone, and on a desktop the
  *   member is already where it points.
@@ -27,16 +32,22 @@
  *
  * **The landing open.** A phone that lands on `/` opens the assistant as the
  * full sheet, once per browser session (`opensOnLanding`, D-CF-3). It waits
- * for the layout read to settle and for the welcome dialog to close, so the
- * question is never asked over the sheet.
+ * until the session, the access read and the layout read have all answered,
+ * the read cache is bound to this member, and the welcome dialog is shut. So
+ * the question is never asked over the sheet, and a late identity bind
+ * (`clearAll`, which closes the assistant) never follows the open (review
+ * of #1206).
  */
 
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
 import Button from "@/components/ui/Button";
-import { chatScope } from "@/lib/sessions";
+import { boundOrganization, identity } from "@/lib/dataCache";
+import { useChatScope } from "@/hooks/useChatSessions";
+import { chatScope, fetchAndMergeSessionsFromDb } from "@/lib/sessions";
 
 import { CHAT_LANDED_KEY, openAssistant, opensOnLanding, useAssistant } from "./assistant";
 import { chatFirstOn } from "./chatFlag";
@@ -55,6 +66,35 @@ function useScope(): string | null {
 }
 
 /**
+ * Whether the member already has a chat with a message, from the merged
+ * session list (the server's list and this browser's). Null until it has
+ * answered for the bound scope. A chat with a message stamps the mark, so
+ * the next device needs no list to know.
+ */
+function useHasChats(on: boolean): boolean | null {
+  const bound = useChatScope();
+  const [state, setState] = useState<{ scope: string; has: boolean } | null>(null);
+  useEffect(() => {
+    if (!on || !bound) return;
+    let live = true;
+    fetchAndMergeSessionsFromDb()
+      .then((list) => {
+        if (!live) return;
+        const has = list.some((s) => (s.messageCount ?? 0) > 0);
+        setState({ scope: bound, has });
+        if (has) void markChatFirstMessage(bound);
+      })
+      .catch(() => {
+        /* no answer: no nudge in this page */
+      });
+    return () => {
+      live = false;
+    };
+  }, [on, bound]);
+  return state && state.scope === bound ? state.has : null;
+}
+
+/**
  * The one bubble. `field` draws it under the desktop field, tail up.
  * `tab` draws it above the phone's Ask tab, tail down.
  */
@@ -66,6 +106,7 @@ export function ChatNudge({ placement, hidden = false }: { placement: "field" | 
   const assistant = useAssistant();
   const retiredHere = useNudgeRetiredHere();
   const scope = useScope();
+  const hasChats = useHasChats(chatFirst);
   // The browser copy, read after mount so the server and the browser agree
   // on the first frame.
   const [retiredInBrowser, setRetiredInBrowser] = useState(true);
@@ -84,6 +125,7 @@ export function ChatNudge({ placement, hidden = false }: { placement: "field" | 
       retiredInBrowser,
       welcomeOpen: welcome,
       assistantOpen: assistant.open,
+      hasChats,
     });
 
   // The phone's page moves its last row up while the bubble shows.
@@ -125,20 +167,59 @@ export function ChatNudge({ placement, hidden = false }: { placement: "field" | 
 }
 
 /**
+ * Whether the landing may decide now (CF-2, review of #1206). Pure, so the
+ * unit test holds it. Every fact must be in: the session, the access read,
+ * the layout read of this page, the read cache bound to this member, and no
+ * welcome dialog. "Not enabled yet" is NOT settled: before access resolves
+ * the shell read is off, the hold screen shows, and the welcome dialog
+ * cannot even mount to say it is open.
+ */
+export function landingSettled(a: {
+  sessionStatus: string;
+  accessLoading: boolean;
+  shellEnabled: boolean;
+  shellAnswered: boolean;
+  identityBound: boolean;
+  welcomeOpen: boolean;
+}): boolean {
+  if (a.sessionStatus === "loading" || a.accessLoading) return false;
+  if (!a.shellEnabled || !a.shellAnswered || !a.identityBound) return false;
+  return !a.welcomeOpen;
+}
+
+/**
  * The landing open, on a phone. `AppShell` calls it once, above its early
- * returns. It decides once per page load, when the layout read has settled
- * and the welcome dialog is shut, and then marks the browser session.
+ * returns. It decides once per page load, when `landingSettled` says every
+ * fact is in, and then marks the browser session.
  */
 export function useChatFirstLanding(phone: boolean): void {
   const pathname = usePathname();
   const [chatFirst] = useState(() => chatFirstOn());
   const shell = useShellPrefs();
   const welcome = useWelcomeOpen();
-  // Settled: the server answered, the read failed, or there is no read.
-  const settled = !shell.enabled || shell.fresh !== undefined || shell.failed;
+  const { status: sessionStatus, data: session } = useSession();
+  const { access, loading: accessLoading } = useAccess();
   const decided = useRef(false);
+  // What `AppShell` binds the read cache to: the session's email and the
+  // access read's organization. Not `access.email`: under the dev bypass
+  // the two can differ, and the cache is keyed on the session's.
+  const sessionEmail = session?.user?.email ?? null;
+  const org = access.organization?.id ?? null;
   useEffect(() => {
-    if (decided.current || !chatFirst || !phone || !settled || welcome || welcomeOpen()) return;
+    if (decided.current || !chatFirst || !phone) return;
+    // The read cache is bound to this member and organization: `AppShell`
+    // binds it in an earlier effect, and a later bind would clear the cache
+    // and close what this opened.
+    const identityBound = identity() === sessionEmail && (org === null || boundOrganization() === org);
+    const settled = landingSettled({
+      sessionStatus,
+      accessLoading,
+      shellEnabled: shell.enabled,
+      shellAnswered: shell.answered,
+      identityBound,
+      welcomeOpen: welcome || welcomeOpen(),
+    });
+    if (!settled) return;
     decided.current = true;
     let seen = false;
     try {
@@ -153,5 +234,5 @@ export function useChatFirstLanding(phone: boolean): void {
       /* storage off */
     }
     openAssistant({ mode: "full" });
-  }, [chatFirst, phone, settled, welcome, pathname]);
+  }, [chatFirst, phone, sessionStatus, accessLoading, shell.enabled, shell.answered, welcome, pathname, sessionEmail, org]);
 }
