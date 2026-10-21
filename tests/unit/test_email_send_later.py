@@ -286,6 +286,7 @@ class TestSendLaterOnARealDatabase:
                 assert err.value.status_code == 409
                 # A send that stopped part way is failed, never sent again.
                 _due(p.admin_engine, sid, minutes=30, status="sending")
+                await sl._sweep(p.org_b)
                 assert await sl._claim(p.org_b) == []
             status, error = _status(p.admin_engine, sid)
             assert status == "failed" and "not sent again" in error and sent == []
@@ -398,3 +399,58 @@ async def test_the_member_check_fails_closed(monkeypatch) -> None:
     assert "no longer in this organization" in await sl._member("dana@fracktal.test", "org-2")
     member = await sl._member("Dana@fracktal.test", "org-1")
     assert member.email == "Dana@fracktal.test" and member.organization_id == "org-1"
+
+
+async def test_a_directory_outage_requeues_and_never_fails(monkeypatch) -> None:
+    """A failed read of the directory says nothing about the member. The row
+    goes back to queued, and the reason is never "no longer active" (second
+    review of #1209, P2). Mutation: let _member return the inactive reason."""
+    from acb_auth import access as acc
+    from acb_auth.permissions import EffectiveAccess
+
+    async def down(email, **kw):
+        return EffectiveAccess(is_active=False)
+
+    monkeypatch.setattr(acc, "resolve_access", down)
+    monkeypatch.setattr(acc, "role_read_failed", lambda: True)
+    with pytest.raises(sl._ReadFailed):
+        await sl._member("dana@fracktal.test", "org-1")
+
+    async def timeout(email, **kw):
+        raise acc.IdentityUnavailable("pool")
+
+    monkeypatch.setattr(acc, "resolve_access", timeout)
+    with pytest.raises(sl._ReadFailed):
+        await sl._member("dana@fracktal.test", "org-1")
+
+    requeued: list[str] = []
+    finished: list[str] = []
+    calls = iter([[SimpleNamespace(id="s1")], []])
+
+    async def claim(org):
+        return next(calls)
+
+    async def nothing(*a, **kw):
+        return None
+
+    async def send(org, row):
+        raise sl._ReadFailed("pool")
+
+    async def requeue(org, sid):
+        requeued.append(sid)
+
+    async def finish(org, sid, *, error):
+        finished.append(sid)
+
+    async def orgs():
+        return ["org-1"]
+
+    monkeypatch.setattr(sl, "send_later_enabled", lambda: True)
+    monkeypatch.setattr(sl, "_orgs", orgs)
+    monkeypatch.setattr(sl, "_sweep", nothing)
+    monkeypatch.setattr(sl, "_claim", claim)
+    monkeypatch.setattr(sl, "_send_one", send)
+    monkeypatch.setattr(sl, "_requeue", requeue)
+    monkeypatch.setattr(sl, "_finish", finish)
+    assert await sl.run_tick() == {}
+    assert requeued == ["s1"] and finished == []

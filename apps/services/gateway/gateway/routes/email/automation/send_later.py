@@ -230,10 +230,9 @@ async def _orgs() -> list[str]:
     return await _list_organizations()
 
 
-async def _claim(org: str) -> list[Any]:
-    """At most ONE due row of *org*, moved to ``sending`` in its own
-    transaction (review of #1209, P2). A stop in mid-tick then leaves at most
-    the one row in ``sending``, never a batch that was claimed and not tried."""
+async def _sweep(org: str) -> None:
+    """Once for each org and tick: fail a stuck send, and a row whose draft
+    went. Neither is ever sent."""
     async with tenant_session(org) as db:
         await db.execute(text(
             "UPDATE email_scheduled_sends SET status = 'failed', updated_at = now(), "
@@ -248,6 +247,13 @@ async def _claim(org: str) -> list[Any]:
             "error = 'The draft changed or was deleted after it was scheduled, so "
             "it was not sent. Schedule it again.' "
             "WHERE status = 'queued' AND draft_id IS NULL"))
+
+
+async def _claim(org: str) -> list[Any]:
+    """At most ONE due row of *org*, moved to ``sending`` in its own
+    transaction (review of #1209, P2). A stop in mid-tick then leaves at most
+    the one row in ``sending``, never a batch that was claimed and not tried."""
+    async with tenant_session(org) as db:
         return list((await db.execute(text(
             "UPDATE email_scheduled_sends SET status = 'sending', updated_at = now() "
             "WHERE id IN (SELECT id FROM email_scheduled_sends "
@@ -284,6 +290,18 @@ def _why(exc: BaseException) -> str:
     return f"The send failed ({type(exc).__name__})."
 
 
+class _ReadFailed(Exception):
+    """The directory could not be read. That says nothing about the member,
+    so the row goes back to ``queued`` (second review of #1209, P2)."""
+
+
+async def _requeue(org: str, schedule_id: str) -> None:
+    async with tenant_session(org) as db:
+        await db.execute(text(
+            "UPDATE email_scheduled_sends SET status = 'queued', updated_at = now() "
+            "WHERE id = CAST(:id AS uuid) AND status = 'sending'"), {"id": schedule_id})
+
+
 async def _member(owner: str, org: str) -> UserContext | str:
     """The member of a send, resolved NOW, or why the send must not go.
 
@@ -291,12 +309,25 @@ async def _member(owner: str, org: str) -> UserContext | str:
     (``resolve_access``, ``is_active=False``), and a member of another org
     now has another home org. Neither send goes (review of #1209, P1). No
     sign-in request is filed (``record_request`` stays False)."""
-    from acb_auth.access import resolve_access, resolve_identity  # noqa: PLC0415
+    from acb_auth.access import (  # noqa: PLC0415
+        IdentityUnavailable,
+        identity_read_failed,
+        resolve_access,
+        resolve_identity,
+        role_read_failed,
+    )
 
-    access = await resolve_access(owner, use_cache=False)
+    try:
+        access = await resolve_access(owner, use_cache=False)
+        if role_read_failed():
+            raise _ReadFailed("roles")
+        user_id, home = await resolve_identity(owner)
+        if not home and identity_read_failed():
+            raise _ReadFailed("identity")
+    except IdentityUnavailable as exc:
+        raise _ReadFailed("pool") from exc
     if not access.is_active:
         return "The member is no longer active in the organization, so it was not sent."
-    user_id, home = await resolve_identity(owner)
     if str(home or "") != org:
         return "The member is no longer in this organization, so it was not sent."
     return UserContext(email=owner, role=UserRole.EMPLOYEE).with_access(
@@ -332,6 +363,7 @@ async def run_tick() -> dict[str, int]:
             break
         token = bind_tenant(org)
         try:
+            await _sweep(org)
             for _ in range(BATCH):
                 if _stopping.is_set():
                     break
@@ -339,7 +371,14 @@ async def run_tick() -> dict[str, int]:
                 if not claimed:
                     break
                 row = claimed[0]
-                why, background = await _send_one(org, row)
+                try:
+                    why, background = await _send_one(org, row)
+                except _ReadFailed as exc:
+                    # Not the member's fault: try again on a later tick.
+                    await _requeue(org, str(row.id))
+                    _log.warning("email.send_later_retry", schedule_id=str(row.id),
+                                 read=str(exc))
+                    break
                 await _finish(org, str(row.id), error=why)
                 if why is None:
                     sent[org] = sent.get(org, 0) + 1
