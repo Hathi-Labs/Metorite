@@ -11,7 +11,7 @@ phases and two organizations:
   leaves the index as it was. The icon then shows in the tree, the page,
   the search hits, the recent list and the favourites;
 - an icon with a title writes one version, a bad icon is a 422, a reader
-  gets 403, and the CHECK of migration 290 refuses 17 characters;
+  gets 403, and the CHECK of migration 291 refuses 17 characters;
 - "Recently updated" shows the live pages the member sees, newest first,
   with a keyset cursor and no repeat, and ``mine`` keeps the member's own;
 - a page that becomes hidden drops out of the favourites and of the recent

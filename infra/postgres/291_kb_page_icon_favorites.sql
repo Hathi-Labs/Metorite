@@ -1,5 +1,5 @@
 -- ============================================================================
--- 290_kb_page_icon_favorites.sql — the icon of a Knowledge page, and the
+-- 291_kb_page_icon_favorites.sql — the icon of a Knowledge page, and the
 -- favourites of a member.
 --
 -- What: one new column, one new table and two indexes.

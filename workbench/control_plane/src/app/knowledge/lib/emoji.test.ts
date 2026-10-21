@@ -2,7 +2,7 @@
  * The emoji data of Knowledge (WS-61 KB-2f). Fence for `emoji.ts`: the
  * contract with KB-2i (`searchEmoji(query, limit)`), the rank of a match,
  * and that every emoji of the data fits the 16 characters of
- * `kb_pages.icon` (migration 290).
+ * `kb_pages.icon` (migration 291).
  */
 import { describe, expect, it } from "vitest";
 
