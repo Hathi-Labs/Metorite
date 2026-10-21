@@ -20,4 +20,11 @@ Code that Metorite took from other projects, and the licence of each.
 Each line is `path in this repo` and `path in Docmost`.
 
 <!-- PORTED-FILES-START -->
+- `workbench/control_plane/src/app/knowledge/lib/editor/footnotes.ts` <- `packages/editor-ext/src/lib/footnotes`
+- `workbench/control_plane/src/app/knowledge/lib/editor/tables.ts` <- `apps/client/src/features/editor/components/table/handle/hooks/use-table-clear.ts`
+- `workbench/control_plane/src/app/knowledge/lib/editor/searchAndReplace.ts` <- `packages/editor-ext/src/lib/search-and-replace/search-and-replace.ts`
+- `workbench/control_plane/src/app/knowledge/lib/editor/tableMove.ts` <- `packages/editor-ext/src/lib/table/utils`
+- `workbench/control_plane/src/app/knowledge/components/editor/tableDrag.ts` <- `packages/editor-ext/src/lib/table/dnd`
+- `workbench/control_plane/src/app/knowledge/components/editor/TableHandles.tsx` <- `apps/client/src/features/editor/components/table/handle`
+- `workbench/control_plane/src/app/knowledge/components/editor/FindBar.tsx` <- `apps/client/src/features/editor/components/search-and-replace/search-and-replace-dialog.tsx`
 <!-- PORTED-FILES-END -->
