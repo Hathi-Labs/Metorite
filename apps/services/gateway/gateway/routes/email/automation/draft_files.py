@@ -79,6 +79,9 @@ class DraftFiles:
     #: Each sentence that :func:`strip_limit_claims` took out of the draft.
     #: The card names it, so the member sees what changed (review round 1).
     removed: list[str] = field(default_factory=list)
+    #: Each part of the mail that did not fit the tier's window
+    #: (``draft_budget.plan_draft``). The card names it.
+    left_out: list[str] = field(default_factory=list)
 
     def read_names(self) -> list[str]:
         return [n for n, _t, _c in self.texts] + [n for n, _u in self.images]
@@ -91,6 +94,9 @@ class DraftFiles:
             names = ", ".join(f"{n} ({why})" for n, why in self.unread)
             out.append(f"The assistant did not read {names}. Check the reply "
                        "against it before you send.")
+        if self.left_out:
+            out.append("The mail is long, so the draft did not see "
+                       + "; ".join(self.left_out) + ". Check the reply against it.")
         if self.removed:
             said = " ".join(" ".join(r.split()) for r in self.removed)[:400]
             out.append(f'The assistant took out a line that said a file could not '
