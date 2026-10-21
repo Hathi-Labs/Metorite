@@ -59,6 +59,16 @@ def test_the_reader_skips_code_and_self() -> None:
     assert page_ids_in(None) == []
 
 
+def test_the_reader_skips_indented_code_but_not_list_continuations() -> None:
+    code = f"Intro\n\n    /knowledge/pages/{A}\n\n[s](/knowledge/pages/{B})"
+    assert page_ids_in(code) == [B]
+    assert page_ids_in(f"    /knowledge/pages/{A}") == []
+    # A line right after paragraph text continues the paragraph.
+    assert page_ids_in(f"Intro\n    /knowledge/pages/{A}") == [A]
+    # Inside a list item the indent is the item's content.
+    assert page_ids_in(f"- item\n\n    /knowledge/pages/{A}") == [A]
+
+
 # ── The routes ──────────────────────────────────────────────────────────────
 
 
@@ -169,3 +179,88 @@ async def test_a_second_org_sees_nothing_and_a_delete_leaves_no_row(kb, app_engi
         c.execute(text("DELETE FROM kb_pages WHERE id = CAST(:p AS uuid)"), {"p": source})
     assert _rows(kb, source) == 0
     assert await _from(kb, admin_a, target) == []
+
+
+async def _member(kb: Any, org: str, tag: str) -> tuple[str, Any]:
+    email = _address(tag)
+    _add_member(kb, org, email)
+    return email, _principal(email, org)
+
+
+def _target_rows(p: Any, source: str, kind: str = "page") -> list[str]:
+    with p.admin_engine.connect() as c:
+        return [r[0] for r in c.execute(text(
+            "SELECT target_id FROM kb_links WHERE page_id = CAST(:p AS uuid) "
+            "AND target_kind = :k"), {"p": source, "k": kind})]
+
+
+async def _links(p: Any, who: Any, page: str) -> list[str]:
+    got = await _ok(p, who, "GET", f"/knowledge/pages/{page}")
+    return [x["target_id"] for x in got["links"] if x["target_kind"] == "page"]
+
+
+@_DB_GATE
+async def test_a_hidden_target_lands_no_row_and_shows_no_link(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    m_email, member = await _member(kb, kb.org_a, "m")
+    mine = await _space(kb, admin, "Mine", [{"subject": m_email, "level": "write"}])
+    board = await _space(kb, admin, "Board", [])
+    secret = await _page(kb, admin, board, "Secret")
+    seen = await _page(kb, admin, mine, "Seen")
+    source = await _page(kb, member, mine, "Source",
+                         f"[s](/knowledge/pages/{secret}) [v](/knowledge/pages/{seen})")
+    assert _target_rows(kb, source) == [seen]
+    assert await _links(kb, member, source) == [seen]
+    assert await _links(kb, admin, source) == [seen]
+
+
+@_DB_GATE
+async def test_a_reader_with_less_access_than_the_writer_sees_no_target(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    n_email, reader = await _member(kb, kb.org_a, "n")
+    open_space = await _space(kb, admin, "Open", [{"subject": "org", "level": "read"}])
+    board = await _space(kb, admin, "Board", [])
+    secret = await _page(kb, admin, board, "Secret")
+    seen = await _page(kb, admin, open_space, "Seen")
+    # The admin sees both targets, so both rows land.
+    source = await _page(kb, admin, open_space, "Source",
+                         f"[s](/knowledge/pages/{secret}) [v](/knowledge/pages/{seen})")
+    assert set(_target_rows(kb, source)) == {secret, seen}
+    assert set(await _links(kb, admin, source)) == {secret, seen}
+    # The reader reads the source and learns nothing of the secret target.
+    assert await _links(kb, reader, source) == [seen]
+
+
+@_DB_GATE
+async def test_a_target_in_another_org_lands_no_row(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin_a = _principal(_address("admin-a"), kb.org_a, CAPABILITY)
+    admin_b = _principal(_address("admin-b"), kb.org_b, CAPABILITY)
+    space_a = await _space(kb, admin_a, "Handbook", [{"subject": "org", "level": "read"}])
+    space_b = await _space(kb, admin_b, "Handbook", [{"subject": "org", "level": "read"}])
+    foreign = await _page(kb, admin_b, space_b, "Foreign")
+    source = await _page(kb, admin_a, space_a, "Source", f"[f](/knowledge/pages/{foreign})")
+    assert _target_rows(kb, source) == []
+    with kb.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM kb_links WHERE target_id = :t"), {"t": foreign}).scalar() == 0
+
+
+@_DB_GATE
+async def test_a_save_leaves_the_links_of_other_kinds(kb, app_engine) -> None:  # noqa: F811
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Ops", [{"subject": "org", "level": "read"}])
+    target = await _page(kb, admin, space, "Target")
+    source = await _page(kb, admin, space, "Source", f"[t](/knowledge/pages/{target})")
+    with kb.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO kb_links (organization_id, page_id, target_kind, target_id, "
+            "created_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'url', "
+            "'https://example.test/x', 'seed')"), {"o": kb.org_a, "p": source})
+    await _ok(kb, admin, "PATCH", f"/knowledge/pages/{source}", {"body_md": "No link."})
+    assert _target_rows(kb, source) == []
+    assert _target_rows(kb, source, "url") == ["https://example.test/x"]
+    got = await _ok(kb, admin, "GET", f"/knowledge/pages/{source}")
+    assert [x["target_kind"] for x in got["links"]] == ["url"]

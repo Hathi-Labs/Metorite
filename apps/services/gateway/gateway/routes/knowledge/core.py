@@ -710,11 +710,24 @@ async def read_links(db: Any, user: UserContext, page_id: str) -> list[dict[str,
              "AND page_id = CAST(:pid AS uuid) ORDER BY created_at"),
         {"org": org_of(user), "pid": page_id},
     )).fetchall()
+    # A page link lists only when the CALLER can see its target (§5.5): a
+    # link is a reference and never a grant, and it must not tell a reader
+    # that a hidden page exists. The other kinds are listed as they are.
+    wanted = [str(r.target_id) for r in rows if r.target_kind == "page"]
+    seen: set[str] = set()
+    if wanted:
+        vis, vparams = visible_pages_clause(user, "p")
+        seen = {str(r[0]) for r in (await db.execute(
+            text(f"SELECT p.id::text FROM kb_pages p WHERE {vis} "
+                 "AND p.id::text = ANY(CAST(:rl_ids AS text[]))"),
+            {**vparams, "rl_ids": wanted},
+        )).fetchall()}
     return [
         {"id": str(r.id), "target_kind": r.target_kind, "target_id": r.target_id,
          "label": r.label, "created_by": r.created_by,
          "created_at": _iso(r.created_at)}
         for r in rows
+        if r.target_kind != "page" or str(r.target_id) in seen
     ]
 
 

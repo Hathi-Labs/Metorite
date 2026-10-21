@@ -44,14 +44,48 @@ _LINK = re.compile(
 )
 
 
+_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])(?:\s|$)")
+_INDENTED = re.compile(r"^(?: {4,}|\t)")
+
+
+def _drop_indented_code(text_: str) -> str:
+    """Remove indented code blocks (CommonMark: 4+ spaces after a blank line).
+
+    An indented line is code only when the line before it is blank or is code
+    itself, and the block it follows is not a list item (there it continues
+    the item). A line that follows paragraph text directly is a continuation.
+    """
+    out: list[str] = []
+    prev_blank = True
+    prev_code = False
+    in_list = False
+    for line in text_.split("\n"):
+        blank = not line.strip()
+        if blank:
+            out.append(line)
+            prev_blank = True
+            continue
+        indented = bool(_INDENTED.match(line))
+        if indented and (prev_blank or prev_code) and not in_list:
+            out.append("")
+            prev_code = True
+        else:
+            out.append(line)
+            prev_code = False
+            if not indented:
+                in_list = bool(_LIST_ITEM.match(line))
+        prev_blank = False
+    return "\n".join(out)
+
+
 def page_ids_in(body_md: str | None, own_id: str | None = None) -> list[str]:
     """The ids of the pages that *body_md* links to, once each, in order.
 
-    A link in a code fence or an inline code span is text and not a link. The
+    A link in a code fence, an indented code block or an inline code span is text and not a link. The
     query and the fragment after an id do not matter. A link to *own_id* is
     dropped.
     """
-    text_ = _INLINE_CODE.sub("", _FENCE.sub("", body_md or ""))
+    text_ = _INLINE_CODE.sub("", _drop_indented_code(_FENCE.sub("", body_md or "")))
     own = (own_id or "").lower()
     out: list[str] = []
     for found in _LINK.findall(text_):
@@ -65,9 +99,10 @@ async def sync_page_links(db: Any, user: UserContext, page: Any, body_md: str) -
     """Make the page-kind links of *page* match *body_md*. Return how many.
 
     It replaces the ``target_kind = 'page'`` rows of the page in the caller's
-    transaction. A target that is not a page of the same organization is
-    skipped, so a stale link never fails a save. The organization is the
-    session's, and the writer is the session's member.
+    transaction. A target the WRITER cannot see (the one clause) or that is
+    not a page of the same organization is skipped, so a stale link never
+    fails a save and a link never tells a writer that a hidden page exists.
+    The organization is the session's, and the writer is the session's member.
     """
     org = core.org_of(user)
     pid = str(page.id)
@@ -79,14 +114,15 @@ async def sync_page_links(db: Any, user: UserContext, page: Any, body_md: str) -
     ids = page_ids_in(body_md, pid)
     if not ids:
         return 0
+    vis, vparams = core.visible_pages_clause(user, "t")
     result = await db.execute(
         text("INSERT INTO kb_links (organization_id, page_id, target_kind, "
              "target_id, created_by) "
              "SELECT CAST(:org AS uuid), CAST(:pid AS uuid), 'page', t.id::text, :by "
-             "FROM kb_pages t WHERE t.organization_id = CAST(:org AS uuid) "
+             f"FROM kb_pages t WHERE {vis} AND t.organization_id = CAST(:org AS uuid) "
              "AND t.id = ANY(CAST(:ids AS uuid[])) AND t.id <> CAST(:pid AS uuid) "
              "ON CONFLICT (organization_id, page_id, target_kind, target_id) DO NOTHING"),
-        {"org": org, "pid": pid, "by": core.viewer_email(user), "ids": ids},
+        {**vparams, "org": org, "pid": pid, "by": core.viewer_email(user), "ids": ids},
     )
     return int(result.rowcount or 0)
 
