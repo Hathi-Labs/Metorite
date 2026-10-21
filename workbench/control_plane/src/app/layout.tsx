@@ -49,8 +49,6 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  // Matches the manifest, so the Android bar and the splash agree.
-  themeColor: "#0b1020",
 };
 
 const fontVariables = [geistSans.variable, geistMono.variable].join(" ");
