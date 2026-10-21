@@ -6152,6 +6152,85 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/saas_multitenancy.md` MT-1g · `specs/backup_and_restore.md`
 - **Added:** 2026-10-20 · artifacts session
 
+### H-373 · Try the email chat fixes of #1201, #1202 and #1203 on real mail · [OWNER]
+- **Check:** an agent cannot run this. It cannot sign in as the owner. The
+  entry stays open until the owner says in a session that the three tries
+  below worked, or names the one that failed.
+- **Why:** the three PRs reached production on 2026-10-21 with green tests
+  and an Opus review each. No person has tried them on real mail.
+- **Do this (owner):** in the chat, try these:
+  - Agree a reply, and check that the card shows that text.
+  - While the card is open, type "make it shorter", and check that a new card
+    shows the shorter text.
+  - Reply to a mail that has a PDF, and check that the draft uses the PDF.
+  - Say "snooze this till tomorrow 9am", and say "add Priya to the cc of my
+    draft".
+- **Authority:** `email_app_master_plan.md` §18 · PRs #1201, #1202, #1203
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-374 · Decide which sends a held run may keep after the chat reads outside mail · [OWNER] · security
+- **Check:** `grep -n "CARD_BOUND_REPLY_TOOLS" -A4 packages/acb_skills/acb_skills/egress.py`
+  names `compose_reply` only. Then the decision is still open.
+- **Why:** after the chat reads mail from outside senders, the egress hold
+  (H-236) keeps only the reply card. A forward, a new mail, a send of a draft
+  and a reply with a file are refused. That defends against an injected mail.
+  It also stops "forward it to Priya" in the same chat.
+- **Recommendation:** make `send_draft` card-bound. The draft's own row holds
+  its recipients, and the card now shows its text and each recipient. Keep
+  `forward_email` and `send_email` held, because the model names their
+  recipients. Answer yes or no.
+- **Authority:** `acb_skills/egress.py` `CARD_BOUND_REPLY_TOOLS` · H-236
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-375 · Build "send later" for email · [AGENT] · data
+- **Check:** `git grep -n "send_at" origin/main -- infra/postgres` prints
+  nothing. Then it is still not built.
+- **Why:** the owner asked that the chat do each email task. A scheduled send
+  has no backend: no table holds a mail to send later, and no job sends it.
+  The email assistant now says so and offers a draft or a snooze.
+- **Do this:** write a spec slice first. Then build each part of it:
+  - a tenant-scoped table, with an expand-only migration (R6),
+  - a scheduler job that sends through the one send path,
+  - a cancel, a card that names the time, and a tool for the chat.
+- **Authority:** `email_app_master_plan.md` · `agent-email-assistant/instructions.md`
+  "The member's other asks"
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-376 · Turn on images in reply drafts when a tier reads images · [OWNER]
+- **Check:** an agent cannot read the box's settings without the `secrets`
+  grant. The owner confirms that `EMAIL_DRAFT_READS_IMAGES` is on in the
+  gateway's environment, and that the AI Router serves the email calls.
+- **Why:** `draft_files.images_on()` sends the images of a mail to the model
+  only when the switch is on AND the Router serves the call with
+  `task: "vision"`. Until then, the card names each image that the draft did
+  not read.
+- **Authority:** `acb_common/settings.py` `email_draft_reads_images` ·
+  `gateway/routes/email/automation/draft_files.py`
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-377 · Let a rule draft and a follow-up draft read the files of the mail · [AGENT]
+- **Check:** `git grep -n "load_draft_files" origin/main -- apps/services/gateway/gateway/routes/email/automation/actions.py apps/services/gateway/gateway/routes/email/automation/followups.py`
+  prints nothing. Then it is still open.
+- **Why:** a draft that a rule writes in the background runs with no member
+  session, so `load_draft_files` gets no user and reads no file. Only an
+  interactive draft reads the files of the mail.
+- **Do this:** build a `UserContext` for the mailbox owner inside the bound
+  tenant, as the rule job already binds it. Never take it from request input
+  (R5). Then pass it to `load_draft_files`, and add a test.
+- **Authority:** `gateway/routes/email/automation/draft_files.py`
+- **Added:** 2026-10-21 · email chat collaboration session
+
+### H-378 · Fit "improve my text" in Draft with AI to the window of its tier · [AGENT]
+- **Check:** `git grep -n "plan_draft(" origin/main -- apps/services/gateway/gateway/routes/email/automation/drafting.py`
+  prints one line, the call in `_llm_draft_reply`. Then it is still open.
+- **Why:** #1203 fits a NEW reply to the tier's window (`draft_budget`). The
+  improve path of the composer keeps its fixed caps. A very long thread there
+  can still reach the generic fitter, and that fitter cuts the middle.
+- **Do this:** call `plan_draft` in `_llm_compose_assist` for the thread and
+  the replied mail. Never cut the owner's own text. Add a test.
+- **Authority:** `gateway/routes/email/automation/draft_budget.py`
+- **Added:** 2026-10-21 · email chat collaboration session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
