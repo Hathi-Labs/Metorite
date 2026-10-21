@@ -154,6 +154,11 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
 #: and why its read is scoped. A key that ends in ``/`` is a package. Paths
 #: are relative to the repository root.
 OUTSIDE_EMAIL_READERS: dict[str, str] = {
+    "apps/services/gateway/gateway/routes/admin/members.py": (
+        "An admin removes or purges a member (H-375). It cancels or deletes "
+        "only the scheduled sends whose owner_email is that member, inside "
+        "the admin's own tenant session, after the admin permission check."
+    ),
     "apps/services/gateway/gateway/routes/crm/activities.py": (
         "The CRM timeline reads email through _email_account_scope, a copy "
         "of _account_scope bound to the caller (WS-26d-email). Mutation "

@@ -47,11 +47,13 @@ from gateway.routes.email.automation.drafting import (
     DraftExpect,
     DraftSendRequest,
     _assert_account_owner,
+    _refuse_bad_draft_id,
     send_draft_endpoint,
 )
-from gateway.routes.email.core import _log, _tenant_session, router
+from gateway.routes.email.core import _log, _savepoint, _tenant_session, router
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 #: Seconds between two ticks of the job.
 TICK_SECONDS = 60
@@ -119,7 +121,7 @@ class ScheduleRow(BaseModel):
 def _row(r: Any) -> ScheduleRow:
     exp = r.expect if isinstance(r.expect, dict) else json.loads(r.expect or "{}")
     return ScheduleRow(
-        id=str(r.id), account_id=str(r.account_id), draft_id=str(r.draft_id),
+        id=str(r.id), account_id=str(r.account_id), draft_id=str(r.draft_id or ""),
         send_at=r.send_at.isoformat(), status=r.status,
         subject=str(getattr(r, "subject", "") or ""),
         to=[str(a) for a in exp.get("to") or []], error=r.error)
@@ -133,9 +135,13 @@ async def schedule_draft(
     """Schedule one draft of the caller's own mailbox. A second open
     schedule of the same draft is a 409."""
     _off()
-    owner = (user.email or "").strip().lower()
+    # The session's own spelling: the send checks the mailbox owner exactly
+    # (review of #1209, P1). Every read compares lower case.
+    owner = (user.email or "").strip()
     if not owner:
         raise HTTPException(status_code=401, detail="No member.")
+    _refuse_bad_draft_id(req.draft_id)
+    _refuse_bad_draft_id(req.account_id)
     when = _when(req.send_at)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
@@ -150,15 +156,21 @@ async def schedule_draft(
             "AND status IN ('queued', 'sending')"), {"id": req.draft_id})).fetchone()
         if taken is not None:
             raise HTTPException(status_code=409, detail="This draft is already scheduled.")
-        row = (await db.execute(text(
-            "INSERT INTO email_scheduled_sends "
-            "(account_id, draft_id, owner_email, send_at, expect, subject) VALUES "
-            "(CAST(:aid AS uuid), CAST(:did AS uuid), :owner, :at, CAST(:exp AS jsonb), "
-            ":subject) "
-            "RETURNING id, account_id, draft_id, send_at, status, expect, error, subject"
-        ), {"aid": req.account_id, "did": req.draft_id, "owner": owner, "at": when,
-            "exp": json.dumps(req.expect.model_dump()),
-            "subject": str(draft.subject or "")[:500]})).fetchone()
+        try:
+            async with _savepoint(db):
+                row = (await db.execute(text(
+                    "INSERT INTO email_scheduled_sends "
+                    "(account_id, draft_id, owner_email, send_at, expect, subject) VALUES "
+                    "(CAST(:aid AS uuid), CAST(:did AS uuid), :owner, :at, "
+                    "CAST(:exp AS jsonb), :subject) RETURNING id, account_id, "
+                    "draft_id, send_at, status, expect, error, subject"
+                ), {"aid": req.account_id, "did": req.draft_id, "owner": owner,
+                    "at": when, "exp": json.dumps(req.expect.model_dump()),
+                    "subject": str(draft.subject or "")[:500]})).fetchone()
+        except IntegrityError:
+            # Two schedules of one draft at once: the unique index wins.
+            raise HTTPException(
+                status_code=409, detail="This draft is already scheduled.") from None
     out = _row(row)
     _log.info("email.send_later_scheduled", schedule_id=out.id)
     return out
@@ -170,12 +182,12 @@ async def list_scheduled(
 ) -> list[ScheduleRow]:
     """The caller's open schedules, and those that failed in the last week."""
     _off()
-    owner = (user.email or "").strip().lower()
+    owner = (user.email or "").strip()
     async with _tenant_session() as db:
         rows = (await db.execute(text(
             "SELECT s.id, s.account_id, s.draft_id, s.send_at, s.status, s.expect, "
             "s.error, s.subject FROM email_scheduled_sends s "
-            "WHERE s.owner_email = :owner AND (s.status IN ('queued', 'sending') "
+            "WHERE lower(s.owner_email) = lower(:owner) AND (s.status IN ('queued', 'sending') "
             "OR (s.status = 'failed' AND s.updated_at > now() - interval '7 days')) "
             "ORDER BY s.send_at LIMIT 100"), {"owner": owner})).fetchall()
     return [_row(r) for r in rows]
@@ -189,11 +201,13 @@ async def cancel_scheduled(
     """Cancel one queued schedule of the caller. A row that is sending, sent
     or done is a 409, and a row of another member is a 404."""
     _off()
-    owner = (user.email or "").strip().lower()
+    owner = (user.email or "").strip()
+    _refuse_bad_draft_id(schedule_id)
     async with _tenant_session() as db:
         row = (await db.execute(text(
             "SELECT id, status FROM email_scheduled_sends "
-            "WHERE id = CAST(:id AS uuid) AND owner_email = :owner FOR UPDATE"
+            "WHERE id = CAST(:id AS uuid) AND lower(owner_email) = lower(:owner) "
+            "FOR UPDATE"
         ), {"id": schedule_id, "owner": owner})).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Schedule not found")
@@ -217,7 +231,9 @@ async def _orgs() -> list[str]:
 
 
 async def _claim(org: str) -> list[Any]:
-    """Due rows of *org*, moved to ``sending`` in one transaction."""
+    """At most ONE due row of *org*, moved to ``sending`` in its own
+    transaction (review of #1209, P2). A stop in mid-tick then leaves at most
+    the one row in ``sending``, never a batch that was claimed and not tried."""
     async with tenant_session(org) as db:
         await db.execute(text(
             "UPDATE email_scheduled_sends SET status = 'failed', updated_at = now(), "
@@ -225,18 +241,25 @@ async def _claim(org: str) -> list[Any]:
             "not go twice. Check Sent, and send it by hand if it is not there.' "
             "WHERE status = 'sending' AND updated_at < :stuck"),
             {"stuck": datetime.now(UTC) - STUCK_AFTER})
+        # The draft row went (a Gmail web edit gives a new id, and the member
+        # can delete it): SET NULL left the schedule, so it fails with a reason.
+        await db.execute(text(
+            "UPDATE email_scheduled_sends SET status = 'failed', updated_at = now(), "
+            "error = 'The draft changed or was deleted after it was scheduled, so "
+            "it was not sent. Schedule it again.' "
+            "WHERE status = 'queued' AND draft_id IS NULL"))
         return list((await db.execute(text(
             "UPDATE email_scheduled_sends SET status = 'sending', updated_at = now() "
             "WHERE id IN (SELECT id FROM email_scheduled_sends "
-            "  WHERE status = 'queued' AND send_at <= now() "
-            "  ORDER BY send_at LIMIT :n FOR UPDATE SKIP LOCKED) "
+            "  WHERE status = 'queued' AND send_at <= now() AND draft_id IS NOT NULL "
+            "  ORDER BY send_at LIMIT 1 FOR UPDATE SKIP LOCKED) "
             "RETURNING id, account_id, draft_id, owner_email, expect"
-        ), {"n": BATCH})).fetchall())
+        ))).fetchall())
 
 
 async def _finish(org: str, schedule_id: str, *, error: str | None) -> None:
-    """Mark a row sent or failed. A sent draft's row is already gone with the
-    draft (ON DELETE CASCADE), so the update then changes nothing."""
+    """Mark a row sent or failed. The send drops the draft row, and SET NULL
+    keeps this row, so a sent row keeps its history."""
     async with tenant_session(org) as db:
         await db.execute(text(
             "UPDATE email_scheduled_sends SET status = CAST(:st AS text), "
@@ -252,16 +275,42 @@ def _why(exc: BaseException) -> str:
         if exc.status_code == 409:
             return ("The recipients of the draft changed after it was scheduled, "
                     "so it was not sent.")
+        if exc.status_code == 404 and "account" in str(exc.detail).lower():
+            return ("The mailbox is no longer connected for this member, so it "
+                    "was not sent.")
         if exc.status_code == 404:
             return "The draft is gone, so it was not sent."
         return f"The send was refused: {exc.detail}"[:500]
     return f"The send failed ({type(exc).__name__})."
 
 
-async def _send_one(org: str, row: Any) -> str | None:
-    """Send one claimed row as its owner. ``None`` when it went, else why not."""
+async def _member(owner: str, org: str) -> UserContext | str:
+    """The member of a send, resolved NOW, or why the send must not go.
+
+    A member removed or suspended after they scheduled resolves to no access
+    (``resolve_access``, ``is_active=False``), and a member of another org
+    now has another home org. Neither send goes (review of #1209, P1). No
+    sign-in request is filed (``record_request`` stays False)."""
+    from acb_auth.access import resolve_access, resolve_identity  # noqa: PLC0415
+
+    access = await resolve_access(owner, use_cache=False)
+    if not access.is_active:
+        return "The member is no longer active in the organization, so it was not sent."
+    user_id, home = await resolve_identity(owner)
+    if str(home or "") != org:
+        return "The member is no longer in this organization, so it was not sent."
+    return UserContext(email=owner, role=UserRole.EMPLOYEE).with_access(
+        access, user_id=user_id, organization_id=org)
+
+
+async def _send_one(org: str, row: Any) -> tuple[str | None, BackgroundTasks | None]:
+    """Send one claimed row as its owner. ``(None, tasks)`` when it went, else
+    ``(why, None)``. The caller records the result, and only then runs the
+    tasks, so a slow task never leaves a sent row in ``sending``."""
     exp = row.expect if isinstance(row.expect, dict) else json.loads(row.expect or "{}")
-    member = UserContext(email=row.owner_email, role=UserRole.EMPLOYEE, organization_id=org)
+    member = await _member(row.owner_email, org)
+    if isinstance(member, str):
+        return member, None
     background = BackgroundTasks()
     try:
         await send_draft_endpoint(
@@ -269,10 +318,8 @@ async def _send_one(org: str, row: Any) -> str | None:
                              expect=DraftExpect(**exp)),
             background, member)
     except Exception as exc:  # noqa: BLE001 - each row reports its own failure
-        return _why(exc)
-    with contextlib.suppress(Exception):
-        await background()
-    return None
+        return _why(exc), None
+    return None, background
 
 
 async def run_tick() -> dict[str, int]:
@@ -285,8 +332,14 @@ async def run_tick() -> dict[str, int]:
             break
         token = bind_tenant(org)
         try:
-            for row in await _claim(org):
-                why = await _send_one(org, row)
+            for _ in range(BATCH):
+                if _stopping.is_set():
+                    break
+                claimed = await _claim(org)
+                if not claimed:
+                    break
+                row = claimed[0]
+                why, background = await _send_one(org, row)
                 await _finish(org, str(row.id), error=why)
                 if why is None:
                     sent[org] = sent.get(org, 0) + 1
@@ -294,6 +347,9 @@ async def run_tick() -> dict[str, int]:
                 else:
                     _log.warning("email.send_later_failed", schedule_id=str(row.id),
                                  reason=why[:120])
+                if background is not None:
+                    with contextlib.suppress(Exception):
+                        await background()
         except Exception as exc:  # noqa: BLE001 - one org never stops the rest
             _log.warning("email.send_later_org_failed", error=type(exc).__name__)
         finally:

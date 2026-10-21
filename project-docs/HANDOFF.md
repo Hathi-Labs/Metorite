@@ -6217,6 +6217,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `gateway/routes/email/automation/draft_budget.py`
 - **Added:** 2026-10-21 · email chat collaboration session
 
+### H-379 · Turn on send later: staging first, then production · [OWNER]
+- **Check:** an agent cannot read the box's settings without the `secrets`
+  grant. The owner confirms that `EMAIL_SEND_LATER` is `true` in the gateway's
+  environment on production. Until then, the chat says that send later is
+  not on.
+- **Why:** #1209 built send later dark (H-375, `email_app_master_plan.md` §19).
+  It sends mail at a later time, so a person turns it on and watches the
+  first send.
+- **Do this (owner):** set `EMAIL_SEND_LATER=true` on staging and restart the
+  gateway. In the chat, schedule a draft for two minutes ahead, and check
+  Sent. Then do the same on production.
+- **Authority:** `email_app_master_plan.md` §19 · `acb_common/settings.py`
+  `email_send_later`
+- **Added:** 2026-10-21 · email chat collaboration session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

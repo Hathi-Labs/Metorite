@@ -35,14 +35,17 @@ CREATE TABLE IF NOT EXISTS email_scheduled_sends (
                      DEFAULT current_setting('app.tenant_id', true)::uuid,
     id               UUID NOT NULL DEFAULT gen_random_uuid(),
     account_id       UUID NOT NULL REFERENCES email_accounts (id) ON DELETE CASCADE,
-    -- The local row of the draft. CASCADE, as every edge under a mailbox is
-    -- (test_email_mailbox_purge_durable.py): a disconnect leaves no row. The
-    -- send drops the draft row, and its schedule row goes with it: the mail
-    -- is then in Sent. A failed send keeps the draft, so it keeps its row.
-    draft_id         UUID NOT NULL REFERENCES email_messages (id) ON DELETE CASCADE,
+    -- The local row of the draft. SET NULL, never CASCADE (review of #1209,
+    -- P1): a Gmail web edit gives a draft a new id and deletes the old row,
+    -- and a CASCADE then removed the schedule with no trace. With SET NULL
+    -- the job fails a queued row whose draft is gone, and says so, and a sent
+    -- row keeps its history. The row still cascades with the mailbox through
+    -- account_id (_NOT_CASCADE in test_email_mailbox_purge_durable.py).
+    draft_id         UUID NULL REFERENCES email_messages (id) ON DELETE SET NULL,
     -- The subject when the member scheduled it, for the list after the send.
     subject          TEXT NULL,
-    -- The member who asked, lower case: the owner of the mailbox.
+    -- The member who asked, as the session spelled it: the send checks the
+    -- mailbox owner with an exact match. Each read compares lower case.
     owner_email      TEXT NOT NULL,
     send_at          TIMESTAMPTZ NOT NULL,
     -- The To, Cc and Bcc that the card showed: {"to": [...], "cc": [...],

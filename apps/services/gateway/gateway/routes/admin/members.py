@@ -517,6 +517,16 @@ async def remove_member_rows(
         ),
         {"uid": member["id"]},
     )
+    # H-375: a send that they scheduled would go out in their name after they
+    # left. The job also refuses a member who is not active, so this is the
+    # second of two locks (review of #1209, P1).
+    await db.execute(
+        text(
+            "UPDATE email_scheduled_sends SET status = 'cancelled', updated_at = now() "
+            " WHERE lower(owner_email) = lower(:email) AND status = 'queued'"
+        ),
+        {"email": member["email"]},
+    )
     # D63 (H-49) — the SECOND door, and it reaches the same seal.
     #
     # ⚠️ The remove route's own docstring records why: it "used to hold its

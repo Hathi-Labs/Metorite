@@ -101,7 +101,9 @@ def test_a_time_needs_an_offset_and_the_future(value: str, why: str) -> None:
 def test_the_migration_is_tenant_scoped_and_keeps_history() -> None:
     sql = _MIGRATION.read_text(encoding="utf-8")
     assert "FORCE  ROW LEVEL SECURITY" in sql and "WITH CHECK" in sql
-    assert "draft_id         UUID NOT NULL REFERENCES email_messages (id) ON DELETE CASCADE" in sql
+    # SET NULL: a Gmail web edit deletes the old draft row, and the schedule
+    # must fail with a reason, never vanish (review of #1209, P1).
+    assert "draft_id         UUID NULL REFERENCES email_messages (id) ON DELETE SET NULL" in sql
     assert "WHERE status IN ('queued', 'sending')" in sql
 
 
@@ -199,8 +201,16 @@ class TestSendLaterOnARealDatabase:
         s.them = UserContext(email=s.other, role=UserRole.EMPLOYEE, organization_id=p.org_b)
         return s
 
-    def _on(self, monkeypatch, p, sent: list[Any], *, fail: Exception | None = None):
+    def _on(self, monkeypatch, p, sent: list[Any], *, fail: Exception | None = None,
+            active: bool = True):
         monkeypatch.setattr(sl, "send_later_enabled", lambda: True)
+
+        async def member(owner, org):
+            if not active:
+                return "The member is no longer active in the organization, so it was not sent."
+            return UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=org)
+
+        monkeypatch.setattr(sl, "_member", member)
 
         async def orgs():
             return [p.org_b]
@@ -236,6 +246,11 @@ class TestSendLaterOnARealDatabase:
             [(req, user)] = sent
             assert req.draft_id == s.draft and req.expect.to == ["ravi@contoso.test"]
             assert user.email == s.owner and user.organization_id == p.org_b
+            assert _status(p.admin_engine, sid) == ("sent", None)
+            # The send dropped the draft row. SET NULL keeps the history.
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_messages WHERE id = CAST(:i AS uuid)"),
+                          {"i": s.draft})
             assert _status(p.admin_engine, sid) == ("sent", None)
         finally:
             _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
@@ -296,3 +311,90 @@ class TestSendLaterOnARealDatabase:
             assert sent == []
         finally:
             _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
+
+    async def test_a_deleted_or_edited_draft_fails_with_a_reason(self, promoted, app_engine, monkeypatch):  # noqa: F811
+        """A Gmail web edit gives a draft a new id and deletes the old row
+        (review of #1209, P1). The schedule fails, and says why."""
+        p, sent = promoted, []
+        s = self._seed(p)
+        self._on(monkeypatch, p, sent)
+        try:
+            async with _as_member(p, p.org_b):
+                sid = await self._schedule(s)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_messages WHERE id = CAST(:i AS uuid)"),
+                          {"i": s.draft})
+            _due(p.admin_engine, sid)
+            async with _as_member(p, p.org_b):
+                assert await sl.run_tick() == {}
+                [listed] = await sl.list_scheduled(s.me)
+            status, error = _status(p.admin_engine, sid)
+            assert status == "failed" and "changed or was deleted" in error and sent == []
+            assert listed.status == "failed" and listed.subject == "Quote"
+        finally:
+            _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
+
+    async def test_a_member_who_left_sends_nothing(self, promoted, app_engine, monkeypatch):  # noqa: F811
+        p, sent = promoted, []
+        s = self._seed(p)
+        self._on(monkeypatch, p, sent, active=False)
+        try:
+            async with _as_member(p, p.org_b):
+                sid = await self._schedule(s)
+                _due(p.admin_engine, sid)
+                assert await sl.run_tick() == {}
+            status, error = _status(p.admin_engine, sid)
+            assert status == "failed" and "no longer active" in error and sent == []
+        finally:
+            _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
+
+    async def test_the_owner_keeps_the_case_of_the_session(self, promoted, app_engine, monkeypatch):  # noqa: F811
+        """The send checks the mailbox owner exactly, so the row keeps the
+        session's spelling, and the reads compare lower case (P1)."""
+        p, sent = promoted, []
+        s = self._seed(p)
+        self._on(monkeypatch, p, sent)
+        mixed = UserContext(email=s.owner.upper(), role=UserRole.EMPLOYEE,
+                            organization_id=p.org_b)
+        try:
+            async with _as_member(p, p.org_b):
+                sid = await self._schedule(s)
+                assert [r.id for r in await sl.list_scheduled(mixed)] == [sid]
+                _due(p.admin_engine, sid)
+                await sl.run_tick()
+            [(_req, user)] = sent
+            assert user.email == s.owner
+        finally:
+            _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
+
+
+async def test_a_bad_id_is_a_404_not_a_500(monkeypatch) -> None:
+    monkeypatch.setattr(sl, "send_later_enabled", lambda: True)
+    user = UserContext(email="dana@fracktal.test", role=UserRole.EMPLOYEE)
+    with pytest.raises(HTTPException) as err:
+        await sl.cancel_scheduled("not-a-uuid", user)
+    assert err.value.status_code == 404
+
+
+async def test_the_member_check_fails_closed(monkeypatch) -> None:
+    """A removed or suspended member resolves to no access (P1)."""
+    from acb_auth import access as acc
+    from acb_auth.permissions import EffectiveAccess
+
+    async def inactive(email, **kw):
+        return EffectiveAccess(is_active=False)
+
+    async def ident(email):
+        return "u1", "org-1"
+
+    monkeypatch.setattr(acc, "resolve_access", inactive)
+    monkeypatch.setattr(acc, "resolve_identity", ident)
+    assert "no longer active" in await sl._member("dana@fracktal.test", "org-1")
+
+    async def active(email, **kw):
+        return EffectiveAccess()
+
+    monkeypatch.setattr(acc, "resolve_access", active)
+    assert "no longer in this organization" in await sl._member("dana@fracktal.test", "org-2")
+    member = await sl._member("Dana@fracktal.test", "org-1")
+    assert member.email == "Dana@fracktal.test" and member.organization_id == "org-1"
