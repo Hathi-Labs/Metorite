@@ -219,7 +219,7 @@ async def test_a_hidden_target_lands_no_row_and_shows_no_link(kb, app_engine) ->
 async def test_a_reader_with_less_access_than_the_writer_sees_no_target(kb, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
-    n_email, reader = await _member(kb, kb.org_a, "n")
+    _n_email, reader = await _member(kb, kb.org_a, "n")
     open_space = await _space(kb, admin, "Open", [{"subject": "org", "level": "read"}])
     board = await _space(kb, admin, "Board", [])
     secret = await _page(kb, admin, board, "Secret")
