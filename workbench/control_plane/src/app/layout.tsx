@@ -23,6 +23,7 @@ import { deployTitle } from "@/lib/deploy/deployEnv";
 import Providers from "@/components/Providers";
 import { UndoProvider } from "@/components/UndoProvider";
 import { ToastProvider } from "@/components/ui/Toast";
+import InstallNudge from "@/lib/shell/InstallNudge";
 import UpdateNotice from "@/lib/shell/UpdateNotice";
 import { themeBootScript } from "@/lib/theme/boot";
 
@@ -31,6 +32,10 @@ export const metadata: Metadata = {
   title: deployTitle("Metorite"),
   applicationName: "Metorite",
   description: "Metorite, the AI company operating system.",
+  // iPhone reads these, not the manifest, to open from the home screen as an
+  // app. `apple-icon.png` (a file beside this one) is its icon.
+  appleWebApp: { capable: true, title: "Metorite", statusBarStyle: "black-translucent" },
+  formatDetection: { telephone: false },
   // The tab and home-screen icons are files beside this one (`favicon.ico`,
   // `icon.svg`, `apple-icon.png`) and `manifest.ts`. `brand/make_icons.py`
   // makes the rasters from the transparent master.
@@ -44,6 +49,8 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  // Matches the manifest, so the Android bar and the splash agree.
+  themeColor: "#0b1020",
 };
 
 const fontVariables = [geistSans.variable, geistMono.variable].join(" ");
@@ -83,6 +90,8 @@ export default function RootLayout({
               toast's own reason: it must speak while session and access are
               failing to resolve, which is exactly what an update looks like. */}
           <UpdateNotice />
+          {/* The home-screen invitation on a phone. Renders nothing. */}
+          <InstallNudge />
           {/* Undo/redo, mounted once for the whole product (owner directive,
               2026-08-31). Inside the toast provider because a failed undo
               reports through it, and OUTSIDE `Providers` for the same reason
