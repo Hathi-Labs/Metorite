@@ -905,6 +905,15 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_email_draft_files.py.
     email_draft_reads_images: bool = False
 
+    # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────
+    #
+    # False is the default, so the feature ships dark: the schedule routes
+    # answer 404 and the send-later job starts no task. True turns on both.
+    # The one reader is `send_later_enabled()` in
+    # gateway/routes/email/automation/send_later.py. Fence:
+    # tests/unit/test_email_send_later.py.
+    email_send_later: bool = False
+
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
     # git pull on each event (no full re-clone per run).

@@ -647,7 +647,7 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
         "email_embeddings", "email_executed_rules", "email_folders",
         "email_insights", "email_knowledge", "email_learned_patterns", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
-        "email_rules", "email_senders", "email_sync_log",
+        "email_rules", "email_scheduled_sends", "email_senders", "email_sync_log",
         "email_thread_status", "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
@@ -697,6 +697,10 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # standing authorization to act as them, so it goes with the credentials.
     _PersonRows("app_tool_grants", "app_tool_grants",
                 "lower(user_email) = :email"),
+    # A send that they scheduled (H-375). It would go out in their name after
+    # they left, so it goes before the mailbox, and the count is real.
+    _PersonRows("scheduled_sends", "email_scheduled_sends",
+                "lower(owner_email) = :email"),
     # Credentials.
     # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
     # rows and this delete name one set of mailboxes.

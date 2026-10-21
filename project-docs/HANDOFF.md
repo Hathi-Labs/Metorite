@@ -6182,20 +6182,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `acb_skills/egress.py` `CARD_BOUND_REPLY_TOOLS` · H-236
 - **Added:** 2026-10-21 · email chat collaboration session
 
-### H-375 · Build "send later" for email · [AGENT] · data
-- **Check:** `git grep -n "send_at" origin/main -- infra/postgres` prints
-  nothing. Then it is still not built.
-- **Why:** the owner asked that the chat do each email task. A scheduled send
-  has no backend: no table holds a mail to send later, and no job sends it.
-  The email assistant now says so and offers a draft or a snooze.
-- **Do this:** write a spec slice first. Then build each part of it:
-  - a tenant-scoped table, with an expand-only migration (R6),
-  - a scheduler job that sends through the one send path,
-  - a cancel, a card that names the time, and a tool for the chat.
-- **Authority:** `email_app_master_plan.md` · `agent-email-assistant/instructions.md`
-  "The member's other asks"
-- **Added:** 2026-10-21 · email chat collaboration session
-
 ### H-376 · Turn on images in reply drafts when a tier reads images · [OWNER]
 - **Check:** an agent cannot read the box's settings without the `secrets`
   grant. The owner confirms that `EMAIL_DRAFT_READS_IMAGES` is on in the

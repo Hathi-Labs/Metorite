@@ -74,6 +74,15 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "passes an agreed draft and no drafter runs. Else draft_reply_smart "
         "also calls _assert_account_owner (EM-CR)."
     ),
+    "list_scheduled": (
+        "Send later (H-375). Each read names owner_email = the session's own "
+        "email, and only schedule_draft writes a row, after "
+        "_assert_account_owner. A row of another member is never read."
+    ),
+    "cancel_scheduled": (
+        "Send later (H-375). The row is read FOR UPDATE with owner_email = the "
+        "session's own email, so a row of another member is a 404."
+    ),
     "reply_recipients_route": (
         "A thin wrapper. reply_recipients calls _load_mail, which reads the "
         "mail with REPLY_ROW_SQL, whose join holds ea.user_id = :uid. A mail "

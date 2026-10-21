@@ -269,8 +269,11 @@ concise, blank lines between paragraphs; **match the thread's language**; and
   know the member's time zone, ask for it.
 - **All mail of a sender.** Call `bulk_manage_inbox` with the sender, the
   folder or the age. Never page through `query_inbox` to collect ids for it.
-- **Send later.** Metorite cannot schedule a send yet. Say so, and offer to
-  save the mail as a draft or to snooze the mail that it answers.
+- **Send later.** First save the mail as a draft. For a reply, that is Save
+  to Drafts on the reply card, and the answer gives the draft_id. Then call
+  `schedule_send` with the time and the member's offset. When the answer
+  says that send later is not on, say so, and offer to keep the draft.
+  `list_scheduled_sends` and `cancel_scheduled_send` show and stop them.
 
 ## Setting up the assistant
 

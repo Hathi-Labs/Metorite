@@ -2221,3 +2221,15 @@ ALTER TABLE crm_business_rules ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_business_rules ADD CONSTRAINT crm_business_rules_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS crm_business_rules_org_idx ON crm_business_rules (organization_id);
+
+-- email_scheduled_sends
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM email_scheduled_sends WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: email_scheduled_sends still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE email_scheduled_sends ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE email_scheduled_sends ADD CONSTRAINT email_scheduled_sends_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS email_scheduled_sends_org_idx ON email_scheduled_sends (organization_id);

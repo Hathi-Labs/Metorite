@@ -62,6 +62,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
     "email-assistant": frozenset({
         # (B) a send, a forward, a send of a draft, an unsubscribe
         "send_email", "forward_email", "send_draft", "unsubscribe_sender",
+        # (B) H-375: a send of a draft later is a send
+        "schedule_send",
         # (B) the signature, the text about the member, auto-run
         "update_assistant_settings",
         # (C) the knowledge base, which feeds each later reply

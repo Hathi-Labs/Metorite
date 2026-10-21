@@ -137,7 +137,9 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # snooze_email, find_contact and bulk_manage_inbox. Each has a route of
     # the Email app that the chat could not reach, and none merges into an
     # existing tool without a mode switch the model gets wrong.
-    assert len(tools) == 50
+    # 53 since send later (H-375): schedule_send, list_scheduled_sends and
+    # cancel_scheduled_send. A schedule is its own act with its own card.
+    assert len(tools) == 53
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",
