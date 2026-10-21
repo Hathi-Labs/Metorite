@@ -6147,8 +6147,9 @@ line — never reclaim a number by deleting the other entry.
   Storage S3 endpoint that the backup already uses. Then move class B, then
   `agent_blob`, as the MT-1g inventory orders them. Each move adds a nullable
   key column, reads the store first and the old place second, and backfills.
-- **Owner input:** confirm Supabase Storage as the store, and one bucket for
-  each environment. The inventory names it as a recommendation only.
+- **Decided (D108, 2026-10-20):** Supabase Storage, one bucket for each
+  environment, and the app signs in as its own Auth user (the BH-4 pattern).
+  MT-1g now lists the slices MT-1g-1 to MT-1g-6.
 - **Authority:** `specs/saas_multitenancy.md` MT-1g · `specs/backup_and_restore.md`
 - **Added:** 2026-10-20 · artifacts session
 

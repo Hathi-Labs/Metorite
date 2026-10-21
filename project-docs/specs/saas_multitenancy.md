@@ -2598,6 +2598,28 @@ with `rclone` (HANDOFF H-123, `backup_and_restore.md`). So the natural store is
 Supabase Storage through the S3 protocol, with one bucket for each
 environment. That choice is a recommendation, not a decision.
 
+**Decided, 2026-10-20 (D108).** The owner accepted the recommendation. The
+store is Supabase Storage through its S3 endpoint, with one private bucket
+for each environment: `metorite-files` and `metorite-files-staging`. The app
+signs in as its own Supabase Auth user and sends the JWT as the S3 session
+token (the BH-4 pattern), because a project-wide S3 key also opens the backup
+bucket. The seam itself checks the tenant prefix of every key. One app
+credential reads every tenant's objects, so that check is the isolation.
+
+**The slices.**
+
+| Slice | What | Done when | Gate |
+|---|---|---|---|
+| **MT-1g-1** ✅ BUILT 2026-10-20, dark | The seam `acb_common.object_store`, dark behind `OBJECT_STORE_ENABLED`. Put, get, stream, head and delete. Keys from the bound tenant. Session-token sign-in, or a plain key pair for a local MinIO | A put, a get and a delete round-trip against MinIO. A key of another organization is refused. Nothing outside the seam imports an S3 client | AGENT-SAFE |
+| **MT-1g-2** | The Supabase objects: the two buckets, with a `file_size_limit` of 512 MB or more (the project default is 50 MB), the files user of each environment, the storage policies, and the secrets entry in `deploy/secrets/manifest.json` with `OBJECT_STORE_REGION` set to the project region (`ap-south-1`). Also a nightly copy of each files bucket into the off-box backup, through the insert-only backup writer of BH-4 | The files user of staging can write, read and delete in `metorite-files-staging`, and gets 403 in `metorite-backups`. A 300 MB object uploads. The nightly copy runs once and lists the object | OWNER-GATE for the Auth provider setting (OD-9), as in BH-4. The rest is AGENT-SAFE through the Supabase MCP |
+| **MT-1g-3** | Task and project attachments (`attachments.path`) | A new attachment lands in the store, an old one still opens from disk, and a backfill copies the old ones | AGENT-SAFE |
+| **MT-1g-4** | Meeting audio (`meeting_recording.artifact_path`), streamed in chunks | A 300 MB recording uploads in parts and plays back with a range request | AGENT-SAFE |
+| **MT-1g-5** | Project imports and Custom App binaries | Both survive a wipe of the box's data folder | AGENT-SAFE |
+| **MT-1g-6** | `agent_blob.content` to the store, the row keeps the metadata and the key. Waits for the nightly copy of MT-1g-2 | A run start rehydrates a workspace from the store, and the BYTEA column holds no new bytes | AGENT-SAFE, HIGH tier |
+
+Class C stays out of these slices. A slice for a table of class C is
+written when one of them grows past its measure of 2026-10-07.
+
 **The shape to build.** One seam, `acb_common.object_store`, with `put`, `get`,
 `delete` and a short-lived signed URL. Keys are `<organization_id>/<app>/<id>`,
 taken from the bound tenant and never from request input (R5). Each table keeps

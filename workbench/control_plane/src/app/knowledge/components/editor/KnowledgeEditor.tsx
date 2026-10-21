@@ -21,16 +21,21 @@
  * - A selection raises the bubble menu: the marks, the link control and the
  *   block type. The caret in a table raises the table tools.
  * - A handle beside each block drags it (`@tiptap/extension-drag-handle`).
+ * - KB-2i (§21.7): grips on a table's rows and columns (`TableHandles`),
+ *   find and replace on Mod-F (`FindBar`), the `:` emoji insert, and the
+ *   title flow (`TitleField`, `titleLink`).
  * - Markdown shortcuts work as you type: `# `, `- `, `1. `, `> `, `[ ] `,
  *   three backticks, `---`, `**bold**`.
  *
- * ⚠️ Nothing here binds `Mod-k` or listens for ⌘K. The shell owns the command
+ * ⚠️ Nothing here binds `Mod-k` or listens for ⌘K. Find takes Mod-F only. The shell owns the command
  * bar (D87), and `src/lib/shell/seams.test.ts` fails a ⌘K handler here.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Extension, type Editor, type Range } from "@tiptap/core";
-import { PluginKey } from "@tiptap/pm/state";
+import type { Node as PMNode } from "@tiptap/pm/model";
+import { PluginKey, Selection } from "@tiptap/pm/state";
+import type { DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, ReactNodeViewRenderer, useEditor } from "@tiptap/react";
 import Suggestion from "@tiptap/suggestion";
 
@@ -40,13 +45,22 @@ import { isInAppPath } from "@/lib/inAppLink";
 
 import { listPages } from "../../lib/api";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
+import { SearchAndReplace } from "../../lib/editor/searchAndReplace";
+import { TitleHandoff, isEmptyBody } from "../../lib/editor/titleFlow";
+import { loadEmoji, searchEmoji, type EmojiMatch } from "../../lib/emoji";
 import { createBodyWriter, type BodyWriter } from "../../lib/editor/bodyWriter";
 import { bodyAfterEdit, markdownWork, normaliseBody, parseBody, writeBody } from "../../lib/editor/markdown";
 import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../../lib/editor/pageLinks";
 import { knowledgeExtensions } from "../../lib/editor/schema";
 import type { Space } from "../../lib/types";
+import { FindBar } from "./FindBar";
 import { FormatBubble, ImageDialog, TableTools, scrollParent } from "./menus";
 import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews";
+import { TableHandlePlugin } from "./tableDrag";
+import { TableHandles } from "./TableHandles";
+import type { TitleLink } from "./TitleField";
+import { storedFormViews } from "./storedFormViews";
+import { TableCellTools } from "./TableExtras";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
 /**
@@ -71,6 +85,7 @@ function inCode(editor: Editor, pos: number): boolean {
 interface MenuHandles {
   slash: () => ReturnType<SuggestionMenu<BlockItem>["render"]>;
   pages: () => ReturnType<SuggestionMenu<PageChoice>["render"]>;
+  emoji: () => ReturnType<SuggestionMenu<EmojiMatch>["render"]>;
   onSpecial: (item: BlockItem, editor: Editor, range: Range) => void;
 }
 
@@ -85,7 +100,10 @@ declare module "@tiptap/core" {
  * menu handles in the extension's storage once the editor exists, and the
  * plugins read them when a menu opens.
  */
-type MenuRenderer = ReturnType<MenuHandles["slash"]> | ReturnType<MenuHandles["pages"]>;
+type MenuRenderer =
+  | ReturnType<MenuHandles["slash"]>
+  | ReturnType<MenuHandles["pages"]>
+  | ReturnType<MenuHandles["emoji"]>;
 
 /**
  * A renderer that finds the component's menu when each event comes.
@@ -157,7 +175,46 @@ const KnowledgeMenus = Extension.create<object, MenuStorage>({
         },
         render: () => lateRenderer(() => handles()?.pages() ?? null),
       }),
+      // `:` and a name inserts an emoji, as in Docmost: the emoji and a space.
+      // The `:` must start a word, so "10:30" and "Note:" open nothing.
+      Suggestion<EmojiMatch, EmojiMatch>({
+        editor: this.editor,
+        char: ":",
+        pluginKey: new PluginKey("kbEmoji"),
+        allow: ({ editor, range }) => editor.isEditable && !inCode(editor, range.from),
+        items: () => [],
+        command: ({ editor, range, props }) => {
+          editor.chain().focus().deleteRange(range).insertContent(`${props.char} `).run();
+        },
+        render: () => lateRenderer(() => handles()?.emoji() ?? null),
+      }),
     ];
+  },
+});
+
+declare module "@tiptap/core" {
+  interface Storage {
+    kbFindKeys: { open: (() => void) | null; close: (() => boolean) | null };
+  }
+}
+
+/**
+ * Mod-F opens find in the page, and Escape closes it. Docmost binds the same
+ * keys. ⚠️ Mod-F, never Mod-K: the shell owns ⌘K (D87).
+ */
+const FindKeys = Extension.create<object, { open: (() => void) | null; close: (() => boolean) | null }>({
+  name: "kbFindKeys",
+  addStorage() {
+    return { open: null, close: null };
+  },
+  addKeyboardShortcuts() {
+    return {
+      "Mod-f": () => {
+        this.storage.open?.();
+        return Boolean(this.storage.open);
+      },
+      Escape: () => this.storage.close?.() ?? false,
+    };
   },
 });
 
@@ -188,6 +245,13 @@ export interface KnowledgeEditorProps {
   label: string;
   /** Read: a click on a link to a page of this app. */
   onNavigate?: (href: string) => void;
+  /**
+   * Read: marks drawn over the body, such as the changes of a compare
+   * (KB-2g, `lib/historyDiff.ts`). The editor draws them and stores nothing.
+   */
+  decorate?: ((doc: PMNode) => DecorationSet | null) | null;
+  /** Edit: the page's title field, for the title flow (KB-2i). */
+  titleLink?: TitleLink;
 }
 
 export default function KnowledgeEditor({
@@ -201,10 +265,13 @@ export default function KnowledgeEditor({
   spaces,
   label,
   onNavigate,
+  decorate,
+  titleLink,
 }: KnowledgeEditorProps) {
   const editable = mode === "edit";
   const onChangeRef = useRef(onChange);
   const onTouchedRef = useRef(onTouched);
+  const decorateRef = useRef(decorate);
   useEffect(() => {
     onChangeRef.current = onChange;
     onTouchedRef.current = onTouched;
@@ -246,6 +313,13 @@ export default function KnowledgeEditor({
   const slash = useSuggestionMenu<BlockItem>((q) => matchBlocks(q));
   const pageRows = useCallback((q: string) => matchPages(pages ?? [], q, { exclude: pageId }), [pages, pageId]);
   const pageMenu = useSuggestionMenu<PageChoice>(pageRows);
+  const emojiRows = useCallback((q: string) => searchEmoji(q), []);
+  // `searchEmoji` answers [] until the data is in memory, so the edit mode
+  // loads it at once. Then the first `:` has rows (KB-2f data, KB-2i insert).
+  useEffect(() => {
+    if (editable) void loadEmoji().catch(() => undefined);
+  }, [editable]);
+  const emojiMenu = useSuggestionMenu<EmojiMatch>(emojiRows);
 
   const [imageAt, setImageAt] = useState<Range | null>(null);
 
@@ -258,9 +332,14 @@ export default function KnowledgeEditor({
           codeBlock: ReactNodeViewRenderer(CodeBlockView),
           callout: ReactNodeViewRenderer(CalloutView),
           details: ReactNodeViewRenderer(DetailsView),
+          ...storedFormViews(),
         },
       }),
       KnowledgeMenus,
+      SearchAndReplace,
+      FindKeys,
+      TableHandlePlugin,
+      TitleHandoff,
     ],
     [],
   );
@@ -280,6 +359,7 @@ export default function KnowledgeEditor({
               "aria-label": label,
             }
           : { class: "kb-editor cc-prose prose prose-sm max-w-none", "aria-label": label },
+        decorations: (state) => decorateRef.current?.(state.doc) ?? null,
       },
       // Cheap on purpose: no parse and no write on a key (`bodyWriter.ts`).
       onUpdate: () => writerRef.current?.touch(),
@@ -291,6 +371,12 @@ export default function KnowledgeEditor({
   useEffect(() => {
     editorRef.current = editor;
   }, [editor]);
+
+  // New marks redraw at once: an empty transaction asks the view again.
+  useEffect(() => {
+    decorateRef.current = decorate;
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta("kbDecorate", true));
+  }, [editor, decorate]);
 
   useEffect(() => {
     const writer = createBodyWriter({
@@ -327,15 +413,103 @@ export default function KnowledgeEditor({
 
   // The box that scrolls the page, so the floating menus follow a scroll.
   const [scroller, setScroller] = useState<HTMLElement | Window | undefined>(undefined);
+  const [shell, setShell] = useState<HTMLDivElement | null>(null);
   const shellRef = useCallback((el: HTMLDivElement | null) => {
+    setShell(el);
     if (el) setScroller(scrollParent(el));
   }, []);
+
+  // ── Find and replace (KB-2i) ───────────────────────────────────────────
+  // `findOpen` counts the opens, so each Mod-F takes the selected text again.
+  const [findOpen, setFindOpen] = useState(0);
+  const openFind = useCallback(() => setFindOpen((n) => n + 1), []);
+  const closeFind = useCallback(() => setFindOpen(0), []);
+  useEffect(() => {
+    if (!editor) return;
+    editor.storage.kbFindKeys.open = openFind;
+    editor.storage.kbFindKeys.close = () => {
+      if (!findOpen) return false;
+      closeFind();
+      return true;
+    };
+  }, [editor, openFind, closeFind, findOpen]);
+  // The read view is not focusable, so Mod-F there comes from the window.
+  // It leaves a field outside the body alone, such as the command bar.
+  useEffect(() => {
+    if (editable) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "f") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+      // A page behind an open modal, such as the history (KB-2g), leaves the
+      // key to the editor in the modal. `Modal` marks the page behind it.
+      if (shell?.closest("[data-base-ui-inert], [aria-hidden='true']")) return;
+      e.preventDefault();
+      openFind();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editable, openFind, shell]);
+
+  // ── The title flow (KB-2i) ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!editor || !editable || !titleLink) return;
+    titleLink.body.current = {
+      focusStart: () => editor.commands.focus("start"),
+      prependParagraph: (text) => {
+        const content = text ? [{ type: "text", text }] : undefined;
+        // Not in the body's undo history: an undo there keeps the split, as in Docmost.
+        editor
+          .chain()
+          .command(({ tr }) => {
+            tr.setMeta("addToHistory", false);
+            return true;
+          })
+          .insertContentAt(isEmptyBody(editor.state) ? { from: 0, to: editor.state.doc.content.size } : 0, {
+            type: "paragraph",
+            content,
+          })
+          // ⚠️ Set the caret here, not with `focus("start")`. That command
+          // skips the set when the old caret was at the same number, and the
+          // insert then leaves the caret at the end of the moved text.
+          .command(({ tr }) => {
+            tr.setSelection(Selection.atStart(tr.doc));
+            return true;
+          })
+          .focus()
+          .run();
+      },
+      openFind,
+    };
+    editor.storage.kbTitleHandoff.exitTop = () => {
+      const field = titleLink.title.current;
+      if (!field) return false;
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+      return true;
+    };
+    return () => {
+      titleLink.body.current = null;
+      if (!editor.isDestroyed) editor.storage.kbTitleHandoff.exitTop = null;
+    };
+  }, [editor, editable, titleLink, openFind]);
 
   // The menus' handles, for the plugins of `KnowledgeMenus`.
   useEffect(() => {
     if (!editor) return;
     editor.storage.knowledgeMenus.setHandles({
       slash: slash.render,
+      emoji: () => {
+        const r = emojiMenu.render();
+        return {
+          ...r,
+          // With no emoji of that name, the keys stay the editor's own.
+          onKeyDown: (props) => {
+            const query = props.view.state.doc.textBetween(props.range.from + 1, props.range.to);
+            return emojiRows(query).length ? r.onKeyDown(props) : false;
+          },
+        };
+      },
       pages: () => {
         const r = pageMenu.render();
         return {
@@ -372,8 +546,19 @@ export default function KnowledgeEditor({
 
   // The editor names the open menu and its active row, so a screen reader
   // follows the `/` menu and the `[[` picker while the caret stays put.
-  const menuId = slash.state ? "kb-slash-menu" : pageMenu.state ? "kb-page-menu" : null;
-  const menuActive = slash.state ? slash.state.active : (pageMenu.state?.active ?? 0);
+  const emojiShown = emojiMenu.state ? emojiRows(emojiMenu.state.query) : [];
+  const menuId = slash.state
+    ? "kb-slash-menu"
+    : pageMenu.state
+      ? "kb-page-menu"
+      : emojiMenu.state && emojiShown.length
+        ? "kb-emoji-menu"
+        : null;
+  const menuActive = slash.state
+    ? slash.state.active
+    : pageMenu.state
+      ? pageMenu.state.active
+      : (emojiMenu.state?.active ?? 0);
   useEffect(() => {
     const dom = editor && editable ? (editor.view.dom as HTMLElement) : null;
     if (!dom) return;
@@ -412,9 +597,15 @@ export default function KnowledgeEditor({
   const pageAnchor = pageMenu.state?.rect
     ? { getBoundingClientRect: () => pageMenu.state!.rect!() ?? new DOMRect() }
     : null;
+  const emojiAnchor = emojiMenu.state?.rect
+    ? { getBoundingClientRect: () => emojiMenu.state!.rect!() ?? new DOMRect() }
+    : null;
 
   return (
     <div ref={shellRef} className={editable ? "kb-editor-shell is-editing" : "kb-editor-shell"} onClick={onClick}>
+      {editor && findOpen ? (
+        <FindBar editor={editor} editable={editable} openCount={findOpen} onClose={closeFind} scroller={scroller} />
+      ) : null}
       {editor && editable ? (
         <DragHandle editor={editor} className="kb-drag-handle">
           <span className="kb-drag-grip" title="Drag to move this block">
@@ -434,6 +625,8 @@ export default function KnowledgeEditor({
             scrollTarget={scroller}
           />
           <TableTools editor={editor} scrollTarget={scroller} />
+          <TableHandles editor={editor} container={shell} />
+          <TableCellTools editor={editor} scrollTarget={scroller} />
           <OptionList
             id="kb-slash-menu"
             label="Blocks"
@@ -456,6 +649,18 @@ export default function KnowledgeEditor({
             onHover={pageMenu.setActive}
             status={pagesLoading && !pages ? "Loading pages…" : null}
             emptyText={pageMenu.state?.query ? "No page has that title." : "No pages yet."}
+          />
+          {/* A `:` with no emoji of that name shows nothing, so "a :)" stays quiet. */}
+          <OptionList
+            id="kb-emoji-menu"
+            label="Emoji"
+            anchor={emojiAnchor}
+            open={Boolean(emojiMenu.state) && emojiShown.length > 0}
+            rows={emojiShown.map((e) => ({ id: e.name, label: `${e.char}  ${e.name}` }))}
+            active={emojiMenu.state?.active ?? 0}
+            onPick={(i) => emojiShown[i] && emojiMenu.pick(emojiShown[i])}
+            onHover={emojiMenu.setActive}
+            emptyText="No emoji has that name."
           />
           <ImageDialog
             open={imageAt !== null}

@@ -12,6 +12,12 @@ For each saved body:
   path, and
 * every other line with text is in a chunk, byte for byte.
 
+KB-2p (§21.7) amends the second rule. The chunker takes off the tags of the
+stored forms (a colour, a highlight, ``sup``, ``sub``, a status, a date and
+the ``data-type`` blocks). A line outside those fragments is still in a
+chunk byte for byte. A line inside one is in a chunk with the tags removed,
+and a line that holds only a block tag holds no text.
+
 So no block that the editor writes is lost to the index, and the index reads
 no text that the body does not hold.
 """
@@ -33,6 +39,27 @@ TITLE = "Golden page"
 
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 _FENCE = re.compile(r"^ {0,3}(```|~~~)")
+
+# The tags of the KB-2p stored forms, written out again here so that the
+# test does not trust the chunker's own pattern.
+_FORM_OPEN = re.compile(
+    r'<span data-color="(?:[a-z]+|#[0-9a-fA-F]{3,6})">'
+    r'|<mark data-color="(?:[a-z]+|#[0-9a-fA-F]{3,6})">|<sup>|<sub>'
+    r'|<span data-type="status" data-color="[a-z]+">'
+    r'|<time data-type="date" datetime="[0-9-]+">'
+    r'|<div data-type="[a-z-]+"(?: data-[a-z]+="[^"<>]+")*>(?:</div>)?'
+)
+_FORM_CLOSE = re.compile(r"</span>|</mark>|</sup>|</sub>|</time>|</div>")
+_DIV_LINE = re.compile(r"^(?:>\s*)*</div>$")
+
+
+def _without_form_tags(line: str) -> str | None:
+    """The text a line of a stored form indexes, or ``None`` for other lines."""
+    if _FORM_OPEN.search(line):
+        return _FORM_CLOSE.sub("", _FORM_OPEN.sub("", line)).strip()
+    if _DIV_LINE.match(line):
+        return ""
+    return None
 
 
 def _lines(saved: str) -> tuple[list[str], list[str]]:
@@ -79,4 +106,9 @@ def test_every_line_of_the_saved_body_is_indexed_unchanged(case: dict) -> None:
     _, text = _lines(case["saved"])
     raw = "\n".join(c.raw for c in chunk_page(TITLE, case["saved"]))
     for line in text:
-        assert line in raw, (line, raw)
+        stripped = _without_form_tags(line)
+        if stripped is None:
+            assert line in raw, (line, raw)
+        else:
+            assert stripped in raw, (line, stripped, raw)
+            assert not _FORM_OPEN.search(raw), raw

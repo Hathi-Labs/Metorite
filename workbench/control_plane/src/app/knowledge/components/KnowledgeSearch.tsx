@@ -45,6 +45,7 @@ import {
 } from "../lib/search";
 import type { SearchHit } from "../lib/types";
 import { useKnowledge } from "./KnowledgeContext";
+import { PageGlyph } from "./PageIcon";
 
 /** The last answer the view holds, for the words it answers. */
 interface Answer {
@@ -312,11 +313,8 @@ function SpaceResults({ group, query }: { group: SpaceGroup; query: string }) {
               href={pageHref(page.pageId)}
               className="cc-link flex gap-3 rounded-lg border border-border bg-card px-4 py-3 tech-transition hover:border-primary/40 hover:bg-muted/40"
             >
-              <Icon
-                name="FileText"
-                size={16}
-                className="mt-0.5 shrink-0 text-muted-foreground"
-              />
+              {/* KB-2f: the page icon, else the page mark. */}
+              <PageGlyph page={page} size="md" className="mt-0.5 text-muted-foreground" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm font-medium text-foreground">
                   <Marked text={page.title} query={query} />

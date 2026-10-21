@@ -16,11 +16,13 @@ import type {
   PageMoved,
   PagePatchBody,
   PageRevertBody,
+  PageState,
   PageSummary,
   PageWritten,
   SearchAnswer,
   Space,
 } from "./types";
+import type { PageVersionBody } from "./history";
 
 export class KnowledgeError extends Error {
   status: number;
@@ -74,9 +76,15 @@ export async function listSpaces(): Promise<Space[]> {
   return out?.spaces ?? [];
 }
 
-/** The live pages of one space, with no body. */
-export async function listPages(spaceId: string): Promise<PageSummary[]> {
-  const out = await call<{ pages: PageSummary[] }>(`/pages?space=${encodeURIComponent(spaceId)}`);
+/**
+ * The pages of one space, with no body. With no `state`, the live pages.
+ * `state: "archived"` gives the archived pages that the member can see
+ * (KB-2d): the gateway shows them to a manager of the space, and a draft
+ * to its author.
+ */
+export async function listPages(spaceId: string, opts: { state?: PageState } = {}): Promise<PageSummary[]> {
+  const state = opts.state ? `&state=${encodeURIComponent(opts.state)}` : "";
+  const out = await call<{ pages: PageSummary[] }>(`/pages?space=${encodeURIComponent(spaceId)}${state}`);
   return out?.pages ?? [];
 }
 
@@ -125,6 +133,11 @@ export function archivePage(id: string): Promise<PageWritten> {
   return call<PageWritten>(`/pages/${encodeURIComponent(id)}/archive`, { method: "POST" });
 }
 
+/** Restore an archived page to its state before the archive. It needs manage too. */
+export function restorePage(id: string): Promise<PageWritten> {
+  return call<PageWritten>(`/pages/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+
 /** The body of a revert: the number of the version to write again. */
 export function revertBody(version: number): PageRevertBody {
   if (!Number.isInteger(version) || version < 1) {
@@ -139,6 +152,17 @@ export function revertPage(id: string, version: number): Promise<PageWritten> {
     method: "POST",
     body: JSON.stringify(revertBody(version)),
   });
+}
+
+/**
+ * One version of a page, with its title and body (KB-2g). The gateway
+ * answers 404 for a page the member cannot see and under the history floor.
+ */
+export function getVersion(pageId: string, n: number): Promise<PageVersionBody> {
+  if (!Number.isInteger(n) || n < 1) {
+    return Promise.reject(new RangeError(`A version is a whole number from 1. Got ${n}.`));
+  }
+  return call<PageVersionBody>(`/pages/${encodeURIComponent(pageId)}/versions/${n}`);
 }
 
 /** The hits of one search. The view asks for the most the gateway gives. */
@@ -165,6 +189,11 @@ export const SPACES_KEY = "knowledge/spaces";
 
 export function pagesKey(spaceId: string): string {
   return `knowledge/pages?space=${spaceId}`;
+}
+
+/** The archived pages of one space (KB-2d). */
+export function archivedPagesKey(spaceId: string): string {
+  return `knowledge/pages?space=${spaceId}&state=archived`;
 }
 
 export function pageKey(pageId: string): string {

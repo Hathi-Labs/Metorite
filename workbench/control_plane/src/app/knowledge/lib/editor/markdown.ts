@@ -20,6 +20,7 @@ import { MarkdownManager } from "@tiptap/markdown";
 import { prepareCodeSpans } from "./inline";
 import { separateAdjacentLists } from "./lists";
 import { FRONT_MATTER, knowledgeExtensions } from "./schema";
+import { dropEmptyHeaderRow } from "./tables";
 
 let shared: MarkdownManager | null = null;
 
@@ -39,10 +40,11 @@ const BLOCK_CONTAINERS = new Set([
   "taskItem",
   "tableCell",
   "tableHeader",
+  "footnoteDefinition",
 ]);
 
 /** The inline nodes of the schema. */
-const INLINE_NODES = new Set(["text", "image", "htmlInline", "hardBreak"]);
+const INLINE_NODES = new Set(["text", "image", "htmlInline", "hardBreak", "footnoteReference"]);
 
 /**
  * Each run of inline nodes in a block container, wrapped in a paragraph.
@@ -93,7 +95,8 @@ export function parseBody(md: string): JSONContent {
   markdownWork.parses++;
   const front = FRONT_MATTER.exec(md);
   const rest = front ? md.slice(front[0].length) : md;
-  const doc = wrapInlineRuns(knowledgeMarkdown().parse(rest));
+  // A header row with no text is a table with its header off (`tables.ts`).
+  const doc = dropEmptyHeaderRow(wrapInlineRuns(knowledgeMarkdown().parse(rest)));
   const content = [...(doc.content ?? [])];
   if (front) {
     const raw = front[0].replace(/\n$/, "");

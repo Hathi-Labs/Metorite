@@ -247,8 +247,9 @@ async def test_search_finds_only_visible_published_pages(kb, app_engine) -> None
     assert _found(await _search(kb, admin_a, "pricing ladder", space=sales)) == [on_sales]
 
     hit = (await _search(kb, seller_a, "pricing ladder"))["hits"][0]
+    # KB-2f added the page icon to this route's hits only.
     assert set(hit) == {"page_id", "space_id", "space_name", "title", "heading_path",
-                        "text", "score", "updated_at", "href"}
+                        "text", "score", "updated_at", "href", "icon"}
     assert hit["space_id"] == sales and hit["space_name"] == "Sales"
     assert hit["href"] == f"/knowledge/pages/{on_sales}"
     assert hit["heading_path"] == "Sales playbook"

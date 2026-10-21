@@ -8,6 +8,7 @@
 import type { Editor, Range } from "@tiptap/core";
 
 import { CALLOUT_TONES, type CalloutTone } from "./schema";
+import { STORED_FORM_BLOCKS } from "./storedFormBlocks";
 
 export type BlockKind = "insert" | "image" | "pageLink";
 
@@ -73,6 +74,10 @@ export const BLOCKS: readonly BlockItem[] = [
     run: (e, r) => at(e, r).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { id: "divider", label: "Divider", keywords: "hr rule line separator ---", icon: "Minus", kind: "insert",
     run: (e, r) => at(e, r).setHorizontalRule().run() },
+  // KB-2i (§21.7): a footnote mark at the caret, and its note at the end.
+  { id: "footnote", label: "Footnote", keywords: "reference citation note [^", icon: "Superscript", kind: "insert",
+    run: (e, r) => at(e, r).addFootnote().run() },
+  ...STORED_FORM_BLOCKS,
   { id: "image", label: "Image", keywords: "picture photo url img", icon: "Image", kind: "image" },
   { id: "page", label: "Link to a page", keywords: "page wiki link [[", icon: "FileText", kind: "pageLink" },
 ];

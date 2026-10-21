@@ -3,6 +3,7 @@
 // `/knowledge` is the Spaces view. `?space=<id>` selects a space.
 // `/knowledge/pages/<id>` is one page, and a search hit opens there.
 // `/knowledge/search?q=<words>` is the Search view, so a search is a link.
+// `/knowledge?space=<id>&view=archived` is the archived pages of a space (KB-2d).
 
 export const KNOWLEDGE_HOME = "/knowledge";
 
@@ -16,6 +17,19 @@ export function spaceHref(spaceId: string | null): string {
 export function pageHref(pageId: string, opts: { edit?: boolean } = {}): string {
   const base = `${KNOWLEDGE_HOME}/pages/${encodeURIComponent(pageId)}`;
   return opts.edit ? `${base}?edit=1` : base;
+}
+
+/** The `view` of a space that lists its archived pages (KB-2d). */
+export const ARCHIVED_VIEW = "archived";
+
+/** The Archived view of one space: `/knowledge?space=<id>&view=archived`. */
+export function archivedHref(spaceId: string): string {
+  return `${spaceHref(spaceId)}&view=${ARCHIVED_VIEW}`;
+}
+
+/** The address of a heading on a page: the page, then `#` and its anchor. */
+export function headingHref(pageId: string, slug: string): string {
+  return `${pageHref(pageId)}#${encodeURIComponent(slug)}`;
 }
 
 /** The Search view for these words. No words, or only spaces, is the bare view. */

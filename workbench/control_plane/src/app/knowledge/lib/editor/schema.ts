@@ -10,10 +10,11 @@
 // - A callout is the GitHub alert syntax, `> [!NOTE]` and its four siblings.
 // - A toggle is `<details>` with a `<summary>`, the one HTML shape we write.
 // - Raw HTML that the editor cannot model stays as its own text, in an
-//   `htmlBlock` or an `htmlInline` node. So do YAML front matter, a footnote
-//   and a link with no text. Each draws as code and writes back byte for
-//   byte, so a save never drops it in silence. ⚠️ No node here hands HTML
-//   to the browser's parser (`htmlSinks.test.ts`).
+//   `htmlBlock` or an `htmlInline` node. So do YAML front matter and a link
+//   with no text. Each draws as code and writes back byte for byte, so a
+//   save never drops it in silence. ⚠️ No node here hands HTML to the
+//   browser's parser (`htmlSinks.test.ts`).
+// - A footnote is a node of its own, and keeps its label (`footnotes.ts`).
 // - Lists, links, code spans and entities follow `lists.ts` and `inline.ts`.
 // - A heading keeps its level in storage (`#` is level 1) and draws one
 //   level down (`displayHeadingLevel`), because the app bar holds the one
@@ -45,9 +46,8 @@ import { Placeholder } from "@tiptap/extensions";
 import { TextSelection } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 
+import { FootnoteDefinition, FootnoteReference } from "./footnotes";
 import {
-  FOOTNOTE_DEF,
-  FOOTNOTE_REF,
   decodeEntities,
   entityTokenizer,
   escapeLineStart,
@@ -57,6 +57,9 @@ import {
   renderInline,
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
+import { storedFormExtensions, type StoredFormViews } from "./storedForms";
+import { withHtmlTable } from "./htmlTable";
+import { withAlign } from "./textAlign";
 
 export { escapeLineStart, markdownDestination } from "./inline";
 
@@ -759,7 +762,7 @@ const HtmlInline = Node.create({
   renderMarkdown: (node) => String(node.attrs?.raw ?? ""),
 });
 
-// ── Front matter, footnotes and entities ────────────────────────────────────
+// ── Front matter and entities ────────────────────────────────────
 
 /**
  * YAML front matter at the top of a body: `---`, a first line with a key
@@ -788,43 +791,6 @@ const FrontMatter = Node.create({
   renderMarkdown: (node) => ((node.content ?? []) as JSONContent[]).map((c) => c.text ?? "").join(""),
 });
 
-/**
- * Footnotes, kept as raw text. GFM draws `[^1]` and `[^1]: …`, and marked
- * does not know them, so the stock round trip escaped them into plain text.
- */
-const FootnoteRef = Extension.create({
-  name: "kbFootnoteRef",
-  markdownTokenizer: {
-    name: "kbFootnoteRef",
-    level: "inline",
-    start: (src: string) => src.indexOf("[^"),
-    tokenize: (src: string) => {
-      const m = FOOTNOTE_REF.exec(src);
-      return m ? { type: "kbFootnoteRef", raw: m[0], text: m[0] } : undefined;
-    },
-  },
-  parseMarkdown: (token, h) => h.createNode("htmlInline", { raw: String(token.raw ?? "") }),
-});
-
-const FootnoteDef = Extension.create({
-  name: "kbFootnoteDef",
-  markdownTokenizer: {
-    name: "kbFootnoteDef",
-    level: "block",
-    start: (src: string) => {
-      const m = /\n\[\^[^\]\s]{1,100}\]:/.exec(src);
-      return m ? m.index + 1 : -1;
-    },
-    tokenize: (src: string) => {
-      const m = FOOTNOTE_DEF.exec(src);
-      if (!m) return undefined;
-      const end = /^\n?/.exec(src.slice(m[0].length))?.[0] ?? "";
-      return { type: "kbFootnoteDef", raw: m[0] + end, text: m[0] };
-    },
-  },
-  parseMarkdown: (token, h) => h.createNode("htmlBlock", {}, [h.createTextNode(String(token.text ?? ""))]),
-});
-
 /** An entity reads as its character (`inline.ts`). */
 const Entities = Extension.create({
   name: "kbEntity",
@@ -835,7 +801,7 @@ const Entities = Extension.create({
 // ── The list ────────────────────────────────────────────────────────────────
 
 /** The node views the component plugs in. Each one is optional. */
-export interface KnowledgeViews {
+export interface KnowledgeViews extends StoredFormViews {
   image?: NodeViewRenderer;
   codeBlock?: NodeViewRenderer;
   callout?: NodeViewRenderer;
@@ -888,12 +854,12 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     }),
     KnowledgeBulletList,
     KnowledgeOrderedList,
-    KnowledgeParagraph,
-    KnowledgeHeading.configure({ levels: [...LEVELS] }),
+    withAlign(KnowledgeParagraph),
+    withAlign(KnowledgeHeading).configure({ levels: [...LEVELS] }),
     withView(KnowledgeCodeBlock, views.codeBlock),
     withView(KnowledgeImage, views.image),
     TableKit.configure({ table: false }),
-    KnowledgeTable.configure({ resizable: false }),
+    withHtmlTable(KnowledgeTable).configure({ resizable: false }),
     KnowledgeTaskList,
     TaskItem.configure({ nested: true }),
     withView(Callout, views.callout),
@@ -903,9 +869,11 @@ export function knowledgeExtensions(opts: KnowledgeSchemaOptions = {}): AnyExten
     HtmlBlock,
     HtmlInline,
     FrontMatter,
-    FootnoteRef,
-    FootnoteDef,
+    FootnoteReference,
+    FootnoteDefinition,
     Entities,
+    // KB-2p: after the raw HTML nodes, so each exact shape wins (`storedForms.ts`).
+    ...storedFormExtensions(views),
   ];
   if (opts.placeholder) {
     list.push(

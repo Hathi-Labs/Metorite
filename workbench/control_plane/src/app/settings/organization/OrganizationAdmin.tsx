@@ -136,6 +136,8 @@ const PURGE_LABELS: Record<string, string> = {
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
+  // WS-61 KB-2f: the member's starred Knowledge pages.
+  knowledge_favorites: "starred Knowledge page",
   audit_entries: "app audit entry",
   audit_events: "audit event",
   agent_runs: "agent run trace",

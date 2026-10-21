@@ -735,6 +735,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # stays, and `purge_crm_member` takes the address off it.
     _PersonRows("crm_member_rules", "crm_business_rules",
                 "scope = 'member' AND lower(member_email) = :email"),
+    # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
+    # member's own shortcut, so it goes with the member. The page stays.
+    _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
