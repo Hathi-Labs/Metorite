@@ -19,6 +19,7 @@ import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  CHAT_LANDED_KEY,
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
@@ -42,6 +43,7 @@ import {
   onChatLink,
   onPageChange,
   openAssistant,
+  opensOnLanding,
   paneAt,
   paneForDelegate,
   publishAssistantFacts,
@@ -55,6 +57,7 @@ import {
   switchTarget,
 } from "./assistant";
 import { chatFirstOn, shellChatOn } from "./chatFlag";
+import { landingSettled } from "./ChatNudge";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -772,6 +775,62 @@ describe("the strip in the dock's source: phone only, flag only", () => {
     expect(css).toContain(":root[data-assistant-peek] .pb-nav {");
     expect(css).toContain(":root[data-assistant-peek] .toast-viewport-bottom {");
     expect(css).toContain('.assistant-panel[data-moving][data-panel-form="peek"]');
+  });
+});
+
+describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () => {
+  const landing = { chatFirst: true, phone: true, pathname: "/", search: "", seen: false };
+
+  it("a phone with the flag on that lands on `/` opens the sheet", () => {
+    expect(opensOnLanding(landing)).toBe(true);
+    expect(opensOnLanding({ ...landing, search: "?" })).toBe(true);
+    expect(opensOnLanding({ ...landing, search: null })).toBe(true);
+  });
+
+  it("the flag off, a desktop, and a second `/` in the session open nothing", () => {
+    expect(opensOnLanding({ ...landing, chatFirst: false })).toBe(false);
+    expect(opensOnLanding({ ...landing, phone: false })).toBe(false);
+    expect(opensOnLanding({ ...landing, seen: true })).toBe(false);
+  });
+
+  it("a deep link opens nothing: another path, or `/` with a query", () => {
+    expect(opensOnLanding({ ...landing, pathname: "/projects" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "/projects", search: "?task=42" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "/chat" })).toBe(false);
+    expect(opensOnLanding({ ...landing, search: "?welcome=new-org" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: null })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "" })).toBe(false);
+  });
+
+  it("the session mark keeps the shell prefix, so it never reads as a chat cache key", () => {
+    expect(CHAT_LANDED_KEY).toBe("cc-shell-chat-landed");
+    expect(CHAT_LANDED_KEY.startsWith("cc-chat")).toBe(false);
+  });
+
+  it("the landing waits for the session, the access read, the layout read, the bound identity and the welcome dialog (review of #1206)", () => {
+    const all = { sessionStatus: "authenticated", accessLoading: false, shellEnabled: true, shellAnswered: true, identityBound: true, welcomeOpen: false };
+    expect(landingSettled(all)).toBe(true);
+    expect(landingSettled({ ...all, sessionStatus: "loading" })).toBe(false);
+    expect(landingSettled({ ...all, accessLoading: true })).toBe(false);
+    // "Not enabled yet" is not settled: the read is off while access loads.
+    expect(landingSettled({ ...all, shellEnabled: false })).toBe(false);
+    expect(landingSettled({ ...all, shellAnswered: false })).toBe(false);
+    expect(landingSettled({ ...all, identityBound: false })).toBe(false);
+    expect(landingSettled({ ...all, welcomeOpen: true })).toBe(false);
+  });
+
+  it("the shell opens it once, from the rule, and marks the session", () => {
+    const src = read("lib/shell/ChatNudge.tsx");
+    expect(src).toContain("const settled = landingSettled({");
+    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
+    expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
+    expect(src).toContain('openAssistant({ mode: "full" });');
+    expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
+  });
+
+  it("the nudge retires on the first message, from the dock's one activity seam", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
   });
 });
 

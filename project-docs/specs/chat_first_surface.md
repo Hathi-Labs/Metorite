@@ -456,7 +456,16 @@ tap, sheet, X. `seams.test.ts` stays at one dock. Mutation, seen to fail
 first: return `"close"` from `onChatLink` with the flag on, and the e2e fails
 at the strip.
 
-### CF-2 · The phone opens on the chat, and the nudge — AGENT-SAFE
+### CF-2 · The phone opens on the chat, and the nudge — AGENT-SAFE · BUILT 2026-10-21 (#1206), dark
+
+**Built.** `opensOnLanding` in `assistant.ts` is the pure rule, and
+`useChatFirstLanding` in `ChatNudge.tsx` opens the sheet once per browser
+session. It waits for the session, the access read, the layout read and the
+welcome dialog. `ChatNudge` draws the
+one bubble under the field and above the Ask tab. The first message or the X
+writes `chat_first_message_at` to `shell_prefs`, and the gateway keeps that
+key when a later layout save omits it. On a phone with the flag on, the answer to
+step 1 of the welcome dialog writes the preset's stars and shows no step 2.
 
 **Files.**
 
@@ -476,8 +485,10 @@ at the strip.
    message writes the time, and the bubble goes. The X writes it too. A
    reload on another browser shows no bubble.
 3. The bubble never shows while the welcome dialog is open.
-4. On a phone with the flag on, "Done" on step 1 of the welcome dialog
-   writes the preset's pins. It shows no step 2.
+4. On a phone with the flag on, a tap on a step 1 answer writes the
+   preset's default stars. It shows no step 2. A different answer to
+   "Change my layout" replaces the stars with that preset's defaults. No
+   step 2 reviews them.
 
 **Fences.** `assistant.test.ts` (`opensOnLanding`: path, phone, flag, the
 session mark). `shellPrefs.test.ts` (the new field reads and writes).

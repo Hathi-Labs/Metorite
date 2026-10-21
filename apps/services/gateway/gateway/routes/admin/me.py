@@ -14,6 +14,7 @@ implementation too many; the server decides and the client renders.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -281,6 +282,26 @@ MAX_PINS = 24
 MAX_CARDS = 8
 MAX_JOBS = 16
 
+#: The longest ISO 8601 timestamp the nudge mark takes (WS-62 CF-2).
+MAX_STAMP = 40
+
+
+def _stamp(v: Any) -> str | None:
+    """An ISO 8601 timestamp, or None. Anything else is not a mark.
+
+    ``chat_first_message_at`` (`chat_first_surface.md` §4.7, D-CF-7) is the
+    time of the member's first message to the assistant, or the time they
+    dismissed the nudge. The server keeps the time, and never reads it as a
+    gate: the nudge shows while it is null, and never again after.
+    """
+    if not isinstance(v, str) or not v or len(v) > MAX_STAMP:
+        return None
+    try:
+        datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return v
+
 
 def _job_ids() -> frozenset[str]:
     """The command bar's job ids, from the gateway's one job list.
@@ -324,6 +345,13 @@ class ShellPrefs(BaseModel):
     NS-7 saved, when ``pins`` were shortcuts on top of the full sidebar, so
     the shell shows EVERY held app for it. The member's first save writes
     ``known``, and the stars filter from then on.
+
+    ``chat_first_message_at`` (WS-62 CF-2, `chat_first_surface.md` §4.7) is
+    the ISO time of the member's first message to the assistant, or of the
+    nudge's dismissal. While it is null the nudge shows. ⚠️ A body that does
+    NOT name it keeps the stored value (``_write_shell``): a layout save is
+    about the layout, and the welcome dialog's one write must not bring the
+    nudge back. A body that names it null clears it on purpose.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -336,12 +364,20 @@ class ShellPrefs(BaseModel):
         default=None, alias="cardOrder", max_length=MAX_CARDS)
     new_order: list[str] | None = Field(
         default=None, alias="newOrder", max_length=MAX_JOBS)
+    chat_first_message_at: str | None = Field(default=None, max_length=MAX_STAMP)
 
     @field_validator("preset")
     @classmethod
     def _preset(cls, v: str | None) -> str | None:
         if v is not None and v not in SHELL_PRESETS:
             raise ValueError(f"unknown preset: {v[:40]}")
+        return v
+
+    @field_validator("chat_first_message_at")
+    @classmethod
+    def _chat_first_message_at(cls, v: str | None) -> str | None:
+        if v is not None and _stamp(v) is None:
+            raise ValueError("chat_first_message_at is an ISO 8601 timestamp")
         return v
 
     @field_validator("pins", "known")
@@ -365,8 +401,31 @@ class ShellPrefs(BaseModel):
 #: second copy of that rule.
 EMPTY_SHELL: dict[str, Any] = {
     "preset": None, "answered": None, "pins": None, "known": None,
-    "cardOrder": None, "newOrder": None,
+    "cardOrder": None, "newOrder": None, "chat_first_message_at": None,
 }
+
+#: The one key of the layout that a save keeps when the body omits it.
+KEPT_KEYS: tuple[str, ...] = ("chat_first_message_at",)
+
+#: How a write changes an existing row's ``shell_prefs`` (WS-62 CF-2). Each
+#: is ONE statement, so two writes never race through a read-then-write
+#: (review of #1206). ``CAST``, not ``::``, beside a bind
+#: (``test_sql_bindparam_jsonb_cast.py``).
+#:
+#: ``layout``: the body is the whole layout, mark included. It replaces.
+_SET_LAYOUT = "EXCLUDED.shell_prefs"
+#: ``layout-keep``: the body is the whole layout and omits the mark. The
+#: stored mark survives, in SQL.
+_SET_LAYOUT_KEEP = (
+    "jsonb_set(EXCLUDED.shell_prefs, ARRAY['chat_first_message_at'], "
+    "COALESCE(user_settings.shell_prefs->'chat_first_message_at', CAST('null' AS jsonb)), true)"
+)
+#: ``stamp``: the body is the mark alone. It merges into the stored layout.
+_SET_STAMP = (
+    "CASE WHEN jsonb_typeof(user_settings.shell_prefs) = 'object' "
+    "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END || EXCLUDED.shell_prefs"
+)
+_SET_BY_MODE = {"layout": _SET_LAYOUT, "layout-keep": _SET_LAYOUT_KEEP, "stamp": _SET_STAMP}
 
 
 def stored_shell(raw: Any) -> dict[str, Any]:
@@ -399,6 +458,7 @@ def stored_shell(raw: Any) -> dict[str, Any]:
         "known": _list("known", SHELL_PANES, MAX_PINS),
         "cardOrder": _list("cardOrder", SHELL_CARDS, MAX_CARDS),
         "newOrder": _list("newOrder", _job_ids(), MAX_JOBS),
+        "chat_first_message_at": _stamp(raw.get("chat_first_message_at")),
     }
 
 
@@ -428,13 +488,20 @@ async def _read_shell(db: Any, uid: str) -> Any:
     )).first()
 
 
-async def _write_shell(db: Any, uid: str, prefs: dict[str, Any] | None) -> None:
-    """Store the layout, or reset it with ``None``.
+async def _write_shell(
+    db: Any, uid: str, prefs: dict[str, Any] | None, mode: str = "layout",
+) -> Any:
+    """Store the layout, or reset it with ``None``. Returns the stored column.
 
     ⚠️ A member with no row yet gets one here, and `/tasks/settings` reads "no
     row" as "seed the calendar from the People schedule" (D-PC-16). So the
     new row carries that seed, and the calendar opens as it did before. An
     existing row changes in `shell_prefs` only.
+
+    ``mode`` picks the one-statement expression for an existing row
+    (``_SET_BY_MODE``). The read before the write decides the seed only. It
+    never carries a value into the write, so a concurrent stamp and a star
+    save cannot write each other over (review of #1206).
     """
     from gateway.routes.tasks.settings import (
         _BOUND_ORG,
@@ -445,7 +512,7 @@ async def _write_shell(db: Any, uid: str, prefs: dict[str, Any] | None) -> None:
 
     if prefs is None:
         await db.execute(text(_RESET_SHELL_SQL.format(org=_BOUND_ORG)), {"uid": uid})
-        return
+        return None
     params: dict[str, Any] = {"uid": uid, "shell_prefs": json.dumps(prefs)}
     if await _read_shell(db, uid) is None:
         params.update(await _seed_from_work_schedule(db, uid))
@@ -455,8 +522,10 @@ async def _write_shell(db: Any, uid: str, prefs: dict[str, Any] | None) -> None:
     def _ph(k: str) -> str:
         return ":shell_prefs ::jsonb" if k == "shell_prefs" else f":{k}"
 
-    await db.execute(
-        text(upsert_settings_sql(cols, _ph, update=["shell_prefs"])), params)
+    sql = upsert_settings_sql(
+        cols, _ph, update=["shell_prefs"], merge={"shell_prefs": _SET_BY_MODE[mode]})
+    row = (await db.execute(text(f"{sql} RETURNING shell_prefs"), params)).first()
+    return row[0] if row is not None else prefs
 
 
 @me_router.get("/me/shell", summary="The caller's shell layout (NS-7)")
@@ -491,6 +560,7 @@ async def put_my_shell(
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to save a layout")
     prefs: dict[str, Any] | None = None
+    mode = "layout"
     if body is not None:
         try:
             model = ShellPrefs.model_validate(body)
@@ -501,11 +571,20 @@ async def put_my_shell(
             ) from exc
         if model.answered == "answered" and model.preset is None:
             raise HTTPException(status_code=422, detail="An answer names its preset")
-        prefs = model.model_dump(by_alias=True)
+        named = model.model_fields_set
+        if named == set(KEPT_KEYS):
+            # The mark alone (`markChatFirstMessage`): merge it, keep the rest.
+            mode = "stamp"
+            prefs = {k: getattr(model, k) for k in KEPT_KEYS}
+        else:
+            prefs = model.model_dump(by_alias=True)
+            # A key the body did not name keeps its stored value (CF-2).
+            if any(k not in named for k in KEPT_KEYS):
+                mode = "layout-keep"
     try:
         async with _tenant_session() as db:
-            await _write_shell(db, uid, prefs)
+            stored = await _write_shell(db, uid, prefs, mode)
     except Exception as exc:
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return stored_shell(prefs) if prefs is not None else dict(EMPTY_SHELL)
+    return stored_shell(stored) if stored is not None else dict(EMPTY_SHELL)

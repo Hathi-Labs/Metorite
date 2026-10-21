@@ -10,7 +10,7 @@
  */
 
 import { shellChatOn } from "@/lib/shell/chatFlag";
-import { clearCachedLayouts } from "@/lib/shell/shellCache";
+import { clearCachedLayouts, clearNudgeMarks } from "@/lib/shell/shellCache";
 import { clearSidebarFolds } from "@/lib/shell/sidebarFolds";
 import { clearComposerHeights } from "@/app/email/lib/composerSize";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
@@ -317,6 +317,8 @@ export function clearSignedOutAccount(): void {
       clearSidebarFolds([email]);
       // The kept height of the email composer (owner request, 2026-10-14).
       clearComposerHeights([email]);
+      // The nudge's browser copy (WS-62 CF-2).
+      clearNudgeMarks([email]);
     }
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
@@ -349,6 +351,7 @@ export function clearAccountNamespaces(emails: readonly string[]): void {
     clearCachedLayouts(emails);
     clearSidebarFolds(emails);
     clearComposerHeights(emails);
+    clearNudgeMarks(emails);
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
     /* storage unavailable: nothing is stored */

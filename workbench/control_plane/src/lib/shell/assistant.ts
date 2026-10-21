@@ -258,6 +258,38 @@ export function navigateAct(a: {
   };
 }
 
+/**
+ * The browser-session mark of the landing open (CF-2). `sessionStorage`, so
+ * a new tab lands on the chat again and a reload in this tab does not.
+ * ⚠️ The key keeps the shell prefix. A key that starts with "cc-" and then
+ * "chat" reads as a chat cache key with no namespace (`railSessions.test.ts`).
+ */
+export const CHAT_LANDED_KEY = "cc-shell-chat-landed";
+
+/**
+ * Whether a phone that just landed opens the assistant as the full sheet
+ * (WS-62 CF-2, `chat_first_surface.md` §4.2, D-CF-2, D-CF-3). True only when
+ * every one of these holds:
+ *
+ * - the chat-first flag is on;
+ * - it is a phone (D-CF-2: a desktop gets the nudge, never an auto-open);
+ * - the path is exactly `/` with no query. `/projects?task=…` is a link
+ *   somebody sent, and `/?welcome=new-org` is the founder's welcome;
+ * - this browser session has not opened it yet (`seen`, D-CF-3). A member
+ *   who dropped the sheet or closed it said so.
+ */
+export function opensOnLanding(a: {
+  chatFirst: boolean;
+  phone: boolean;
+  pathname: string | null | undefined;
+  search: string | null | undefined;
+  seen: boolean;
+}): boolean {
+  if (!a.chatFirst || !a.phone || a.seen) return false;
+  if (a.pathname !== "/") return false;
+  return !(a.search ?? "").replace(/^\?/, "").trim();
+}
+
 function subscribeWidth(listener: () => void): () => void {
   window.addEventListener("resize", listener);
   return () => window.removeEventListener("resize", listener);
