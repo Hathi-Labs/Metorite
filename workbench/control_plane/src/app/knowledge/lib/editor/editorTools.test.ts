@@ -8,7 +8,7 @@ import { getSchema, type JSONContent } from "@tiptap/core";
 import { EditorState, TextSelection } from "@tiptap/pm/state";
 import { describe, expect, it } from "vitest";
 
-import { searchEmoji } from "../emoji";
+import { loadEmoji, searchEmoji } from "../emoji";
 import { footnoteBody, footnoteNumbers, nextFootnoteLabel, renderFootnote } from "./footnotes";
 import { normaliseBody, parseBody, writeBody } from "./markdown";
 import { knowledgeExtensions } from "./schema";
@@ -148,10 +148,11 @@ describe("the title flow", () => {
 });
 
 describe("the : emoji search", () => {
-  it("takes the start of a name first, and reads _ as a space", () => {
-    expect(searchEmoji("rock")[0]).toEqual({ char: "🚀", name: "rocket" });
+  it("takes the start of a name first, and reads _ as a space", async () => {
+    await loadEmoji();
+    expect(searchEmoji("rock")[0]).toEqual({ char: "🪨", name: "rock" });
     expect(searchEmoji("thumbs_up")[0].char).toBe("👍");
     expect(searchEmoji("zzzz")).toEqual([]);
-    expect(searchEmoji("", 3)).toHaveLength(3);
+    expect(searchEmoji("", 3)).toEqual([]); // KB-2f: an empty query lists nothing
   });
 });

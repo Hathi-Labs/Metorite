@@ -47,7 +47,7 @@ import { listPages } from "../../lib/api";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
 import { SearchAndReplace } from "../../lib/editor/searchAndReplace";
 import { TitleHandoff, isEmptyBody } from "../../lib/editor/titleFlow";
-import { searchEmoji, type EmojiHit } from "../../lib/emoji";
+import { searchEmoji, type EmojiMatch } from "../../lib/emoji";
 import { createBodyWriter, type BodyWriter } from "../../lib/editor/bodyWriter";
 import { bodyAfterEdit, markdownWork, normaliseBody, parseBody, writeBody } from "../../lib/editor/markdown";
 import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../../lib/editor/pageLinks";
@@ -85,7 +85,7 @@ function inCode(editor: Editor, pos: number): boolean {
 interface MenuHandles {
   slash: () => ReturnType<SuggestionMenu<BlockItem>["render"]>;
   pages: () => ReturnType<SuggestionMenu<PageChoice>["render"]>;
-  emoji: () => ReturnType<SuggestionMenu<EmojiHit>["render"]>;
+  emoji: () => ReturnType<SuggestionMenu<EmojiMatch>["render"]>;
   onSpecial: (item: BlockItem, editor: Editor, range: Range) => void;
 }
 
@@ -177,7 +177,7 @@ const KnowledgeMenus = Extension.create<object, MenuStorage>({
       }),
       // `:` and a name inserts an emoji, as in Docmost: the emoji and a space.
       // The `:` must start a word, so "10:30" and "Note:" open nothing.
-      Suggestion<EmojiHit, EmojiHit>({
+      Suggestion<EmojiMatch, EmojiMatch>({
         editor: this.editor,
         char: ":",
         pluginKey: new PluginKey("kbEmoji"),
@@ -314,7 +314,7 @@ export default function KnowledgeEditor({
   const pageRows = useCallback((q: string) => matchPages(pages ?? [], q, { exclude: pageId }), [pages, pageId]);
   const pageMenu = useSuggestionMenu<PageChoice>(pageRows);
   const emojiRows = useCallback((q: string) => searchEmoji(q), []);
-  const emojiMenu = useSuggestionMenu<EmojiHit>(emojiRows);
+  const emojiMenu = useSuggestionMenu<EmojiMatch>(emojiRows);
 
   const [imageAt, setImageAt] = useState<Range | null>(null);
 
