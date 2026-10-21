@@ -1,8 +1,17 @@
 # Chat first — the assistant is the front door
 
-**Status: PROPOSED, 2026-10-20.** Owner directive of 2026-10-20, recorded in
-§1. Verified against code on 2026-10-20, at `origin/main` `f629b6bab`. Board
-row **WS-62**. Nothing is built.
+**Status: PROPOSED, 2026-10-20. CF-1 and CF-3 BUILT 2026-10-20, dark.**
+Owner directive of 2026-10-20, recorded in §1. Verified against code on
+2026-10-20, at `origin/main` `f629b6bab`. Board row **WS-62**.
+
+**CF-1, the peek strip, merged as #1198.** **CF-3, `show_in_app`, merged as
+#1197** after one review round (a dot segment walked past the pane check,
+and the tool was not dark). Both are in production since the release of
+2026-10-21, behind two flags that are off. The client flag is
+`NEXT_PUBLIC_CHAT_FIRST` in `workbench/control_plane/.env.local`, which
+`acb-staging-flag` refuses, so the owner writes it on staging too. The server
+flag is `CHAT_FIRST_TOOLS`, which adds the tool to the orchestrator. CF-2,
+CF-4, CF-5, CF-6 and CF-7 are not built.
 
 §5 proposes **D-CF-1** to **D-CF-7**, each with a default. HANDOFF **H-369**
 carries them to the owner. Every ticket in §6 is AGENT-SAFE to build dark,
@@ -391,7 +400,14 @@ D-CF-2 changes CF-1 and CF-2 only.
 Each ticket names its files, its "done when", and its fence (R7). Each is
 AGENT-SAFE to build dark. The order is the order of value to a phone member.
 
-### CF-1 · The peek strip — AGENT-SAFE
+### CF-1 · The peek strip — AGENT-SAFE · BUILT 2026-10-20 (#1198), dark
+
+Built as the spec says, with three additions from the review. An open that
+names a chat, a draft or words raises the strip to the sheet
+(`modeOnOpen`). A finished run shows the last reply in the strip, not the
+status. The `RecordingDock` of Notes sits at the strip's height, and nobody
+has looked at the two together. Not proven in a browser: the raise on a
+waiting card, which only unit tests cover.
 
 **Files.**
 
@@ -454,7 +470,18 @@ session mark). `shellPrefs.test.ts` (the new field reads and writes).
 gains a phone case. Python twin: the `shell_prefs` route test gains the
 field, and `test_auth_me_shell.py` if the field rides `/auth/me`.
 
-### CF-3 · `show_in_app` — AGENT-SAFE
+### CF-3 · `show_in_app` — AGENT-SAFE · BUILT 2026-10-20 (#1197), dark
+
+Built as the spec says, and hardened in one review round. Both path checks
+decode each segment once and refuse `.`, `..`, an empty segment and a
+decoded slash, so `/projects/../crm` moves nothing. The shared table is
+`src/lib/inAppPaths.cases.json`, and `tests/unit/test_in_app_path_twin.py`
+holds the two checks equal. The server allowlist `PANES` holds the live
+panes only, and a test holds it equal to `nav.ts`. A nested run refuses the
+tool, and the WhatsApp channel withholds it. The server offers the tool only
+with `CHAT_FIRST_TOOLS` on. One cost: the stricter client check also
+governs chat links, so a link with a trailing slash opens as a plain link.
+No server code makes such a link.
 
 **Files.**
 
