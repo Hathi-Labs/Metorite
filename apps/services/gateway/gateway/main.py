@@ -469,6 +469,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
 
+    # Start the send-later job (routes/email/automation/send_later.py; spec
+    # email_app_master_plan.md §19, H-375). Every 60 s it sends the drafts
+    # that are due. Dark by default: with EMAIL_SEND_LATER off it starts no
+    # task. Fence: test_email_send_later.py.
+    try:
+        from gateway.routes.email.automation.send_later import start_send_later_loop
+        _log.info("gateway.email_send_later_loop", started=await start_send_later_loop())
+    except Exception as exc:
+        _log.warning("gateway.email_send_later_loop_skipped", error=str(exc))
+
     # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
     # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
     # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
@@ -583,6 +593,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.email.memory_purge import stop_purge_loop
         await stop_purge_loop()
+    except Exception:
+        pass
+
+    # Stop the send-later job and wait for a tick in progress.
+    try:
+        from gateway.routes.email.automation.send_later import stop_send_later_loop
+        await stop_send_later_loop()
     except Exception:
         pass
 

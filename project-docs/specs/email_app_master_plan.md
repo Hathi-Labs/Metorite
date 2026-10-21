@@ -20421,3 +20421,54 @@ that property in Unicode 15.1, plus U+2800, and a test holds it to the property 
 - The backstop is the mark run, not a share of marks. A share of marks would refuse fully
   vowelled Arabic, which has more marks than letters. Hindi, Tamil, Thai, Arabic and
   Vietnamese text, flags, joined families, skin tones and keycaps stay unchanged.
+
+## 19. Send later (2026-10-21)
+
+**Status:** built, dark. The switch `email_send_later` is off by default.
+**Origin:** owner, 2026-10-20: the chat must do each email task of the
+member. HANDOFF H-375.
+
+### 19.1 What the member gets
+
+The member says "send it tomorrow at 9". The email assistant saves the mail as
+a draft first. For a reply, that is Save to Drafts on the reply card (§18).
+Then `schedule_send` shows one card with the time, each recipient and the text.
+At the time, the server sends the draft.
+
+`list_scheduled_sends` shows what
+waits, and what failed in the last week with the reason.
+`cancel_scheduled_send` stops one, and the draft stays in Drafts.
+
+### 19.2 The rules
+
+1. **One send path.** The job sends through `send_draft_endpoint`, with the
+   To, Cc and Bcc that the card showed as `expect`. A draft whose recipients
+   changed after the card answers 409, and the row is `failed`. The job never
+   sends to new people.
+2. **No double send.** The job claims a due row with `FOR UPDATE SKIP LOCKED`
+   and moves it to `sending` in the same transaction. A unique index allows
+   one open schedule for each draft. A row in `sending` for 15 minutes is
+   `failed`, and it is never sent again.
+3. **Tenancy (R5).** The table is tenant-scoped with FORCE row level
+   security. The job reads the orgs from the one tenant-discovery read of
+   email, and runs each statement in `tenant_session(org)`. The member of a
+   send is the `owner_email` of the row. The schedule route takes it from the
+   session, never from request input.
+4. **Held runs.** `schedule_send` is a send, so a run that read outside mail
+   does not hold it (H-236).
+5. **Disconnect and purge.** The rows cascade with the mailbox and with the
+   draft. A member purge deletes the member's rows first, and it counts them.
+
+### 19.3 Acceptance
+
+- With the switch off, each route answers 404, and the job starts no task.
+- A due row goes once, as its owner, with `expect`.
+- A changed recipient list fails the row, and nothing is sent.
+- A second member cannot read or cancel the row of the first.
+- Fence: `tests/unit/test_email_send_later.py` (hermetic and R8).
+
+### 19.4 Files
+
+`infra/postgres/290_email_scheduled_sends.sql` ·
+`gateway/routes/email/automation/send_later.py` · the tools in
+`apps/agents/agent-email-assistant/agents.py`.

@@ -1893,7 +1893,10 @@ async def compose_reply(
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
         return f"Sent to {to}{copy}, from {box}."
-    return f"Saved in Drafts of {box}, to {to}{copy}. Nothing was sent."
+    did = str(res.get("draft_id") or "")
+    # The id lets the agent schedule the draft (``schedule_send``, H-375).
+    ref = f" (draft_id {did})" if did else ""
+    return f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent."
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -4516,6 +4519,106 @@ async def bulk_manage_inbox(
     return f"{_BULK_VERBS[action]}: {int((res or {}).get('affected') or 0)} emails changed."
 
 
+# ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────────
+
+
+@_annotate_risk(destructive=True, open_world=True)
+async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
+    """Send a draft later, at ``send_at``: "send it tomorrow at 9". The draft
+    must be in Drafts. To reply later, first save the reply with
+    ``compose_reply`` (its card has Save to Drafts), and use the draft_id
+    that it returns. ``send_at`` is ISO 8601 WITH the member's offset, for
+    example ``2026-10-27T09:00:00+05:30``.
+
+    Shows the member a card with the time, each recipient and the text. At
+    the time, the server sends the draft only if its recipients are still
+    the ones on the card. Cancel with ``cancel_scheduled_send``."""
+    draft, sender = await _draft_row(account_id, draft_id)
+    if draft is None:
+        return f"Not scheduled. {sender}"
+    when, why = _snooze_time(send_at)
+    if when is None:
+        return f"Not scheduled. {why}"
+    lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
+    if not any(lists.values()):
+        return "Not scheduled. The draft has no recipient. Add one first."
+    if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
+        return f"Not scheduled. An address is longer than {_TARGET_LIMIT} characters."
+    detail, context = _draft_card(sender, draft.get("subject"), lists)
+    if not context:
+        return "Not scheduled. The draft has too many recipients for one card."
+    stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
+    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
+    from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
+    approved = await request_confirmation(
+        title=f"Send this draft at {stamp}?",
+        detail=detail, context=context, close_on_steer=True,
+    )
+    if not approved:
+        if _revised(approved):
+            return _CARD_REVISED
+        if not _card_channel_open():
+            return _NO_CARD_CHANNEL
+        return "Cancelled — nothing was scheduled. The draft stays in Drafts."
+    try:
+        res = await _post("/email/drafts/schedule", {
+            "account_id": account_id, "draft_id": draft_id,
+            "send_at": when.isoformat(), "expect": lists,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status == 404 and "not on" in str(exc).lower():
+            return ("Not scheduled. Send later is not on for this organization "
+                    "yet. Offer to keep the draft, or to snooze the mail.")
+        if exc.status in (404, 409, 422):
+            return f"Not scheduled. {exc}"
+        raise
+    return (f"Scheduled: the draft goes at {stamp} from {sender} "
+            f"(schedule_id {res.get('id', '')}). It stays in Drafts until then.")
+
+
+@_annotate_risk(open_world=False)
+async def list_scheduled_sends() -> str:
+    """List the drafts that wait to be sent later, and any that failed in the
+    last week, with the reason."""
+    try:
+        rows = await _get("/email/drafts/scheduled") or []
+    except GatewayError as exc:
+        if exc.status == 404:
+            return "Send later is not on for this organization yet."
+        raise
+    if not rows:
+        return "No draft waits to be sent later."
+    lines = []
+    for r in rows:
+        to = ", ".join(_card_text(a, _TARGET_LIMIT) for a in r.get("to") or [])
+        what = _card_text(r.get("subject") or "(no subject)", 120)
+        line = f"- {r.get('send_at')} · {what} · to {to or '(none)'} · {r.get('status')}"
+        if r.get("error"):
+            line += f" · {_one_line(r['error'], 200)}"
+        lines.append(f"{line} (schedule_id {r.get('id')})")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False, destructive=False)
+async def cancel_scheduled_send(schedule_id: str) -> str:
+    """Cancel a draft that waits to be sent later. The draft stays in Drafts.
+    Shows a card first."""
+    refusal = await _card_refusal(
+        "Cancel this scheduled send?",
+        "The draft is not sent at its time, and it stays in Drafts.",
+        "Cancelled — nothing changed. The draft is still scheduled.",
+    )
+    if refusal:
+        return refusal
+    try:
+        await _post(f"/email/drafts/scheduled/{schedule_id}/cancel", {})
+    except GatewayError as exc:
+        if exc.status in (404, 409):
+            return f"Nothing changed. {exc}"
+        raise
+    return "Cancelled. The draft stays in Drafts and is not sent."
+
+
 # ── Knowledge base (edit/remove) ─────────────────────────────────────────────
 
 @_annotate_risk(open_world=False)
@@ -5413,6 +5516,10 @@ _TOOLS = [
     snooze_email,
     find_contact,
     bulk_manage_inbox,
+    # H-375: send later.
+    schedule_send,
+    list_scheduled_sends,
+    cancel_scheduled_send,
     # Attachments / artifacts
     list_artifacts,
     # Senders / categorization
@@ -5480,6 +5587,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "compose_reply",
     # Owner, 2026-10-20: the assistant tools that were missing.
     "edit_draft", "snooze_email", "bulk_manage_inbox",
+    # H-375: send later.
+    "schedule_send", "cancel_scheduled_send",
 })
 
 #: The registered tools that call a gateway POST and still ask no card, with

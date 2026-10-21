@@ -967,3 +967,14 @@ async def test_the_remove_mirror_logs_an_ownership_transfer(
     assert ("member_remove_console_owner_transferred", {
         "email": "priya@fracktal.in", "new_owner": "owner@fracktal.in",
     }) in lines
+
+
+async def test_removing_a_member_cancels_their_queued_sends(db: _FakeDB) -> None:
+    """H-375: a send that the member scheduled would go out in their name
+    after they left. The removal cancels each queued one (review of #1209,
+    P1). Mutation: drop the UPDATE in ``remove_member_rows``."""
+    from gateway.routes.admin.members import remove_member
+
+    await remove_member("priya@fracktal.in", admin=OWNER)
+    assert any("SET status = 'cancelled'" in s and "status = 'queued'" in s
+               for s in db.send_later), db.send_later

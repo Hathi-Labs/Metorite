@@ -321,7 +321,7 @@ class TestTheTool:
         risk = getattr(agents.query_insights, "__tool_risk__", {})
         assert risk.get("open_world") is False and risk.get("destructive") is False
 
-    def test_the_two_tool_lists_agree_with_50_names(self):
+    def test_the_two_tool_lists_agree_with_53_names(self):
         config = json.loads((_AGENT_DIR / "config.json").read_text(encoding="utf-8"))
         # WS-48 N2: ``narrow_and_read`` is in the scope, and only a build
         # with ``NARROWING_AGENTS`` on holds it (test_own_tool_scope_parity.py).
@@ -334,7 +334,9 @@ class TestTheTool:
         # 50 since the chat assistant tools (owner, 2026-10-20): edit_draft,
         # snooze_email, find_contact and bulk_manage_inbox
         # (test_email_chat_assistant_tools.py).
-        assert len(scope) == len(set(scope)) == 50
+        # 53 since send later (H-375): schedule_send, list_scheduled_sends
+        # and cancel_scheduled_send (test_email_send_later.py).
+        assert len(scope) == len(set(scope)) == 53
         assert "query_insights" in scope
 
 

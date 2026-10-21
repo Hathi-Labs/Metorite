@@ -308,6 +308,10 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "edit_draft": {"account_id": BOX, "draft_id": "d1", "body": "Hi Kim,\n\nNew text."},
     "snooze_email": {"email_id": MSG, "until": "2099-01-05T09:00:00+05:30"},
     "bulk_manage_inbox": {"action": "read", "sender_email": "news@list.test"},
+    # H-375: send later.
+    "schedule_send": {"account_id": BOX, "draft_id": "d1",
+                      "send_at": "2099-01-05T09:00:00+05:30"},
+    "cancel_scheduled_send": {"schedule_id": "s1"},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 

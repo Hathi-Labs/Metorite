@@ -1313,3 +1313,10 @@ DROP POLICY IF EXISTS crm_business_rules_tenant_isolation ON crm_business_rules;
 CREATE POLICY crm_business_rules_tenant_isolation ON crm_business_rules
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_scheduled_sends ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_scheduled_sends FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_scheduled_sends_tenant_isolation ON email_scheduled_sends;
+CREATE POLICY email_scheduled_sends_tenant_isolation ON email_scheduled_sends
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

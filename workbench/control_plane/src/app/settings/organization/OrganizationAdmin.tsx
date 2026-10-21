@@ -127,6 +127,8 @@ const PURGE_LABELS: Record<string, string> = {
   room_participations: "room membership",
   app_grants: "app grant",
   app_tool_grants: "remembered tool approval",
+  // H-375: a send that the member scheduled for later.
+  scheduled_sends: "scheduled send",
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",

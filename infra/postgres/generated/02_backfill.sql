@@ -569,3 +569,6 @@ UPDATE crm_digests SET organization_id = (SELECT id FROM organization WHERE slug
 
 UPDATE crm_business_rules SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE email_scheduled_sends SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

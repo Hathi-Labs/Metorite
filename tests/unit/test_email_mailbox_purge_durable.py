@@ -1015,6 +1015,10 @@ _NOT_CASCADE: dict[tuple[str, str], str] = {
     ("email_rule_guidance", "message_id"):
         "87_email_rule_guidance.sql: a correction outlives the mail that "
         "prompted it, and the row cascades on account_id",
+    ("email_scheduled_sends", "draft_id"):
+        "290_email_scheduled_sends.sql: a schedule outlives its draft row, so "
+        "a deleted draft fails with a reason and a sent row keeps its "
+        "history, and the row cascades on account_id",
 }
 
 
