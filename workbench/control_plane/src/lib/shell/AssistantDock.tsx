@@ -89,6 +89,7 @@ import {
 import { CHAT_GONE_NOTICE } from "@/lib/runActivity";
 import { IDLE_RUN, runViewText, type RunStatus } from "@/lib/runStatus";
 import {
+  boundChatScope,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
@@ -99,6 +100,7 @@ import {
 } from "@/lib/sessions";
 
 import { chatFirstOn } from "./chatFlag";
+import { markChatFirstMessage } from "./shellPrefs";
 import {
   dockFloats,
   ASSISTANT_AGENT,
@@ -323,6 +325,9 @@ function useAssistantChat(open: boolean) {
       if (!activeId) return;
       enrichSession(activeId, info);
       refresh();
+      // CF-2: the member's first message retires the nudge, on the server,
+      // for every device. A chat with a message is a chat they wrote in.
+      if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());
     },
   };
 }

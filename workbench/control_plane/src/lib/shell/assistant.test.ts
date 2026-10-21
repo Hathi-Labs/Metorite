@@ -19,6 +19,7 @@ import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  CHAT_LANDED_KEY,
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
@@ -42,6 +43,7 @@ import {
   onChatLink,
   onPageChange,
   openAssistant,
+  opensOnLanding,
   paneAt,
   paneForDelegate,
   publishAssistantFacts,
@@ -772,5 +774,49 @@ describe("the strip in the dock's source: phone only, flag only", () => {
     expect(css).toContain(":root[data-assistant-peek] .pb-nav {");
     expect(css).toContain(":root[data-assistant-peek] .toast-viewport-bottom {");
     expect(css).toContain('.assistant-panel[data-moving][data-panel-form="peek"]');
+  });
+});
+
+describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () => {
+  const landing = { chatFirst: true, phone: true, pathname: "/", search: "", seen: false };
+
+  it("a phone with the flag on that lands on `/` opens the sheet", () => {
+    expect(opensOnLanding(landing)).toBe(true);
+    expect(opensOnLanding({ ...landing, search: "?" })).toBe(true);
+    expect(opensOnLanding({ ...landing, search: null })).toBe(true);
+  });
+
+  it("the flag off, a desktop, and a second `/` in the session open nothing", () => {
+    expect(opensOnLanding({ ...landing, chatFirst: false })).toBe(false);
+    expect(opensOnLanding({ ...landing, phone: false })).toBe(false);
+    expect(opensOnLanding({ ...landing, seen: true })).toBe(false);
+  });
+
+  it("a deep link opens nothing: another path, or `/` with a query", () => {
+    expect(opensOnLanding({ ...landing, pathname: "/projects" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "/projects", search: "?task=42" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "/chat" })).toBe(false);
+    expect(opensOnLanding({ ...landing, search: "?welcome=new-org" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: null })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "" })).toBe(false);
+  });
+
+  it("the session mark keeps the shell prefix, so it never reads as a chat cache key", () => {
+    expect(CHAT_LANDED_KEY).toBe("cc-shell-chat-landed");
+    expect(CHAT_LANDED_KEY.startsWith("cc-chat")).toBe(false);
+  });
+
+  it("the shell opens it once, after the layout read settles and the welcome dialog shuts", () => {
+    const src = read("lib/shell/ChatNudge.tsx");
+    expect(src).toContain("const settled = !shell.enabled || shell.fresh !== undefined || shell.failed;");
+    expect(src).toContain("if (decided.current || !chatFirst || !phone || !settled || welcome || welcomeOpen()) return;");
+    expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
+    expect(src).toContain('openAssistant({ mode: "full" });');
+    expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
+  });
+
+  it("the nudge retires on the first message, from the dock's one activity seam", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
   });
 });

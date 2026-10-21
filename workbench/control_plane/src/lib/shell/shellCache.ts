@@ -78,6 +78,52 @@ export function writeCachedLayout(scope: string | null | undefined, layout: Stor
   }
 }
 
+// ── The nudge's browser copy (WS-62 CF-2, `chat_first_surface.md` §4.7) ────
+// `shellPrefs.ts` reads and writes it. It is here, pure, so a sign-out can
+// clear it with the layout's copy.
+
+/**
+ * The key prefix of the browser copy, `cc-shell-chat-nudge:<email>|<org>`.
+ * ⚠️ It keeps the shell prefix: a key that starts with "cc-" and then "chat"
+ * reads as a chat cache key with no namespace (`railSessions.test.ts`).
+ */
+export const NUDGE_PREFIX = "cc-shell-chat-nudge:";
+
+/** The key of one account's copy, or null with no account to name. */
+export function nudgeKey(scope: string | null | undefined): string | null {
+  if (!scope || !scope.includes("|")) return null;
+  return `${NUDGE_PREFIX}${scope}`;
+}
+
+/** Whether this browser already knows the member wrote to the assistant. */
+export function readNudgeRetired(scope: string | null | undefined): boolean {
+  const key = nudgeKey(scope);
+  const store = storage();
+  if (!key || !store) return false;
+  try {
+    return store.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Keep the fact in this browser. Never throws. */
+export function writeNudgeRetired(scope: string | null | undefined): void {
+  const key = nudgeKey(scope);
+  const store = storage();
+  if (!key || !store) return;
+  try {
+    store.setItem(key, "1");
+  } catch {
+    /* storage off: the server's copy still holds */
+  }
+}
+
+/** Remove the copies of these emails, in every organization. Never throws. */
+export function clearNudgeMarks(emails: readonly string[]): void {
+  clearAccountKeys(NUDGE_PREFIX, emails);
+}
+
 /** The key prefix of every organization of one email. */
 export function shellAccountPrefix(email: string): string {
   return `${SHELL_CACHE_PREFIX}${email}|`;

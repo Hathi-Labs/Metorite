@@ -690,6 +690,16 @@ select optgroup {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
 }
 
+/* ── The chat nudge on a phone (CF-2, `lib/shell/ChatNudge.tsx`) ──────────
+   One bubble above the Ask tab, on the fixed bottom nav. While it shows,
+   `ChatNudge` sets `data-chat-nudge` on <html>, and the page's last row
+   moves up by the bubble's height and a gap (3rem), so it never covers a
+   composer's action row. The peek strip's rule below wins when both show,
+   and the strip hides the bubble anyway. Only the phone sets the attribute. */
+:root[data-chat-nudge] .pb-nav {
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
+}
+
 /* ── The assistant's peek strip on a phone (CF-1, `lib/shell/AssistantDock.tsx`) ──
    A 56 px row on the fixed bottom nav. It takes the place the agent pill
    takes. While it shows, `AssistantDock` sets `data-assistant-peek` on

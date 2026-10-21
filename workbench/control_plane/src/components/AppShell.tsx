@@ -51,6 +51,7 @@ import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { AssistantWorkArea } from "@/lib/shell/ChatBar";
+import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
 import { openAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
@@ -163,6 +164,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // route needs only the session. The sidebar mounts once access resolves,
   // and by then the answer is often in memory (`shellPrefs.ts`).
   useShellPrefs();
+  // WS-62 CF-2: a phone that lands on `/` opens the assistant, once per
+  // browser session, with the chat-first flag on. Off, it does nothing.
+  useChatFirstLanding(isMobile);
 
   // The shell nav flag, read once as the Sidebar reads it: the dev override
   // must not flip mid-session, and the two must agree on the frame.
@@ -361,6 +365,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
+          {/* CF-2: one nudge above the Ask tab, for a member who never wrote
+              to the assistant. Behind the chat-first flag. */}
+          {chatOn ? <ChatNudge placement="tab" /> : null}
           <MobileBottomNavInner pathname={pathname} toggleView={toggleView} />
         </div>
 

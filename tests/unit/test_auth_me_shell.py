@@ -113,6 +113,10 @@ class TestValidation:
         # The body never names the member or the tenant (R5, R11).
         {"pins": [], "user_id": "someone@else.example"},
         {"pins": [], "organization_id": "00000000-0000-0000-0000-000000000001"},
+        # The nudge mark is an ISO timestamp, or null (CF-2).
+        {"chat_first_message_at": "yesterday"},
+        {"chat_first_message_at": 1_700_000_000},
+        {"chat_first_message_at": "2026-10-21T09:00:00.000Z" + "0" * 20},
     ])
     def test_a_bad_layout_is_refused_and_writes_nothing(self, fake: _FakeDB, body: dict) -> None:
         res = _client(_user()).put("/auth/me/shell", json=body)
@@ -146,6 +150,52 @@ class TestValidation:
         assert res.json()["answered"] == "skipped"
         [(_, params)] = _writes(fake)
         assert json.loads(params["shell_prefs"])["answered"] == "skipped"
+
+
+# ── The nudge mark (WS-62 CF-2, `chat_first_surface.md` §4.7, D-CF-7) ──────
+
+
+STAMP = "2026-10-21T09:00:00.000Z"
+
+
+class TestTheNudgeMark:
+    def test_the_first_message_time_is_stored_and_read_back(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped"})
+        body = {"answered": "skipped", "chat_first_message_at": STAMP}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_first_message_at"] == STAMP
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["chat_first_message_at"] == STAMP
+        fake.stored = params["shell_prefs"]
+        assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] == STAMP
+
+    def test_a_layout_save_that_omits_the_mark_keeps_it(self, fake: _FakeDB) -> None:
+        """The welcome dialog's one write names the layout only. It must
+        not bring the nudge back on every device (§4.7)."""
+        fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": STAMP})
+        body = {"preset": "engineer", "answered": "answered", "pins": ["/tasks"]}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_first_message_at"] == STAMP
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["chat_first_message_at"] == STAMP
+
+    def test_an_explicit_null_clears_the_mark(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": STAMP})
+        body = {"answered": "skipped", "chat_first_message_at": None}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_first_message_at"] is None
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["chat_first_message_at"] is None
+
+    def test_a_member_with_no_row_reads_null(self, fake: _FakeDB) -> None:
+        assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] is None
+
+    def test_a_stored_value_that_is_not_a_time_reads_null(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped", "chat_first_message_at": "soon"})
+        assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] is None
 
 
 # ── The write ──────────────────────────────────────────────────────────────
@@ -208,7 +258,8 @@ class TestTheRead:
                                   "pins": ["/tasks", "/gone"], "newOrder": ["capture", "x"]})
         body = _client(_user()).get("/auth/me/shell").json()
         assert body == {"preset": None, "answered": "skipped", "pins": ["/tasks"],
-                        "known": None, "cardOrder": None, "newOrder": ["capture"]}
+                        "known": None, "cardOrder": None, "newOrder": ["capture"],
+                        "chat_first_message_at": None}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",

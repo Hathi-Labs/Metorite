@@ -32,7 +32,7 @@
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -42,7 +42,7 @@ import { chatScope } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
-import { asLayout, readCachedLayout, writeCachedLayout } from "./shellCache";
+import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
 
 export { asLayout } from "./shellCache";
@@ -117,6 +117,19 @@ export async function readShellPrefs(): Promise<StoredShell> {
 }
 
 /**
+ * The body of a layout save. ⚠️ The nudge mark is never sent as null (CF-2):
+ * the browser never clears it (one nudge, ever, §9.2 Q4), and the server
+ * keeps the stored value for a key the body omits. A layout built from
+ * `EMPTY_SHELL`, as the welcome dialog's is, would name it null otherwise,
+ * and bring the nudge back on every device.
+ */
+export function bodyFor(next: StoredShell | null): Omit<StoredShell, "chat_first_message_at"> & { chat_first_message_at?: string } | null {
+  if (!next) return null;
+  const { chat_first_message_at, ...rest } = next;
+  return chat_first_message_at ? { ...rest, chat_first_message_at } : rest;
+}
+
+/**
  * Store `next`, or reset with `null`. It shows at once.
  *
  * On a refusal it throws, so the caller can say so. With `keep`, the chosen
@@ -142,7 +155,7 @@ export async function saveShellPrefs(
     const res = await fetch(SHELL_PREFS_PATH, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(next),
+      body: JSON.stringify(bodyFor(next)),
     });
     if (!res.ok) throw new Error(`shell layout ${res.status}`);
     const saved = asLayout(await res.json()) ?? shown;
@@ -181,6 +194,89 @@ export async function saveShellPrefs(
       invalidate(SHELL_PREFS_PATH);
     }
     throw err;
+  }
+}
+
+// ── The nudge mark (WS-62 CF-2, `chat_first_surface.md` §4.7, D-CF-7) ──────
+//
+// `chat_first_message_at` is one field of the layout. The server holds it, so
+// the nudge never returns on another device. The browser holds a copy under
+// the account's scope, so the nudge never flashes before the read lands, and
+// never after a layout save that has not answered yet.
+
+// The browser copy's key and its read, write and clear live in
+// `shellCache.ts`, beside the layout's copy, so `lib/sessions.ts` can clear
+// them on sign-out without importing this hook.
+export { NUDGE_PREFIX, nudgeKey, readNudgeRetired } from "./shellCache";
+
+// The page's own memory of the mark, so a dismissal hides the bubble at once
+// and a second call does nothing.
+let nudgeRetiredHere = false;
+const nudgeListeners = new Set<() => void>();
+onClear(() => {
+  nudgeRetiredHere = false;
+  nudgeListeners.forEach((l) => l());
+});
+function subscribeNudge(listener: () => void): () => void {
+  nudgeListeners.add(listener);
+  return () => {
+    nudgeListeners.delete(listener);
+  };
+}
+const getNudgeRetired = () => nudgeRetiredHere;
+const getServerNudgeRetired = () => false;
+
+/** Whether this page already retired the nudge. */
+export function useNudgeRetiredHere(): boolean {
+  return useSyncExternalStore(subscribeNudge, getNudgeRetired, getServerNudgeRetired);
+}
+
+/**
+ * Whether the nudge shows (CF-2). Only when the SERVER's layout for this
+ * page says the member never wrote (`fresh`, never the browser copy of the
+ * layout, which may be old), and neither this browser nor this page knows
+ * better.
+ */
+export function nudgeShows(a: {
+  chatFirst: boolean;
+  fresh: StoredShell | undefined;
+  retiredHere: boolean;
+  retiredInBrowser: boolean;
+  welcomeOpen: boolean;
+  assistantOpen: boolean;
+}): boolean {
+  if (!a.chatFirst || a.welcomeOpen || a.assistantOpen) return false;
+  if (a.retiredHere || a.retiredInBrowser) return false;
+  return a.fresh !== undefined && a.fresh.chat_first_message_at === null;
+}
+
+/**
+ * The member wrote to the assistant, or dismissed the nudge. The browser
+ * copy and the page's memory take it at once. The server takes it once, in
+ * the member's own layout: a layout the page holds, or the one the server
+ * answers now. A layout the server already stamped is left alone.
+ *
+ * A second call, and every call after the server said yes, does nothing.
+ */
+export async function markChatFirstMessage(scope: string | null | undefined): Promise<void> {
+  if (!nudgeRetiredHere) {
+    nudgeRetiredHere = true;
+    nudgeListeners.forEach((l) => l());
+  }
+  writeNudgeRetired(scope);
+  let base: StoredShell | undefined = latestShell() ?? confirmed;
+  if (!base) {
+    try {
+      base = await readShellPrefs();
+    } catch {
+      return; // no layout to build on: the next device asks the server again
+    }
+  }
+  if (base.chat_first_message_at) return;
+  try {
+    await saveShellPrefs({ ...base, chat_first_message_at: new Date().toISOString() }, { keep: true });
+  } catch {
+    /* the browser copy holds for this device; another device shows it once */
   }
 }
 

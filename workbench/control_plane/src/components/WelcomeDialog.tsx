@@ -59,7 +59,9 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { visibleSections, type NavSection } from "@/lib/nav";
+import { chatFirstOn } from "@/lib/shell/chatFlag";
 import {
   ANSWERS,
   EMPTY_SHELL,
@@ -74,7 +76,7 @@ import {
   type PresetId,
 } from "@/lib/shell/presets";
 import { launcherGroups, shellNavOn } from "@/lib/shell/shellNav";
-import { layoutQuestionOpen } from "@/lib/shell/welcomeSteps";
+import { layoutQuestionOpen, setWelcomeOpen, skipsAppsStep } from "@/lib/shell/welcomeSteps";
 import { CHANGE_LAYOUT, askedInThisPage, markAsked, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export const WELCOME_PARAM = "welcome";
@@ -124,6 +126,11 @@ function WelcomeDialogInner() {
   const newOrg = params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
   // Read once, as the sidebar reads it: the dev override must not flip.
   const [navOn] = useState(() => shellNavOn());
+  // WS-62 CF-2: with the chat-first flag on, a phone skips step 2. It has
+  // no sidebar to choose apps for (`chat_first_surface.md` §4.7).
+  const [chatFirst] = useState(() => chatFirstOn());
+  const { isMobile } = useViewMode();
+  const noAppsStep = skipsAppsStep({ chatFirst, phone: isMobile });
   const shell = useShellPrefs();
   const { access, loading } = useAccess();
   const sections = visibleSections(loading ? null : access.features, access.is_admin);
@@ -169,6 +176,11 @@ function WelcomeDialogInner() {
   // to the question it should follow.
   const inviteOpen =
     newOrg && !questionOpen && !(navOn && shell.loading) && (step === "invite" || !(asking || reopened));
+  // CF-2: the chat-first landing and the nudge wait while either is open.
+  useEffect(() => {
+    setWelcomeOpen(questionOpen || inviteOpen);
+    return () => setWelcomeOpen(false);
+  }, [questionOpen, inviteOpen]);
 
   // "Back" puts the focus on the answer the member chose. The dialog stays
   // open, so its own first focus does not run again.
@@ -213,9 +225,21 @@ function WelcomeDialogInner() {
     });
   };
 
+  // ONE write: the answer, its preset, the stars and what the member saw.
+  // ⚠️ The layout only. The nudge mark (`chat_first_message_at`, CF-2) is
+  // null here, `saveShellPrefs` leaves a null mark out of the body, and the
+  // server keeps the stored one for a key the body omits (`routes/admin/me.py`).
+  const finish = (shown: Iterable<string>, preset: PresetId | null = chosen) => {
+    if (!preset) return;
+    const askedAgain = again;
+    const stars = starsToSave(shown, sections, shell.layout);
+    next();
+    save({ ...EMPTY_SHELL, preset, answered: "answered", ...stars }, askedAgain);
+  };
   // An answer goes to step 2, and saves nothing yet. Asked again with the
   // same answer, the ticks are the member's current stars. Otherwise they
-  // are the answer's defaults.
+  // are the answer's defaults. On a phone with the chat-first flag on there
+  // is no step 2: the answer writes those stars at once (CF-2).
   const answer = (preset: PresetId) => {
     const same = again && shell.stored?.answered === "answered" && shell.stored.preset === preset;
     const current = starredHrefs(shell.layout, sections);
@@ -225,17 +249,13 @@ function WelcomeDialogInner() {
           .filter((h) => current === null || current.has(h))
       : answerStars(presetById(preset)!, sections);
     setChosen(preset);
+    if (noAppsStep) {
+      finish(start, preset);
+      return;
+    }
     setDefaults(start);
     setTicks(new Set(start));
     setStep("apps");
-  };
-  // ONE write: the answer, its preset, the stars and what the member saw.
-  const finish = (shown: Iterable<string>) => {
-    if (!chosen) return;
-    const askedAgain = again;
-    const stars = starsToSave(shown, sections, shell.layout);
-    next();
-    save({ ...EMPTY_SHELL, preset: chosen, answered: "answered", ...stars }, askedAgain);
   };
   const done = () => finish(ticks);
   // On a first visit the X and Escape on step 2 keep the answer, with the
