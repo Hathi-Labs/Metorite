@@ -20,6 +20,8 @@ export interface PageMenuState {
   editing: boolean;
   /** The page draws at the full width of the window. */
   fullWidth: boolean;
+  /** The member starred the page (KB-2f). */
+  starred: boolean;
 }
 
 /** The groups of the menu. A line separates two groups. */
@@ -45,6 +47,9 @@ export const PAGE_MENU: readonly PageMenuEntry[] = [
   { id: "download-md", label: "Download as .md", icon: "Download", group: "share" },
   { id: "print", label: "Print", icon: "Printer", group: "share", when: (s) => !s.editing },
   { id: "full-width", label: "Full width", icon: "MoveHorizontal", group: "view", checked: (s) => s.fullWidth },
+  // KB-2f: a star is the member's own shortcut, so a reader has it too. The
+  // favourites list leaves out an archived page, so the star does too.
+  { id: "favorite", label: "Favourite", icon: "Star", group: "view", checked: (s) => s.starred, when: (s) => !s.archived },
   { id: "move", label: "Move", icon: "FolderInput", group: "organise", when: (s) => s.canWrite && !s.archived && !s.editing },
   {
     id: "archive",

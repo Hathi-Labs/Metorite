@@ -1118,6 +1118,11 @@ select optgroup {
   right: 0;
   top: 0;
   width: min(26rem, 100%);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--popover);
+  padding: 0.25rem;
+}
 /* ── KB-2p: the stored forms (knowledge_base.md §21.7) ──────────────────────
    A colour name of `lib/editor/colors.ts` maps to a slot of the categorical
    ramp, which clears AA on the card in both modes. A hex value from another
@@ -1151,6 +1156,7 @@ select optgroup {
   border-radius: calc(var(--radius) - 2px);
   background: var(--popover);
   padding: 0.25rem;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
 }
 @media print {
   .kb-find-anchor { display: none; }
@@ -1162,9 +1168,6 @@ select optgroup {
 .kb-editor .kb-find-match-current {
   background: color-mix(in srgb, var(--primary) 40%, transparent);
   outline: 1px solid var(--primary);
-}
-
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent);
 }
 /* KB-2p adds buttons to the bubble, so on a phone its row wraps. */
 .kb-bubble { max-width: calc(100vw - 1rem); }

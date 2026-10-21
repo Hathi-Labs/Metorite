@@ -25,13 +25,14 @@ import { foldCrumbs, parentChain, type Crumb } from "../lib/breadcrumbs";
 import { pageHref, spaceHref } from "../lib/links";
 import type { PageDetail, PageSummary, Space } from "../lib/types";
 import ChromePopover from "./ChromePopover";
+import { iconOf } from "./PageIcon";
 
 export default function PageBreadcrumbs({
   page,
   space,
   onGo,
 }: {
-  page: Pick<PageDetail, "id" | "title" | "parent_id" | "space_id">;
+  page: Pick<PageDetail, "id" | "title" | "parent_id" | "space_id"> & { icon?: string | null };
   space: Space | null;
   /** Go to an address through the leave guard. Return true to stop the link. */
   onGo: (href: string) => boolean;
@@ -51,15 +52,22 @@ export default function PageBreadcrumbs({
       title: p.title,
       href: pageHref(p.id),
       kind: "page" as const,
+      icon: p.icon,
     })),
-    { id: page.id, title: page.title, href: pageHref(page.id), kind: "page" },
+    { id: page.id, title: page.title, href: pageHref(page.id), kind: "page", icon: page.icon },
   ];
   const { head, folded, tail } = foldCrumbs(trail, isMobile);
 
+  // A page with an emoji shows it before its title (KB-2f). The emoji is
+  // text inside the link, so the crumb's name keeps it.
+  const label = (c: Crumb) => {
+    const emoji = iconOf(c);
+    return emoji ? `${emoji} ${c.title}` : c.title;
+  };
   const crumb = (c: Crumb, last: boolean) =>
     last ? (
       <span aria-current="page" className="min-w-0 truncate text-foreground">
-        {c.title}
+        {label(c)}
       </span>
     ) : (
       <Link
@@ -69,7 +77,7 @@ export default function PageBreadcrumbs({
         }}
         className="cc-link min-w-0 truncate text-muted-foreground hover:text-foreground"
       >
-        {c.title}
+        {label(c)}
       </Link>
     );
 
@@ -120,11 +128,17 @@ export default function PageBreadcrumbs({
                       aria-current={c.id === lastId ? "page" : undefined}
                       className="cc-link flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground tech-transition hover:bg-muted"
                     >
-                      <Icon
-                        name={c.kind === "space" ? "LayoutGrid" : "FileText"}
-                        size={14}
-                        className="shrink-0 text-muted-foreground"
-                      />
+                      {iconOf(c) ? (
+                        <span aria-hidden data-page-icon="" className="w-3.5 shrink-0 text-center text-sm leading-none">
+                          {iconOf(c)}
+                        </span>
+                      ) : (
+                        <Icon
+                          name={c.kind === "space" ? "LayoutGrid" : "FileText"}
+                          size={14}
+                          className="shrink-0 text-muted-foreground"
+                        />
+                      )}
                       <span className="min-w-0 truncate">{c.title}</span>
                     </Link>
                   </li>

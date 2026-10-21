@@ -12,6 +12,8 @@ export interface Crumb {
   title: string;
   href: string;
   kind: "space" | "page";
+  /** The page's emoji (KB-2f), or none. */
+  icon?: string | null;
 }
 
 /** The longest trail that shows in full on a wide screen. */
@@ -25,18 +27,18 @@ export const MAX_SHOWN_CRUMBS = 3;
  * shows only what the member can open. A loop in bad data ends it too.
  */
 export function parentChain(
-  pages: readonly Pick<PageSummary, "id" | "parent_id" | "title">[],
+  pages: readonly (Pick<PageSummary, "id" | "parent_id" | "title"> & { icon?: string | null })[],
   parentId: string | null,
-): Array<Pick<PageSummary, "id" | "title">> {
+): Array<Pick<PageSummary, "id" | "title" | "icon">> {
   const byId = new Map(pages.map((p) => [p.id, p]));
-  const chain: Array<Pick<PageSummary, "id" | "title">> = [];
+  const chain: Array<Pick<PageSummary, "id" | "title" | "icon">> = [];
   const seen = new Set<string>();
   let at = parentId;
   while (at && !seen.has(at)) {
     seen.add(at);
     const parent = byId.get(at);
     if (!parent) break;
-    chain.unshift({ id: parent.id, title: parent.title });
+    chain.unshift({ id: parent.id, title: parent.title, icon: parent.icon });
     at = parent.parent_id;
   }
   return chain;

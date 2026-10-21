@@ -86,7 +86,7 @@ export default function HistoryList({
             {comparing ? null : (
               <span
                 className={`mr-1 flex shrink-0 items-center gap-0.5 ${
-                  on ? "" : "md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                  on ? "" : "reveal-on-hover"
                 }`}
               >
                 <Button

@@ -20,6 +20,8 @@ import type { Node as PMNode } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { TableMap } from "@tiptap/pm/tables";
 
+import { needsHtmlTable } from "./htmlTable";
+
 /** The alignments a GFM column can have. `null` is the default, `---`. */
 export type ColumnAlign = "left" | "center" | "right" | null;
 
@@ -44,6 +46,9 @@ export function dropEmptyHeaderRow(node: JSONContent): JSONContent {
   const content = node.content?.map(dropEmptyHeaderRow);
   const out = content ? { ...node, content } : node;
   if (out.type !== "table" || !out.content || out.content.length < 2) return out;
+  // Only the GFM form writes an empty header line for "header off". The HTML
+  // form of KB-2p writes the rows it has, so its empty header row is content.
+  if (needsHtmlTable(out)) return out;
   const [first, ...rest] = out.content;
   const cells = first.content ?? [];
   if (cells.length && cells.every((c) => c.type === "tableHeader" && isBlank(c))) return { ...out, content: rest };

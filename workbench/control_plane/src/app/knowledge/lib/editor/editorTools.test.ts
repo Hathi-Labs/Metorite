@@ -70,6 +70,27 @@ describe("the GFM table rules", () => {
     expect(table?.content?.[0].content?.[0].type).toBe("tableCell");
   });
 
+  it("keeps the empty header row of a table in the HTML form (KB-2p)", () => {
+    const cell = (type: string, text: string, attrs: Record<string, unknown> = {}) => ({
+      type, attrs, content: [{ type: "paragraph", content: text ? [{ type: "text", text }] : [] }],
+    });
+    const doc = {
+      type: "doc",
+      content: [{
+        type: "table",
+        content: [
+          { type: "tableRow", content: [cell("tableHeader", ""), cell("tableHeader", "")] },
+          { type: "tableRow", content: [cell("tableCell", "1", { background: "blue" }), cell("tableCell", "2")] },
+        ],
+      }],
+    };
+    const saved = writeBody(doc);
+    expect(saved).toContain("<table>");
+    const table = parseBody(saved).content?.[0];
+    expect(table?.content?.length).toBe(2);
+    expect(writeBody(parseBody(saved))).toBe(saved);
+  });
+
   it("sets and clears the alignment of a column", () => {
     const { state, tablePos } = tableState(TABLE);
     const table = state.doc.nodeAt(tablePos)!;

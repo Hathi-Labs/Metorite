@@ -29,6 +29,7 @@ import { pageHref } from "../lib/links";
 import { markdownFileName, pageMarkdown, pageMenuItems, type PageMenuState } from "../lib/pageMenu";
 import { printPage } from "../lib/printPage";
 import type { PageDetail, Space } from "../lib/types";
+import { useFavoriteToggle } from "./Favorites";
 import MovePageDialog from "./MovePageDialog";
 import { useRestorePage } from "./useRestorePage";
 
@@ -53,6 +54,7 @@ export default function PageMenu({
   const [archiving, setArchiving] = useState(false);
   const [busy, setBusy] = useState(false);
   const { restoring, restore } = useRestorePage();
+  const favorite = useFavoriteToggle(page);
 
   const state: PageMenuState = {
     canWrite: page.can_write,
@@ -60,6 +62,7 @@ export default function PageMenu({
     archived: page.state === "archived",
     editing,
     fullWidth,
+    starred: favorite.starred,
   };
 
   const reread = () => invalidate(KNOWLEDGE_CACHE);
@@ -104,6 +107,7 @@ export default function PageMenu({
       if (printBody) void printPage(page.title, printBody);
     },
     "full-width": () => setFullWidth(!fullWidth),
+    favorite: () => void favorite.toggle(),
     move: () => setMoving(true),
     archive: () => setArchiving(true),
     restore: () => void restore(page),

@@ -162,6 +162,7 @@ describe("the page menu", () => {
     archived: false,
     editing: false,
     fullWidth: false,
+    starred: false,
     ...over,
   });
   const ids = (s: PageMenuState) =>
@@ -180,15 +181,15 @@ describe("the page menu", () => {
       expect(shown).not.toContain("archive");
       expect(shown).not.toContain("restore");
     }
-    expect(ids(state())).toEqual(["copy-link", "copy-markdown", "download-md", "print", "|", "full-width"]);
+    expect(ids(state())).toEqual(["copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "favorite"]);
   });
 
   it("gives a writer Move, and a manager Archive, with a line between groups", () => {
     expect(ids(state({ canWrite: true }))).toEqual([
-      "copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "|", "move",
+      "copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "favorite", "|", "move",
     ]);
     expect(ids(state({ canWrite: true, canManage: true }))).toEqual([
-      "copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "|", "move", "|", "archive",
+      "copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "favorite", "|", "move", "|", "archive",
     ]);
   });
 
@@ -204,6 +205,14 @@ describe("the page menu", () => {
     expect(shown).not.toContain("print");
     expect(shown).not.toContain("move");
     expect(shown).not.toContain("archive");
+  });
+
+  it("marks Favourite when the page is starred, and hides it on an archived page", () => {
+    const row = pageMenuItems(state({ starred: true })).find(
+      (r) => r.kind === "entry" && r.entry.id === "favorite",
+    );
+    expect(row).toMatchObject({ checked: true });
+    expect(ids(state({ archived: true }))).not.toContain("favorite");
   });
 
   it("marks Full width when it is on", () => {

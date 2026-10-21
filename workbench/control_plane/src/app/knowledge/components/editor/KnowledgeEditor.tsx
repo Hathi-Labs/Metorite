@@ -47,7 +47,7 @@ import { listPages } from "../../lib/api";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
 import { SearchAndReplace } from "../../lib/editor/searchAndReplace";
 import { TitleHandoff, isEmptyBody } from "../../lib/editor/titleFlow";
-import { searchEmoji, type EmojiMatch } from "../../lib/emoji";
+import { loadEmoji, searchEmoji, type EmojiMatch } from "../../lib/emoji";
 import { createBodyWriter, type BodyWriter } from "../../lib/editor/bodyWriter";
 import { bodyAfterEdit, markdownWork, normaliseBody, parseBody, writeBody } from "../../lib/editor/markdown";
 import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../../lib/editor/pageLinks";
@@ -314,6 +314,11 @@ export default function KnowledgeEditor({
   const pageRows = useCallback((q: string) => matchPages(pages ?? [], q, { exclude: pageId }), [pages, pageId]);
   const pageMenu = useSuggestionMenu<PageChoice>(pageRows);
   const emojiRows = useCallback((q: string) => searchEmoji(q), []);
+  // `searchEmoji` answers [] until the data is in memory, so the edit mode
+  // loads it at once. Then the first `:` has rows (KB-2f data, KB-2i insert).
+  useEffect(() => {
+    if (editable) void loadEmoji().catch(() => undefined);
+  }, [editable]);
   const emojiMenu = useSuggestionMenu<EmojiMatch>(emojiRows);
 
   const [imageAt, setImageAt] = useState<Range | null>(null);
@@ -436,12 +441,15 @@ export default function KnowledgeEditor({
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "f") return;
       const target = e.target as HTMLElement | null;
       if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
+      // A page behind an open modal, such as the history (KB-2g), leaves the
+      // key to the editor in the modal. `Modal` marks the page behind it.
+      if (shell?.closest("[data-base-ui-inert], [aria-hidden='true']")) return;
       e.preventDefault();
       openFind();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editable, openFind]);
+  }, [editable, openFind, shell]);
 
   // ── The title flow (KB-2i) ─────────────────────────────────────────────
   useEffect(() => {

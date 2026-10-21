@@ -24,6 +24,7 @@ import { useEditorState } from "@tiptap/react";
 import Button from "@/components/ui/Button";
 
 import { HIGHLIGHT_COLORS } from "../../lib/editor/colors";
+import { TableHandlesKey } from "./tableDrag";
 
 function CellActs({ editor, merge }: { editor: Editor; merge: boolean }) {
   const [colours, setColours] = useState(false);
@@ -128,7 +129,12 @@ export function TableCellTools({ editor, scrollTarget }: { editor: Editor; scrol
     <BubbleMenu
       editor={editor}
       pluginKey="kbTableCells"
-      shouldShow={({ editor: e, state }) => e.isEditable && state.selection instanceof CellSelection}
+      // A grip's own menu (KB-2i) holds the same cells while it is open, and a
+      // drag moves them, so the bubble waits for both to end.
+      shouldShow={({ editor: e, state }) => {
+        const grip = TableHandlesKey.getState(state);
+        return e.isEditable && state.selection instanceof CellSelection && !grip?.frozen && !grip?.dragging;
+      }}
       options={{ placement: "top", hide: true, shift: { padding: 8 }, scrollTarget }}
       className="kb-bubble shadow-md"
       role="toolbar"
