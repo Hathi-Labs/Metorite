@@ -150,3 +150,30 @@ async def test_the_drafter_keeps_the_latest_message_whole_and_last(monkeypatch) 
     assert user.index("File: spec.pdf") < user.index("Latest message")
     assert "To fit, these parts are not shown:" in user
     assert files.left_out and "did not see" in " ".join(files.notices())
+
+
+# ── H-378: "improve my text" in Draft with AI ───────────────────────────────
+
+
+async def test_improve_fits_the_thread_and_never_cuts_the_owners_text(monkeypatch) -> None:
+    """The improve path fits the replied mail and the thread to the tier's
+    window. The owner's own text is never cut. Mutation: drop the
+    ``plan_draft`` call in ``_llm_compose_assist``."""
+    seen: list[dict[str, Any]] = []
+
+    async def fake(*, model, messages, **kw):
+        seen.append({"model": model, "messages": messages})
+        return _resp("Hi Ravi,\n\nBetter."), model
+
+    monkeypatch.setattr("acb_llm.context.acompletion_with_fallback", fake)
+    monkeypatch.setattr(db, "_window_of", lambda m: {"tier-fast": 20_000}.get(m, 8_000))
+    mine = "My own words, which must stay whole. " * 200
+    await dr._llm_compose_assist(
+        about="", signature="", current_body=mine, instruction="tighten it",
+        mode="reply", thread="Older mail. " * 8000, reply_to_body="Please quote.",
+        model="tier-fast")
+    [call] = seen
+    user = call["messages"][1]["content"]
+    assert mine.strip() in user
+    assert "To fit, these parts are not shown:" in user
+    assert "Please quote." in user
