@@ -20953,6 +20953,19 @@ the send and at the fire of a schedule. `edit_draft` and a chat save refuse
 such a text, and they normalise NBSP and trailing spaces. The Email app's
 composer is unchanged. Fence: `tests/unit/test_held_hidden_text.py`.
 
+**Fix round 3 (2026-10-22).** A send card never shows less than the send
+carries. `drafting.check_draft_send` is the one check of a chat send of a
+draft. It refuses a hidden character, a subject over 200 characters, and NBSP or
+a space at the end of a line. The card, the send and the fire of a schedule run
+it. Each card shows the whole subject. A text that does not fit on the card
+shows no card. The chat writers save no NBSP and no line-end space. Fence:
+`tests/unit/test_held_card_shows_less.py`.
+
+**Open (P2, not fixed).** A confusable letter, such as a Cyrillic а in place of
+a Latin a, shows on a card as the letter it imitates. The same gap is on `main`.
+The lookalike flag covers the domain of a new address only. A body or a subject
+with such a letter still sends.
+
 **The fences.**
 
 | Rule | Fence |
@@ -20971,3 +20984,5 @@ composer is unchanged. Fence: `tests/unit/test_held_hidden_text.py`.
 | The flow in the main chat | `workbench/control_plane/e2e/email-held-send.spec.ts` |
 | A move into Sent, and the From of a Sent mail | `tests/unit/test_move_into_sent_refused.py`, `tests/unit/test_held_send_classes_r8.py` (R8) |
 | The seal of the text | `tests/unit/test_held_text_seal.py` |
+| Hidden text in a draft | `tests/unit/test_held_hidden_text.py` |
+| A card never shows less than the send | `tests/unit/test_held_card_shows_less.py` |
