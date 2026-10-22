@@ -1017,6 +1017,39 @@ test.describe("the block editor", () => {
     expect(kb.writes[0].body).toEqual({ body_md: "# From Markdown\n\n> [!TIP]\n> Typed as text." });
   });
 
+  test("read and edit share one canvas: the title and the first line stay put, and no box draws", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page);
+    await mockKnowledge(page, { level: "write", pages: pageWith("Start of the body.") });
+    await page.goto("/knowledge/pages/kp-a");
+    const readTitle = page.getByRole("heading", { name: "Refund policy", level: 2 });
+    await expect(readTitle).toBeVisible({ timeout: 30_000 });
+    const readBody = page.locator(".kb-editor p").first();
+    const at = async (loc: ReturnType<typeof page.locator>) => (await loc.boundingBox())!;
+    const t0 = await at(readTitle);
+    const p0 = await at(readBody);
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    const title = page.getByRole("textbox", { name: "Title" });
+    const body = page.getByRole("textbox", { name: "Page body" });
+    await expect(body).toBeVisible();
+    await body.click();
+    const t1 = await at(title);
+    const p1 = await at(body.locator("p").first());
+    expect(Math.abs(t1.y - t0.y)).toBeLessThan(8);
+    expect(Math.abs(t1.x - t0.x)).toBeLessThan(8);
+    expect(Math.abs(p1.y - p0.y)).toBeLessThan(8);
+    // No bordered focus box around the body or the title while editing.
+    for (const surface of [body, title, page.locator(".kb-editor-shell.is-editing")]) {
+      const css = await surface.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { border: c.borderTopWidth + c.borderLeftWidth, shadow: c.boxShadow, outline: c.outlineStyle };
+      });
+      expect(css.border).toBe("0px0px");
+      expect(css.shadow).toBe("none");
+    }
+    await expect(page.getByRole("button", { name: "Save changes" })).toBeVisible();
+  });
+
   test("typing on a long page parses nothing, and Save still writes the last key", async ({ page }) => {
     test.setTimeout(90_000);
     await setup(page);

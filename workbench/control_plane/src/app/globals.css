@@ -815,26 +815,45 @@ select optgroup {
    a token, so light mode, density and accent all reach it. */
 .kb-editor-shell { position: relative; }
 .kb-editor { outline: none; }
-.kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 2rem; }
-/* The body shows where the keys go while a member edits: a quiet ring
-   from the ring token, on the shell, so the text does not move. */
-.kb-editor-shell.is-editing {
-  margin: -0.25rem -0.5rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: calc(var(--radius) - 4px);
+.kb-editor-shell.is-editing .kb-editor { min-height: 16rem; padding-bottom: 6rem; }
+/* One canvas (WS-61, 2026-10-22): the edit surface draws no box, no ring
+   and no background. The caret is the focus signal, as in Notion. The shell
+   adds no padding or margin either, so the first line sits where it sits in
+   the read view. */
+/* The page title, read and edit alike: one class, so the h2 and the
+   textarea draw the same glyphs on the same line. */
+.kb-title {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
-.kb-editor-shell.is-editing:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 30%, transparent);
-}
-/* The same rhythm as the chat's Markdown (`MarkdownBody`): compact
-   headings under the page title, and tight lists. */
-.kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.35; }
-.kb-editor :where(h2) { font-size: 1.15em; margin: 1.5em 0 0.5em; }
-.kb-editor :where(h3) { font-size: 1.05em; margin: 1.25em 0 0.4em; }
-.kb-editor :where(h4, h5, h6) { font-size: 1em; margin: 1em 0 0.35em; }
+textarea.kb-title { resize: none; overflow: hidden; outline: none; box-shadow: none; }
+textarea.kb-title::placeholder { color: var(--muted-foreground); opacity: 0.6; }
+/* The body reads at 1rem on a 1.7 line, whatever the typography plugin's
+   small size says. Rem, so the density setting reaches it. */
+.kb-editor.prose { font-size: 1rem; line-height: 1.7; }
+.kb-editor :where(p) { margin: 0.75em 0; }
+.kb-editor :where(h2, h3, h4, h5, h6) { color: var(--foreground); font-weight: 600; line-height: 1.3; }
+/* A body heading draws one level down: the app bar owns the one h1. The
+   editor's own level sits in data-md-level, so the sizes follow it. */
+.kb-editor :where(h2, h3, h4, h5, h6) { margin: 1.6em 0 0.4em; }
+.kb-editor [data-md-level="1"] { font-size: 1.875rem; }
+.kb-editor [data-md-level="2"] { font-size: 1.5rem; }
+.kb-editor [data-md-level="3"] { font-size: 1.25rem; }
+.kb-editor [data-md-level="4"], .kb-editor [data-md-level="5"], .kb-editor [data-md-level="6"] { font-size: 1.0625rem; }
 .kb-editor > :first-child { margin-top: 0; }
-.kb-editor :where(ul, ol) { margin: 0.5em 0; }
-.kb-editor :where(li) { margin: 0.15em 0; }
+.kb-editor :where(ul, ol) { margin: 0.75em 0; }
+.kb-editor :where(li) { margin: 0.3em 0; }
 .kb-editor :where(li > p) { margin: 0; }
 .kb-editor :where(hr) { margin: 1.5em 0; }
 .kb-editor :where(blockquote) { font-style: normal; color: var(--muted-foreground); }

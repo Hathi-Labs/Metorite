@@ -36,6 +36,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { EmptyState } from "@/components/EmptyState";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -114,6 +115,7 @@ export default function PageView({ pageId }: { pageId: string }) {
   const { spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave } = useKnowledge();
   const { access, loading: accessLoading } = useAccess();
   const scope = accessLoading ? null : chatScope(access.email, access.organization?.id);
+  const { isMobile } = useViewMode();
   const router = useRouter();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -400,6 +402,16 @@ export default function PageView({ pageId }: { pageId: string }) {
 
   const width = fullWidth ? "max-w-none" : "max-w-6xl";
 
+  /** Edit or leave the Markdown field. The editor reads the field's text. */
+  function toggleSource() {
+    if (!source) flushedDraft();
+    setSource((v) => !v);
+    setSession((n) => n + 1);
+  }
+
+  const newSubPage = () => openNewPage({ parent: { id: page.id, title: page.title, spaceId: page.space_id } });
+  const noTitle = !draft.title.trim();
+
   return (
     <div
       ref={setScrollerEl}
@@ -407,12 +419,87 @@ export default function PageView({ pageId }: { pageId: string }) {
       data-full-width={fullWidth ? "" : undefined}
       className="min-h-0 flex-1 overflow-y-auto"
     >
-      {/* The chrome row (KB-2d): the breadcrumbs and the page menu. It stays
-          at the top of the scroller, as the page scrolls under it. */}
+      {/* The chrome row (KB-2d): the breadcrumbs on the left and the page's
+          tools on the right. It stays at the top of the scroller, as the
+          page scrolls under it. Save and Cancel live here, so no footer
+          covers the body. */}
       <div ref={setStickyEl} className="sticky top-0 z-20 border-b border-border bg-background">
-        <div className={`mx-auto flex w-full ${width} items-center gap-2 px-4 py-1.5 sm:px-6`}>
+        <div className={`mx-auto flex w-full ${width} items-center gap-2 px-4 py-1.5 min-h-11 sm:px-6`}>
           <PageBreadcrumbs page={page} space={space} onGo={goGuarded} />
-          <PageMenu page={page} spaces={spaces} editing={editing} printBody={bodyEl} />
+          <div className="flex shrink-0 items-center gap-1" data-page-tools="">
+            {editing ? (
+              <>
+                {isMobile ? null : (
+                  <span className="mr-1 text-xs text-muted-foreground" role="status">
+                    {dirty ? "Unsaved changes" : ""}
+                  </span>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  icon="FileCode"
+                  selected={source}
+                  aria-label="Markdown"
+                  title={source ? "Back to the editor" : "Edit as Markdown"}
+                  onClick={toggleSource}
+                />
+                {isMobile ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    icon="X"
+                    aria-label="Cancel"
+                    title="Cancel"
+                    disabled={saving}
+                    onClick={() => requestLeave(endEdit)}
+                  />
+                ) : (
+                  <Button variant="ghost" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>
+                    Cancel
+                  </Button>
+                )}
+                <Button size="sm" loading={saving} disabled={saving || !canSave || noTitle} onClick={() => void save()}>
+                  Save changes
+                </Button>
+              </>
+            ) : (
+              <>
+                <FavoriteStar page={page} />
+                {writable ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      icon="FilePlus"
+                      aria-label="New sub-page"
+                      title="New sub-page"
+                      onClick={newSubPage}
+                    />
+                    {page.state === "draft" ? (
+                      <Button size="sm" icon="Send" onClick={() => setConfirmPublish(true)}>
+                        Publish
+                      </Button>
+                    ) : null}
+                    {isMobile ? (
+                      <Button
+                        variant="secondary"
+                        size="icon-sm"
+                        icon="Pencil"
+                        aria-label="Edit"
+                        title="Edit"
+                        onClick={() => startEdit(page)}
+                      />
+                    ) : (
+                      <Button variant="secondary" size="sm" icon="Pencil" onClick={() => startEdit(page)}>
+                        Edit
+                      </Button>
+                    )}
+                  </>
+                ) : null}
+              </>
+            )}
+            <PageMenu page={page} spaces={spaces} editing={editing} printBody={bodyEl} />
+          </div>
         </div>
       </div>
       <div className={`mx-auto flex w-full ${width} flex-col gap-6 px-4 py-5 sm:px-6 xl:flex-row xl:items-start`}>
@@ -423,31 +510,65 @@ export default function PageView({ pageId }: { pageId: string }) {
             </div>
           ) : null}
 
-          {editing ? (
-            // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
-            // language, the fold of a toggle) must never submit the page.
-            <div className="mt-1 space-y-3">
+          {/* One header for the read view and the edit (WS-61, 2026-10-22):
+              the icon, the title and the byline stay where they are when the
+              mode changes. A page with no icon reserves no room for one. */}
+          <header className="group relative pt-8">
+            <PageIconControl page={page} editable={writable} />
+            {editing ? (
               <TitleField
                 value={draft.title}
                 onChange={(title) => setDraft((d) => ({ ...d, title }))}
                 link={titleLink}
               />
-              <div className="flex justify-end">
+            ) : (
+              <h2 className="kb-title">{page.title}</h2>
+            )}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
+                {stateLabel(page.state)}
+              </Badge>
+              {page.can_write ? null : <Badge icon="Eye">Read only</Badge>}
+              <PageByline versions={page.versions} />
+            </div>
+            {editing && noTitle ? <p className="mt-2 text-xs text-destructive">A page needs a title.</p> : null}
+            {editing && stale ? (
+              <div
+                role="alert"
+                className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
+              >
+                <span className="min-w-0 flex-1 basis-full sm:basis-0">
+                  Someone saved a newer version of this page while you edited it. Save anyway
+                  to write your changes over it, or reload to read it first.
+                </span>
+                <Button size="sm" variant="secondary" disabled={saving} onClick={() => void save(true)}>
+                  Save anyway
+                </Button>
                 <Button
-                  variant="ghost"
                   size="sm"
-                  icon="FileCode"
-                  selected={source}
+                  variant="ghost"
+                  disabled={saving}
                   onClick={() => {
-                    if (!source) flushedDraft();
-                    setSource((v) => !v);
-                    setSession((n) => n + 1);
+                    endEdit();
+                    reread();
                   }}
                 >
-                  Markdown
+                  Reload
                 </Button>
               </div>
-              {source ? (
+            ) : null}
+            {editing && saveError ? (
+              <p role="alert" className="mt-3 text-xs text-destructive">
+                {saveError}
+              </p>
+            ) : null}
+          </header>
+
+          <div className="mt-6">
+            {editing ? (
+              // ⚠️ A `div`, not a `form`. The editor's own buttons (the code
+              // language, the fold of a toggle) must never submit the page.
+              source ? (
                 <Textarea
                   aria-label="Page body in Markdown"
                   value={draft.body_md}
@@ -457,7 +578,7 @@ export default function PageView({ pageId }: { pageId: string }) {
                   className="w-full font-mono"
                 />
               ) : (
-                <div ref={setBodyEl} className="min-h-64 pt-1">
+                <div ref={setBodyEl} className="min-h-64">
                   <KnowledgeEditor
                     key={`edit-${session}`}
                     mode="edit"
@@ -472,108 +593,24 @@ export default function PageView({ pageId }: { pageId: string }) {
                     titleLink={titleLink}
                   />
                 </div>
-              )}
-              {stale ? (
-                <div
-                  role="alert"
-                  className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
-                >
-                  <span className="min-w-0 flex-1 basis-full sm:basis-0">
-                    Someone saved a newer version of this page while you edited it. Save anyway
-                    to write your changes over it, or reload to read it first.
-                  </span>
-                  <Button size="sm" variant="secondary" disabled={saving} onClick={() => void save(true)}>
-                    Save anyway
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={saving}
-                    onClick={() => {
-                      endEdit();
-                      reread();
-                    }}
-                  >
-                    Reload
-                  </Button>
+              )
+            ) : page.body_md.trim() ? (
+              <HeadingAnchors pageId={page.id} headings={outline.headings} elements={outline.elements}>
+                <div ref={setBodyEl}>
+                  <KnowledgeEditor
+                    mode="read"
+                    body={page.body_md}
+                    label={`${page.title}, the page body`}
+                    onNavigate={(href) => router.push(href)}
+                  />
                 </div>
-              ) : null}
-              {saveError ? (
-                <p role="alert" className="text-xs text-destructive">
-                  {saveError}
-                </p>
-              ) : null}
-              {/* The save row stays in view at the foot of the scroller, so a
-                  long page does not hide Save below the body. */}
-              <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background py-2">
-                <Button size="sm" loading={saving} disabled={saving || !canSave || !draft.title.trim()} onClick={() => void save()}>
-                  Save changes
-                </Button>
-                <Button variant="secondary" size="sm" disabled={saving} onClick={() => requestLeave(endEdit)}>
-                  Cancel
-                </Button>
-                {!draft.title.trim() ? (
-                  <span className="text-xs text-destructive">A page needs a title.</span>
-                ) : null}
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* KB-2f: the page icon and the star, around the title. */}
-              <div className="group mt-1 flex items-center gap-2">
-                <PageIconControl page={page} editable={writable} />
-                <h2 className="min-w-0 flex-1 break-words text-xl font-semibold text-foreground">{page.title}</h2>
-                <FavoriteStar page={page} />
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
-                  {stateLabel(page.state)}
-                </Badge>
-                {page.can_write ? null : <Badge icon="Eye">Read only</Badge>}
-                <PageByline versions={page.versions} />
-              </div>
-              {writable ? (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button variant="secondary" size="sm" icon="PenLine" onClick={() => startEdit(page)}>
-                    Edit
-                  </Button>
-                  {page.state === "draft" ? (
-                    <Button size="sm" icon="Send" onClick={() => setConfirmPublish(true)}>
-                      Publish
-                    </Button>
-                  ) : null}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="FilePlus"
-                    onClick={() =>
-                      openNewPage({ parent: { id: page.id, title: page.title, spaceId: page.space_id } })
-                    }
-                  >
-                    New sub-page
-                  </Button>
-                </div>
-              ) : null}
-              <div className="mt-5">
-                {page.body_md.trim() ? (
-                  <HeadingAnchors pageId={page.id} headings={outline.headings} elements={outline.elements}>
-                    <div ref={setBodyEl}>
-                      <KnowledgeEditor
-                        mode="read"
-                        body={page.body_md}
-                        label={`${page.title}, the page body`}
-                        onNavigate={(href) => router.push(href)}
-                      />
-                    </div>
-                  </HeadingAnchors>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    This page is empty.{writable ? " Choose Edit to write it." : ""}
-                  </p>
-                )}
-              </div>
-            </>
-          )}
+              </HeadingAnchors>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                This page is empty.{writable ? " Choose Edit to write it." : ""}
+              </p>
+            )}
+          </div>
         </article>
 
         <aside

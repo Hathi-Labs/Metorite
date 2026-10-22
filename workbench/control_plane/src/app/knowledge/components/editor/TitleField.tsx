@@ -3,16 +3,15 @@
 /**
  * The title of a page in an edit (WS-61 KB-2i, `knowledge_base.md` §21.7).
  *
- * A plain `Input`, joined to the body by a `TitleLink`. The keys follow
+ * A borderless, auto-growing textarea that draws like the read title
+ * (`.kb-title`), joined to the body by a `TitleLink`. The keys follow
  * Docmost's title editor, and `lib/editor/titleFlow.ts` holds the rules:
  * Enter moves the text after the caret into a new first paragraph of the
  * body, and ArrowDown, or ArrowRight at the end, moves into the body. The
  * body's ArrowUp at its start comes back here. Mod-F opens find in the
  * page, as it does in the body.
  */
-import { useRef } from "react";
-
-import { Input } from "@/components/ui/Input";
+import { useLayoutEffect, useRef } from "react";
 
 import { splitTitle } from "../../lib/editor/titleFlow";
 
@@ -26,13 +25,13 @@ export interface BodyActs {
 
 /** The two ends of the title flow. */
 export interface TitleLink {
-  title: React.RefObject<HTMLInputElement | null>;
+  title: React.RefObject<HTMLTextAreaElement | null>;
   body: React.RefObject<BodyActs | null>;
 }
 
 /** One link for the life of the page view. */
 export function useTitleLink(): TitleLink {
-  const title = useRef<HTMLInputElement | null>(null);
+  const title = useRef<HTMLTextAreaElement | null>(null);
   const body = useRef<BodyActs | null>(null);
   const link = useRef<TitleLink>({ title, body });
   return link.current;
@@ -47,13 +46,23 @@ export function TitleField({
   onChange: (title: string) => void;
   link: TitleLink;
 }) {
+  // Grow with the text: the title wraps and never scrolls.
+  useLayoutEffect(() => {
+    const el = link.title.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value, link.title]);
   return (
-    <Input
+    <textarea
       ref={link.title}
       aria-label="Title"
+      placeholder="Untitled"
+      rows={1}
       value={value}
       maxLength={300}
-      onChange={(e) => onChange(e.target.value)}
+      // A title is one line. A pasted line break becomes a space.
+      onChange={(e) => onChange(e.target.value.replace(/\s*\n+\s*/g, " "))}
       onKeyDown={(e) => {
         const body = link.body.current;
         const native = e.nativeEvent as KeyboardEvent & { isComposing?: boolean };
@@ -78,7 +87,7 @@ export function TitleField({
           body.focusStart();
         }
       }}
-      className="w-full"
+      className="kb-title"
     />
   );
 }
