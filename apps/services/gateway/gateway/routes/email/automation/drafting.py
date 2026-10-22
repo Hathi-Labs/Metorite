@@ -3280,12 +3280,13 @@ async def _upsert_reply_draft(
     draft. The local copy runs in a savepoint, and a failed copy is logged.
     A failed provider write raises. Fence:
     ``tests/unit/test_email_reply_draft_upsert.py``."""
-    from acb_skills.reply_card import strip_invisible_spacing
+    from acb_skills.reply_card import visible_spacing
 
-    # §21 fix round 3: a draft that the chat writes (the drafter of
-    # /email/draft-reply, the reply card, /email/drafts/save) keeps no NBSP
-    # and no line-end space, so a chat send of it is never refused for them.
-    body = strip_invisible_spacing(body)
+    # §21 fix rounds 3 and 4: a draft that the chat writes (the drafter of
+    # /email/draft-reply, the reply card, /email/drafts/save) is saved in the
+    # form that the card shows: no NBSP, no line-end space, one blank line
+    # for a run, and no blank edge. A chat send of it is never refused.
+    body = visible_spacing(body)
     subject = " ".join(str(subject or "").split())
     cc_list = [c for c in (cc or []) if c]
     rows: list[Any] = []

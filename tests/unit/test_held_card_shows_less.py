@@ -169,3 +169,66 @@ async def test_a_chat_draft_from_the_drafter_sends_cleanly() -> None:
     d.check_draft_send(provider.created[0]["subject"], sent_text)
     d.check_draft_send("Re: Quote", row["body"])
     assert sent_text == "Hi Kim,\n\nYes, Friday works.\n\n--\nJane Doe"
+
+
+# ── Fix round 4 ──────────────────────────────────────────────────────────────
+
+
+async def test_a_drafter_body_with_blank_runs_is_saved_folded() -> None:
+    """Each chat writer saves the form that the card shows: a run of blank
+    lines is one blank line, and the edges are trimmed. Mutation: go back to
+    ``strip_invisible_spacing`` in ``_upsert_reply_draft`` → red."""
+    from tests.unit.test_email_reply_draft_upsert import ACC, THREAD, _Db, _Outlook
+
+    db, provider = _Db(), _Outlook()
+    drafted = "\n\nHi Kim,\n\n\n\n\nYes, Friday works.\n\n\n"
+    wrote = await d._upsert_reply_draft(
+        db, provider, ACC, thread_id=THREAD, reply_to_provider_id="pm-mail",
+        owner_email=F.MEMBER, to=[F.KNOWN], subject="Re: Quote", body=drafted)
+    saved = provider.created[0]["body_text"]
+    assert saved == "Hi Kim,\n\nYes, Friday works."
+    row = next(r for r in db.rows if r["id"] == wrote.local_id)
+    assert row["body"] == saved
+
+
+@pytest.mark.parametrize("name", ["send_draft", "schedule_send"])
+async def test_the_send_card_lists_the_files_of_the_draft(monkeypatch, name: str) -> None:
+    """The switch-off card names each file, in the line form of the held
+    card (``held_card._draft_card``). Mutation: drop ``_draft_files_block``
+    from ``_sealed_card`` → red."""
+    from acb_skills import ask_tools
+
+    agents = F.load_email_agent(f"ea_held_files_{name}")
+    cards: list[Any] = []
+
+    async def get(path: str, params: Any = None) -> Any:
+        if path == f"/email/messages/{F.DRAFT}":
+            return {"account_id": F.BOX, "folder": "drafts", "subject": "Quote",
+                    "to_addresses": [{"email": F.KNOWN}],
+                    "attachments": [{"id": "f1", "filename": "quote.pdf", "size_bytes": 4096},
+                                    {"id": "f2", "filename": "rates.xlsx", "size_bytes": 2048}]}
+        if path == "/email/drafts/seal":
+            return {"text_digest": "a" * 64, "subject": "Quote", "body_text": "Hi Kim"}
+        raise AssertionError(path)
+
+    async def post(path: str, body: Any) -> Any:
+        return {"id": "s-1"}
+
+    async def mailbox(_aid: str) -> str:
+        return F.MEMBER
+
+    async def card(**kw: Any) -> bool:
+        cards.append(kw)
+        return True
+
+    monkeypatch.setattr(agents, "_get", get)
+    monkeypatch.setattr(agents, "_post", post)
+    monkeypatch.setattr(agents, "_mailbox_name", mailbox)
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    args = [F.BOX, F.DRAFT] + ([(datetime.now(UTC) + timedelta(days=1)).isoformat()]
+                               if name == "schedule_send" else [])
+    await getattr(agents, name)(*args)
+    lines = cards[0]["context"].splitlines()
+    i = lines.index("The files of the draft go with it:")
+    assert lines[i + 1:i + 3] == ['- file "quote.pdf" (4 KB)', '- file "rates.xlsx" (2 KB)']

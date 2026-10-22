@@ -4695,9 +4695,27 @@ async def _sealed_card(
         return too_many
     context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"),
                                whole=True)
-    if not context:
+    if context:
+        # §21 fix round 4: the files go with the draft, so the card names
+        # them, in the form of the held card (``held_card._draft_card``).
+        context += _draft_files_block(draft.get("attachments"))
+    if not context or len(context) > _CARD_CONTEXT_LIMIT:
         return f"{lead}. {_DRAFT_TOO_LONG_ANSWER}"
     return detail, context, seal
+
+
+def _draft_files_block(files: Any) -> str:
+    """The files of a draft for its send card, or "" for none: each name in
+    quotes with its size, as ``held_card._draft_card`` lists them."""
+    items = [f for f in (files or []) if isinstance(f, dict)]
+    if not items:
+        return ""
+    lines = ["", "", "The files of the draft go with it:"]
+    lines += [f"- {_card_file_line(_card_file_name(f.get('filename') or 'file', 1000), _size_text(f.get('size_bytes')))}"
+              for f in items[:20]]
+    if len(items) > 20:
+        lines.append(f"- +{len(items) - 20} more")
+    return "\n".join(lines)
 
 
 # H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
