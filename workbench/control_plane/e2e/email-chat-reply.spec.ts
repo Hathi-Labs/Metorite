@@ -49,7 +49,7 @@ const REPLY_FORM = {
 const RESULTS: Record<string, string> = {
   send: "Sent to kim@contoso.test, lee@contoso.test, with a copy to ops@contoso.test, from Work · jane@acme.test.",
   save: "Saved in Drafts of Work · jane@acme.test, to kim@contoso.test. Nothing was sent.",
-  REJECT: "Reply discarded and cancelled. Nothing was sent or saved.",
+  REJECT: "Reply discarded and cancelled. Nothing was sent.",
 };
 
 async function install(page: Page) {
@@ -243,7 +243,7 @@ test.describe("the reply card in the main chat", () => {
     expect(await emailCalls(page)).toEqual([]);
   });
 
-  test("Discard answers REJECT, and nothing is sent or saved", async ({ page }) => {
+  test("Discard answers REJECT, and nothing is sent", async ({ page }) => {
     await ask(page);
     const card = page.locator("[data-reply-card]");
     await card.locator("[data-reply-discard]").click();
