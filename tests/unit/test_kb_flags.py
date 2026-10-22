@@ -25,7 +25,7 @@ from gateway.routes.knowledge import flags as kb_flags
 ORG = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
-#: Each route of KB-1, KB-2f, KB-2g and KB-3, with a body that passes validation where one
+#: Each route of KB-1, KB-2f, KB-2g, KB-3 and KB-5a, with a body that passes validation where one
 #: is needed.
 CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/spaces", None),
@@ -49,6 +49,11 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/favorites", None),
     ("POST", f"/knowledge/pages/{OTHER}/favorite", None),
     ("DELETE", f"/knowledge/pages/{OTHER}/favorite", None),
+    # KB-5a: the proposals.
+    ("POST", "/knowledge/proposals", {"kind": "page", "title": "A page"}),
+    ("GET", "/knowledge/proposals", None),
+    ("POST", f"/knowledge/proposals/{OTHER}/accept", None),
+    ("POST", f"/knowledge/proposals/{OTHER}/reject", None),
 ]
 
 
@@ -91,8 +96,11 @@ def test_the_settings_default_is_off_and_empty() -> None:
 
 def _template(path: str) -> str:
     """The route template of a concrete path in ``CALLS``."""
-    out = path.split("?")[0].replace(
-        OTHER, "{page_id}" if "/pages/" in path else "{space_id}")
+    if "/proposals/" in path:
+        name = "{proposal_id}"
+    else:
+        name = "{page_id}" if "/pages/" in path else "{space_id}"
+    out = path.split("?")[0].replace(OTHER, name)
     return out.replace("/versions/2", "/versions/{version}")
 
 

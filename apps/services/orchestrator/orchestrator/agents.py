@@ -166,7 +166,8 @@ A decision:
 # on, three parts of the persona change, each by an exact swap: the two
 # legacy retrieval tools leave the tool list, rule 1 becomes the grounding
 # paragraph, and rule 5 cites a full_id. KB-4a adds one line to the first
-# swap, for the two Knowledge reads. With the flag off the persona IS
+# swap, for the two Knowledge reads, and KB-5a one more, for the two
+# proposals. With the flag off the persona IS
 # `_PULL_INSTRUCTIONS`, byte for byte. Fence: tests/unit/test_company_search_tool.py.
 _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
     (
@@ -175,7 +176,9 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "- search_company: find the company's records in every app the member holds:\n"
         "  tasks, email, people, the CRM, artifacts, WhatsApp and Knowledge\n"
         "- read_page, list_spaces: read a Knowledge page when a passage is not enough,\n"
-        "  and list the spaces when the member asks what the company has written down\n",
+        "  and list the spaces when the member asks what the company has written down\n"
+        "- propose_page, propose_edit: when the member asks, file a proposed page or\n"
+        "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
     ),
     (
         "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.\n",
@@ -769,14 +772,22 @@ def build_orchestrator_agent(
     # `search_company` takes the place of the two legacy retrievers. This is
     # the ONE path of the tool: not config.json tool_scope, not the floor.
     # KB-4a: the two Knowledge reads join it on the same path, and only then.
+    # KB-5a: the two proposals too. Each asks with a card and never publishes.
     if company_search:
         from acb_skills.company_search_tools import search_company, search_company_dated
-        from acb_skills.knowledge_tools import list_spaces, read_page
+        from acb_skills.knowledge_tools import (
+            list_spaces,
+            propose_edit,
+            propose_page,
+            read_page,
+        )
 
         # CX-1: with CONTEXT_RECENCY on, the tool of the same name that takes
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
-        retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        retrieval_tools: list[Any] = [
+            company_tool, read_page, list_spaces, propose_page, propose_edit,
+        ]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
