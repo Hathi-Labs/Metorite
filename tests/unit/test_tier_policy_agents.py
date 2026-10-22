@@ -83,6 +83,15 @@ NATIVE: dict[str, str] = {
     "apis-config": "apps/agents/agent-apis-config",
 }
 
+#: Each native agent's own default tier (D-AI-4). The email assistant moved
+#: to tier-powerful on 2026-10-22 (owner): mail asks for judgement.
+DEFAULTS: dict[str, str] = {"email-assistant": "tier-powerful"}
+
+
+def _default(name: str) -> str:
+    return DEFAULTS.get(name, "tier-balanced")
+
+
 #: The Copilot SDK agents of §11 S4. They switch tier per run, never per request.
 COPILOT: tuple[str, ...] = ("task-manager", "app-builder")
 
@@ -138,7 +147,7 @@ class TestEveryNativeAgent:
         events, _ = drive_native(name, NATIVE[name], monkeypatch, model,
                                  request_model="tier-powerful")
         _ok(events)
-        assert [b["model"] for b in model.bodies] == ["tier-balanced"]
+        assert [b["model"] for b in model.bodies] == [_default(name)]
         ignored = [r for r in logs if r.get("event") == "ai_route.model_ignored"]
         assert ignored and ignored[0]["model"] == "tier-powerful"
         assert ignored[0]["agent"] == name
@@ -150,9 +159,9 @@ class TestEveryNativeAgent:
         events, _ = drive_native(name, NATIVE[name], monkeypatch, model, message="hi")
         _ok(events)
         assert wire.requests == []
-        assert [b["model"] for b in model.bodies] == ["tier-balanced"]
+        assert [b["model"] for b in model.bodies] == [_default(name)]
         assert [(r["tier"], r["reason"]) for r in _routes(events)] == [
-            ("tier-balanced", "default")]
+            (_default(name), "default")]
 
     def test_3_a_code_turn_sends_every_main_request_to_powerful(
         self, name, monkeypatch,
@@ -188,7 +197,7 @@ class TestEveryNativeAgent:
         monkeypatch.setattr(tier_policy, "_log", _Tap())
         events, _ = drive_native(name, NATIVE[name], monkeypatch, model, message="hi")
         _ok(events)
-        assert [b["model"] for b in model.bodies] == ["tier-balanced", "tier-balanced"]
+        assert [b["model"] for b in model.bodies] == [_default(name)] * 2
         assert [r["reason"] for r in _routes(events)] == ["default", "default"]
         ignored = [r for r in logs if r["event"] == "ai_route.hint_ignored"]
         assert [(r["tool"], r["agent"]) for r in ignored] == [("decide", name)]
@@ -586,7 +595,9 @@ class TestSubAgents:
         for flag, parent, kind, expected in (
             ("task-manager", "tier-fast", "code", "tier-powerful"),
             ("task-manager", "tier-powerful", "chat", "tier-balanced"),
-            (None, "tier-fast", "code", "tier-fast"),
+            # Not covered: the parent's tier, but never below the sub-agent's
+            # own default (owner, 2026-10-22, executor._sub_agent_tier).
+            (None, "tier-fast", "code", "tier-balanced"),
         ):
             _flags(monkeypatch, flag)
             _wire(monkeypatch, _turn_reply(kind))

@@ -398,7 +398,7 @@ declares a default tier".
 | Agent | Runtime | Default | Anchor |
 |---|---|---|---|
 | projects-assistant | native MAF | `PROJECTS_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-projects/agents.py:93` |
-| email-assistant | native MAF | `EMAIL_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-email-assistant/agents.py:2387` |
+| email-assistant | native MAF | `EMAIL_AGENT_MODEL`, else `tier-powerful` (owner, 2026-10-22) | `apps/agents/agent-email-assistant/agents.py:2387` |
 | crm-assistant | native MAF | `CRM_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-crm/agents.py:1013` |
 | whatsapp-assistant | native MAF | `WHATSAPP_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-whatsapp-assistant/agents.py:516` |
 | apis-config | native MAF | `MODEL = "tier-balanced"` | `apps/agents/agent-apis-config/agents.py:54` |
@@ -604,6 +604,29 @@ The question is the kind of the member's message: `chat`, `code`, `plan` or
   tool hint raises it.
 - A turn with one short message under 12 words skips the question and reads as
   `chat`. This saves the call on "thanks" and "yes".
+
+### 4.3a The size of the work (owner, 2026-10-22)
+
+The owner asked for fast or balanced on ordinary work, and for powerful on a
+lot of context or a long thread. Three rules do it:
+
+1. **A long turn.** The executor counts the turn before the first request:
+   the member's message, the earlier messages and the added context
+   (`tier_policy.turn_tokens`, 3 characters a token). A turn of
+   `CONTEXT_POWERFUL_TOKENS` (24,000) or more starts on `tier-powerful`, with
+   reason `context`. The size is known at the start, so the turn keeps ONE
+   model (the rule of 2026-10-09 holds). A tier off the ladder stays.
+2. **A judgement turn.** The turn question names "a comparison of options or
+   offers with a choice, or a reply or a document that needs judgement" as
+   `analysis`, which takes `tier-powerful` (§4.1).
+3. **A delegated run** never goes below its own agent's default
+   (`executor._sub_agent_tier`). The email assistant's default is now
+   `tier-powerful`.
+
+The email drafter, which is outside this policy, follows the same idea
+(`draft_budget.tier_for_size`). A mail with files or 12,000 characters takes
+at least `tier-balanced`. 60,000 characters takes `tier-powerful`. The window
+check of `plan_draft` still wins. Fence: `tests/unit/test_adaptive_tier.py`.
 
 ### 4.4 Tool hints
 

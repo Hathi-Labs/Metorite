@@ -1675,6 +1675,16 @@ async def _run_sub_agent_streaming(
             # WS-43n gets "maf" when its config.json declares nothing, so the
             # label alone no longer finds every Copilot object (§15.5).
             _sub_is_copilot = _runtime == "github-copilot" or is_copilot_agent(agent)
+            # A delegated run never goes BELOW its own agent's default tier
+            # (owner, 2026-10-22). The email assistant runs on tier-powerful
+            # in the Email app, and it got the orchestrator's tier-balanced
+            # when the main chat asked it. A covered sub-agent runs its own
+            # policy below, and that policy floors at the same default.
+            model = _sub_agent_tier(
+                model, agent, getattr(loaded, "config", None) or {},
+                (_agent_md_spec.model or "").strip() if _agent_md_spec is not None else "",
+                is_copilot=_sub_is_copilot,
+            )
             if (
                 _sub_is_copilot
                 and hasattr(agent, "_default_options")
@@ -7948,6 +7958,28 @@ def _tier_policy_covers(agent_name: str) -> bool:
     return tier_routing_on(agent_name)
 
 
+def _sub_agent_tier(
+    parent: str | None, agent: Any, config: dict[str, Any], agent_md_model: str,
+    *, is_copilot: bool,
+) -> str | None:
+    """The tier of a delegated run: the higher of the parent's tier and the
+    sub-agent's own default (owner, 2026-10-22).
+
+    A tier off the ladder (an admin's ``provider/model``) stays as the parent
+    chose it. With no parent tier, the sub-agent's own default resolves as
+    before (``None``). Fence: ``tests/unit/test_sub_agent_tier_floor.py``.
+    """
+    from acb_skills.tier_policy import LADDER
+
+    if not (parent or "").strip():
+        return parent
+    own = _agent_default_tier(agent, config, agent_md_model, is_copilot=is_copilot)
+    p = parent.strip()
+    if p not in LADDER or own not in LADDER:
+        return parent
+    return LADDER[max(LADDER.index(p), LADDER.index(own))]
+
+
 def _agent_default_tier(
     agent: Any, config: dict[str, Any], agent_md_model: str, *, is_copilot: bool,
 ) -> str:
@@ -8058,6 +8090,18 @@ async def _tier_policy_for_run(
             "ai_route.effort_from_text", agent=agent_name, run_id=run_id,
             effort=effort, source=turn.effort_source,
         )
+    # The size of the turn (owner, 2026-10-22): a long chat or a lot of
+    # context starts the turn on the powerful tier. Known before the first
+    # request, so the turn keeps one model.
+    context_tokens = 0
+    if isinstance(event_payload, dict):
+        context_tokens = tier_policy.turn_tokens(
+            message, event_payload.get("messages") or [],
+            str(event_payload.get("context") or ""),
+        )
+    if context_tokens >= tier_policy.CONTEXT_POWERFUL_TOKENS:
+        _log.info("ai_route.long_turn", agent=agent_name, run_id=run_id,
+                  tokens=context_tokens)
     return tier_policy.RunTierPolicy(
         agent=agent_name,
         run_id=run_id,
@@ -8065,6 +8109,7 @@ async def _tier_policy_for_run(
         kind=turn.kind,
         effort=effort,
         emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
+        context_tokens=context_tokens,
     )
 
 
