@@ -211,7 +211,8 @@ import {
   spaceOf,
   taskWhere,
 } from "./lib/tree";
-import { forgetFold, markHidden, openFolds, resumeFold } from "./lib/treeFold";
+import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
+import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
@@ -408,6 +409,30 @@ function ProjectNav({
   onManageTags: (space: ProjectRow) => void;
   onManageLifecycle: (space: ProjectRow) => void;
 }) {
+  // Filed work leaves the live tree and waits in one collapsed section at the
+  // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
+  const split = useMemo(() => splitArchived(roots), [roots]);
+  const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
+  const archivedGen = useMemo(
+    () => new Map(split.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [split.archived],
+  );
+  // `onDelete` is wrapped for the reason the comment below gives in full: it
+  // RAISES A DIALOG, and on a phone this tree is the drawer sheet. Every other
+  // entry writes and closes its own menu.
+  const navActions = actions
+    ? {
+        ...actions,
+        ...(actions.onDelete
+          ? {
+              onDelete: (project: ProjectRow, level: NodeLevel) => {
+                actions.onDelete?.(project, level);
+                onPicked?.();
+              },
+            }
+          : {}),
+      }
+    : undefined;
   return (
     <>
       {/* The app's own destinations, in the main sidebar's grammar (owner
@@ -481,7 +506,7 @@ function ProjectNav({
       </div>
 
       <ProjectTree
-        roots={roots}
+        roots={split.active}
         selectedId={app ? null : selectedId}
         onSelect={(project) => {
           onSelect(project);
@@ -508,21 +533,7 @@ function ProjectNav({
         // `actions` writes and closes its own menu — those are safe as they
         // are, and wrapping them would close the drawer for a state change
         // somebody wants to make twice in a row.
-        actions={
-          actions
-            ? {
-                ...actions,
-                ...(actions.onDelete
-                  ? {
-                      onDelete: (project: ProjectRow, level: NodeLevel) => {
-                        actions.onDelete?.(project, level);
-                        onPicked?.();
-                      },
-                    }
-                  : {}),
-              }
-            : undefined
-        }
+        actions={navActions}
         // Each closes the phone's drawer, like every other row action here —
         // a dialog opening behind an open drawer is a dialog nobody can see.
         onManageStatuses={(space) => {
@@ -542,6 +553,48 @@ function ProjectNav({
           onPicked?.();
         }}
       />
+
+      {/* Archived — its own section, closed until asked for. No section when
+          nothing is filed. The rows are the same tree rows, so Unarchive and
+          Delete are on the row's menu, and a filed project opens to read. */}
+      {split.count > 0 ? (
+        <div className="mt-2 border-t border-border pt-1" data-testid="archived-section">
+          <button
+            type="button"
+            aria-expanded={archivedOpen}
+            aria-controls="projects-archived-list"
+            onClick={() => toggleFold(ARCHIVED_FOLD_ID)}
+            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+          >
+            <Icon name={archivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+            <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+              Archived
+            </span>
+            <span
+              className="shrink-0 text-xs tabular-nums"
+              title="Archived projects, subprojects and spaces"
+            >
+              {split.count}
+              <span className="sr-only"> archived projects</span>
+            </span>
+          </button>
+          {archivedOpen ? (
+            <div id="projects-archived-list" className="opacity-75">
+              <ProjectTree
+                roots={split.archived.map((entry) => entry.node)}
+                selectedId={app ? null : selectedId}
+                onSelect={(project) => {
+                  onSelect(project);
+                  onPicked?.();
+                }}
+                actions={navActions}
+                rootParentGen={(node) => archivedGen.get(node.id) ?? 0}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
