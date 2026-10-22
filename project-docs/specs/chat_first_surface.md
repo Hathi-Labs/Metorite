@@ -557,7 +557,7 @@ the My Day feed read it reuses (`src/lib/shell/feed.ts`).
 **Fences.** The route's test (new or extended). `feed.test.ts` for the
 pick. An e2e stub of the feed with three cards, and the pills read them.
 
-### CF-5 · The brief as the first turn — AGENT-SAFE · BUILT 2026-10-22 (#PR), dark on staging, live where the flag is on
+### CF-5 · The brief as the first turn — AGENT-SAFE · BUILT 2026-10-22 (#1216), dark on staging, live where the flag is on
 
 The build added `POST /chat/sessions/{id}/brief`, which writes one assistant row from the Reach brief parts and stamps the member's day. The dock asks it once through `wantsBrief`, on a phone with the flag on, and the chat mounts after the answer. The `reportCard` template draws the brief's lines as pills, and a tap sends the line as the member's turn.
 
