@@ -121,6 +121,7 @@ import {
   markBriefAsked,
   navigateAct,
   onChatLink,
+  runMovesPage,
   onPageChange,
   openAssistant,
   paneAt,
@@ -735,6 +736,13 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const raise = useCallback(() => setAssistantMode("full"), []);
 
   // ── The app switch ──────────────────────────────────────────────────────
+  // A tap on a phone toast's Open: the page, as a tapped link opens one.
+  const openFromPhone = (href: string) => {
+    router.push(href);
+    const how = onChatLink({ phone: true, chatFirst: liveRef.current.chatFirst });
+    if (how === "peek") setAssistantMode("peek");
+    else if (how === "close") closeAssistant();
+  };
   const movedRef = useRef<Set<string>>(new Set());
   const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock, phone, chatFirst });
   useEffect(() => {
@@ -754,13 +762,20 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       if (!target) return;
       movedRef.current.add(target.href);
       const back = live.pathname ?? "/";
+      // On a phone the chat stays open, and the toast offers the app
+      // (owner report, 2026-10-22, `runMovesPage`).
+      if (!runMovesPage(live)) {
+        toast.show({
+          key: `assistant-switch-${target.href}`,
+          variant: "success",
+          title: `${ASSISTANT_NAME} is working in ${target.label}`,
+          action: { label: `Open ${target.label}`, onClick: () => openFromPhone(target.href) },
+        });
+        return;
+      }
       router.push(target.href);
       // A full view hides the app it just opened.
       if (live.form === "full" && live.canDock) setAssistantMode("dock");
-      // On a phone the sheet hides it too. With the flag on it drops to the
-      // strip, so the member sees the app the run opened (CF-1). With the
-      // flag off nothing changes: the sheet stays.
-      if (onChatLink({ phone: live.phone, chatFirst: live.chatFirst }) === "peek") setAssistantMode("peek");
       toast.show({
         key: `assistant-switch-${target.href}`,
         variant: "success",
@@ -779,22 +794,24 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         open: live.open, threadId, activeId: live.activeId, path, sections: live.sections,
         phone, chatFirst: live.chatFirst, form: live.form, canDock: live.canDock,
       });
-      if (!act.push || !path) return;
+      if (!path) return;
+      const label = act.pane?.label;
+      if (act.offer) {
+        // A phone keeps the chat open. The member opens the page from the
+        // toast, if they want it (owner report, 2026-10-22).
+        toast.show({
+          key: `assistant-open-${path}`,
+          variant: "success",
+          title: label ? `${label} is ready` : "A page is ready",
+          description: why || undefined,
+          action: { label: label ? `Open ${label}` : "Open", onClick: () => openFromPhone(path) },
+        });
+        return;
+      }
+      if (!act.push) return;
       const back = live.pathname ?? "/";
       router.push(path);
       if (act.dock) setAssistantMode("dock");
-      if (act.peek) {
-        // The sheet drops to the peek strip, so the page shows and the
-        // chat stays one tap away (CF-1). The strip shows the reply.
-        setAssistantMode("peek");
-        return;
-      }
-      if (act.close) {
-        // With the flag off a phone has no strip, so the sheet gives way.
-        closeAssistant();
-        return;
-      }
-      const label = act.pane?.label;
       toast.show({
         key: `assistant-open-${path}`,
         variant: "success",
