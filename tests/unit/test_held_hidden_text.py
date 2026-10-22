@@ -42,7 +42,7 @@ from tests.unit.test_held_text_seal import _drow, _Provider, _seal, _send
 
 TAG = "Hi Kim,\n\nThe quote.\U000e0070\U000e0061\U000e0079"  # "pay" in tags
 ZERO_WIDTH = "Hi Kim,\n\nThe​ quote‌."
-NBSP = "Hi Kim,   \n\nThe quote.  "
+NBSP = "Hi\u00a0Kim,   \n\nThe quote.  "
 
 
 @pytest.mark.parametrize(("text", "hidden"), [
@@ -102,7 +102,7 @@ def test_a_chat_save_refuses_hidden_text_and_normalises_spacing() -> None:
         with pytest.raises(HTTPException) as e:
             d._chat_draft_text(req(body, subject))
         assert e.value.status_code == 422
-    clean = d._chat_draft_text(req(NBSP, "Quote for  June "))
+    clean = d._chat_draft_text(req(NBSP, "Quote\u00a0for  June "))
     assert clean.body == "Hi Kim,\n\nThe quote." and clean.subject == "Quote for June"
 
 
