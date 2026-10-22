@@ -398,20 +398,28 @@ A desktop, and a phone with the flag off, draw what they drew before.
 
 ---
 
-## 5. Decisions proposed — each with a default an agent builds to
+## 5. Decisions — Decided: owner, 2026-10-22 (D109)
 
-| # | Question | Default | Why |
+**Decided: owner, 2026-10-22,** in chat: "go ahead with your recommendation".
+The recommendation was to accept D-CF-1, D-CF-2, D-CF-3, D-CF-4, D-CF-6 and
+D-CF-7 as proposed, and to amend D-CF-5. `work_plan.md` §3 records it as
+**D109**. The principle behind all seven: conversation first, screens on
+demand, and the member's last choice always wins over the default.
+
+| # | Question | Decided | Why |
 |---|---|---|---|
 | **D-CF-1** | Does the desktop get a peek size too? | **No.** The peek strip is a phone size | The side panel already keeps the chat in reach. A third desktop form would make one press open three things, the fault D102 removed |
-| **D-CF-2** | Does a desktop auto-open the assistant on the first visit? | **No.** The desktop gets the nudge under the field | A desktop member sees the field at all times. An auto-open steals the page they came for |
-| **D-CF-3** | Does the phone open on the chat on every visit, or once? | **Once per browser session,** and never on a deep link | A member who closed it said so. A link somebody sent names a page |
-| **D-CF-4** | Does `show_in_app` move the page when the assistant is closed? | **No.** Only while the member watches that chat | The same rule as the app switch. A page that moves under a member who writes elsewhere loses their place |
-| **D-CF-5** | Does a `recordCard` act write without a card? | **No.** Every act goes through `request_confirmation` | The card policy of `projects_ai_chat.md` §29. The owner's rule of 2026-10-20: a write asks once, on one card |
-| **D-CF-6** | Where does the brief come from? | **My Day's MD-7 composition,** read, never recomposed | One composition serves WhatsApp, My Day and the chat. A second composition costs a model call and can disagree |
-| **D-CF-7** | Does the nudge live on the server? | **Yes,** in `shell_prefs` | A nudge that returns on every device is the "proactive bubble" that teaches people to dismiss everything |
+| **D-CF-2** | Does a desktop auto-open the assistant on the first visit? | **No.** The desktop gets the nudge under the field | A desktop member sees the field at all times. An unasked panel is an interruption, and an interruption invites the urge to undo it |
+| **D-CF-3** | Does the phone open on the chat on every visit, or once? | **Once per browser session,** and never on a deep link. Read it as "every launch starts in the chat, and a choice made in the session stands" | A habit forms on a stable cue, so every launch meets the same first screen. A member who dropped the chat to the strip must not be thrown back on the next Home tap |
+| **D-CF-4** | Does `show_in_app` move the page when the assistant is closed? | **No.** Only while the member watches that chat | The same rule as the app switch. A page that moves under a member is the fastest way to lose their trust |
+| **D-CF-5** | Does a `recordCard` act write without a card? | **Amended.** A write that leaves the company or cannot be undone asks once, on one card: send, delete, money, membership. A reversible write on the member's own work acts at once and offers Undo: mark done, snooze, move to Monday | People habituate to a confirm on a low-stakes act within days, and then it protects nothing, while it costs a tap every time. Undo keeps the flow and keeps the safety. This amends the owner's rule of 2026-10-20 for the reversible case, and `projects_ai_chat.md` §29 reads it with this spec |
+| **D-CF-6** | Where does the brief come from? | **My Day's MD-7 composition,** read, never recomposed | The same words on WhatsApp, on My Day and in the chat read as one assistant with one memory |
+| **D-CF-7** | Does the nudge live on the server? | **Yes,** in `shell_prefs` | A nudge that returns on every device becomes a banner, and a banner is invisible within a week |
 
-The owner accepts, amends or refuses each in H-369. A refusal of D-CF-1 or
-D-CF-2 changes CF-1 and CF-2 only.
+**One refinement for later, accepted with D-CF-3.** A member may close the
+sheet at once on three launches in a row. Then the phone stops opening on
+the chat, and the account menu offers a "Chat first" switch. Ticket CF-9,
+not built.
 
 ---
 
@@ -598,8 +606,12 @@ mark. An e2e with a stubbed brief.
 
 1. A `recordCard` for a task draws the title, four fields, the status chip
    and the acts. It holds at the panel width and at 390 px.
-2. An act sends the member's turn in words, and the tool's own card follows.
-   No write happens without that card.
+2. An act sends the member's turn in words. For a send, a delete, money or
+   membership, the tool's own confirm card follows, and no write happens
+   without it. A reversible act on the member's own work, such as mark done
+   or snooze, writes at once. An Undo toast follows (D-CF-5 as decided,
+   2026-10-22). The Undo uses the task store's existing undo seam
+   (`UndoToast`), never a second one.
 3. "Open" calls `show_in_app`.
 4. An unknown `kind` draws `GenUIFallback`.
 5. "Show me task #42" in the routing eval returns a `recordCard`.
@@ -659,10 +671,19 @@ rows still show. `seams.test.ts` stays at one dock. Mutation, seen to fail
 first: pass `compact={form === "dock" || phone}` in the dock, and the fence
 fails.
 
+### CF-9 · Three dismissals stop the open, and a "Chat first" switch — AGENT-SAFE
+
+The refinement accepted with D-CF-3. `shell_prefs` counts launches where the
+member closed the sheet within five seconds of the open. At three in a row,
+the phone stops opening on the chat. A "Chat first" switch in the account
+menu turns it back on, and any send resets the count. Pure rule with tests
+in `assistant.ts`, the field in the prefs route with its Python test, one
+phone e2e. Not built.
+
 ### Order
 
 CF-1, then CF-2 and CF-3 in parallel, then CF-4 and CF-5, then CF-6, then
-CF-7. CF-8 follows CF-1, because it builds on the sheet's one row. CF-1 to
+CF-7 and CF-9. CF-8 follows CF-1, because it builds on the sheet's one row. CF-1 to
 CF-3 give a phone member the whole loop: open on the chat, work in it, see
 a page, come back. CF-4 to CF-6 make the chat worth opening.
 
