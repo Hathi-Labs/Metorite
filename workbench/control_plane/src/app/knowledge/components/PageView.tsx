@@ -32,7 +32,7 @@
  * decides "off" from the spaces read alone (`lib/phase.ts`).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -74,6 +74,7 @@ import {
 import { useFullWidth } from "../lib/fullWidth";
 import { publishBody, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
 import { KNOWLEDGE_HOME, pageHref } from "../lib/links";
+import { highlightWords } from "../lib/search";
 import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
 import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
@@ -279,6 +280,17 @@ export default function PageView({ pageId }: { pageId: string }) {
   // render, the adjust-state-on-a-prop-change pattern. The address then
   // drops it, so a reload shows the page and not the editor.
   const askEdit = searchParams.get("edit") === "1";
+
+  // KB-3d: a hit opens the page with the words of the search in `?q=`. The
+  // match bar marks them, and its close button drops `q` from the address.
+  const matchQ = searchParams.get("q") ?? "";
+  const matchTerms = useMemo(() => highlightWords(matchQ), [matchQ]);
+  const closeMatches = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("q");
+    const rest = next.toString();
+    router.replace(rest ? `${pageHref(pageId)}?${rest}` : pageHref(pageId), { scroll: false });
+  }, [searchParams, router, pageId]);
   const [editAsked, setEditAsked] = useState<string | null>(null);
   if (askEdit && page && editAsked !== page.id) {
     setEditAsked(page.id);
@@ -605,6 +617,8 @@ export default function PageView({ pageId }: { pageId: string }) {
                     body={page.body_md}
                     label={`${page.title}, the page body`}
                     onNavigate={(href) => router.push(href)}
+                    matchTerms={matchTerms}
+                    onMatchClose={closeMatches}
                   />
                 </div>
               </HeadingAnchors>

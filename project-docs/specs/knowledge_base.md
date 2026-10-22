@@ -1797,7 +1797,7 @@ Four builders work at once, so they keep out of each other's files.
 |---|---|
 | **KB-2j** | Editor, second set: math with KaTeX, mermaid diagrams as code blocks with a live preview, image resize, align, caption and lightbox, and embeds from an allowlist of providers (YouTube, Vimeo, Loom, Figma and the like) in a sandboxed iframe, with `frame-src` in the CSP |
 | **KB-2h and KB-2k** | Backlinks written to `kb_links` from the saved body, and a "Linked from" list. `@` mentions of a person or a page, a hover preview on a page link, and "Create page" from a `[[` with no match |
-| **KB-3d** | Search view like the Docmost spotlight: chips for Space, Creator, Date and Title only, matched words marked in each snippet, and a match bar on the opened page |
+| **KB-3d** ✅ BUILT 2026-10-22 (branch `ws61-kb3d-search`) | Search view like the Docmost spotlight: chips for Space, Creator, Date and Title only, matched words marked in each snippet, and a match bar on the opened page |
 | **KB-2m** | Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages and attachments, as a zip |
 | **KB-2o** | Labels on pages, a labels list and a page of the pages with one label |
 | **KB-2c** | Files: attachments, video, audio and PDF blocks, and draw.io and Excalidraw blocks that save as attachments. After AM-5 and H-322 |
@@ -1822,7 +1822,7 @@ These Docmost features change the product, so no builder starts them.
 The order is KB-2d, KB-2f, KB-2g and KB-2i in parallel, then wave 2.
 
 
-#### KB-3d in detail (specified 2026-10-22)
+#### KB-3d in detail (specified 2026-10-22, built 2026-10-22)
 
 The section "KB-2k in detail" is not in this spec yet, so this section
 follows the end of §21.7. KB-3d takes no migration. It changes one gateway
@@ -1839,3 +1839,12 @@ read and the Search view (KB-3b). The look stays Metorite's one look.
 **R5.** The route reads no tenant and no identity from its input. The
 `author` value is a filter on rows that the member can already see. It grants
 no access.
+
+**KB-3d is BUILT, 2026-10-22** (branch `ws61-kb3d-search`, no migration).
+`GET /knowledge/search` takes `author`, `updated_after` and `title_only`,
+and answers `terms` and each hit's `author_email`. The Search view has the
+four chips, with the filters in the address (`space`, `author`, `date`,
+`title`). A snippet marks the matched words as React elements. A hit opens
+its page with `?q=`, and `MatchBar` drives the find engine of KB-2i. The R8
+tests are in `tests/unit/test_kb_search_r8.py`, and the e2e tests are in
+`e2e/knowledge-search-filters.spec.ts`.

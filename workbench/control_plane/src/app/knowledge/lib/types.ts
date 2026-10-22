@@ -151,12 +151,16 @@ export interface SearchHit {
   href: string;
   /** The page icon (KB-2f), or `null`. */
   icon?: string | null;
+  /** The page author (KB-3d), for the Creator chip. */
+  author_email?: string | null;
 }
 
 /** `GET /knowledge/search`. `query` is the words the gateway searched. */
 export interface SearchAnswer {
   query: string;
   hits: SearchHit[];
+  /** The plain words of the query, to mark in a snippet (KB-3d). */
+  terms?: string[];
   /** True when only the lexical half ran. The view shows nothing for it. */
   degraded: boolean;
 }
