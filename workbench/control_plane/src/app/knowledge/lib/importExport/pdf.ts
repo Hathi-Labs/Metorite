@@ -200,6 +200,12 @@ export interface PdfResult extends PdfMarkdown {
 /** The refusal for a PDF that has no text. */
 export const SCAN_MESSAGE = "This PDF has no text layer (a scan). OCR is not available yet.";
 
+/** How many pages to read, and the notice when the cap cuts the document. Pure. */
+export function planPdfPages(numPages: number): { count: number; notice: string | null } {
+  if (numPages <= MAX_PDF_PAGES) return { count: numPages, notice: null };
+  return { count: MAX_PDF_PAGES, notice: `Only the first ${MAX_PDF_PAGES} of ${numPages} PDF pages were read.` };
+}
+
 /** Read a PDF file as a Markdown body. Browser only. */
 export async function pdfToMarkdown(data: Uint8Array): Promise<PdfResult> {
   const { pdfjs } = await import("react-pdf");
@@ -215,29 +221,43 @@ export async function pdfToMarkdown(data: Uint8Array): Promise<PdfResult> {
     throw new DocumentRefusal("This PDF cannot be read. It may be damaged.");
   }
   try {
-    const notices: string[] = [];
-    const count = Math.min(doc.numPages, MAX_PDF_PAGES);
-    if (doc.numPages > MAX_PDF_PAGES) {
-      notices.push(`Only the first ${MAX_PDF_PAGES} of ${doc.numPages} PDF pages were read.`);
-    }
-    const pages: PdfItem[][] = [];
-    for (let n = 1; n <= count; n++) {
-      const page = await doc.getPage(n);
-      const content = await page.getTextContent();
-      const items: PdfItem[] = [];
-      for (const item of content.items) {
-        if (!("str" in item)) continue;
-        const t = item.transform as number[];
-        const size = item.height > 0 ? item.height : Math.hypot(t[2], t[3]);
-        items.push({ str: item.str, x: t[4], y: t[5], size, width: item.width });
-      }
-      pages.push(items);
-      page.cleanup();
-    }
-    const out = pdfToMarkdownFromItems(pages);
-    if (!out.markdown.trim() && !out.title) throw new DocumentRefusal(SCAN_MESSAGE);
-    return { ...out, notices };
+    return await pdfDocToMarkdown(doc);
   } finally {
     await doc.destroy();
   }
+}
+
+/** The part of a pdf.js document that the reader uses. A test passes a stand-in. */
+export interface PdfDocLike {
+  numPages: number;
+  getPage(n: number): Promise<{
+    getTextContent(): Promise<{ items: ReadonlyArray<unknown> }>;
+    cleanup(): void;
+  }>;
+}
+
+/** Read the pages of an open document as Markdown. Refuses a scan. */
+export async function pdfDocToMarkdown(doc: PdfDocLike): Promise<PdfResult> {
+  const notices: string[] = [];
+  const plan = planPdfPages(doc.numPages);
+  const count = plan.count;
+  if (plan.notice) notices.push(plan.notice);
+  const pages: PdfItem[][] = [];
+  for (let n = 1; n <= count; n++) {
+    const page = await doc.getPage(n);
+    const content = await page.getTextContent();
+    const items: PdfItem[] = [];
+    for (const raw of content.items) {
+      const item = raw as { str?: string; transform: number[]; height: number; width: number };
+      if (typeof item.str !== "string") continue;
+      const t = item.transform;
+      const size = item.height > 0 ? item.height : Math.hypot(t[2], t[3]);
+      items.push({ str: item.str, x: t[4], y: t[5], size, width: item.width });
+    }
+    pages.push(items);
+    page.cleanup();
+  }
+  const out = pdfToMarkdownFromItems(pages);
+  if (!out.markdown.trim() && !out.title) throw new DocumentRefusal(SCAN_MESSAGE);
+  return { ...out, notices };
 }

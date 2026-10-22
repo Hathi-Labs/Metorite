@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { bodySize, headingLevels, itemsToLines, linesToBlocks, pdfToMarkdownFromItems, type PdfItem } from "./pdf";
+import {
+  SCAN_MESSAGE,
+  bodySize,
+  headingLevels,
+  itemsToLines,
+  linesToBlocks,
+  pdfDocToMarkdown,
+  pdfToMarkdownFromItems,
+  planPdfPages,
+  type PdfDocLike,
+  type PdfItem,
+} from "./pdf";
 
 let y = 0;
 const item = (str: string, x: number, yy: number, size = 11, width = str.length * size * 0.5): PdfItem => ({ str, x, y: yy, size, width });
@@ -110,5 +121,41 @@ describe("pdf to Markdown", () => {
     const lines = itemsToLines([item("Head", 10, 700, 20), item("body body body body body body", 10, 650), item("body two body two body two", 10, 636)]);
     const blocks = linesToBlocks(lines, new Map([[20, 1]]));
     expect(blocks.map((b) => [b.level, b.lines.length])).toEqual([[1, 1], [0, 2]]);
+  });
+});
+
+describe("pdf reader limits", () => {
+  const fakeDoc = (numPages: number, withText: boolean) => {
+    const read: number[] = [];
+    const doc: PdfDocLike = {
+      numPages,
+      getPage: async (n) => {
+        read.push(n);
+        return {
+          getTextContent: async () => ({
+            items: withText ? [{ str: `Page ${n} text`, transform: [1, 0, 0, 11, 10, 700], height: 11, width: 50 }] : [],
+          }),
+          cleanup: () => {},
+        };
+      },
+    };
+    return { doc, read };
+  };
+
+  it("plans 300 pages and a notice for a 301-page document", () => {
+    expect(planPdfPages(301)).toEqual({ count: 300, notice: "Only the first 300 of 301 PDF pages were read." });
+    expect(planPdfPages(300)).toEqual({ count: 300, notice: null });
+  });
+
+  it("reads 300 pages of a 301-page document and adds the notice", async () => {
+    const { doc, read } = fakeDoc(301, true);
+    const out = await pdfDocToMarkdown(doc);
+    expect(read).toHaveLength(300);
+    expect(read[299]).toBe(300);
+    expect(out.notices).toEqual(["Only the first 300 of 301 PDF pages were read."]);
+  });
+
+  it("refuses a document with no text layer, and does not give an empty page", async () => {
+    await expect(pdfDocToMarkdown(fakeDoc(3, false).doc)).rejects.toThrow(SCAN_MESSAGE);
   });
 });
