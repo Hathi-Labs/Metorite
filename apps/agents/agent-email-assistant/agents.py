@@ -4854,19 +4854,9 @@ async def edit_draft(
 
     Shows the member the changed draft on a card. Sends nothing: send it
     after with send_draft, which shows its own card."""
-    # §21 fix round 2: no hidden character goes into a draft from the chat.
-    # NBSP and trailing spaces are normalised, and the gateway checks again.
-    from acb_skills.reply_card import has_hidden_text, visible_spacing  # noqa: PLC0415
-
-    if any(has_hidden_text(t) for t in (body, subject) if t is not None):
-        return ("Nothing changed. The new text holds hidden characters. Write it "
-                "again in plain text.")
-    if subject is not None and len(" ".join(subject.split())) > _SUBJECT_MAX:
-        # §21 fix round 3: a send card shows the whole subject.
-        return (f"Nothing changed. A subject has {_SUBJECT_MAX} characters at most, "
-                "so a card can show it whole. Write a shorter subject.")
-    body = visible_spacing(body) if body is not None else None
-    subject = " ".join(visible_spacing(subject).split()) if subject is not None else None
+    refused, body, subject = _edit_text(body, subject)
+    if refused:
+        return refused
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Nothing changed. {sender}"
@@ -4928,19 +4918,45 @@ async def edit_draft(
             "from_chat": True,
         }) or {}
     except GatewayError as exc:
-        if exc.status not in (409, 422):
-            raise
-        if "hidden characters" in str(getattr(exc, "detail", "") or exc):
-            return ("Nothing changed. The draft holds hidden characters. Read it with "
-                    "read_email, and pass its whole text again in plain text in body.")
-        return (f"Nothing changed. {exc}. Read the draft with read_email, and "
-                "pass its whole text, with the change, in body.")
+        return _edit_save_refusal(exc)
     lost = (" Its formatting and its images could not be kept, so it now "
             "holds the text only.") if res.get("html") == "lost" else ""
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
     cancelled = await _cancel_schedules(pending)
     return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+
+
+def _edit_save_refusal(exc: Exception) -> str:
+    """The answer of ``edit_draft`` when the gateway refused the save: a 409
+    or a 422. Any other failure raises."""
+    if getattr(exc, "status", None) not in (409, 422):
+        raise exc
+    if "hidden characters" in str(getattr(exc, "detail", "") or exc):
+        # §21 fix round 2.
+        return ("Nothing changed. The draft holds hidden characters. Read it with "
+                "read_email, and pass its whole text again in plain text in body.")
+    return (f"Nothing changed. {exc}. Read the draft with read_email, and "
+            "pass its whole text, with the change, in body.")
+
+
+def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:
+    """``(refusal, body, subject)`` of an ``edit_draft`` call.
+
+    §21 fix round 2: no hidden character goes into a draft from the chat.
+    NBSP and trailing spaces are normalised, and the gateway checks again.
+    Fix round 3: a send card shows the whole subject, so it has
+    ``_SUBJECT_MAX`` characters at most."""
+    from acb_skills.reply_card import has_hidden_text, visible_spacing
+
+    if any(has_hidden_text(t) for t in (body, subject) if t is not None):
+        return ("Nothing changed. The new text holds hidden characters. Write it "
+                "again in plain text."), body, subject
+    if subject is not None and len(" ".join(subject.split())) > _SUBJECT_MAX:
+        return (f"Nothing changed. A subject has {_SUBJECT_MAX} characters at most, "
+                "so a card can show it whole. Write a shorter subject."), body, subject
+    return ("", visible_spacing(body) if body is not None else None,
+            " ".join(visible_spacing(subject).split()) if subject is not None else None)
 
 
 async def _pending_schedules(draft_id: str) -> list[dict[str, Any]]:

@@ -3793,6 +3793,23 @@ async def _check_text_seal(provider: Any, drow: Any, expect: DraftExpect, signat
         raise HTTPException(status_code=409, detail=DRAFT_TEXT_CHANGED_DETAIL)
 
 
+async def _check_chat_send(
+    provider: Any, drow: Any, expect: DraftExpect, signature: str,
+) -> None:
+    """The checks of a send from a chat card (``expect``), before any
+    provider write. A schedule fires through here too.
+
+    §21 fix rounds 2 and 3: the card can show the draft whole
+    (:func:`check_draft_send`), also for a schedule stored before the seal.
+    Fix round 1 (P1-b): the text is the text the card sealed."""
+    try:
+        check_draft_send(drow.subject, drow.body_text)
+    except DraftTextRefused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+    if expect.text_digest:
+        await _check_text_seal(provider, drow, expect, signature)
+
+
 #: The answer when the PROVIDER draft holds other recipients than the card.
 DRAFT_PROVIDER_CHANGED_DETAIL = (
     "The recipients of this draft changed in your mail app. Nothing was sent.")
@@ -3906,17 +3923,8 @@ async def send_draft_endpoint(
                 "WHERE account_id = :aid"
             ), {"aid": req.account_id})).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
-            # §21 fix round 2: a send from a chat card (``expect``) never
-            # carries hidden characters, also a schedule stored before the seal.
             if req.expect is not None:
-                try:
-                    check_draft_send(drow.subject, drow.body_text)
-                except DraftTextRefused as exc:
-                    raise HTTPException(status_code=422, detail=exc.detail) from None
-            # §21 fix round 1 (P1-b): the text is the text the card sealed,
-            # checked before any provider write. A schedule fires through here.
-            if req.expect is not None and req.expect.text_digest:
-                await _check_text_seal(provider, drow, req.expect, signature)
+                await _check_chat_send(provider, drow, req.expect, signature)
             # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
             # F1 and F2). Gmail rebuilds the whole draft on the signing
             # update, and Outlook PATCHes each list that it gets.
