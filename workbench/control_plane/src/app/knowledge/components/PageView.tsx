@@ -38,6 +38,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAccess } from "@/components/AccessProvider";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { EmptyState } from "@/components/EmptyState";
+import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -430,8 +431,11 @@ export default function PageView({ pageId }: { pageId: string }) {
             {editing ? (
               <>
                 {isMobile ? null : (
-                  <span className="mr-1 text-xs text-muted-foreground" role="status">
-                    {dirty ? "Unsaved changes" : ""}
+                  // The page looks the same in both modes, so the bar says
+                  // which one is open, and whether a save is owed.
+                  <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground" role="status">
+                    <Icon name={dirty ? "CircleDot" : "Pencil"} size={12} className={dirty ? "text-warning" : undefined} />
+                    {dirty ? "Unsaved changes" : "Editing"}
                   </span>
                 )}
                 <Button
