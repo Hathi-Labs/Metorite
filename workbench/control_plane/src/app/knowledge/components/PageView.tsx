@@ -430,14 +430,13 @@ export default function PageView({ pageId }: { pageId: string }) {
           <div className="flex shrink-0 items-center gap-1" data-page-tools="">
             {editing ? (
               <>
-                {isMobile ? null : (
-                  // The page looks the same in both modes, so the bar says
-                  // which one is open, and whether a save is owed.
-                  <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground" role="status">
-                    <Icon name={dirty ? "CircleDot" : "Pencil"} size={12} className={dirty ? "text-warning" : undefined} />
-                    {dirty ? "Unsaved changes" : "Editing"}
-                  </span>
-                )}
+                {/* The page looks the same in both modes, so the bar says
+                    which one is open, and whether a save is owed. A phone
+                    shows the mark alone, and the words stay for a reader. */}
+                <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground" role="status">
+                  <Icon name={dirty ? "CircleDot" : "Pencil"} size={12} className={dirty ? "text-warning" : undefined} />
+                  <span className={isMobile ? "sr-only" : undefined}>{dirty ? "Unsaved changes" : "Editing"}</span>
+                </span>
                 <Button
                   variant="ghost"
                   size="icon-sm"

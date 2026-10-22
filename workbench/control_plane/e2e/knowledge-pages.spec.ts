@@ -1046,6 +1046,7 @@ test.describe("the block editor", () => {
       });
       expect(css.border).toBe("0px0px");
       expect(css.shadow).toBe("none");
+      expect(css.outline).toBe("none");
     }
     await expect(page.getByRole("button", { name: "Save changes" })).toBeVisible();
   });
