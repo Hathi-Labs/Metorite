@@ -119,3 +119,20 @@ export function sanitizeDocxHtml(raw: string): SanitizedDocx {
     DOMPurify.removeHook(hook);
   }
 }
+
+/**
+ * Clean HTML that leaves the app as a FILE (Knowledge export, KB-2m). The
+ * file opens in the member's own browser, away from our origin, so this keeps
+ * remote images and styles and removes what runs: the email policy's tags and
+ * attributes (`UNTRUSTED_FORBID_*`), which DOMPurify's defaults extend with
+ * every handler attribute and every `javascript:` URL. Browser only, and it
+ * FAILS CLOSED like `sanitizeDocxHtml`: with no DOM it returns no HTML.
+ */
+export function sanitizeFileHtml(raw: string): string {
+  if (!DOMPurify.isSupported) return "";
+  return DOMPurify.sanitize(raw, {
+    FORBID_TAGS: [...UNTRUSTED_FORBID_TAGS],
+    FORBID_ATTR: [...UNTRUSTED_FORBID_ATTR],
+    WHOLE_DOCUMENT: false,
+  });
+}
