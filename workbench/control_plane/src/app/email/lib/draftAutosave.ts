@@ -540,6 +540,14 @@ export function newerDraft(
  * was saved last. A forward never continues a reply draft, so the caller
  * asks only for Reply and Reply all.
  */
+/** A forward prefix: English and the common localised ones (review P2). */
+const FORWARD_SUBJECT = /^\s*(fwd?|fw|wg|tr|rv|enc|doorst|vs|pd)\s*:/i;
+
+/** A draft subject that reads as a forward, never a reply to continue. */
+export function isForwardSubject(subject: string | null | undefined): boolean {
+  return FORWARD_SUBJECT.test(subject ?? "");
+}
+
 export function draftToContinue<T extends { id: string; receivedAt: string }>(
   thread: readonly T[] | null,
   gone: readonly string[],

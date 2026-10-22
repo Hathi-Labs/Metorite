@@ -75,7 +75,7 @@ describe("startReply wiring", () => {
   const start = src.slice(src.indexOf("const startReply = ("), src.indexOf("const switchReplyMode"));
 
   it("seeds the draft id and the composer record from the held draft", () => {
-    expect(start).toContain("draftToContinue(thread, composerDrafts.gone, isDraftEmail)");
+    expect(start).toContain("draftToContinue(thread, composerDrafts.gone, isReplyDraft)");
     expect(start).toContain("draftIdRef.current = held?.id ?? null;");
     expect(start).toContain("ownDraft(newReplyDrafts(d), held.id)");
     expect(start).toContain("continuedBody(held.bodyText");
@@ -88,5 +88,23 @@ describe("startReply wiring", () => {
 
   it("never continues a reply draft for a forward", () => {
     expect(start).toMatch(/mode === "forward" \? null : draftToContinue/);
+  });
+});
+
+describe("Reply never continues a forward draft (review P2)", () => {
+  it("reads a forward subject in English and the common localised prefixes", async () => {
+    const { isForwardSubject } = await import("./draftAutosave");
+    for (const s of ["Fwd: x", "FW: x", " fw : x", "WG: x", "TR: x", "RV: x", "Enc: x"]) {
+      expect(isForwardSubject(s)).toBe(true);
+    }
+    for (const s of ["Re: Fwd: x", "Re: x", "Forward planning", "", null]) {
+      expect(isForwardSubject(s)).toBe(false);
+    }
+  });
+
+  it("the pane passes the reply-only predicate", () => {
+    const src = readFileSync(join(__dirname, "../components/EmailDetail.tsx"), "utf-8");
+    expect(src).toContain("draftToContinue(thread, composerDrafts.gone, isReplyDraft)");
+    expect(src).toContain("isDraftEmail(m) && !isForwardSubject(m.subject)");
   });
 });

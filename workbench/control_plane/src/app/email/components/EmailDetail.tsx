@@ -47,7 +47,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import { revealWithin } from "@/lib/scrollWithin";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
-  continuedBody, draftToContinue, draftToUpdate, holdPick, pickProblem, recordSave,
+  continuedBody, draftToContinue, isForwardSubject, draftToUpdate, holdPick, pickProblem, recordSave,
   saveFailureText, sendFailureText,
   supersededDraft, NO_COMPOSER_DRAFTS, draftsAfterSend, markGone, newReplyDrafts, ownDraft,
   retireDrafts, threadWithoutComposerDrafts,
@@ -702,8 +702,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // or an earlier reply, so no second draft starts (owner, 2026-10-22).
     // A draft with no text here (an HTML-only copy) is not opened, so an
     // edit cannot write over text that this pane does not show.
+    // Reply continues a reply draft, never a forward draft (review P2).
+    const isReplyDraft = (m: Email) => isDraftEmail(m) && !isForwardSubject(m.subject);
     const found =
-      mode === "forward" ? null : draftToContinue(thread, composerDrafts.gone, isDraftEmail);
+      mode === "forward" ? null : draftToContinue(thread, composerDrafts.gone, isReplyDraft);
     const held = found && (found.bodyText || "").trim() ? found : null;
     draftIdRef.current = held?.id ?? null;
     setComposerDrafts((d) => (held ? ownDraft(newReplyDrafts(d), held.id) : newReplyDrafts(d)));
