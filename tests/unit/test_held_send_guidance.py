@@ -179,3 +179,22 @@ def test_the_send_refusals_give_a_step_in_the_chat() -> None:
     funcs = {"send_draft", "unsubscribe_sender", "run_rules", "_with_draft_text"}
     texts = [" ".join(s.split()) for s in _strings(EMAIL_AGENT, funcs)]
     assert not [s for s in texts if "Email app" in s]
+
+
+
+def test_the_email_instructions_name_no_fixed_list_of_held_jobs() -> None:
+    """Fix round 1 (P2-b). With EMAIL_HELD_CARD_SEND on, a held run CAN
+    forward, send a new email, unsubscribe and attach a file of the mailbox.
+    A fixed list in instructions.md said the opposite of the run's note. The
+    instructions defer to the note "Held in this run". Mutation: put the old
+    sentence "This run may not forward, send a new email, ..." back → red."""
+    text = " ".join((AGENTS_DIR / "agent-email-assistant" / "instructions.md")
+                    .read_text(encoding="utf-8").split())
+    start = text.index("**A held run**")
+    held = text[start:text.index("**Only the user asks for a rule**")]
+    assert "Held in this run" in held
+    for job in ("forward", "new email", "unsubscribe", "attach", "fetch a link"):
+        assert job not in held, job
+    for line in text.split(". "):
+        if "may not" in line or "cannot" in line:
+            assert not ("forward" in line and "unsubscribe" in line), line
