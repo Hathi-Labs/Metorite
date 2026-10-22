@@ -45,12 +45,15 @@ import { EditorContent, ReactNodeViewRenderer, useEditor } from "@tiptap/react";
 import Suggestion, { findSuggestionMatch } from "@tiptap/suggestion";
 
 import Icon from "@/components/Icon";
+import { useToast } from "@/components/ui/Toast";
+import { invalidate } from "@/lib/dataCache";
 import { OptionList, optionId } from "@/components/ui/OptionList";
 import { isInAppPath } from "@/lib/inAppLink";
 
-import { listPages } from "../../lib/api";
+import { KNOWLEDGE_CACHE, KnowledgeError, createPage, listPages } from "../../lib/api";
 import { dateLabel } from "../../lib/editor/date";
 import { MENTION_PREFIXES, buildMentionItems, type MentionItem } from "../../lib/editor/mention";
+import { personHref, personLinkText } from "../../lib/editor/people";
 import { PageChips, chipRuns } from "../../lib/editor/pageChips";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
 import { SearchAndReplace } from "../../lib/editor/searchAndReplace";
@@ -70,6 +73,8 @@ import type { TitleLink } from "./TitleField";
 import { storedFormViews } from "./storedFormViews";
 import { TableCellTools } from "./TableExtras";
 import { useKnowledge } from "../KnowledgeContext";
+import PageChipPreview from "./PageChipPreview";
+import { usePeopleMentions } from "./usePeopleMentions";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
 /**
@@ -97,6 +102,8 @@ interface MenuHandles {
   mention: () => ReturnType<SuggestionMenu<MentionItem>["render"]>;
   emoji: () => ReturnType<SuggestionMenu<EmojiMatch>["render"]>;
   onSpecial: (item: BlockItem, editor: Editor, range: Range) => void;
+  /** KB-2k3: make the draft page of a "Create page" pick, then link it. */
+  onCreate: (title: string, editor: Editor, range: Range) => void;
 }
 
 declare module "@tiptap/core" {
@@ -202,15 +209,32 @@ const KnowledgeMenus = Extension.create<object, MenuStorage>({
         },
         items: () => [],
         command: ({ editor, range, props }) => {
+          if (props.kind === "create") {
+            // The page is made first. Nothing is deleted or inserted until it exists.
+            handles()?.onCreate(props.title, editor, range);
+            return;
+          }
           const chain = editor.chain().focus().deleteRange(range);
-          if (props.kind === "page") {
+          if (props.kind === "person") {
+            // KB-2k1: a plain Markdown link. It writes no `kb_links` row.
+            chain
+              .insertContent([
+                {
+                  type: "text",
+                  text: personLinkText(props.person.name),
+                  marks: [{ type: "link", attrs: { href: personHref(props.person.id) } }],
+                },
+                { type: "text", text: " " },
+              ])
+              .run();
+          } else if (props.kind === "page") {
             chain
               .insertContent([
                 { type: "text", text: props.page.title, marks: [{ type: "link", attrs: { href: pageLinkHref(props.page.id) } }] },
                 { type: "text", text: " " },
               ])
               .run();
-          } else {
+          } else if (props.kind === "date") {
             chain
               .insertContent([
                 { type: "kbDate", attrs: { date: props.iso, label: dateLabel(props.iso) } },
@@ -287,6 +311,10 @@ export interface KnowledgeEditorProps {
   pageId?: string | null;
   /** Edit: the spaces whose pages the picker lists. */
   spaces?: readonly Space[];
+  /** Edit: the space of the open page, where "Create page" makes its draft (KB-2k3). */
+  spaceId?: string | null;
+  /** Edit: the page detail's `can_write`. "Create page" shows only when true. */
+  canWrite?: boolean;
   /** The name of the body for a screen reader. */
   label: string;
   /** Read: a click on a link to a page of this app. */
@@ -309,6 +337,8 @@ export default function KnowledgeEditor({
   flushRef,
   pageId,
   spaces,
+  spaceId,
+  canWrite,
   label,
   onNavigate,
   decorate,
@@ -363,10 +393,13 @@ export default function KnowledgeEditor({
   const slash = useSuggestionMenu<BlockItem>((q) => matchBlocks(q));
   const pageRows = useCallback((q: string) => matchPages(pages ?? [], q, { exclude: pageId }), [pages, pageId]);
   const pageMenu = useSuggestionMenu<PageChoice>(pageRows);
+  const people = usePeopleMentions();
+  const canCreate = editable && Boolean(canWrite) && Boolean(spaceId) && Boolean(pageId);
   const mentionRows = useCallback(
-    (q: string) => buildMentionItems(pages ?? [], q, { exclude: pageId }),
-    [pages, pageId],
+    (q: string) => buildMentionItems(pages, q, { exclude: pageId, people: people.rows, canCreate }),
+    [pages, pageId, people.rows, canCreate],
   );
+  const toast = useToast();
   const mentionMenu = useSuggestionMenu<MentionItem>(mentionRows);
   const emojiRows = useCallback((q: string) => searchEmoji(q), []);
   // `searchEmoji` answers [] until the data is in memory, so the edit mode
@@ -598,12 +631,50 @@ export default function KnowledgeEditor({
         const r = mentionMenu.render();
         return {
           ...r,
+          onStart: (props) => {
+            people.request(props.query);
+            r.onStart(props);
+          },
+          onUpdate: (props) => {
+            people.request(props.query);
+            r.onUpdate(props);
+          },
           // With no page and no date for the words, the keys stay the editor's own.
           onKeyDown: (props) => {
             const query = props.view.state.doc.textBetween(props.range.from + 1, props.range.to);
             return mentionRows(query).length ? r.onKeyDown(props) : false;
           },
         };
+      },
+      onCreate: (title, e, range) => {
+        if (!spaceId || !pageId) return;
+        const typed = e.state.doc.textBetween(range.from, range.to);
+        void createPage({ space_id: spaceId, parent_id: pageId, title })
+          .then((made) => {
+            if (e.isDestroyed) return;
+            invalidate(KNOWLEDGE_CACHE);
+            setPages((prev) =>
+              prev
+                ? [
+                    ...prev,
+                    { id: made.id, title: made.title, spaceName: spaceList.find((s) => s.id === spaceId)?.name ?? "", updatedAt: made.updated_at, icon: null },
+                  ]
+                : prev,
+            );
+            const chain = e.chain().focus();
+            // The words may have moved while the page was made. Delete them only if they are still there.
+            if (e.state.doc.textBetween(range.from, range.to) === typed) chain.deleteRange(range);
+            chain
+              .insertContent([
+                { type: "text", text: made.title, marks: [{ type: "link", attrs: { href: pageLinkHref(made.id) } }] },
+                { type: "text", text: " " },
+              ])
+              .run();
+          })
+          .catch((err: unknown) => {
+            const reason = err instanceof KnowledgeError ? err.message : "The page was not created.";
+            toast.show({ key: "kb-mention-create", variant: "error", title: "Could not create the page", description: reason });
+          });
       },
       onSpecial: (item, e, range) => {
         if (item.kind === "image") {
@@ -708,6 +779,7 @@ export default function KnowledgeEditor({
         </DragHandle>
       ) : null}
       <EditorContent editor={editor} />
+      <PageChipPreview shell={shell} spaces={spaceList} />
       {editor && editable ? (
         <>
           <FormatBubble
@@ -769,7 +841,11 @@ export default function KnowledgeEditor({
                     glyph: m.glyph ?? undefined,
                     section: m.section,
                   }
-                : { id: m.id, label: m.label, hint: m.hint, icon: "Calendar", section: m.section },
+                : m.kind === "person"
+                  ? { id: m.id, label: m.label, hint: m.hint, icon: "User", section: m.section }
+                  : m.kind === "create"
+                    ? { id: m.id, label: m.label, icon: "FilePlus", section: m.section }
+                    : { id: m.id, label: m.label, hint: m.hint, icon: "Calendar", section: m.section },
             )}
             active={mentionMenu.state?.active ?? 0}
             onPick={(i) => mentionShown[i] && mentionMenu.pick(mentionShown[i])}

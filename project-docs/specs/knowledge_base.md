@@ -91,7 +91,8 @@ Notion does."
 Markdown link as `[[` did, and `[[` still works. A link to a page by uuid draws
 as a mention chip. The `/` menu has groups, a line for each block and its
 Markdown shortcut. The link button of the bubble menu opens one popover for a
-page or an address. People mentions wait for KB-2k1.
+page or an address. **KB-2k is BUILT, 2026-10-22** (people mentions, the hover
+preview and Create page, see "KB-2k in detail" in §21.7).
 
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
@@ -1796,11 +1797,27 @@ Four builders work at once, so they keep out of each other's files.
 | Ticket | What |
 |---|---|
 | **KB-2j** | Editor, second set: math with KaTeX, mermaid diagrams as code blocks with a live preview, image resize, align, caption and lightbox, and embeds from an allowlist of providers (YouTube, Vimeo, Loom, Figma and the like) in a sandboxed iframe, with `frame-src` in the CSP |
-| **KB-2h and KB-2k** | Backlinks written to `kb_links` from the saved body, and a "Linked from" list. `@` mentions of a person or a page, a hover preview on a page link, and "Create page" from a `[[` with no match |
+| **KB-2h** ✅ BUILT 2026-10-21 (#1212) | Backlinks written to `kb_links` from the saved body, and a "Linked from" list |
+| **KB-2k** | ✅ BUILT 2026-10-22 (KB-2k1, KB-2k2 and KB-2k3). `@` mentions of a person, a hover preview on a page link, and "Create page" from a mention with no match. The `@` menu for pages and dates is built (#1225). See "KB-2k in detail" below |
 | **KB-3d** | Search view like the Docmost spotlight: chips for Space, Creator, Date and Title only, matched words marked in each snippet, and a match bar on the opened page |
 | **KB-2m** | Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages and attachments, as a zip |
 | **KB-2o** | Labels on pages, a labels list and a page of the pages with one label |
 | **KB-2c** | Files: attachments, video, audio and PDF blocks, and draw.io and Excalidraw blocks that save as attachments. After AM-5 and H-322 |
+
+
+#### KB-2k in detail (specified 2026-10-22)
+
+The `@` menu of #1225 already lists pages and dates. KB-2k adds three things to it. No slice needs a migration, and each slice is AGENT-SAFE.
+
+| Slice | What | Done when |
+|---|---|---|
+| **KB-2k1** ✅ BUILT 2026-10-22 | A People section in the `@` menu, after Pages. It reads `GET /people/?q=` (the one directory read, `routes/people/directory.py`) and shows at most 5 people with their name and email. A pick stores `[@Name](/people/<person_id>)`, a plain Markdown link. The editor draws it as a chip, as it draws a page chip. A person without Knowledge access can be mentioned, because the mention is only a link. KB-2k1 writes no `kb_links` row and sends no notice. A later ticket adds both, with the reader that needs them | `@as` shows "Asha Rao" under People. Enter saves `[@Asha Rao](/people/<id>)`. The read view draws a person chip that opens the People profile. A member who cannot read the directory sees no People section, and the menu still works |
+| **KB-2k2** ✅ BUILT 2026-10-22 | A hover preview on a page chip. After 400 ms of hover, or on keyboard focus, a card shows the page icon, title, space, state and the first 200 characters of its text. It reads the existing `GET /knowledge/pages/{id}` through the cache. A page that the reader cannot open shows "You cannot open this page", and no title. The card closes on Esc and on leave | A hover on a chip shows the card with the title and the text. A chip to a page in a space the member cannot read shows the refusal line. Tab to a chip shows the card. Esc closes it |
+| **KB-2k3** ✅ BUILT 2026-10-22 | "Create page" from the `@` menu. When the typed text matches no page, the last row reads "Create page \"<text>\"". A pick creates a draft page with that title, as a child of the page being edited, in its space, through the existing `POST /knowledge/pages`. Then it inserts a link to the new page. The row shows only when the member can write in that space | Typing `@Refund FAQ` with no match shows the row. Enter creates a draft child page titled "Refund FAQ" and inserts its link. The tree shows the new page. A member without write sees no row |
+
+Verify each slice with `cd workbench/control_plane && npx tsc --noEmit && npx vitest run app/knowledge`, and with `npx playwright test --project=ci e2e/knowledge-shortcuts.spec.ts`, which gains a test for each "Done when".
+
+**Built 2026-10-22, with four choices.** The People read waits for at least one typed character. The "Create page" row does not show when the typed words match a date row. The preview card shows the refusal line for any failed read, not only a 403 or a 404. A person chip draws a user icon and the name after "@". The code is in `lib/editor/people.ts`, `chipPreview.ts`, `mention.ts` and `components/editor/PageChipPreview.tsx`.
 
 #### What stays with the owner
 

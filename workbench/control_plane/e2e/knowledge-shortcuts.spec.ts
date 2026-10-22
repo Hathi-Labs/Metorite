@@ -17,6 +17,10 @@ test.describe.configure({ timeout: 150_000 });
 const SPACE_ID = "ks-company";
 const HOLIDAY = "3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b";
 const REFUND = "7a1c9d2e-0b3f-4c5d-8e6f-2a3b4c5d6e7f";
+const GONE = "9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+const ASHA = "5b1d7e2a-3c4f-4a8b-9d6e-0f1a2b3c4d5e";
+const NEW_PAGE = "c0ffee00-1111-4222-8333-444455556666";
+const HOLIDAY_TEXT = "Public holidays for the year. Plan **leave** early, see [the policy](/knowledge/pages/x) and ask your lead. ";
 
 type KbPage = { id: string; title: string; body_md: string; versions: number };
 
@@ -26,7 +30,15 @@ function todayIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-async function setup(page: Page, body: string) {
+type SetupOptions = {
+  /** The page detail's `can_write`. A reader sees no Create row. */
+  canWrite?: boolean;
+  /** `refused` answers the People directory with 403. */
+  people?: "ok" | "refused";
+};
+
+async function setup(page: Page, body: string, opts: SetupOptions = {}) {
+  const canWrite = opts.canWrite ?? true;
   await page.addInitScript(() => {
     localStorage.setItem("cc-shell-bar", "1");
     localStorage.setItem("cc-shell-nav", "1");
@@ -37,7 +49,7 @@ async function setup(page: Page, body: string) {
       email: "asha@example.com",
       name: "Asha Rao",
       is_admin: false,
-      features: ["knowledge"],
+      features: ["knowledge", "people"],
       permissions: [],
       capabilities: [],
       roles: ["member"],
@@ -47,6 +59,21 @@ async function setup(page: Page, body: string) {
   const now = new Date().toISOString();
   const doc: KbPage = { id: "kp-a", title: "Refund policy notes", body_md: body, versions: 1 };
   const writes: Array<{ title?: string; body_md?: string }> = [];
+  const creates: Array<Record<string, unknown>> = [];
+  await page.route("**/api/people**", async (route) => {
+    const url = new URL(route.request().url());
+    if (opts.people === "refused") return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: "No access" }) });
+    const q = (url.searchParams.get("q") ?? "").toLowerCase();
+    const all = [
+      { id: ASHA, name: "Asha Rao", email: "asha@example.com", status: "active" },
+      ...Array.from({ length: 7 }, (_, i) => ({
+        id: `5b1d7e2a-3c4f-4a8b-9d6e-0f1a2b3c4d${String(10 + i)}`, name: `Ashok Kumar ${i}`, email: `ashok${i}@example.com`, status: "active",
+      })),
+      { id: "5b1d7e2a-3c4f-4a8b-9d6e-0f1a2b3c4d99", name: "Ben Cole", email: "ben@example.com", status: "active" },
+    ];
+    const rows = all.filter((r) => `${r.name} ${r.email}`.toLowerCase().includes(q));
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ rows, total: rows.length, hr_visible: false, can_manage: false }) });
+  });
   const summary = (id: string, title: string, icon: string | null = null) => ({
     id, space_id: SPACE_ID, parent_id: null, position: 0, title, icon, state: "published",
     author_email: "asha@example.com", reviewers: [], review_at: null, source_ref: null, published_at: null,
@@ -59,7 +86,7 @@ async function setup(page: Page, body: string) {
     const path = url.pathname.replace(/^\/api\/knowledge\//, "");
     if (path === "spaces") {
       return route.fulfill(json(200, { spaces: [{ id: SPACE_ID, slug: "company", name: "Company", purpose: "How we work.",
-        icon: "", kind: "company", owner_email: null, archived_at: null, created_at: now, level: "write", page_count: 3 }] }));
+        icon: "", kind: "company", owner_email: null, archived_at: null, created_at: now, level: canWrite ? "write" : "read", page_count: 3 }] }));
     }
     if (path === "pages" && req.method() === "GET") {
       return route.fulfill(json(200, { pages: [
@@ -67,6 +94,14 @@ async function setup(page: Page, body: string) {
         summary(HOLIDAY, "Holiday calendar", "🎉"),
         summary(REFUND, "Returns handbook"),
       ] }));
+    }
+    if (path === "pages" && req.method() === "POST") {
+      const made = JSON.parse(req.postData() ?? "{}") as Record<string, unknown>;
+      creates.push(made);
+      return route.fulfill(json(201, { ...summary(NEW_PAGE, String(made.title ?? "")), state: "draft", parent_id: made.parent_id ?? null, body_md: "", origin: null, version: 1 }));
+    }
+    if (path === `pages/${HOLIDAY}`) {
+      return route.fulfill(json(200, { ...summary(HOLIDAY, "Holiday calendar", "🎉"), body_md: HOLIDAY_TEXT, origin: null, level: "write", can_write: true, links: [], versions: [] }));
     }
     if (path !== `pages/${doc.id}`) return route.fulfill(json(404, { detail: "Not found" }));
     if (req.method() === "PATCH") {
@@ -78,12 +113,12 @@ async function setup(page: Page, body: string) {
       return route.fulfill(json(200, { ...summary(doc.id, doc.title), body_md: doc.body_md, origin: null, version: doc.versions }));
     }
     return route.fulfill(json(200, {
-      ...summary(doc.id, doc.title), body_md: doc.body_md, origin: null, level: "write", can_write: true, links: [],
+      ...summary(doc.id, doc.title), body_md: doc.body_md, origin: null, level: canWrite ? "write" : "read", can_write: canWrite, links: [],
       versions: Array.from({ length: doc.versions }, (_, i) => ({ version: doc.versions - i, title: doc.title,
         author_email: "asha@example.com", reason: "edit", via: "web", created_at: now })),
     }));
   });
-  return { writes, doc };
+  return { writes, doc, creates };
 }
 
 async function edit(page: Page) {
@@ -151,7 +186,10 @@ test.describe("the @ mention menu", () => {
     await edit(page);
     await caretAtEnd(page);
     await page.keyboard.type("@2026-02-30");
-    await expect(MENTION(page)).toHaveCount(0);
+    // A bad day offers no date. Only the Create page row is left.
+    await expect(MENTION(page).getByRole("option")).toHaveCount(1);
+    await expect(MENTION(page).getByRole("option")).toHaveText('Create page "2026-02-30"');
+    await expect(MENTION(page).getByText("Date", { exact: true })).toHaveCount(0);
     await page.keyboard.press("Backspace");
     await page.keyboard.press("Backspace");
     await page.keyboard.type("19");
@@ -338,4 +376,161 @@ test.describe("paste and the Markdown rules", () => {
       await expect(body.locator(selector).first()).toBeVisible();
     });
   }
+});
+
+
+// ── KB-2k (WS-61): people, the hover preview and Create page ───────────────
+
+test.describe("KB-2k1 people in the @ menu", () => {
+  test("@as shows Asha Rao under People, and Enter saves a plain link to the person", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const kb = await setup(page, "Ask ");
+    await edit(page);
+    await caretAtEnd(page);
+    await page.keyboard.type("@asha");
+    const menu = MENTION(page);
+    await expect(menu.getByText("People", { exact: true })).toBeVisible();
+    const row = menu.getByRole("option", { name: /Asha Rao/ });
+    await expect(row).toContainText("asha@example.com");
+    await page.keyboard.press("Enter");
+    await expect(menu).toHaveCount(0);
+    expect((await save(page, kb)).body_md).toBe(`Ask [@Asha Rao](/people/${ASHA})`);
+  });
+
+  test("the menu shows at most five people", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, "Ask ");
+    await edit(page);
+    await caretAtEnd(page);
+    await page.keyboard.type("@as");
+    const menu = MENTION(page);
+    await expect(menu.getByRole("option", { name: /Asha Rao/ })).toBeVisible();
+    // Five people, and the Create page row after them.
+    await expect(menu.getByRole("option")).toHaveCount(6);
+  });
+
+  test("the read view draws a person chip that opens the person", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, `Ask [@Asha Rao](/people/${ASHA}) about it.`);
+    await page.goto("/knowledge/pages/kp-a");
+    const chip = page.getByLabel(/the page body/).locator("a.kb-person-chip");
+    await expect(chip).toHaveCount(1);
+    await expect(chip).toHaveText("@Asha Rao");
+    await expect(chip).toHaveAttribute("href", `/people/${ASHA}`);
+    // It is no page chip: nothing hovers a card for it.
+    await expect(page.locator("a.kb-page-chip")).toHaveCount(0);
+    expect(await chip.evaluate((el) => getComputedStyle(el).textDecorationLine)).toBe("none");
+    await chip.click();
+    // The dev server compiles the People route on the first visit.
+    await expect(page).toHaveURL(new RegExp(`/people/${ASHA}`), { timeout: 45_000 });
+  });
+
+  test("a refused directory read shows no People section, and the menu still works", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, "Ask ", { people: "refused" });
+    await edit(page);
+    await caretAtEnd(page);
+    await page.keyboard.type("@holi");
+    const menu = MENTION(page);
+    await expect(menu.getByRole("option", { name: /Holiday calendar/ })).toBeVisible();
+    await page.waitForTimeout(600);
+    await expect(menu.getByText("People", { exact: true })).toHaveCount(0);
+    await page.keyboard.press("Enter");
+    await expect(menu).toHaveCount(0);
+  });
+});
+
+test.describe("KB-2k2 the hover preview of a page chip", () => {
+  const CARD = (page: Page) => page.getByRole("tooltip");
+  const body = `See [Holiday calendar](/knowledge/pages/${HOLIDAY}) and [Old page](/knowledge/pages/${GONE}).`;
+
+  test("a hover of 400 ms shows the title, the space and the text, and leaving closes it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, body);
+    await page.goto("/knowledge/pages/kp-a");
+    const chip = page.locator(`a.kb-page-chip[data-page-id="${HOLIDAY}"]`);
+    await chip.hover();
+    const card = CARD(page);
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Holiday calendar");
+    await expect(card).toContainText("Company");
+    await expect(card).toContainText("Published");
+    await expect(card).toContainText("Public holidays for the year. Plan leave early, see the policy and ask your lead.");
+    await page.mouse.move(5, 5);
+    await expect(card).toHaveCount(0);
+  });
+
+  test("a page the mock answers 404 shows the refusal and no title", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, body);
+    await page.goto("/knowledge/pages/kp-a");
+    await page.locator(`a.kb-page-chip[data-page-id="${GONE}"]`).hover();
+    const card = CARD(page);
+    await expect(card).toContainText("You cannot open this page");
+    await expect(card).not.toContainText("Old page");
+  });
+
+  test("Tab to a chip shows the card at once, and Esc closes it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, body);
+    await page.goto("/knowledge/pages/kp-a");
+    const chip = page.locator(`a.kb-page-chip[data-page-id="${HOLIDAY}"]`);
+    await expect(chip).toBeVisible();
+    for (let i = 0; i < 60; i++) {
+      await page.keyboard.press("Tab");
+      if (await chip.evaluate((el) => el === document.activeElement)) break;
+    }
+    await expect(chip).toBeFocused();
+    const card = CARD(page);
+    await expect(card).toContainText("Holiday calendar");
+    await page.keyboard.press("Escape");
+    await expect(card).toHaveCount(0);
+  });
+});
+
+test.describe("KB-2k3 Create page from the @ menu", () => {
+  test("@Refund FAQ with no match shows the row, and Enter makes a draft child and links it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const kb = await setup(page, "See ");
+    await edit(page);
+    await caretAtEnd(page);
+    await page.keyboard.type("@Refund FAQ");
+    const menu = MENTION(page);
+    const rows = menu.getByRole("option");
+    await expect(rows.last()).toHaveText('Create page "Refund FAQ"');
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => kb.creates.length).toBe(1);
+    expect(kb.creates[0]).toMatchObject({ title: "Refund FAQ", parent_id: "kp-a", space_id: SPACE_ID });
+    await expect(menu).toHaveCount(0);
+    expect((await save(page, kb)).body_md).toBe(`See [Refund FAQ](/knowledge/pages/${NEW_PAGE})`);
+  });
+
+  test("a reader without write cannot open the editor, so no Create row exists", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setup(page, "See ", { canWrite: false });
+    await page.goto("/knowledge/pages/kp-a");
+    await expect(page.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
+    await expect(page.getByText("Read only")).toBeVisible();
+  });
+
+  test("a failed create shows a toast and inserts nothing", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const kb = await setup(page, "See ");
+    await page.route("**/api/knowledge/pages", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: "Writing in this space needs a write grant." }) });
+    });
+    await edit(page);
+    await caretAtEnd(page);
+    await page.keyboard.type("@Refund FAQ");
+    await expect(MENTION(page).getByRole("option").last()).toHaveText('Create page "Refund FAQ"');
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Enter");
+    const toast = page.getByLabel("Notifications");
+    await expect(toast.getByText("Could not create the page")).toBeVisible();
+    await expect(toast.getByText("Writing in this space needs a write grant.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Page body" })).not.toContainText("](/knowledge");
+    expect(kb.creates).toHaveLength(0);
+  });
 });

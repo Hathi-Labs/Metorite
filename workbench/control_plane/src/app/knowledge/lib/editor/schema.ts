@@ -59,6 +59,7 @@ import {
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
 import { chipPageId } from "./pageLinks";
+import { personChipId } from "./people";
 import { storedFormExtensions, type StoredFormViews } from "./storedForms";
 import { withHtmlTable } from "./htmlTable";
 import { withAlign } from "./textAlign";
@@ -206,9 +207,13 @@ const KnowledgeLink = Link.extend({
   // Only the drawn `<a>` gets the class. The Markdown form stays a link.
   renderHTML(props) {
     const out = this.parent?.(props) as unknown as ["a", Record<string, unknown>, 0];
-    const id = chipPageId(String(props.HTMLAttributes.href ?? ""));
-    if (!id) return out as never;
-    return ["a", mergeAttributes(out[1], { class: "kb-page-chip", "data-page-id": id }), 0];
+    const href = String(props.HTMLAttributes.href ?? "");
+    const id = chipPageId(href);
+    if (id) return ["a", mergeAttributes(out[1], { class: "kb-page-chip", "data-page-id": id }), 0];
+    // A link to a person (KB-2k1) draws as a person chip. It is a plain link.
+    const person = personChipId(href);
+    if (person) return ["a", mergeAttributes(out[1], { class: "kb-person-chip", "data-person-id": person }), 0];
+    return out as never;
   },
   parseMarkdown: (token: MarkdownToken, h: MarkdownParseHelpers): MarkdownParseResult => {
     const content = h.parseInline(token.tokens ?? []);
