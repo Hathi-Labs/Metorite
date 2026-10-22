@@ -1731,6 +1731,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-62 CF-5 — the day's brief as the first turn of a fresh chat on a
+    # phone (`chat_first_surface.md` §4.6). Shares /chat's prefix, in its own
+    # module, as the rooms do.
+    from gateway.routes.chat_brief import router as _chat_brief_router
+
+    app.include_router(_chat_brief_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # Rooms share /chat's prefix — a room IS a chat session — but live in their
     # own module because membership, presence, and the live room stream are a
     # different concern from history CRUD.

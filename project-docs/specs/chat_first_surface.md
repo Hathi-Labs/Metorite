@@ -555,7 +555,15 @@ the Python check and `inAppLink.ts` agree on a shared table of paths.
 test: a replay emits no `onNavigate`. Mutation, seen to fail first: let the
 server accept `//evil.example`, and the twin test fails.
 
-### CF-4 · Starter pills from the feed — AGENT-SAFE
+### CF-4 · Starter pills from the feed — AGENT-SAFE · BUILT 2026-10-22 (#1215)
+
+**Built.** The chat reads the feed through the feed's own cache key, the one
+My Day reads, so no `starter` branch joined the suggestions route.
+`starterPills` in `src/lib/starterPills.ts` is the pure rule: three headlines
+in the feed's order, de-duplicated, cut at a word near 60 characters, else
+the fixed list. Only the one assistant's empty chat reads it, only with the
+flag on, and `starterPills.test.ts`, `assistant.test.ts` and
+`e2e/chat-starter-pills.spec.ts` fence it.
 
 **Files.** `src/app/api/chat/suggestions/route.ts` (the `starter` branch),
 `src/components/AgentChat.tsx` (the empty state reads it with the flag on),
@@ -571,7 +579,9 @@ the My Day feed read it reuses (`src/lib/shell/feed.ts`).
 **Fences.** The route's test (new or extended). `feed.test.ts` for the
 pick. An e2e stub of the feed with three cards, and the pills read them.
 
-### CF-5 · The brief as the first turn — AGENT-SAFE
+### CF-5 · The brief as the first turn — AGENT-SAFE · BUILT 2026-10-22 (#1216), dark on staging, live where the flag is on
+
+The build added `POST /chat/sessions/{id}/brief`, which writes one assistant row from the Reach brief parts and stamps the member's day. The dock asks it once through `wantsBrief`, on a phone with the flag on, and the chat mounts after the answer. The `reportCard` template draws the brief's lines as pills, and a tap sends the line as the member's turn.
 
 **Files.**
 

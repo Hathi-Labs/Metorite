@@ -525,6 +525,7 @@ export function __resetAssistantForTests(): void {
   _factsSnapshot = NO_FACTS;
   _listeners.clear();
   _factListeners.clear();
+  _briefAskedOn = null;
 }
 
 // A new member on this browser starts closed, and reads their own preference.
@@ -571,6 +572,76 @@ export function barMayJoin(
   if ((chat.participantCount ?? 0) > 1) return false;
   return !startsFresh(chat, now);
 }
+
+// ── The brief as the first turn (WS-62 CF-5, §4.6, D-CF-6) ──────────────────
+
+/**
+ * Whether a chat asks the server for the day's brief as its first turn.
+ * True only when every one of these holds:
+ *
+ * - the chat-first flag is on;
+ * - it is a phone (D-CF-6 and §9.2 Q1: the desktop reads the brief on My Day);
+ * - the chat holds no message. A fresh chat from `startFresh`, or a restored
+ *   chat that is still empty, both count. A chat with a turn is a chat the
+ *   member wrote in, and the brief never lands under their words;
+ * - this page has not asked today (`askedFor`). The server stamps the
+ *   member's day too, so a second device gets no second brief. The page's
+ *   own mark saves the round trip, and keeps a new chat opened an hour
+ *   later from asking again.
+ *
+ * The dock calls the brief route only through this rule (`assistant.test.ts`).
+ */
+export function wantsBrief(a: {
+  chatFirst: boolean;
+  phone: boolean;
+  messageCount: number;
+  askedFor: boolean;
+}): boolean {
+  if (!a.chatFirst || !a.phone || a.askedFor) return false;
+  return a.messageCount === 0;
+}
+
+/**
+ * How long the dock holds a fresh chat for the brief's answer, at most
+ * (review of #1216). The feed read behind the route can be slow on a cold
+ * morning, and the composer must never wait on it.
+ */
+export const BRIEF_HOLD_MS = 4_000;
+
+/**
+ * Whether a chat waits for its brief: only while ITS ask is out. The dock
+ * mounts the chat the moment this is false. The rule reads no clock and no
+ * flag, so nothing can hold a chat that no effect would release.
+ */
+export function holdsForBrief(hold: string | null, sessionId: string): boolean {
+  return Boolean(hold) && hold === sessionId;
+}
+
+/** The member's local date, as the page's mark of the brief ask keys on it. */
+export function localDay(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// The day this page last asked for the brief. Memory only, and a change of
+// member or org clears it with the rest (`onClear`).
+let _briefAskedOn: string | null = null;
+
+/** Whether this page already asked for today's brief. */
+export function briefAskedToday(now: Date = new Date()): boolean {
+  return _briefAskedOn === localDay(now);
+}
+
+/** Mark that this page asked for today's brief. A second call does nothing. */
+export function markBriefAsked(now: Date = new Date()): void {
+  _briefAskedOn = localDay(now);
+}
+
+onClear(() => {
+  _briefAskedOn = null;
+});
 
 // ── The context ──────────────────────────────────────────────────────────────
 

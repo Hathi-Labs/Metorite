@@ -38,7 +38,7 @@ import { useSession } from "next-auth/react";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
 import { invalidate, onClear, peek, put } from "@/lib/dataCache";
-import { chatScope } from "@/lib/sessions";
+import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
@@ -229,6 +229,20 @@ const getServerNudgeRetired = () => false;
 /** Whether this page already retired the nudge. */
 export function useNudgeRetiredHere(): boolean {
   return useSyncExternalStore(subscribeNudge, getNudgeRetired, getServerNudgeRetired);
+}
+
+/**
+ * Whether the member wrote in any chat of the list (CF-2, and CF-5's review
+ * of #1216). A chat counts only with a MEMBER turn. The day's brief is an
+ * agent turn that the server posts before the member types, so a chat with
+ * the brief alone keeps the nudge. The server's list says `hasUserMessage`.
+ * A chat the server has not listed yet has no such fact, so its message
+ * count stands in, as before CF-5.
+ */
+export function memberWrote(
+  list: ReadonlyArray<Pick<ChatSession, "messageCount" | "hasUserMessage">>,
+): boolean {
+  return list.some((s) => s.hasUserMessage ?? (s.messageCount ?? 0) > 0);
 }
 
 /**
