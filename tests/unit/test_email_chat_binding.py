@@ -163,6 +163,9 @@ class Gateway:
             return self.sent_from
         if path == "/email/messages/d1":
             return dict(DRAFT_D1)
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b): the card's seal
+            return {"text_digest": "a" * 64, "subject": DRAFT_D1.get("subject"),
+                    "body_text": DRAFT_D1.get("body_text") or ""}
         if path.startswith("/email/messages/"):
             mid = path.rsplit("/", 1)[1]
             return next((dict(m) for m in THREAD if m["id"] == mid), {})

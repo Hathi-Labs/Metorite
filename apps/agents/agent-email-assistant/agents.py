@@ -4706,15 +4706,14 @@ async def _sealed_card(
 
 def _draft_files_block(files: Any) -> str:
     """The files of a draft for its send card, or "" for none: each name in
-    quotes with its size, as ``held_card._draft_card`` lists them."""
+    quotes with its size, as ``held_card._draft_card`` lists them. Each file
+    is named, none is cut: a card that does not fit shows no card (§21)."""
     items = [f for f in (files or []) if isinstance(f, dict)]
     if not items:
         return ""
     lines = ["", "", "The files of the draft go with it:"]
     lines += [f"- {_card_file_line(_card_file_name(f.get('filename') or 'file', 1000), _size_text(f.get('size_bytes')))}"
-              for f in items[:20]]
-    if len(items) > 20:
-        lines.append(f"- +{len(items) - 20} more")
+              for f in items]
     return "\n".join(lines)
 
 

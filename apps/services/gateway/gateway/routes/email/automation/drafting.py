@@ -3853,9 +3853,14 @@ async def draft_seal(
     It answers the subject and the text that the seal covers, so the card
     shows exactly them, and ``text_digest``, which the send and the schedule
     carry in ``expect``. A read: it writes nothing."""
+    from gateway.routes.email.account_ref import resolve_account_filter
+
     _refuse_bad_draft_id(draft_id)
-    _refuse_bad_draft_id(account_id)
     async with _tenant_session() as db:
+        # The one reader of an ``account_id`` of a route (an id, "all" or an
+        # address). A seal acts on one mailbox, so it is required.
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, body_text FROM email_messages "

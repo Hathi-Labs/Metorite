@@ -747,9 +747,9 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
     lines = [f"Subject: {subject}", "", "The text of the draft:", body or "(no text)"]
     if files:
         lines += ["", "The files of the draft go with it:"]
-        lines += [f'- file "{f.filename}" ({_size_text(f.size_bytes)})' for f in files[:20]]
-        if len(files) > 20:
-            lines.append(f"- +{len(files) - 20} more")
+        # Each file is named, none is cut: a card that does not fit shows no
+        # card (CONTEXT_MAX below), so the card never shows less than the send.
+        lines += [f'- file "{f.filename}" ({_size_text(f.size_bytes)})' for f in files]
     context = "\n".join(lines)
     if len(context) > CONTEXT_MAX:
         raise HTTPException(status_code=422, detail=TEXT_TOO_LONG)

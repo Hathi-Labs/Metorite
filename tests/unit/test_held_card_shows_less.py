@@ -232,3 +232,13 @@ async def test_the_send_card_lists_the_files_of_the_draft(monkeypatch, name: str
     lines = cards[0]["context"].splitlines()
     i = lines.index("The files of the draft go with it:")
     assert lines[i + 1:i + 3] == ['- file "quote.pdf" (4 KB)', '- file "rates.xlsx" (2 KB)']
+
+
+def test_every_file_is_named_and_none_is_cut() -> None:
+    """A card names each file of the draft. With too many to fit, no card
+    shows (``_sealed_card`` and the held ``CONTEXT_MAX``). Mutation: cut the
+    list at 20 again → red."""
+    agents = F.load_email_agent("ea_held_files_all")
+    files = [{"filename": f"f{i}.pdf", "size_bytes": 1024} for i in range(25)]
+    block = agents._draft_files_block(files)
+    assert all(f'"f{i}.pdf"' in block for i in range(25)) and "more" not in block
