@@ -42,6 +42,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/pages/{OTHER}/restore", None),
     ("POST", f"/knowledge/pages/{OTHER}/revert", {"version": 1}),
     ("GET", f"/knowledge/pages/{OTHER}/versions/2", None),
+    ("GET", f"/knowledge/pages/{OTHER}/backlinks", None),
     ("GET", "/knowledge/search?q=refund+window", None),
     # KB-2f: the home lists and the favourites.
     ("GET", "/knowledge/recent", None),

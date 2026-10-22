@@ -49,7 +49,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.kb_index import index as kb_index
-from gateway.routes.knowledge import core, flags, icon
+from gateway.routes.knowledge import backlinks, core, flags, icon
 from gateway.routes.knowledge.core import router
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -145,6 +145,7 @@ async def _written(
         db, user, row, title=row.title, body_md=row.body_md, reason=reason,
     )
     org = core.org_of(user)
+    await backlinks.sync_page_links(db, user, row, row.body_md)
     rank = await _rank(db, user, row)
     reindexed = await kb_index.reindex_page(db, row, organization_id=org)
     if (background is not None and reindexed.new_shas

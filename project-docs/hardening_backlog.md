@@ -37,3 +37,11 @@ Add a section per feature as you build it. Example:
 | # | Item | Why | Done when |
 | E-1 | Two-org test for email_threads | ... | ... |
 ```
+
+### Knowledge (WS-61)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| K-1 | `diff-reviewer` on the whole wave 2 diff, with KB-2h first | KB-2h landed in build mode, with the verifier only | The reviewer reports no P0 on the backlinks write, the read and `read_links` |
+| K-2 | A backfill of `kb_links` for the pages written before KB-2h | Old pages gain links only on their next write | Each live page has the rows its body names, or the spec says why not |
+| K-3 | Visual review of the "Linked from" list | Build mode skipped it | The list reads right in light mode, compact density, a changed accent, and at 390 px |

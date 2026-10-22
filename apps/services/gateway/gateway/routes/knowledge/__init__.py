@@ -22,7 +22,14 @@ organization is on ``KNOWLEDGE_ORGS`` (``flags.py``), then 403 without
 ``tests/unit/test_kb_pages_r8.py``.
 """
 
-from gateway.routes.knowledge import history, home, pages, search, spaces  # noqa: F401 — registers routes
+from gateway.routes.knowledge import (  # noqa: F401 — registers routes
+    backlinks,
+    history,
+    home,
+    pages,
+    search,
+    spaces,
+)
 from gateway.routes.knowledge.core import router
 
 __all__ = ["router"]
