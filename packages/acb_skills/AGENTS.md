@@ -238,6 +238,13 @@ clone cache.
    tool, and so is an MCP tool, an MCP-born tool and a `STORE_WRITES` member
    (the four memory writes and `save_note`). An agent's own tool carries its
    annotation on the function (`__tool_risk__`).
+   A held run also keeps the card-bound sends of `CARD_BOUND_SEND_TOOLS`:
+   `compose_reply` (EM-CR) and `send_draft` (H-374, owner, 2026-10-22).
+   `is_card_bound_send` needs the name on the list, the `card_bound`
+   annotation and the exact pinned parameters. Each card shows each
+   recipient. Fence: tests/unit/test_email_chat_reply.py. The hold texts
+   offer no new conversation and no paste by hand. Fence:
+   tests/unit/test_held_send_guidance.py.
    TRUST IS BY IDENTITY (H-236 follow-up). `_platform_owned` reads
    `_PLATFORM_CALLABLES`, a weak map from each platform callable to the tool
    names that it may carry. A tool OBJECT takes a registry entry, or a

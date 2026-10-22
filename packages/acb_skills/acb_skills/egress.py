@@ -17,7 +17,11 @@ Such a run holds only:
 1. the four :data:`DELEGATION_TOOLS`, because the flag travels with them;
 2. the sandbox tools (``run_command``, the file tools and the skill tools),
    which say ``open_world=False`` because the container has no network;
-3. tools whose risk annotation says ``open_world=False`` EXPLICITLY.
+3. tools whose risk annotation says ``open_world=False`` EXPLICITLY;
+4. the card-bound sends of :data:`CARD_BOUND_SEND_TOOLS`: ``compose_reply``
+   (EM-CR) and ``send_draft`` (H-374, owner decision of 2026-10-22). Each
+   sends only after a card that shows each recipient, and the model names
+   none. A forward, a new mail and a scheduled send stay held.
 
 A tool with no annotation, or with no ``open_world`` key, counts as an
 egress tool (:func:`is_egress_tool`). So an agent from another repo, whose
@@ -50,7 +54,7 @@ _log = get_logger("acb_skills.egress")
 
 __all__ = [
     "CARD_BOUND_KEY",
-    "CARD_BOUND_REPLY_TOOLS",
+    "CARD_BOUND_SEND_TOOLS",
     "DELEGATION_TOOLS",
     "EGRESS_HELD_MAIL_ANSWER",
     "EGRESS_HOLD_NOTE_MAIL",
@@ -75,7 +79,7 @@ __all__ = [
     "egress_tool_names",
     "has_explicit_open_world",
     "hold_is_for_mail",
-    "is_card_bound_reply",
+    "is_card_bound_send",
     "is_delegation_tool",
     "is_egress_tool",
     "mark_untrusted_answer",
@@ -603,18 +607,26 @@ EGRESS_WITHHELD_ANSWER = (
 #: The same answer when the run works for a chat session that read text that
 #: a stranger wrote (EM-G11d, owner report of 2026-10-19). The chat had said
 #: "ask again from the Email app". That claim was not checked, and a run cannot
-#: check it. So this text names the kind of act, the reason, and the two ways
-#: on that are true. It names no other app (security review of #1173, P2).
-#: Only a run that another run called is held (``_tool_injection._run_no_egress``),
-#: so the text says that, and no more. Fence: ``tests/unit/test_no_egress_tool_audit.py``.
+#: check it. So this text names the kind of act and the reason. It names no
+#: other app (security review of #1173, P2). Only a run that another run
+#: called is held (``_tool_injection._run_no_egress``), so the text says that.
+#:
+#: H-374 (owner decision, 2026-10-22). A held run keeps the card-bound sends,
+#: so a saved draft still goes out with ``send_draft``. The text does not
+#: send the member to "a new conversation" or "by hand". On 2026-10-22 the
+#: model gave those two ways for a draft that it could send, and the member
+#: had to paste the mail. Fences: ``tests/unit/test_no_egress_tool_audit.py``
+#: and ``tests/unit/test_held_send_guidance.py``.
 EGRESS_HELD_MAIL_ANSWER = (
     "{name} is off in this run. Another assistant called this run from a "
     "conversation that read email from outside senders, and such text can "
-    "carry hidden instructions. So this run may not send, forward, fetch a "
-    "link or reach outside Metorite. Tell the member what you could not do, "
-    "and why. The member can do it by hand, or ask for it in a new "
-    "conversation that has not read outside email. Tools that act only inside "
-    "Metorite or in the member's own mailbox still work here."
+    "carry hidden instructions. So this run may not forward, send a new "
+    "email, fetch a link or reach outside Metorite. Tell the member in one "
+    "sentence what you could not do, and why. A reply card and a saved draft "
+    "still send here. If you hold send_draft, send a saved draft with it, "
+    "and its card shows each recipient. "
+    "Tools that act only inside Metorite or in the member's own mailbox still "
+    "work here."
 )
 
 #: The notes at the top of each ``no_egress`` run (:class:`EgressGuardProvider`),
@@ -625,14 +637,16 @@ EGRESS_HOLD_NOTE_MAIL = (
     "## Held in this run\n"
     "Another assistant called this run from a conversation that read email "
     "from outside senders, and such text can carry hidden instructions. So "
-    "this run holds no tool that sends email, forwards, fetches a link, "
-    "searches the web, or reaches outside Metorite in another way. If the "
-    "member asks for such an act, say that this run cannot do it, and say "
-    "why. Then say what the member can do: do it by hand, or ask for it in a "
-    "new conversation that has not read outside email. Do not say that "
-    "another app can or cannot do it, because this run cannot tell. The tools "
-    "that you hold act only inside Metorite or in the member's own mailbox, so "
-    "use them. For mail, a saved reply draft, a label and an archive still work."
+    "this run holds no tool that forwards, sends a new email, schedules a "
+    "send, fetches a link, searches the web, or reaches outside Metorite in "
+    "another way. A saved draft still sends: if you hold send_draft, call it, "
+    "and its card shows the member each To, Cc and Bcc and the text. A reply "
+    "card still sends too. If the member asks for a forward or a new email, say in one "
+    "sentence that this run cannot do it, and why. Do not say that another "
+    "app can or cannot do it, because this run cannot tell. The tools that "
+    "you hold act only inside Metorite or in the member's own mailbox, so use "
+    "them. For mail, a saved reply draft, an edit of a draft, a label and an "
+    "archive still work."
 )
 EGRESS_HOLD_NOTE_SANDBOX = (
     "## Held in this run\n"
@@ -817,33 +831,43 @@ def has_explicit_open_world(item: Any) -> bool:
     return isinstance(hints, Mapping) and isinstance(hints.get("open_world"), bool)
 
 
-#: The sends that may stay in a held run (EM-CR, ``email_app_master_plan.md``
-#: §18), each with its parameters, EXACTLY. The owner asked on 2026-10-20 for
-#: a reply that the member confirms in the chat and that then completes, also
-#: in a chat that read outside mail. Such a tool sends ONE reply, and only
-#: after its card:
+#: The sends that may stay in a held run, each with its parameters, EXACTLY.
+#: Each one sends only after a card that shows the member each recipient and
+#: the text, and the model names no recipient in the call.
+#:
+#: ``compose_reply`` (EM-CR, ``email_app_master_plan.md`` §18). The owner
+#: asked on 2026-10-20 for a reply that the member confirms in the chat and
+#: that then completes, also in a chat that read outside mail:
 #:
 #: * the gateway derives To and Cc from the original mail and the Reply or
-#:   Reply all choice that the MEMBER set on the card. The model names no
-#:   recipient;
+#:   Reply all choice that the MEMBER set on the card;
 #: * the body is the one the member submitted on the card. The gateway sends
 #:   it only when its own record of the card answer matches
 #:   (``reply_card.take_reply_answer``);
-#: * it takes no file, no forward and no new recipient. Those stay with
-#:   ``send_email`` and ``forward_email``, which a held run does not hold;
 #: * ``draft`` and ``instruction`` only shape the text on the card. The
 #:   member sees it in full and edits it, and what leaves is the text the
 #:   member submitted.
 #:
-#: Any parameter outside the pinned five, a recipient or a file above all,
+#: ``send_draft`` (H-374). The owner chose "Drafts, with a card" on
+#: 2026-10-22: a saved draft may be sent from every chat. The tool takes only
+#: the mailbox and the draft id. The draft row holds the recipients, and the
+#: card lists each To, Cc and Bcc of the row. If the list does not fit on the
+#: card, the tool sends nothing. The gateway sends only when the row, and the
+#: provider draft, still hold the recipients of the card (``expect``, 409).
+#:
+#: ``send_email``, ``forward_email`` and ``schedule_send`` stay held, because
+#: the model names their recipients or their files.
+#:
+#: Any parameter outside a tool's pinned set, a recipient or a file above all,
 #: breaks the pin, and the tool is an egress tool again. Fence:
 #: ``tests/unit/test_email_chat_reply.py``.
-CARD_BOUND_REPLY_TOOLS: Mapping[str, frozenset[str]] = {
+CARD_BOUND_SEND_TOOLS: Mapping[str, frozenset[str]] = {
     "compose_reply": frozenset(
         {"email_id", "account_id", "reply_all", "draft", "instruction"}),
+    "send_draft": frozenset({"account_id", "draft_id"}),
 }
 #: The annotation key of such a tool (``tool_annotations.annotate``).
-CARD_BOUND_KEY = "card_bound_reply"
+CARD_BOUND_KEY = "card_bound"
 
 
 def _tool_params(item: Any) -> frozenset[str] | None:
@@ -858,8 +882,8 @@ def _tool_params(item: Any) -> frozenset[str] | None:
     return frozenset(params)
 
 
-def is_card_bound_reply(item: Any) -> bool:
-    """True for a send that may stay in a held run (:data:`CARD_BOUND_REPLY_TOOLS`).
+def is_card_bound_send(item: Any) -> bool:
+    """True for a send that may stay in a held run (:data:`CARD_BOUND_SEND_TOOLS`).
 
     Three tests, and each one fails closed: the name is on the list, the
     tool's own annotation says :data:`CARD_BOUND_KEY`, and the callable's
@@ -867,7 +891,7 @@ def is_card_bound_reply(item: Any) -> bool:
     the registry, as :func:`is_egress_tool` does for a bare name.
     """
     name = item if isinstance(item, str) else tool_name(item)
-    allowed = CARD_BOUND_REPLY_TOOLS.get(name)
+    allowed = CARD_BOUND_SEND_TOOLS.get(name)
     if allowed is None:
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
@@ -886,8 +910,8 @@ def is_egress_tool(item: Any) -> bool:
     repo that borrows a delegation name is judged like any other tool. An MCP
     tool, a store write, and a tool with no explicit ``open_world=False`` may
     not stay. A bare name reads the registry, so only a caller that resolved
-    the tool object first may pass one (the Copilot guard does). The one
-    send that may stay is a card-bound reply (:func:`is_card_bound_reply`).
+    the tool object first may pass one (the Copilot guard does). The only
+    sends that may stay are the card-bound ones (:func:`is_card_bound_send`).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return True
@@ -896,7 +920,7 @@ def is_egress_tool(item: Any) -> bool:
         return False
     if not name or name in STORE_WRITES:
         return True
-    if is_card_bound_reply(item):
+    if is_card_bound_send(item):
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     return not (isinstance(hints, Mapping) and hints.get("open_world") is False)

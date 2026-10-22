@@ -29,6 +29,7 @@
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
+> 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card". A held chat now sends a saved draft with `send_draft` behind its card. A forward, a new mail and a scheduled send stay held.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
@@ -20354,10 +20355,56 @@ only because of four limits. The gateway enforces each one.
 4. **No card, no act.** A WhatsApp run, a batch run and a scheduled run draft, save and send
    nothing. The tool says so.
 
-`acb_skills.egress.CARD_BOUND_REPLY_TOOLS` pins the parameters of `compose_reply`:
-`email_id`, `account_id` and `reply_all`. The tool also carries the annotation
-`card_bound_reply`. A held run keeps the tool only while both hold. A new parameter makes
-it an egress tool again.
+`acb_skills.egress.CARD_BOUND_SEND_TOOLS` pins the parameters of each card-bound send.
+For `compose_reply` they are `email_id`, `account_id`, `reply_all`, `draft` and
+`instruction`. The tool also carries the annotation `card_bound`. A held run keeps the
+tool only while its name, its annotation and its parameters all match. A new parameter
+makes it an egress tool again.
+
+#### 18.5.1 A saved draft sends in a held chat (H-374, 2026-10-22)
+
+**Decision.** The owner chose "Drafts, with a card" on 2026-10-22, and this closes
+HANDOFF H-374. The owner approved this text: "`send_draft` works in every chat. Its card
+lists every To, Cc and Bcc from the draft, and the server checks them again on send. A
+forward or a brand-new mail stays blocked in a held chat, because the assistant would
+name those recipients."
+
+**Why.** The production log of 2026-10-22 shows that a held chat withheld `send_draft`.
+The chat saved a reply with two added Cc addresses, and then it could not send it. It
+told the owner to paste the mail by hand, or to ask in a new conversation.
+
+**The limits of `send_draft` in a held run.**
+
+1. **The model names no recipient.** The tool takes only `account_id` and `draft_id`.
+   The draft row holds the recipients. `edit_draft` changes them, and its own card shows
+   each address that it adds or takes out.
+2. **The card lists each recipient.** It names each To, Cc and Bcc of the row, and it
+   cuts no address. If the list does not fit on the card, the tool shows no card and
+   sends nothing.
+3. **The server checks again.** The send carries the lists of the card as `expect`.
+   `POST /email/drafts/send` answers 409 when the row, or the provider draft, holds other
+   recipients.
+4. **No card, no send.** A run with no card channel sends nothing.
+
+`CARD_BOUND_SEND_TOOLS` pins `send_draft` to `account_id` and `draft_id`. `send_email`,
+`forward_email`, `schedule_send` and `unsubscribe_sender` stay held, because the model
+names their recipients, their files or their link.
+
+**The text that the model reads.** The hold note and the held answer of
+`acb_skills.egress` say that a saved draft still sends with `send_draft`. For a job that
+stays held, the model tells the member in one sentence that this chat cannot do it,
+because it read outside mail. No text offers a new conversation or a paste by hand. The
+refusals of `send_draft`, `unsubscribe_sender` and `run_rules` give a next step in the
+chat, and not only the Email app.
+
+**Open risks.**
+
+- The card shows the start of a long text. The rest goes to the recipients that the
+  member approved, so it cannot reach a new address.
+- An unsigned send sends the body of the provider draft. The server checks its
+  recipients, and not its body.
+- A marked chat that is not held asks no second card for `send_draft`. The tool's own
+  card stays, as for `compose_reply`.
 
 ### 18.6 Fences
 
@@ -20365,6 +20412,8 @@ it an egress tool again.
 |---|---|
 | The hand-off card asks only for a child that is not held | `tests/unit/test_delegation_no_egress.py` |
 | The recipients, the record of the answer, the act route, the parameter pin, no card | `tests/unit/test_email_chat_reply.py` |
+| `send_draft` in a held run: the pin, each Bcc on the card, the 409 | `tests/unit/test_email_chat_reply.py`, `tests/unit/test_email_send_cards.py` |
+| No text offers a new conversation or a paste by hand (H-374) | `tests/unit/test_held_send_guidance.py` |
 | The real SQL of both routes, under FORCE RLS | `TestReplyCardRealSql` in the same file (R8) |
 | The card, its answer and the one renderer | `src/lib/replyCard.test.ts` |
 | The flow in the main chat | `e2e/email-chat-reply.spec.ts` |

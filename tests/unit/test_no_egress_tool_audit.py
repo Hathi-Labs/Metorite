@@ -60,8 +60,9 @@ agents = _load_email()
 #: change of the egress surface, so it names each one.
 EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
     "email-assistant": frozenset({
-        # (B) a send, a forward, a send of a draft, an unsubscribe
-        "send_email", "forward_email", "send_draft", "unsubscribe_sender",
+        # (B) a send, a forward, an unsubscribe. H-374 (owner, 2026-10-22):
+        # send_draft is card-bound, so a held run keeps it.
+        "send_email", "forward_email", "unsubscribe_sender",
         # (B) H-375: a send of a draft later is a send
         "schedule_send",
         # (B) the signature, the text about the member, auto-run
@@ -105,6 +106,8 @@ EMAIL_KEPT = frozenset({
     "create_rule", "update_rule", "create_rules_from_prompt", "install_default_rules",
     "learn_rule_pattern", "run_rules", "resolve_execution",
     "read_email", "query_inbox", "list_labels", "mark_thread_done", "delete_rule",
+    # H-374: the card-bound sends. Each card shows each recipient.
+    "compose_reply", "send_draft", "edit_draft",
 })
 
 
@@ -178,7 +181,7 @@ def test_the_in_space_email_tools_stay_and_the_sends_go(_hermetic) -> None:
     rel = _in_repo_agents()["email-assistant"]
     held = _run_tools("email-assistant", rel, no_egress=True)
     assert held >= EMAIL_KEPT, sorted(EMAIL_KEPT - held)
-    assert not held & {"send_email", "forward_email", "send_draft", "fetch_page",
+    assert not held & {"send_email", "forward_email", "schedule_send", "fetch_page",
                        "web_search", "unsubscribe_sender"}
 
 
@@ -348,10 +351,12 @@ def test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool() -> None:
 
     agents.build_agents()  # registers the annotations of the email tools
     call = types.SimpleNamespace()
-    for name in ("send_email", "forward_email", "send_draft", "unsubscribe_sender",
+    for name in ("send_email", "forward_email", "schedule_send", "unsubscribe_sender",
                  "fetch_page"):
         assert pp._reaches_out(call, name, None) is True, name
-    for name in ("draft_reply", "create_label", "manage_inbox", "create_rule"):
+    # H-374: send_draft is card-bound. Its own card lists each recipient.
+    for name in ("draft_reply", "create_label", "manage_inbox", "create_rule",
+                 "send_draft"):
         assert pp._reaches_out(call, name, None) is False, name
         # A reply draft in the member's own Drafts asks no card (owner,
         # 2026-10-22). Each other tool asks its own.
@@ -589,12 +594,14 @@ def test_no_held_text_claims_what_the_code_does_not_do(name: str) -> None:
         assert claim not in text, (name, claim)
 
 
-def test_the_held_answer_names_the_reason_and_the_two_ways_on() -> None:
+def test_the_held_answer_names_the_reason_and_the_draft_that_still_sends() -> None:
+    """H-374 (owner, 2026-10-22): the answer names no workaround. It says
+    that a saved draft still sends with send_draft."""
     mail = eg.egress_held_answer("send_email", {"agent_name": "email-assistant"})
     assert mail.startswith("send_email is off in this run. Another assistant called this run")
     assert "read email from outside senders" in mail
-    assert "new conversation that has not read outside email" in mail
-    assert "by hand" in mail
+    assert "in one sentence" in mail and "send_draft" in mail
+    assert "new conversation" not in mail and "by hand" not in mail
     sandbox = eg.egress_held_answer("send_email", {"agent_name": "projects-assistant"})
     assert sandbox == eg.EGRESS_WITHHELD_ANSWER.format(name="send_email")
 
@@ -605,6 +612,8 @@ def test_each_cause_of_a_hold_has_its_own_note() -> None:
     assert note.startswith("## Held in this run\nAnother assistant called this run")
     assert "Do not say that another app can or cannot do it" in note
     assert "a saved reply draft" in note
+    assert "send_draft" in note and "each To, Cc and Bcc" in note
+    assert "new conversation" not in note and "by hand" not in note
     sandbox = eg.egress_hold_note({"agent_name": "projects-assistant"})
     assert sandbox == eg.EGRESS_HOLD_NOTE_SANDBOX
     assert "sandboxed turn" in sandbox and "mail" not in sandbox.lower()

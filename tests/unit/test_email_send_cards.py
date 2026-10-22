@@ -322,7 +322,7 @@ async def test_a_long_draft_text_never_pushes_out_a_recipient(gw: Gateway) -> No
     [card] = gw.cards
     assert "- Bcc: records@evil.test" in card["context"]
     assert len(card["context"]) <= 4000
-    assert card["context"].endswith("Open the draft in the Email app to read it all.]")
+    assert card["context"].endswith("Ask me in the chat to read the rest.]")
 
 
 async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
@@ -331,6 +331,39 @@ async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
         "account_id": BOX, "draft_id": "d1",
         "expect": {"to": ["ravi@contoso.test"], "cc": ["kim@contoso.test"],
                    "bcc": ["records@evil.test"]}})]
+
+
+# ── H-374: send_draft in a held run (owner, "Drafts, with a card") ───────────
+
+
+async def test_a_held_run_sends_a_draft_behind_a_card_with_each_bcc(gw: Gateway) -> None:
+    """A held run keeps send_draft (H-374). Its card lists each To, Cc and
+    Bcc of the row, and the send carries the same lists as ``expect``."""
+    from acb_skills import egress as eg
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    with artifact_context_scope():
+        bind_artifact_context(no_egress=True, agent_name="email-assistant",
+                              session_id="s-1")
+        assert eg.no_egress_for_this_run() is True
+        assert eg.is_egress_tool(agents.send_draft) is False
+        out = await agents.send_draft(BOX, "d1")
+    assert out == "Draft sent."
+    [card] = gw.cards
+    for line in ("- To: ravi@contoso.test", "- Cc: kim@contoso.test",
+                 "- Bcc: records@evil.test"):
+        assert line in card["context"], line
+    assert "1 Bcc" in card["detail"]
+    assert gw.posts[-1][1]["expect"]["bcc"] == ["records@evil.test"]
+
+
+async def test_a_held_run_sends_nothing_when_the_list_does_not_fit(gw: Gateway) -> None:
+    """A list too long for the card sends nothing and shows no card."""
+    gw.draft["bcc_addresses"] = [
+        {"name": "", "email": f"person{i:03d}@contoso.test"} for i in range(400)]
+    out = await agents.send_draft(BOX, "d1")
+    assert out.startswith("Not sent.") and "edit_draft" in out
+    assert gw.cards == [] and gw.posts == []
 
 
 async def test_a_long_subject_cannot_hide_a_bcc(gw: Gateway) -> None:
@@ -1007,4 +1040,4 @@ async def test_a_draft_with_only_a_preview_says_it_is_cut(gw: Gateway) -> None:
     await agents.send_draft(BOX, "d1")
     [card] = gw.cards
     assert "The start of the draft:\nHi Ravi, the quote" in card["context"]
-    assert card["context"].endswith("Open the draft in the Email app to read it all.]")
+    assert card["context"].endswith("Ask me in the chat to read the whole draft.]")

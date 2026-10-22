@@ -59,13 +59,14 @@ from acb_skills.untrusted import UntrustedFrame
 #   rule that forwards, calls a webhook or drafts to an address that it names
 #   opens an outbound path. So in a ``no_egress`` run each rule tool refuses
 #   that part at call time (:func:`_egress_held`), and does the rest.
-# * (B) ``True``: a send, a forward, a send of a draft, an unsubscribe (a mail
+# * (B) ``True``: a send, a forward, a scheduled send, an unsubscribe (a mail
 #   or a request to a URL from the mail), and the settings (a signature, the
 #   text about the member, auto-run).
 # * (C) ``True``: the knowledge base, a store that feeds each later reply.
-# * (D) ``True`` and ``card_bound_reply``: ``compose_reply`` (EM-CR, §18). It
-#   sends, and a held run keeps it only because of its card and its pinned
-#   parameters (``acb_skills.egress.CARD_BOUND_REPLY_TOOLS``).
+# * (D) ``True`` and ``card_bound``: ``compose_reply`` (EM-CR, §18) and
+#   ``send_draft`` (H-374, owner decision of 2026-10-22). Each sends, and a
+#   held run keeps it only because of its card and its pinned parameters
+#   (``acb_skills.egress.CARD_BOUND_SEND_TOOLS``).
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -1785,8 +1786,9 @@ async def draft_reply(
 
     A second chat draft of the same email updates the first one. A draft
     that the member wrote or edited is never written over: the new text
-    then goes beside it, and the answer says so. The member can finish and
-    send the draft in the Email app (owner, 2026-10-22). Set
+    then goes beside it, and the answer says so. The member can finish the
+    draft in the chat, with edit_draft and send_draft, or in the Email app
+    (owner, 2026-10-22). Set
     save=false only to show a text in the chat and leave Drafts unchanged.
 
     ``instruction`` carries what the member wants the reply to say, in the
@@ -1852,7 +1854,7 @@ async def draft_reply(
 # 4. With no card (WhatsApp, a batch or scheduled run) it drafts, saves and
 #    sends nothing.
 #
-# ``acb_skills.egress.CARD_BOUND_REPLY_TOOLS`` pins its parameters. A new
+# ``acb_skills.egress.CARD_BOUND_SEND_TOOLS`` pins its parameters. A new
 # parameter makes it an egress tool again. Fence:
 # ``tests/unit/test_email_chat_reply.py``.
 
@@ -1933,7 +1935,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
     return f"Reply to {len(to)} recipients?" if len(to) != 1 else "Reply to 1 recipient?"
 
 
-@_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
     email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
     instruction: str = "",
@@ -1946,16 +1948,15 @@ async def compose_reply(
 
     The text of each card also goes to the member's Drafts. A new card for
     the same email updates the chat's own draft, and never a draft that the
-    member wrote or edited. So the member can finish and send the reply in
-    the Email app instead. The member's Discard trashes the card's draft,
-    unless the member edited it there.
+    member wrote or edited. So the member can also finish the reply later,
+    in the chat with edit_draft and send_draft, or in the Email app. The
+    member's Discard trashes the card's draft, unless the member edited it
+    there.
 
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
-    choose no recipient: the server derives the recipients. You cannot add
-    a CC or a BCC. When the member asks for one, say so, and tell them to
-    save to Drafts and add it there.
+    choose no recipient: the server derives the recipients.
 
     ``draft`` is the reply text that you and the member already agreed in
     the chat, or that the request to you contains. Pass it WORD FOR WORD,
@@ -2844,8 +2845,8 @@ async def run_rules(
         if listing is None:
             return (
                 "Nothing changed. Too many rules that send email out, or that "
-                "write a draft text, are on to show on one card. Run them from "
-                "the rules screen of the Email app."
+                "write a draft text, are on to show on one card. Ask the member "
+                "which of them to turn off with update_rule, then run the rules again."
             )
         refusal = await _card_refusal(
             f"Apply the rules to {what} in {box}?",
@@ -3885,8 +3886,9 @@ async def send_email(
     attachments: list[str] | None = None,
     reply_all: bool = False,
 ) -> str:
-    """Send an email immediately — a new message OR a reply. Outward-facing —
-    ALWAYS confirm the recipients and body with the user before calling this.
+    """Send an email immediately — a new message OR a reply. Outward-facing.
+    The tool shows the member its own card with the recipients and the body,
+    and sends only after Send. So do not ask in text first.
 
     To REPLY to an email, pass ``reply_to_email_id`` (the original's local id);
     the recipient and 'Re:' subject are derived from it automatically (and it's
@@ -4310,25 +4312,33 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
         if start:
             # Only the preview is stored. Say so, or the card looks whole.
             return (context + "\n\nThe start of the draft:\n" + clip_words(start, 1000)
-                    + "\n[… only the start is shown. Open the draft in the Email "
-                    "app to read it all.]")
+                    + "\n[… only the start is shown. Ask me in the chat to read "
+                    "the whole draft.]")
         return context + "\n\nThe draft has no text."
     head = context + "\n\nThe text of the draft:\n"
     room = _CARD_CONTEXT_LIMIT - len(head)
     if len(text) <= room:
         return head + text
-    tail = "\n[… the rest is cut here. Open the draft in the Email app to read it all.]"
+    tail = "\n[… the rest is cut here. Ask me in the chat to read the rest.]"
     return head + clip_words(text, max(0, room - len(tail))).rstrip() + tail
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
+# this send, as it keeps ``compose_reply``. The tool takes no recipient: the
+# draft row holds them, the card lists each one, and a list that does not
+# fit on the card sends nothing. The gateway checks the row and the provider
+# draft against the card (``expect``, 409).
+# ``acb_skills.egress.CARD_BOUND_SEND_TOOLS`` pins the two parameters. A new
+# parameter makes it an egress tool again. Fence: ``tests/unit/test_email_chat_reply.py``.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def send_draft(account_id: str, draft_id: str) -> str:
     """Send an existing draft natively (Drafts → Sent, no duplicate). Shows a
     confirmation card before sending.
 
     The card names each To, Cc and Bcc address of the draft, and shows its
     text. The send fails, and sends nothing, when the recipients changed
-    after the card."""
+    after the card. It works in every chat, also in one that read mail from
+    outside senders."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     sender = await _mailbox_name(account_id)
     if sender is None:
@@ -4353,18 +4363,21 @@ async def send_draft(account_id: str, draft_id: str) -> str:
         return f"Not sent. The message {draft_id} is not a draft."
     lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
     if not any(lists.values()):
-        return "Not sent. The draft has no recipient. Add one in the Email app."
+        return ("Not sent. The draft has no recipient. Ask the member for an "
+                "address, and add it with edit_draft.")
     if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
         # The card never cuts an address (review round 1, P3).
         return (
             f"Not sent. The draft has an address longer than {_TARGET_LIMIT} "
-            "characters, so the card cannot show it. Fix it in the Email app."
+            "characters, so the card cannot show it. Ask the member for the "
+            "right address, and fix it with edit_draft."
         )
     detail, context = _draft_card(sender, draft.get("subject"), lists)
     if not context:
         return (
             "Not sent. The draft has too many recipients to show on one card. "
-            "Send it from the Email app."
+            "Ask the member which recipients to keep, and take the rest out "
+            "with edit_draft."
         )
     context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
     if not await request_confirmation(
@@ -4846,7 +4859,8 @@ async def delete_knowledge(account_id: str, knowledge_id: str) -> str:
 # shows its host or its address, and posts that exact link.
 _UNSUBSCRIBE_NOT_READY = (
     "Nothing changed. Unsubscribe from the chat is not ready on this server "
-    "yet, so nothing was sent. The user can unsubscribe in the Email app."
+    "yet, so nothing was sent. Offer to mark the sender cold with "
+    "set_sender_status, or to archive the sender's mail with bulk_manage_inbox."
 )
 # The text of a mailto unsubscribe (review round 1, P2). A real unsubscribe
 # mail needs no long text and no link. So a subject or a body over this many
@@ -4958,7 +4972,7 @@ async def unsubscribe_sender(
     if refusal:
         return (
             f"Nothing changed. For {shown}, {refusal}, so nothing was sent. "
-            "The user can block the sender in the Email app."
+            "Offer to mark the sender cold with set_sender_status instead."
         )
     # Outward-facing: it fires a real one-click request or SENDS an unsubscribe
     # email, and archives existing mail. Confirm, fail-closed.
@@ -5796,7 +5810,8 @@ OWN_DRAFT_SAVES: dict[str, str] = {
     "draft_reply": (
         "POST /email/draft-reply saves the reply as the one draft of the "
         "conversation in the member's own Drafts. It sends nothing, and the "
-        "member finishes and sends it in the Email app (owner, 2026-10-22)."),
+        "member sends it with send_draft, which shows its card, or in the "
+        "Email app (owner, 2026-10-22)."),
 }
 
 #: The registered tools that call a gateway POST and still ask no card, with

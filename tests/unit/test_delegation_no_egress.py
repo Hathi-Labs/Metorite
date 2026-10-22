@@ -99,8 +99,9 @@ EXPECTED_OPEN_WORLD = frozenset({
     # H-375: a send of a draft later is a send.
     "schedule_send",
     # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
-    # open_world. It is the one send that a held run keeps, and only because
-    # of its card and its pinned parameters (eg.CARD_BOUND_REPLY_TOOLS).
+    # open_world. It and send_draft (H-374, above) are the sends that a held
+    # run keeps, only because of a card and pinned parameters
+    # (eg.CARD_BOUND_SEND_TOOLS).
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
@@ -290,8 +291,8 @@ def test_the_open_world_tools_are_pinned_and_the_egress_set_is_the_rule() -> Non
     )
     egress = {n for n, t in names.items() if eg.is_egress_tool(t)}
     want = (EXPECTED_OPEN_WORLD | specialists | (eg.STORE_WRITES & set(names))) - eg.DELEGATION_TOOLS
-    # EM-CR: the card-bound reply stays in a held run although it sends.
-    want -= set(eg.CARD_BOUND_REPLY_TOOLS)
+    # EM-CR and H-374: the card-bound sends stay in a held run although they send.
+    want -= set(eg.CARD_BOUND_SEND_TOOLS)
     assert egress == want, (sorted(egress - want), sorted(want - egress))
 
 

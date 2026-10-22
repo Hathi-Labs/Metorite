@@ -6111,20 +6111,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `email_app_master_plan.md` §18 · PRs #1201, #1202, #1203
 - **Added:** 2026-10-21 · email chat collaboration session
 
-### H-374 · Decide which sends a held run may keep after the chat reads outside mail · [OWNER] · security
-- **Check:** `grep -n "CARD_BOUND_REPLY_TOOLS" -A4 packages/acb_skills/acb_skills/egress.py`
-  names `compose_reply` only. Then the decision is still open.
-- **Why:** after the chat reads mail from outside senders, the egress hold
-  (H-236) keeps only the reply card. A forward, a new mail, a send of a draft
-  and a reply with a file are refused. That defends against an injected mail.
-  It also stops "forward it to Priya" in the same chat.
-- **Recommendation:** make `send_draft` card-bound. The draft's own row holds
-  its recipients, and the card now shows its text and each recipient. Keep
-  `forward_email` and `send_email` held, because the model names their
-  recipients. Answer yes or no.
-- **Authority:** `acb_skills/egress.py` `CARD_BOUND_REPLY_TOOLS` · H-236
-- **Added:** 2026-10-21 · email chat collaboration session
-
 ### H-376 · Turn on images in reply drafts when a tier reads images · [OWNER]
 - **Check:** an agent cannot read the box's settings without the `secrets`
   grant. The owner confirms that `EMAIL_DRAFT_READS_IMAGES` is on in the
