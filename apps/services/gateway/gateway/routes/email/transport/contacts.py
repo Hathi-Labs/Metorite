@@ -22,7 +22,7 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Query
+from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import _account_scope, _tenant_session, _log, router
 from pydantic import BaseModel
@@ -558,6 +558,33 @@ async def contact_card(
 class ContactSuggestion(BaseModel):
     email: str
     name: str = ""
+    #: Where the address comes from, strongest first: ``org`` is a member or a
+    #: directory person of the caller's own organization, ``sent`` is a person
+    #: the caller wrote to, and ``seen`` is only a contact or a sender. The
+    #: chat assistant asks the member before it uses a ``seen`` address.
+    source: str = "seen"
+
+
+#: A domain filter: letters, digits, dots and hyphens only, so the value can
+#: go into a regular expression with only its dots escaped.
+_DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def _domain_pattern(domain: str | None) -> str:
+    """The POSIX pattern of a domain filter, or ``""`` for no filter.
+
+    ``fracktal.in`` matches ``fracktal.in`` and each subdomain of it. A value
+    with no dot is the name part, so ``fracktal`` matches ``fracktal.in`` and
+    ``fracktal.com`` too. Raises ``ValueError`` for a value that is not a
+    domain. A value that is not a string (an unresolved ``Query`` default on
+    a direct call) is no filter."""
+    d = domain.strip().lower().lstrip("@") if isinstance(domain, str) else ""
+    if not d:
+        return ""
+    if not _DOMAIN_RE.match(d) or ".." in d:
+        raise ValueError(domain)
+    esc = d.replace(".", r"\.")
+    return rf"(^|\.){esc}$" if "." in d else rf"(^|\.){esc}(\.|$)"
 
 
 #: The most addresses one ``/contacts/sent-from`` read takes (EM-T8c).
@@ -614,20 +641,33 @@ async def suggest_contacts(
     account_id: str | None = Query(
         None, description="Scope to one mailbox; omit to span the user's accounts"),
     limit: int = Query(8, ge=1, le=20),
+    domain: str | None = Query(
+        None, description="Only addresses at this domain, e.g. fracktal.in"),
     user: UserContext = Depends(get_current_user),
 ) -> list[ContactSuggestion]:
     """People-picker autocomplete for the composers' To/Cc/Bcc fields.
 
-    Candidates, strongest first: addresses the user has SENT mail to (the
-    autofill signal that matters most), the learned ``email_contacts``
+    Candidates, strongest first: the members and the People directory of the
+    caller's own organization, and addresses the user has SENT mail to (the
+    autofill signal that matters most), then the learned ``email_contacts``
     directory, and every known sender. Matched on address OR display name;
     prefix matches rank above substring hits, then by how often the address
     appears and how recently. The user's own connected addresses are excluded.
+    Each hit names its ``source`` (``org``, ``sent`` or ``seen``). ``domain``
+    keeps only the addresses at that domain.
+
+    The organization rows read ``app_user`` and ``people`` through the tenant
+    seam. Each also names the bound tenant in its own predicate, as
+    ``people.core.has_login`` does, so an unbound GUC matches no row.
     Best-effort: any failure returns [] — a typeahead must never error the
     composer."""
     needle = (q or "").strip().lower()
     if not needle:
         return []
+    try:
+        dom_re = _domain_pattern(domain)
+    except ValueError:
+        raise HTTPException(422, "domain must be a domain, e.g. fracktal.in") from None
     # Before the try: the typeahead swallows its own failures, and a bad
     # account_id is the caller's error (422), not a miss.
     account_id = await resolve_account_filter(
@@ -640,6 +680,7 @@ async def suggest_contacts(
                 "any": f"%{needle}%",
                 "pre": f"{needle}%",
                 "lim": limit,
+                "dom": dom_re,
             }
             rows = (await db.execute(text(
                 """
@@ -647,10 +688,10 @@ async def suggest_contacts(
                     SELECT id FROM email_accounts
                      WHERE user_id = :uid AND (:aid = '' OR id::text = :aid)
                 ),
-                cands (email, name, weight, last_at) AS (
+                cands (email, name, weight, last_at, src) AS (
                     -- People the user has WRITTEN to — the strongest signal.
                     SELECT LOWER(r->>'email'), NULLIF(TRIM(r->>'name'), ''),
-                           3, em.received_at
+                           3, em.received_at, 'sent'
                       FROM email_messages em
                       CROSS JOIN LATERAL jsonb_array_elements(
                         COALESCE(em.to_addresses, '[]'::jsonb)
@@ -658,20 +699,40 @@ async def suggest_contacts(
                      WHERE em.account_id IN (SELECT id FROM accts)
                        AND LOWER(COALESCE(em.folder, '')) = 'sent'
                     UNION ALL
+                    -- The active members of the caller's own organization.
+                    SELECT LOWER(au.email), NULLIF(TRIM(au.display_name), ''),
+                           3, NULL::timestamptz, 'org'
+                      FROM app_user au
+                     WHERE COALESCE(au.status, 'active') = 'active'
+                       AND au.organization_id = CAST(NULLIF(
+                             current_setting('app.tenant_id', true), '') AS uuid)
+                    UNION ALL
+                    -- The People directory of the caller's own organization.
+                    SELECT LOWER(pp.email), NULLIF(TRIM(pp.name), ''),
+                           3, NULL::timestamptz, 'org'
+                      FROM people pp
+                     WHERE pp.email IS NOT NULL
+                       AND COALESCE(pp.status, 'active') = 'active'
+                       AND pp.organization_id = CAST(NULLIF(
+                             current_setting('app.tenant_id', true), '') AS uuid)
+                    UNION ALL
                     -- The learned people directory (names parsed from signatures).
                     SELECT LOWER(ec.email), NULLIF(TRIM(ec.display_name), ''),
-                           2, ec.updated_at
+                           2, ec.updated_at, 'seen'
                       FROM email_contacts ec
                      WHERE ec.account_id IN (SELECT id FROM accts)
                     UNION ALL
                     -- Everyone who has mailed the user (the senders rollup).
                     SELECT LOWER(es.email), NULLIF(TRIM(es.name), ''),
-                           1, es.updated_at
+                           1, es.updated_at, 'seen'
                       FROM email_senders es
                      WHERE es.account_id IN (SELECT id FROM accts)
                 )
                 SELECT c.email,
                        COALESCE(MAX(c.name), '') AS name,
+                       CASE WHEN BOOL_OR(c.src = 'org') THEN 'org'
+                            WHEN BOOL_OR(c.src = 'sent') THEN 'sent'
+                            ELSE 'seen' END AS source,
                        (BOOL_OR(c.email LIKE :pre)
                         OR BOOL_OR(COALESCE(c.name, '') ILIKE :pre)) AS prefix_hit,
                        MAX(c.weight)  AS weight,
@@ -680,6 +741,8 @@ async def suggest_contacts(
                   FROM cands c
                  WHERE c.email IS NOT NULL AND POSITION('@' IN c.email) > 1
                    AND (c.email LIKE :any OR COALESCE(c.name, '') ILIKE :any)
+                   AND (:dom = '' OR SPLIT_PART(c.email, '@', 2) ~ :dom)
+                   AND c.email <> LOWER(:uid)
                    AND c.email NOT IN (
                        SELECT LOWER(email_address) FROM email_accounts
                         WHERE user_id = :uid)
@@ -689,8 +752,16 @@ async def suggest_contacts(
                  LIMIT :lim
                 """
             ), params)).fetchall()
-            return [ContactSuggestion(email=r.email, name=r.name or "")
+            return [ContactSuggestion(email=r.email, name=r.name or "",
+                                      source=_source(r))
                     for r in rows]
     except Exception as exc:  # noqa: BLE001 — typeahead is best-effort
         _log.warning("email.contact_suggest_failed", error=str(exc)[:160])
         return []
+
+
+def _source(row: Any) -> str:
+    """The ``source`` of a suggestion row. An unknown value reads ``seen``,
+    the weakest, so a fault never makes a stranger look like a colleague."""
+    src = getattr(row, "source", None)
+    return src if src in ("org", "sent", "seen") else "seen"
