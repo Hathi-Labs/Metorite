@@ -128,13 +128,13 @@ def _approve(monkeypatch: Any, answer: Any = True) -> list[dict[str, Any]]:
     return calls
 
 
-def _scalar(p: Any, sql: str, **params: Any) -> Any:
-    with p.admin_engine.connect() as c:
+def _scalar(_ns: Any, sql: str, **params: Any) -> Any:
+    with _ns.admin_engine.connect() as c:
         return c.execute(text(sql), params).scalar()
 
 
-def _rows(p: Any, sql: str, **params: Any) -> list[Any]:
-    with p.admin_engine.connect() as c:
+def _rows(_ns: Any, sql: str, **params: Any) -> list[Any]:
+    with _ns.admin_engine.connect() as c:
         return list(c.execute(text(sql), params).fetchall())
 
 
