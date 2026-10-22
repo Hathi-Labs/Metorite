@@ -22,9 +22,10 @@ holds each one:
    carries the count the route reports. A card that says "delete X" with no
    size is a signature bought under a misdescription.
 
-What is deliberately NOT here: hard delete of a project or a task (D-PM-35,
-class X until WS-40), a bulk ``delete`` action for the same reason, and a
-grant write (spec §12, question 2).
+Hard delete of a project or a task IS here since 2026-10-22 (owner, over
+D-PM-35): ``delete_project`` and ``delete_task``, one act per card. What is
+deliberately NOT here: a bulk ``delete`` action, and a grant write (spec §12,
+question 2).
 """
 
 from __future__ import annotations
@@ -279,6 +280,88 @@ async def unarchive_project(project_id: str) -> str:
     return (
         f"Restored {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
         f"back on the surface.\n  project_id: {pid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_project(project_id: str) -> str:
+    """Delete a project and EVERYTHING under it for good: its subprojects,
+    their tasks (archived ones too), comments and grants. ONE project per
+    call. There is no undo. The card leads with how many projects and open
+    tasks you can see go with it. When the member only wants it out of the
+    way, archive_project is the reversible act: offer that first."""
+    if _many(project_id):
+        return f"delete_project {ONE_ACT}"
+    pid, node = await _node(project_id)
+    summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
+    below = _descendants(await _tree_node(pid))
+    open_tasks = _open_count(summary)
+    # Both reads are visibility-filtered and the delete is not: it takes the
+    # whole subtree, archived tasks included. So the card says "you can see".
+    impact = (
+        f"{_plural(1 + below, 'project')} you can see deleted for good · "
+        f"{_plural(open_tasks, 'open task')} you can see go with them, with every "
+        "archived task, comment and grant below; rows you cannot see go too"
+    )
+    if not await _confirm(
+        title="Delete this project for good?",
+        detail=f"{data(node.get('name'))} · {impact}",
+        context=_guard_card(
+            impact,
+            {
+                "project": data(node.get("name")),
+                "undo": "none; deleting is permanent. Archiving is the reversible way",
+            },
+        ),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/nodes/{pid}")) or {}
+    gone = result.get("cascaded") or {}
+    return (
+        f"Deleted {data(node.get('name'))}: {_plural(int(gone.get('projects') or 0), 'project')}, "
+        f"{_plural(int(gone.get('tasks') or 0), 'task')} and "
+        f"{_plural(int(gone.get('grants') or 0), 'grant')} removed."
+        f"\n  project_id: {pid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_task(task_id: str) -> str:
+    """Delete one task for good, with its comments, attachments and links.
+    ONE task per call. There is no undo. Its subtasks are not deleted: they
+    move up one level, to this task's own parent. The card carries the title,
+    the lane and what happens to the subtasks. When the member only wants it
+    out of the way, archive_task is the reversible act."""
+    if _many(task_id):
+        return f"delete_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    count = await _subtask_counts(tid)
+    lane = await _status_name(task)
+    tail = (
+        f"{_subtasks_phrase(count.total, 'move up', count.capped)} up one level, not deleted"
+        if count.total
+        else "no subtasks"
+    )
+    impact = f"1 task deleted for good from lane {lane} · {tail}"
+    if not await _confirm(
+        title="Delete this task for good?",
+        detail=f"{_ref(task)} · {impact}",
+        context=_guard_card(
+            impact,
+            {
+                "task": _ref(task),
+                "status": lane,
+                "undo": "none; deleting is permanent. Archiving is the reversible way",
+            },
+        ),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/tasks/{tid}")) or {}
+    moved = int((result.get("cascaded") or {}).get("subtasks_promoted") or 0)
+    return (
+        f"Deleted {_ref(task)}."
+        + (f" {_plural(moved, 'subtask')} moved up one level." if moved else "")
+        + f"\n  task_id: {tid}"
     )
 
 

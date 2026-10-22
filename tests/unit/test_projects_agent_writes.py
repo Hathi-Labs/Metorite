@@ -213,6 +213,10 @@ def _s3_writes(call: dict) -> Any:
         return {"project_id": ARCHIVED, "archived": False, "projects": 1, "open_tasks": 0}
     if path.endswith("/revert"):
         return {"task_id": UUID, "reverted": ["due_at"], "skipped": []}
+    if method == "DELETE" and path.startswith("/projects/nodes/"):
+        return {"deleted": UUID, "cascaded": {"projects": 2, "tasks": 5, "grants": 1}}
+    if method == "DELETE" and path.startswith("/projects/tasks/"):
+        return {"deleted": LIVE, "cascaded": {"subtasks_promoted": 0}}
     if method == "DELETE" and path.startswith("/projects/statuses/"):
         # The route's real shape (admin.py `delete_status`).
         return {"deleted": S1, "tasks_affected": 4}
@@ -492,6 +496,8 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "unarchive_project": [{"project_id": ARCHIVED}],
     "move_project": [{"project_id": UUID, "parent_project_id": SALES}],
     "archive_task": [{"task_id": LIVE}, {"task_id": LIVE, "include_subtasks": "yes"}],
+    "delete_project": [{"project_id": UUID}],
+    "delete_task": [{"task_id": LIVE}],
     "merge_tasks": [{"target_task_id": UUID, "source_task_ids": OTHER}],
     "bulk_update": [
         {"task_ids": f"{UUID},{OTHER}", "status": "done", "tags_add": "q4"},
@@ -576,6 +582,8 @@ _ONE_ID: dict[str, str] = {
     "unarchive_project": "project_id",
     "move_project": "project_id",
     "archive_task": "task_id",
+    "delete_project": "project_id",
+    "delete_task": "task_id",
     "delete_comment": "comment_id",
     "revert_activity": "activity_id",
     "delete_status": "status",

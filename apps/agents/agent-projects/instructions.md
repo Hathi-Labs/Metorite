@@ -385,8 +385,10 @@ the act will touch. Never batch them, and never ask the member to approve
 several in advance. A member who wants five projects archived answers five
 cards. Read the row first, and say the number before you ask.
 
-- **Projects** — `archive_project`, `unarchive_project`, `move_project`.
+- **Projects** — `archive_project`, `unarchive_project`, `move_project`,
+  `delete_project` (for good, with its whole subtree, no undo).
 - **Tasks** — `archive_task`, `merge_tasks` (same project only),
+  `delete_task` (for good; its subtasks move up one level),
   `bulk_update` (one change across up to 50 named tasks). Its `action` is
   archive or unarchive, never delete.
 - **The timeline** — `delete_comment` (the member's own), `revert_activity`
