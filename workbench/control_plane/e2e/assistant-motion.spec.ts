@@ -68,10 +68,24 @@ interface InstallOptions {
   shell?: ShellLayout;
   /** Hold `/api/auth/me` and the layout read this long, so the shell lands before they answer. */
   delayMs?: number;
+  /**
+   * CF-5: serve `POST /api/chat/sessions/<id>/brief` from the page. `card`
+   * answers 200 and then serves the brief row from that chat's messages;
+   * `none` answers 204. `window.__briefPosts` counts the calls. Without it
+   * the route is refused, as every other request without a stub is.
+   */
+  brief?: "card" | "none";
 }
 
+/** The brief the stub posts (CF-5): the lead line, and the lines as pills. */
+const BRIEF_LEAD = "Your day, Thu 22 Oct. 3 things need you.";
+const BRIEF_PILLS = [
+  'Reply to Priya Shah: "Q3 pricing" (waiting 40 min)',
+  "Overdue: Send the deck (2 days late)",
+];
+
 async function install(page: Page, opts: InstallOptions = {}) {
-  await page.addInitScript(({ chatFirst, pill, taskId, shell, delayMs }) => {
+  await page.addInitScript(({ chatFirst, pill, taskId, shell, delayMs, brief, briefLead, briefPills }) => {
     window.localStorage.clear();
     // The one assistant needs its flag and the full frame (`chatFlag.ts`).
     for (const k of ["cc-shell-chat", "cc-shell-bar", "cc-shell-nav"]) window.localStorage.setItem(k, "1");
@@ -93,10 +107,35 @@ async function install(page: Page, opts: InstallOptions = {}) {
     const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    // CF-5: the brief rows the page "posted", by chat id, and the count of asks.
+    const briefRows = new Map<string, unknown[]>();
+    w.__briefPosts = 0;
+    const briefRow = () => ({
+      id: "brief-2026-10-22", role: "assistant", content: briefLead, timestamp: Date.now(),
+      toolEvents: [], progressLines: [], reasoning: null, agentState: null,
+      customEvents: [{
+        name: "generative_ui", segmentCutoff: 0,
+        value: { type: "template", props: { name: "reportCard", data: { title: "Your day, Thu 22 Oct", pills: briefPills, note: "+1 more on My Day" } } },
+      }],
+      authorEmail: "orchestrator", authorKind: "agent",
+    });
     const orig = window.fetch.bind(window);
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/chat/active-sessions")) return json([]);
+      if (brief) {
+        const asked = url.match(/\/api\/chat\/sessions\/([^/]+)\/brief/);
+        if (asked) {
+          w.__briefPosts = (w.__briefPosts as number) + 1;
+          if (brief === "none") return new Response(null, { status: 204 });
+          briefRows.set(decodeURIComponent(asked[1]), [briefRow()]);
+          return json({ posted: true, message_id: "brief-2026-10-22", preview: briefLead });
+        }
+        const read = url.match(/\/api\/chat\/sessions\/([^/?]+)\/messages/);
+        if (read && (init?.method ?? "GET").toUpperCase() === "GET") {
+          return json(briefRows.get(decodeURIComponent(read[1])) ?? []);
+        }
+      }
       if (delayMs && (url.includes("/api/auth/me/shell") || url.endsWith("/api/auth/me"))) {
         await new Promise((r) => setTimeout(r, delayMs));
       }
@@ -170,7 +209,10 @@ async function install(page: Page, opts: InstallOptions = {}) {
       }
       return orig(input, init);
     };
-  }, { chatFirst: Boolean(opts.chatFirst), pill: Boolean(opts.pill), taskId: TASK_ID, shell: opts.shell ?? null, delayMs: opts.delayMs ?? 0 });
+  }, {
+    chatFirst: Boolean(opts.chatFirst), pill: Boolean(opts.pill), taskId: TASK_ID, shell: opts.shell ?? null,
+    delayMs: opts.delayMs ?? 0, brief: opts.brief ?? null, briefLead: BRIEF_LEAD, briefPills: BRIEF_PILLS,
+  });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -201,6 +243,10 @@ async function openHome(page: Page, width: number, height = 900, opts: InstallOp
   await install(page, opts);
   await page.goto(path);
 }
+
+/** How many times the page asked `POST .../brief` (CF-5). */
+const briefPosts = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __briefPosts: number }).__briefPosts);
 
 /** The bodies the page PUT to `/api/auth/me/shell`, in order. */
 const shellPuts = (page: Page) =>
@@ -664,6 +710,55 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
 
     // The dialog shut, so the landing open runs now.
     await expectLandedOnChat(page);
+  });
+
+  test("a fresh chat on a phone opens with the day's brief as a card with pills, once a day (CF-5)", async ({ page }) => {
+    await openHome(page, 390, 844, { chatFirst: true, shell: WROTE, brief: "card" });
+    await expectLandedOnChat(page);
+    // The brief is the first turn: its lead line, the card, and one pill a line.
+    await expect(panel(page).getByText(BRIEF_LEAD).first()).toBeVisible({ timeout: 30_000 });
+    const card = panel(page).locator("[data-report-pills]");
+    await expect(card).toBeVisible();
+    await expect(card.getByText("Your day, Thu 22 Oct")).toBeVisible();
+    await expect(card.getByText("Tap a line to act on it")).toBeVisible();
+    await expect(card.getByText("+1 more on My Day")).toBeVisible();
+    for (const line of BRIEF_PILLS) await expect(card.getByRole("button", { name: line })).toBeVisible();
+    // The route was asked once, with no model call: no `/api/agent/chat` yet.
+    expect(await briefPosts(page)).toBe(1);
+    await expect(panel(page).getByText("Working on the plan.")).toHaveCount(0);
+
+    // A tap on a pill sends the line as the member's turn.
+    await card.getByRole("button", { name: BRIEF_PILLS[1] }).click();
+    await expect(panel(page).getByText(BRIEF_PILLS[1]).nth(1)).toBeVisible({ timeout: 15_000 });
+    await expect(panel(page).getByText("Working on the plan.").first()).toBeVisible({ timeout: 15_000 });
+    await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    await expect(panel(page).getByText("The due date is Friday.").first()).toBeVisible({ timeout: 15_000 });
+
+    // A second fresh chat in the same page asks nothing: the day is marked.
+    await panel(page).getByRole("button", { name: "New chat" }).click();
+    await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
+    await expect(panel(page).getByText(BRIEF_LEAD)).toHaveCount(0);
+    await expect(panel(page).locator("[data-report-pills]")).toHaveCount(0);
+    await page.waitForTimeout(1_000);
+    expect(await briefPosts(page)).toBe(1);
+  });
+
+  test("a day with no brief opens the chat empty, with the starter pills (CF-5)", async ({ page }) => {
+    await openHome(page, 390, 844, { chatFirst: true, shell: WROTE, brief: "none" });
+    await expectLandedOnChat(page);
+    await expect.poll(() => briefPosts(page), { timeout: 30_000 }).toBe(1);
+    await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
+    await expect(panel(page).locator("[data-report-pills]")).toHaveCount(0);
+    await expect(panel(page).getByText("Try asking")).toBeVisible({ timeout: 30_000 });
+  });
+
+  test("a desktop asks for no brief, with the flag on (D-CF-6, §9.2 Q1)", async ({ page }) => {
+    await openHome(page, 1440, 900, { chatFirst: true, brief: "card" });
+    await openPanel(page);
+    await expect(panel(page)).toHaveAttribute("data-panel-form", "dock");
+    await page.waitForTimeout(1_000);
+    expect(await briefPosts(page)).toBe(0);
+    await expect(panel(page).locator("[data-report-pills]")).toHaveCount(0);
   });
 
   test("a slow access read and a slow layout read: the question still comes before the sheet", async ({ page }) => {

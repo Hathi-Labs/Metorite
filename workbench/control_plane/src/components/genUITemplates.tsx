@@ -64,6 +64,7 @@ import { cardExit, isDeclinedAnswer } from "@/lib/declineAnswer";
 import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
+import SuggestionPills from "@/components/SuggestionPills";
 import { clipWords, plainTitle } from "@/lib/fencedText";
 import { type CardFamily, templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -219,8 +220,8 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "reportCard",
-    summary: "A saved report: headline tiles plus one table per section.",
-    data: "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }] }",
+    summary: "A saved report: headline tiles plus one table per section. `pills` are lines a tap sends as the member's next message (the day's brief, CF-5).",
+    data: "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }], pills?:[string], note? }",
     family: "result",
   },
   {
@@ -1742,17 +1743,33 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   );
 }
 
-function ReportCard({ data }: { data: Data }) {
+/** The pills of a `reportCard`: its `pills` strings, trimmed, empties dropped. Exported for its test. */
+export function reportCardPills(data: Data): string[] {
+  return arr(data.pills).map((p) => str(p).trim()).filter(Boolean);
+}
+
+/** The label over the pills of the day's brief (WS-62 CF-5). */
+export const BRIEF_PILLS_LABEL = "Tap a line to act on it";
+
+function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const stats = arr(data.stats);
   const tables = arr(data.tables).map((t) => (t ?? {}) as Data);
+  // WS-62 CF-5: the day's brief draws as this card, with one pill for each
+  // line. A tap sends the line as the member's next message, through the
+  // same `onAction` every template button uses. The one pill component
+  // (`SuggestionPills`) draws them, so the brief's pills and the starter
+  // pills are one control. With no `onAction` (the side panel) they draw
+  // and do nothing.
+  const pills = reportCardPills(data);
+  const note = str(data.note).trim();
   // In a chat card the report is ONE card: its title row is the card's
   // header, and the tiles and the tables are its body (owner report,
   // 2026-10-13). Elsewhere it is the column it always was.
   const fold = useCardFold();
   return (
-    <div style={fold ? CARD_BOX : undefined}>
+    <div style={fold ? CARD_BOX : undefined} data-report-pills={pills.length > 0 ? "" : undefined}>
       {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
-      <TemplateHead icon="file-text" gap={10} title={str(data.title, "Report")} href={reportLink()}
+      <TemplateHead icon="file-text" gap={10} title={str(data.title, "Report")} href={pills.length > 0 ? null : reportLink()}
         aside={data.period != null ? str(data.period) : undefined} />
       <TemplateBody>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1762,6 +1779,10 @@ function ReportCard({ data }: { data: Data }) {
       <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
       {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+      {pills.length > 0 && (
+        <SuggestionPills suggestions={pills} onPick={(line) => ctx?.onAction?.(line)} label={BRIEF_PILLS_LABEL} align="start" />
+      )}
+      {note ? <div className="text-xs text-muted-foreground"><GenUiText text={note} /></div> : null}
       </div>
       </TemplateBody>
     </div>
@@ -2204,7 +2225,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   timeline: (data) => <Timeline data={data} />,
   taskBoard: (data) => <TaskBoard data={data} />,
   dataGrid: (data) => <DataGrid data={data} />,
-  reportCard: (data) => <ReportCard data={data} />,
+  reportCard: (data, ctx) => <ReportCard data={data} ctx={ctx} />,
   planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
   chart: (data) => <ChartCard spec={data} />,
   report: (data) => <ReportTemplate data={data} />,
