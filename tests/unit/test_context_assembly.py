@@ -210,10 +210,16 @@ def test_reserve_tokens_leave_room_for_instructions_and_tools(monkeypatch):
         {"role": "user" if i % 2 == 0 else "assistant", "content": f"t{i} " + "x" * 4000}
         for i in range(16)
     ]
-    plain = assemble_run_context(
+    # Each call runs in a copy of the context, so the pressure stats that it
+    # sets (`last_fit_stats`) never reach a later test in this thread.
+    import contextvars
+
+    plain = contextvars.copy_context().run(
+        assemble_run_context,
         history=history, current_message="now", model="m", max_output_tokens=2000,
     )
-    reserved = assemble_run_context(
+    reserved = contextvars.copy_context().run(
+        assemble_run_context,
         history=history, current_message="now", model="m", max_output_tokens=2000,
         reserve_tokens=8000,
     )
