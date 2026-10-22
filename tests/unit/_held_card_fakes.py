@@ -62,6 +62,9 @@ class FakeRedis:
     async def getdel(self, k: str) -> str | None:
         return self.keys.pop(k, None)
 
+    async def get(self, k: str) -> str | None:
+        return self.keys.get(k)
+
 
 def install_redis(monkeypatch) -> FakeRedis:
     """One fake Redis behind both records: the answer and the card."""
