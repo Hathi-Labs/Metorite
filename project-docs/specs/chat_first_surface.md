@@ -282,8 +282,15 @@ show_in_app(path: str, why: str) -> dict
   with `isInAppPath`, pushes the route, and then:
   - on a desktop, the panel stays. A full view becomes the side panel, as
     for a delegation. One toast says "Opened Projects · Go back".
-  - on a phone, the sheet drops to the peek strip. The strip's line is
-    `why`. A tap brings the chat back.
+  - ~~on a phone, the sheet drops to the peek strip. The strip's line is
+    `why`. A tap brings the chat back.~~ **Changed by the owner,
+    2026-10-22.** On a phone the run moves no page, for `show_in_app` and
+    for a delegation alike. The chat closed and the app opened while the
+    member still talked, and that was jarring. The sheet stays open. A
+    toast names the page, and its Open button opens it. A link that the
+    member taps still opens its page. `runMovesPage` in
+    `src/lib/shell/assistant.ts` holds the rule, and
+    `src/lib/shell/assistant.test.ts` is the fence.
 - **Once per turn.** A run may call `show_in_app` once per assistant turn.
   A second call in the same turn returns an error to the model and moves
   nothing. A page that jumps twice is a page the member cannot read.

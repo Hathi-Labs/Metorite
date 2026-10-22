@@ -153,6 +153,18 @@ export function onPageChange(a: {
  * - null: a desktop keeps the chat, and `onPageChange` docks a full view
  *   when the route changes.
  */
+/**
+ * Whether a RUN may move the page by itself: a delegation to an app's
+ * agent, or `show_in_app`. On a phone it may not (owner report,
+ * 2026-10-22): the chat closed and the app opened while the member was
+ * still talking, which was jarring. The phone keeps the chat open and
+ * offers the page in a toast instead. A link the member taps still opens
+ * (`onChatLink`). On a desktop the page moves beside the chat, as before.
+ */
+export function runMovesPage(a: { phone: boolean }): boolean {
+  return !a.phone;
+}
+
 export function onChatLink(a: { phone: boolean; chatFirst: boolean }): "peek" | "close" | null {
   if (!a.phone) return null;
   return a.chatFirst ? "peek" : "close";
@@ -220,10 +232,8 @@ export function stripText(a: { phase: RunPhase; statusText: string | null | unde
  *   `/connect`, `/signup`, `/settings` or a pane they lack (review of #1197).
  * - `dock`: a desktop full view becomes the side panel, so the page shows
  *   beside the chat.
- * - `close`: a phone's sheet covers the page, so it gives way (`onChatLink`),
- *   with the chat-first flag off.
- * - `peek`: with the flag on, the sheet drops to the peek strip (CF-1), so
- *   the page shows and the chat stays one tap away.
+ * - `offer`: on a phone nothing moves (`runMovesPage`). The chat stays open,
+ *   and a toast offers the page (owner report, 2026-10-22).
  *
  * `pane` is the pane the path opens, for the toast's label. Null for the root.
  */
@@ -237,8 +247,8 @@ export function navigateAct(a: {
   chatFirst: boolean;
   form: AssistantMode;
   canDock: boolean;
-}): { push: boolean; dock: boolean; close: boolean; peek: boolean; pane: NavPane | null } {
-  const none = { push: false, dock: false, close: false, peek: false, pane: null };
+}): { push: boolean; dock: boolean; offer: boolean; pane: NavPane | null } {
+  const none = { push: false, dock: false, offer: false, pane: null };
   if (!a.open || !a.threadId || a.threadId !== a.activeId) return none;
   const pathname = inAppPathname(a.path);
   if (pathname === null) return none;
@@ -249,13 +259,8 @@ export function navigateAct(a: {
     if (!pane || pane.launch !== "live" || pane.adminOnly) return none;
     if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
   }
-  return {
-    push: true,
-    dock: !a.phone && a.form === "full" && a.canDock,
-    close: onChatLink({ phone: a.phone, chatFirst: a.chatFirst }) === "close",
-    peek: onChatLink({ phone: a.phone, chatFirst: a.chatFirst }) === "peek",
-    pane,
-  };
+  if (!runMovesPage(a)) return { push: false, dock: false, offer: true, pane };
+  return { push: true, dock: a.form === "full" && a.canDock, offer: false, pane };
 }
 
 /**
