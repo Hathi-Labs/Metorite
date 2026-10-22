@@ -766,7 +766,7 @@ class BaseEmailProvider(ABC):
                     raise ValueError(f"unknown bulk action {action!r}")
                 if new_id and new_id != pmid:
                     rekeys[pmid] = new_id
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if failed_out is not None:
                     failed_out.append(pmid)
                 logger.warning(
