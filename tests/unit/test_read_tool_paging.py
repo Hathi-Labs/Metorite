@@ -800,15 +800,19 @@ def test_query_inbox_page_two_holds_items_31_to_35(monkeypatch, ea) -> None:
 
 
 def test_read_thread_pages_the_newest_messages_in(monkeypatch, ea) -> None:
-    """The thread is oldest first. The old read showed the oldest 25 of at
-    most 50, and called the dropped NEWEST ones 'earlier'."""
+    """The old read showed the oldest 25 of at most 50, and called the
+    dropped NEWEST ones 'earlier'. Since 2026-10-22 the first page holds
+    the NEWEST 25, oldest first within the page, and offset pages back."""
     _gw(monkeypatch, ea, _paged_messages(_messages(60)))
     first = asyncio.run(ea.read_thread(thread_id="t1"))
     assert "60 message(s)" in first
-    assert "Showing 1-25 of 60. Call again with offset=25 for the rest." in first
+    assert "[36]" in first and "[60]" in first and "x60@y.io" in first
+    assert "[35]" not in first
+    assert ("Showing messages 36-60 of 60. Call again with offset=25 for the 25 "
+            "messages before these.") in first
     last = asyncio.run(ea.read_thread(thread_id="t1", offset=50))
-    assert "[51]" in last and "[60]" in last and "x60@y.io" in last
-    assert "This is the last page." in last
+    assert "[1]" in last and "[10]" in last and "[11]" not in last
+    assert "These are the oldest messages." in last
 
 
 def test_find_urgent_names_the_total(monkeypatch, ea) -> None:

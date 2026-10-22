@@ -1464,6 +1464,40 @@ class AgentRunError(Exception):
         self.mutation_pr = mutation_pr
 
 
+# The longest sub-agent answer that goes back to the orchestrator whole. The
+# orchestrator relays a drafted email or document as it is, so 8000 cut real
+# drafts. Override with SUB_AGENT_MAX_RESULT_CHARS.
+# Fence: tests/unit/test_sub_agent_result_cap.py.
+_SUB_AGENT_RESULT_CHARS_DEFAULT = 24000
+
+
+def _cap_sub_agent_result(text: str, cap: int) -> str:
+    """Cut a sub-agent answer to about *cap* characters, head AND tail kept.
+
+    The end of a draft holds the sign-off and the questions for the reader,
+    so a head-only cut lost them. The cut keeps two thirds from the start
+    and one third from the end, each at a line break when one is near. A
+    marker between them names the number of characters left out.
+    """
+    if cap <= 0 or len(text) <= cap:
+        return text
+    head_len = (cap * 2) // 3
+    tail_len = cap - head_len
+    head = text[:head_len]
+    nl = head.rfind("\n")
+    if nl > head_len // 2:
+        head = head[:nl]
+    tail = text[len(text) - tail_len:]
+    nl = tail.find("\n")
+    if 0 <= nl < tail_len // 2:
+        tail = tail[nl + 1:]
+    left_out = len(text) - len(head) - len(tail)
+    return (
+        f"{head}\n\n[Sub-agent result cut: {left_out} of {len(text)} characters"
+        f" left out here. The start and the end are kept.]\n\n{tail}"
+    )
+
+
 async def _run_sub_agent_streaming(
     agent_name: str,
     message_str: str,
@@ -1756,11 +1790,14 @@ async def _run_sub_agent_streaming(
             text_parts: list[str] = []
 
             # Max chars returned from a sub-agent to the parent (technique #5).
-            # Research: sub-agents explore deeply (10k+ tokens) but the parent
-            # only needs a condensed 1-2k token summary.  Prevents single
-            # sub-agent calls from bloating the orchestrator's context.
+            # Prevents single sub-agent calls from bloating the orchestrator's
+            # context. The bound is high enough for a whole draft, because the
+            # orchestrator relays a draft as it is.
             _MAX_SUB_RESULT_CHARS = int(
-                os.environ.get("SUB_AGENT_MAX_RESULT_CHARS", "8000")
+                os.environ.get(
+                    "SUB_AGENT_MAX_RESULT_CHARS",
+                    str(_SUB_AGENT_RESULT_CHARS_DEFAULT),
+                )
             )
 
             if _sub_is_copilot and hasattr(agent, "run"):
@@ -1901,21 +1938,13 @@ async def _run_sub_agent_streaming(
             if not raw_result:
                 return f"({agent_name!r} returned an empty response)"
             if len(raw_result) > _MAX_SUB_RESULT_CHARS:
-                trimmed = raw_result[:_MAX_SUB_RESULT_CHARS]
-                last_nl = trimmed.rfind("\n")
-                if last_nl > _MAX_SUB_RESULT_CHARS // 2:
-                    trimmed = trimmed[:last_nl]
                 _log.debug(
                     "executor.sub_agent_result_truncated",
                     agent=agent_name,
                     original=len(raw_result),
                     capped=_MAX_SUB_RESULT_CHARS,
                 )
-                return (
-                    trimmed
-                    + f"\n\n[Sub-agent result truncated to"
-                    f" {_MAX_SUB_RESULT_CHARS} chars]"
-                )
+                return _cap_sub_agent_result(raw_result, _MAX_SUB_RESULT_CHARS)
             return raw_result
 
     except Exception as exc:
@@ -5424,6 +5453,7 @@ async def run_agent_stream(
                 _native_input, _native_ctx = _compose_maf_run(
                     agent_name, run_id, event_payload, integrations,
                     native=True, session_turn=_session_turn,
+                    agent=agent,
                 )
                 # Context-pressure notice (audit CX6): eviction was silent —
                 # a long conversation just degraded as oldest turns dropped.
@@ -6816,6 +6846,7 @@ async def run_agent_stream(
                         agent_name, run_id, event_payload, integrations,
                         native=not _is_copilot_sdk,
                         session_turn=_session_turn,
+                        agent=agent,
                     )
                     response = await _with_tier_policy(
                         _agent_for_run(
@@ -7440,6 +7471,7 @@ async def _run_with_maf_agent(
                 model=_model,
                 max_output_tokens=_reserved_output_tokens(_model),
                 history_loader=_loader if callable(_loader) else None,
+                reserve_tokens=_agent_prompt_reserve_tokens(agent),
             )
             # MAF _types.Message takes content as a list of parts.
             run_input = [
@@ -7562,6 +7594,7 @@ def _compose_maf_run(
     *,
     native: bool,
     session_turn: Any = None,
+    agent: Any = None,
 ) -> tuple[Any, Any]:
     """Build the input of a MAF run, and the provider of its context.
 
@@ -7598,6 +7631,9 @@ def _compose_maf_run(
     :func:`_begin_native_session`. A usable one sends the input through
     :func:`_compose_session_run`, which never returns the string: a stored
     session keeps its input messages, and the string carries the memory.
+
+    *agent* is the agent that runs the input. The fit holds back room for its
+    instructions and tool schemas (:func:`_agent_prompt_reserve_tokens`).
     """
     if not native or not _native_sessions_enabled():
         return (
@@ -7612,6 +7648,7 @@ def _compose_maf_run(
     if session_turn is not None and getattr(session_turn, "usable", False):
         return _compose_session_run(
             agent_name, run_id, event_payload, integrations, session_turn,
+            agent=agent,
         )
     if not (history_msgs or _loader) or not current_msg_text.strip():
         return (
@@ -7637,6 +7674,7 @@ def _compose_maf_run(
             model=_model,
             max_output_tokens=_reserved_output_tokens(_model),
             history_loader=_loader if callable(_loader) else None,
+            reserve_tokens=_agent_prompt_reserve_tokens(agent),
         )
         fitted_context = ""
         turns = list(assembled)
@@ -7669,6 +7707,8 @@ def _compose_session_run(
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
     turn: Any,
+    *,
+    agent: Any = None,
 ) -> tuple[Any, Any]:
     """The input of a native run that carries a session (WS-43t2, §15.9.4).
 
@@ -7713,6 +7753,7 @@ def _compose_session_run(
             history_loader=(
                 None if turn.loaded or not callable(loader) else loader
             ),
+            reserve_tokens=_agent_prompt_reserve_tokens(agent),
         )
         turns = list(assembled)
         fitted_context = ""
@@ -7737,6 +7778,55 @@ def _compose_session_run(
         )
         turn.abandon("compose_failed")
         return _build_event_message(agent_name, run_id, event_payload, integrations), None
+
+
+def _agent_prompt_reserve_tokens(agent: Any) -> int:
+    """Tokens that *agent* sends beside the messages: instructions and tools.
+
+    The history fit must leave room for them, or a long chat plus a large
+    tool set goes over the window. The estimate is characters / 4, the same
+    rate as the /v1 guard uses for tool schemas. It reads a MAF ``Agent``
+    (``default_options`` with ``instructions`` and ``tools``) and a Copilot
+    SDK agent (``_default_options`` with ``system_message``). An unknown
+    shape, or any error, gives 0, which is the old budget.
+    Fence: tests/unit/test_context_assembly.py.
+    """
+    if agent is None:
+        return 0
+    try:
+        texts: list[str] = []
+        tools: list[Any] = []
+        for attr in ("default_options", "_default_options"):
+            opts = getattr(agent, attr, None)
+            if not isinstance(opts, dict):
+                continue
+            if isinstance(opts.get("instructions"), str):
+                texts.append(opts["instructions"])
+            msg = opts.get("system_message")
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                texts.append(msg["content"])
+            if isinstance(opts.get("tools"), (list, tuple)):
+                tools.extend(opts["tools"])
+            break
+        direct = getattr(agent, "instructions", None)
+        if isinstance(direct, str) and direct not in texts:
+            texts.append(direct)
+        chars = sum(len(t) for t in texts)
+        for item in tools:
+            spec: Any = item
+            to_spec = getattr(item, "to_json_schema_spec", None)
+            if callable(to_spec):
+                spec = to_spec()
+            elif not isinstance(item, dict):
+                spec = {
+                    "name": getattr(item, "name", "") or getattr(item, "__name__", ""),
+                    "description": getattr(item, "description", "")
+                    or getattr(item, "__doc__", "") or "",
+                }
+            chars += len(json.dumps(spec, default=str))
+        return chars // 4
+    except Exception:
+        return 0
 
 
 def _native_history_cap(model: str, reserve_tokens: int = 0) -> int:
@@ -7839,7 +7929,7 @@ async def _begin_native_session(
         reserve = count_message_tokens([
             {"role": "system", "content": _run_context_text(event_payload, integrations, agent_name)},
             {"role": "user", "content": current},
-        ], model)
+        ], model) + _agent_prompt_reserve_tokens(agent)
         return await native_session_store.begin_turn(
             organization_id=str(org),
             thread_id=str(caller_thread_id),
