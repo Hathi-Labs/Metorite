@@ -426,6 +426,16 @@ async def test_a_new_mail_with_hidden_text_is_refused(_world, field: str, value:
     assert _world["redis"].keys == {}
 
 
+def test_each_kind_names_the_fields_that_it_needs() -> None:
+    """An empty id never reaches the SQL as an empty UUID."""
+    for kind, body in (("draft", {"account_id": F.BOX}), ("draft", {"draft_id": F.DRAFT}),
+                       ("schedule", {"account_id": F.BOX, "draft_id": F.DRAFT}),
+                       ("unsubscribe", {"account_id": F.BOX}), ("forward", {"to": ["a@b.test"]}),
+                       ("new", {"to": ["a@b.test"]})):
+        with pytest.raises(ValidationError):
+            hc.HeldCardRequest(kind=kind, **body)
+
+
 def test_each_kind_takes_only_its_own_fields() -> None:
     """A draft card takes no recipient, and an unsubscribe card no file."""
     for kind, extra in (("draft", {"to": [F.STRANGER]}), ("schedule", {"files": ["a"]}),

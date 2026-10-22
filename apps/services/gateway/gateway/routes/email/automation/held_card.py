@@ -552,6 +552,9 @@ class HeldCardRequest(BaseModel):
         for name in _KIND_FIELD_NAMES:
             if name not in allowed and getattr(self, name):
                 raise ValueError(f"a {self.kind} card takes no {name}")
+        for name in _KIND_NEEDS[self.kind]:
+            if not str(getattr(self, name) or "").strip():
+                raise ValueError(f"a {self.kind} card needs {name}")
         return self
 
 
@@ -565,6 +568,15 @@ _KIND_FIELDS: dict[str, frozenset[str]] = {
 }
 _KIND_FIELD_NAMES = ("draft_id", "send_at", "email", "message_id", "to", "cc", "bcc",
                      "note", "subject", "files")
+#: The fields that each kind of held card must name. A forward may leave out
+#: its mailbox, which the mail names.
+_KIND_NEEDS: dict[str, tuple[str, ...]] = {
+    "draft": ("account_id", "draft_id"),
+    "schedule": ("account_id", "draft_id", "send_at"),
+    "unsubscribe": ("account_id", "email"),
+    "forward": ("message_id",),
+    "new": ("account_id",),
+}
 
 
 class HeldCardActRequest(BaseModel):
