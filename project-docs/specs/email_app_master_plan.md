@@ -29,7 +29,7 @@
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
-> 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card". A held chat now sends a saved draft with `send_draft` behind its card. A forward, a new mail and a scheduled send stay held.
+> 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card" and "Schedule a send". A held chat now sends or schedules a saved draft behind a card. A forward, a new mail, a file, an unsubscribe and a settings change stay held.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
@@ -20386,9 +20386,21 @@ told the owner to paste the mail by hand, or to ask in a new conversation.
    recipients.
 4. **No card, no send.** A run with no card channel sends nothing.
 
-`CARD_BOUND_SEND_TOOLS` pins `send_draft` to `account_id` and `draft_id`. `send_email`,
-`forward_email`, `schedule_send` and `unsubscribe_sender` stay held, because the model
-names their recipients, their files or their link.
+`CARD_BOUND_SEND_TOOLS` pins `send_draft` to `account_id` and `draft_id`.
+
+**A scheduled send (second owner decision, 2026-10-22).** The owner asked which other
+jobs may work in a held chat, and selected only "Schedule a send". The condition was a
+check of the recipients when the send fires.
+
+That check exists. `POST
+/email/drafts/schedule` requires `expect`, the lists of the card, and stores them with the
+schedule. The job sends through `send_draft_endpoint` with that `expect`, so a changed
+draft answers 409. The schedule then fails with a reason, and nothing goes.
+`CARD_BOUND_SEND_TOOLS` pins `schedule_send` to `account_id`, `draft_id` and `send_at`.
+
+`send_email`, `forward_email`, `unsubscribe_sender`, a file and the settings tools stay
+held. The model names their recipients, their files or their link, and the owner did not
+select them.
 
 **The text that the model reads.** The hold note and the held answer of
 `acb_skills.egress` say that a saved draft still sends with `send_draft`. For a job that
@@ -20413,6 +20425,7 @@ chat, and not only the Email app.
 | The hand-off card asks only for a child that is not held | `tests/unit/test_delegation_no_egress.py` |
 | The recipients, the record of the answer, the act route, the parameter pin, no card | `tests/unit/test_email_chat_reply.py` |
 | `send_draft` in a held run: the pin, each Bcc on the card, the 409 | `tests/unit/test_email_chat_reply.py`, `tests/unit/test_email_send_cards.py` |
+| `schedule_send` in a held run: the pin, `expect` stored and checked when it fires | `tests/unit/test_email_chat_reply.py`, `tests/unit/test_email_send_later.py` |
 | No text offers a new conversation or a paste by hand (H-374) | `tests/unit/test_held_send_guidance.py` |
 | The real SQL of both routes, under FORCE RLS | `TestReplyCardRealSql` in the same file (R8) |
 | The card, its answer and the one renderer | `src/lib/replyCard.test.ts` |

@@ -59,14 +59,14 @@ from acb_skills.untrusted import UntrustedFrame
 #   rule that forwards, calls a webhook or drafts to an address that it names
 #   opens an outbound path. So in a ``no_egress`` run each rule tool refuses
 #   that part at call time (:func:`_egress_held`), and does the rest.
-# * (B) ``True``: a send, a forward, a scheduled send, an unsubscribe (a mail
-#   or a request to a URL from the mail), and the settings (a signature, the
-#   text about the member, auto-run).
+# * (B) ``True``: a send, a forward, an unsubscribe (a mail or a request to
+#   a URL from the mail), and the settings (a signature, the text about the
+#   member, auto-run).
 # * (C) ``True``: the knowledge base, a store that feeds each later reply.
-# * (D) ``True`` and ``card_bound``: ``compose_reply`` (EM-CR, §18) and
-#   ``send_draft`` (H-374, owner decision of 2026-10-22). Each sends, and a
-#   held run keeps it only because of its card and its pinned parameters
-#   (``acb_skills.egress.CARD_BOUND_SEND_TOOLS``).
+# * (D) ``True`` and ``card_bound``: ``compose_reply`` (EM-CR, §18),
+#   ``send_draft`` and ``schedule_send`` (H-374, owner decisions of
+#   2026-10-22). Each sends, and a held run keeps it only because of its
+#   card and its pinned parameters (``acb_skills.egress.CARD_BOUND_SEND_TOOLS``).
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -4730,7 +4730,13 @@ async def bulk_manage_inbox(
 # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────────
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# H-374 (owner decision "Schedule a send", 2026-10-22). A held run keeps this
+# send, as it keeps ``send_draft``. The tool takes no recipient, the card
+# lists each one, and the gateway stores them as ``expect``. When the send
+# fires, the job sends through the one draft-send path with that ``expect``,
+# so a changed draft answers 409 and nothing goes (``send_later.py``).
+# ``acb_skills.egress.CARD_BOUND_SEND_TOOLS`` pins the three parameters.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     """Send a draft later, at ``send_at``: "send it tomorrow at 9". The draft
     must be in Drafts. To reply later, first save the reply with

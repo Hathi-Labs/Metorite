@@ -550,15 +550,16 @@ def test_the_mark_alone_keeps_nothing() -> None:
 
 
 def test_a_held_run_sends_only_through_a_card() -> None:
-    """H-374 (owner, "Drafts, with a card", 2026-10-22): a held run keeps the
-    reply card and send_draft. A forward, a new mail and a scheduled send
-    stay held, because the model names their recipients."""
+    """H-374 (owner, "Drafts, with a card" and "Schedule a send",
+    2026-10-22): a held run keeps the reply card, send_draft and
+    schedule_send. A forward, a new mail and an unsubscribe stay held,
+    because the model names their recipients or their link."""
     tools = {fn.__name__: fn for fn in agents._agent_tools()}
-    for name in ("compose_reply", "send_draft"):
+    for name in ("compose_reply", "send_draft", "schedule_send"):
         assert eg.is_egress_tool(tools[name]) is False, name
-    for name in ("send_email", "forward_email", "schedule_send", "unsubscribe_sender"):
+    for name in ("send_email", "forward_email", "unsubscribe_sender"):
         assert eg.is_egress_tool(tools[name]) is True, name
-    assert set(eg.CARD_BOUND_SEND_TOOLS) == {"compose_reply", "send_draft"}
+    assert set(eg.CARD_BOUND_SEND_TOOLS) == {"compose_reply", "send_draft", "schedule_send"}
 
 
 # ── 4b. send_draft (H-374): pinned to the mailbox and the draft id ───────────
@@ -604,10 +605,30 @@ def test_send_draft_with_no_mark_is_an_egress_tool() -> None:
     assert eg.is_egress_tool(send_draft) is True
 
 
+def test_the_parameter_fence_pins_schedule_send() -> None:
+    params = list(inspect.signature(agents.schedule_send).parameters)
+    assert params == ["account_id", "draft_id", "send_at"]
+    assert frozenset(params) == eg.CARD_BOUND_SEND_TOOLS["schedule_send"]
+    assert agents.schedule_send.__tool_risk__[eg.CARD_BOUND_KEY] is True
+    assert eg.is_card_bound_send(agents.schedule_send) is True
+
+
+@pytest.mark.parametrize("extra", ["to", "cc", "bcc", "attachments", "body"])
+def test_an_extra_parameter_on_schedule_send_breaks_the_pin(extra: str) -> None:
+    ns: dict[str, Any] = {}
+    exec(  # a fixed test source
+        f"async def schedule_send(account_id, draft_id, send_at, {extra}=None):\n"
+        "    return ''\n", ns)
+    fn = ns["schedule_send"]
+    fn.__tool_risk__ = dict(agents.schedule_send.__tool_risk__)
+    assert eg.is_card_bound_send(fn) is False
+    assert eg.is_egress_tool(fn) is True
+
+
 def test_the_other_sends_carry_no_card_mark() -> None:
     """The mark goes on a card-bound send only, so a later rename of the list
     cannot keep a forward by mistake."""
-    for name in ("send_email", "forward_email", "schedule_send", "unsubscribe_sender"):
+    for name in ("send_email", "forward_email", "unsubscribe_sender"):
         fn = getattr(agents, name)
         assert eg.CARD_BOUND_KEY not in fn.__tool_risk__, name
         assert name not in eg.CARD_BOUND_SEND_TOOLS, name

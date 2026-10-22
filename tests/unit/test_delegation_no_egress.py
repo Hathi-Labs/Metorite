@@ -99,8 +99,8 @@ EXPECTED_OPEN_WORLD = frozenset({
     # H-375: a send of a draft later is a send.
     "schedule_send",
     # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
-    # open_world. It and send_draft (H-374, above) are the sends that a held
-    # run keeps, only because of a card and pinned parameters
+    # open_world. It, send_draft and schedule_send (H-374) are the sends that
+    # a held run keeps, only because of a card and pinned parameters
     # (eg.CARD_BOUND_SEND_TOOLS).
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)

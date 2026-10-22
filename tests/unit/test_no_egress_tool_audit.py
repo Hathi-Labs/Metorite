@@ -61,10 +61,8 @@ agents = _load_email()
 EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
     "email-assistant": frozenset({
         # (B) a send, a forward, an unsubscribe. H-374 (owner, 2026-10-22):
-        # send_draft is card-bound, so a held run keeps it.
+        # send_draft and schedule_send are card-bound, so a held run keeps them.
         "send_email", "forward_email", "unsubscribe_sender",
-        # (B) H-375: a send of a draft later is a send
-        "schedule_send",
         # (B) the signature, the text about the member, auto-run
         "update_assistant_settings",
         # (C) the knowledge base, which feeds each later reply
@@ -107,7 +105,7 @@ EMAIL_KEPT = frozenset({
     "learn_rule_pattern", "run_rules", "resolve_execution",
     "read_email", "query_inbox", "list_labels", "mark_thread_done", "delete_rule",
     # H-374: the card-bound sends. Each card shows each recipient.
-    "compose_reply", "send_draft", "edit_draft",
+    "compose_reply", "send_draft", "schedule_send", "edit_draft",
 })
 
 
@@ -181,7 +179,7 @@ def test_the_in_space_email_tools_stay_and_the_sends_go(_hermetic) -> None:
     rel = _in_repo_agents()["email-assistant"]
     held = _run_tools("email-assistant", rel, no_egress=True)
     assert held >= EMAIL_KEPT, sorted(EMAIL_KEPT - held)
-    assert not held & {"send_email", "forward_email", "schedule_send", "fetch_page",
+    assert not held & {"send_email", "forward_email", "fetch_page",
                        "web_search", "unsubscribe_sender"}
 
 
@@ -351,12 +349,11 @@ def test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool() -> None:
 
     agents.build_agents()  # registers the annotations of the email tools
     call = types.SimpleNamespace()
-    for name in ("send_email", "forward_email", "schedule_send", "unsubscribe_sender",
-                 "fetch_page"):
+    for name in ("send_email", "forward_email", "unsubscribe_sender", "fetch_page"):
         assert pp._reaches_out(call, name, None) is True, name
-    # H-374: send_draft is card-bound. Its own card lists each recipient.
+    # H-374: the card-bound sends. Each own card lists each recipient.
     for name in ("draft_reply", "create_label", "manage_inbox", "create_rule",
-                 "send_draft"):
+                 "send_draft", "schedule_send"):
         assert pp._reaches_out(call, name, None) is False, name
         # A reply draft in the member's own Drafts asks no card (owner,
         # 2026-10-22). Each other tool asks its own.
