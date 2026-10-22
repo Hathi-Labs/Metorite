@@ -11,6 +11,8 @@ R7, each with the mutation that turns it red:
   card-bound whatever the switch says.
 * ``test_with_the_switch_on_a_held_run_holds_the_section_21_set`` — leave a
   joined tool out of the pin, or let a tool of 21.5's held list join.
+* ``test_a_new_parameter_breaks_a_held_card_pin`` — pin a set with room for
+  one more parameter.
 * ``test_each_new_path_reads_the_switch`` — let a tool take the held path
   with the switch off.
 * ``test_the_hold_note_follows_the_switch`` — read the cards note with the
@@ -38,7 +40,9 @@ H374_WITHHELD = frozenset({
 
 #: §21.5: what a held run does not get with the switch on. A new slice that
 #: joins a tool takes it out of this set, in the same change.
-SECTION_21_WITHHELD = H374_WITHHELD
+SECTION_21_WITHHELD = H374_WITHHELD - {
+    "unsubscribe_sender",  # slice (c): the stored link, its host and its hash
+}
 
 
 def _withheld() -> frozenset[str]:
@@ -89,3 +93,35 @@ def test_the_hold_note_follows_the_switch(monkeypatch, on: bool) -> None:
     assert note == (eg.EGRESS_HOLD_NOTE_MAIL_CARDS if on else eg.EGRESS_HOLD_NOTE_MAIL)
     sandbox = eg.egress_hold_note({"agent_name": "projects-assistant"})
     assert sandbox == eg.EGRESS_HOLD_NOTE_SANDBOX
+
+
+@pytest.mark.parametrize("name", sorted(eg.HELD_CARD_SEND_TOOLS))
+def test_a_held_card_tool_carries_its_exact_pin(monkeypatch, name: str) -> None:
+    import inspect
+
+    F.flag_on(monkeypatch)
+    agents = F.load_email_agent(f"ea_held_pin_{name}")
+    fn = getattr(agents, name)
+    assert frozenset(inspect.signature(fn).parameters) == eg.HELD_CARD_SEND_TOOLS[name]
+    assert fn.__tool_risk__[eg.CARD_BOUND_KEY] is True
+    assert eg.is_card_bound_send(fn) is True
+    F.flag_off(monkeypatch)
+    assert eg.is_card_bound_send(fn) is False
+
+
+@pytest.mark.parametrize("name", sorted(eg.HELD_CARD_SEND_TOOLS))
+@pytest.mark.parametrize("extra", ["to", "bcc", "unsubscribe_link", "url", "attachments"])
+def test_a_new_parameter_breaks_a_held_card_pin(monkeypatch, name: str, extra: str) -> None:
+    """A tool of the held card with one more parameter is an egress tool
+    again, also with the switch on."""
+    if extra in eg.HELD_CARD_SEND_TOOLS[name]:
+        pytest.skip("the tool already has this parameter")
+    F.flag_on(monkeypatch)
+    agents = F.load_email_agent(f"ea_held_extra_{name}")
+    params = ", ".join(f"{p}=None" for p in sorted(eg.HELD_CARD_SEND_TOOLS[name]))
+    ns: dict = {}
+    exec(f"async def {name}({params}, {extra}=None):\n    return ''\n", ns)
+    fn = ns[name]
+    fn.__tool_risk__ = dict(getattr(agents, name).__tool_risk__)
+    assert eg.is_card_bound_send(fn) is False
+    assert eg.is_egress_tool(fn) is True

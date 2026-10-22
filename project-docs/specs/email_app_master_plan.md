@@ -20631,8 +20631,8 @@ saved reply draft with `edit_draft`, and offers `send_draft`.
 build on 2026-10-22. It ships dark behind `EMAIL_HELD_CARD_SEND`, which is off by default.
 With the switch off, a held chat holds the tools of H-374, and a test asserts it. Slice (a)
 is built: the classifier, the card record, `send_draft`, `schedule_send` and the classes of
-the reply card. Slice (b) is built: the files rule. Slices (c) to (e) follow on the same
-branch.
+the reply card. Slice (b) is built: the files rule. Slice (c) is built: `unsubscribe_sender`.
+Slices (d) and (e) follow on the same branch.
 
 **Origin:** owner, 2026-10-22. Every email job must work in the chat, also in a held chat.
 A held chat is a chat that read outside mail. The owner approved this direction: "Go ahead

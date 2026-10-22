@@ -625,13 +625,18 @@ def test_an_extra_parameter_on_schedule_send_breaks_the_pin(extra: str) -> None:
     assert eg.is_egress_tool(fn) is True
 
 
-def test_the_other_sends_carry_no_card_mark() -> None:
-    """The mark goes on a card-bound send only, so a later rename of the list
-    cannot keep a forward by mistake."""
+def test_the_other_sends_join_no_pin_with_the_switch_off(monkeypatch) -> None:
+    """§21 (``email_app_master_plan.md``): a send of the held card may carry
+    the mark, and the mark alone keeps nothing. While EMAIL_HELD_CARD_SEND is
+    off, these sends are on no pin, so a held run holds none of them."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "email_held_card_send", False)
     for name in ("send_email", "forward_email", "unsubscribe_sender"):
         fn = getattr(agents, name)
-        assert eg.CARD_BOUND_KEY not in fn.__tool_risk__, name
         assert name not in eg.CARD_BOUND_SEND_TOOLS, name
+        assert eg.is_card_bound_send(fn) is False, name
+        assert eg.is_egress_tool(fn) is True, name
 
 
 class _Gateway:

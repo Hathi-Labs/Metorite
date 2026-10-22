@@ -22,6 +22,9 @@ Such a run holds only:
    (EM-CR), ``send_draft`` and ``schedule_send`` (H-374, owner decisions
    of 2026-10-22). Each sends only after a card that shows each recipient,
    and the model names none. A forward and a new mail stay held.
+   While ``EMAIL_HELD_CARD_SEND`` is on, :data:`HELD_CARD_SEND_TOOLS` join
+   too (§21 of ``email_app_master_plan.md``), each behind the held card
+   that the gateway records. With the switch off, none of them joins.
 
 A tool with no annotation, or with no ``open_world`` key, counts as an
 egress tool (:func:`is_egress_tool`). So an agent from another repo, whose
@@ -61,6 +64,7 @@ __all__ = [
     "EGRESS_HOLD_NOTE_MAIL_CARDS",
     "EGRESS_HOLD_NOTE_SANDBOX",
     "EGRESS_WITHHELD_ANSWER",
+    "HELD_CARD_SEND_TOOLS",
     "MAIL_STORE_WRITE_REFUSED",
     "MARK_CACHE_MAX",
     "MARK_CLEAR",
@@ -905,6 +909,36 @@ CARD_BOUND_SEND_TOOLS: Mapping[str, frozenset[str]] = {
 #: The annotation key of such a tool (``tool_annotations.annotate``).
 CARD_BOUND_KEY = "card_bound"
 
+#: The sends that join a held run ONLY while ``EMAIL_HELD_CARD_SEND`` is on
+#: (``email_app_master_plan.md`` §21.5). Each sends through the held card
+#: that the gateway builds and records (``gateway/routes/email/automation/
+#: held_card.py``), and the gateway sends only the rows that the member
+#: ticked. Each pin is the tool's whole parameter set, so a new parameter
+#: makes it an egress tool again. With the switch off, none of them joins,
+#: and a held run holds the set of H-374.
+#:
+#: ``unsubscribe_sender`` (§21.3, the Unsubscribe row). The gateway reads the
+#: link from the stored ``List-Unsubscribe`` header, records its host and its
+#: hash, and acts only when both still match. It takes no link from the tool.
+#: ``name`` stays in the pin because the tool has it today. The held path
+#: does not send it.
+HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
+    "unsubscribe_sender": frozenset({"account_id", "email", "name"}),
+}
+
+
+def _pinned_params(name: str) -> frozenset[str] | None:
+    """The pinned parameters of a card-bound send called *name*, or None.
+
+    A tool of :data:`HELD_CARD_SEND_TOOLS` has a pin only while the switch is
+    on. Only those names read the switch."""
+    allowed = CARD_BOUND_SEND_TOOLS.get(name)
+    if allowed is not None or name not in HELD_CARD_SEND_TOOLS:
+        return allowed
+    from acb_skills.held_card import held_card_send_enabled
+
+    return HELD_CARD_SEND_TOOLS[name] if held_card_send_enabled() else None
+
 
 def _tool_params(item: Any) -> frozenset[str] | None:
     """The parameter names of the callable under *item*, or None."""
@@ -919,7 +953,8 @@ def _tool_params(item: Any) -> frozenset[str] | None:
 
 
 def is_card_bound_send(item: Any) -> bool:
-    """True for a send that may stay in a held run (:data:`CARD_BOUND_SEND_TOOLS`).
+    """True for a send that may stay in a held run (:data:`CARD_BOUND_SEND_TOOLS`,
+    and :data:`HELD_CARD_SEND_TOOLS` while ``EMAIL_HELD_CARD_SEND`` is on).
 
     Three tests, and each one fails closed: the name is on the list, the
     tool's own annotation says :data:`CARD_BOUND_KEY`, and the callable's
@@ -927,7 +962,7 @@ def is_card_bound_send(item: Any) -> bool:
     the registry, as :func:`is_egress_tool` does for a bare name.
     """
     name = item if isinstance(item, str) else tool_name(item)
-    allowed = CARD_BOUND_SEND_TOOLS.get(name)
+    allowed = _pinned_params(name)
     if allowed is None:
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)

@@ -521,10 +521,13 @@ class HeldCardRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["draft", "schedule"]
+    kind: Literal["draft", "schedule", "unsubscribe"]
     account_id: str = Field(max_length=64)
     draft_id: str = Field(default="", max_length=64)
     send_at: str = Field(default="", max_length=64)
+    #: ``unsubscribe``: the sender to unsubscribe from. No link: the server
+    #: reads the stored ``List-Unsubscribe`` header.
+    email: str = Field(default="", max_length=320)
 
 
 class HeldCardActRequest(BaseModel):
@@ -657,6 +660,146 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
             "rows": card_rows(rows)}
 
 
+# ── The card of an unsubscribe (§21.3, the Unsubscribe row) ──────────────────
+#
+# The link comes only from the stored ``List-Unsubscribe`` header of the
+# sender's mail (``senders._stored_unsubscribe_link``), never from the tool or
+# the browser. The card names the sender and the host. The record holds the
+# sender, the host and a hash of the link, and the act reads the link again
+# and acts only when both still match. Open question 7 took the safer choice:
+# a held chat takes an https one-click link only, so a ``mailto:`` target
+# sends nothing. A sender with no link is blocked, which stays in the mailbox.
+
+#: The answer of a ``mailto:`` target in a held chat (open question 7).
+MAILTO_REFUSED = (
+    "This sender's unsubscribe link sends an email, and a chat that read outside mail "
+    "takes only an https link. Nothing was sent. Offer to mark the sender cold with "
+    "set_sender_status instead.")
+#: The answer of a link that is not https, or that names no host.
+LINK_REFUSED = (
+    "This sender's unsubscribe link is not an https link with a host, so nothing was "
+    "sent. Offer to mark the sender cold with set_sender_status instead.")
+#: The answer when the stored link changed after the card.
+LINK_CHANGED = ("The unsubscribe link of this sender changed after the card, so nothing "
+                "was sent. Ask again to see the new link.")
+#: The one row of an unsubscribe card.
+UNSUBSCRIBE_ROW = "unsub-0"
+
+
+def link_digest(link: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(str(link or "").encode("utf-8")).hexdigest()
+
+
+def _https_host(link: str) -> str:
+    """The host of an https link, or "" for any other link."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(link or "").strip())
+    except ValueError:
+        return ""
+    if parts.scheme.lower() != "https":
+        return ""
+    return (parts.hostname or "").lower()
+
+
+async def _stored_target(account_id: str, owner: str, sender: str) -> tuple[str, str]:
+    """``(act, link)`` of the stored link: ``one-click``, ``mailto`` or ``block``."""
+    from gateway.routes.email.automation.senders import (
+        _stored_unsubscribe_link,
+        _unsubscribe_kind,
+    )
+    from gateway.routes.email.core import _assert_account_owner
+
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, account_id, owner)
+        link = await _stored_unsubscribe_link(db, account_id, sender) or ""
+    return _unsubscribe_kind(link), link
+
+
+async def _unsubscribe_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
+    owner = _owner(user)
+    _refuse_bad_draft_id(req.account_id)
+    sender = req.email.strip()
+    why = address_problem(sender)
+    if why:
+        raise HTTPException(status_code=422, detail=f"The sender {why}.")
+    act, link = await _stored_target(req.account_id, owner, sender)
+    host = ""
+    if act == "mailto":
+        raise HTTPException(status_code=422, detail=MAILTO_REFUSED)
+    if act == "one-click":
+        host = _https_host(link)
+        if not host:
+            raise HTTPException(status_code=422, detail=LINK_REFUSED)
+        label = f"Unsubscribe from {sender}: a one-click request goes to host {host}."
+        context = "\n".join([
+            f"Sender: {sender}",
+            f"Host of the link: {host}",
+            "The link comes from the List-Unsubscribe header of the sender's own mail.",
+            "If the request fails, the sender is blocked, and their mail in the inbox is "
+            "archived.",
+        ])
+    else:
+        label = f"Block {sender}: their new mail is archived. No request leaves Metorite."
+        context = "\n".join([
+            f"Sender: {sender}",
+            "The sender's mail carries no unsubscribe link.",
+            "The block archives their mail in the inbox too.",
+        ])
+    rows = [{"id": UNSUBSCRIBE_ROW, "kind": "unsubscribe", "label": label, "hint": "",
+             "checked": True}]
+    record = {
+        "v": 1, "kind": "unsubscribe", "owner": owner.lower(),
+        "account_id": req.account_id, "sender": sender, "act": act,
+        "host": host, "hash": link_digest(link) if act == "one-click" else "",
+        "rows": rows,
+    }
+    card_id = await write_record(user, record)
+    _log.info("email.held_card_built", kind="unsubscribe", act=act)
+    title = (f"Unsubscribe from {sender}?" if act == "one-click" else f"Block {sender}?")
+    return {"card_id": card_id, "title": title[:120], "context": context, "rows": card_rows(rows),
+            "detail": (f"Sender {sender} · host {host}" if host
+                       else f"Sender {sender} · no unsubscribe link")[:DETAIL_MAX]}
+
+
+async def _act_unsubscribe(
+    rec: dict[str, Any], ids: frozenset[str], background: BackgroundTasks,
+    user: UserContext,
+) -> dict[str, Any]:
+    """Unsubscribe as the card showed, with the link read again from the
+    stored header. A changed host or a changed link sends nothing."""
+    from gateway.routes.email.automation.senders import (
+        NewsletterUpdate,
+        UnsubscribeRequest,
+        unsubscribe_sender,
+        upsert_newsletter,
+    )
+
+    if UNSUBSCRIBE_ROW not in ids:
+        raise HTTPException(status_code=422, detail="Nothing was ticked, so nothing changed.")
+    owner = _owner(user)
+    act, link = await _stored_target(rec["account_id"], owner, rec["sender"])
+    if act != rec["act"]:
+        raise HTTPException(status_code=409, detail=LINK_CHANGED)
+    if act == "one-click":
+        if _https_host(link) != rec["host"] or link_digest(link) != rec["hash"]:
+            raise HTTPException(status_code=409, detail=LINK_CHANGED)
+        res = await unsubscribe_sender(UnsubscribeRequest(
+            account_id=rec["account_id"], email=rec["sender"], unsubscribe_link=link),
+            background, user)
+        return {"ok": True, "action": "unsubscribe", "sender": rec["sender"],
+                "host": rec["host"], "unsubscribed": bool((res or {}).get("ok")),
+                "archived": int((res or {}).get("archived") or 0)}
+    res = await upsert_newsletter(NewsletterUpdate(
+        account_id=rec["account_id"], email=rec["sender"], status="AUTO_ARCHIVED"),
+        background, user)
+    return {"ok": True, "action": "block", "sender": rec["sender"], "unsubscribed": False,
+            "archived": int((res or {}).get("archived") or 0)}
+
+
 @router.post("/held-card")
 async def held_card(
     req: HeldCardRequest,
@@ -667,6 +810,8 @@ async def held_card(
     The answer is what the card shows: ``card_id``, ``title``, ``detail``,
     ``context`` and ``rows``. Nothing is sent. 404 while the switch is off."""
     _off()
+    if req.kind == "unsubscribe":
+        return await _unsubscribe_card(req, user)
     return await _draft_card(req, user)
 
 
@@ -797,6 +942,10 @@ async def held_card_act(
         raise HTTPException(
             status_code=409,
             detail="The answer names a row that the card did not offer, so nothing was sent.")
+    if rec.get("kind") == "unsubscribe":
+        out = await _act_unsubscribe(rec, ids, background, user)
+        _audit(req.card_id, "unsubscribe", rows, ids)
+        return out
     ticked = _ticked_lists(rows, ids)
     if not ticked[KIND_TO]:
         _log.info("email.held_card_refused", reason="no_to")

@@ -5109,7 +5109,13 @@ def _unsubscribe_card(
     return "", "", "the server named no known unsubscribe target"
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# §21 (the Unsubscribe row): ``card_bound`` keeps nothing while
+# EMAIL_HELD_CARD_SEND is off, because the name is on no pin then
+# (``acb_skills.egress.HELD_CARD_SEND_TOOLS``). With the switch on, a held
+# run keeps this tool, and it goes through the held card: the gateway reads
+# the link from the stored header and acts only when its host and its hash
+# still match the card.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def unsubscribe_sender(
     account_id: str,
     email: str,
@@ -5126,6 +5132,21 @@ async def unsubscribe_sender(
     The tool uses the link that the mailbox stored for the sender, and the
     card names its host or its address. You cannot pass a link."""
     shown = _card_text(email, 200)
+    if _held_card_mode():
+        res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
+                                "email": email},
+                               "Nothing changed", f"Cancelled — still subscribed to {shown}.")
+        if isinstance(res, str):
+            return res
+        archived = int(res.get("archived") or 0)
+        if res.get("action") == "block":
+            return (f"Blocked {shown}: future mail is archived, and {archived} existing "
+                    "message(s) were archived. No request left Metorite.")
+        if res.get("unsubscribed"):
+            return (f"Unsubscribed from {shown} through host {res.get('host')}; archived "
+                    f"{archived} existing message(s).")
+        return (f"The one-click request to {res.get('host')} failed, so {shown} is blocked "
+                f"instead. Future mail is archived, and {archived} message(s) were archived.")
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
