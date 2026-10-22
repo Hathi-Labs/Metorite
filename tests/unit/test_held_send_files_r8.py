@@ -8,7 +8,9 @@ phase-4-promoted catalog.
 R7, each with the mutation that turns it red:
 
 * ``test_the_members_own_file_resolves`` — break the owner join.
-* ``test_a_file_of_another_member_is_refused`` — drop ``acc.user_id = :uid``.
+* ``test_a_file_named_with_another_members_mailbox_is_refused`` — drop
+  ``acc.user_id = :uid``. ``test_a_file_of_another_member_is_refused`` holds
+  the mailbox predicate.
 * ``test_a_file_of_another_tenant_is_refused`` — the role bypasses no RLS,
   so only the policy and the owner join stand between the two tenants.
 * ``test_a_file_of_another_mailbox_of_the_member_is_refused`` — drop
@@ -161,4 +163,13 @@ async def test_a_file_of_another_tenant_is_refused(world) -> None:
 async def test_a_file_of_another_mailbox_of_the_member_is_refused(world) -> None:
     with pytest.raises(HTTPException) as e:
         await _resolve(world, [f"attachment:{world.file['a2']}"])
+    assert e.value.status_code == 404
+
+
+async def test_a_file_named_with_another_members_mailbox_is_refused(world) -> None:
+    """The caller names member B's mailbox AND B's file. The route checks the
+    mailbox owner first, and the resolver's owner join refuses it too, so a
+    route that forgot the first check still sends nothing (defence in depth)."""
+    with pytest.raises(HTTPException) as e:
+        await _resolve(world, [f"attachment:{world.file['b']}"], box="b")
     assert e.value.status_code == 404
