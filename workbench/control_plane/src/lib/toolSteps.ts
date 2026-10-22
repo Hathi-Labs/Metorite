@@ -162,6 +162,7 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   task_dataset: { kind: "search", verb: V.build, object: "a table of tasks" },
   status_report: { kind: "edit", verb: V.wrote, object: "a status report" },
   open_in_app: { kind: "other", verb: V.open, object: "it in the app" },
+  show_view: { kind: "other", verb: V.open, object: "a view of the board" },
   analytics_stuck: { kind: "search", verb: V.check, object: "what is stuck" },
   analytics_load: { kind: "search", verb: V.check, object: "who holds the work" },
   analytics_throughput: { kind: "search", verb: V.check, object: "the throughput" },

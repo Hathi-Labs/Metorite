@@ -204,6 +204,12 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
         {"target": "project", "target_id": UUID},
         {"target": "app", "target_id": "analytics"},
     ],
+    # WS-46 P11 — what the open page shows
+    "show_view": [
+        {"project_id": UUID, "mode": "timeline"},
+        {"project_id": UUID, "view_name": "Board"},
+        {"project_id": UUID, "filters": '{"overdue": true}', "group_by": "assignee"},
+    ],
 }
 
 

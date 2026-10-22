@@ -93,6 +93,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S6 — navigation. The page usually opens the row itself; this card keeps
   // the link for a member who is not on the Projects page.
   open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
+  show_view: { icon: "Filter", label: "Board view changed" },
   // S7e — the on-the-fly table. It draws as a table (`lib/datasetTable.ts`).
   task_dataset: { icon: "Table2", label: "Task dataset" },
   my_led_projects: { icon: "FolderKanban", label: "Projects you lead" },
