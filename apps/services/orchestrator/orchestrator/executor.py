@@ -1476,9 +1476,9 @@ async def _run_sub_agent_streaming(
     Called by ``call_agent`` when there is an active parent SSE queue so that
     the sub-agent's progress is visible in the UI in real time.
 
-    *model* is the parent run's resolved tier; when set it takes priority over
-    the sub-agent's own config default so a delegated task inherits the tier the
-    user chose for the parent (both Copilot SDK and native MAF sub-agents).
+    *model* is the parent run's resolved tier. A delegated task inherits it,
+    but never below the sub-agent's own default (``_sub_agent_tier``, owner
+    2026-10-22), for both Copilot SDK and native MAF sub-agents.
 
     Supports GitHub Copilot SDK agents (native stream) and MAF agents (batch
     run with a single result delta at the end).
@@ -7967,7 +7967,9 @@ def _sub_agent_tier(
 
     A tier off the ladder (an admin's ``provider/model``) stays as the parent
     chose it. With no parent tier, the sub-agent's own default resolves as
-    before (``None``). Fence: ``tests/unit/test_sub_agent_tier_floor.py``.
+    before (``None``). So a member who chose a lower tier for the parent
+    gets the sub-agent's own default for the delegated run. Fence:
+    ``tests/unit/test_adaptive_tier.py``.
     """
     from acb_skills.tier_policy import LADDER
 
@@ -8095,9 +8097,12 @@ async def _tier_policy_for_run(
     # request, so the turn keeps one model.
     context_tokens = 0
     if isinstance(event_payload, dict):
+        # The added context is what the BFF and the gateway send with the
+        # turn: the persona, open documents and memories (review of #1219).
         context_tokens = tier_policy.turn_tokens(
             message, event_payload.get("messages") or [],
-            str(event_payload.get("context") or ""),
+            str(event_payload.get("system_context") or "")
+            + str(event_payload.get("memory_context") or ""),
         )
     if context_tokens >= tier_policy.CONTEXT_POWERFUL_TOKENS:
         _log.info("ai_route.long_turn", agent=agent_name, run_id=run_id,

@@ -70,14 +70,24 @@ BALANCED_CHARS = 12_000
 POWERFUL_CHARS = 60_000
 
 
-def tier_for_size(model: str, chars: int, *, has_files: bool = False) -> str:
-    """*model*, raised by the size of the mail, never lowered. A tier off the
-    ladder (an admin's ``provider/model``) stays."""
+#: The highest tier that a draft the member WAITS for may take. tier-powerful
+#: can be a reasoning model that needs 20 to 60 s, and the reply card waits
+#: inside a 60 s call (review of #1219, P2). A background draft has no cap.
+INTERACTIVE_CEILING = "tier-balanced"
+
+
+def tier_for_size(model: str, chars: int, *, has_files: bool = False,
+                  ceiling: str | None = None) -> str:
+    """*model*, raised by the size of the mail, never lowered, and never
+    raised above *ceiling*. A tier off the ladder (an admin's
+    ``provider/model``) stays."""
     if model not in DRAFT_LADDER:
         return model
     want = ("tier-powerful" if chars >= POWERFUL_CHARS
             else "tier-balanced" if (chars >= BALANCED_CHARS or has_files)
             else model)
+    if ceiling in DRAFT_LADDER:
+        want = DRAFT_LADDER[min(DRAFT_LADDER.index(want), DRAFT_LADDER.index(ceiling))]
     return DRAFT_LADDER[max(DRAFT_LADDER.index(model), DRAFT_LADDER.index(want))]
 
 

@@ -31,6 +31,7 @@ from gateway.routes.email.automation.assistant import (
     _load_assistant_about,
 )
 from gateway.routes.email.automation.draft_budget import (
+    INTERACTIVE_CEILING,
     DraftParts,
     plan_draft,
     tier_for_size,
@@ -1196,7 +1197,9 @@ async def _llm_draft_reply(
             model, len(parts.latest) + len(parts.thread)
             + sum(len(t) for _n, t, _c in parts.files),
             has_files=bool(parts.files) or bool(
-                isinstance(files, DraftFiles) and files.images))
+                isinstance(files, DraftFiles) and files.images),
+            # The member waits for an interactive draft (review of #1219).
+            ceiling=INTERACTIVE_CEILING if interactive_fallback else None)
         if sized != model:
             _log.info("email.draft_tier_by_size", frm=model, to=sized)
             model = sized
@@ -1448,7 +1451,7 @@ async def _llm_compose_assist(
         # The tier by the size of the mail (owner, 2026-10-22). The owner's
         # own text counts too: a long draft to improve needs a strong reader.
         sized = tier_for_size(model, len(fit_in.latest) + len(fit_in.thread)
-                              + len(owner_text))
+                              + len(owner_text), ceiling=INTERACTIVE_CEILING)
         if sized != model:
             _log.info("email.compose_tier_by_size", frm=model, to=sized)
             model = sized

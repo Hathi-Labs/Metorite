@@ -135,11 +135,21 @@ def _resp(content: str) -> Any:
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
-@pytest.mark.parametrize(("thread", "want"), [
-    ("", "tier-fast"),
-    ("Earlier mail. " * 6000, "tier-powerful"),
+def test_a_waited_for_draft_stops_at_balanced() -> None:
+    """tier-powerful can be a reasoning model of 20 to 60 s, and the reply card
+    waits inside a 60 s call (review of #1219, P2)."""
+    assert db.tier_for_size("tier-fast", db.POWERFUL_CHARS,
+                            ceiling=db.INTERACTIVE_CEILING) == "tier-balanced"
+    assert db.tier_for_size("tier-powerful", 10,
+                            ceiling=db.INTERACTIVE_CEILING) == "tier-powerful"
+
+
+@pytest.mark.parametrize(("thread", "interactive", "want"), [
+    ("", False, "tier-fast"),
+    ("Earlier mail. " * 6000, False, "tier-powerful"),
+    ("Earlier mail. " * 6000, True, "tier-balanced"),
 ])
-async def test_a_long_thread_drafts_on_powerful(monkeypatch, thread, want) -> None:
+async def test_a_long_thread_drafts_on_powerful(monkeypatch, thread, interactive, want) -> None:
     seen: list[str] = []
 
     async def fake(*, model, messages, **kw):
@@ -150,5 +160,27 @@ async def test_a_long_thread_drafts_on_powerful(monkeypatch, thread, want) -> No
     monkeypatch.setattr(db, "_window_of", lambda m: 1_000_000)
     email = {"from": "ravi@navy.test", "from_name": "Ravi", "subject": "BQ",
              "body": "Please quote.", "thread": thread}
-    await dr._llm_draft_reply(email, about="", signature="", model="tier-fast")
+    await dr._llm_draft_reply(email, about="", signature="", model="tier-fast",
+                              interactive_fallback=interactive)
     assert seen == [want]
+
+
+async def test_the_turn_counts_the_system_and_memory_context(monkeypatch) -> None:
+    """The BFF sends ``system_context`` and the gateway ``memory_context``
+    (review of #1219, P2). Both count toward the size of the turn."""
+    from orchestrator import executor as ex
+
+    async def kind(message, tools, effort, **kw):
+        return tp.TurnKind("chat", "short")
+
+    monkeypatch.setattr(ex, "_tier_policy_covers", lambda name: True)
+    monkeypatch.setattr(tp, "turn_kind", kind)
+    agent = SimpleNamespace(client=SimpleNamespace(model=tp.TIER_BALANCED),
+                            default_options={"tools": []})
+    run = await ex._tier_policy_for_run(
+        "orchestrator", agent, run_id="r", thread_id=None, model=None,
+        think_mode="auto",
+        event_payload={"message": "hi", "messages": [],
+                       "system_context": "s" * 40_000, "memory_context": "m" * 40_000},
+        config={}, agent_md_model="", is_copilot=False, emit=False)
+    assert run.context_tokens >= tp.CONTEXT_POWERFUL_TOKENS
