@@ -20625,11 +20625,13 @@ saved reply draft with `edit_draft`, and offers `send_draft`.
   `tests/unit/test_email_contact_card.py` and
   `tests/unit/test_email_chat_assistant_tools.py`.
 
-## 21. Held chat: you confirm new people (proposed, not built)
+## 21. Held chat: you confirm new people (building, dark)
 
-**Status: PROPOSED. It needs an explicitly permitted build session.** The build changes
-the egress guard (`packages/acb_skills/acb_skills/egress.py`, H-236). No agent may start it
-without that permission. This section changes no code.
+**Status: BUILDING on the branch `held-chat-build`, not merged.** The owner permitted the
+build on 2026-10-22. It ships dark behind `EMAIL_HELD_CARD_SEND`, which is off by default.
+With the switch off, a held chat holds the tools of H-374, and a test asserts it. Slice (a)
+is built: the classifier, the card record, `send_draft`, `schedule_send` and the classes of
+the reply card. Slices (b) to (e) follow on the same branch.
 
 **Origin:** owner, 2026-10-22. Every email job must work in the chat, also in a held chat.
 A held chat is a chat that read outside mail. The owner approved this direction: "Go ahead

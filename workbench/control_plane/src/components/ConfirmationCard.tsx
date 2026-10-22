@@ -46,6 +46,7 @@ import CardFieldValue from "@/components/CardFieldValue";
 import FencedText from "@/components/FencedText";
 import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -54,6 +55,7 @@ import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
 import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
+import { noRecipientHint, rowMark } from "@/lib/sendCard";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -413,7 +415,26 @@ export default function ConfirmationCard({
                       <span className="break-words text-xs text-foreground">
                         <CardText text={r.label} fenced={fenced} />
                       </span>
-                      {r.hint && (
+                      {/* A held send card (§21): the server's class of the
+                          person, as a mark. A new address is the one that
+                          must look different, so it takes the warning tone. */}
+                      {rowMark(r.cls) && (
+                        <span data-send-row-mark={r.cls}>
+                          <Badge tone={r.cls === "new" ? "warning" : "neutral"} size="xs">
+                            {rowMark(r.cls)}
+                          </Badge>
+                        </span>
+                      )}
+                      {r.warning && (
+                        <span
+                          className="flex items-start gap-1 break-words text-[11px] text-warning"
+                          data-send-row-warning=""
+                        >
+                          <Icon name="AlertTriangle" size={12} className="mt-px shrink-0" />
+                          {r.warning}
+                        </span>
+                      )}
+                      {r.hint && r.hint !== rowMark(r.cls) && (
                         <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
                           <CardText text={r.hint} fenced={fenced} />
                         </span>
@@ -497,7 +518,7 @@ export default function ConfirmationCard({
         >
           Reject
         </Button>
-        <span className="text-[10px] text-muted-foreground">{CONFIRM_HINT}</span>
+        <span className="text-[10px] text-muted-foreground">{noRecipientHint(rows) || CONFIRM_HINT}</span>
       </div>
       )}
       </RollupBody>

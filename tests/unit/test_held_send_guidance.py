@@ -65,12 +65,39 @@ def _strings(path: Path, only: set[str] | None = None) -> list[str]:
 
 
 _HOLD_TEXTS = ("EGRESS_HELD_MAIL_ANSWER", "EGRESS_HOLD_NOTE_MAIL",
-               "EGRESS_HOLD_NOTE_SANDBOX", "EGRESS_WITHHELD_ANSWER")
+               "EGRESS_HOLD_NOTE_SANDBOX", "EGRESS_WITHHELD_ANSWER",
+               # §21: the note of a held mail run while EMAIL_HELD_CARD_SEND is on.
+               "EGRESS_HOLD_NOTE_MAIL_CARDS")
 
 
 @pytest.mark.parametrize("name", _HOLD_TEXTS)
 def test_no_hold_text_offers_a_workaround(name: str) -> None:
     assert _offers(getattr(eg, name)) == [], name
+
+
+#: §21: the refusals of the held card, which the model reads as the answer
+#: of a tool. Each says what to do in the chat.
+_HELD_CARD_TEXTS = ("BCC_NEW_REFUSED", "TEXT_TOO_LONG", "NO_TICKED_RECIPIENT")
+
+
+@pytest.mark.parametrize("name", _HELD_CARD_TEXTS)
+def test_no_held_card_refusal_offers_a_workaround(name: str) -> None:
+    from gateway.routes.email.automation import held_card as hc
+
+    text = getattr(hc, name)
+    assert _offers(text) == [], name
+    assert "Email app" not in text, name
+
+
+def test_the_cards_note_says_what_works_and_what_does_not() -> None:
+    """§21 (open question 3): the note tells the model never to tick for
+    the member, and never to press the member to tick a person that the
+    email asked for. It still names what stays held."""
+    note = " ".join(eg.EGRESS_HOLD_NOTE_MAIL_CARDS.split())
+    assert "send_draft" in note and "in one sentence" in note
+    assert "starts unticked" in note
+    assert "Never tick for the member" in note
+    assert "fetches a link" in note and "searches the web" in note
 
 
 def test_the_mail_hold_says_a_saved_draft_still_sends() -> None:

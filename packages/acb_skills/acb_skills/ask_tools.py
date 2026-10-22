@@ -757,13 +757,29 @@ def clean_card_rows(rows: list[dict] | None) -> list[dict] | None:
         if not rid or len(rid) > _ROW_ID_MAX or rid in seen:
             raise ValueError("each row needs its own short id")
         seen.add(rid)
-        out.append({
+        clean = {
             "id": rid,
             "label": str(row.get("label") or rid).strip()[:ROW_LABEL_MAX],
             "hint": str(row.get("hint") or "").strip()[:_ROW_HINT_MAX],
             "checked": row.get("checked", True) is not False,
-        })
+        }
+        # A held send card (``email_app_master_plan.md`` §21) tells the client
+        # what each row is and how the server classed it. A row with none of
+        # the three keys is exactly as before.
+        for name in _ROW_EXTRA_KEYS:
+            value = row.get(name)
+            if isinstance(value, str) and value.strip():
+                clean[name] = value.strip()[:_ROW_EXTRA_MAX]
+        out.append(clean)
     return out
+
+
+#: The optional keys of a row of a held send card: ``kind`` (to, cc, bcc,
+#: file, ...), ``class`` (org, sent, thread, new) and ``warning`` (a lookalike
+#: domain). The gateway sets them, and the client reads them
+#: (``sendCard.ts``). The card's answer names ids only, as before.
+_ROW_EXTRA_KEYS: tuple[str, ...] = ("kind", "class", "warning")
+_ROW_EXTRA_MAX = 300
 
 
 #: The longest answer a rows card can honestly send: the prefix, the JSON
@@ -904,7 +920,32 @@ def clean_reply_form(form: dict | None) -> dict | None:
         "note": _clip_line(form.get("note")),
         # A notice names addresses, so it is never cut: an over-long one fails.
         "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
+        # §21: the server's class of each address, in a held chat only. A form
+        # with no classes is exactly as before.
+        **({"classes": _reply_classes(form["classes"])}
+           if isinstance(form.get("classes"), dict) and form["classes"] else {}),
     }
+
+
+#: The classes of a person on a held card (``acb_skills.held_card.CLASSES``).
+_PERSON_CLASSES = frozenset({"org", "sent", "thread", "new"})
+
+
+def _reply_classes(value: dict) -> dict[str, str]:
+    """The class of each address of a reply form, by its lower-case form.
+
+    An unknown class reads as ``new``, the class that marks a person. A key
+    that is not an address, or too many keys, raises ``ValueError`` before
+    any card is drawn."""
+    if len(value) > 4 * 100:
+        raise ValueError("a reply form names too many classes")
+    out: dict[str, str] = {}
+    for addr, cls in value.items():
+        a = " ".join(str(addr or "").split()).lower()
+        if not a or "@" not in a or len(a) > _REPLY_ADDRESS_MAX:
+            raise ValueError("a reply form classes a value that is not an address")
+        out[a] = cls if cls in _PERSON_CLASSES else "new"
+    return out
 
 
 def _draft_id(value: Any) -> str:
@@ -999,6 +1040,57 @@ class ReplyAnswer:
         self.thread_id = thread_id
 
 
+class RowsAnswer:
+    """The member's answer to a held send card (``email_app_master_plan.md`` §21).
+
+    ``answer`` is the exact text that the member's browser posted, and
+    ``ticked`` is its parse against the rows that the card offered. The tool
+    hands ``answer`` to the gateway unchanged, and the gateway checks it
+    against its own record and its own rows. ``request_id`` is the card id
+    that the gateway minted. It is falsy when no row is ticked.
+    """
+
+    __slots__ = ("answer", "request_id", "responder", "thread_id", "ticked")
+
+    def __init__(self, request_id: str, answer: str, ticked: frozenset[str],
+                 responder: str, thread_id: str = "") -> None:
+        self.request_id = request_id
+        self.answer = answer
+        self.ticked = ticked
+        self.responder = responder
+        #: The thread that owns the card: the key of the gateway's record.
+        self.thread_id = thread_id
+
+    def __bool__(self) -> bool:
+        return bool(self.ticked)
+
+
+#: A card id that the gateway minted: 32 lower-case hex digits.
+_CARD_ID_RE = _re.compile(r"[0-9a-f]{32}")
+
+
+def _check_card_args(request_id: str | None, with_answer: bool, rows: Any) -> bool:
+    """Check the two arguments of a held send card (§21), and give
+    ``with_answer`` as a bool. A bad one is a programming error of the
+    calling tool, so it raises ``ValueError`` before any card is drawn."""
+    if request_id is not None and not _CARD_ID_RE.fullmatch(str(request_id)):
+        raise ValueError("request_id is a card id that the gateway minted")
+    if with_answer and rows is None:
+        raise ValueError("with_answer needs rows")
+    return bool(with_answer)
+
+
+def _card_id(request_id: str | None, pending: Any) -> str | None:
+    """The card id that the caller named, or None to mint one. An id that a
+    waiting card already holds raises, because two cards on one id would
+    share one answer."""
+    if request_id is None:
+        return None
+    if request_id in pending:
+        raise ValueError("a card with this id already waits")
+    return request_id
+
+
 def _was_parked(request_id: str) -> bool:
     """True when the run parked this card (WS-51 S2). It must stay open."""
     try:
@@ -1088,7 +1180,9 @@ async def request_confirmation(
     fenced: bool | None = None,
     reply: dict | None = None,
     close_on_steer: bool | None = None,
-) -> bool | frozenset[str] | ReplyAnswer | _Revised | None:
+    request_id: str | None = None,
+    with_answer: bool = False,
+) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -1126,6 +1220,14 @@ async def request_confirmation(
             while it waits, and give :data:`REVISED`. On by default for a
             reply form. A send card turns it on, so "make it shorter" changes
             the mail instead of waiting behind the old card.
+        request_id: the card id that the gateway minted for a held send
+            card (§21), 32 lower-case hex digits. The card takes it as its
+            ``request_id``, so the record of the answer and the gateway's
+            record of the rows share one key. Any other value raises
+            ``ValueError``. ``None`` mints an id, as before.
+        with_answer: with ``rows``, give a :class:`RowsAnswer` (the exact
+            text of the answer, its ticked ids and the card's thread) in
+            place of the set of ids. ``None`` on no approval.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -1152,6 +1254,7 @@ async def request_confirmation(
     _context = str(context or "").strip()[:4000]
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
+    _with_answer = _check_card_args(request_id, with_answer, _rows)
     if _reply is not None:
         if _rows is not None:
             raise ValueError("a card has rows or a reply form, never both")
@@ -1163,9 +1266,12 @@ async def request_confirmation(
     # the card to the gate below. It never approves a card with rows.
     _profile = _whatsapp_answer(_title, _detail, _context, _rows)
     if _profile is not None:
-        return _profile
+        # A held send card (§21) never takes an answer from a profile.
+        return None if _with_answer else _profile
     if cards_refused():
         # A deny, never an approve: a channel with no card is no consent.
+        if _with_answer:
+            return None
         return frozenset() if _rows is not None else False
     _offered = frozenset(r["id"] for r in _rows or [])
     _steer_closes = (_reply is not None) if close_on_steer is None else bool(close_on_steer)
@@ -1186,6 +1292,8 @@ async def request_confirmation(
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
     _replied: list[ReplyAnswer] = []
+    #: The answer of a held send card (§21), with its exact text.
+    _rows_replied: list[RowsAnswer] = []
     #: The thread that owns each card of this call (EM-CR): the key of the
     #: gateway's record of a reply answer.
     _card_thread: dict[str, str] = {}
@@ -1211,6 +1319,11 @@ async def request_confirmation(
         if _rows is None:
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
+        if ticked and _with_answer:
+            # The exact text: the gateway's record holds its digest (§21).
+            _rows_replied.append(RowsAnswer(rid, str(result.get("answer", "")), ticked,
+                                            str(result.get("responder") or ""),
+                                            _card_thread.get(rid, "")))
         return ("APPROVE" if ticked else "REJECT"), ticked
 
     def _steer_baseline() -> tuple[str, frozenset[int]] | None:
@@ -1225,8 +1338,9 @@ async def request_confirmation(
         marks = _steer_marks(tid)
         return None if marks is None else (tid, marks)
 
-    async def _block_on(_fut, _rid, _pending, _publish,
-                        _baseline=None) -> bool | frozenset[str] | ReplyAnswer | _Revised | None:
+    async def _block_on(
+        _fut, _rid, _pending, _publish, _baseline=None,
+    ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
         """Park on the answer, then say on the stream that the card is closed.
 
         A model can call card-gated tools in parallel, so one stream can carry
@@ -1265,9 +1379,13 @@ async def request_confirmation(
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
         if _answer == REVISED_ANSWER:
+            if _with_answer:
+                return REVISED
             return frozenset() if _rows is not None else REVISED
         if _reply is not None:
             return _replied[0] if _answer == "APPROVE" and _replied else None
+        if _with_answer:
+            return _rows_replied[0] if _answer == "APPROVE" and _rows_replied else None
         if _rows is not None:
             return _ticked or frozenset()
         return _answer == "APPROVE"
@@ -1285,7 +1403,7 @@ async def request_confirmation(
         import asyncio as _asyncio
         import uuid as _uuid
 
-        _rid = _uuid.uuid4().hex
+        _rid = _card_id(request_id, _pending_user_input) or _uuid.uuid4().hex
         _fut = _asyncio.get_running_loop().create_future()
         _pending_user_input[_rid] = _fut
         _card_thread[_rid] = str(getattr(_pending_user_input, "owner_of", lambda _r: "")(_rid)
@@ -1312,7 +1430,7 @@ async def request_confirmation(
             import asyncio as _asyncio
             import uuid as _uuid
 
-            _rid = _uuid.uuid4().hex
+            _rid = _card_id(request_id, _pending_user_input) or _uuid.uuid4().hex
             _fut = _asyncio.get_running_loop().create_future()
             _pending_user_input[_rid] = _fut
             _card_thread[_rid] = str(_tid)
@@ -1330,7 +1448,7 @@ async def request_confirmation(
     # No delivery channel (non-interactive run) — fail CLOSED unless the
     # caller explicitly opted a reversible action into auto-approval. A reply
     # form never auto-approves: there is no body the member submitted.
-    if _reply is not None:
+    if _reply is not None or _with_answer:
         return None
     approved = str(non_interactive_default).strip().lower() == "approve"
     if _rows is not None:

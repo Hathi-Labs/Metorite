@@ -57,6 +57,7 @@ __all__ = [
     "is_invisible_char",
     "is_lookalike_space",
     "looks_like_reply_answer",
+    "looks_like_send_answer",
     "parse_reply_answer",
     "record_reply_answer",
     "reply_answer_digest",
@@ -349,6 +350,44 @@ def looks_like_reply_answer(answer: Any) -> bool:
     return parse_reply_answer(answer) is not None
 
 
+def looks_like_send_answer(answer: Any) -> bool:
+    """True when *answer* has the shape of the answer of a held send card
+    (``email_app_master_plan.md`` §21): ``APPROVE {"rows": [...]}`` with 1 to
+    ``MAX_CARD_ROWS`` short string ids, and nothing else.
+
+    It checks the shape only. The gateway's act route checks the ids against
+    the rows that it recorded for the card (``ask_tools.ticked_rows``)."""
+    from acb_skills.ask_tools import MAX_CARD_ROWS, MAX_ROWS_ANSWER, ROWS_ANSWER_PREFIX
+
+    text = answer if isinstance(answer, str) else ""
+    if len(text) > MAX_ROWS_ANSWER:
+        return False
+    text = text.strip()
+    if not text.upper().startswith(ROWS_ANSWER_PREFIX):
+        return False
+    try:
+        payload = json.loads(text[len(ROWS_ANSWER_PREFIX):])
+    except (TypeError, ValueError, RecursionError):
+        return False
+    if not isinstance(payload, dict) or set(payload) != {"rows"}:
+        return False
+    ids = payload["rows"]
+    return (isinstance(ids, list) and 0 < len(ids) <= MAX_CARD_ROWS
+            and all(isinstance(i, str) and 0 < len(i) <= 64 for i in ids))
+
+
+def _recordable(answer: Any) -> bool:
+    """True when respond-input records *answer*: a reply answer, and, only
+    while ``EMAIL_HELD_CARD_SEND`` is on, the answer of a held send card."""
+    if looks_like_reply_answer(answer):
+        return True
+    if not looks_like_send_answer(answer):
+        return False
+    from acb_skills.held_card import held_card_send_enabled
+
+    return held_card_send_enabled()
+
+
 def reply_answer_digest(
     request_id: str, responder: str, answer: str, thread_id: str = "",
 ) -> str:
@@ -385,10 +424,14 @@ async def record_reply_answer(
     answer that is not a reply answer is not recorded. The first record of a
     card in its thread wins (``SET NX``). Never raises. A fault records
     nothing, so the act route refuses, and nothing is sent.
+
+    With ``EMAIL_HELD_CARD_SEND`` on, the answer of a held send card is
+    recorded too, with the same key, the same ``SET NX`` and the same digest
+    (``email_app_master_plan.md`` §21.4 item 3).
     """
     if not (organization_id and request_id and responder and thread_id):
         return False
-    if not looks_like_reply_answer(answer):
+    if not _recordable(answer):
         return False
     digest = reply_answer_digest(request_id, responder, answer, thread_id)
     try:

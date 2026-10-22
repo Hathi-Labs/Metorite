@@ -92,6 +92,20 @@ def _egress_held() -> bool:
     return no_egress_for_this_run()
 
 
+def _held_card_mode() -> bool:
+    """True when this run sends through the held card (§21).
+
+    That is a held run (:func:`_egress_held`) while ``EMAIL_HELD_CARD_SEND``
+    is on. The one reader of the switch is ``acb_skills.held_card``. With the
+    switch off, each tool acts exactly as it did before §21, and an older
+    platform with no reader reads as off."""
+    try:
+        from acb_skills.held_card import held_card_send_enabled
+    except ImportError:
+        return False
+    return held_card_send_enabled() and _egress_held()
+
+
 def _egress_held_answer(act: str) -> str:
     """The answer of a rule tool that refuses its outward part in a held run.
     It starts "Nothing changed.", so the chat card draws an act that did not
@@ -1920,6 +1934,36 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
 #: The longest card title that ``request_confirmation`` keeps whole.
 _REPLY_TITLE_MAX = 120
 
+#: The notice of a held reply card whose Reply all adds a new address (§21,
+#: open question 1, the safer choice).
+_REPLY_ALL_NEW_NOTICE = (
+    "Reply all adds an address that you do not know, so the card opens on "
+    "Reply. Each new address is marked. Press Reply all to add them.")
+
+
+def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
+    """Put the server's classes on a reply form of a held run (§21).
+
+    A person that Reply all adds, and that the member does not know, starts
+    out: the card opens on Reply, and the member must press Reply all. An
+    address with no class reads as new, so a fault fails closed."""
+    classes = {str(k).strip().lower(): str(v)
+               for k, v in (prep.get("classes") or {}).items() if k}
+    rec = form["recipients"]
+    shown = {a.strip().lower() for key in ("to", "cc")
+             for a in (rec.get("reply") or {}).get(key) or []}
+    added = [a for key in ("to", "cc") for a in (rec.get("reply_all") or {}).get(key) or []
+             if a.strip().lower() not in shown]
+    every = {a.strip().lower() for choice in ("reply", "reply_all") for key in ("to", "cc")
+             for a in (rec.get(choice) or {}).get(key) or []}
+    form["classes"] = {a: classes.get(a, "new") for a in every}
+    if form["reply_all"] and any(classes.get(a.strip().lower(), "new") == "new" for a in added):
+        form["reply_all"] = False
+        if len(form["notices"]) < 4:
+            form["notices"].append(_REPLY_ALL_NEW_NOTICE)
+        else:
+            form["note"] = f"{_REPLY_ALL_NEW_NOTICE} {form['note']}".strip()
+
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
     """The card title: who the reply goes TO, as the server derived it.
@@ -1990,9 +2034,11 @@ async def compose_reply(
         steer["reply_all"] = True
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, reply_all)
+    if _held_card_mode():
+        _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     answer = await ask_tools.request_confirmation(
-        title=_reply_title(form, reply_all),
+        title=_reply_title(form, form["reply_all"]),
         detail=_card_text(
             f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
         reply=form,
@@ -4323,6 +4369,98 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     return head + clip_words(text, max(0, room - len(tail))).rstrip() + tail
 
 
+# ── The held card (email_app_master_plan.md §21) ─────────────────────────────
+#
+# In a held run with ``EMAIL_HELD_CARD_SEND`` on, a send goes through ONE card
+# that the gateway builds and records (``POST /email/held-card``). The gateway
+# classifies each person, and a new address starts unticked. The tool shows
+# the gateway's rows as they are, with the gateway's card id, and posts the
+# member's exact answer to ``POST /email/held-card/act``. The gateway sends
+# only the ticked rows that it recorded. The tool names no recipient, no
+# class and no file of its own.
+
+#: The answer when the member wrote in the chat while a held card was open.
+_HELD_CARD_REVISED = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent. Read the member's words below. If they change "
+    "this mail, change it, and show a new card. If they ask about something "
+    "else, answer that first.")
+
+
+async def _held_card(
+    body: dict[str, Any], lead: str, cancelled: str,
+) -> dict[str, Any] | str:
+    """Show the gateway's held card for *body*, and act on the answer.
+
+    Returns the act's answer, or the text of the tool when nothing was sent:
+    a run with no card channel (a WhatsApp, batch or scheduled run sends
+    nothing, open question 9), a refusal of the gateway, a "no" on the card,
+    or a card that the member's words closed."""
+    try:
+        from acb_skills import ask_tools
+    except ImportError:  # an older platform with no card
+        return _NO_CARD_CHANNEL
+    if not ask_tools.reply_card_channel_open():
+        return _NO_CARD_CHANNEL
+    try:
+        prep = await _post("/email/held-card", body) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return _held_refusal(exc, lead)
+        raise
+    answer = await ask_tools.request_confirmation(
+        title=str(prep.get("title") or "Send this mail?"),
+        detail=str(prep.get("detail") or ""),
+        context=str(prep.get("context") or ""),
+        rows=list(prep.get("rows") or []),
+        request_id=str(prep.get("card_id") or ""),
+        with_answer=True,
+        close_on_steer=True,
+    )
+    if _revised(answer):
+        return _HELD_CARD_REVISED
+    if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
+        return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
+    member = _current_user_email().strip().lower()
+    if answer.responder and member and answer.responder.strip().lower() != member:
+        return (f"{lead}. Another member answered this card, and only the member "
+                "who asked can send it.")
+    try:
+        return await _post("/email/held-card/act", {
+            "card_id": answer.request_id,
+            "card_thread_id": answer.thread_id,
+            "answer": answer.answer,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return _held_refusal(exc, lead)
+        raise
+
+
+def _held_refusal(exc: Exception, lead: str) -> str:
+    """The answer of a refused held card, in the gateway's safe words and
+    never with the route. A detail that already says "Not sent: ..." stands
+    as it is."""
+    detail = str(getattr(exc, "detail", "") or "").strip()
+    if detail.lower().startswith("not sent"):
+        return detail
+    return f"{lead}. {detail or 'The server refused it, and nothing was sent.'}"
+
+
+def _held_sent_text(res: dict[str, Any], lead: str) -> str:
+    """What the tool says after a held card acted: each recipient that got
+    it, and the count of rows that the member left out."""
+    parts = [f"To {_addr_text(res.get('to'))}"]
+    if res.get("cc"):
+        parts.append(f"Cc {_addr_text(res.get('cc'))}")
+    if res.get("bcc"):
+        parts.append(f"Bcc {_addr_text(res.get('bcc'))}")
+    left = int(res.get("left_out") or 0)
+    tail = (f" The member left {left} row(s) unticked, and those did not go."
+            if left else "")
+    return f"{lead}: {'; '.join(parts)}.{tail}"
+
+
 # H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
 # this send, as it keeps ``compose_reply``. The tool takes no recipient: the
 # draft row holds them, the card lists each one, and a list that does not
@@ -4340,6 +4478,15 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     after the card. It works in every chat, also in one that read mail from
     outside senders."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
+    # §21: in a held run with EMAIL_HELD_CARD_SEND on, the gateway builds and
+    # records the card, and a person the member does not know starts unticked.
+    # The docstring stays as it was, so the tool text is the same with the
+    # switch off.
+    if _held_card_mode():
+        res = await _held_card(
+            {"kind": "draft", "account_id": account_id, "draft_id": draft_id},
+            "Not sent", "Send cancelled — the draft was not sent.")
+        return res if isinstance(res, str) else _held_sent_text(res, "Draft sent")
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
@@ -4747,6 +4894,20 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     Shows the member a card with the time, each recipient and the text. At
     the time, the server sends the draft only if its recipients are still
     the ones on the card. Cancel with ``cancel_scheduled_send``."""
+    if _held_card_mode():
+        when, why = _snooze_time(send_at)
+        if when is None:
+            return f"Not scheduled. {why}"
+        res = await _held_card(
+            {"kind": "schedule", "account_id": account_id, "draft_id": draft_id,
+             "send_at": when.isoformat()},
+            "Not scheduled",
+            "Cancelled — nothing was scheduled. The draft stays in Drafts.")
+        if isinstance(res, str):
+            return res
+        stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
+        return (_held_sent_text(res, f"Scheduled for {stamp}")
+                + f" (schedule_id {res.get('schedule_id', '')}). It stays in Drafts until then.")
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Not scheduled. {sender}"

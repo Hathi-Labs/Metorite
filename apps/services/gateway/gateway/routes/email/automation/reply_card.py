@@ -381,7 +381,7 @@ async def reply_card(
         to, cc = (all_to, all_cc) if req.reply_all else (reply_to, reply_cc)
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, to, cc, _reply_subject(mail.subject), body, prior=prior)
-    return {
+    out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
         # reply against it (``draft_files``).
@@ -406,6 +406,35 @@ async def reply_card(
         # A draft of the member stays in Drafts, beside the card's draft.
         "kept_draft": kept_draft,
     }
+    from acb_skills.held_card import held_card_send_enabled
+
+    if held_card_send_enabled():
+        # §21: the server classes each person of both choices. The person
+        # that a Reply answers is ``thread``, unless the member knows them.
+        # Each other person that the member does not know is ``new``.
+        out["classes"] = await _reply_classes(
+            owner, [*reply_to, *reply_cc, *all_to, *all_cc], primary=reply_to)
+    return out
+
+
+async def _reply_classes(
+    owner: str, addresses: list[str], *, primary: list[str],
+) -> dict[str, str]:
+    """The class of each address of a reply card (§21.3, the Reply row).
+
+    Only the person that a Reply answers can be ``thread``. Open question 1
+    took the safer choice: a person that only Reply all adds, and that the
+    member does not know, is ``new``. A fault fails closed: each address is
+    ``new``, so the card opens on Reply and marks each one."""
+    from acb_skills.held_card import CLASS_NEW
+    from gateway.routes.email.automation.held_card import classify_addresses
+
+    try:
+        async with _tenant_session() as db:
+            return await classify_addresses(db, owner, addresses, thread_senders=primary)
+    except Exception as exc:  # each address reads as new
+        _log.warning("email.reply_card_classes_failed", error=type(exc).__name__)
+        return {a.strip().lower(): CLASS_NEW for a in addresses if a and a.strip()}
 
 
 def _same(a: Sequence[str], b: Sequence[str]) -> bool:
