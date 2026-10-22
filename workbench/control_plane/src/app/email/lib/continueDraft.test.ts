@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { continuedBody, draftToContinue } from "./draftAutosave";
+import { continuedBody, draftToContinue, newerDraft } from "./draftAutosave";
 
 type Row = { id: string; receivedAt: string; folder: string };
 const isDraft = (m: Row) => m.folder === "drafts";
@@ -37,6 +37,27 @@ describe("draftToContinue", () => {
   });
 });
 
+describe("newerDraft: the one rule of the gateway and the pane", () => {
+  it("is the later receivedAt, compared as time, not as text", () => {
+    // The same instant in two spellings is a tie, broken by the id.
+    const a = { id: "b", receivedAt: "2026-10-22T10:00:00+00:00" };
+    const b = { id: "a", receivedAt: "2026-10-22T10:00:00.000Z" };
+    expect(newerDraft(a, b)).toBe(true);
+    expect(newerDraft(b, a)).toBe(false);
+    expect(newerDraft({ id: "a", receivedAt: "2026-10-22T11:00:00Z" }, a)).toBe(true);
+  });
+
+  it("matches the ORDER BY of _THREAD_DRAFT_SQL in drafting.py", () => {
+    const py = readFileSync(
+      join(__dirname, "../../../../../../apps/services/gateway/gateway/routes/email/automation/drafting.py"),
+      "utf-8",
+    );
+    expect(py).toContain('" ORDER BY received_at DESC NULLS LAST, id DESC")');
+    // Each save moves received_at, so the draft saved last is the newest.
+    expect(py).toContain("received_at = now(),");
+  });
+});
+
 describe("continuedBody", () => {
   const quote = "On Mon, Kim wrote:\n> Ok?";
 
@@ -58,6 +79,11 @@ describe("startReply wiring", () => {
     expect(start).toContain("draftIdRef.current = held?.id ?? null;");
     expect(start).toContain("ownDraft(newReplyDrafts(d), held.id)");
     expect(start).toContain("continuedBody(held.bodyText");
+  });
+
+  it("keeps the Bcc of a continued draft, so the first save does not clear it", () => {
+    expect(start).toContain("setReplyBcc(held ? (held.bcc ?? []).map((a) => a.email)");
+    expect(start).not.toContain('setReplyBcc("");');
   });
 
   it("never continues a reply draft for a forward", () => {

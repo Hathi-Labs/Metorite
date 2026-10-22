@@ -88,11 +88,6 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "mail with REPLY_ROW_SQL, whose join holds ea.user_id = :uid. A mail "
         "of another member is a 404. It writes nothing."
     ),
-    "reply_card_discard": (
-        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
-        "join holds ea.user_id = :uid, so a mail of another member is a 404. "
-        "Only then does _cleanup_thread_drafts run on the mailbox of that mail."
-    ),
     "reply_card_act": (
         "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
         "join holds ea.user_id = :uid, and _save_draft opens provider_session "

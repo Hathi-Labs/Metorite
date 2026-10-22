@@ -137,6 +137,7 @@ class Gateway:
         self.calls: list[tuple[str, str, Any]] = []
         self.cards: list[dict[str, Any]] = []
         self.answer = False
+        self.kept_draft = False
         self.channel = True
         self.gets: list[tuple[str, dict[str, Any]]] = []
         self.provider = "gmail"
@@ -200,7 +201,8 @@ class Gateway:
         if path == "/email/reply-card":
             return REPLY_CARD
         if path == "/email/draft-reply":
-            return {"draft": "Hi", "created": bool((body or {}).get("create_draft"))}
+            return {"draft": "Hi", "created": bool((body or {}).get("create_draft")),
+                    "kept_draft": self.kept_draft}
         if path == "/email/reply-card/act":
             return {"ok": True, "action": "send", "to": ["kim@contoso.test"], "cc": [],
                     "mailbox": BOX_TEXT}
@@ -437,6 +439,16 @@ async def test_a_chat_draft_saves_to_drafts_with_no_card(
     [(method, path, sent)] = [c for c in gw.calls if c[0] != "GET"]
     assert (method, path) == ("POST", "/email/draft-reply")
     assert sent["create_draft"] is True
+
+
+async def test_a_chat_draft_says_when_the_members_draft_stays(gw: Gateway) -> None:
+    """The chat never writes over a draft of the member. The first line says
+    the member's draft stays, beside the new one."""
+    gw.kept_draft = True
+    out = await agents.draft_reply("m1", BOX)
+    head = out.partition("\n\n")[0]
+    assert "(saved to Drafts)" in head
+    assert "your earlier draft of this email stays in Drafts as it was" in head
 
 
 async def test_save_false_still_writes_nothing(gw: Gateway) -> None:

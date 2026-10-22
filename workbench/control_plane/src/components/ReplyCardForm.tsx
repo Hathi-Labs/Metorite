@@ -26,6 +26,7 @@ import Button from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import {
   bodyCanGo,
+  discardReplyDraft,
   lineCount,
   MAX_REPLY_BODY,
   receivedText,
@@ -199,7 +200,12 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => armed && onDiscard()}
+          onClick={() => {
+            if (!armed) return;
+            // The member's own Discard also trashes the card's draft.
+            void discardReplyDraft(form);
+            onDiscard();
+          }}
           disabled={disabled}
           aria-disabled={!armed || undefined}
           data-reply-discard=""

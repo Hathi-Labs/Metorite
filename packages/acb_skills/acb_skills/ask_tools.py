@@ -898,10 +898,20 @@ def clean_reply_form(form: dict | None) -> dict | None:
         "recipients": {"reply": reply, "reply_all": reply_all},
         "reply_all": form.get("reply_all") is True,
         "body": body,
+        # The local id of the draft that the card wrote. The member's Discard
+        # names it, and the gateway checks it before a trash.
+        "draft_id": _draft_id(form.get("draft_id")),
         "note": _clip_line(form.get("note")),
         # A notice names addresses, so it is never cut: an over-long one fails.
         "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
     }
+
+
+def _draft_id(value: Any) -> str:
+    """The draft id of a reply form, whole, or "" for none. An id is never
+    cut, because a cut id names no draft."""
+    did = str(value or "").strip()
+    return did if 0 < len(did) <= 64 and did.isprintable() and " " not in did else ""
 
 
 def _whole_line(value: Any) -> str:

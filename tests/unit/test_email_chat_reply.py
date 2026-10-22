@@ -115,15 +115,20 @@ class _CardDrafts:
         self.calls: list[tuple[list[str], list[str], str, str]] = []
 
     async def keep(self, mail: Any, owner: str, to: list[str], cc: list[str],
-                   subject: str, body: str) -> str:
+                   subject: str, body: str, *, prior: Any = None) -> tuple[str, bool]:
         self.calls.append((to, cc, subject, body))
-        return "local-draft-1"
+        return "local-draft-1", False
 
 
 @pytest.fixture(autouse=True)
 def card_drafts(monkeypatch) -> _CardDrafts:
     fake = _CardDrafts()
     monkeypatch.setattr(rc, "_keep_card_draft", fake.keep)
+
+    async def no_record(_mail: Any) -> list[str]:
+        return []
+
+    monkeypatch.setattr(rc, "_chat_record", no_record)
     return fake
 
 
@@ -554,13 +559,14 @@ def test_a_held_run_sends_only_through_the_reply_card() -> None:
 class _Gateway:
     def __init__(self) -> None:
         self.posts: list[tuple[str, dict[str, Any]]] = []
+        self.card_extra: dict[str, Any] = {}
         self.act: dict[str, Any] = {"ok": True, "action": "send", "to": ["kim@contoso.test"],
                                     "cc": [], "mailbox": f"Work · {MEMBER}"}
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         self.posts.append((path, body))
         if path == "/email/reply-card":
-            return {
+            return {**self.card_extra, **{
                 "account_id": BOX, "mailbox": f"Work · {MEMBER}", "subject": "Re: Quote",
                 "original": {"from": "Kim <kim@contoso.test>", "subject": "Quote",
                              "received": "", "excerpt": "Can you confirm?"},
@@ -569,11 +575,9 @@ class _Gateway:
                                              "cc": []}},
                 "body": "Hi Kim,\n\nYes.",
                 "message_id": MAIL, "notices": [],
-            }
+            }}
         if path == "/email/reply-card/act":
             return self.act
-        if path == "/email/reply-card/discard":
-            return {"ok": True}
         raise AssertionError(f"unexpected POST {path}")
 
 
@@ -660,16 +664,31 @@ async def test_compose_reply_saves_and_says_so(monkeypatch, gw) -> None:
                    "to ops@contoso.test. Nothing was sent.")
 
 
-async def test_compose_reply_discard_sends_nothing_and_drops_the_card_draft(
+async def test_compose_reply_never_trashes_on_a_discard_or_a_timeout(
     monkeypatch, gw,
 ) -> None:
-    """Discard sends nothing. It asks the gateway to trash the draft that the
-    card wrote, which goes only while the member did not edit it."""
+    """``request_confirmation`` answers None for Discard and for a timeout
+    alike. So the tool trashes nothing, and a card that timed out keeps its
+    draft. The member's own Discard click posts the trash (``ReplyCardForm``)."""
     _card_answer(monkeypatch, lambda kw: None)
     out = await agents.compose_reply(MAIL, BOX)
     assert out.startswith("Reply discarded") and "Nothing was sent." in out
-    assert gw.posts == [("/email/reply-card", {"message_id": MAIL}),
-                        ("/email/reply-card/discard", {"message_id": MAIL})]
+    assert gw.posts == [("/email/reply-card", {"message_id": MAIL})]
+
+
+async def test_the_form_carries_the_cards_draft_id(monkeypatch, gw) -> None:
+    gw.card_extra = {"draft_id": "d-1"}
+    cards = _card_answer(monkeypatch, lambda kw: None)
+    await agents.compose_reply(MAIL, BOX)
+    assert cards[0]["reply"]["draft_id"] == "d-1"
+
+
+async def test_the_answer_says_when_the_members_draft_stays(monkeypatch, gw) -> None:
+    gw.card_extra = {"kept_draft": True}
+    _card_answer(monkeypatch, lambda kw: _member_send(kw, action="save"))
+    gw.act = {**gw.act, "action": "save"}
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out.endswith(agents._KEPT_DRAFT) and "earlier draft" in out
 
 
 async def test_compose_reply_asks_for_the_reply_all_draft(monkeypatch, gw) -> None:

@@ -8,8 +8,9 @@ opens.
    (``draft_reply_smart``, with ``create_draft`` off) and derives the
    recipients for Reply and for Reply all from the original mail. The card
    shows what it answers. It also writes the text of the card to the
-   member's Drafts, as the ONE draft of the conversation, so the member can
-   finish it in the Email app (owner, 2026-10-22). Nothing is sent.
+   member's Drafts, so the member can finish it in the Email app (owner,
+   2026-10-22). It updates the chat's own unedited draft, and it never
+   writes over a draft of the member. Nothing is sent.
 2. ``POST /email/reply-card/act`` does what the member chose: send, or save
    to Drafts. It takes NO recipient and NO body of its own. The body comes
    from the card answer that the member's browser posted to
@@ -18,8 +19,9 @@ opens.
    and Cc again from the original mail and the Reply all choice of the
    member, and it refuses when they differ from what the card showed.
 
-3. ``POST /email/reply-card/discard`` trashes the draft that the card wrote,
-   and only while its text is still the text that the card wrote.
+3. ``POST /email/reply-card/discard`` is the member's own Discard, which the
+   browser posts. It trashes the one draft that the card wrote, and only
+   while its text is still the text that the card wrote.
 
 So in a chat that read outside mail (H-236 holds that run), the model can
 still get the member's reply out, and it cannot choose where it goes or what
@@ -37,11 +39,12 @@ from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DraftReplyRequest,
-    _cleanup_thread_drafts,
     _store_ai_draft,
     _upsert_reply_draft,
+    chat_draft_record,
     draft_reply_smart,
     strip_placeholder_lines,
+    trash_chat_draft,
 )
 from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.core import (
@@ -100,11 +103,13 @@ class ReplyCardRequest(BaseModel):
 
 
 class ReplyCardDiscardRequest(BaseModel):
-    """The mail whose card the member discarded. Nothing else."""
+    """The member's own Discard on a reply card: the mail, and the draft that
+    THIS card wrote (``draft_id`` of ``/email/reply-card``). Nothing else."""
 
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
+    draft_id: str = Field(max_length=64)
 
 
 class ReplyCardActRequest(BaseModel):
@@ -358,6 +363,9 @@ async def reply_card(
     # the drafter does not write a second, different one.
     agreed = clean_reply_body(strip_placeholder_lines(req.draft))
     drafted: dict[str, Any] | None = None
+    # The text that Metorite wrote BEFORE this card. The drafter below
+    # replaces the record, and the save must still know the chat's own draft.
+    prior = await _chat_record(mail)
     if not agreed.strip():
         drafted = await draft_reply_smart(
             DraftReplyRequest(account_id=mail.account_id, message_id=req.message_id,
@@ -368,11 +376,11 @@ async def reply_card(
     # the card, so the card shows each character that the send can carry.
     body = agreed if agreed.strip() else clean_reply_body(
         strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
-    draft_id = ""
+    draft_id, kept_draft = "", False
     if body.strip():
         to, cc = (all_to, all_cc) if req.reply_all else (reply_to, reply_cc)
-        draft_id = await _keep_card_draft(
-            mail, owner, to, cc, _reply_subject(mail.subject), body)
+        draft_id, kept_draft = await _keep_card_draft(
+            mail, owner, to, cc, _reply_subject(mail.subject), body, prior=prior)
     return {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
@@ -395,6 +403,8 @@ async def reply_card(
         "body": body,
         "skipped": (drafted or {}).get("skipped"),
         "draft_id": draft_id,
+        # A draft of the member stays in Drafts, beside the card's draft.
+        "kept_draft": kept_draft,
     }
 
 
@@ -473,54 +483,69 @@ async def reply_card_act(
             "draft_id": draft_id}
 
 
+async def _chat_record(mail: _Mail) -> list[str] | None:
+    """The text that Metorite recorded for the thread, or None on a fault.
+    None lets the save read the record itself."""
+    try:
+        async with _tenant_session() as db:
+            return await chat_draft_record(db, mail.account_id, mail.thread_id)
+    except Exception as exc:  # the save reads it again
+        _log.warning("email.reply_card_record_failed", error=type(exc).__name__)
+        return None
+
+
 async def _write_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
-    *, chat_wrote: bool = False,
-) -> str:
-    """Write the ONE reply draft of the conversation, and return its LOCAL id.
+    *, chat_wrote: bool = False, prior: list[str] | None = None,
+) -> tuple[str, bool]:
+    """Write the reply draft of the conversation. Returns its LOCAL id, and
+    True when a draft of the member stays beside it.
 
-    :func:`drafting._upsert_reply_draft` updates the draft that the thread
-    holds, or makes one. ``exact_to`` writes the To over the one Outlook's
-    ``createReply`` sets, so the draft holds what the card showed.
+    :func:`drafting._upsert_reply_draft` updates the chat's own unedited
+    draft, or makes one, and never writes over a draft of the member.
+    ``exact_to`` writes the To over the one Outlook's ``createReply`` sets.
 
     ``chat_wrote`` records the body as the text that Metorite wrote
-    (``email_ai_drafts``). A send of the reply, or a discard of the card,
-    then trashes the draft only while it still holds that text
-    (``_cleanup_thread_drafts``). An edit of the member keeps it."""
+    (``email_ai_drafts``). A send of the reply, or the member's Discard, then
+    trashes the draft only while it still holds that text."""
     async with _tenant_session() as db:
         async with provider_session(db, owner, account_id=mail.account_id) as sess:
-            local_id = await _upsert_reply_draft(
+            wrote = await _upsert_reply_draft(
                 db, sess.provider, mail.account_id, thread_id=mail.thread_id,
                 reply_to_provider_id=mail.provider_message_id,
                 owner_email=mail.address, to=to, cc=cc, subject=subject,
-                body=body, exact_to=True,
+                body=body, exact_to=True, prior=prior, exact_cc=not chat_wrote,
             )
         if chat_wrote and mail.thread_id:
             await _store_ai_draft(db, mail.account_id, mail.thread_id, body,
                                   commit=False)
-    return local_id
+    return wrote.local_id, wrote.kept_draft
 
 
 async def _keep_card_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
-) -> str:
+    *, prior: list[str] | None = None,
+) -> tuple[str, bool]:
     """The draft of a card that shows: best effort, so the card always shows."""
     try:
-        return await _write_draft(mail, owner, to, cc, subject, body, chat_wrote=True)
-    except Exception as exc:  # noqa: BLE001 - the card still shows
+        return await _write_draft(mail, owner, to, cc, subject, body,
+                                  chat_wrote=True, prior=prior)
+    except Exception as exc:  # the card still shows
         _log.warning("email.reply_card_draft_failed", error=type(exc).__name__)
-        return ""
+        return "", False
 
 
 async def _save_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
 ) -> str:
-    """Save the member's reply as the one draft of the conversation.
+    """Save the member's reply as the reply draft of the conversation.
 
     It returns the LOCAL id, which ``/email/drafts/schedule`` and
     ``send_draft`` take. It returned the provider id before, and a schedule
-    of that id found no draft."""
-    return await _write_draft(mail, owner, to, cc, subject, body)
+    of that id found no draft. The member chose the Cc on the card, so the
+    save writes it as it is."""
+    local_id, _kept = await _write_draft(mail, owner, to, cc, subject, body)
+    return local_id
 
 
 @router.post("/reply-card/discard")
@@ -528,12 +553,19 @@ async def reply_card_discard(
     req: ReplyCardDiscardRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Trash the draft that a reply card wrote, after the member discarded it.
+    """The member pressed Discard on a reply card: trash the draft it wrote.
 
-    It trashes a draft of the conversation only while its body is still the
-    text that Metorite wrote (``_cleanup_thread_drafts``). So a draft that the
-    member edited in the Email app stays. It sends nothing."""
-    mail = await _load_mail(req.message_id, user.email or "anonymous")
-    if mail.thread_id:
-        await _cleanup_thread_drafts(mail.account_id, mail.thread_id)
-    return {"ok": True}
+    The browser posts this on the member's own click. The model never calls
+    it, so a card that times out keeps its draft. It trashes ONLY the draft
+    ``draft_id``, and only while its stored and live bodies are still the
+    text that Metorite wrote. A draft that the member edited stays, and so
+    does each other draft of the thread. It sends nothing."""
+    owner = user.email or "anonymous"
+    mail = await _load_mail(req.message_id, owner)
+    if not mail.thread_id:
+        return {"ok": True, "trashed": False}
+    async with (_tenant_session() as db,
+                provider_session(db, owner, account_id=mail.account_id) as sess):
+        gone = await trash_chat_draft(
+            db, sess.provider, mail.account_id, mail.thread_id, req.draft_id)
+    return {"ok": True, "trashed": gone}

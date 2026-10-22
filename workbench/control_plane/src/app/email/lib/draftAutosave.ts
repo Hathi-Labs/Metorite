@@ -515,14 +515,30 @@ export function threadWithoutComposerDrafts<T extends { id: string }>(
 }
 
 /**
+ * True when draft `a` is newer than draft `b`: the later `receivedAt`, then
+ * the larger id. That is the order of `_THREAD_DRAFT_SQL` on the gateway.
+ */
+export function newerDraft(
+  a: { id: string; receivedAt: string },
+  b: { id: string; receivedAt: string },
+): boolean {
+  const ta = Date.parse(a.receivedAt);
+  const tb = Date.parse(b.receivedAt);
+  if (ta !== tb) return (Number.isNaN(ta) ? -Infinity : ta) > (Number.isNaN(tb) ? -Infinity : tb);
+  return a.id.toLowerCase() > b.id.toLowerCase();
+}
+
+/**
  * The draft of the conversation that a new reply continues, or null (owner
  * directive, 2026-10-22). A reply drafted in the chat lands in Drafts as the
- * one draft of the conversation. Reply in the reading pane then opens THAT
- * draft, so the member finishes and sends it, and no second draft starts.
+ * newest draft of the conversation. Reply in the reading pane then opens
+ * THAT draft, so the member finishes and sends it, and no second draft starts.
  *
- * It is the newest draft of the thread that no send or discard ended
- * (`gone`). A forward never continues a reply draft, so the caller asks only
- * for Reply and Reply all.
+ * It is the newest draft of the thread (`newerDraft`) that no send or
+ * discard ended (`gone`). Each save of a draft moves its `received_at`
+ * (`_upsert_local_draft`), so the gateway and this pane pick the draft that
+ * was saved last. A forward never continues a reply draft, so the caller
+ * asks only for Reply and Reply all.
  */
 export function draftToContinue<T extends { id: string; receivedAt: string }>(
   thread: readonly T[] | null,
@@ -532,7 +548,7 @@ export function draftToContinue<T extends { id: string; receivedAt: string }>(
   let best: T | null = null;
   for (const m of thread ?? []) {
     if (!isDraft(m) || gone.includes(m.id)) continue;
-    if (!best || m.receivedAt >= best.receivedAt) best = m;
+    if (!best || newerDraft(m, best)) best = m;
   }
   return best;
 }

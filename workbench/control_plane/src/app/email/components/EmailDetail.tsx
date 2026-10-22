@@ -710,7 +710,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     replyHasFileRef.current = held?.hasAttachments ?? false;
     replyDirty.current = false;
     setDraftStatus("idle");
-    setReplyBcc("");
+    // A continued draft keeps its Bcc, or the first save would clear it.
+    setReplyBcc(held ? (held.bcc ?? []).map((a) => a.email).filter(Boolean).join(", ") : "");
     setReplyAttachments([]);
     setReplyArtifacts([]);
     setForwardFiles(mode === "forward" ? forwardFilesOf(src.attachments) : []);
@@ -755,7 +756,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         setReplyQuote(kept.quote);
         setReplyTo(held.to.length ? held.to.map((a) => a.email).join(", ") : to.join(", "));
         setReplyCc(held.to.length ? heldCc.join(", ") : cc.join(", "));
-        if (heldCc.length) setShowReplyCc(true);
+        if (heldCc.length || (held.bcc ?? []).length) setShowReplyCc(true);
       } else {
         setReplyTo(to.join(", "));
         setReplyCc(cc.join(", "));

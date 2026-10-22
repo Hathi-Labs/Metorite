@@ -12,7 +12,6 @@ Dynamic Agent Loader entry point.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import ipaddress
 import json
 import os
@@ -1784,9 +1783,10 @@ async def draft_reply(
     """Draft a context-aware reply to an email, and save it in the user's
     Drafts folder. Nothing is sent.
 
-    The draft is the ONE draft of the conversation: a second draft of the
-    same email updates the first one, so Drafts never holds two. The member
-    can finish and send it in the Email app (owner, 2026-10-22). Set
+    A second chat draft of the same email updates the first one. A draft
+    that the member wrote or edited is never written over: the new text
+    then goes beside it, and the answer says so. The member can finish and
+    send the draft in the Email app (owner, 2026-10-22). Set
     save=false only to show a text in the chat and leave Drafts unchanged.
 
     ``instruction`` carries what the member wants the reply to say, in the
@@ -1812,6 +1812,11 @@ async def draft_reply(
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
+    if res.get("kept_draft"):
+        # The first line, because the card edits the rest. The chat never
+        # writes over a draft of the member.
+        note += (" (your earlier draft of this email stays in Drafts as it was, "
+                 "and this is a second draft beside it)")
     # The first line names the mailbox. The chat card reads "(mailbox <id>)"
     # from it, so its Save and Send use the mailbox of the mail (EM-T8a).
     sender = await _mailbox_name(account_id) or str(account_id)
@@ -1851,9 +1856,14 @@ async def draft_reply(
 # parameter makes it an egress tool again. Fence:
 # ``tests/unit/test_email_chat_reply.py``.
 
-#: The answer of a reply card that the member discarded. The gateway then
-#: trashes the draft that the card wrote, unless the member edited it.
+#: The answer of a reply card that the member discarded. The member's click
+#: also trashes the draft that the card wrote, unless the member edited it.
 _REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent."
+
+#: Added to the answer when the member's own draft of the email stays in
+#: Drafts, beside the draft that the chat wrote. The chat never writes over it.
+_KEPT_DRAFT = (" Your earlier draft of this email stays in Drafts as it was, and "
+               "the new text is a second draft beside it.")
 
 #: The answer of a send card that the member wrote over in the chat
 #: (``ask_tools.REVISED``). Their words follow this result.
@@ -1896,6 +1906,8 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
         "recipients": {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}},
         "reply_all": bool(reply_all),
         "body": body,
+        # The draft that this card wrote. The member's Discard trashes it.
+        "draft_id": str(prep.get("draft_id") or ""),
         "note": ("" if body.strip() else
                  "The assistant did not write a draft for this mail. Write the reply below."),
     }
@@ -1930,10 +1942,11 @@ async def compose_reply(
     The member decides on the card, and the tool then does it and returns
     what happened. The card is the question, so do not ask in text first.
 
-    The text of each card also goes to the member's Drafts, as the one draft
-    of the conversation. A new card for the same email updates that draft.
-    So the member can finish and send the reply in the Email app instead.
-    Discard trashes that draft, unless the member edited it there.
+    The text of each card also goes to the member's Drafts. A new card for
+    the same email updates the chat's own draft, and never a draft that the
+    member wrote or edited. So the member can finish and send the reply in
+    the Email app instead. The member's Discard trashes the card's draft,
+    unless the member edited it there.
 
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
@@ -1968,6 +1981,7 @@ async def compose_reply(
         steer["reply_all"] = True
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, reply_all)
+    kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, reply_all),
         detail=_card_text(
@@ -1975,15 +1989,12 @@ async def compose_reply(
         reply=form,
     )
     if answer is ask_tools.REVISED:
-        return _CARD_REVISED
+        return _CARD_REVISED + kept
     if not isinstance(answer, ask_tools.ReplyAnswer):
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
-        # The card wrote a draft. It goes, unless the member edited it. A
-        # failure leaves the draft in Drafts, and nothing was sent.
-        with contextlib.suppress(Exception):
-            await _post("/email/reply-card/discard", {"message_id": email_id})
-        return _REPLY_DISCARDED
+        # Discard and a timeout look the same here, so the tool trashes
+        # nothing. The member's Discard click posts its own trash of the
+        # card's draft (``ReplyCardForm``), and a timeout keeps the draft.
+        return (_REPLY_DISCARDED + kept) if _card_channel_open() else _NO_CARD_CHANNEL
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return ("Nothing was sent. Another member answered this card, "
@@ -1998,11 +2009,11 @@ async def compose_reply(
     copy = f", with a copy to {cc}" if cc else ""
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
-        return f"Sent to {to}{copy}, from {box}."
+        return f"Sent to {to}{copy}, from {box}.{kept}"
     did = str(res.get("draft_id") or "")
     # The id lets the agent schedule the draft (``schedule_send``, H-375).
     ref = f" (draft_id {did})" if did else ""
-    return f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent."
+    return f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
