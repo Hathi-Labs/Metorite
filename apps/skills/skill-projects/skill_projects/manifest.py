@@ -576,6 +576,9 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "link_tasks_batch": frozenset({"link_tasks"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
+    # WS-46 P11 — what the page shows: the node read, and the views read for a
+    # saved view by name. It writes nothing.
+    "show_view": frozenset({"project_summary", "project_views"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do

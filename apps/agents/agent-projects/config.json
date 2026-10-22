@@ -84,6 +84,7 @@
     "project_views",
     "watchers",
     "open_in_app",
+    "show_view",
     "team_capacity",
     "fit_for_task",
     "rebalance",

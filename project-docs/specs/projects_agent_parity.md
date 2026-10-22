@@ -1,7 +1,9 @@
 # Projects agent parity — the assistant can do everything the app can — WS-46
 
 **Status: ACTIVE. D91 DECIDED by the owner on 2026-10-06, with the defaults
-of §14 as the answers to Q1 to Q6. P1 is BUILT (2026-10-06, branch
+of §14 as the answers to Q1 to Q6. P11 is BUILT (2026-10-22): `show_view` sets the
+canvas, a saved view, the filters and the grouping of the open page. The owner
+reversed Q4 that day. P1 is BUILT (2026-10-06, branch
 `ws46-p1-recurring-task`). P2 is BUILT (2026-10-06): a refusal
 reaches the model as text, and an unknown argument is refused by name.
 P3 is BUILT (2026-10-06): `evals/projects_ops/` runs PO-1 to PO-7, and the
@@ -224,7 +226,7 @@ the chat does part of it, or does it in a way that fails in practice.
 | G19 | **A plan with subprojects** | Nodes made one at a time | `POST /projects/nodes` | `propose_plan` writes one node (`forms.py:934-940`), and W1 tells the model to use subprojects | Partial | P8 |
 | G20 | A repeat rule in a plan, an intake capture or a private capture | Not in one step | `PUT …/recurrence` after the create | None | **Missing** | P8 |
 | G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
-| G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Not now (Q4) |
+| G22 | Filter the board from the chat | The filter bar | Browser state | Closed by P11: `show_view` sets the canvas, a saved view, the filters and the grouping | Closed | P11 |
 | G23 | Agent runs on a task: the three reads, the start, an activity and the finish | The task detail (EA-12c) | `routes/projects/agent_runs.py` (`external_agent_access.md` §12.1) | The four tools are in `PLANNED`. An outside agent reaches the routes over MCP | **Missing** | EA-12e |
 
 **Count: 23 gaps.** WS-55 EA-12a added G23 on 2026-10-14. The counts below are the measure of 2026-10-05. P1, P2
@@ -968,7 +970,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
 | **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
 | **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
-| **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Not now. The owner answered Q4 on 2026-10-06 |
+| **P11 · Filter the board** ✅ BUILT 2026-10-22 | `show_view`: the canvas, a saved view by name, the filters in `save_view`'s words, `group_by` and `sub_group_by`. It writes nothing and shows no card. The page reads the filters through `fromConfig`. Fences: `test_projects_show_view.py`, `chatView.test.ts` | G22 | AGENT-SAFE. The owner reversed Q4 on 2026-10-22 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
 | **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, ONE confirmation card with a checkbox for each task, a receipt for each row · eval task PO-10 | — (a chat need, not a UI input) | AGENT-SAFE |
 
@@ -1071,7 +1073,7 @@ as the answer. The slices build to these answers.
 | **Q1** | A weekly repeat with no day named: take the due date's weekday, or always ask? | Take the due date's weekday, else today's, and name it on the card. The member can decline |
 | **Q2** | Should a task made from an email link back to the email? This needs `source_ref` on `pm_tasks`, which is a migration | No link in P9. `source="email"` and the line on the card only. Intake keeps its `source_ref` |
 | **Q3** | May the chat nudge a colleague? The nudge route stays class X (`manifest.py:95-106`) | No. The member presses Nudge in the app |
-| **Q4** | Should the chat filter the board the member is looking at (G22)? It needs a stable filter shape first | Not now. `open_in_app` stays the chat's only navigation |
+| **Q4** | Should the chat filter the board the member is looking at (G22)? It needs a stable filter shape first | Not now. `open_in_app` stays the chat's only navigation. **Reversed by the owner on 2026-10-22**: the chat sets filters and views. P11 built it |
 | **Q5** | Confirm D91: native tools now, the MCP facade parked | Yes, as written |
 | **Q6** | May the Projects agent hold a direct, read-only CRM tool for an org-visible record by id, later? | Not in this spec. Delegation only |
 
