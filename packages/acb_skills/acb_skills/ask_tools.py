@@ -1013,9 +1013,7 @@ def confirmation_channel_open() -> bool:
     (``_active_run_queue``) and path C (the relay thread). A tool reads it
     AFTER a denial, to tell a refusal from a run with no live chat (WS-17
     EM-T13a). A tool may also read it BEFORE a card, but only to choose a
-    narrower act that writes less: ``draft_reply`` of the email assistant
-    returns an unsaved draft when no card can show (WS-17 EM-G11c1). It
-    never approves a write. ``request_confirmation`` stays the one gate,
+    narrower act that writes less. It never approves a write. ``request_confirmation`` stays the one gate,
     and it fails closed, so a drift here can change a message or skip a
     write, and never adds one.
     A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).

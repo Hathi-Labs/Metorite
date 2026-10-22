@@ -513,3 +513,39 @@ export function threadWithoutComposerDrafts<T extends { id: string }>(
   if (hidden.size === 0) return [...messages];
   return messages.filter((m) => !(hidden.has(m.id) && isDraft(m)));
 }
+
+/**
+ * The draft of the conversation that a new reply continues, or null (owner
+ * directive, 2026-10-22). A reply drafted in the chat lands in Drafts as the
+ * one draft of the conversation. Reply in the reading pane then opens THAT
+ * draft, so the member finishes and sends it, and no second draft starts.
+ *
+ * It is the newest draft of the thread that no send or discard ended
+ * (`gone`). A forward never continues a reply draft, so the caller asks only
+ * for Reply and Reply all.
+ */
+export function draftToContinue<T extends { id: string; receivedAt: string }>(
+  thread: readonly T[] | null,
+  gone: readonly string[],
+  isDraft: (m: T) => boolean,
+): T | null {
+  let best: T | null = null;
+  for (const m of thread ?? []) {
+    if (!isDraft(m) || gone.includes(m.id)) continue;
+    if (!best || m.receivedAt >= best.receivedAt) best = m;
+  }
+  return best;
+}
+
+/**
+ * The editable text and the quote of a continued draft. The inline reply
+ * saves its text and then the quote, so a draft that it saved ends with the
+ * same quote. That quote comes off, and the reply shows it apart again. A
+ * draft from the chat holds no quote, so its whole body is the text, and the
+ * quote stays empty: each save then keeps the body as the draft held it.
+ */
+export function continuedBody(body: string, quote: string): { text: string; quote: string } {
+  const tail = quote ? `\n\n${quote}` : "";
+  if (tail && body.endsWith(tail)) return { text: body.slice(0, -tail.length), quote };
+  return { text: body, quote: "" };
+}

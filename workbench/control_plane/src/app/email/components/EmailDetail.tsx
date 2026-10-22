@@ -47,7 +47,8 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import { revealWithin } from "@/lib/scrollWithin";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
-  draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
+  continuedBody, draftToContinue, draftToUpdate, holdPick, pickProblem, recordSave,
+  saveFailureText, sendFailureText,
   supersededDraft, NO_COMPOSER_DRAFTS, draftsAfterSend, markGone, newReplyDrafts, ownDraft,
   retireDrafts, threadWithoutComposerDrafts,
   type ComposerDrafts, type DraftHandOver, type DraftStatus, type SavedDraft,
@@ -691,15 +692,22 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // (EM-G3c-2 item 11).
     autosave.flush();
     replySessionRef.current += 1;
-    replyHasFileRef.current = false;
     setReplyTargetId(src.id);
     setFromPick(null);
     staleDraftsRef.current = [];
     setSendErr(null);
     // New reply session: forget any previous draft so we don't update it.
     // A closed reply keeps its draft, and the thread shows it again.
-    draftIdRef.current = null;
-    setComposerDrafts(newReplyDrafts);
+    // A reply continues the draft that the conversation holds, from the chat
+    // or an earlier reply, so no second draft starts (owner, 2026-10-22).
+    // A draft with no text here (an HTML-only copy) is not opened, so an
+    // edit cannot write over text that this pane does not show.
+    const found =
+      mode === "forward" ? null : draftToContinue(thread, composerDrafts.gone, isDraftEmail);
+    const held = found && (found.bodyText || "").trim() ? found : null;
+    draftIdRef.current = held?.id ?? null;
+    setComposerDrafts((d) => (held ? ownDraft(newReplyDrafts(d), held.id) : newReplyDrafts(d)));
+    replyHasFileRef.current = held?.hasAttachments ?? false;
     replyDirty.current = false;
     setDraftStatus("idle");
     setReplyBcc("");
@@ -736,12 +744,23 @@ export function EmailDetail({ email }: EmailDetailProps) {
       );
     } else {
       const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
-      setReplyTo(to.join(", "));
-      setReplyCc(cc.join(", "));
-      setReplyQuote(
+      const quote =
         `On ${src.receivedAt}, ${src.from.name} wrote:\n> ` +
-        quoteSrc.replace(/\n/g, "\n> ")
-      );
+        quoteSrc.replace(/\n/g, "\n> ");
+      if (held) {
+        // The draft keeps its own text and recipients.
+        const kept = continuedBody(held.bodyText || "", quote);
+        const heldCc = (held.cc ?? []).map((a) => a.email).filter(Boolean);
+        setReplyBody(kept.text);
+        setReplyQuote(kept.quote);
+        setReplyTo(held.to.length ? held.to.map((a) => a.email).join(", ") : to.join(", "));
+        setReplyCc(held.to.length ? heldCc.join(", ") : cc.join(", "));
+        if (heldCc.length) setShowReplyCc(true);
+      } else {
+        setReplyTo(to.join(", "));
+        setReplyCc(cc.join(", "));
+        setReplyQuote(quote);
+      }
     }
     setReplyMode(mode);
     // Bring the composer into view (it renders below a possibly-long thread).

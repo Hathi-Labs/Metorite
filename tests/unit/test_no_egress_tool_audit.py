@@ -288,10 +288,12 @@ def _is_held(out: str) -> bool:
     return out.startswith("Nothing changed.") and "off in this run" in out
 
 
-async def test_a_held_run_saves_a_reply_draft_after_its_card(gw, held) -> None:
-    out = await agents.draft_reply("m-1", BOX, save=True)
+async def test_a_held_run_saves_a_reply_draft(gw, held) -> None:
+    """A held run still saves the reply draft in the member's own Drafts. It
+    asks no card (owner, 2026-10-22), and the draft sends nothing."""
+    out = await agents.draft_reply("m-1", BOX)
     assert "saved to Drafts" in out, out
-    assert len(gw.cards) == 1
+    assert gw.cards == []
     assert gw.posts == [("/email/draft-reply",
                          {"account_id": BOX, "message_id": "m-1", "create_draft": True})]
 
@@ -351,7 +353,10 @@ def test_wac_p4_still_asks_for_each_send_and_not_for_an_in_space_tool() -> None:
         assert pp._reaches_out(call, name, None) is True, name
     for name in ("draft_reply", "create_label", "manage_inbox", "create_rule"):
         assert pp._reaches_out(call, name, None) is False, name
-        assert name in agents.MAILBOX_WRITE_TOOLS, f"{name} must ask its own card"
+        # A reply draft in the member's own Drafts asks no card (owner,
+        # 2026-10-22). Each other tool asks its own.
+        assert (name in agents.MAILBOX_WRITE_TOOLS
+                or name in agents.OWN_DRAFT_SAVES), f"{name} must ask its own card"
 
 
 async def test_a_held_update_that_adds_a_forward_is_refused(gw, held) -> None:

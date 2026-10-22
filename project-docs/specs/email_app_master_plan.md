@@ -29,6 +29,7 @@
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
+> 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22).** A chat reply draft lands in Drafts as the one draft of its conversation, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
@@ -20421,6 +20422,39 @@ that property in Unicode 15.1, plus U+2800, and a test holds it to the property 
 - The backstop is the mark run, not a share of marks. A share of marks would refuse fully
   vowelled Arabic, which has more marks than letters. Hindi, Tamil, Thai, Arabic and
   Vietnamese text, flags, joined families, skin tones and keycaps stay unchanged.
+
+### 18.9 One draft for each conversation (2026-10-22)
+
+**Status:** 🔨 BUILT on branch `chat-draft-upsert`, not merged. No migration, and no flag.
+
+**Origin.** The owner asked for three things in the chat on 2026-10-22. A reply drafted in
+the chat shows in Drafts. A conversation that holds a draft gets no second one. The member
+starts a reply in the chat, and finishes and sends it in the Email app.
+
+This replaces the save card of `draft_reply` (EM-G11c1). Nothing is sent without the member.
+
+1. **One helper.** `_upsert_reply_draft` in `drafting.py` finds the newest draft of the
+   thread and updates it in place. With no draft in the thread, it makes one. It shares
+   `_update_provider_draft` with `PUT /email/drafts`, so a Gmail id move and the IMAP
+   fallback work the same in both.
+2. **Each chat draft saves.** `/email/draft-reply`, `/email/drafts/save` and the save of the
+   reply card write through the helper. `draft_reply` saves with no card, and it left
+   `MAILBOX_WRITE_TOOLS` for `OWN_DRAFT_SAVES`.
+3. **The reply card writes its text.** `POST /email/reply-card` writes the text of each
+   card as the draft, and records it as the text of Metorite. A new card updates the same
+   draft. Discard calls `POST /email/reply-card/discard`, which trashes the draft only
+   while it holds that text (`_cleanup_thread_drafts`). A send does the same.
+4. **The card save answers the local id.** `/email/drafts/schedule` takes that id.
+5. **The Email app continues the draft.** Reply opens the newest draft of the thread, with
+   its text and recipients, so no second draft starts.
+
+**Known limits.** A card that times out after an hour also runs the discard. An unedited
+draft then goes. An Outlook reply draft can hold the quote that Outlook adds, so the
+discard keeps it.
+
+**Fences.** `tests/unit/test_email_reply_draft_upsert.py`, its R8 half
+`tests/unit/test_email_reply_draft_upsert_r8.py`, `tests/unit/test_email_chat_reply.py`,
+`tests/unit/test_email_agent_write_cards.py` and `src/app/email/lib/continueDraft.test.ts`.
 
 ## 19. Send later (2026-10-21)
 

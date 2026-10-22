@@ -12,6 +12,7 @@ Dynamic Agent Loader entry point.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import os
@@ -1778,61 +1779,39 @@ async def manage_inbox(
 
 @_annotate_risk(open_world=False)
 async def draft_reply(
-    email_id: str, account_id: str, save: bool = False, instruction: str = "",
+    email_id: str, account_id: str, save: bool = True, instruction: str = "",
 ) -> str:
-    """Draft a context-aware reply to an email. Set save=true to also create a
-    provider draft in the user's Drafts folder, after a card.
+    """Draft a context-aware reply to an email, and save it in the user's
+    Drafts folder. Nothing is sent.
+
+    The draft is the ONE draft of the conversation: a second draft of the
+    same email updates the first one, so Drafts never holds two. The member
+    can finish and send it in the Email app (owner, 2026-10-22). Set
+    save=false only to show a text in the chat and leave Drafts unchanged.
 
     ``instruction`` carries what the member wants the reply to say, in the
     member's words ("accept, but move it to Friday", "shorter"). Always pass
     it when the member said anything about the content, or the drafter
     writes from the email alone. To save or send a text that you and the
     member already agreed, use ``compose_reply`` with ``draft``: this tool
-    writes a new text. The draft is
-    always made in the mailbox that received the email, whatever
-    ``account_id`` says. Where no card can show, the tool saves nothing and
-    returns the draft, which the user saves or sends in the Email app."""
+    writes a new text. The draft is always made in the mailbox that received
+    the email, whatever ``account_id`` says."""
     try:
-        # A read for the card: it must not mark the email read (fix round 1).
+        # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
     except Exception:
         orig = None
     own = str((orig or {}).get("account_id") or "")
     if own:
         account_id = own
-    unsaved = ""
-    if save and not _card_channel_open():
-        # EM-G11c1 fix round 1 (P1-a): a run with no card channel must still
-        # draft. So the tool writes the draft and saves nothing. The draft
-        # card has Save and Send. The note goes in the first line, because
-        # the card edits the rest. It names no chat (EM-G11c1b).
-        save = False
-        unsaved = (" (Drafts is unchanged, because a card cannot show here. "
-                   "Save or send this draft in the Email app)")
-    if save:
-        # EM-G11c1: a saved draft is one click from a send, so it asks first.
-        # A draft that only shows in the chat (save=false) asks nothing.
-        box = await _named(account_id)
-        frm = ((orig or {}).get("from_address") or {})
-        refusal = await _card_refusal(
-            f"Save a reply draft in {box}?",
-            "The assistant writes a reply to this email and saves it in the "
-            f"Drafts folder of {box}. Nothing is sent.",
-            "Cancelled — no draft was saved.",
-            "\n".join([
-                "The email:",
-                f"- from: {_card_text(frm.get('email') or '(unknown)', 120)}",
-                f"- subject: {_card_text((orig or {}).get('subject') or '(none)', 200)}",
-            ]),
-        )
-        if refusal:
-            return refusal
+    # The owner approved the save with no card (2026-10-22). A draft in the
+    # member's own Drafts sends nothing, so it needs no card and no channel.
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save,
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
-    note = unsaved or (" (saved to Drafts)" if res.get("created") else "")
+    note = " (saved to Drafts)" if res.get("created") else ""
     # The first line names the mailbox. The chat card reads "(mailbox <id>)"
     # from it, so its Save and Send use the mailbox of the mail (EM-T8a).
     sender = await _mailbox_name(account_id) or str(account_id)
@@ -1872,14 +1851,16 @@ async def draft_reply(
 # parameter makes it an egress tool again. Fence:
 # ``tests/unit/test_email_chat_reply.py``.
 
-#: The answer of a reply card that the member discarded.
-_REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent or saved."
+#: The answer of a reply card that the member discarded. The gateway then
+#: trashes the draft that the card wrote, unless the member edited it.
+_REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent."
 
 #: The answer of a send card that the member wrote over in the chat
 #: (``ask_tools.REVISED``). Their words follow this result.
 _CARD_REVISED = (
     "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent or saved. Read the member's words below. If "
+    "closed. Nothing was sent. The draft of this reply in Drafts holds the "
+    "text of the card, and a new card updates it. Read the member's words below. If "
     "they change this mail, change it, keep every part they did not ask to "
     "change, and show a new card with the new text. If they ask about "
     "something else, answer that first, then ask whether to show the card "
@@ -1949,6 +1930,11 @@ async def compose_reply(
     The member decides on the card, and the tool then does it and returns
     what happened. The card is the question, so do not ask in text first.
 
+    The text of each card also goes to the member's Drafts, as the one draft
+    of the conversation. A new card for the same email updates that draft.
+    So the member can finish and send the reply in the Email app instead.
+    Discard trashes that draft, unless the member edited it there.
+
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
@@ -1977,6 +1963,9 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
+    if reply_all:
+        # The draft in Drafts takes the recipients that the card opens with.
+        steer["reply_all"] = True
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, reply_all)
     answer = await ask_tools.request_confirmation(
@@ -1988,10 +1977,16 @@ async def compose_reply(
     if answer is ask_tools.REVISED:
         return _CARD_REVISED
     if not isinstance(answer, ask_tools.ReplyAnswer):
-        return _REPLY_DISCARDED if _card_channel_open() else _NO_CARD_CHANNEL
+        if not _card_channel_open():
+            return _NO_CARD_CHANNEL
+        # The card wrote a draft. It goes, unless the member edited it. A
+        # failure leaves the draft in Drafts, and nothing was sent.
+        with contextlib.suppress(Exception):
+            await _post("/email/reply-card/discard", {"message_id": email_id})
+        return _REPLY_DISCARDED
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
-        return ("Nothing was sent or saved. Another member answered this card, "
+        return ("Nothing was sent. Another member answered this card, "
                 "and only the member who asked can send this reply.")
     res = await _post("/email/reply-card/act", {
         "message_id": email_id,
@@ -5686,8 +5681,9 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "send_email", "forward_email", "send_draft", "unsubscribe_sender",
     "digest", "sync_account", "install_default_rules", "create_rule",
     "update_rule", "create_rules_from_prompt", "manage_inbox",
-    # Gap G6 (§12.3.13.2, item 3).
-    "draft_reply", "auto_categorize_inbox", "delete_rule", "run_rules",
+    # Gap G6 (§12.3.13.2, item 3). ``draft_reply`` left on 2026-10-22, see
+    # ``OWN_DRAFT_SAVES``.
+    "auto_categorize_inbox", "delete_rule", "run_rules",
     "learn_rule_pattern", "update_assistant_settings", "create_label",
     "find_follow_ups", "mark_thread_done", "reclassify_reply_zero",
     "set_sender_status", "resolve_execution",
@@ -5702,8 +5698,20 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "schedule_send", "cancel_scheduled_send",
 })
 
+#: The tools that save a reply draft in the member's OWN Drafts with no card,
+#: with the reason. Owner directive, 2026-10-22: "The latest email drafts done
+#: on chat should also appear in the email draft". The draft sends nothing,
+#: and a conversation keeps one draft. Fence:
+#: ``tests/unit/test_email_agent_write_cards.py``.
+OWN_DRAFT_SAVES: dict[str, str] = {
+    "draft_reply": (
+        "POST /email/draft-reply saves the reply as the one draft of the "
+        "conversation in the member's own Drafts. It sends nothing, and the "
+        "member finishes and sends it in the Email app (owner, 2026-10-22)."),
+}
+
 #: The registered tools that call a gateway POST and still ask no card, with
-#: the reason for each. A tool that is in neither list fails the fence.
+#: the reason for each. A tool that is in none of the lists fails the fence.
 GATEWAY_READ_POSTS: dict[str, str] = {
     "present_email_groups": (
         "POST /email/messages/summaries reads the sender and the subject of "
