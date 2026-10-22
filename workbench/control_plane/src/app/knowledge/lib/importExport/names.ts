@@ -10,7 +10,21 @@ import { MAX_TITLE } from "./limits";
 export const MARKDOWN_EXT = [".md", ".markdown"] as const;
 export const HTML_EXT = [".html", ".htm"] as const;
 
-export type PageKind = "md" | "html";
+/** Office and PDF files (KB-AI-1). The browser parses each one into a page. */
+export const DOCUMENT_EXT = {
+  docx: [".docx"],
+  pdf: [".pdf"],
+  pptx: [".pptx"],
+  xlsx: [".xlsx"],
+} as const;
+
+export type DocumentKind = keyof typeof DOCUMENT_EXT;
+export type PageKind = "md" | "html" | DocumentKind;
+
+/** True for a kind that needs the file's bytes and a parser, not its text. */
+export function isDocumentKind(kind: PageKind | null): kind is DocumentKind {
+  return kind !== null && kind !== "md" && kind !== "html";
+}
 
 /** The last part of a path. */
 export function baseName(path: string): string {
@@ -29,6 +43,9 @@ export function pageKind(name: string): PageKind | null {
   const lower = name.toLowerCase();
   if (MARKDOWN_EXT.some((ext) => lower.endsWith(ext))) return "md";
   if (HTML_EXT.some((ext) => lower.endsWith(ext))) return "html";
+  for (const kind of Object.keys(DOCUMENT_EXT) as DocumentKind[]) {
+    if (DOCUMENT_EXT[kind].some((ext) => lower.endsWith(ext))) return kind;
+  }
   return null;
 }
 

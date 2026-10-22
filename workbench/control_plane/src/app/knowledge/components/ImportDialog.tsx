@@ -3,7 +3,8 @@
 /**
  * Import files as pages (WS-61 KB-2m, `knowledge_base.md` §21.7).
  *
- * The member picks Markdown files, HTML files or a zip. The dialog reads
+ * The member picks Markdown, HTML, Word, PDF, PowerPoint or Excel files, or a
+ * zip of them (KB-AI-1 added the last four, which the browser parses). The dialog reads
  * them, refuses over a limit with nothing made, and then makes draft pages
  * one by one, parents first, with a count and a Cancel. A final report says
  * what was made, what was skipped and what failed. All logic is in
@@ -23,7 +24,7 @@ import { ImportRefusal, MAX_FILE_BYTES, MAX_PAGES, MAX_TOTAL_BYTES, mb } from ".
 import { prepareImport, sourceOf } from "../lib/importExport/prepare";
 import { runImport, type ImportReport } from "../lib/importExport/runImport";
 
-const ACCEPT = ".md,.markdown,.html,.htm,.zip";
+const ACCEPT = ".md,.markdown,.html,.htm,.docx,.pdf,.pptx,.xlsx,.zip";
 
 type Phase = "pick" | "reading" | "running" | "done";
 
@@ -116,7 +117,7 @@ export default function ImportDialog({
             {phase === "pick" || phase === "reading" ? (
               <>
                 <p className="text-muted-foreground">
-                  Choose Markdown files, HTML files or a zip, such as a Notion export. Each file becomes a draft page{" "}
+                  Choose Markdown, HTML, Word, PDF, PowerPoint, Excel, or a zip of them, such as a Notion export. Each file becomes a draft page{" "}
                   <span className="font-medium text-foreground">{where}</span>. A folder becomes a parent page.
                 </p>
                 <input
@@ -138,7 +139,7 @@ export default function ImportDialog({
                     Choose files
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    .md, .html or .zip. Up to {mb(MAX_FILE_BYTES)} each, {mb(MAX_TOTAL_BYTES)} in all, {MAX_PAGES} pages.
+                    .md, .html, .docx, .pdf, .pptx, .xlsx or .zip. Up to {mb(MAX_FILE_BYTES)} each, {mb(MAX_TOTAL_BYTES)} in all, {MAX_PAGES} pages.
                   </span>
                 </div>
                 {files.length ? (
@@ -213,6 +214,7 @@ function Report({ report }: { report: ImportReport }) {
   }
   if (report.images) lines.push(`${report.images} ${report.images === 1 ? "image became" : "images became"} text.`);
   if (report.linksRewritten) lines.push(`${report.linksRewritten} ${report.linksRewritten === 1 ? "link now points" : "links now point"} to an imported page.`);
+  const notices = report.notices;
   return (
     <div data-testid="kb-import-report" className="space-y-3">
       <h3 className="text-sm font-medium text-foreground">
@@ -231,7 +233,7 @@ function Report({ report }: { report: ImportReport }) {
             <span>You stopped it. {pages(report.notStarted)} not made.</span>
           </li>
         ) : null}
-        {lines.map((line) => (
+        {[...lines, ...notices].map((line) => (
           <li key={line} className="flex items-center gap-2 text-muted-foreground">
             <Icon name="Info" className="h-3.5 w-3.5 shrink-0" />
             <span>{line}</span>
@@ -244,6 +246,20 @@ function Report({ report }: { report: ImportReport }) {
           </li>
         ) : null}
       </ul>
+      {report.unreadable.length ? (
+        <div role="alert" data-testid="kb-import-unreadable" className="space-y-1 text-xs">
+          <p className="font-medium text-destructive">
+            {report.unreadable.length} {report.unreadable.length === 1 ? "file" : "files"} made no page
+          </p>
+          <ul className="space-y-1">
+            {report.unreadable.map((f) => (
+              <li key={`u:${f.file}`} className="text-muted-foreground">
+                <span className="text-foreground">{f.file}</span>. {f.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {report.failed.length || report.skippedChildren.length ? (
         <div role="alert" className="space-y-1 text-xs">
           <p className="font-medium text-destructive">

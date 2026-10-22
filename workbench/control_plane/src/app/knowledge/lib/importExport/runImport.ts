@@ -6,7 +6,7 @@
 // the address of the new page.
 
 import { rewriteLinksToIds } from "./links";
-import type { ImportPlan } from "./plan";
+import type { ImportPlan, Unreadable } from "./plan";
 
 /** The two writes that an import needs. The client of `lib/api.ts` gives both. */
 export interface ImportWrites {
@@ -43,6 +43,10 @@ export interface ImportReport {
   skippedFiles: number;
   /** Images turned into text. */
   images: number;
+  /** Document files that made no page (KB-AI-1). */
+  unreadable: Unreadable[];
+  /** Plain notes from the reading of the documents. */
+  notices: string[];
   /** The id of the first page made at the top, to open after the run. */
   firstId: string | null;
 }
@@ -60,7 +64,8 @@ export async function runImport(
 ): Promise<ImportReport> {
   const report: ImportReport = {
     created: 0, failed: [], skippedChildren: [], notStarted: 0, cancelled: false,
-    linksRewritten: 0, linkFailures: 0, skippedFiles: plan.skipped.length, images: plan.images, firstId: null,
+    linksRewritten: 0, linkFailures: 0, skippedFiles: plan.skipped.length, images: plan.images,
+    unreadable: plan.unreadable, notices: plan.notices, firstId: null,
   };
   const total = plan.pages.length;
   const ids = new Map<number, string>();
