@@ -1309,10 +1309,22 @@ async def test_a_saved_draft_falls_back_to_the_sender(monkeypatch) -> None:
         "kim@contoso.test"]
 
 
-def test_a_revised_card_says_recipients_are_fixed():
+def test_a_revised_card_adds_a_cc_in_the_chat():
     """Owner report, 2026-10-22: the member asked three times to CC two
-    people, and the sub-agent redrew the same card each time. The tool
-    cannot change recipients, so the model must say so (R7 fence)."""
+    people, and the sub-agent redrew the same card. A Cc now goes on the
+    card's draft with edit_draft, in the chat (R7 fence)."""
     text = agents._CARD_REVISED
-    assert "cannot add or remove a recipient, a CC or a BCC" in text
-    assert "Never show the same card again" in text
+    assert "find_contact" in text and "edit_draft" in text
+    assert "a new card resets the Cc" in text
+    assert "Never send the member to the Email app" in text
+
+async def test_a_revised_card_names_its_draft_id(monkeypatch, gw) -> None:
+    """The member writes "add Kiran to CC" while the card is open. The answer
+    names the card's draft, so edit_draft can add the Cc to it."""
+    from acb_skills.ask_tools import REVISED
+
+    _card_answer(monkeypatch, lambda kw: REVISED)
+    gw.card_extra = {"draft_id": "d-123"}
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out.startswith(agents._CARD_REVISED)
+    assert "The draft_id of this reply in Drafts is d-123." in out
