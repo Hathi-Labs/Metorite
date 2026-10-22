@@ -1821,3 +1821,21 @@ These Docmost features change the product, so no builder starts them.
 
 The order is KB-2d, KB-2f, KB-2g and KB-2i in parallel, then wave 2.
 
+
+#### KB-3d in detail (specified 2026-10-22)
+
+The section "KB-2k in detail" is not in this spec yet, so this section
+follows the end of §21.7. KB-3d takes no migration. It changes one gateway
+read and the Search view (KB-3b). The look stays Metorite's one look.
+
+| Slice | What | Done when |
+|---|---|---|
+| **Filters on the route** | `GET /knowledge/search` takes three more parameters. `author` is an email of at most 320 characters, and the page's `author_email` must equal it, ignoring case. `updated_after` is an ISO date, and the page's `updated_at` must be on or after its midnight UTC. `title_only` is a boolean. When true, the lexical half matches the page title and not the chunk text, and the semantic half does not run, so no embed call happens. All three add to `core.visible_pages_clause`. They never replace it, and no second predicate exists. Every value is a bound parameter. The tenant and the member come from the session. A bad date answers 422. The defaults change no result, so `GET /search/company` and the chat tools stay as they are | An R8 test on a real database shows that `author` keeps only that author's pages, that `updated_after` drops older pages, and that `title_only` finds a title word and not a body-only word. A second member never sees a page through a filter that the page's grants hide. Org 2 sees nothing. `test_kb_visibility_one_seam.py` stays green |
+| **Terms and author in the answer** | The answer gains `terms`, the plain words of the query without the operators of `websearch_to_tsquery` (quotes, `or` and a leading `-`). Each hit gains `author_email`. The gateway returns no HTML. The client builds the marks from the text and the terms | The R8 test reads `terms` for a query with a quoted phrase, an `or` and a negated word. The hit keys in the R8 test list `author_email` |
+| **Filter chips** | A chip row under the field: Space (a menu of the spaces), Creator (the authors in the current hits, or a typed email), Date (Any time, Past week, Past month, Past year) and a Title only toggle. A chip with a value shows the value and a clear button. The chips use `ui/` primitives and `<Icon>`, with no colour literal. The filters live in the URL query as `space`, `author`, `after` and `title`, so a reload or a shared link keeps them. A Date preset becomes `updated_after` at request time | A vitest test round-trips the URL query and the presets. An e2e test shows that each chip sends its parameter, that a chip clears, and that a reload keeps the filters |
+| **Marked words** | Each title and snippet marks the matched words. The view builds React elements from the text and the terms. A term is escaped before it enters a pattern. Case does not matter. There is no `dangerouslySetInnerHTML`, because `src/lib/htmlSinks.test.ts` fences it. The mark uses the highlight look of the editor find bar | A vitest test gives terms in and gets segments out, with a case-insensitive match, no pattern injection and escaped special characters. An e2e test sees the marked words |
+| **Match bar** | A hit opens its page with `?q=<terms>`. A slim bar under the page toolbar says `N matches for "<terms>"`, with up and down buttons to step and a close button. The bar marks the matches in the body. It reuses the find engine of KB-2i (`lib/editor/searchAndReplace.ts`) and builds no second match engine. Close removes `q` from the URL | An e2e test opens a result and sees the bar with the count. Down moves to the next match. Close hides the bar and clears `q` |
+
+**R5.** The route reads no tenant and no identity from its input. The
+`author` value is a filter on rows that the member can already see. It grants
+no access.
