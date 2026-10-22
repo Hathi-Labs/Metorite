@@ -4637,6 +4637,21 @@ async def _draft_seal(account_id: str, draft_id: str, lead: str) -> dict[str, An
     return seal
 
 
+async def _sealed_card(
+    sender: str, account_id: str, draft_id: str, lists: dict[str, list[str]],
+    draft: dict[str, Any], lead: str, too_many: str,
+) -> tuple[str, str, dict[str, Any]] | str:
+    """``(detail, context, seal)`` of a draft send card, with the text that
+    the seal covers (§21 fix round 1, P1-b), or the tool's answer."""
+    seal = await _draft_seal(account_id, draft_id, lead)
+    if isinstance(seal, str):
+        return seal
+    detail, context = _draft_card(sender, seal.get("subject"), lists)
+    if not context:
+        return too_many
+    return detail, _with_draft_text(context, seal.get("body_text"), draft.get("snippet")), seal
+
+
 # H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
 # this send, as it keeps ``compose_reply``. The tool takes no recipient: the
 # draft row holds them, the card lists each one, and a list that does not
@@ -4695,17 +4710,13 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "characters, so the card cannot show it. Ask the member for the "
             "right address, and fix it with edit_draft."
         )
-    seal = await _draft_seal(account_id, draft_id, "Not sent")
-    if isinstance(seal, str):
-        return seal
-    detail, context = _draft_card(sender, seal.get("subject"), lists)
-    if not context:
-        return (
-            "Not sent. The draft has too many recipients to show on one card. "
-            "Ask the member which recipients to keep, and take the rest out "
-            "with edit_draft."
-        )
-    context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"))
+    card = await _sealed_card(sender, account_id, draft_id, lists, draft, "Not sent", (
+        "Not sent. The draft has too many recipients to show on one card. "
+        "Ask the member which recipients to keep, and take the rest out "
+        "with edit_draft."))
+    if isinstance(card, str):
+        return card
+    detail, context, seal = card
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
@@ -4838,9 +4849,7 @@ async def edit_draft(
     # and the card says so first. The send would not go anyway: the schedule
     # holds the seal of the old text.
     pending = await _pending_schedules(draft_id)
-    if pending:
-        when = ", ".join(str(r.get("send_at") or "") for r in pending)
-        context = f"This cancels the send scheduled for {when}.\n\n{context}"
+    context = _cancel_line(pending) + context
     refusal = await _card_refusal(
         "Save these changes to the draft?",
         detail + " · Nothing is sent.",
@@ -4880,6 +4889,14 @@ async def _pending_schedules(draft_id: str) -> list[dict[str, Any]]:
         raise
     return [r for r in rows if isinstance(r, dict) and str(r.get("draft_id")) == str(draft_id)
             and r.get("status") == "queued"]
+
+
+def _cancel_line(pending: list[dict[str, Any]]) -> str:
+    """The first line of an edit card of a scheduled draft, or ""."""
+    if not pending:
+        return ""
+    when = ", ".join(str(r.get("send_at") or "") for r in pending)
+    return f"This cancels the send scheduled for {when}.\n\n"
 
 
 async def _cancel_schedules(pending: list[dict[str, Any]]) -> str:
@@ -5136,14 +5153,12 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
         return "Not scheduled. The draft has no recipient. Add one first."
     if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
         return f"Not scheduled. An address is longer than {_TARGET_LIMIT} characters."
-    seal = await _draft_seal(account_id, draft_id, "Not scheduled")
-    if isinstance(seal, str):
-        return seal
-    detail, context = _draft_card(sender, seal.get("subject"), lists)
-    if not context:
-        return "Not scheduled. The draft has too many recipients for one card."
+    card = await _sealed_card(sender, account_id, draft_id, lists, draft, "Not scheduled",
+                              "Not scheduled. The draft has too many recipients for one card.")
+    if isinstance(card, str):
+        return card
+    detail, context, seal = card
     stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
-    context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"))
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     approved = await request_confirmation(
         title=f"Send this draft at {stamp}?",

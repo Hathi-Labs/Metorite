@@ -20926,6 +20926,25 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
 - The settings card is a confirmation card with the old and the new value of each key. It
   has no gateway record, because the tool takes no recipient and no link.
 
+**Fix round 1 of the review (2026-10-22).**
+
+1. **P1-a, a forged `sent`.** A held run could move a stranger's mail into
+   Sent, and its Cc then read as `sent`. Now a Sent mail counts only when its
+   From is the mailbox's own address. No provider moves a mail into Sent or
+   Drafts (`base.MOVE_REFUSED_FOLDERS`).
+2. **P1-b, the text of a draft.** A card bound the recipients and not the
+   text, also with the switch off. Now `expect` carries `text_digest`, the
+   seal of the subject, the stored text and the live text at the provider
+   (`drafting.draft_text_seal`). A change after the card sends nothing. An
+   edit of a scheduled draft cancels its send, and its card says so. The key
+   is optional, so an old schedule still sends on its recipients alone.
+3. **P2-a.** Only the From sender is `thread`. A Reply-To is classed on its
+   own merits.
+4. **P2-b.** `instructions.md` defers to the note "Held in this run", and it
+   names no fixed list of held jobs.
+5. **P3.** The draft tools name an in-chat step. Only the email agent holds a
+   tool of the held card, and a test holds that.
+
 **The fences.**
 
 | Rule | Fence |
@@ -20942,3 +20961,5 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
 | The injection corpus | `tests/unit/test_held_injection_corpus.py` |
 | The client | `workbench/control_plane/src/lib/sendCard.test.ts` |
 | The flow in the main chat | `workbench/control_plane/e2e/email-held-send.spec.ts` |
+| A move into Sent, and the From of a Sent mail | `tests/unit/test_move_into_sent_refused.py`, `tests/unit/test_held_send_classes_r8.py` (R8) |
+| The seal of the text | `tests/unit/test_held_text_seal.py` |
