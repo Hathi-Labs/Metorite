@@ -20961,6 +20961,10 @@ it. Each card shows the whole subject. A text that does not fit on the card
 shows no card. The chat writers save no NBSP and no line-end space. Fence:
 `tests/unit/test_held_card_shows_less.py`.
 
+**Fix round 4 (2026-10-22).** Each chat writer saves the form that the card
+shows: one blank line for a run, and no blank edge. The switch-off send card
+names each file of the draft, as the held card does.
+
 **Open (P2, not fixed).** A confusable letter, such as a Cyrillic а in place of
 a Latin a, shows on a card as the letter it imitates. The same gap is on `main`.
 The lookalike flag covers the domain of a new address only. A body or a subject
