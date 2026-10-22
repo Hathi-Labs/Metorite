@@ -14,8 +14,7 @@ and a page's ``updated_at`` must be on or after its midnight UTC.
 ``title_only`` matches the title and skips the semantic half. None of them
 grants access, and each default leaves the answer as it was.
 
- Each hit is one chunk of a published
-page the caller can see: ``page_id``, ``space_id``, ``space_name``,
+Each hit is one chunk of a published page the caller can see: ``page_id``, ``space_id``, ``space_name``,
 ``title``, ``heading_path``, ``text`` (at most 400 characters), ``score``,
 ``updated_at``, ``author_email``, ``href`` and ``icon`` (the page icon of KB-2f, or None). The
 company retrieval maps each hit to its own ``Hit`` and never reads ``icon``.
