@@ -284,6 +284,9 @@ def _why(exc: BaseException) -> str:
             # §21 fix round 2.
             return ("The draft holds hidden characters, so it was not sent. "
                     "Clean the text, and schedule it again.")
+        if exc.status_code == 422:
+            # §21 fix round 3: a long subject, or spaces that a card cannot show.
+            return f"The draft could not be sent as it is. {exc.detail}"[:500]
         if exc.status_code == 409 and exc.detail == DRAFT_TEXT_CHANGED_DETAIL:
             # §21 fix round 1 (P1-b): the text is sealed too.
             return ("The subject or the text of the draft changed after it was "

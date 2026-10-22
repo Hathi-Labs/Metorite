@@ -87,7 +87,7 @@ async def test_the_card_classes_each_person_and_starts_a_new_one_unticked(_world
 
 async def test_the_card_shows_the_whole_text_or_nothing(_world) -> None:
     """Open question 8, the safer choice. Mutation: cut the text → red."""
-    _world["db"].draft["body_text"] = "x " * 2000
+    _world["db"].draft["body_text"] = ("x " * 2000).strip()
     with pytest.raises(HTTPException) as e:
         await _card()
     assert e.value.status_code == 422 and "longer than" in e.value.detail

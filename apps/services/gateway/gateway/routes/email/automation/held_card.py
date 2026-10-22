@@ -644,19 +644,19 @@ def _check_lists(lists: dict[str, list[str]]) -> None:
 
 
 def _refuse_hidden_draft(row: Any) -> None:
-    """422 for a draft whose subject or text holds hidden characters (§21 fix
-    round 2). The card shows the cleaned text, and the send would carry the
-    raw one, so no card shows."""
+    """422 for a draft that a card cannot show whole (§21 fix rounds 2 and
+    3): hidden characters, a subject over ``SUBJECT_MAX``, or NBSP and
+    line-end spaces. The card would show less than the send carries, so no
+    card shows (``drafting.check_draft_send``)."""
     from gateway.routes.email.automation.drafting import (
-        DRAFT_HIDDEN_TEXT_DETAIL,
-        HiddenDraftText,
-        check_draft_text,
+        DraftTextRefused,
+        check_draft_send,
     )
 
     try:
-        check_draft_text(row.subject, row.body_text)
-    except HiddenDraftText:
-        raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
+        check_draft_send(row.subject, row.body_text)
+    except DraftTextRefused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from None
 
 
 def _refuse_new_bcc(rows: Sequence[dict[str, Any]]) -> None:
@@ -679,9 +679,8 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
     draft, 502 for a provider that gives no text. A seam, so a test passes a
     fake."""
     from gateway.routes.email.automation.drafting import (
-        DRAFT_HIDDEN_TEXT_DETAIL,
         DRAFT_TEXT_READ_FAILED_DETAIL,
-        HiddenDraftText,
+        DraftTextRefused,
         _account_signature,
         draft_text_seal,
     )
@@ -697,8 +696,8 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
             try:
                 return await draft_text_seal(sess.provider, row.provider_message_id,
                                              row.subject, row.body_text, signature)
-            except HiddenDraftText as exc:  # §21 fix round 2
-                raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from exc
+            except DraftTextRefused as exc:  # §21 fix rounds 2 and 3
+                raise HTTPException(status_code=422, detail=exc.detail) from exc
             except Exception as exc:  # nothing shows or goes that is not sealed
                 raise HTTPException(
                     status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
@@ -743,7 +742,8 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
     body = _check_text(str(row.body_text or ""))
     mailbox = (f"{me.label} · {me.address}" if me.label and me.label != me.address
                else me.address)
-    subject = " ".join(str(row.subject or "(no subject)").split())[:200]
+    # The whole subject: ``check_draft_send`` capped it (fix round 3).
+    subject = str(row.subject or "") or "(no subject)"
     lines = [f"Subject: {subject}", "", "The text of the draft:", body or "(no text)"]
     if files:
         lines += ["", "The files of the draft go with it:"]
@@ -1015,7 +1015,8 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
     rows += file_rows(files)
     if len(rows) > MAX_ROWS:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
-    subject = " ".join(str(mail.subject or "(no subject)").split())[:200]
+    # The whole subject of the mail, never cut (fix round 3).
+    subject = " ".join(str(mail.subject or "(no subject)").split())
     context = "\n".join([f"Forwarding the email: {subject}", "",
                          "Your note above it:", note or "(no note)"])
     return await _person_card(user, req, rows, context, {

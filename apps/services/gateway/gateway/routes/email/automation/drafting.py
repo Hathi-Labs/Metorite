@@ -3280,6 +3280,13 @@ async def _upsert_reply_draft(
     draft. The local copy runs in a savepoint, and a failed copy is logged.
     A failed provider write raises. Fence:
     ``tests/unit/test_email_reply_draft_upsert.py``."""
+    from acb_skills.reply_card import strip_invisible_spacing
+
+    # §21 fix round 3: a draft that the chat writes (the drafter of
+    # /email/draft-reply, the reply card, /email/drafts/save) keeps no NBSP
+    # and no line-end space, so a chat send of it is never refused for them.
+    body = strip_invisible_spacing(body)
+    subject = " ".join(str(subject or "").split())
     cc_list = [c for c in (cc or []) if c]
     rows: list[Any] = []
     if thread_id:
@@ -3490,6 +3497,8 @@ def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
     except HiddenDraftText:
         raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
     subject = " ".join(visible_spacing(req.subject).split())
+    if len(subject) > SUBJECT_MAX:  # §21 fix round 3: a card shows it whole
+        raise HTTPException(status_code=422, detail=DRAFT_SUBJECT_TOO_LONG_DETAIL)
     return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
 
 
@@ -3515,6 +3524,12 @@ async def upsert_draft(
         # the idempotent backstop for bodies that arrived without it.
         body = append_signature_text(
             await _account_signature(db, req.account_id), req.body)
+        if req.from_chat:
+            # §21 fix round 3: the signature can carry NBSP or a line-end
+            # space ("-- "). A chat draft keeps none, so its send is clean.
+            from acb_skills.reply_card import strip_invisible_spacing
+
+            body = strip_invisible_spacing(body)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
@@ -3689,7 +3704,28 @@ DRAFT_HIDDEN_TEXT_DETAIL = (
     "edit_draft, and show the card again.")
 
 
-class HiddenDraftText(ValueError):
+#: The longest subject that a chat card shows whole (§21 fix round 3).
+SUBJECT_MAX = 200
+#: The answer for a subject that a card cannot show whole.
+DRAFT_SUBJECT_TOO_LONG_DETAIL = (
+    f"The subject of this draft is longer than {SUBJECT_MAX} characters, so a card "
+    "cannot show it whole. It was not sent. Shorten it with edit_draft.")
+#: The answer for spaces that a card cannot show.
+DRAFT_SPACING_DETAIL = (
+    "This draft holds spaces that a card cannot show: a no-break space, or a space "
+    "at the end of a line. It was not sent. Clean the text with edit_draft.")
+
+
+class DraftTextRefused(ValueError):
+    """A draft that a chat card cannot show whole (§21 fix rounds 2 and 3).
+    ``detail`` is the answer of the route."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class HiddenDraftText(DraftTextRefused):
     """A part of a draft holds a character that a reader cannot see."""
 
 
@@ -3701,6 +3737,21 @@ def check_draft_text(*parts: Any) -> None:
 
     if any(has_hidden_text(str(p or "")) for p in parts):
         raise HiddenDraftText(DRAFT_HIDDEN_TEXT_DETAIL)
+
+
+def check_draft_send(subject: Any, body: Any) -> None:
+    """Raise :class:`DraftTextRefused` unless a chat card can show the
+    subject and the text of a draft whole: no hidden character, a subject of
+    :data:`SUBJECT_MAX` characters at most, and no NBSP and no space at the
+    end of a line (§21 fix round 3). THE one check of a chat send of a
+    draft: the card, the send and the fire of a schedule."""
+    from acb_skills.reply_card import has_invisible_spacing
+
+    check_draft_text(subject, body)
+    if len(str(subject or "")) > SUBJECT_MAX:
+        raise DraftTextRefused(DRAFT_SUBJECT_TOO_LONG_DETAIL)
+    if has_invisible_spacing(str(subject or "")) or has_invisible_spacing(str(body or "")):
+        raise DraftTextRefused(DRAFT_SPACING_DETAIL)
 
 
 async def draft_text_seal(
@@ -3719,7 +3770,7 @@ async def draft_text_seal(
     cover the hidden data and not catch it."""
     import hashlib
 
-    check_draft_text(subject, body_text)
+    check_draft_send(subject, body_text)
     live = await asyncio.wait_for(
         provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
     check_draft_text(_live_draft_text(live))
@@ -3734,8 +3785,8 @@ async def _check_text_seal(provider: Any, drow: Any, expect: DraftExpect, signat
     try:
         seal = await draft_text_seal(provider, drow.provider_message_id, drow.subject,
                                      drow.body_text, signature)
-    except HiddenDraftText as exc:
-        raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from exc
+    except DraftTextRefused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
     except Exception as exc:  # any failed read sends nothing
         raise HTTPException(status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
     if seal != expect.text_digest:
@@ -3801,8 +3852,8 @@ async def draft_seal(
             try:
                 seal = await draft_text_seal(sess.provider, drow.provider_message_id,
                                              drow.subject, drow.body_text, signature)
-            except HiddenDraftText as exc:
-                raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from exc
+            except DraftTextRefused as exc:
+                raise HTTPException(status_code=422, detail=exc.detail) from exc
             except Exception as exc:  # the card shows nothing it cannot seal
                 raise HTTPException(
                     status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
@@ -3859,10 +3910,9 @@ async def send_draft_endpoint(
             # carries hidden characters, also a schedule stored before the seal.
             if req.expect is not None:
                 try:
-                    check_draft_text(drow.subject, drow.body_text)
-                except HiddenDraftText:
-                    raise HTTPException(
-                        status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
+                    check_draft_send(drow.subject, drow.body_text)
+                except DraftTextRefused as exc:
+                    raise HTTPException(status_code=422, detail=exc.detail) from None
             # §21 fix round 1 (P1-b): the text is the text the card sealed,
             # checked before any provider write. A schedule fires through here.
             if req.expect is not None and req.expect.text_digest:

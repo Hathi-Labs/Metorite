@@ -4488,22 +4488,31 @@ def _draft_card(
     noun = "recipient" if total == 1 else "recipients"
     counts = ", ".join(f"{len(lists[key])} {head}" for key, head, _ in _DRAFT_FIELDS)
     detail = (
-        f"From {sender} · Sends to {total} {noun}: {counts}. Each address is "
-        f"in the list below. · Subject: {_card_text(subject or '(none)', 120)}"
+        f"From {sender} · Sends to {total} {noun}: {counts}. Each address and "
+        "the whole subject are in the list below."
     )
-    lines = ["Each recipient of this draft:"]
+    # §21 fix round 3: the whole subject, never cut. A chat send refuses a
+    # subject over ``drafting.SUBJECT_MAX``, so it always fits here.
+    shown = _card_text(subject, len(str(subject or ""))) if subject else "(none)"
+    lines = [f"Subject: {shown}", "", "Each recipient of this draft:"]
     lines += [f"- {head}: {_draft_address_line(addr)}"
               for key, head, _ in _DRAFT_FIELDS for addr in lists[key]]
     context = "\n".join(lines)
     return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
 
 
-def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
+def _with_draft_text(
+    context: str, body: Any, preview: Any = None, *, whole: bool = False,
+) -> str:
     """The card context with the text of the draft under the recipients.
 
     The member approves a send, so the card shows what the mail says, not
     only where it goes. A long text is cut, and the card says so. The
-    recipients come first and are never cut."""
+    recipients come first and are never cut.
+
+    ``whole`` (a send card, §21 fix round 3) gives "" in place of a cut:
+    the text does not fit, or only its preview is stored. The tool then
+    shows no card, because a card must never show less than the send."""
     from acb_skills.ask_tools import clip_words  # noqa: PLC0415
     from acb_skills.reply_card import clean_reply_body  # noqa: PLC0415
 
@@ -4511,6 +4520,8 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     text = clean_reply_body(str(body or "")).strip()
     if not text:
         start = clean_reply_body(str(preview or "")).strip()
+        if start and whole:
+            return ""
         if start:
             # Only the preview is stored. Say so, or the card looks whole.
             return (context + "\n\nThe start of the draft:\n" + clip_words(start, 1000)
@@ -4521,6 +4532,8 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     room = _CARD_CONTEXT_LIMIT - len(head)
     if len(text) <= room:
         return head + text
+    if whole:
+        return ""
     tail = "\n[… the rest is cut here. Ask me in the chat to read the rest.]"
     return head + clip_words(text, max(0, room - len(tail))).rstrip() + tail
 
@@ -4617,6 +4630,23 @@ def _held_sent_text(res: dict[str, Any], lead: str) -> str:
     return f"{lead}: {'; '.join(parts)}.{tail}"
 
 
+#: The longest subject of a draft from the chat (``drafting.SUBJECT_MAX``).
+_SUBJECT_MAX = 200
+
+#: The answer for a draft whose text does not fit on a send card (§21 fix
+#: round 3). The Email app is one choice here, never the only way.
+_DRAFT_TOO_LONG_ANSWER = (
+    "This draft is too long to show on the card. I can shorten it with edit_draft, "
+    "or you can send it from the Email app.")
+#: The answers for a draft that a card cannot show whole, by the gateway's
+#: words (``drafting.check_draft_send``).
+_SUBJECT_TOO_LONG_ANSWER = (
+    "The subject of this draft is too long to show on the card. I can shorten it "
+    "with edit_draft and show it again.")
+_SPACING_ANSWER = (
+    "This draft holds spaces that the card cannot show, such as a space at the end "
+    "of a line. I can clean it with edit_draft and show it again.")
+
 #: The answer for a draft with hidden characters (§21 fix round 2).
 _HIDDEN_DRAFT_ANSWER = (
     "This draft holds hidden characters, so I cannot send it. I can clean it with "
@@ -4635,8 +4665,13 @@ async def _draft_seal(account_id: str, draft_id: str, lead: str) -> dict[str, An
                                                  "draft_id": draft_id}) or {}
     except GatewayError as exc:
         if exc.status == 422:
-            # §21 fix round 2: hidden characters in the draft.
-            return (f"{lead}. {_HIDDEN_DRAFT_ANSWER}")
+            # §21 fix rounds 2 and 3: a draft that a card cannot show whole.
+            said = str(getattr(exc, "detail", "") or exc)
+            if "subject" in said:
+                return f"{lead}. {_SUBJECT_TOO_LONG_ANSWER}"
+            if "spaces" in said:
+                return f"{lead}. {_SPACING_ANSWER}"
+            return f"{lead}. {_HIDDEN_DRAFT_ANSWER}"
         if exc.status in (404, 405, 409, 502):
             return (f"{lead}. The text of the draft could not be read to check it, so "
                     "nothing was sent. Try again in a moment.")
@@ -4658,7 +4693,11 @@ async def _sealed_card(
     detail, context = _draft_card(sender, seal.get("subject"), lists)
     if not context:
         return too_many
-    return detail, _with_draft_text(context, seal.get("body_text"), draft.get("snippet")), seal
+    context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"),
+                               whole=True)
+    if not context:
+        return f"{lead}. {_DRAFT_TOO_LONG_ANSWER}"
+    return detail, context, seal
 
 
 # H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
@@ -4822,6 +4861,10 @@ async def edit_draft(
     if any(has_hidden_text(t) for t in (body, subject) if t is not None):
         return ("Nothing changed. The new text holds hidden characters. Write it "
                 "again in plain text.")
+    if subject is not None and len(" ".join(subject.split())) > _SUBJECT_MAX:
+        # §21 fix round 3: a send card shows the whole subject.
+        return (f"Nothing changed. A subject has {_SUBJECT_MAX} characters at most, "
+                "so a card can show it whole. Write a shorter subject.")
     body = visible_spacing(body) if body is not None else None
     subject = " ".join(visible_spacing(subject).split()) if subject is not None else None
     draft, sender = await _draft_row(account_id, draft_id)

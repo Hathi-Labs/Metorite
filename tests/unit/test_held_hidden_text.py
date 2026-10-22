@@ -86,11 +86,15 @@ async def test_the_seal_refuses_hidden_text_at_the_card(where: str) -> None:
         await _seal(row, p)
 
 
-async def test_nbsp_and_trailing_spaces_are_normalised_and_still_send() -> None:
+async def test_nbsp_from_another_writer_is_refused_at_a_chat_send() -> None:
+    """§21 fix round 3: a card cannot show NBSP or a line-end space, so a
+    chat send of a draft that another writer saved with them sends nothing.
+    A chat writer never saves them (``test_held_card_shows_less.py``)."""
     p = _Provider(live=NBSP)
-    row = _drow(body_text=NBSP)
-    await _send(row, p, await _seal(row, p))
-    assert p.sent == ["pm-1"]
+    with pytest.raises(HTTPException) as e:
+        await _send(_drow(body_text=NBSP), p, None)
+    assert e.value.status_code == 422 and e.value.detail == d.DRAFT_SPACING_DETAIL
+    assert p.sent == []
 
 
 def test_a_chat_save_refuses_hidden_text_and_normalises_spacing() -> None:

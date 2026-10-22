@@ -109,7 +109,7 @@ async def _send(drow: SimpleNamespace, provider: _Provider, digest: str | None) 
 async def test_the_seal_holds_through_a_reflow_and_changes_with_a_word() -> None:
     p = _Provider()
     base = await _seal(_drow(), p)
-    assert base == await _seal(_drow(body_text="Hi  Kim,\n\n\nThe   quote. "), p)
+    assert base == await _seal(_drow(body_text="Hi  Kim,\n\n\nThe   quote."), p)
     assert base != await _seal(_drow(body_text="Hi Kim,\n\nThe quote. Also x@evil."), p)
     assert base != await _seal(_drow(subject="Quote, and the payroll"), p)
     assert base != await _seal(_drow(), _Provider(live="Hi Kim, the payroll."))

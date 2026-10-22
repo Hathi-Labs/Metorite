@@ -55,6 +55,7 @@ __all__ = [
     "ReplyChoice",
     "clean_reply_body",
     "has_hidden_text",
+    "has_invisible_spacing",
     "is_invisible_char",
     "is_lookalike_space",
     "looks_like_reply_answer",
@@ -63,6 +64,7 @@ __all__ = [
     "record_reply_answer",
     "reply_answer_digest",
     "reply_body_refusal",
+    "strip_invisible_spacing",
     "take_reply_answer",
     "visible_spacing",
 ]
@@ -301,6 +303,30 @@ def visible_spacing(text: str) -> str:
             continue
         kept.append(line)
     return "\n".join(kept).strip()
+
+
+def _lines(text: str) -> list[str]:
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def has_invisible_spacing(text: str) -> bool:
+    """True when *text* holds a space that a card cannot show (§21 fix round
+    3): a space that only looks like one (NBSP, category Zs), or a space or a
+    tab at the end of a line. A chat send refuses such a draft, and a chat
+    writer removes them (:func:`strip_invisible_spacing`)."""
+    raw = str(text or "")
+    if any(is_lookalike_space(ch) or ch in _LINE_BREAKS for ch in raw):
+        return True
+    return any(line != line.rstrip(" \t") for line in _lines(raw))
+
+
+def strip_invisible_spacing(text: str) -> str:
+    """*text* with each NBSP a plain space and no space at the end of a line.
+    It keeps every line and every blank line, so it changes nothing that a
+    reader sees (§21 fix round 3)."""
+    raw = "".join(" " if is_lookalike_space(ch) else ("\n" if ch in _LINE_BREAKS else ch)
+                  for ch in str(text or ""))
+    return "\n".join(line.rstrip(" \t") for line in _lines(raw))
 
 
 def has_hidden_text(text: str) -> bool:

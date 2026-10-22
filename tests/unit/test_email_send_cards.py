@@ -304,7 +304,9 @@ async def test_the_draft_card_names_each_to_cc_and_bcc(gw: Gateway) -> None:
     [card] = gw.cards
     assert card["detail"].startswith("From Fracktal · dana@fracktal.test · ")
     assert "Sends to 3 recipients: 1 To, 1 Cc, 1 Bcc." in card["detail"]
-    assert card["context"].splitlines()[1:4] == [
+    # §21 fix round 3: the whole subject leads the card, then each recipient.
+    assert card["context"].splitlines()[0] == "Subject: Re: Quote"
+    assert card["context"].splitlines()[3:6] == [
         "- To: ravi@contoso.test", "- Cc: kim@contoso.test",
         "- Bcc: records@evil.test"]
     assert out == "Draft sent."
@@ -319,13 +321,13 @@ async def test_the_draft_card_shows_the_text_that_it_sends(gw: Gateway) -> None:
         "The text of the draft:\nHi Ravi,\n\nThe quote is attached.\n\nDana")
 
 
-async def test_a_long_draft_text_never_pushes_out_a_recipient(gw: Gateway) -> None:
+async def test_a_long_draft_text_shows_no_card(gw: Gateway) -> None:
+    """§21 fix round 3: a send card never shows less than the send. A text
+    that does not fit sends nothing, and the answer offers a way on."""
     gw.draft["body_text"] = "x" * 9000
-    await agents.send_draft(BOX, "d1")
-    [card] = gw.cards
-    assert "- Bcc: records@evil.test" in card["context"]
-    assert len(card["context"]) <= 4000
-    assert card["context"].endswith("Ask me in the chat to read the rest.]")
+    out = await agents.send_draft(BOX, "d1")
+    assert gw.cards == [] and gw.posts == []
+    assert "too long to show on the card" in out
 
 
 async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
@@ -372,14 +374,15 @@ async def test_a_held_run_sends_nothing_when_the_list_does_not_fit(gw: Gateway) 
 
 
 async def test_a_long_subject_cannot_hide_a_bcc(gw: Gateway) -> None:
-    """The card cuts ``detail`` at 500 characters. A Bcc is in ``context``,
-    and the count in ``detail`` comes before the subject."""
-    gw.draft["subject"] = "S" * 900
+    """§21 fix round 3: the subject is in ``context`` whole, never cut, and
+    ``detail`` holds no subject. The gateway refuses a subject over 200
+    characters at the seal (``test_held_card_shows_less.py``)."""
+    gw.draft["subject"] = "S" * 190 + "-tail"
     await agents.send_draft(BOX, "d1")
     [card] = gw.cards
     assert "records@evil.test" in card["context"]
-    shown = card["detail"][:500]
-    assert "1 Bcc" in shown and shown.index("1 Bcc") < shown.index("Subject:")
+    assert f"Subject: {'S' * 190}-tail" in card["context"]
+    assert "Subject" not in card["detail"]
 
 
 async def test_the_card_shows_no_hidden_text_in_an_address(gw: Gateway) -> None:
@@ -1042,7 +1045,6 @@ async def test_a_reply_to_a_reply_to_says_so_on_the_card(monkeypatch, gw: Gatewa
 async def test_a_draft_with_only_a_preview_says_it_is_cut(gw: Gateway) -> None:
     gw.draft["body_text"] = ""
     gw.draft["snippet"] = "Hi Ravi, the quote"
-    await agents.send_draft(BOX, "d1")
-    [card] = gw.cards
-    assert "The start of the draft:\nHi Ravi, the quote" in card["context"]
-    assert card["context"].endswith("Ask me in the chat to read the whole draft.]")
+    out = await agents.send_draft(BOX, "d1")
+    # §21 fix round 3: only the start is stored, so no send card shows.
+    assert gw.cards == [] and "too long to show on the card" in out
