@@ -33,7 +33,14 @@ member, and no fold sealed it. ``test_rooms.py`` keeps the mint keyword in
 ``chat_brief_posted_on``, in ``user_settings.my_day_prefs``, written through
 ``routes/shell/prefs.py`` ``_write`` (MD-2d's one-key merge). It holds the
 member's local date (``Day.feed_day``), so a chat opened at 23:50 and one at
-00:10 are two days. A layout save never touches it (migration 259).
+00:10 are two days. A layout save never touches it (migration 259). A
+complete read with no brief stamps the day too, and an incomplete read
+leaves ``chat_brief_retry_after``, so the next fresh chats of the day read
+no feed (review of #1216).
+
+**The row is sealed.** After the fill, ``run_final_at`` is set, as the fold
+sets it for a run's reply. So no client write, not even the member's own
+browser save, changes the brief's words (S13).
 
 **Scope** (R5e). The tenant is the bound organization, and the member is the
 session's. The session must be one the member can send in
@@ -48,7 +55,7 @@ Fences: ``tests/unit/test_chat_brief_turn.py`` (pure) and
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -66,6 +73,11 @@ router = APIRouter(
 
 #: The key of the once-a-day mark in ``user_settings.my_day_prefs``.
 BRIEF_STAMP_KEY = "chat_brief_posted_on"
+#: The key of the retry mark an incomplete read leaves: an ISO instant.
+#: Until it passes, the route answers 204 without a feed read.
+BRIEF_RETRY_KEY = "chat_brief_retry_after"
+#: How long an incomplete read rests before the next fresh chat tries again.
+BRIEF_RETRY_AFTER = timedelta(minutes=10)
 #: The agent a brief row names when the session names none.
 DEFAULT_AGENT = "orchestrator"
 #: The template the card draws with.
@@ -126,26 +138,45 @@ async def _local_today(org: str, user: UserContext, now: datetime) -> date:
     return day.feed_day(now)
 
 
-async def _stamped_on(uid: str) -> str | None:
-    """The stored ``chat_brief_posted_on``, or None."""
+async def _marks(uid: str) -> dict[str, str]:
+    """The member's brief marks in ``my_day_prefs``: the day stamp and the
+    retry mark, each a string when set."""
     from gateway.db import tenant_session as _tenant_session
     from gateway.routes.shell import prefs
 
     async with _tenant_session() as db:
         row = await prefs._read(db, uid)
     raw = row[0] if row is not None else None
-    if isinstance(raw, dict):
-        value = raw.get(BRIEF_STAMP_KEY)
-        return value if isinstance(value, str) else None
-    return None
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k in (BRIEF_STAMP_KEY, BRIEF_RETRY_KEY)
+            if isinstance(v := raw.get(k), str)}
 
 
-async def _stamp(uid: str, day: date) -> None:
+def brief_done_today(marks: dict[str, str], today: date, now: datetime) -> bool:
+    """Whether the route answers 204 at once: the day is stamped, or an
+    incomplete read set a retry mark that has not passed (review of #1216).
+    Pure, so ``test_chat_brief_turn.py`` holds it."""
+    if marks.get(BRIEF_STAMP_KEY) == today.isoformat():
+        return True
+    retry = marks.get(BRIEF_RETRY_KEY)
+    if not retry:
+        return False
+    try:
+        until = datetime.fromisoformat(retry)
+    except ValueError:
+        return False
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    return now < until
+
+
+async def _mark(uid: str, key: str, value: str) -> None:
     from gateway.db import tenant_session as _tenant_session
     from gateway.routes.shell import prefs
 
     async with _tenant_session() as db:
-        await prefs._write(db, uid, BRIEF_STAMP_KEY, day.isoformat())
+        await prefs._write(db, uid, key, value)
 
 
 # ── The write ────────────────────────────────────────────────────────────────
@@ -180,6 +211,17 @@ def _post_row(
     if message_id in declined:
         return False
     with tenant_session(organization_id) as s:
+        # Seal the row (review of #1216). The fold seals a run's reply with
+        # ``run_final_at``, and no fold runs here. Sealed, the S13 ``WHERE``
+        # of ``_upsert_messages`` refuses every client write to it, so the
+        # member's own browser save cannot put other words in the brief.
+        s.execute(
+            text(
+                "UPDATE chat_message SET run_final_at = now() "
+                "WHERE session_id = :sid AND id = :id AND run_final_at IS NULL"
+            ),
+            {"sid": session_id, "id": message_id},
+        )
         s.execute(
             text(
                 "UPDATE chat_session SET last_preview = :p, "
@@ -210,7 +252,10 @@ async def post_brief(
 ) -> Any:
     """See the module docstring. 200 with the row's id, or 204 and no row."""
     org = str(getattr(user, "organization_id", None) or "")
-    email = (user.email or "").strip().lower()
+    # As the session stores it (``routes/chat.py`` passes ``user.email`` to
+    # every room check and write). The message seam lowercases the run
+    # member itself, and ``prefs`` keys on this same address.
+    email = (user.email or "").strip()
     if not org or not email:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -230,15 +275,24 @@ async def post_brief(
 
     now = _now()
     today = await _local_today(org, user, now)
-    if await _stamped_on(email) == today.isoformat():
+    # Two devices that pass this read at the same moment can each post a
+    # brief into their own chat. That is accepted: the stamp is a day mark,
+    # not a lock, and the second brief is the same text in a second chat.
+    if brief_done_today(await _marks(email), today, now):
         return _nothing(response)
 
     snap = await loop.snapshot(org, user, now)
     if not snap.complete:
+        # Not the day's answer yet. A retry mark keeps the next fresh chats
+        # from reading the whole feed again for a while (review of #1216).
         _log.info("chat_brief.read_incomplete", session_id=session_id[:12])
+        await _mark(email, BRIEF_RETRY_KEY, (now + BRIEF_RETRY_AFTER).isoformat())
         return _nothing(response)
     parts = plan.brief_parts(snap.cards, snap.local_date, now=snap.now)
     if parts is None:
+        # A complete read with nothing to say is the day's answer: stamp it,
+        # so no later fresh chat reads the feed again today.
+        await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
         return _nothing(response)
 
     lead = plan.brief_lead(parts)
@@ -251,5 +305,5 @@ async def post_brief(
     )
     if not posted:
         raise HTTPException(status_code=503, detail="The brief could not be posted. Try again.")
-    await _stamp(email, snap.local_date)
+    await _mark(email, BRIEF_STAMP_KEY, snap.local_date.isoformat())
     return {"posted": True, "message_id": message_id, "preview": lead}

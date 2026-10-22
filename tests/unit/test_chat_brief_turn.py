@@ -104,6 +104,29 @@ class TestTheTurn:
     def test_the_row_id_is_one_a_day(self):
         assert chat_brief.brief_message_id(TODAY) == "brief-2026-10-22"
 
+    def test_the_day_is_done_on_a_stamp_or_a_live_retry_mark(self):
+        """Review of #1216: a stamped day and an unexpired retry mark both
+        answer 204 before any feed read. An expired or unreadable mark does
+        not, and yesterday's stamp does not."""
+        done = chat_brief.brief_done_today
+        assert done({"chat_brief_posted_on": "2026-10-22"}, TODAY, NOW) is True
+        assert done({"chat_brief_posted_on": "2026-10-21"}, TODAY, NOW) is False
+        assert done({}, TODAY, NOW) is False
+        later = (NOW + timedelta(minutes=5)).isoformat()
+        earlier = (NOW - timedelta(minutes=5)).isoformat()
+        assert done({"chat_brief_retry_after": later}, TODAY, NOW) is True
+        assert done({"chat_brief_retry_after": earlier}, TODAY, NOW) is False
+        assert done({"chat_brief_retry_after": "soon"}, TODAY, NOW) is False
+        assert timedelta(minutes=10) == chat_brief.BRIEF_RETRY_AFTER
+
+    def test_the_row_is_sealed_after_the_fill(self):
+        """Review of #1216: the brief is an agent row with no fold, so the
+        write seals it itself, after the fill and never before."""
+        src = inspect.getsource(chat_brief._post_row)
+        seal = src.index("SET run_final_at = now()")
+        assert src.index("_upsert_messages(") < seal
+        assert "run_final_at IS NULL" in src
+
 
 class TestTheSeams:
     def test_the_row_goes_through_the_one_minter_and_the_one_message_seam(self):

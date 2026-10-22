@@ -86,10 +86,11 @@ def feed(monkeypatch):
     from gateway.reach import loop
     from gateway.routes.shell import state
 
-    box = {"cards": [], "complete": True}
+    box = {"cards": [], "complete": True, "reads": 0}
     day = state.Day(ZoneInfo("Asia/Kolkata"), 9, 18)
 
     async def snapshot(org, user, now=None):
+        box["reads"] += 1
         return loop.Snapshot(list(box["cards"]), now or NOW, day, True, box["complete"])
 
     async def read_day(org, user):
@@ -157,11 +158,33 @@ def _session(ns, sid: str):
             "SELECT last_preview, message_count FROM chat_session WHERE id = :s"), {"s": sid}).first()
 
 
-def _stamp(ns, email: str):
+def _stamp(ns, email: str, key: str = "chat_brief_posted_on"):
     with ns.admin_engine.connect() as c:
         return c.execute(text(
-            "SELECT my_day_prefs->>'chat_brief_posted_on' FROM user_settings "
+            f"SELECT my_day_prefs->>'{key}' FROM user_settings "
             "WHERE user_id = :u"), {"u": email}).scalar()
+
+
+def _sealed(ns, sid: str, mid: str):
+    with ns.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT run_final_at IS NOT NULL FROM chat_message "
+            "WHERE session_id = :s AND id = :m"), {"s": sid, "m": mid}).scalar()
+
+
+def _client(user):
+    """The real chat handlers behind FastAPI, as ``test_chat_write_under_rls``
+    builds them: the browser's save and the session list."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.chat import list_sessions, save_messages
+
+    app = FastAPI()
+    app.post("/chat/sessions/{session_id}/messages")(save_messages)
+    app.get("/chat/sessions")(list_sessions)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
 
 
 async def _post(ns, sid: str, user):
@@ -226,9 +249,34 @@ async def test_a_fresh_chat_gets_one_brief_row_and_the_second_chat_of_the_day_no
             "Your day, Thu 22 Oct. 2 things need you.", 1)
         assert _stamp(ns, email) == "2026-10-22"
 
-        # The same session again: one row still.
+        # Review of #1216, P1: the row is sealed. The member's own browser
+        # save of the brief's id with other words is refused (S13), and the
+        # words stay.
+        assert _sealed(ns, sid, "brief-2026-10-22") is True
+        client = _client(user)
+        forged = client.post(f"/chat/sessions/{sid}/messages", json=[{
+            "id": "brief-2026-10-22", "role": "assistant", "content": "Take the day off.",
+            "timestamp": 1_790_000_000_000, "tool_events": [], "progress_lines": [],
+            "agent_state": None, "custom_events": [], "author_kind": "agent",
+        }])
+        assert forged.status_code == 200, forged.text
+        assert forged.json()["unchanged"] == ["brief-2026-10-22"]
+        assert _rows(ns, sid)[0].content == "Your day, Thu 22 Oct. 2 things need you."
+
+        # Review of #1216, P1: the list says no MEMBER wrote here, so the
+        # nudge stays. A member turn turns it true.
+        [listed] = [s for s in client.get("/chat/sessions").json() if s["id"] == sid]
+        assert (listed["messageCount"], listed["hasUserMessage"]) == (1, False)
+        client.post(f"/chat/sessions/{sid}/messages", json=[{
+            "id": "u1", "role": "user", "content": "Reply to Priya", "timestamp": 1_790_000_000_001,
+            "tool_events": [], "progress_lines": [], "agent_state": None, "custom_events": [],
+        }])
+        [listed] = [s for s in client.get("/chat/sessions").json() if s["id"] == sid]
+        assert listed["hasUserMessage"] is True
+
+        # The same session again: one brief row still (and the member turn above).
         assert _status(again) == 204
-        assert len(_rows(ns, sid)) == 1
+        assert [r.id for r in _rows(ns, sid)] == ["u1", "brief-2026-10-22"]
         # The second chat: nothing posted.
         assert _status(other) == 204
         assert _rows(ns, sid2) == []
@@ -236,36 +284,51 @@ async def test_a_fresh_chat_gets_one_brief_row_and_the_second_chat_of_the_day_no
         _unseed_member(ns, email)
 
 
-async def test_a_day_with_no_brief_posts_nothing_and_stamps_nothing(graph_as_app, feed):
+async def test_a_day_with_no_brief_posts_nothing_and_stamps_the_day(graph_as_app, feed):
+    """A complete read with nothing to say is the day's answer (review of
+    #1216, P2): the day is stamped, and the next fresh chat reads no feed."""
     ns = graph_as_app
     org, email = ns.org_a, _address("bob")
     _seed_member(ns, email, org)
     feed["cards"] = []
-    sid = f"cf5-{uuid.uuid4().hex[:12]}"
+    feed["reads"] = 0
+    sid, sid2 = f"cf5-{uuid.uuid4().hex[:12]}", f"cf5-{uuid.uuid4().hex[:12]}"
     try:
         _new_session(sid, email, org)
+        _new_session(sid2, email, org)
         async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
             got = await _post(ns, sid, _member(email, org))
-        assert _status(got) == 204
-        assert _rows(ns, sid) == []
-        assert _stamp(ns, email) is None
+            again = await _post(ns, sid2, _member(email, org))
+        assert _status(got) == 204 and _status(again) == 204
+        assert _rows(ns, sid) == [] and _rows(ns, sid2) == []
+        assert _stamp(ns, email) == "2026-10-22"
+        assert feed["reads"] == 1
     finally:
         _unseed_member(ns, email)
 
 
-async def test_an_incomplete_read_posts_nothing(graph_as_app, feed):
+async def test_an_incomplete_read_posts_nothing_and_rests_ten_minutes(graph_as_app, feed):
+    """An incomplete read is not the day's answer (review of #1216, P2). It
+    leaves a retry mark, and until it passes the route reads no feed."""
     ns = graph_as_app
     org, email = ns.org_a, _address("dan")
     _seed_member(ns, email, org)
     feed["cards"] = [_card("email:a:t1", "Q3 pricing")]
     feed["complete"] = False
-    sid = f"cf5-{uuid.uuid4().hex[:12]}"
+    feed["reads"] = 0
+    sid, sid2 = f"cf5-{uuid.uuid4().hex[:12]}", f"cf5-{uuid.uuid4().hex[:12]}"
     try:
         _new_session(sid, email, org)
+        _new_session(sid2, email, org)
         async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
             got = await _post(ns, sid, _member(email, org))
-        assert _status(got) == 204
-        assert _rows(ns, sid) == []
+            again = await _post(ns, sid2, _member(email, org))
+        assert _status(got) == 204 and _status(again) == 204
+        assert _rows(ns, sid) == [] and _rows(ns, sid2) == []
+        assert _stamp(ns, email) is None
+        retry = _stamp(ns, email, "chat_brief_retry_after")
+        assert retry == (NOW + timedelta(minutes=10)).isoformat()
+        assert feed["reads"] == 1
     finally:
         feed["complete"] = True
         _unseed_member(ns, email)

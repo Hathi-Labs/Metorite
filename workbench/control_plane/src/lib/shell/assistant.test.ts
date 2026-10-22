@@ -50,7 +50,9 @@ import {
   raiseOnNeed,
   setAssistantMode,
   setDockWidth,
+  BRIEF_HOLD_MS,
   briefAskedToday,
+  holdsForBrief,
   localDay,
   markBriefAsked,
   startsFresh,
@@ -262,6 +264,20 @@ describe("the brief as the first turn (WS-62 CF-5, §4.6, D-CF-6)", () => {
     expect(await requestBrief("c1", (async () => { throw new Error("offline"); }) as typeof fetch)).toBeNull();
     expect(calls[0]).toBe(`POST ${briefPath("c1")}`);
     expect(briefPath("a/b")).toBe("/api/chat/sessions/a%2Fb/brief");
+  });
+
+  it("a chat waits only while ITS ask is out, and the hold is capped (review of #1216)", () => {
+    expect(holdsForBrief(null, "c1")).toBe(false);
+    expect(holdsForBrief("c1", "c1")).toBe(true);
+    expect(holdsForBrief("c2", "c1")).toBe(false);
+    expect(holdsForBrief("", "")).toBe(false);
+    expect(BRIEF_HOLD_MS).toBe(4_000);
+    const dock = read("lib/shell/AssistantDock.tsx");
+    // The gate reads the hold alone: no clock, no flag, so no spinner past midnight.
+    expect(dock).toContain("briefPending: (s: ChatSession) => holdsForBrief(briefHold, s.id),");
+    // The hold is set before the paint, and released by the answer or the cap.
+    expect(dock).toMatch(/useLayoutEffect\(\(\) => \{\r?\n\s+if \(!scope \|\| !open \|\| !activeIdForBrief/);
+    expect(dock).toContain("const timer = setTimeout(release, BRIEF_HOLD_MS);");
   });
 
   it("the dock asks only through the rule, and marks the day before it asks", () => {
@@ -897,9 +913,12 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
   });
 
-  it("the nudge retires on the first message, from the dock's one activity seam", () => {
+  it("the nudge retires on the member's first message, from the dock's one activity seam", () => {
     const dock = read("lib/shell/AssistantDock.tsx");
-    expect(dock).toContain("if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
+    // A MEMBER turn, never a bare count: the day's brief is an agent turn
+    // that lands before the member types (CF-5, review of #1216).
+    expect(dock).toContain("if (info.firstUserMessage && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
+    expect(dock).not.toContain("info.messageCount > 0 && chatFirstOn()");
   });
 });
 

@@ -51,7 +51,7 @@ import { chatScope, fetchAndMergeSessionsFromDb } from "@/lib/sessions";
 
 import { CHAT_LANDED_KEY, openAssistant, opensOnLanding, useAssistant } from "./assistant";
 import { chatFirstOn } from "./chatFlag";
-import { markChatFirstMessage, nudgeShows, readNudgeRetired, useNudgeRetiredHere, useShellPrefs } from "./shellPrefs";
+import { markChatFirstMessage, memberWrote, nudgeShows, readNudgeRetired, useNudgeRetiredHere, useShellPrefs } from "./shellPrefs";
 import { useWelcomeOpen, welcomeOpen } from "./welcomeSteps";
 
 /** The desktop's words, under the field. */
@@ -80,7 +80,8 @@ function useHasChats(on: boolean): boolean | null {
     fetchAndMergeSessionsFromDb()
       .then((list) => {
         if (!live) return;
-        const has = list.some((s) => (s.messageCount ?? 0) > 0);
+        // CF-5: only a MEMBER turn counts. The brief alone keeps the nudge.
+        const has = memberWrote(list);
         setState({ scope: bound, has });
         if (has) void markChatFirstMessage(bound);
       })

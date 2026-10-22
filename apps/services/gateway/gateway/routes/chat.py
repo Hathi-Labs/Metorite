@@ -137,6 +137,12 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
                 "          WHERE p.session_id = s.id) AS participant_count, "
+                # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
+                # The brief row is an agent turn, so a chat that holds only
+                # the brief reads false, and the nudge stays (§4.7).
+                "       EXISTS (SELECT 1 FROM chat_message m "
+                "               WHERE m.session_id = s.id AND m.role = 'user') "
+                "         AS has_user_message, "
                 "       me.role AS my_role, s.archived_at "
                 "FROM chat_session s "
                 # One join on the participant key, so no query per row.
@@ -174,6 +180,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
+            "hasUserMessage": bool(r.has_user_message),
             # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,

@@ -47,7 +47,7 @@
  */
 
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -108,10 +108,12 @@ import {
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  BRIEF_HOLD_MS,
   DOCK_MAX,
   DOCK_MIN,
   briefAskedToday,
   closeAssistant,
+  holdsForBrief,
   consumeAsk,
   consumeDraft,
   effectiveMode,
@@ -273,9 +275,13 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // The brief as the first turn (CF-5). Asked once per page per day, and
   // only through the rule. The server decides whether a brief exists and
   // writes the row (D-PM-39); a 204 or a fault opens the chat empty.
+  // A layout effect, so the hold is set before the paint that would mount
+  // the chat, and the chat's first load reads the row. The hold ends when
+  // the route answers, or after BRIEF_HOLD_MS, whichever comes first
+  // (review of #1216): a slow feed never holds the composer.
   const activeIdForBrief = st.sessionId ?? "";
   const activeCount = sessions.find((s) => s.id === activeIdForBrief)?.messageCount;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!scope || !open || !activeIdForBrief || activeCount === undefined) return;
     if (!wantsBrief({
       chatFirst: surface.chatFirst, phone: surface.phone,
@@ -284,13 +290,21 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     markBriefAsked();
     const id = activeIdForBrief;
     setBriefHold(id);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      setBriefHold((held) => (held === id ? null : held));
+      refresh();
+    };
+    const timer = setTimeout(release, BRIEF_HOLD_MS);
     void requestBrief(id)
       .then((posted) => {
         if (posted) enrichSession(id, { messageCount: 1, lastPreview: posted.preview });
       })
       .finally(() => {
-        setBriefHold((held) => (held === id ? null : held));
-        refresh();
+        clearTimeout(timer);
+        release();
       });
   }, [scope, open, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -326,16 +340,12 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     active,
     activeId,
     /**
-     * Whether the chat waits for the brief (CF-5): its ask is out, or the
-     * rule says it will be asked. The dock mounts it after the answer, so
-     * its first load reads the brief row.
+     * Whether the chat waits for the brief (CF-5): only while its ask is
+     * out. The dock mounts it after the answer, so its first load reads the
+     * brief row. Never a rule read at render time (review of #1216): a
+     * clock read there could hold a chat that no effect would release.
      */
-    briefPending: (s: ChatSession) =>
-      briefHold === s.id ||
-      wantsBrief({
-        chatFirst: surface.chatFirst, phone: surface.phone,
-        messageCount: s.messageCount, askedFor: briefAskedToday(),
-      }),
+    briefPending: (s: ChatSession) => holdsForBrief(briefHold, s.id),
     sendable,
     refresh,
     onSessionRefused,
@@ -371,8 +381,9 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       enrichSession(activeId, info);
       refresh();
       // CF-2: the member's first message retires the nudge, on the server,
-      // for every device. A chat with a message is a chat they wrote in.
-      if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());
+      // for every device. Only a MEMBER turn counts (CF-5, review of #1216):
+      // the day's brief is an agent turn that lands before they type.
+      if (info.firstUserMessage && chatFirstOn()) void markChatFirstMessage(boundChatScope());
     },
   };
 }

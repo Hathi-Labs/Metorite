@@ -327,7 +327,10 @@ async function expectStrip(page: Page, height: number) {
 async function openPanel(page: Page) {
   await expect(toggle(page)).toBeVisible({ timeout: 60_000 });
   await toggle(page).click();
-  await expect(panel(page)).toHaveAttribute("data-panel-phase", "open");
+  // The dock mounts lazily on the first open. Late in a run that takes more
+  // than the 5 s default (measured 2026-10-22: the panel was open in the
+  // failure's snapshot). The same wait `expectLandedOnChat` gives it.
+  await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 30_000 });
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }
 

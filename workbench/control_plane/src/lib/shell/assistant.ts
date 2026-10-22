@@ -601,6 +601,22 @@ export function wantsBrief(a: {
   return a.messageCount === 0;
 }
 
+/**
+ * How long the dock holds a fresh chat for the brief's answer, at most
+ * (review of #1216). The feed read behind the route can be slow on a cold
+ * morning, and the composer must never wait on it.
+ */
+export const BRIEF_HOLD_MS = 4_000;
+
+/**
+ * Whether a chat waits for its brief: only while ITS ask is out. The dock
+ * mounts the chat the moment this is false. The rule reads no clock and no
+ * flag, so nothing can hold a chat that no effect would release.
+ */
+export function holdsForBrief(hold: string | null, sessionId: string): boolean {
+  return Boolean(hold) && hold === sessionId;
+}
+
 /** The member's local date, as the page's mark of the brief ask keys on it. */
 export function localDay(now: Date = new Date()): string {
   const y = now.getFullYear();

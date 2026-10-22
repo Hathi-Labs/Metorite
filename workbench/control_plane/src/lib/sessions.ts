@@ -38,6 +38,13 @@ export interface ChatSession {
   /** >1 means somebody else is in here too. Drives the shared badge. */
   participantCount?: number;
   /**
+   * WS-62 CF-5: whether a MEMBER wrote in this chat, from the server's list.
+   * A chat that holds only the day's brief (an agent turn) reads false, so
+   * the nudge stays (`memberWrote` in `shell/shellPrefs.ts`). Undefined for
+   * a chat the server has not listed yet.
+   */
+  hasUserMessage?: boolean;
+  /**
    * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
    */
@@ -643,6 +650,8 @@ export function enrichSession(
     s.title = truncateAtWord(info.firstUserMessage, 60);
     newTitle = s.title;
   }
+  // CF-5: a member turn in this page is the fact, before the server lists it.
+  if (info.firstUserMessage) s.hasUserMessage = true;
   if (info.lastPreview !== undefined) {
     s.lastPreview = truncateAtWord(info.lastPreview, 120);
   }
@@ -768,6 +777,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       visibility?: ChatSession["visibility"];
       isOwner?: boolean;
       participantCount?: number;
+      hasUserMessage?: boolean;
       archivedAt?: string | null;
     }>;
 
@@ -784,6 +794,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       s.visibility = r.visibility;
       s.isOwner = r.isOwner;
       s.participantCount = r.participantCount;
+      // CF-5: a member turn seen here stays true. The server's answer can
+      // lag a save by one list, and the fact never goes back to false.
+      if (r.hasUserMessage !== undefined) s.hasUserMessage = s.hasUserMessage || r.hasUserMessage;
       // D99: an archive and a name made on another device reach this one.
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
@@ -817,6 +830,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           visibility: r.visibility,
           isOwner: r.isOwner,
           participantCount: r.participantCount,
+          hasUserMessage: r.hasUserMessage,
           archivedAt: r.archivedAt ?? null,
         });
       }
