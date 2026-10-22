@@ -981,3 +981,40 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
     expect(src).toContain('${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin');
   });
 });
+
+describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.md §4.6)", () => {
+  const chat = () => read("components/AgentChat.tsx");
+
+  it("the chat reads the starter pills through the one rule, and only with the flag on", () => {
+    const src = chat();
+    expect(src).toContain('import { starterPills } from "@/lib/starterPills";');
+    expect(src).toContain('import { chatFirstOn } from "@/lib/shell/chatFlag";');
+    expect(src).toContain("const [chatFirst] = useState(() => chatFirstOn());");
+    // The one assistant's empty chat, and nothing else: no messages, no
+    // history on its way, and not another agent's chat.
+    expect(src).toContain(
+      "const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;",
+    );
+    expect(src).toMatch(/starterPills\(\{\s*chatFirst: starterFeedWanted,\s*cards: starterFeedCards,/);
+    // The empty state draws the rule's answer. The follow-up pills stay as they were.
+    expect(src).toMatch(/<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}\s*\/>/);
+    expect(src).toMatch(/<SuggestionPills\s+suggestions=\{smartSuggestions\.length > 0/);
+    expect((src.match(/<SuggestionPills\b/g) ?? []).length).toBe(2);
+  });
+
+  it("the feed comes through the key My Day reads, so the chat adds no second fetch and no route", () => {
+    const src = chat();
+    const hook = "useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed()";
+    expect(src).toContain(hook);
+    // The same key and the same fetcher as My Day's `useFeed` (AGENTS.md rule 9).
+    expect(read("lib/shell/FeedCard.tsx")).toContain(
+      "useCachedResource<FeedAnswer>(enabled ? feedKey() : null, () => fetchFeed())",
+    );
+    // No `starter` branch on the follow-up route, and no model call for a pill.
+    expect(src).not.toMatch(/starter:\s*true/);
+    expect(read("app/api/chat/suggestions/route.ts")).not.toMatch(/\bstarter\b/i);
+    // The rule itself is pure: no fetch, no cache, no feed import.
+    const rule = read("lib/starterPills.ts");
+    expect(rule).not.toMatch(/\bfetch\(|useCachedResource|from "@\//);
+  });
+});
