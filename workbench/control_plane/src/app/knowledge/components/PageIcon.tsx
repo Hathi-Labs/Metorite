@@ -77,7 +77,9 @@ export function PageGlyph({
 
 /**
  * The icon before the title of a page. A writer opens the picker from it:
- * the emoji itself, or "Add icon" when the page has none. A reader sees the
+ * the emoji itself, large above the title, or "Add icon" when the page has
+ * none. With none, the control takes no room: the caller's header is
+ * `relative` and the button floats in its top margin. A reader sees the
  * emoji only, and nothing when there is none.
  */
 export function PageIconControl({
@@ -96,7 +98,7 @@ export function PageIconControl({
 
   if (!editable) {
     return emoji ? (
-      <span aria-label={`Page icon ${emoji}`} role="img" className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-2xl leading-none">
+      <span aria-label={`Page icon ${emoji}`} role="img" className="mb-2 inline-flex h-16 shrink-0 items-center text-5xl leading-none">
         {emoji}
       </span>
     ) : null;
@@ -124,7 +126,7 @@ export function PageIconControl({
         <Button
           variant="ghost"
           size="none"
-          className="h-8 w-8 shrink-0 rounded text-2xl leading-none"
+          className="mb-2 h-16 w-16 shrink-0 justify-start rounded px-0 text-5xl leading-none"
           aria-label={`Change the page icon, now ${emoji}`}
           aria-haspopup="dialog"
           aria-expanded={open}
@@ -138,22 +140,26 @@ export function PageIconControl({
           {emoji}
         </Button>
       ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          icon="SmilePlus"
-          // A phone has no hover, so "Add icon" shows at all times there.
-          className={`${isMobile ? "" : "reveal-on-hover"} shrink-0 text-muted-foreground`}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          disabled={busy}
-          onClick={(e) => {
-            setAnchor(e.currentTarget);
-            setOpen((v) => !v);
-          }}
-        >
-          Add icon
-        </Button>
+        // A page with no icon reserves no room. The row floats in the top
+        // margin of the header and shows on hover or on focus (Notion).
+        <div className="absolute left-0 top-1 flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="SmilePlus"
+            // A phone has no hover, so "Add icon" shows at all times there.
+            className={`${isMobile ? "" : "reveal-on-hover"} shrink-0 text-muted-foreground`}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            disabled={busy}
+            onClick={(e) => {
+              setAnchor(e.currentTarget);
+              setOpen((v) => !v);
+            }}
+          >
+            Add icon
+          </Button>
+        </div>
       )}
       <EmojiPicker
         anchor={anchor}

@@ -164,6 +164,10 @@ test.describe("the table grips (KB-2i)", () => {
       await body.locator("td, th", { hasText: from }).first().hover();
       const grip = page.getByRole("button", { name: gripName });
       await expect(grip).toBeVisible();
+      // Rest on the grip first. The pointer's arrival re-renders the grips,
+      // and a press in that same frame lands on the old one.
+      await grip.hover();
+      await expect(grip).toBeVisible();
       const g = (await grip.boundingBox())!;
       const target = (await body.locator("td, th", { hasText: to }).first().boundingBox())!;
       await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
