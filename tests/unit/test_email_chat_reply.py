@@ -108,6 +108,30 @@ def redis(monkeypatch) -> _Redis:
 from gateway.routes.email.automation import reply_card as rc  # noqa: E402
 
 
+class _CardDrafts:
+    """A stand-in for the draft that each shown card writes to Drafts."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], list[str], str, str]] = []
+
+    async def keep(self, mail: Any, owner: str, to: list[str], cc: list[str],
+                   subject: str, body: str, *, prior: Any = None) -> tuple[str, bool]:
+        self.calls.append((to, cc, subject, body))
+        return "local-draft-1", False
+
+
+@pytest.fixture(autouse=True)
+def card_drafts(monkeypatch) -> _CardDrafts:
+    fake = _CardDrafts()
+    monkeypatch.setattr(rc, "_keep_card_draft", fake.keep)
+
+    async def no_record(_mail: Any) -> list[str]:
+        return []
+
+    monkeypatch.setattr(rc, "_chat_record", no_record)
+    return fake
+
+
 def _derive(reply_all: bool, **kw: Any) -> tuple[list[str], list[str]]:
     base = {"sender": "kim@contoso.test", "reply_to": [], "to": [MEMBER, "lee@contoso.test"],
             "cc": ["ops@contoso.test", "jane@ACME.test"], "own": {MEMBER, "jane@other.test"}}
@@ -425,7 +449,7 @@ def test_the_act_request_takes_no_recipient_body_or_file(field: str) -> None:
 
 
 async def test_the_card_route_drafts_with_the_one_drafter_and_strips_placeholders(
-    monkeypatch,
+    monkeypatch, card_drafts,
 ) -> None:
     calls: list[Any] = []
 
@@ -442,6 +466,9 @@ async def test_the_card_route_drafts_with_the_one_drafter_and_strips_placeholder
     [req] = calls
     assert req.create_draft is False and req.message_id == MAIL and req.account_id == BOX
     assert out["body"] == "Hi Kim,\n\nYes."
+    # The text of the card is the one draft in Drafts (owner, 2026-10-22).
+    assert card_drafts.calls == [(["kim@contoso.test"], [], "Re: Quote", "Hi Kim,\n\nYes.")]
+    assert out["draft_id"] == "local-draft-1"
     assert out["recipients"] == {
         "reply": {"to": ["kim@contoso.test"], "cc": []},
         "reply_all": {"to": ["kim@contoso.test", "lee@contoso.test"],
@@ -449,6 +476,30 @@ async def test_the_card_route_drafts_with_the_one_drafter_and_strips_placeholder
     }
     assert out["original"]["from"] == "Kim <kim@contoso.test>"
     assert out["original"]["excerpt"] == "Can you confirm the quote?"
+
+
+async def test_the_card_route_writes_the_reply_all_draft(monkeypatch, card_drafts) -> None:
+    async def load_mail(message_id: str, owner: str) -> Any:
+        return _mail()
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    await rc.reply_card(rc.ReplyCardRequest(message_id=MAIL, draft="Hi all.",
+                                            reply_all=True), USER)
+    assert card_drafts.calls == [(["kim@contoso.test", "lee@contoso.test"],
+                                  ["ops@contoso.test"], "Re: Quote", "Hi all.")]
+
+
+async def test_a_card_with_no_text_writes_no_draft(monkeypatch, card_drafts) -> None:
+    async def load_mail(message_id: str, owner: str) -> Any:
+        return _mail()
+
+    async def drafter(req: Any, user: Any) -> dict[str, Any]:
+        return {"draft": "", "created": False, "skipped": "low_confidence"}
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    monkeypatch.setattr(rc, "draft_reply_smart", drafter)
+    out = await rc.reply_card(rc.ReplyCardRequest(message_id=MAIL), USER)
+    assert card_drafts.calls == [] and out["draft_id"] == ""
 
 
 # ── 4. The tool: pinned parameters, the held run, and no card ────────────────
@@ -508,13 +559,14 @@ def test_a_held_run_sends_only_through_the_reply_card() -> None:
 class _Gateway:
     def __init__(self) -> None:
         self.posts: list[tuple[str, dict[str, Any]]] = []
+        self.card_extra: dict[str, Any] = {}
         self.act: dict[str, Any] = {"ok": True, "action": "send", "to": ["kim@contoso.test"],
                                     "cc": [], "mailbox": f"Work · {MEMBER}"}
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         self.posts.append((path, body))
         if path == "/email/reply-card":
-            return {
+            return {**self.card_extra, **{
                 "account_id": BOX, "mailbox": f"Work · {MEMBER}", "subject": "Re: Quote",
                 "original": {"from": "Kim <kim@contoso.test>", "subject": "Quote",
                              "received": "", "excerpt": "Can you confirm?"},
@@ -523,7 +575,7 @@ class _Gateway:
                                              "cc": []}},
                 "body": "Hi Kim,\n\nYes.",
                 "message_id": MAIL, "notices": [],
-            }
+            }}
         if path == "/email/reply-card/act":
             return self.act
         raise AssertionError(f"unexpected POST {path}")
@@ -612,11 +664,38 @@ async def test_compose_reply_saves_and_says_so(monkeypatch, gw) -> None:
                    "to ops@contoso.test. Nothing was sent.")
 
 
-async def test_compose_reply_discard_does_nothing(monkeypatch, gw) -> None:
+async def test_compose_reply_never_trashes_on_a_discard_or_a_timeout(
+    monkeypatch, gw,
+) -> None:
+    """``request_confirmation`` answers None for Discard and for a timeout
+    alike. So the tool trashes nothing, and a card that timed out keeps its
+    draft. The member's own Discard click posts the trash (``ReplyCardForm``)."""
     _card_answer(monkeypatch, lambda kw: None)
     out = await agents.compose_reply(MAIL, BOX)
-    assert out.startswith("Reply discarded") and "Nothing was sent or saved" in out
-    assert [p for p, _ in gw.posts] == ["/email/reply-card"]
+    assert out.startswith("Reply discarded") and "Nothing was sent." in out
+    assert gw.posts == [("/email/reply-card", {"message_id": MAIL})]
+
+
+async def test_the_form_carries_the_cards_draft_id(monkeypatch, gw) -> None:
+    gw.card_extra = {"draft_id": "d-1"}
+    cards = _card_answer(monkeypatch, lambda kw: None)
+    await agents.compose_reply(MAIL, BOX)
+    assert cards[0]["reply"]["draft_id"] == "d-1"
+
+
+async def test_the_answer_says_when_the_members_draft_stays(monkeypatch, gw) -> None:
+    gw.card_extra = {"kept_draft": True}
+    _card_answer(monkeypatch, lambda kw: _member_send(kw, action="save"))
+    gw.act = {**gw.act, "action": "save"}
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out.endswith(agents._KEPT_DRAFT) and "earlier draft" in out
+
+
+async def test_compose_reply_asks_for_the_reply_all_draft(monkeypatch, gw) -> None:
+    """The draft in Drafts takes the recipients that the card opens with."""
+    _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
+    await agents.compose_reply(MAIL, BOX, reply_all=True)
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": True})
 
 
 async def test_another_members_answer_does_nothing(monkeypatch, gw) -> None:
@@ -626,7 +705,7 @@ async def test_another_members_answer_does_nothing(monkeypatch, gw) -> None:
     _card_answer(monkeypatch, lambda kw: ReplyAnswer("r", text, rcard.parse_reply_answer(text),
                                                      "lee@contoso.test"))
     out = await agents.compose_reply(MAIL, BOX)
-    assert out.startswith("Nothing was sent or saved.")
+    assert out.startswith("Nothing was sent.")
     assert [p for p, _ in gw.posts] == ["/email/reply-card"]
 
 

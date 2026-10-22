@@ -29,6 +29,7 @@
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
+> 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
@@ -20421,6 +20422,57 @@ that property in Unicode 15.1, plus U+2800, and a test holds it to the property 
 - The backstop is the mark run, not a share of marks. A share of marks would refuse fully
   vowelled Arabic, which has more marks than letters. Hindi, Tamil, Thai, Arabic and
   Vietnamese text, flags, joined families, skin tones and keycaps stay unchanged.
+
+### 18.9 One draft for each conversation (2026-10-22)
+
+**Status:** 🔨 BUILT on branch `chat-draft-upsert`, not merged. No migration, and no flag.
+
+**Origin.** The owner asked for three things in the chat on 2026-10-22. A reply drafted in
+the chat shows in Drafts. A conversation that holds a draft gets no second one. The member
+starts a reply in the chat, and finishes and sends it in the Email app.
+
+This replaces the save card of `draft_reply` (EM-G11c1). Nothing is sent without the member.
+
+1. **One helper.** `_upsert_reply_draft` in `drafting.py` writes the reply draft. It updates
+   a draft in place ONLY while the draft holds the recorded text of the thread
+   (`email_ai_drafts`). The stored body must match, and then the live body at the
+   provider must match too. A failed live read counts as an edit.
+2. **The member's draft is never written over.** A draft that the member typed or edited
+   stays as it was. The chat's text then goes into a new draft beside it. The route answers
+   `kept_draft`, and the tool tells the model that two drafts now exist.
+3. **Only reply drafts are candidates.** A forward and a draft with a file are never updated.
+   An update keeps the Cc of the draft when the caller gives none. It also keeps the Bcc and
+   the HTML of the row. The save of the card writes the Cc that the member chose.
+4. **One rule for "newest".** The newest draft is the later `received_at`, then the larger
+   id. Each save moves `received_at`. The gateway (`_THREAD_DRAFT_SQL`) and the Email app
+   (`newerDraft`) read the same rule.
+5. **Each chat draft saves.** `/email/draft-reply`, `/email/drafts/save` and the save of the
+   reply card write through the helper. Each caller reads the record before it stores the
+   new text. `draft_reply` saves with no card, and it left `MAILBOX_WRITE_TOOLS` for
+   `OWN_DRAFT_SAVES`.
+6. **The reply card writes its text**, and answers its `draft_id`. A new card updates the
+   chat's own draft. The save of the card answers the LOCAL id, which
+   `/email/drafts/schedule` takes.
+7. **Discard is the member's click.** `request_confirmation` gives the same answer for a
+   Discard and for a timeout, so `compose_reply` trashes nothing. The Discard button of the
+   card posts `POST /email/reply-card/discard` with the card's `draft_id`. The route trashes
+   that one draft, and only while its stored and live bodies are still the recorded text. A
+   card that times out keeps its draft.
+8. **The Email app continues the draft.** Reply opens the newest draft of the thread, with
+   its text, To, Cc and Bcc, so no second draft starts.
+
+**Known limits.**
+
+- The chat and the Email app can write the same Gmail draft at the same time. Gmail then
+  gives two new ids, and one write can be lost. Nothing guards this race.
+- The live check costs one provider read for each save that finds a candidate.
+- A note after "(saved to Drafts)" on the first line of `draft_reply` makes the chat card
+  start unsaved. Its Save then updates the same draft, so no second draft starts.
+
+**Fences.** `tests/unit/test_email_reply_draft_upsert.py`, its R8 half
+`tests/unit/test_email_reply_draft_upsert_r8.py`, `tests/unit/test_email_chat_reply.py`,
+`tests/unit/test_email_agent_write_cards.py`, `src/lib/replyCardDiscard.test.ts` and
+`src/app/email/lib/continueDraft.test.ts`.
 
 ## 19. Send later (2026-10-21)
 

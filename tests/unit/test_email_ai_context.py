@@ -859,7 +859,9 @@ async def test_the_draft_reply_copy_stores_the_mailbox_as_from(monkeypatch) -> N
                               provider_message_id="pm-1")
 
     for name, value in (
-        ("_tenant_session", bind_db(AsyncMock())),
+        # The thread holds no draft yet (``_upsert_reply_draft`` reads it).
+        ("_tenant_session", bind_db(SimpleNamespace(execute=AsyncMock(
+            return_value=SimpleNamespace(fetchall=lambda: [], fetchone=lambda: None))))),
         ("_assert_account_owner", AsyncMock()),
         ("_build_reply_context", AsyncMock(return_value={
             "from": RAVI, "from_name": "Ravi", "subject": "Quote",

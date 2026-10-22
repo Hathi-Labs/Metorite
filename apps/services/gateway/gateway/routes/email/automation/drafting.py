@@ -9,7 +9,7 @@ import re
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
@@ -2391,14 +2391,8 @@ async def draft_reply_smart(
         # dedups against this same text.
         draft = append_signature_text(signature, draft)
 
-        # Remember this draft so we can learn from the user's edits on send.
-        if not req.follow_up:
-            # commit=False: this db is the route's _tenant_session — the
-            # wrapper's exit commit lands the row (H2).
-            await _store_ai_draft(
-                db, req.account_id, email["thread_id"], draft, commit=False)
-
         created = False
+        kept_draft = False
         if req.create_draft:
             reply_to = await _reply_to_list(
                 req.message_id, user.email or "anonymous", email["from"])
@@ -2413,42 +2407,37 @@ async def draft_reply_smart(
                             if email["subject"].lower().startswith("re:")
                             else f"Re: {email['subject']}"
                         )
-                        provider_id = await sess.provider.create_draft(
-                            to=reply_to,
-                            subject=re_subject,
-                            body_text=draft,
-                            reply_to_message_id=sess.provider_message_id,
+                        # One draft per conversation: a second chat draft of
+                        # this mail updates the first (owner, 2026-10-22).
+                        # ``created`` is True once the provider holds it, and
+                        # a failed local copy is logged (EM-G11c1b round 1).
+                        # The From of the copy is the sending mailbox, never
+                        # the sign-in address of the member (MB-14, EM-T8e-1).
+                        # Each To goes in, or the signed send rebuilds the
+                        # draft with the first one only (F2).
+                        wrote = await _upsert_reply_draft(
+                            db, sess.provider, sess.account_id,
                             thread_id=email["thread_id"] or None,
+                            reply_to_provider_id=sess.provider_message_id,
+                            owner_email=email.get("self") or "",
+                            to=reply_to or [email["from"]],
+                            subject=re_subject, body=draft,
                         )
-                        # The provider holds the draft now. A failed mirror
-                        # below must not hide that, or the chat card offers
-                        # Save again and makes a second provider draft
-                        # (EM-G11c1b review round 1).
-                        created = True
-                        # Mirror locally so it shows in Drafts + in-thread at once.
-                        # The From is the sending mailbox, never the sign-in
-                        # address of the member (MB-14, EM-T8e-1). The
-                        # savepoint keeps the rest of the transaction alive.
-                        try:
-                            async with _savepoint(db):
-                                await _upsert_local_draft(
-                                    db, sess.account_id, provider_id,
-                                    thread_id=email["thread_id"] or None,
-                                    owner_email=email.get("self") or "",
-                                    to_email=(reply_to or [email["from"]])[0],
-                                    # Each To, or the signed send rebuilds the
-                                    # draft with the first one only (F2).
-                                    to_addresses=reply_to or None,
-                                    subject=re_subject, body=draft,
-                                )
-                        except Exception as exc:
-                            _log.warning("email.draft_reply_mirror_failed",
-                                         error=str(exc)[:160])
+                        created, kept_draft = True, wrote.kept_draft
                 # The wrapper's exit commit lands the mirrored local draft.
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
 
-        return {"draft": draft, "created": created,
+        # Remember this draft so we can learn from the user's edits on send.
+        # AFTER the save: the save reads the record of the draft BEFORE, to
+        # tell the chat's own draft from the member's.
+        if not req.follow_up:
+            # commit=False: this db is the route's _tenant_session — the
+            # wrapper's exit commit lands the row (H2).
+            await _store_ai_draft(
+                db, req.account_id, email["thread_id"], draft, commit=False)
+
+        return {"draft": draft, "created": created, "kept_draft": kept_draft,
                 "files_read": files.read_names(), "notices": files.notices()}
 
 
@@ -2990,6 +2979,9 @@ async def _upsert_local_draft(
              has_attachments =
                email_messages.has_attachments OR EXCLUDED.has_attachments,
              """ + clear + """folder = 'drafts',
+             -- The newest draft of a thread is the last one saved, on the
+             -- server (``_THREAD_DRAFT_SQL``) and in the Email app alike.
+             received_at = now(),
              updated_at = now()
            RETURNING id"""
     ), {
@@ -3147,6 +3139,232 @@ def _refuse_bad_draft_id(draft_id: str | None) -> None:
     §17.11). Fence: ``tests/unit/test_email_reply_draft_save.py``."""
     if draft_id and _as_uuid(draft_id) is None:
         raise HTTPException(status_code=404, detail="Draft not found")
+
+
+async def _update_provider_draft(
+    db: Any, provider: Any, account_id: str, local_id: str,
+    provider_message_id: str, *,
+    to: list[str], subject: str, body: str, thread_id: str | None,
+    cc: list[str], bcc: list[str], attachments: list[dict[str, Any]] | None,
+    keep_body: bool = False, html_kw: dict[str, str] | None = None,
+) -> str:
+    """Update one provider draft in place, and move its local row if its id changed.
+
+    The one in-place update. ``PUT /email/drafts`` and :func:`_upsert_reply_draft`
+    both call it. A provider with no update primitive (IMAP) gets a fresh
+    draft, and the old one goes to the trash. Gmail returns a new message id
+    at each update, and the IMAP fallback a new draft, so the local row moves
+    to it by its row id (EM-G3a item 8, E-A2). Outlook keeps its id. Returns
+    the provider id that the draft has now."""
+    try:
+        with (_draft_changed_upstream(), _file_not_attached(),
+              _mail_too_large()):
+            provider_id = await provider.update_draft(
+                provider_message_id, to=to or None,
+                subject=subject or None,
+                body_text=None if keep_body else body,
+                thread_id=thread_id or None,
+                cc=cc, bcc=bcc, attachments=attachments or None,
+                **(html_kw or {}),
+            )
+    except NotImplementedError:
+        if keep_body:
+            # A fresh draft needs a body, and this one keeps its own.
+            raise HTTPException(
+                status_code=409,
+                detail="This mailbox cannot change a draft without its text.",
+            ) from None
+        # No in-place update primitive → fresh draft, drop the old.
+        provider_id = await provider.create_draft(
+            to=to, subject=subject, body_text=body,
+            thread_id=thread_id or None, cc=cc, bcc=bcc,
+            attachments=attachments or None, exact_to=True,
+        )
+        try:
+            await provider.trash_message(provider_message_id)
+        except Exception:  # noqa: BLE001
+            pass
+    if provider_id and provider_id != provider_message_id:
+        await _move_local_draft(db, account_id, local_id, provider_id)
+    return provider_id
+
+
+#: The reply drafts of one conversation of one mailbox, newest first. A
+#: forward and a draft with a file are never a candidate. "Newest" is
+#: ``received_at``, which ``_upsert_local_draft`` moves on each save, and the
+#: Email app (``draftToContinue``) reads the same field.
+_THREAD_DRAFT_SQL = (
+    "SELECT id, provider_message_id, body_text, cc_addresses, bcc_addresses"
+    " FROM email_messages"
+    " WHERE account_id = :aid AND thread_id = :tid"
+    " AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
+    " AND has_attachments IS NOT TRUE"
+    " AND LOWER(COALESCE(subject, '')) NOT LIKE 'fw%'"
+    " ORDER BY received_at DESC NULLS LAST, id DESC")
+
+#: The text that Metorite wrote for one thread (the chat, the card, a rule).
+_CHAT_RECORD_SQL = (
+    "SELECT draft_text FROM email_ai_drafts"
+    " WHERE account_id = :aid AND thread_id = :tid")
+
+
+def _fold_draft(sig: str, body: str) -> str:
+    """A draft body, less the signature, with its whitespace folded."""
+    return _normalize_text(strip_signature_text(sig, body or ""))
+
+
+async def chat_draft_record(db: Any, account_id: str, thread_id: str | None) -> list[str]:
+    """The text that Metorite wrote for the thread, as a list of one or none."""
+    if not thread_id:
+        return []
+    row = (await db.execute(text(_CHAT_RECORD_SQL), {
+        "aid": account_id, "tid": thread_id})).fetchone()
+    return [row.draft_text] if row and (row.draft_text or "").strip() else []
+
+
+async def _live_is_chat_text(
+    provider: Any, provider_message_id: str, wrote: set[str], sig: str,
+) -> bool:
+    """True while the provider's live body is still the text Metorite wrote.
+
+    The stored body is not enough: Outlook sends an HTML body, and the sync
+    never replaces a stored text with one made from HTML. So an edit in
+    Outlook can leave Metorite's text in the row. A failed or slow read
+    answers False, so the draft counts as the member's and stays."""
+    try:
+        live = await asyncio.wait_for(
+            provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
+    except Exception:  # unread or too slow: the draft is the member's
+        return False
+    return _fold_draft(sig, _live_draft_text(live)) in wrote
+
+
+def _addresses_of(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else json.loads(value or "[]")
+    return [str(a.get("email") or "") for a in items
+            if isinstance(a, dict) and a.get("email")]
+
+
+class ReplyDraftWrite(NamedTuple):
+    """What :func:`_upsert_reply_draft` did."""
+
+    #: The local id of the draft it wrote, or "" when the copy failed.
+    local_id: str
+    #: A draft of the member stays in the thread, beside the one it wrote.
+    kept_draft: bool
+
+
+async def _upsert_reply_draft(
+    db: Any, provider: Any, account_id: str, *,
+    thread_id: str | None, reply_to_provider_id: str | None,
+    owner_email: str, to: list[str], subject: str, body: str,
+    cc: list[str] | None = None, exact_to: bool = False,
+    prior: list[str] | None = None, exact_cc: bool = False,
+) -> ReplyDraftWrite:
+    """Write a reply draft so that the chat keeps ONE draft in a conversation.
+
+    Owner directive, 2026-10-22: a reply drafted in the chat shows in Drafts,
+    and a second chat draft of the same mail updates the first one. The
+    member can then finish and send it in the Email app.
+
+    It updates a draft in place ONLY while that draft is still the text that
+    Metorite wrote (``email_ai_drafts``): the stored body matches, and then
+    the live body at the provider matches too. A draft that the member typed
+    or edited is never written over. Then this makes a new draft beside it,
+    and ``kept_draft`` says so. A forward and a draft with a file are never
+    updated. ``prior`` is the record as it was before the caller replaced it.
+
+    An update keeps the Cc of the draft when the caller gives none, unless
+    ``exact_cc`` (the member chose the Cc on the card). It keeps the Bcc and
+    the HTML of the row. An update that fails makes a fresh
+    draft. The local copy runs in a savepoint, and a failed copy is logged.
+    A failed provider write raises. Fence:
+    ``tests/unit/test_email_reply_draft_upsert.py``."""
+    cc_list = [c for c in (cc or []) if c]
+    rows: list[Any] = []
+    if thread_id:
+        rows = list((await db.execute(text(_THREAD_DRAFT_SQL), {
+            "aid": account_id, "tid": thread_id})).fetchall())
+    sig = await _account_signature(db, account_id) if rows else ""
+    texts = prior if prior is not None else (
+        await chat_draft_record(db, account_id, thread_id) if rows else [])
+    wrote = {_fold_draft(sig, t) for t in texts if (t or "").strip()}
+    ours = next((r for r in rows if _fold_draft(sig, r.body_text) in wrote), None)
+    if ours is not None and not await _live_is_chat_text(
+            provider, ours.provider_message_id, wrote, sig):
+        ours = None
+    kept = any(r is not ours for r in rows)
+    provider_id = ""
+    if ours is not None:
+        keep_cc = cc_list if exact_cc else (cc_list or _addresses_of(ours.cc_addresses))
+        cc_list = keep_cc
+        try:
+            # The savepoint keeps the transaction alive when the move fails.
+            async with _savepoint(db):
+                provider_id = await _update_provider_draft(
+                    db, provider, account_id, str(ours.id),
+                    ours.provider_message_id, to=to, subject=subject,
+                    body=body, thread_id=thread_id, cc=keep_cc,
+                    bcc=_addresses_of(ours.bcc_addresses), attachments=None,
+                )
+        except Exception as exc:  # make a fresh draft below
+            _log.warning("email.reply_draft_update_failed",
+                         error=type(exc).__name__)
+            provider_id = ""
+    bcc_list = _addresses_of(ours.bcc_addresses) if ours is not None and provider_id else []
+    if not provider_id:
+        provider_id = await provider.create_draft(
+            to=to, subject=subject, body_text=body,
+            reply_to_message_id=reply_to_provider_id,
+            thread_id=thread_id or None, cc=cc_list or None,
+            exact_to=exact_to,
+        )
+    local_id = ""
+    try:
+        async with _savepoint(db):
+            local_id = await _upsert_local_draft(
+                db, account_id, provider_id, thread_id=thread_id or None,
+                owner_email=owner_email, to_email=(to[0] if to else ""),
+                to_addresses=to or None, cc=cc_list or None,
+                bcc=bcc_list or None, subject=subject, body=body,
+            )
+    except Exception as exc:  # the provider holds the draft
+        _log.warning("email.reply_draft_mirror_failed", error=type(exc).__name__)
+    return ReplyDraftWrite(local_id, kept)
+
+
+#: One draft row of a thread, by its local id.
+_CARD_DRAFT_SQL = (
+    "SELECT id, provider_message_id, body_text FROM email_messages"
+    " WHERE id = CAST(:id AS uuid) AND account_id = :aid AND thread_id = :tid"
+    " AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')")
+
+
+async def trash_chat_draft(
+    db: Any, provider: Any, account_id: str, thread_id: str, local_id: str,
+) -> bool:
+    """Trash ONE draft that the chat wrote, while it still holds that text.
+
+    The member pressed Discard on the reply card that wrote *local_id*. The
+    draft goes only while its stored body AND its live body are the text
+    that Metorite recorded for the thread. A draft that the member edited
+    stays, and so does each other draft of the thread. True when it went."""
+    if _as_uuid(local_id) is None:
+        return False
+    row = (await db.execute(text(_CARD_DRAFT_SQL), {
+        "id": local_id, "aid": account_id, "tid": thread_id})).fetchone()
+    if row is None:
+        return False
+    sig = await _account_signature(db, account_id)
+    wrote = {_fold_draft(sig, t)
+             for t in await chat_draft_record(db, account_id, thread_id)}
+    if _fold_draft(sig, row.body_text) not in wrote:
+        return False
+    if not await _live_is_chat_text(provider, row.provider_message_id, wrote, sig):
+        return False
+    await provider.trash_message(row.provider_message_id)
+    await db.execute(text("DELETE FROM email_messages WHERE id = :id"), {"id": row.id})
+    return True
 
 
 class DraftUpsertRequest(BaseModel):
@@ -3317,40 +3535,12 @@ async def upsert_draft(
                         db, provider, req.account_id, req.draft_id,
                         drow.provider_message_id)
                     html_kw = {"body_html": kept} if kept else {}
-                try:
-                    with (_draft_changed_upstream(), _file_not_attached(),
-                          _mail_too_large()):
-                        provider_id = await provider.update_draft(
-                            drow.provider_message_id, to=to or None,
-                            subject=subject or None,
-                            body_text=None if keep_body else body,
-                            thread_id=thread_id or None,
-                            cc=cc, bcc=bcc, attachments=atts or None,
-                            **html_kw,
-                        )
-                except NotImplementedError:
-                    if keep_body:
-                        # A fresh draft needs a body, and this one keeps its own.
-                        raise HTTPException(
-                            status_code=409,
-                            detail="This mailbox cannot change a draft without its text.",
-                        ) from None
-                    # No in-place update primitive → fresh draft, drop the old.
-                    provider_id = await provider.create_draft(
-                        to=to, subject=subject, body_text=body,
-                        thread_id=thread_id or None, cc=cc, bcc=bcc,
-                        attachments=atts or None, exact_to=True,
-                    )
-                    try:
-                        await provider.trash_message(drow.provider_message_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                # Gmail returns a new message id, and the IMAP fallback a new
-                # draft. The local row moves to it by its row id, so the draft
-                # keeps one row (EM-G3a item 8, E-A2). Outlook keeps its id.
-                if provider_id and provider_id != drow.provider_message_id:
-                    await _move_local_draft(
-                        db, req.account_id, req.draft_id, provider_id)
+                provider_id = await _update_provider_draft(
+                    db, provider, req.account_id, req.draft_id,
+                    drow.provider_message_id, to=to, subject=subject,
+                    body=body, thread_id=thread_id, cc=cc, bcc=bcc,
+                    attachments=atts, keep_body=keep_body, html_kw=html_kw,
+                )
             elif req.reply_to_message_id:
                 # Accept either the local message id (inline reply) or the
                 # provider message id (full composer pop-out passes
@@ -3675,19 +3865,14 @@ async def save_draft(
                 subject if subject.lower().startswith("re:") else f"Re: {subject}"
             )
             to_email = (reply_to or [frm.get("email", "")])[0]
-            provider_id = await sess.provider.create_draft(
-                to=reply_to or [to_email],
-                subject=re_subject,
-                body_text=body,
-                reply_to_message_id=sess.provider_message_id,
+            # One draft per conversation: the card's save updates the draft
+            # that the chat already wrote (owner, 2026-10-22). The From of the
+            # copy is the mailbox that saves it (MB-14, EM-T8e-1 round 1).
+            wrote = await _upsert_reply_draft(
+                db, sess.provider, req.account_id,
                 thread_id=row.thread_id or None,
-            )
-            # The From of the copy is the mailbox that saves the draft, never
-            # blank (MB-14, EM-T8e-1 review round 1).
-            local_id = await _upsert_local_draft(
-                db, req.account_id, provider_id, thread_id=row.thread_id,
+                reply_to_provider_id=sess.provider_message_id,
                 owner_email=(await resolve_self(db, req.account_id)).address,
-                to_email=to_email, subject=re_subject, body=body,
-                to_addresses=reply_to or None,
+                to=reply_to or [to_email], subject=re_subject, body=body,
             )
-        return {"created": True, "id": local_id}
+        return {"created": True, "id": wrote.local_id, "kept_draft": wrote.kept_draft}

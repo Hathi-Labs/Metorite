@@ -72,6 +72,15 @@ READ_POSTS = {
     "/email/rules/generate/preview": "turns a prompt into rule specs, saves nothing",
     "/email/rules/test": "a dry run of the rules on one email",
 }
+#: Each POST that writes only a reply draft in the member's OWN Drafts, by
+#: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in
+#: Drafts with no card, and a conversation keeps one draft. Each sends nothing.
+OWN_DRAFT_PATHS = {
+    "/email/reply-card": "EM-CR: the text of the card, as the one draft of "
+                         "the conversation",
+    "/email/reply-card/discard": "the member's Discard trashes the draft that "
+                                 "the card wrote, unless the member edited it",
+}
 #: A POST whose body says it is a dry run.
 DRY_RUN_POSTS = ("/email/cleanup/auto-categorize", "/email/rules/run",
                  # bulk_manage_inbox counts the mail first (owner, 2026-10-20).
@@ -83,13 +92,11 @@ def _is_write(method: str, path: str, body: Any) -> bool:
         return False
     if method == "POST" and path in READ_POSTS:
         return False
+    if method == "POST" and path in OWN_DRAFT_PATHS:
+        return False
     if (method == "POST" and path == "/email/draft-reply"
             and isinstance(body, dict) and body.get("create_draft") is False):
         return False  # a draft that only shows in the chat: no provider write
-    if method == "POST" and path == "/email/reply-card":
-        # EM-CR: the reply card's draft, made with create_draft off, and the
-        # recipients the server derives. No provider write.
-        return False
     dry_run = isinstance(body, dict) and body.get("dry_run") is True
     return not (method == "POST" and path in DRY_RUN_POSTS and dry_run)
 
@@ -130,6 +137,7 @@ class Gateway:
         self.calls: list[tuple[str, str, Any]] = []
         self.cards: list[dict[str, Any]] = []
         self.answer = False
+        self.kept_draft = False
         self.channel = True
         self.gets: list[tuple[str, dict[str, Any]]] = []
         self.provider = "gmail"
@@ -192,6 +200,9 @@ class Gateway:
             return {"matched": 5, "affected": 0}
         if path == "/email/reply-card":
             return REPLY_CARD
+        if path == "/email/draft-reply":
+            return {"draft": "Hi", "created": bool((body or {}).get("create_draft")),
+                    "kept_draft": self.kept_draft}
         if path == "/email/reply-card/act":
             return {"ok": True, "action": "send", "to": ["kim@contoso.test"], "cc": [],
                     "mailbox": BOX_TEXT}
@@ -287,7 +298,6 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "update_rule": {"account_id": BOX, "rule_id": "r1", "instructions": "bank mail"},
     "create_rules_from_prompt": {"account_id": BOX, "prompt": "label bank mail"},
     "manage_inbox": {"action": "archive", "message_ids": ["m1", "m2", "m3"]},
-    "draft_reply": {"email_id": "m1", "account_id": BOX, "save": True},
     "auto_categorize_inbox": {"account_id": BOX, "apply": True},
     "delete_rule": {"account_id": BOX, "rule_id": "r1"},
     "run_rules": {"account_id": BOX, "dry_run": False},
@@ -371,20 +381,11 @@ async def test_the_no_card_text_names_no_chat(
     monkeypatch.undo()
     monkeypatch.setattr(agents, "_request", _recording_request(gw))
     with ask_tools.refuse_cards():
-        out = await agents.draft_reply("m1", BOX, save=True)
+        out = await agents.draft_reply("m1", BOX)
     note = out.partition("\n\n")[0]
-    assert "Drafts is unchanged" in note, note
     for text in (agents._NO_CARD_CHANNEL, note):
         assert "this chat" not in text.lower(), text
         assert "cancelled" not in text.lower(), text
-
-
-#: The tools that still work with no card channel: they write nothing and
-#: answer the result, not the no-card text (fix round 1, P1-a).
-NO_CHANNEL_FALLBACK = {
-    "draft_reply": "the draft shows in the chat, and the user saves or sends "
-                   "it in the Email app",
-}
 
 
 @pytest.mark.parametrize("refused", [True, False], ids=["no-channel", "scheduled"])
@@ -405,45 +406,55 @@ async def test_a_headless_caller_writes_nothing(
     else:
         out = await getattr(agents, tool)(**WRITE_CASES[tool])
     assert gw.writes == [], tool
-    if tool in NO_CHANNEL_FALLBACK:
-        assert out != NO_CARD_TEXT, tool
-    else:
-        assert out == NO_CARD_TEXT, (tool, out)
+    assert out == NO_CARD_TEXT, (tool, out)
 
 
-async def test_a_draft_with_no_card_channel_saves_nothing(
-    monkeypatch: pytest.MonkeyPatch, gw: Gateway,
+# ── A reply draft in the member's own Drafts (owner, 2026-10-22) ─────────────
+
+def test_draft_reply_is_an_own_draft_save_and_not_a_card_tool() -> None:
+    assert "draft_reply" not in agents.MAILBOX_WRITE_TOOLS
+    assert set(agents.OWN_DRAFT_SAVES) == {"draft_reply"}
+    for tool, reason in agents.OWN_DRAFT_SAVES.items():
+        assert len(reason) > 40, tool
+
+
+@pytest.mark.parametrize("refused", [True, False], ids=["no-channel", "live-chat"])
+async def test_a_chat_draft_saves_to_drafts_with_no_card(
+    monkeypatch: pytest.MonkeyPatch, gw: Gateway, refused: bool,
 ) -> None:
-    """P1-a: drafting works with no card channel. The draft comes back, no
-    card shows, and no provider draft is made. The first line says it is not
-    saved."""
+    """The owner approved the save with no card (2026-10-22). The draft goes
+    to Drafts in a live chat and in a run with no card channel. The first
+    line keeps the "(saved to Drafts)" mark, so the chat card starts saved."""
     from acb_skills import ask_tools
 
-    monkeypatch.undo()
-    monkeypatch.setattr(agents, "_request", _recording_request(gw))
-    with ask_tools.refuse_cards():
-        out = await agents.draft_reply("m1", BOX, save=True)
+    if refused:
+        with ask_tools.refuse_cards():
+            out = await agents.draft_reply("m1", BOX)
+    else:
+        out = await agents.draft_reply("m1", BOX)
+    assert gw.cards == []
     head, _, body = out.partition("\n\n")
     assert head.startswith(f"Draft from {BOX_TEXT} (mailbox {BOX})")
-    assert "Drafts is unchanged" in head and "Email app" in head
-    # Round 2: the note of an unsaved draft shares no text with the note
-    # of a saved one, so no reader takes it for a save.
-    assert "saved to Drafts" not in head
-    assert body == "Hi"
+    assert "(saved to Drafts)" in head and body == "Hi"
     [(method, path, sent)] = [c for c in gw.calls if c[0] != "GET"]
     assert (method, path) == ("POST", "/email/draft-reply")
-    assert sent["create_draft"] is False
-    assert gw.writes == []
-
-
-async def test_a_draft_in_a_live_chat_still_asks_before_it_saves(gw: Gateway) -> None:
-    out = await agents.draft_reply("m1", BOX, save=True)
-    assert len(gw.cards) == 1 and gw.writes == []
-    assert out.startswith("Cancelled")
-    gw.answer = True
-    await agents.draft_reply("m1", BOX, save=True)
-    [(_m, _p, sent)] = gw.writes
     assert sent["create_draft"] is True
+
+
+async def test_a_chat_draft_says_when_the_members_draft_stays(gw: Gateway) -> None:
+    """The chat never writes over a draft of the member. The first line says
+    the member's draft stays, beside the new one."""
+    gw.kept_draft = True
+    out = await agents.draft_reply("m1", BOX)
+    head = out.partition("\n\n")[0]
+    assert "(saved to Drafts)" in head
+    assert "your earlier draft of this email stays in Drafts as it was" in head
+
+
+async def test_save_false_still_writes_nothing(gw: Gateway) -> None:
+    await agents.draft_reply("m1", BOX, save=False)
+    [(_m, _p, sent)] = [c for c in gw.calls if c[0] != "GET"]
+    assert sent["create_draft"] is False and gw.cards == []
 
 
 # ── What needs no card ───────────────────────────────────────────────────────
@@ -790,7 +801,8 @@ def _gateway_write_tools(source: str) -> set[str]:
 
 def test_each_gateway_write_tool_is_in_the_registry() -> None:
     found = _gateway_write_tools(_AGENT.read_text(encoding="utf-8"))
-    allowed = set(agents.MAILBOX_WRITE_TOOLS) | set(agents.GATEWAY_READ_POSTS)
+    allowed = (set(agents.MAILBOX_WRITE_TOOLS) | set(agents.GATEWAY_READ_POSTS)
+               | set(agents.OWN_DRAFT_SAVES))
     assert found - allowed == set(), (
         "a tool writes through the gateway with no card. Add it to "
         "MAILBOX_WRITE_TOOLS with a card, or to GATEWAY_READ_POSTS with a reason")

@@ -898,10 +898,20 @@ def clean_reply_form(form: dict | None) -> dict | None:
         "recipients": {"reply": reply, "reply_all": reply_all},
         "reply_all": form.get("reply_all") is True,
         "body": body,
+        # The local id of the draft that the card wrote. The member's Discard
+        # names it, and the gateway checks it before a trash.
+        "draft_id": _draft_id(form.get("draft_id")),
         "note": _clip_line(form.get("note")),
         # A notice names addresses, so it is never cut: an over-long one fails.
         "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
     }
+
+
+def _draft_id(value: Any) -> str:
+    """The draft id of a reply form, whole, or "" for none. An id is never
+    cut, because a cut id names no draft."""
+    did = str(value or "").strip()
+    return did if 0 < len(did) <= 64 and did.isprintable() and " " not in did else ""
 
 
 def _whole_line(value: Any) -> str:
@@ -1013,9 +1023,7 @@ def confirmation_channel_open() -> bool:
     (``_active_run_queue``) and path C (the relay thread). A tool reads it
     AFTER a denial, to tell a refusal from a run with no live chat (WS-17
     EM-T13a). A tool may also read it BEFORE a card, but only to choose a
-    narrower act that writes less: ``draft_reply`` of the email assistant
-    returns an unsaved draft when no card can show (WS-17 EM-G11c1). It
-    never approves a write. ``request_confirmation`` stays the one gate,
+    narrower act that writes less. It never approves a write. ``request_confirmation`` stays the one gate,
     and it fails closed, so a drift here can change a message or skip a
     write, and never adds one.
     A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).

@@ -55,6 +55,11 @@ export interface ReplyForm {
   body: string;
   /** A line from the tool, for example when it wrote no draft. */
   note: string;
+  /**
+   * The local id of the draft that the card wrote to Drafts (owner,
+   * 2026-10-22). The member's Discard names it, and only it can go.
+   */
+  draftId?: string;
 }
 
 export type ReplyAction = "send" | "save";
@@ -113,7 +118,31 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
     replyAll: v.reply_all === true,
     body: text(v.body, MAX_REPLY_BODY),
     note: text(v.note),
+    draftId: text(v.draft_id, 64),
   };
+}
+
+/**
+ * The member's own Discard of the draft that the card wrote. The card calls
+ * it on the member's click, beside the REJECT that ends the tool. The model
+ * never calls it, so a card that times out keeps its draft. The gateway
+ * trashes only this draft, and only while the member did not edit it. A
+ * failure keeps the draft in Drafts, which loses nothing.
+ */
+export async function discardReplyDraft(
+  form: ReplyForm,
+  post: typeof fetch = fetch,
+): Promise<void> {
+  if (!form.draftId) return;
+  try {
+    await post("/api/email/reply-card/discard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: form.messageId, draft_id: form.draftId }),
+    });
+  } catch {
+    // The draft stays in Drafts. Nothing was sent.
+  }
 }
 
 /** The recipients the card shows, for the member's choice. */

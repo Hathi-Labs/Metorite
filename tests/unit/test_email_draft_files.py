@@ -297,7 +297,7 @@ async def test_a_saved_reply_draft_keeps_every_to(monkeypatch) -> None:
 
     class _Db:
         async def execute(self, *a, **kw):
-            return SimpleNamespace(fetchone=lambda: row)
+            return SimpleNamespace(fetchone=lambda: row, fetchall=lambda: [])
 
     @asynccontextmanager
     async def session():
@@ -339,7 +339,7 @@ async def test_a_saved_reply_draft_keeps_every_to(monkeypatch) -> None:
     monkeypatch.setattr(dr, "resolve_self", me)
     out = await dr.save_draft(
         dr.SaveDraftRequest(account_id="a1", message_id="m1", body="Hi"), USER)
-    assert out == {"created": True, "id": "local-1"}
+    assert out == {"created": True, "id": "local-1", "kept_draft": False}
     assert made[0]["to"] == ["ravi@contoso.test", "priya@contoso.test"]
     assert upserts[0]["to_addresses"] == ["ravi@contoso.test", "priya@contoso.test"]
 

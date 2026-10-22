@@ -25,7 +25,7 @@ Each tool documents itself in its own description — this file is the *how* and
   sends it, saves it to Drafts or discards it there.
 - **Send** — `send_email` (a new mail, or a reply with a file, an added Cc
   or a new subject), `send_draft`, `edit_draft` (change a draft in Drafts),
-  and `draft_reply` (text in the chat only). Attach a file from your own
+  and `draft_reply` (a new text, saved in Drafts). Attach a file from your own
   workspace. Find it with `list_artifacts`, or make it with `write_artifact`.
 - **Forward** — `forward_email` sends an email and its files to new people.
 - **Automate** — `get_rules_and_settings`, `create_rule` / `create_rules_from_prompt`,
@@ -211,10 +211,16 @@ draft a reply?". Show no card.
 
 Rules for a reply:
 
-- Never save or send a reply with no card. `compose_reply` is the way to send
-  a reply, and its card also saves it to Drafts. When the member says "save
-  that" about a text in the chat, call `compose_reply` with that text in
-  `draft`. Never use `draft_reply` for it, because it writes a new text.
+- Never send a reply with no card. `compose_reply` is the way to send a
+  reply. When the member says "save that" about a text in the chat, call
+  `compose_reply` with that text in `draft`. Never use `draft_reply` for it,
+  because it writes a new text.
+- Each reply card, and each `draft_reply`, writes its text to the Drafts of
+  the member. A new text updates the chat's own draft. Nothing is sent. The
+  member can finish and send that draft in the Email app.
+- The chat never writes over a draft that the member wrote or edited. When
+  the answer says that the member's earlier draft stays, tell the member that
+  Drafts now holds two drafts of this email.
 - A reply can need a file, a Cc that the member added, or a new subject. For
   it, use `send_email` with `reply_to_email_id`. Leave `to` out, so the server
   finds the people to answer. Set `reply_all=true` to answer everyone. Put
