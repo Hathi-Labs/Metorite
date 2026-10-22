@@ -29,7 +29,7 @@ The owner's amendment of 2026-10-09 (one model per turn, amends §4.4):
 * A hinted tool no longer raises the NEXT request. :class:`ToolHintRecorder`
   logs ``ai_route.hint_ignored`` for tuning, and the tier stays.
 * The turn-kind question of §4.3 (:func:`turn_kind`). It asks the System-1
-  agent once, on ``tier-fast``, and waits at most 1.5 s.
+  agent once, on ``tier-fast``, and waits at most :data:`TURN_KIND_TIMEOUT_S`.
 * :class:`TierPolicyMiddleware`, which sets ``options["model"]`` on each
   model request of ONE run, and :class:`TierPolicyProvider`, which adds it
   to the run's own view of the agent (§4.5). The executor attaches it, the
@@ -144,8 +144,11 @@ HINT_IGNORED = "ai_route.hint_ignored"
 # ── The turn-kind question (§4.3) ───────────────────────────────────────────
 
 #: The longest the executor waits for the turn kind. A slower answer is
-#: ``chat``, so the turn stays on the default.
-TURN_KIND_TIMEOUT_S = 1.5
+#: ``chat``, so the turn stays on the default. 3.0 s since 2026-10-22:
+#: production measured the answers at 1.1 to 1.5 s, so a 1.5 s wait timed out
+#: on 41 of 80 turns (51%), and those turns could never go powerful. A short
+#: message asks no question, so it waits for nothing.
+TURN_KIND_TIMEOUT_S = 3.0
 
 #: A message with fewer words skips the question and reads as ``chat``.
 SHORT_MESSAGE_WORDS = 12
@@ -468,7 +471,7 @@ async def turn_kind(
             id="effort", question=EFFORT_QUESTION, kind="yes_no",
             options=system_one.YES_NO,
         ))
-    # So the 1.5 s counts the exchange, not an import. An import fault reads
+    # So the wait counts the exchange, not an import. An import fault reads
     # as no answer, below.
     with contextlib.suppress(Exception):
         system_one.warm()
