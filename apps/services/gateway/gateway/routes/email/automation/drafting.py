@@ -3393,6 +3393,11 @@ class DraftUpsertRequest(BaseModel):
     # A Gmail save rebuilds the whole message, so it still needs ``body``,
     # and ``keep_html`` keeps its HTML. Only an update by ``draft_id`` reads it.
     keep_body: bool = False
+    # §21 fix round 2: the email assistant's ``edit_draft`` sets it. Then a
+    # text with hidden characters is refused, and NBSP and trailing spaces
+    # are normalised before the save. The Email app's composer sends False,
+    # so its saves are as before.
+    from_chat: bool = False
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3474,6 +3479,20 @@ async def _gmail_signed_html(
     return text_html
 
 
+def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
+    """A chat save of a draft (§21 fix round 2): 422 for hidden characters in
+    the subject or the text, else the text with NBSP and trailing spaces
+    normalised (``reply_card.visible_spacing``)."""
+    from acb_skills.reply_card import visible_spacing
+
+    try:
+        check_draft_text(req.subject, req.body)
+    except HiddenDraftText:
+        raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
+    subject = " ".join(visible_spacing(req.subject).split())
+    return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -3487,6 +3506,8 @@ async def upsert_draft(
     neither → a standalone draft. Returns the persisted message so the UI can show
     it in the Drafts folder and in-thread at once."""
     _refuse_bad_draft_id(req.draft_id)
+    if req.from_chat:
+        req = _chat_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         # The signature lives IN the draft body so the upstream (provider)
@@ -3661,6 +3682,27 @@ DRAFT_TEXT_READ_FAILED_DETAIL = (
     "not check it. Nothing was sent.")
 
 
+#: The answer when a draft holds hidden characters (§21 fix round 2). The
+#: chat reads it, so it says what to do next in the chat.
+DRAFT_HIDDEN_TEXT_DETAIL = (
+    "This draft holds hidden characters, so it was not sent. Clean the text with "
+    "edit_draft, and show the card again.")
+
+
+class HiddenDraftText(ValueError):
+    """A part of a draft holds a character that a reader cannot see."""
+
+
+def check_draft_text(*parts: Any) -> None:
+    """Raise :class:`HiddenDraftText` when a part holds hidden content: a tag
+    character, a zero-width character, a bidi control (``reply_card.
+    has_hidden_text``). NBSP and trailing spaces are not hidden."""
+    from acb_skills.reply_card import has_hidden_text
+
+    if any(has_hidden_text(str(p or "")) for p in parts):
+        raise HiddenDraftText(DRAFT_HIDDEN_TEXT_DETAIL)
+
+
 async def draft_text_seal(
     provider: Any, provider_message_id: str, subject: Any, body_text: Any, signature: str,
 ) -> str:
@@ -3670,11 +3712,17 @@ async def draft_text_seal(
     Each part is folded as ``_fold_draft`` folds it (the signature out, the
     whitespace and the case folded), so a sync that only reflows text keeps
     the seal. Any edit of a word changes it. A failed or slow read of the
-    provider raises, and the caller sends nothing."""
+    provider raises, and the caller sends nothing.
+
+    A part with hidden content raises :class:`HiddenDraftText` (§21 fix
+    round 2): the fold keeps a zero-width character, so a seal of it would
+    cover the hidden data and not catch it."""
     import hashlib
 
+    check_draft_text(subject, body_text)
     live = await asyncio.wait_for(
         provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
+    check_draft_text(_live_draft_text(live))
     parts = (_normalize_text(str(subject or "")), _fold_draft(signature, str(body_text or "")),
              _fold_draft(signature, _live_draft_text(live)))
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
@@ -3686,6 +3734,8 @@ async def _check_text_seal(provider: Any, drow: Any, expect: DraftExpect, signat
     try:
         seal = await draft_text_seal(provider, drow.provider_message_id, drow.subject,
                                      drow.body_text, signature)
+    except HiddenDraftText as exc:
+        raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from exc
     except Exception as exc:  # any failed read sends nothing
         raise HTTPException(status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
     if seal != expect.text_digest:
@@ -3751,6 +3801,8 @@ async def draft_seal(
             try:
                 seal = await draft_text_seal(sess.provider, drow.provider_message_id,
                                              drow.subject, drow.body_text, signature)
+            except HiddenDraftText as exc:
+                raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from exc
             except Exception as exc:  # the card shows nothing it cannot seal
                 raise HTTPException(
                     status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
@@ -3803,6 +3855,14 @@ async def send_draft_endpoint(
                 "WHERE account_id = :aid"
             ), {"aid": req.account_id})).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
+            # §21 fix round 2: a send from a chat card (``expect``) never
+            # carries hidden characters, also a schedule stored before the seal.
+            if req.expect is not None:
+                try:
+                    check_draft_text(drow.subject, drow.body_text)
+                except HiddenDraftText:
+                    raise HTTPException(
+                        status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
             # §21 fix round 1 (P1-b): the text is the text the card sealed,
             # checked before any provider write. A schedule fires through here.
             if req.expect is not None and req.expect.text_digest:

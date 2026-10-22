@@ -643,6 +643,22 @@ def _check_lists(lists: dict[str, list[str]]) -> None:
                     detail=f"An address of the draft {why}, so the card cannot show it.")
 
 
+def _refuse_hidden_draft(row: Any) -> None:
+    """422 for a draft whose subject or text holds hidden characters (§21 fix
+    round 2). The card shows the cleaned text, and the send would carry the
+    raw one, so no card shows."""
+    from gateway.routes.email.automation.drafting import (
+        DRAFT_HIDDEN_TEXT_DETAIL,
+        HiddenDraftText,
+        check_draft_text,
+    )
+
+    try:
+        check_draft_text(row.subject, row.body_text)
+    except HiddenDraftText:
+        raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
+
+
 def _refuse_new_bcc(rows: Sequence[dict[str, Any]]) -> None:
     if any(r["kind"] == KIND_BCC and r["class"] == CLASS_NEW for r in rows):
         raise HTTPException(status_code=422, detail=BCC_NEW_REFUSED)
@@ -663,7 +679,9 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
     draft, 502 for a provider that gives no text. A seam, so a test passes a
     fake."""
     from gateway.routes.email.automation.drafting import (
+        DRAFT_HIDDEN_TEXT_DETAIL,
         DRAFT_TEXT_READ_FAILED_DETAIL,
+        HiddenDraftText,
         _account_signature,
         draft_text_seal,
     )
@@ -679,6 +697,8 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
             try:
                 return await draft_text_seal(sess.provider, row.provider_message_id,
                                              row.subject, row.body_text, signature)
+            except HiddenDraftText as exc:  # §21 fix round 2
+                raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from exc
             except Exception as exc:  # nothing shows or goes that is not sealed
                 raise HTTPException(
                     status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
@@ -707,6 +727,7 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
             "id": req.draft_id, "aid": req.account_id, "uid": owner})).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Draft not found")
+        _refuse_hidden_draft(row)
         lists = _lists_of(row)
         _check_lists(lists)
         senders = await thread_senders(db, req.account_id, row.thread_id)

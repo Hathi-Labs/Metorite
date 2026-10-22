@@ -4617,6 +4617,12 @@ def _held_sent_text(res: dict[str, Any], lead: str) -> str:
     return f"{lead}: {'; '.join(parts)}.{tail}"
 
 
+#: The answer for a draft with hidden characters (§21 fix round 2).
+_HIDDEN_DRAFT_ANSWER = (
+    "This draft holds hidden characters, so I cannot send it. I can clean it with "
+    "edit_draft and show it again.")
+
+
 async def _draft_seal(account_id: str, draft_id: str, lead: str) -> dict[str, Any] | str:
     """The seal of a draft's text, for its send card (§21 fix round 1, P1-b).
 
@@ -4628,7 +4634,10 @@ async def _draft_seal(account_id: str, draft_id: str, lead: str) -> dict[str, An
         seal = await _get("/email/drafts/seal", {"account_id": account_id,
                                                  "draft_id": draft_id}) or {}
     except GatewayError as exc:
-        if exc.status in (404, 405, 409, 422, 502):
+        if exc.status == 422:
+            # §21 fix round 2: hidden characters in the draft.
+            return (f"{lead}. {_HIDDEN_DRAFT_ANSWER}")
+        if exc.status in (404, 405, 409, 502):
             return (f"{lead}. The text of the draft could not be read to check it, so "
                     "nothing was sent. Try again in a moment.")
         raise
@@ -4806,6 +4815,15 @@ async def edit_draft(
 
     Shows the member the changed draft on a card. Sends nothing: send it
     after with send_draft, which shows its own card."""
+    # §21 fix round 2: no hidden character goes into a draft from the chat.
+    # NBSP and trailing spaces are normalised, and the gateway checks again.
+    from acb_skills.reply_card import has_hidden_text, visible_spacing  # noqa: PLC0415
+
+    if any(has_hidden_text(t) for t in (body, subject) if t is not None):
+        return ("Nothing changed. The new text holds hidden characters. Write it "
+                "again in plain text.")
+    body = visible_spacing(body) if body is not None else None
+    subject = " ".join(visible_spacing(subject).split()) if subject is not None else None
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Nothing changed. {sender}"
@@ -4864,10 +4882,14 @@ async def edit_draft(
             "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
             "subject": new_subject, "body": text,
             "keep_html": keep_body, "keep_body": keep_body,
+            "from_chat": True,
         }) or {}
     except GatewayError as exc:
         if exc.status not in (409, 422):
             raise
+        if "hidden characters" in str(getattr(exc, "detail", "") or exc):
+            return ("Nothing changed. The draft holds hidden characters. Read it with "
+                    "read_email, and pass its whole text again in plain text in body.")
         return (f"Nothing changed. {exc}. Read the draft with read_email, and "
                 "pass its whole text, with the change, in body.")
     lost = (" Its formatting and its images could not be kept, so it now "

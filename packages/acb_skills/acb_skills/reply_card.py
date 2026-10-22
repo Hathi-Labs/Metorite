@@ -54,6 +54,7 @@ __all__ = [
     "REPLY_ANSWER_PREFIX",
     "ReplyChoice",
     "clean_reply_body",
+    "has_hidden_text",
     "is_invisible_char",
     "is_lookalike_space",
     "looks_like_reply_answer",
@@ -63,6 +64,7 @@ __all__ = [
     "reply_answer_digest",
     "reply_body_refusal",
     "take_reply_answer",
+    "visible_spacing",
 ]
 
 #: The prefix of an Approve with a payload. The rows card uses the same one
@@ -279,6 +281,42 @@ def reply_body_refusal(text: str) -> str | None:
 
 _HIDDEN_REFUSAL = ("The reply text holds hidden characters that change what the reader "
                    "sees, so nothing was sent or saved. Ask for the reply again.")
+
+
+def visible_spacing(text: str) -> str:
+    """*text* with only the visible normalisations of :func:`clean_reply_body`:
+    one kind of line end, a plain space for each space that only looks like
+    one (NBSP), no space at the end of a line, one blank line for a run, and
+    no blank edge. It removes no character that a reader cannot see.
+
+    The draft path saves this form (§21 fix round 2): NBSP and trailing
+    spaces occur in real mail, so they are normalised and never refused."""
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw = "".join("\n" if ch in _LINE_BREAKS else (" " if is_lookalike_space(ch) else ch)
+                  for ch in raw)
+    kept: list[str] = []
+    for line in raw.split("\n"):
+        line = line.rstrip()
+        if not line and kept and not kept[-1]:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def has_hidden_text(text: str) -> bool:
+    """True when *text* holds a character that a reader cannot see, or that
+    changes what the reader sees (§21 fix round 2): a tag character, a
+    zero-width character, a bidi control, a stray variation selector, or a
+    long run of marks. An emoji joiner and a presentation selector inside a
+    real emoji are not hidden. NBSP and trailing spaces are not hidden: they
+    are normalised (:func:`visible_spacing`).
+
+    THE one test of a draft's text. It holds exactly when the one cleaning
+    (:func:`clean_reply_body`) would remove a character."""
+    raw = str(text or "")
+    if reply_body_refusal(raw):
+        return True
+    return clean_reply_body(raw) != visible_spacing(raw)
 
 
 @dataclass(frozen=True)
