@@ -20945,6 +20945,14 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
 5. **P3.** The draft tools name an in-chat step. Only the email agent holds a
    tool of the held card, and a test holds that.
 
+**Fix round 2 (2026-10-22).** The draft path was the one send path with no
+check of hidden text. The card showed the cleaned text, and the send carried
+the raw draft. Now `reply_card.has_hidden_text` is the one test. A chat send
+refuses a draft with a tag character or a zero-width character at the card, at
+the send and at the fire of a schedule. `edit_draft` and a chat save refuse
+such a text, and they normalise NBSP and trailing spaces. The Email app's
+composer is unchanged. Fence: `tests/unit/test_held_hidden_text.py`.
+
 **The fences.**
 
 | Rule | Fence |
