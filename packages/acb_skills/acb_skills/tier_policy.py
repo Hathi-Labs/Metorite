@@ -136,7 +136,7 @@ TOOL_HINTS: dict[str, str] = {
 
 #: Why a request got its tier. ``ai_route.chosen`` carries one of these.
 #: ``tool_hint`` left on 2026-10-09: a hint no longer sets a tier.
-REASONS: tuple[str, ...] = ("default", "turn_kind", "effort")
+REASONS: tuple[str, ...] = ("default", "turn_kind", "effort", "context")
 
 #: The log line of a hinted tool that the turn did not follow (2026-10-09).
 HINT_IGNORED = "ai_route.hint_ignored"
@@ -161,8 +161,34 @@ TURN_QUESTION = (
     "chat: answer, read, look up or summarise. "
     "code: write, run or fix code. "
     "plan: plan many steps, schedule or rebalance work. "
-    "analysis: a hard analysis, a forecast or a conflict read with many parts."
+    "analysis: a hard analysis, a forecast or a conflict read with many parts, "
+    "a comparison of options or offers with a choice, or a reply or a "
+    "document that needs judgement."
 )
+
+# ── The size of the turn (owner, 2026-10-22) ─────────────────────────────────
+
+#: A turn whose history and context hold at least this many tokens starts on
+#: :data:`TIER_POWERFUL` (reason ``context``). The owner asked that a long
+#: thread or a lot of context switch to the powerful tier, and that ordinary
+#: turns stay on fast or balanced. The size is known before the first
+#: request, so the turn still picks ONE model (2026-10-09).
+CONTEXT_POWERFUL_TOKENS = 24_000
+
+#: Characters for each token when the turn's size is counted. 3, not 4, so a
+#: language that tokenizes worse than English still counts as long.
+CONTEXT_CHARS_PER_TOKEN = 3
+
+
+def turn_tokens(message: str | None, history: Iterable[Any] | None = (),
+                extra: str | None = "") -> int:
+    """About how many tokens the turn starts with: the member's message, the
+    earlier messages of the chat and any added context. Never raises."""
+    total = len(str(message or "")) + len(str(extra or ""))
+    for item in history or ():
+        content = item.get("content") if isinstance(item, dict) else item
+        total += len(content) if isinstance(content, str) else len(str(content or ""))
+    return total // CONTEXT_CHARS_PER_TOKEN
 
 # ── The effort from the member's words (owner, 2026-10-07) ───────────────────
 
@@ -325,7 +351,8 @@ class Choice:
     reason: str
 
 
-def choose(*, default: str, kind: str, effort: str | None) -> Choice:
+def choose(*, default: str, kind: str, effort: str | None,
+           context_tokens: int = 0) -> Choice:
     """The tier of a TURN: every main model request of it (§4.1 and §5).
 
     One model per turn (owner, 2026-10-09, amends §4.4). The tier is set
@@ -350,6 +377,12 @@ def choose(*, default: str, kind: str, effort: str | None) -> Choice:
     if mode == "max":
         return Choice(_at_least(default, MAX_TIER), kind, "effort")
     base = tier_for_kind(kind, default)
+    # A long turn (owner, 2026-10-22): a long thread, many files or a long
+    # chat. The powerful tier reads it whole and keeps it straight.
+    if context_tokens >= CONTEXT_POWERFUL_TOKENS:
+        long = _at_least(base, TIER_POWERFUL)
+        if long != base:
+            return Choice(long, kind, "context")
     if mode == "thinking":
         stepped = _at_least(base, rung_up(default))
         if stepped != base:
@@ -518,10 +551,13 @@ class RunTierPolicy:
     effort: str
     emit: Emit | None = None
     _requests: int = 0
+    #: The size of the turn at its start (:func:`turn_tokens`).
+    context_tokens: int = 0
 
     def run_choice(self) -> Choice:
         """The choice for the whole turn. No tool call changes it."""
-        return choose(default=self.default, kind=self.kind, effort=self.effort)
+        return choose(default=self.default, kind=self.kind, effort=self.effort,
+                      context_tokens=self.context_tokens)
 
     def run_tier(self) -> str:
         """The tier of the whole run (§4.5).

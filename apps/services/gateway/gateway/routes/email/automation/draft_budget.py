@@ -53,6 +53,44 @@ MIN_LATEST_CHARS = 4000
 MIN_FILE_CHARS = 1500
 
 
+# ── The tier by the size of the mail (owner, 2026-10-22) ─────────────────────
+#
+# "Use tier fast or balanced for regular things, and switch to powerful when
+# there's a lot of context or a long thread." The drafter's own tier stays
+# for a short mail. A mail with files, or with some length, takes at least
+# balanced. A long thread or a lot of context takes powerful. :func:`plan_draft`
+# then still checks the window, so a tier that cannot hold the mail is never
+# used: fitting the mail wins over the strength of the tier.
+
+#: The ladder of the drafting tiers, weakest first.
+DRAFT_LADDER: tuple[str, ...] = ("tier-fast", "tier-balanced", "tier-powerful")
+#: Characters of mail (thread, latest message and files) for tier-balanced.
+BALANCED_CHARS = 12_000
+#: Characters of mail for tier-powerful: about 20,000 tokens.
+POWERFUL_CHARS = 60_000
+
+
+#: The highest tier that a draft the member WAITS for may take. tier-powerful
+#: can be a reasoning model that needs 20 to 60 s, and the reply card waits
+#: inside a 60 s call (review of #1219, P2). A background draft has no cap.
+INTERACTIVE_CEILING = "tier-balanced"
+
+
+def tier_for_size(model: str, chars: int, *, has_files: bool = False,
+                  ceiling: str | None = None) -> str:
+    """*model*, raised by the size of the mail, never lowered, and never
+    raised above *ceiling*. A tier off the ladder (an admin's
+    ``provider/model``) stays."""
+    if model not in DRAFT_LADDER:
+        return model
+    want = ("tier-powerful" if chars >= POWERFUL_CHARS
+            else "tier-balanced" if (chars >= BALANCED_CHARS or has_files)
+            else model)
+    if ceiling in DRAFT_LADDER:
+        want = DRAFT_LADDER[min(DRAFT_LADDER.index(want), DRAFT_LADDER.index(ceiling))]
+    return DRAFT_LADDER[max(DRAFT_LADDER.index(model), DRAFT_LADDER.index(want))]
+
+
 @dataclass
 class DraftParts:
     """The parts of the drafter's prompt that can be cut, in characters."""
