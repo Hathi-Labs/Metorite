@@ -121,6 +121,10 @@ class FakeDb:
         self.senders: list[str] = [KNOWN]
         self.files: list[Any] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        #: The seal of the draft's text NOW (``held_card.seal_of``). A test
+        #: changes it to stand for an edit after the card.
+        self.seal = "a" * 64
+        self.seals: list[str] = []
         #: The mail to forward, and the files of the member's own mailbox.
         self.mail: dict[str, Any] | None = {"id": MAIL, "account_id": BOX, "subject": "Quote"}
         self.mail_files: list[Any] = [
@@ -176,8 +180,13 @@ def install_db(monkeypatch, db: FakeDb | None = None) -> FakeDb:
 
     from gateway.routes.email import core
 
+    async def seal(owner: str, account_id: str, draft_id: str) -> str:
+        db.seals.append(draft_id)
+        return db.seal
+
     monkeypatch.setattr(hc, "_tenant_session", session)
     monkeypatch.setattr(hc, "resolve_self", me)
+    monkeypatch.setattr(hc, "seal_of", seal)
     monkeypatch.setattr(core, "_assert_account_owner", owner)
     return db
 

@@ -648,6 +648,42 @@ def _refuse_new_bcc(rows: Sequence[dict[str, Any]]) -> None:
         raise HTTPException(status_code=422, detail=BCC_NEW_REFUSED)
 
 
+#: The draft row that a seal reads (§21 fix round 1, P1-b).
+SEAL_ROW_SQL = (
+    "SELECT em.provider_message_id, em.subject, em.body_text "
+    "FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id "
+    "WHERE em.id = CAST(:id AS uuid) AND em.account_id = CAST(:aid AS uuid) "
+    "AND ea.user_id = :uid AND LOWER(em.folder) IN ('drafts', 'draft')"
+)
+
+
+async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
+    """The seal of a draft's text NOW (``drafting.draft_text_seal``): the
+    subject, the stored text and the live text at the provider. 404 for no
+    draft, 502 for a provider that gives no text. A seam, so a test passes a
+    fake."""
+    from gateway.routes.email.automation.drafting import (
+        DRAFT_TEXT_READ_FAILED_DETAIL,
+        _account_signature,
+        draft_text_seal,
+    )
+    from gateway.routes.email.core import provider_session
+
+    async with _tenant_session() as db:
+        row = (await db.execute(text(SEAL_ROW_SQL), {
+            "id": draft_id, "aid": account_id, "uid": owner})).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        signature = await _account_signature(db, account_id)
+        async with provider_session(db, owner, account_id=account_id) as sess:
+            try:
+                return await draft_text_seal(sess.provider, row.provider_message_id,
+                                             row.subject, row.body_text, signature)
+            except Exception as exc:  # nothing shows or goes that is not sealed
+                raise HTTPException(
+                    status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
+
+
 def _when(send_at: str) -> datetime:
     from gateway.routes.email.automation import send_later
 
@@ -705,6 +741,8 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         "account_id": req.account_id, "draft_id": req.draft_id,
         "send_at": when.isoformat() if when else "",
         "held": lists, "rows": rows,
+        # §21 fix round 1 (P1-b): the text that the card showed.
+        "seal": await seal_of(owner, req.account_id, req.draft_id),
     }
     card_id = await write_record(user, record)
     _log.info("email.held_card_built", kind=req.kind, rows=len(rows), new=new)
@@ -1130,10 +1168,22 @@ async def _act_draft(
     rec: dict[str, Any], ticked: dict[str, list[str]], background: BackgroundTasks,
     user: UserContext,
 ) -> dict[str, Any]:
+    from gateway.routes.email.automation.drafting import DRAFT_TEXT_CHANGED_DETAIL
+
+    owner = _owner(user)
     draft_id = str(rec["draft_id"])
+    # §21 fix round 1 (P1-b): the text is still the text the card showed,
+    # before the narrowing writes the draft. A record with no seal sends nothing.
+    if not rec.get("seal") or await seal_of(owner, rec["account_id"], draft_id) != rec["seal"]:
+        raise HTTPException(status_code=409, detail=DRAFT_TEXT_CHANGED_DETAIL)
+    seal = rec["seal"]
     if not _same(ticked, rec["held"]):
         draft_id = await _narrow_draft(user, rec, ticked)
-    expect = DraftExpect(to=ticked[KIND_TO], cc=ticked[KIND_CC], bcc=ticked[KIND_BCC])
+        # The narrowing wrote the draft, so the send and the schedule carry
+        # the seal of what it wrote.
+        seal = await seal_of(owner, rec["account_id"], draft_id)
+    expect = DraftExpect(to=ticked[KIND_TO], cc=ticked[KIND_CC], bcc=ticked[KIND_BCC],
+                         text_digest=seal)
     if rec["kind"] == "schedule":
         from gateway.routes.email.automation.send_later import (
             ScheduleRequest,

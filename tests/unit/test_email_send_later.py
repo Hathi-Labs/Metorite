@@ -123,6 +123,9 @@ def gw(monkeypatch) -> SimpleNamespace:
                     "to_addresses": [{"email": "ravi@contoso.test"}],
                     "cc_addresses": [], "bcc_addresses": [],
                     "body_text": "Hi Ravi,\n\nThe quote."}
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b)
+            return {"text_digest": "a" * 64, "subject": "Quote",
+                    "body_text": "Hi Ravi,\n\nThe quote."}
         return {}
 
     async def post(path, body):
@@ -148,7 +151,8 @@ async def test_the_tool_shows_the_time_and_posts_what_it_showed(gw) -> None:
     assert card["close_on_steer"] is True
     [(path, body)] = gw.posts
     assert path == "/email/drafts/schedule"
-    assert body["expect"] == {"to": ["ravi@contoso.test"], "cc": [], "bcc": []}
+    assert body["expect"] == {"to": ["ravi@contoso.test"], "cc": [], "bcc": [],
+                              "text_digest": "a" * 64}  # §21 fix round 1 (P1-b)
     assert body["send_at"] == "2099-01-05T09:00:00+05:30"
     assert "schedule_id s1" in out
 

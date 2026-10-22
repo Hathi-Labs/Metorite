@@ -118,7 +118,8 @@ async def test_the_send_takes_the_ticked_recorded_rows(_world) -> None:
     assert out["to"] == [F.KNOWN] and out["cc"] == [F.COLLEAGUE]
     sent = _world["sends"].sent
     assert len(sent) == 1
-    assert sent[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [F.COLLEAGUE], "bcc": []}
+    assert sent[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [F.COLLEAGUE], "bcc": [],
+                                         "text_digest": "a" * 64}
 
 
 async def test_an_unticked_row_is_not_sent_also_when_the_draft_holds_it(_world) -> None:
@@ -254,7 +255,8 @@ async def test_the_schedule_stores_only_the_ticked_set(_world, monkeypatch) -> N
     await F.record_answer(card["card_id"], answer)
     out = await _act(card["card_id"], answer)
     assert out["action"] == "schedule"
-    assert stored[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [], "bcc": []}
+    assert stored[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [], "bcc": [],
+                                           "text_digest": "a" * 64}
     assert _world["sends"].sent == []
 
 
@@ -443,3 +445,41 @@ def test_each_kind_takes_only_its_own_fields() -> None:
                         ("new", {"message_id": F.MAIL}), ("draft", {"email": "a@b.test"})):
         with pytest.raises(ValidationError):
             hc.HeldCardRequest(kind=kind, account_id=F.BOX, **extra)
+
+
+
+# ── 8. The text is sealed (fix round 1, P1-b) ────────────────────────────────
+
+
+async def test_an_edit_after_the_card_sends_nothing(_world) -> None:
+    """The card showed one text, and edit_draft changed it before the act.
+    Mutation: drop the seal check of ``_act_draft`` → red."""
+    card = await _card()
+    answer = F.rows_answer(*[r["id"] for r in card["rows"]])
+    await F.record_answer(card["card_id"], answer)
+    _world["db"].seal = "b" * 64  # edit_draft wrote a new text
+    with pytest.raises(HTTPException) as e:
+        await _act(card["card_id"], answer)
+    assert e.value.status_code == 409 and "text" in e.value.detail
+    assert _world["sends"].sent == [] and _world["sends"].narrowed == []
+
+
+async def test_a_narrowed_draft_goes_with_the_seal_of_what_was_written(_world) -> None:
+    card = await _card()
+    rows = _ids(card)
+    answer = F.rows_answer(rows[F.KNOWN]["id"])
+    await F.record_answer(card["card_id"], answer)
+    seals = iter(["a" * 64, "c" * 64])
+
+    async def seal(owner, account_id, draft_id):
+        return next(seals)
+
+    import gateway.routes.email.automation.held_card as mod
+
+    mod_seal = mod.seal_of
+    mod.seal_of = seal
+    try:
+        await _act(card["card_id"], answer)
+    finally:
+        mod.seal_of = mod_seal
+    assert _world["sends"].sent[0].expect.text_digest == "c" * 64

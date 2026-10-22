@@ -4618,6 +4618,26 @@ def _held_sent_text(res: dict[str, Any], lead: str) -> str:
     return f"{lead}: {'; '.join(parts)}.{tail}"
 
 
+async def _draft_seal(account_id: str, draft_id: str, lead: str) -> dict[str, Any] | str:
+    """The seal of a draft's text, for its send card (§21 fix round 1, P1-b).
+
+    ``GET /email/drafts/seal`` answers the subject and the text that the
+    card shows, and ``text_digest``, which goes in ``expect``. The send then
+    sends nothing when the text changed after the card. Any refusal is the
+    tool's answer, and nothing is sent."""
+    try:
+        seal = await _get("/email/drafts/seal", {"account_id": account_id,
+                                                 "draft_id": draft_id}) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 405, 409, 422, 502):
+            return (f"{lead}. The text of the draft could not be read to check it, so "
+                    "nothing was sent. Try again in a moment.")
+        raise
+    if not isinstance(seal, dict) or not seal.get("text_digest"):
+        return f"{lead}. The text of the draft could not be checked, so nothing was sent."
+    return seal
+
+
 # H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
 # this send, as it keeps ``compose_reply``. The tool takes no recipient: the
 # draft row holds them, the card lists each one, and a list that does not
@@ -4676,14 +4696,17 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "characters, so the card cannot show it. Ask the member for the "
             "right address, and fix it with edit_draft."
         )
-    detail, context = _draft_card(sender, draft.get("subject"), lists)
+    seal = await _draft_seal(account_id, draft_id, "Not sent")
+    if isinstance(seal, str):
+        return seal
+    detail, context = _draft_card(sender, seal.get("subject"), lists)
     if not context:
         return (
             "Not sent. The draft has too many recipients to show on one card. "
             "Ask the member which recipients to keep, and take the rest out "
             "with edit_draft."
         )
-    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
+    context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"))
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
@@ -4693,7 +4716,8 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     try:
         await _post(
             "/email/drafts/send",
-            {"account_id": account_id, "draft_id": draft_id, "expect": lists},
+            {"account_id": account_id, "draft_id": draft_id,
+             "expect": {**lists, "text_digest": seal["text_digest"]}},
         )
     except GatewayError as exc:
         if exc.status != 409:
@@ -4811,6 +4835,13 @@ async def edit_draft(
         context += "\n\nThe text of the draft stays as it is."
     else:
         context = _with_draft_text(context, text)
+    # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
+    # and the card says so first. The send would not go anyway: the schedule
+    # holds the seal of the old text.
+    pending = await _pending_schedules(draft_id)
+    if pending:
+        when = ", ".join(str(r.get("send_at") or "") for r in pending)
+        context = f"This cancels the send scheduled for {when}.\n\n{context}"
     refusal = await _card_refusal(
         "Save these changes to the draft?",
         detail + " · Nothing is sent.",
@@ -4835,7 +4866,37 @@ async def edit_draft(
             "holds the text only.") if res.get("html") == "lost" else ""
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
-    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}"
+    cancelled = await _cancel_schedules(pending)
+    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+
+
+async def _pending_schedules(draft_id: str) -> list[dict[str, Any]]:
+    """The queued sends of *draft_id* (§21 fix round 1, P1-b). None when send
+    later is off (404)."""
+    try:
+        rows = await _get("/email/drafts/scheduled") or []
+    except GatewayError as exc:
+        if exc.status in (404, 405):
+            return []
+        raise
+    return [r for r in rows if isinstance(r, dict) and str(r.get("draft_id")) == str(draft_id)
+            and r.get("status") == "queued"]
+
+
+async def _cancel_schedules(pending: list[dict[str, Any]]) -> str:
+    """Cancel each queued send of an edited draft, and say what happened."""
+    if not pending:
+        return ""
+    failed = 0
+    for r in pending:
+        try:
+            await _post(f"/email/drafts/scheduled/{r.get('id')}/cancel", {})
+        except GatewayError:
+            failed += 1
+    if failed:
+        return (f" {failed} scheduled send(s) could not be cancelled. They will not go, "
+                "because the text changed. Cancel them with cancel_scheduled_send.")
+    return " The send that was scheduled for it is cancelled."
 
 
 def _snooze_time(until: str) -> tuple[Any, str]:
@@ -5076,11 +5137,14 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
         return "Not scheduled. The draft has no recipient. Add one first."
     if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
         return f"Not scheduled. An address is longer than {_TARGET_LIMIT} characters."
-    detail, context = _draft_card(sender, draft.get("subject"), lists)
+    seal = await _draft_seal(account_id, draft_id, "Not scheduled")
+    if isinstance(seal, str):
+        return seal
+    detail, context = _draft_card(sender, seal.get("subject"), lists)
     if not context:
         return "Not scheduled. The draft has too many recipients for one card."
     stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
-    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
+    context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"))
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     approved = await request_confirmation(
         title=f"Send this draft at {stamp}?",
@@ -5095,7 +5159,8 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     try:
         res = await _post("/email/drafts/schedule", {
             "account_id": account_id, "draft_id": draft_id,
-            "send_at": when.isoformat(), "expect": lists,
+            "send_at": when.isoformat(),
+            "expect": {**lists, "text_digest": seal["text_digest"]},
         }) or {}
     except GatewayError as exc:
         if exc.status == 404 and "not on" in str(exc).lower():

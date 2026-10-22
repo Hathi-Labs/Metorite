@@ -3597,11 +3597,19 @@ async def upsert_draft(
 
 
 class DraftExpect(BaseModel):
-    """The recipients that the chat card showed (WS-17 EM-T13b-1)."""
+    """The recipients that the chat card showed (WS-17 EM-T13b-1), and the
+    seal of its text (§21 fix round 1, P1-b).
+
+    ``text_digest`` is :func:`draft_text_seal` of the draft as the card read
+    it: its subject, its stored text and the live text at the provider. A
+    send checks it again before any provider write, so an edit after the card
+    sends nothing. It is optional and expand-only (R6): a schedule stored
+    before it carries no key, and its send checks the recipients only."""
 
     to: list[str] = []
     cc: list[str] = []
     bcc: list[str] = []
+    text_digest: str | None = Field(default=None, max_length=64)
 
 
 class DraftSendRequest(BaseModel):
@@ -3642,6 +3650,48 @@ def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
     })
 
 
+#: The answer when the text of the draft changed after the card (§21 fix
+#: round 1, P1-b). The send-later job shows it as the reason of a failed row.
+DRAFT_TEXT_CHANGED_DETAIL = (
+    "The subject or the text of this draft changed after the card showed it. "
+    "Nothing was sent.")
+#: The answer when the provider did not give the text of the draft.
+DRAFT_TEXT_READ_FAILED_DETAIL = (
+    "The mail provider did not give the text of this draft, so the send could "
+    "not check it. Nothing was sent.")
+
+
+async def draft_text_seal(
+    provider: Any, provider_message_id: str, subject: Any, body_text: Any, signature: str,
+) -> str:
+    """The seal of a draft's text: its subject, its stored text, and its live
+    text at the provider. THE one rule (§21 fix round 1, P1-b).
+
+    Each part is folded as ``_fold_draft`` folds it (the signature out, the
+    whitespace and the case folded), so a sync that only reflows text keeps
+    the seal. Any edit of a word changes it. A failed or slow read of the
+    provider raises, and the caller sends nothing."""
+    import hashlib
+
+    live = await asyncio.wait_for(
+        provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
+    parts = (_normalize_text(str(subject or "")), _fold_draft(signature, str(body_text or "")),
+             _fold_draft(signature, _live_draft_text(live)))
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+async def _check_text_seal(provider: Any, drow: Any, expect: DraftExpect, signature: str) -> None:
+    """409 when the draft's text is not the text the card sealed, 502 when the
+    provider gives no text. Nothing is sent in either case."""
+    try:
+        seal = await draft_text_seal(provider, drow.provider_message_id, drow.subject,
+                                     drow.body_text, signature)
+    except Exception as exc:  # any failed read sends nothing
+        raise HTTPException(status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
+    if seal != expect.text_digest:
+        raise HTTPException(status_code=409, detail=DRAFT_TEXT_CHANGED_DETAIL)
+
+
 #: The answer when the PROVIDER draft holds other recipients than the card.
 DRAFT_PROVIDER_CHANGED_DETAIL = (
     "The recipients of this draft changed in your mail app. Nothing was sent.")
@@ -3671,6 +3721,41 @@ async def _check_provider_recipients(
             status_code=502, detail=DRAFT_PROVIDER_READ_FAILED_DETAIL) from exc
     if not isinstance(held, dict) or not _same_recipients(expect, held):
         raise HTTPException(status_code=409, detail=DRAFT_PROVIDER_CHANGED_DETAIL)
+
+
+@router.get("/drafts/seal")
+async def draft_seal(
+    account_id: str,
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The seal of a draft that a chat card shows (§21 fix round 1, P1-b).
+
+    It answers the subject and the text that the seal covers, so the card
+    shows exactly them, and ``text_digest``, which the send and the schedule
+    carry in ``expect``. A read: it writes nothing."""
+    _refuse_bad_draft_id(draft_id)
+    _refuse_bad_draft_id(account_id)
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        drow = (await db.execute(text(
+            "SELECT provider_message_id, subject, body_text FROM email_messages "
+            "WHERE id = :id AND account_id = :aid AND LOWER(folder) IN ('drafts', 'draft')"
+        ), {"id": draft_id, "aid": account_id})).fetchone()
+        if not drow:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        signature = await _account_signature(db, account_id)
+        async with provider_session(
+            db, user.email or "anonymous", account_id=account_id,
+        ) as sess:
+            try:
+                seal = await draft_text_seal(sess.provider, drow.provider_message_id,
+                                             drow.subject, drow.body_text, signature)
+            except Exception as exc:  # the card shows nothing it cannot seal
+                raise HTTPException(
+                    status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
+    return {"text_digest": seal, "subject": drow.subject or "",
+            "body_text": drow.body_text or ""}
 
 
 @router.post("/drafts/send")
@@ -3718,6 +3803,10 @@ async def send_draft_endpoint(
                 "WHERE account_id = :aid"
             ), {"aid": req.account_id})).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
+            # §21 fix round 1 (P1-b): the text is the text the card sealed,
+            # checked before any provider write. A schedule fires through here.
+            if req.expect is not None and req.expect.text_digest:
+                await _check_text_seal(provider, drow, req.expect, signature)
             # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
             # F1 and F2). Gmail rebuilds the whole draft on the signing
             # update, and Outlook PATCHes each list that it gets.

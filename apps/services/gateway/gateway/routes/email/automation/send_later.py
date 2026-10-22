@@ -44,6 +44,7 @@ from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
+    DRAFT_TEXT_CHANGED_DETAIL,
     DraftExpect,
     DraftSendRequest,
     _assert_account_owner,
@@ -278,6 +279,10 @@ async def _finish(org: str, schedule_id: str, *, error: str | None) -> None:
 
 def _why(exc: BaseException) -> str:
     if isinstance(exc, HTTPException):
+        if exc.status_code == 409 and exc.detail == DRAFT_TEXT_CHANGED_DETAIL:
+            # §21 fix round 1 (P1-b): the text is sealed too.
+            return ("The subject or the text of the draft changed after it was "
+                    "scheduled, so it was not sent.")
         if exc.status_code == 409:
             return ("The recipients of the draft changed after it was scheduled, "
                     "so it was not sent.")

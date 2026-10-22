@@ -126,6 +126,9 @@ def gw(monkeypatch) -> Gateway:
             return dict(g.target)
         if path == "/email/messages/d1":
             return json.loads(json.dumps(g.draft))
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b)
+            return {"text_digest": "a" * 64, "subject": g.draft.get("subject"),
+                    "body_text": g.draft.get("body_text")}
         return {}
 
     async def fake_post(path, body):
@@ -330,7 +333,9 @@ async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
     assert gw.posts == [("/email/drafts/send", {
         "account_id": BOX, "draft_id": "d1",
         "expect": {"to": ["ravi@contoso.test"], "cc": ["kim@contoso.test"],
-                   "bcc": ["records@evil.test"]}})]
+                   "bcc": ["records@evil.test"],
+                   # §21 fix round 1 (P1-b): the seal of the text the card showed.
+                   "text_digest": "a" * 64}})]
 
 
 # ── H-374: send_draft in a held run (owner, "Drafts, with a card") ───────────
