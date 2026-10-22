@@ -1883,7 +1883,10 @@ _CARD_REVISED = (
     "they change this mail, change it, keep every part they did not ask to "
     "change, and show a new card with the new text. If they ask about "
     "something else, answer that first, then ask whether to show the card "
-    "again.")
+    "again. You cannot add or remove a recipient, a CC or a BCC: the server "
+    "sets them. If the member asks for that, say so in one sentence, and "
+    "tell them to save the reply to Drafts and add the people there. Never "
+    "show the same card again as if you had made the change.")
 
 
 def _revised(answer: Any) -> bool:
@@ -1949,7 +1952,9 @@ async def compose_reply(
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
-    choose no recipient: the server derives the recipients.
+    choose no recipient: the server derives the recipients. You cannot add
+    a CC or a BCC. When the member asks for one, say so, and tell them to
+    save to Drafts and add it there.
 
     ``draft`` is the reply text that you and the member already agreed in
     the chat, or that the request to you contains. Pass it WORD FOR WORD,

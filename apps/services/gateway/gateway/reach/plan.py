@@ -210,7 +210,10 @@ def line(card: dict[str, Any], now: datetime, *, kind: str | None = None) -> str
     if kind == "day_overbooked":
         return f"Overbooked: {_clean(card.get('why'), 100)}"
     if kind == "no_plan_yet":
-        return "Nothing is planned for today yet"
+        # A chat pill sends its line as the member's own message, so the
+        # line asks for the act. A plain fact sent back made no sense
+        # (owner report, 2026-10-22).
+        return "Plan my day: nothing is planned yet"
     if kind == "notify_me":
         # Every request line carries its body, cut to one short line (RE-5).
         head = _clean(card.get("title"), REQUEST_TITLE_CHARS)

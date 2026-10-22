@@ -300,7 +300,15 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     const timer = setTimeout(release, BRIEF_HOLD_MS);
     void requestBrief(id)
       .then((posted) => {
-        if (posted) enrichSession(id, { messageCount: 1, lastPreview: posted.preview });
+        // The brief names the chat: "Your day, Thu 22 Oct", the lead's first
+        // sentence. Without it, the first pill tapped became the title.
+        if (posted) {
+          enrichSession(id, {
+            title: posted.preview.split(". ")[0].trim() || undefined,
+            messageCount: 1,
+            lastPreview: posted.preview,
+          });
+        }
       })
       .finally(() => {
         clearTimeout(timer);

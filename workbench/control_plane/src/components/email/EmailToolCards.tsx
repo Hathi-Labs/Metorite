@@ -44,7 +44,7 @@ import AppIcon from "@/components/Icon";
 import { clipWords } from "@/lib/fencedText";
 import Readout from "@/components/Readout";
 import { withoutIds } from "@/lib/readout";
-import { useState, useEffect } from "react";
+import { useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import {
@@ -61,10 +61,10 @@ import { emailLink } from "@/app/email/lib/emailLink";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
+import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
-const DRAFT_TOOLS = new Set(["draft_reply", "draft_email"]);
 const RULE_TOOLS = new Set(["create_rule", "update_rule"]);
 // Tools whose result is a list of emails (each line carries `id=<id>`) — these
 // render as a clickable list that opens the message. Includes the assistant's
@@ -416,6 +416,7 @@ export default function EmailToolCards({
   emailId?: string | null;
 }) {
   const dismissed = useDismissedToolCards();
+  const pin = useContext(DraftPinContext);
   const all = (toolEvents ?? []).filter((e) => !dismissed.has(e.id));
 
   // When the agent read a whole thread, the thread card IS the canonical view —
@@ -520,6 +521,12 @@ export default function EmailToolCards({
     // render them directly rather than inside a DismissableCard.
     if (INFO_TOOLS.has(e.name)) {
       items.push(<InfoResultCard key={e.id} event={e} />);
+      continue;
+    }
+    // The draft above the composer, and a draft a newer one replaced, draw
+    // one line here, not a second editable copy (`lib/pinnedDraft.ts`).
+    if (DRAFT_TOOLS.has(e.name) && (e.id === pin.pinnedId || pin.superseded.has(e.id))) {
+      items.push(<DraftLine key={e.id} pinned={e.id === pin.pinnedId} />);
       continue;
     }
     items.push(
@@ -732,6 +739,44 @@ function DraftResultCard({
       </RollupBody>
     </div>
     </RollupCard>
+  );
+}
+
+/** One line in the thread for a draft that draws elsewhere or is old. */
+function DraftLine({ pinned }: { pinned: boolean }) {
+  return (
+    <div data-email-card="draft-line" className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+      <AppIcon name={pinned ? "Pin" : "PenLine"} size={12} className="shrink-0" />
+      <span className="min-w-0 truncate">
+        {pinned ? "Draft reply · above the message box" : "Earlier draft · a newer draft replaced it"}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The newest draft, pinned above the composer (`lib/pinnedDraft.ts`). It is
+ * the same editable card as in the thread, and its X closes the pin. The
+ * box scrolls, so a long draft never pushes the composer off a phone.
+ */
+export function PinnedDraftCard({
+  event,
+  accountId,
+  emailId,
+  onClose,
+}: {
+  event: ToolEvent;
+  accountId?: string | null;
+  emailId?: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <div data-pinned-draft className="max-w-3xl mx-auto mb-2 max-h-72 overflow-y-auto rounded-lg">
+      <DismissableCard onDismiss={onClose}>
+        {/* Keyed by the tool call, so a revision starts from its own text. */}
+        <DraftResultCard key={event.id} event={event} accountId={accountId} emailId={emailId} />
+      </DismissableCard>
+    </div>
   );
 }
 

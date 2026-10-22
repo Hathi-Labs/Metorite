@@ -1228,3 +1228,12 @@ async def test_a_saved_draft_falls_back_to_the_sender(monkeypatch) -> None:
     monkeypatch.setattr(rc, "reply_recipients", broken)
     assert await drafting._reply_to_list(MAIL, MEMBER, "kim@contoso.test") == [
         "kim@contoso.test"]
+
+
+def test_a_revised_card_says_recipients_are_fixed():
+    """Owner report, 2026-10-22: the member asked three times to CC two
+    people, and the sub-agent redrew the same card each time. The tool
+    cannot change recipients, so the model must say so (R7 fence)."""
+    text = agents._CARD_REVISED
+    assert "cannot add or remove a recipient, a CC or a BCC" in text
+    assert "Never show the same card again" in text

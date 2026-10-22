@@ -5721,6 +5721,17 @@ Every element of an assistant turn is one of four kinds.
    bar shows only while the element is out of view, and a press scrolls to
    it. Answering the element removes the bar. The bar reuses the "1 of N"
    confirmation queue and adds no state of its own.
+
+   **Exception: a reply card and a draft pin above the composer** (owner
+   report, 2026-10-22). The member revises a reply over chat, and each
+   revision closes the card and draws a new one. In the flow, the card sat
+   above the member's messages and scrolled away. So a waiting reply card
+   (a confirmation with a `reply` form) draws above the composer, and the
+   thread shows one line in its place. The newest `draft_reply` or
+   `draft_email` card pins the same way, and an older draft draws as one
+   line. The X of the pin puts the card back in the thread, until a new
+   card comes. Code: `AgentChat.tsx` (`pinAsk`) and `src/lib/pinnedDraft.ts`.
+   Fences: `src/lib/pinnedDraft.test.ts` and `src/lib/askPin.test.ts`.
 2. **EVIDENCE** — the result of a READ. Examples are `projects_tree`,
    `vocabulary`, `list_tasks`, `find_tasks`, `task_detail`, `task_dataset`,
    `project_summary`, `my_work`, and the email and Tasks reads. It draws
