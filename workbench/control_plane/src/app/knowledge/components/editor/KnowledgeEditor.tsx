@@ -16,8 +16,13 @@
  *   body byte for byte, so a save with no edit writes nothing
  *   (`bodyAfterEdit`). Fix round P1: a parse and a write on each key cost
  *   170 ms at 19 KB and 2 s at 75 KB.
- * - `/` opens the block menu, and `[[` opens the page picker. Both draw
- *   through `OptionList` from `src/components/ui/`.
+ * - `/` opens the block menu, grouped as in Notion. `@` opens the mention
+ *   menu: Pages, then Date. `[[` still opens the page picker for old habits,
+ *   and the slash item "Link to a page" opens `@`. They all draw through
+ *   `OptionList` from `src/components/ui/`. A page pick writes the Markdown
+ *   link `[Title](/knowledge/pages/<id>)`, as `[[` always did (KB-2h).
+ * - A link to a page draws as a mention chip (`pageChips.ts`), in the read
+ *   view and in the editor.
  * - A selection raises the bubble menu: the marks, the link control and the
  *   block type. The caret in a table raises the table tools.
  * - A handle beside each block drags it (`@tiptap/extension-drag-handle`).
@@ -37,13 +42,16 @@ import type { Node as PMNode } from "@tiptap/pm/model";
 import { PluginKey, Selection } from "@tiptap/pm/state";
 import type { DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, ReactNodeViewRenderer, useEditor } from "@tiptap/react";
-import Suggestion from "@tiptap/suggestion";
+import Suggestion, { findSuggestionMatch } from "@tiptap/suggestion";
 
 import Icon from "@/components/Icon";
 import { OptionList, optionId } from "@/components/ui/OptionList";
 import { isInAppPath } from "@/lib/inAppLink";
 
 import { listPages } from "../../lib/api";
+import { dateLabel } from "../../lib/editor/date";
+import { MENTION_PREFIXES, buildMentionItems, type MentionItem } from "../../lib/editor/mention";
+import { PageChips, chipRuns } from "../../lib/editor/pageChips";
 import { matchBlocks, type BlockItem } from "../../lib/editor/blocks";
 import { SearchAndReplace } from "../../lib/editor/searchAndReplace";
 import { TitleHandoff, isEmptyBody } from "../../lib/editor/titleFlow";
@@ -61,6 +69,7 @@ import { TableHandles } from "./TableHandles";
 import type { TitleLink } from "./TitleField";
 import { storedFormViews } from "./storedFormViews";
 import { TableCellTools } from "./TableExtras";
+import { useKnowledge } from "../KnowledgeContext";
 import { useSuggestionMenu, type SuggestionMenu } from "./useSuggestionMenu";
 
 /**
@@ -75,7 +84,7 @@ const DragHandle = dynamic(() => import("@tiptap/extension-drag-handle-react").t
 export const WRITE_AFTER_MS = 300;
 
 /** The hint on an empty body while a member writes. */
-export const EDITOR_PLACEHOLDER = "Write here. Type / for a block, or [[ to link a page.";
+export const EDITOR_PLACEHOLDER = "Write here. Type / for a block, or @ to link a page.";
 
 /** True when the typed trigger sits in a code block or in raw HTML. */
 function inCode(editor: Editor, pos: number): boolean {
@@ -85,6 +94,7 @@ function inCode(editor: Editor, pos: number): boolean {
 interface MenuHandles {
   slash: () => ReturnType<SuggestionMenu<BlockItem>["render"]>;
   pages: () => ReturnType<SuggestionMenu<PageChoice>["render"]>;
+  mention: () => ReturnType<SuggestionMenu<MentionItem>["render"]>;
   emoji: () => ReturnType<SuggestionMenu<EmojiMatch>["render"]>;
   onSpecial: (item: BlockItem, editor: Editor, range: Range) => void;
 }
@@ -103,6 +113,7 @@ declare module "@tiptap/core" {
 type MenuRenderer =
   | ReturnType<MenuHandles["slash"]>
   | ReturnType<MenuHandles["pages"]>
+  | ReturnType<MenuHandles["mention"]>
   | ReturnType<MenuHandles["emoji"]>;
 
 /**
@@ -174,6 +185,41 @@ const KnowledgeMenus = Extension.create<object, MenuStorage>({
             .run();
         },
         render: () => lateRenderer(() => handles()?.pages() ?? null),
+      }),
+      // `@` is Notion's mention: a page, or a date. It opens at the start of a
+      // line or after a space, so `a@b.com` opens nothing. The query may hold
+      // spaces (a page title), but an `@` then a space closes it.
+      Suggestion<MentionItem, MentionItem>({
+        editor: this.editor,
+        char: "@",
+        allowSpaces: true,
+        allowedPrefixes: MENTION_PREFIXES,
+        pluginKey: new PluginKey("kbMention"),
+        allow: ({ editor, range }) => editor.isEditable && !inCode(editor, range.from),
+        findSuggestionMatch: (config) => {
+          const match = findSuggestionMatch(config);
+          return match && /^\s/.test(match.query) ? null : match;
+        },
+        items: () => [],
+        command: ({ editor, range, props }) => {
+          const chain = editor.chain().focus().deleteRange(range);
+          if (props.kind === "page") {
+            chain
+              .insertContent([
+                { type: "text", text: props.page.title, marks: [{ type: "link", attrs: { href: pageLinkHref(props.page.id) } }] },
+                { type: "text", text: " " },
+              ])
+              .run();
+          } else {
+            chain
+              .insertContent([
+                { type: "kbDate", attrs: { date: props.iso, label: dateLabel(props.iso) } },
+                { type: "text", text: " " },
+              ])
+              .run();
+          }
+        },
+        render: () => lateRenderer(() => handles()?.mention() ?? null),
       }),
       // `:` and a name inserts an emoji, as in Docmost: the emoji and a space.
       // The `:` must start a word, so "10:30" and "Note:" open nothing.
@@ -297,10 +343,14 @@ export default function KnowledgeEditor({
   // ── The member's pages, for `[[` and the link control ──────────────────
   const [pages, setPages] = useState<PageChoice[] | null>(null);
   const [pagesLoading, setPagesLoading] = useState(false);
-  const spacesRef = useRef(spaces ?? []);
+  // The read view has no `spaces` prop, so it takes the layout's list. The
+  // list gives the chips their page emoji.
+  const known = useKnowledge().spaces;
+  const spaceList = spaces ?? known;
+  const spacesRef = useRef(spaceList);
   useEffect(() => {
-    spacesRef.current = spaces ?? [];
-  }, [spaces]);
+    spacesRef.current = spaceList;
+  }, [spaceList]);
   const loadPages = useCallback(() => {
     if (pages || pagesLoading) return;
     setPagesLoading(true);
@@ -313,6 +363,11 @@ export default function KnowledgeEditor({
   const slash = useSuggestionMenu<BlockItem>((q) => matchBlocks(q));
   const pageRows = useCallback((q: string) => matchPages(pages ?? [], q, { exclude: pageId }), [pages, pageId]);
   const pageMenu = useSuggestionMenu<PageChoice>(pageRows);
+  const mentionRows = useCallback(
+    (q: string) => buildMentionItems(pages ?? [], q, { exclude: pageId }),
+    [pages, pageId],
+  );
+  const mentionMenu = useSuggestionMenu<MentionItem>(mentionRows);
   const emojiRows = useCallback((q: string) => searchEmoji(q), []);
   // `searchEmoji` answers [] until the data is in memory, so the edit mode
   // loads it at once. Then the first `:` has rows (KB-2f data, KB-2i insert).
@@ -336,6 +391,7 @@ export default function KnowledgeEditor({
         },
       }),
       KnowledgeMenus,
+      PageChips,
       SearchAndReplace,
       FindKeys,
       TableHandlePlugin,
@@ -494,6 +550,24 @@ export default function KnowledgeEditor({
     };
   }, [editor, editable, titleLink, openFind]);
 
+  // The page chips (`pageChips.ts`). A body with a page link loads the page
+  // list once, and the list gives each chip its page emoji. Until then a
+  // chip draws the file icon.
+  // An edit loads the list at once. ⚠️ Not on the first `@`: a state change
+  // there redraws the bubble menu, which re-registers its plugin, and that
+  // closes the menu that just opened.
+  useEffect(() => {
+    if (!editor || spaceList.length === 0) return;
+    if (editable || chipRuns(editor.state.doc).length > 0) loadPages();
+  }, [editor, editable, spaceList.length, loadPages, body]);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !pages) return;
+    const icons = editor.storage.kbPageChips.icons;
+    icons.clear();
+    for (const p of pages) if (p.icon) icons.set(p.id, p.icon);
+    editor.view.dispatch(editor.state.tr.setMeta("kbChips", true));
+  }, [editor, pages]);
+
   // The menus' handles, for the plugins of `KnowledgeMenus`.
   useEffect(() => {
     if (!editor) return;
@@ -520,12 +594,24 @@ export default function KnowledgeEditor({
           },
         };
       },
+      mention: () => {
+        const r = mentionMenu.render();
+        return {
+          ...r,
+          // With no page and no date for the words, the keys stay the editor's own.
+          onKeyDown: (props) => {
+            const query = props.view.state.doc.textBetween(props.range.from + 1, props.range.to);
+            return mentionRows(query).length ? r.onKeyDown(props) : false;
+          },
+        };
+      },
       onSpecial: (item, e, range) => {
         if (item.kind === "image") {
           e.chain().focus().deleteRange(range).run();
           setImageAt({ from: range.from, to: range.from });
         } else if (item.kind === "pageLink") {
-          e.chain().focus().deleteRange(range).insertContent("[[").run();
+          // "Link to a page" opens the `@` menu, as Notion's mention does.
+          e.chain().focus().deleteRange(range).insertContent("@").run();
         }
       },
     });
@@ -547,18 +633,23 @@ export default function KnowledgeEditor({
   // The editor names the open menu and its active row, so a screen reader
   // follows the `/` menu and the `[[` picker while the caret stays put.
   const emojiShown = emojiMenu.state ? emojiRows(emojiMenu.state.query) : [];
+  const mentionShown = mentionMenu.state ? mentionRows(mentionMenu.state.query) : [];
   const menuId = slash.state
     ? "kb-slash-menu"
     : pageMenu.state
       ? "kb-page-menu"
-      : emojiMenu.state && emojiShown.length
-        ? "kb-emoji-menu"
-        : null;
+      : mentionMenu.state && mentionShown.length
+        ? "kb-mention-menu"
+        : emojiMenu.state && emojiShown.length
+          ? "kb-emoji-menu"
+          : null;
   const menuActive = slash.state
     ? slash.state.active
     : pageMenu.state
       ? pageMenu.state.active
-      : (emojiMenu.state?.active ?? 0);
+      : mentionMenu.state && mentionShown.length
+        ? mentionMenu.state.active
+        : (emojiMenu.state?.active ?? 0);
   useEffect(() => {
     const dom = editor && editable ? (editor.view.dom as HTMLElement) : null;
     if (!dom) return;
@@ -597,6 +688,9 @@ export default function KnowledgeEditor({
   const pageAnchor = pageMenu.state?.rect
     ? { getBoundingClientRect: () => pageMenu.state!.rect!() ?? new DOMRect() }
     : null;
+  const mentionAnchor = mentionMenu.state?.rect
+    ? { getBoundingClientRect: () => mentionMenu.state!.rect!() ?? new DOMRect() }
+    : null;
   const emojiAnchor = emojiMenu.state?.rect
     ? { getBoundingClientRect: () => emojiMenu.state!.rect!() ?? new DOMRect() }
     : null;
@@ -632,7 +726,16 @@ export default function KnowledgeEditor({
             label="Blocks"
             anchor={slashAnchor}
             open={Boolean(slash.state)}
-            rows={slashRows.map((b) => ({ id: b.id, label: b.label, icon: b.icon }))}
+            // Headings show with no words typed. Once a member filters, the
+            // rows run by score across the groups, and a heading would repeat.
+            rows={slashRows.map((b) => ({
+              id: b.id,
+              label: b.label,
+              icon: b.icon,
+              description: b.description,
+              hint: b.shortcut,
+              section: slash.state?.query.trim() ? undefined : b.group,
+            }))}
             active={slash.state?.active ?? 0}
             onPick={(i) => slashRows[i] && slash.pick(slashRows[i])}
             onHover={slash.setActive}
@@ -649,6 +752,29 @@ export default function KnowledgeEditor({
             onHover={pageMenu.setActive}
             status={pagesLoading && !pages ? "Loading pages…" : null}
             emptyText={pageMenu.state?.query ? "No page has that title." : "No pages yet."}
+          />
+          {/* An `@` with no page and no date for the words shows nothing. */}
+          <OptionList
+            id="kb-mention-menu"
+            label="Mention a page or a date"
+            anchor={mentionAnchor}
+            open={Boolean(mentionMenu.state) && mentionShown.length > 0}
+            rows={mentionShown.map((m) =>
+              m.kind === "page"
+                ? {
+                    id: m.id,
+                    label: m.label,
+                    hint: m.hint,
+                    icon: "FileText",
+                    glyph: m.glyph ?? undefined,
+                    section: m.section,
+                  }
+                : { id: m.id, label: m.label, hint: m.hint, icon: "Calendar", section: m.section },
+            )}
+            active={mentionMenu.state?.active ?? 0}
+            onPick={(i) => mentionShown[i] && mentionMenu.pick(mentionShown[i])}
+            onHover={mentionMenu.setActive}
+            emptyText="No page or date has that name."
           />
           {/* A `:` with no emoji of that name shows nothing, so "a :)" stays quiet. */}
           <OptionList
@@ -675,13 +801,15 @@ export default function KnowledgeEditor({
           />
         </>
       ) : null}
-      {editable && (slash.state || pageMenu.state) ? (
+      {editable && (slash.state || pageMenu.state || (mentionMenu.state && mentionShown.length)) ? (
         <span className="sr-only" aria-live="polite">
           {slash.state
             ? (slashRows[slash.state.active]?.label ?? "")
-            : pagesLoading && !pages
-              ? "Loading pages"
-              : (pickRows[pageMenu.state?.active ?? 0]?.title ?? "No page has that title.")}
+            : pageMenu.state
+              ? pagesLoading && !pages
+                ? "Loading pages"
+                : (pickRows[pageMenu.state.active]?.title ?? "No page has that title.")
+              : (mentionShown[mentionMenu.state?.active ?? 0]?.label ?? "")}
         </span>
       ) : null}
     </div>

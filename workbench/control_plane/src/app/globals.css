@@ -871,6 +871,50 @@ textarea.kb-title::placeholder { color: var(--muted-foreground); opacity: 0.6; }
 .kb-editor + .ProseMirror-dropcursor { background: var(--primary); }
 .kb-editor .ProseMirror-gapcursor::after { border-top-color: var(--foreground); }
 
+/* A link to a page of this app draws as a mention chip, as in Notion: a page
+   glyph, then the title, no underline, a soft hover and rounded corners. The
+   `<a>` gets `kb-page-chip` from the Link mark (`lib/editor/schema.ts`), and
+   the first text of the link gets `kb-page-glyph` (`lib/editor/pageChips.ts`).
+   With no emoji the glyph is a file icon cut from `currentColor` by a mask,
+   so it follows the text colour in every mode. The stored form is still a
+   Markdown link. */
+.kb-editor a.kb-page-chip {
+  color: var(--foreground);
+  text-decoration: none;
+  border-radius: calc(var(--radius) - 0.25rem);
+  font-weight: inherit;
+  padding: 0.05em 0.1em 0.05em 0.2em;
+  margin: 0 -0.05em 0 -0.15em;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.kb-editor a.kb-page-chip:hover { background-color: var(--muted); }
+.kb-editor a.kb-page-chip .kb-page-glyph::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.15em;
+  background-color: var(--muted-foreground);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M16 13H8'/%3E%3Cpath d='M16 17H8'/%3E%3C/svg%3E");
+}
+.kb-editor a.kb-page-chip .kb-page-glyph[data-emoji]::before {
+  content: attr(data-emoji);
+  width: auto;
+  background: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+  vertical-align: baseline;
+}
+
 /* KB-2g: the marks of a compare in the page history (`lib/historyDiff.ts`).
    An added word takes a tint of --success, and a removed word shows struck
    through in --destructive: the status vocabulary, never a palette class. */

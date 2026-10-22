@@ -562,7 +562,7 @@ test.describe("the block editor", () => {
       await page.keyboard.press("Backspace");
       await page.keyboard.type(`/${label}`);
       await expect(menu, label).toBeVisible();
-      await expect(menu.getByRole("option").first(), label).toHaveText(label);
+      await expect(menu.getByRole("option").first(), label).toContainText(label);
       await page.keyboard.press("Enter");
       await expect(menu).toHaveCount(0);
       await expect(body.locator(selector).first(), label).toBeVisible();
@@ -582,7 +582,7 @@ test.describe("the block editor", () => {
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.press("Backspace");
     await page.keyboard.type("/Image");
-    await expect(menu.getByRole("option").first()).toHaveText("Image");
+    await expect(menu.getByRole("option").first()).toContainText("Image");
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Add an image" });
     await dialog.getByRole("textbox", { name: "Image address" }).fill("https://example.com/chart.png");
@@ -596,14 +596,14 @@ test.describe("the block editor", () => {
     await expect(page.getByRole("list", { name: "Versions" }).locator("li")).toHaveCount(before + 2);
     expect(kb.writes[kb.writes.length - 1].body).toEqual({ body_md: "![A chart](https://example.com/chart.png)" });
 
-    // "Link to a page" opens the page picker.
+    // "Link to a page" opens the @ menu (a mention of a page or a date).
     await page.getByRole("button", { name: "Edit", exact: true }).click();
     await caretAtEnd(page);
     await page.keyboard.press("Enter");
     await page.keyboard.type("/Link to a page");
-    await expect(menu.getByRole("option").first()).toHaveText("Link to a page");
+    await expect(menu.getByRole("option").first()).toContainText("Link to a page");
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("listbox", { name: "Pages" })).toBeVisible();
+    await expect(page.getByRole("listbox", { name: "Mention a page or a date" })).toBeVisible();
   });
 
   test("the / menu inserts each KB-2p block, and a save writes its stored form", async ({ page }) => {
@@ -673,7 +673,7 @@ test.describe("the block editor", () => {
       await page.keyboard.press("Backspace");
       await page.keyboard.type(`/${label}`);
       await expect(menu, label).toBeVisible();
-      await expect(menu.getByRole("option").first(), label).toHaveText(label);
+      await expect(menu.getByRole("option").first(), label).toContainText(label);
       await page.keyboard.press("Enter");
       await expect(menu).toHaveCount(0);
       await expect(body.locator(selector).first(), label).toBeVisible();
@@ -692,7 +692,7 @@ test.describe("the block editor", () => {
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.press("Backspace");
     await page.keyboard.type("/2 columns");
-    await expect(menu.getByRole("option").first()).toHaveText("2 columns");
+    await expect(menu.getByRole("option").first()).toContainText("2 columns");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Left");
     await body.getByRole("button", { name: "3 columns" }).click();
@@ -791,7 +791,7 @@ test.describe("the block editor", () => {
     const body = await openEditor(page);
     await page.keyboard.press("Enter");
     await page.keyboard.type("/Table");
-    await expect(page.getByRole("listbox", { name: "Blocks" }).getByRole("option").first()).toHaveText("Table");
+    await expect(page.getByRole("listbox", { name: "Blocks" }).getByRole("option").first()).toContainText("Table");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Quarter");
 
@@ -958,7 +958,7 @@ test.describe("the block editor", () => {
     await page.keyboard.press("Enter");
     const blocks = page.getByRole("listbox", { name: "Blocks" });
     await page.keyboard.type("/Note callout");
-    await expect(blocks.getByRole("option").first()).toHaveText("Note callout");
+    await expect(blocks.getByRole("option").first()).toContainText("Note callout");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Refunds take five days.");
     // Enter on an empty line leaves the callout, as it leaves a quote.
@@ -969,7 +969,7 @@ test.describe("the block editor", () => {
     await page.keyboard.press("Enter");
     await page.keyboard.press("Enter");
     await page.keyboard.type("/Table");
-    await expect(blocks.getByRole("option").first()).toHaveText("Table");
+    await expect(blocks.getByRole("option").first()).toContainText("Table");
     await page.keyboard.press("Enter");
     await page.keyboard.type("Item");
 
