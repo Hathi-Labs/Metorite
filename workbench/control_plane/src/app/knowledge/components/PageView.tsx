@@ -76,7 +76,8 @@ import { publishBody, stateLabel, stateTone, STATE_LABELS } from "../lib/labels"
 import { KNOWLEDGE_HOME, pageHref } from "../lib/links";
 import { highlightWords } from "../lib/search";
 import { flushLiveDraft, registerLiveDraft } from "../lib/liveDrafts";
-import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, pageRefusal, type PageRead } from "../lib/phase";
+import { readPage } from "../lib/readPage";
+import { PAGE_NOT_FOUND_BODY, PAGE_NOT_FOUND_TITLE, type PageRead } from "../lib/phase";
 import type { PageDetail, PageVersion } from "../lib/types";
 import ArchivedBanner from "./ArchivedBanner";
 import KnowledgeEditor from "./editor/KnowledgeEditor";
@@ -93,16 +94,6 @@ import LinkedFrom from "./LinkedFrom";
 import PageSidePanel from "./PageSidePanel";
 import { usePageHeadings } from "./usePageHeadings";
 import VersionList from "./VersionList";
-
-async function readPage(id: string): Promise<PageRead<PageDetail>> {
-  try {
-    return { kind: "page", page: await getPage(id) };
-  } catch (err) {
-    const refusal = pageRefusal<PageDetail>(err);
-    if (refusal) return refusal;
-    throw err;
-  }
-}
 
 /** The session store, or `null` on the server and in a blocked browser. */
 function sessionStore(): Storage | null {
@@ -604,6 +595,8 @@ export default function PageView({ pageId }: { pageId: string }) {
                     flushRef={flushRef}
                     pageId={page.id}
                     spaces={spaces}
+                    spaceId={page.space_id}
+                    canWrite={page.can_write}
                     label="Page body"
                     titleLink={titleLink}
                   />

@@ -112,3 +112,33 @@ describe("the rows of the menu", () => {
     expect(rows.map((r) => r.kind)).toEqual(["date"]);
   });
 });
+
+describe("the Create page row (KB-2k3)", () => {
+  const pages = [page("p1", "Holiday calendar"), page("p2", "Returns handbook")];
+  const last = (q: string, o: Parameters<typeof buildMentionItems>[2] = {}) =>
+    buildMentionItems(pages, q, { now: NOW, canCreate: true, ...o }).at(-1);
+
+  it("is the last row when the words match no page, no date and the member can write", () => {
+    const row = last("Refund FAQ");
+    expect(row).toMatchObject({ kind: "create", label: 'Create page "Refund FAQ"', title: "Refund FAQ" });
+  });
+
+  it("is absent with no words, with a page match, with a date match and without write", () => {
+    expect(last("")?.kind).not.toBe("create");
+    expect(last("holi")?.kind).not.toBe("create");
+    expect(last("today")?.kind).not.toBe("create");
+    expect(last("2026-10-19")?.kind).not.toBe("create");
+    expect(last("Refund FAQ", { canCreate: false })?.kind).not.toBe("create");
+  });
+
+  it("waits for the page list and refuses a title the gateway would refuse", () => {
+    expect(buildMentionItems(null, "Refund FAQ", { now: NOW, canCreate: true }).some((i) => i.kind === "create")).toBe(false);
+    expect(last("x".repeat(301))?.kind).not.toBe("create");
+  });
+
+  it("puts People after Pages and before Date", () => {
+    const people = [{ id: "u1", name: "Holi Rao", email: "h@example.com" }];
+    const kinds = buildMentionItems(pages, "holi", { now: NOW, people, canCreate: true }).map((i) => i.kind);
+    expect(kinds).toEqual(["page", "person"]);
+  });
+});
