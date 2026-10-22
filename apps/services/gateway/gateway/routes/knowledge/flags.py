@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader of the four settings below. Nothing else in the
+This module is the ONE reader of the five settings below. Nothing else in the
 gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
@@ -15,6 +15,10 @@ gateway reads them.
 * ``KNOWLEDGE_EMBED_SWEEP`` (KB-3c) — the kill switch of the embed sweep,
   default ON. The sweep does nothing for an org that ``KNOWLEDGE_EMBED``
   does not name, so ON costs nothing until an org is named.
+* ``KNOWLEDGE_GAPS`` (KB-9a) — the organization ids whose
+  ``search_company`` reads with no Knowledge hit write a ``kb_gaps`` row, in
+  the grammar of ``KNOWLEDGE_ORGS``. Empty, the default, means no
+  organization. It also opens the gap routes and the ``kb_gap`` card.
 
 :func:`require_knowledge_enabled` is the first router dependency in
 ``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
@@ -105,6 +109,36 @@ def knowledge_embed_allowed(organization_id: str | None) -> bool:
     org = str(organization_id).strip().lower()
     orgs = knowledge_embed_orgs()
     return ALL_ORGS in orgs or org in orgs
+
+
+def knowledge_gaps_orgs() -> frozenset[str]:
+    """The organization ids that record gaps (KB-9a). Empty means none."""
+    return _parse_orgs(str(get_settings().knowledge_gaps or ""))
+
+
+def knowledge_gaps_allowed(organization_id: str | None) -> bool:
+    """True when Knowledge serves the organization AND ``KNOWLEDGE_GAPS`` names it.
+
+    False means no gap write, a 404 on each gap route, and no ``kb_gap``
+    card. No organization is false, also with ``*``.
+    """
+    if not knowledge_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = knowledge_gaps_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+async def require_knowledge_gaps(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless ``KNOWLEDGE_GAPS`` names the caller's organization (KB-9a).
+
+    The gap routes add it to the router's own dependencies. It reads
+    ``user.organization_id`` and nothing else from the request.
+    """
+    if not knowledge_gaps_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 async def require_knowledge_enabled(

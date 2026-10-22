@@ -769,10 +769,11 @@ class TestTheRoute:
 class TestTheMyDayCard:
     def test_the_kind_is_registered_everywhere(self):
         assert "digest_ready" in feed.CRM_KINDS
-        # Below every MD-3 kind. CRM-Q32-4 puts `crm_open_questions` below it.
+        # Below every MD-3 kind. CRM-Q32-4 puts `crm_open_questions` below
+        # it, and WS-61 KB-9a puts the Knowledge `kb_gap` below both.
         assert feed_rank.BASE["digest_ready"] < min(
             v for k, v in feed_rank.BASE.items()
-            if k not in ("digest_ready", "crm_open_questions"))
+            if k not in ("digest_ready", "crm_open_questions", "kb_gap"))
         assert feed_rank.group("digest_ready", {}, NOW, NOW.date()) == "fyi"
         # Delivery outside the app is CRM-Q28b, an owner gate.
         assert classes.REACH_CLASS["digest_ready"] == "none"

@@ -249,6 +249,7 @@ class _FakeDB:
         self.seal_previews: list[str] = []
         #: WS-53 CRM-Q33: each statement of the CRM half of a purge, in order.
         self.crm_purge: list[str] = []
+        self.kb_purge: list[str] = []
         #: The statements on email_scheduled_sends (H-375), in order.
         self.send_later: list[str] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
@@ -827,6 +828,13 @@ class _FakeDB:
         # on a real Postgres in `test_crm_answer_first_r8.py` (R8).
         if "crm_business_rules" in s or "crm_sync_cursors" in s:
             self.crm_purge.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-61 KB-9a: the Knowledge half of a purge takes the address out
+        # of the gaps. What it does to real rows is proven on a real
+        # Postgres in `test_kb_gaps_r8.py` (R8).
+        if "kb_gaps" in s:
+            self.kb_purge.append(s)
             return _Rows([], rowcount=0)
 
         # H-375: a removal cancels the member's queued sends, and a purge

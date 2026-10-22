@@ -79,6 +79,13 @@ _GRANT_REASON = (
     "and a person applies it in the app."
 )
 
+#: KB-9a: a gap is closed by a person in the Knowledge app.
+_GAP_DECISION_REASON = (
+    "A person closes a gap in the Knowledge app: Dismiss needs "
+    "knowledge:manage, and \"I wrote it\" links a page the person wrote. The "
+    "chat does not close a gap for the member (knowledge_base.md §8.4)."
+)
+
 #: KB-2f: a favourite is a personal shortcut of the Knowledge app.
 _FAVORITE_REASON = (
     "A favourite is the member's own shortcut in the Knowledge app, not "
@@ -114,6 +121,11 @@ MANIFEST: tuple[Route, ...] = (
     # ── Search ── `search_company` already asks Knowledge (§20). The
     # Knowledge-only tool waits (§8.1, `search_knowledge` is deferred).
     Route("GET", "/knowledge/search", "", "A", planned="search_knowledge, deferred (§8.1)"),
+    # ── Gaps (KB-9a, §8.4 door 3) ── the questions Knowledge could not
+    # answer. A read may join the chat later. A person decides each close.
+    Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
+    Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
+    Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
 )
 
 

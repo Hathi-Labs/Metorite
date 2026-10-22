@@ -46,7 +46,7 @@ import pytest
 from acb_auth import get_current_user
 from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gateway.retrieval import company, sources
 from gateway.routes.artifacts import list_artifacts as _real_list_artifacts
@@ -408,10 +408,12 @@ class TestNoDataPathOfItsOwn:
 class TestTheRouteTakesNoTenant:
     def test_the_route_takes_the_words_the_apps_k_and_after_and_nothing_else(self):
         # CX-1 added `after`, a date (company_context.md §4.5). It names no
-        # org and no member.
+        # org and no member. KB-9a added `background`, the route's own
+        # BackgroundTasks, which FastAPI fills and no request can set.
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "after", "user"}
+        assert set(params) == {"q", "apps", "k", "after", "user", "background"}
         assert params["user"].default.dependency is get_current_user
+        assert params["background"].annotation in (BackgroundTasks, "BackgroundTasks")
 
     def test_an_org_or_a_member_in_the_request_changes_nothing(self, apps):
         session = member(*ALL)

@@ -207,9 +207,10 @@ class TestTheLimits:
         # The Calendar kinds are feed-only, and a member may mute them too.
         assert {"block_soon", "overdue", "colleague_out", "agent_asks"} <= prefs.feed_kinds()
         # §5.9 item 10.6: the table holds exactly the cap. 20 after MD-3,
-        # 21 since WS-53 CRM-Q28 added `digest_ready`, and 22 since WS-53
-        # CRM-Q32-4 added `crm_open_questions`.
-        assert len(prefs.feed_kinds()) == prefs.MAX_KINDS == 22
+        # 21 since WS-53 CRM-Q28 added `digest_ready`, 22 since WS-53
+        # CRM-Q32-4 added `crm_open_questions`, and 23 since WS-61 KB-9a
+        # added `kb_gap`.
+        assert len(prefs.feed_kinds()) == prefs.MAX_KINDS == 23
 
     def test_a_list_keeps_its_order_and_loses_its_repeats(self, fake: _FakeDB) -> None:
         res = _put({"key": "mutes", "value": ["block_soon", "overdue", "block_soon"]})

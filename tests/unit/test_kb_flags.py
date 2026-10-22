@@ -49,6 +49,10 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/favorites", None),
     ("POST", f"/knowledge/pages/{OTHER}/favorite", None),
     ("DELETE", f"/knowledge/pages/{OTHER}/favorite", None),
+    # KB-9a: the gaps.
+    ("GET", "/knowledge/gaps", None),
+    ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
+    ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
 ]
 
 
@@ -87,12 +91,14 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_enabled"].default is False
     assert fields["knowledge_orgs"].default == ""
     assert fields["knowledge_embed"].default == ""
+    assert fields["knowledge_gaps"].default == ""
 
 
 def _template(path: str) -> str:
     """The route template of a concrete path in ``CALLS``."""
-    out = path.split("?")[0].replace(
-        OTHER, "{page_id}" if "/pages/" in path else "{space_id}")
+    holder = ("{page_id}" if "/pages/" in path
+              else "{gap_id}" if "/gaps/" in path else "{space_id}")
+    out = path.split("?")[0].replace(OTHER, holder)
     return out.replace("/versions/2", "/versions/{version}")
 
 
@@ -144,7 +150,7 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
 
 
 @pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED",
-                                  "KNOWLEDGE_EMBED_SWEEP"])
+                                  "KNOWLEDGE_EMBED_SWEEP", "KNOWLEDGE_GAPS"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""
     assert is_platform_env(name)
