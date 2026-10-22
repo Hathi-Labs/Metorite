@@ -411,10 +411,10 @@ demand, and the member's last choice always wins over the default.
 | **D-CF-6** | Where does the brief come from? | **My Day's MD-7 composition,** read, never recomposed | The same words on WhatsApp, on My Day and in the chat read as one assistant with one memory |
 | **D-CF-7** | Does the nudge live on the server? | **Yes,** in `shell_prefs` | A nudge that returns on every device becomes a banner, and a banner is invisible within a week |
 
-**One refinement for later, accepted with D-CF-3.** If a member closes the
-sheet at once on three launches in a row, the phone stops opening on the
-chat, and the account menu offers a "Chat first" switch. Ticket CF-9, not
-built.
+**One refinement for later, accepted with D-CF-3.** A member may close the
+sheet at once on three launches in a row. Then the phone stops opening on
+the chat, and the account menu offers a "Chat first" switch. Ticket CF-9,
+not built.
 
 ---
 
@@ -602,10 +602,10 @@ mark. An e2e with a stubbed brief.
    and the acts. It holds at the panel width and at 390 px.
 2. An act sends the member's turn in words. For a send, a delete, money or
    membership, the tool's own confirm card follows, and no write happens
-   without it. For a reversible act on the member's own work, such as mark
-   done or snooze, the write happens at once and an Undo toast follows
-   (D-CF-5 as decided, 2026-10-22). The Undo uses the task store's existing
-   undo seam (`UndoToast`), never a second one.
+   without it. A reversible act on the member's own work, such as mark done
+   or snooze, writes at once. An Undo toast follows (D-CF-5 as decided,
+   2026-10-22). The Undo uses the task store's existing undo seam
+   (`UndoToast`), never a second one.
 3. "Open" calls `show_in_app`.
 4. An unknown `kind` draws `GenUIFallback`.
 5. "Show me task #42" in the routing eval returns a `recordCard`.
