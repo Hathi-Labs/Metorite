@@ -881,6 +881,46 @@ for every kind that `search_company` returns. It needs no «» and no change to 
 Door 3 is the "opportunities" the owner asked for, in its cheapest form. It
 needs no model: a gap is a search with no hit, counted.
 
+**Door 3 as KB-9a builds it (2026-10-22).** These rules replace the short
+form above where the two differ.
+
+1. **The trigger.** `GET /search/company` asks Knowledge, and Knowledge
+   answers with zero hits. Hits from other apps do not matter, because a gap
+   is about Knowledge. A Knowledge source that failed, timed out or was
+   skipped writes nothing.
+2. **The gate.** `KNOWLEDGE_GAPS` names the org (§13), and Knowledge serves
+   the org. The caller is a member: a person's email address and an org. A
+   service call (`system:internal`) or a principal with no email writes
+   nothing.
+3. **The skip rules.** The route writes nothing for a question with fewer
+   than 3 words. It writes nothing for a question that holds a URL, an email
+   address or a uuid. It writes nothing when more than half of the words
+   hold a digit. Such a question is an id or a number.
+4. **The normal form.** Unicode NFKC, then lower case. Each character that is
+   not a letter or a digit becomes a space. Then the spaces fold to one, and
+   the ends are cut. Two questions with one normal form are one gap.
+   `sample_query` keeps the first wording, cut to 300 characters.
+5. **The write.** The route answers first. Then a `BackgroundTasks` job
+   writes in its own tenant session (`acb_common.db.tenant_session`). The
+   org and the member come from the session. One `INSERT ... ON CONFLICT`
+   statement adds the asker when the asker is new, and it moves
+   `last_asked_at`. The job never raises, so a failed write never fails the
+   search.
+6. **The window.** `ask_count` counts the different askers in one window. A
+   new ask that comes more than 30 days after the last ask starts a new
+   window with one asker. `askers` keeps 20 addresses at most. After 20, a
+   new address raises the count and is not stored.
+7. **Who sees a gap.** A holder of `knowledge:manage` sees each gap of the
+   org. A member sees the gaps that the member asked. A gap stores no space,
+   so the card goes to a holder of `knowledge:manage`.
+8. **How a gap closes.** A person closes it. "I wrote it" links a page, and
+   the gap reads `answered`. Dismiss sets `dismissed`. A publish closes no
+   gap in KB-9a.
+
+KB-AI-3 (§22) adds "Draft with AI" to the card. It drafts on
+`tier-balanced` and files the draft as a KB-5a proposal. KB-9a calls no
+model.
+
 ### 8.5 Where knowledge ends and memory begins
 
 | | Knowledge | Memory (WS-9) |
@@ -939,6 +979,24 @@ Each kind gets a row in `feed_rank.BASE` and in the old-path group table of
 `REACH_CLASS`, and `test_reach_plan.py::TestTheClasses` pins all four. A
 page publish calls `cache.bump_org`, and a source failure calls
 `cache.bump_member`, so the feed sees the change without a wider `on_event`.
+
+**`kb_gap` as KB-9a builds it (2026-10-22).** The provider registers in
+`routes/shell/feed.py`, with the other gated feed-only providers. It names
+the feature `knowledge` and the permission `knowledge:manage`. It gives only
+`kb_gap` until KB-9b adds the other three kinds. A closed Knowledge switch or
+a closed `KNOWLEDGE_GAPS` reads `absent`. The read is
+`routes/knowledge/gaps.my_day_rows`, one tenant session, and `feed.py` opens
+none.
+
+A card shows for an `open` gap with `ask_count` 2 or more and a last
+ask less than 30 days old. Its key is `knowledge:gap:<id>`. Its acts are
+"Write a page", which opens `/knowledge/gaps?write=<id>`, and "See all gaps".
+The New page form then opens with the question as the title.
+
+The card's own
+Dismiss is the feed's dismiss. The gap's Dismiss is in the Gaps view. The
+reach class of `kb_gap` is `brief`. A gap that reaches 2 askers, a dismiss
+and an answer each call `cache.bump_org_safe`.
 
 The feed is where insight lives, and the four kinds are deliberately dumb.
 A fifth kind that uses a model, "the handbook contradicts the CRM's price
@@ -1068,7 +1126,7 @@ compact density, a changed accent, and four widths.
 | `kb_page_files` | organization_id, page_id, artifact_id (→ `artifacts`), position, caption, created_by, created_at | as the page |
 | `kb_links` | §5.5 | as the page |
 | `kb_chunks` | §6.1 | as the page or the document |
-| `kb_gaps` | id, organization_id, question_norm, question, asker_email, space_hint, asked_at, resolved_page_id | the space the hint names, else org |
+| `kb_gaps` | id, organization_id, norm_query, sample_query, askers TEXT[] (20 at most), ask_count, first_asked_at, last_asked_at, status (`open`, `answered`, `dismissed`), answered_page_id (→ `kb_pages`, ON DELETE SET NULL), dismissed_by, dismissed_at, created_at. UNIQUE (organization_id, norm_query). KB-9a, §8.4 | org scope: `knowledge:manage`. A member: the gaps the member asked |
 | `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, scope_kind, member_email, display_name, last_discovery_at, last_changes_at, status, created_at | org scope: `knowledge:manage`. member scope: the member |
 | `kb_source_nodes` | organization_id, source_id, ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url, path, included_space_id, explored, seen_at | as the source |
 | `kb_documents` | id, organization_id, source_id, node_ext_id, space_id, title, text, text_sha, extracted_at, pages, truncated, copied_attachment_id | the space it was included into |
@@ -1094,6 +1152,7 @@ The first migration adds, and nothing renames (R6).
 | `KNOWLEDGE_SOURCES` | empty | The providers a member can connect: `dropbox`, `onedrive`, `google_drive` | owner. `google_drive` waits on §7.4 |
 | `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
 | `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
+| `KNOWLEDGE_GAPS` | empty | The organization ids whose `search_company` reads with no Knowledge hit write a `kb_gaps` row (KB-9a, §8.4). A star is every org. It opens the gap routes and the `kb_gap` card too. Empty, nothing writes a gap, and the gap routes answer 404 | AGENT-SAFE. It spends no credit and sends nothing. A flip for an org: the owner, gate `enforcement-flip` |
 | `KNOWLEDGE_DISTILL` | off | CX-3 writes a digest for each published page on `tier-fast` (`company_context.md` §5) | owner, it spends credits |
 | `COMPANY_SEARCH_ENABLED` | off | The assistant gets `search_company` and loses the two legacy retrievers (§20.5) | Agent, under the dev-phase `enforcement-flip` grant. It spends no credit, sends nothing, and reads only what the member can already read. After the grant ends, the owner |
 
@@ -1192,13 +1251,14 @@ its own branch, three or four in flight at most.
 | **KB-7c** | The OneDrive and SharePoint adapter on the Microsoft app the Email app uses | Same checks as 7a on a Microsoft 365 account | AGENT-SAFE. Org-wide `Sites.Read.All` consent: owner |
 | **KB-7d** | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
 | **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
-| **KB-9** | The My Day provider and the four kinds, the reach classes, the cache bumps, and `kb_gaps` with its write on a Knowledge search with no hit (§8.4 door 3) | A page past review shows a card to its author. A twice-asked gap shows a card to a writer. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
+| **KB-9a** | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss` and `POST /knowledge/gaps/{id}/answered`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-10's rule |
+| **KB-9b** | The other three kinds of §9: `doc_needs_review`, `doc_shared_with_me` and `source_sync_failed`, with their reach classes and the cache bumps of a publish and a source failure. `source_sync_failed` waits for KB-7b | A page past review shows a card to its author. A new page in a space the member reads shows a card. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
 | **KB-12** ✅ DONE 2026-10-18, by owner decision in chat (H-21) | Promotion to `live`: the launch table, `LIVE_SET`, `APP_BAR_HOME`, the two jobs of §11 on both job lists, and Knowledge in the bar's `BAR_APPS` and `SCOPE_APPS`. `NEXT_PUBLIC_KNOWLEDGE` never existed, and §13 says so | The pane shows to every member with `feature:knowledge`. "Find in Knowledge" and "Write a page" answer in the command bar, and a Knowledge page answers in its search | **OWNER-GATE** (H-21), granted in chat on 2026-10-18 |
 
 The order is KB-0, KB-1, KB-2a, KB-3, KB-4, then KB-6 and KB-5 together,
-then KB-7a and KB-9, then the rest. KB-3 before KB-4, because the assistant
+then KB-7a and KB-9a, then the rest. KB-3 before KB-4, because the assistant
 with no index is the assistant we have today.
 
 ---
