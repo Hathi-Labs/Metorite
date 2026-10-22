@@ -1,17 +1,22 @@
 # Chat first — the assistant is the front door
 
-**Status: PROPOSED, 2026-10-20. CF-1 and CF-3 BUILT 2026-10-20, dark.**
-Owner directive of 2026-10-20, recorded in §1. Verified against code on
-2026-10-20, at `origin/main` `f629b6bab`. Board row **WS-62**.
+**Status: PROPOSED, 2026-10-20. CF-1, CF-2, CF-3 and CF-8 LIVE in production
+since 2026-10-21.** Owner directive of 2026-10-20, recorded in §1. Verified
+against code on 2026-10-20, at `origin/main` `f629b6bab`. Board row **WS-62**.
 
 **CF-1, the peek strip, merged as #1198.** **CF-3, `show_in_app`, merged as
 #1197** after one review round (a dot segment walked past the pane check,
-and the tool was not dark). Both are in production since the release of
-2026-10-21, behind two flags that are off. The client flag is
+and the tool was not dark). **CF-8, the phone chat chrome, merged as #1205.**
+**CF-2, the phone opens on the chat and the nudge, merged as #1206** after
+one review round.
+
+On 2026-10-21 the owner asked for production the same day. Two hotfix
+releases shipped the four slices, and both flags went ON in production that
+day, with the owner's permission in chat. The client flag is
 `NEXT_PUBLIC_CHAT_FIRST` in `workbench/control_plane/.env.local`, which
-`acb-staging-flag` refuses, so the owner writes it on staging too. The server
-flag is `CHAT_FIRST_TOOLS`, which adds the tool to the orchestrator. CF-2,
-CF-4, CF-5, CF-6 and CF-7 are not built.
+`acb-staging-flag` refuses. The server flag is `CHAT_FIRST_TOOLS`, which adds
+the tool to the orchestrator. Staging has neither flag yet. CF-4, CF-5, CF-6
+and CF-7 are not built.
 
 §5 proposes **D-CF-1** to **D-CF-7**, each with a default. HANDOFF **H-369**
 carries them to the owner. Every ticket in §6 is AGENT-SAFE to build dark,
@@ -511,9 +516,10 @@ decode each segment once and refuse `.`, `..`, an empty segment and a
 decoded slash, so `/projects/../crm` moves nothing. The shared table is
 `src/lib/inAppPaths.cases.json`, and `tests/unit/test_in_app_path_twin.py`
 holds the two checks equal. The server allowlist `PANES` holds the live
-panes only, and a test holds it equal to `nav.ts`. A nested run refuses the
-tool, and the WhatsApp channel withholds it. The server offers the tool only
-with `CHAT_FIRST_TOOLS` on. One cost: the stricter client check also
+panes only, and a test holds it equal to `nav.ts`.
+
+A nested run refuses the tool, and the WhatsApp channel withholds it. The
+server offers the tool only with `CHAT_FIRST_TOOLS` on. One cost: the stricter client check also
 governs chat links, so a link with a trailing slash opens as a plain link.
 No server code makes such a link.
 
@@ -658,8 +664,8 @@ from `md`).
 5. A desktop, and a phone with the flag off, draw what they drew before.
 
 **Fences.** `assistant.test.ts` ("the chat's chrome on a phone") reads the
-source: the prop with the flag, `compact` as it was, the two rows, the one
-control, the ring's floor and the tap size. `e2e/assistant-motion.spec.ts`
+source. It checks the prop with the flag, `compact` as it was, the two rows,
+the one control, the ring's floor and the tap size. `e2e/assistant-motion.spec.ts`
 gains one phone test with the flag on, and the flag-off test asserts the two
 rows still show. `seams.test.ts` stays at one dock. Mutation, seen to fail
 first: pass `compact={form === "dock" || phone}` in the dock, and the fence
