@@ -10,6 +10,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { DismissableCard } from "@/components/ToolCardShell";
 import { useState, useRef, useEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from "react";
 import React from "react";
 import Link from "next/link";
@@ -42,6 +43,8 @@ import {
   type ResendOutcome,
 } from "@/lib/cardAnswer";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
+import { noActionOf, PinnedDraftCard } from "@/components/email/EmailToolCards";
+import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
@@ -1906,6 +1909,15 @@ export default function AgentChat({
     );
   };
   const hasConfirmations = confirmations.cards.length > 0;
+  // A reply card pins above the composer while it waits (owner report,
+  // 2026-10-22). The member revised a reply over chat, and each steer drew a
+  // new card in the thread ABOVE the messages, so it scrolled away. Pinned,
+  // the same card stays in view and each revision replaces it there. Its X
+  // puts it back in the thread. `lib/pinnedDraft.ts` holds the same rule for
+  // a `draft_reply` card.
+  const replyCard = confirmations.cards.find((c) => c.reply !== undefined);
+  const [unpinnedAsk, setUnpinnedAsk] = useState<string | null>(null);
+  const pinAsk = !!replyCard && replyCard.key !== unpinnedAsk;
 
   // A question card that the run took an answer for waits no more. It
   // stays in view with its answer until the run ends (owner, 2026-10-13).
@@ -2065,6 +2077,16 @@ export default function AgentChat({
   const onManualToggle = useCallback(() => {
     lastManualToggleRef.current = performance.now();
   }, []);
+  // The newest email draft pins above the composer, and each revision
+  // replaces it there (owner report, 2026-10-22, `lib/pinnedDraft.ts`).
+  const drafts = useMemo(() => draftsOf(messages, (e) => !noActionOf(e.result)), [messages]);
+  const [closedDraft, setClosedDraft] = useState<string | null>(null);
+  const pin = useMemo(() => draftPin(drafts, closedDraft), [drafts, closedDraft]);
+  const pinScope = useMemo(
+    () => ({ pinnedId: pin.pinned?.id ?? null, superseded: pin.superseded }),
+    [pin],
+  );
+
   const rollupScope = useMemo<RollupScope>(
     () => ({
       registry: rollupRegistry,
@@ -2184,6 +2206,7 @@ export default function AgentChat({
           </button>
         )}
 
+        <DraftPinContext.Provider value={pinScope}>
         <RollupContext.Provider value={rollupScope}>
         <div ref={contentRef} className="max-w-3xl mx-auto space-y-5">
           {/* The old "Agent running… / Reconnecting…" banner sat at the TOP of
@@ -2302,7 +2325,7 @@ export default function AgentChat({
                     </div>
                   ))}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
-                {msg.id === hitlAnchorId && renderHitlCards()}
+                {msg.id === hitlAnchorId && (pinAsk ? <PinnedAskLine /> : renderHitlCards())}
               </div>
             );
           })}
@@ -2310,7 +2333,7 @@ export default function AgentChat({
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
-          {hitlAnchorId === null && renderHitlCards()}
+          {hitlAnchorId === null && (pinAsk ? <PinnedAskLine /> : renderHitlCards())}
 
           {/* No follow-up pills under a cut answer or during an update: the
               notice below is the next step, and it sits right under the answer. */}
@@ -2347,6 +2370,7 @@ export default function AgentChat({
           ) : null}
         </div>
         </RollupContext.Provider>
+        </DraftPinContext.Provider>
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
@@ -2364,7 +2388,22 @@ export default function AgentChat({
           return null;
         })()}
         {/* The element that waits on the member, while it is out of view. */}
-        <AskPin ask={waiting} threadRef={threadRef} />
+        <AskPin ask={pinAsk ? null : waiting} threadRef={threadRef} />
+        {pinAsk && (
+          <div data-pinned-ask className="max-w-3xl mx-auto mb-2 max-h-96 overflow-y-auto rounded-lg">
+            <DismissableCard onDismiss={() => setUnpinnedAsk(replyCard!.key)}>
+              {renderHitlCards()}
+            </DismissableCard>
+          </div>
+        )}
+        {pin.pinned && (
+          <PinnedDraftCard
+            event={pin.pinned}
+            accountId={emailContext?.accountId}
+            emailId={emailContext?.emailId}
+            onClose={() => setClosedDraft(pin.pinned!.id)}
+          />
+        )}
         {/* Live working indicator — always visible at bottom of output while
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the
@@ -2783,3 +2822,12 @@ export default function AgentChat({
   );
 }
 
+/** The thread's one line for a reply card that waits above the composer. */
+function PinnedAskLine() {
+  return (
+    <div data-pinned-ask-line className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+      <Icon name="Pin" size={12} className="shrink-0" />
+      <span className="min-w-0 truncate">Reply card · above the message box</span>
+    </div>
+  );
+}
