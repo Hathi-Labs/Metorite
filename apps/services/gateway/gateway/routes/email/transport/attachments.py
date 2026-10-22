@@ -608,6 +608,11 @@ class _ReadHold:
 #: from before ``offset`` (it holds the first part only), and reads as a miss.
 _CACHED_FIELDS = ("kind", "text", "truncated", "chars", "reason")
 
+#: The most characters of one file that the cache holds and that an offset
+#: can reach (review of #1220, P2). A 2,000,000-character entry can take
+#: about 12 MB of Redis after JSON escapes. 200,000 is about 60 pages.
+MAX_CACHED_TEXT_CHARS = 200_000
+
 
 def _text_part(answer: AttachmentTextModel, offset: int) -> AttachmentTextModel:
     """The part of a whole-text *answer* that starts at character *offset*.
@@ -755,14 +760,16 @@ async def attachment_text(
             full = parsed.text
             _log.info("attachment_text.read", aid=aid, kind=parsed.kind,
                       size=len(got.content), chars=len(full), stopped=parsed.stopped)
-            # The whole text goes in the cache. `truncated` here says only
-            # that the reader stopped early, and `_text_part` cuts the reply.
+            # The text goes in the cache, up to MAX_CACHED_TEXT_CHARS.
+            # `truncated` here says that the reader or the cap stopped early,
+            # and `_text_part` cuts the reply.
+            kept = full[:MAX_CACHED_TEXT_CHARS]
             answer = AttachmentTextModel(
                 **base,
                 kind=parsed.kind,
-                text=full,
-                truncated=bool(parsed.stopped),
-                chars=len(full),
+                text=kept,
+                truncated=bool(parsed.stopped) or len(full) > len(kept),
+                chars=len(kept),
             )
         await _remember_text(org_id, row, answer)
         return _text_part(answer, offset)

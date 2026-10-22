@@ -187,3 +187,16 @@ def test_the_attachment_offset_reaches_the_route(monkeypatch, ea) -> None:
     out = asyncio.run(ea.read_email_attachment(MAIL_ID, PDF_ID, offset=20_000))
     assert gw.requests == [(f"/email/attachments/{PDF_ID}/text", {"offset": "20000"})]
     assert "[Cut at" not in out and "stopped at a limit" not in out
+
+
+def test_an_offset_past_the_end_never_says_the_file_is_unreadable(monkeypatch, ea) -> None:
+    """Review of #1220, P3. Mutation: drop the ``chars`` branch of
+    ``_frame_attachment_text``: the answer then says the file cannot be read."""
+    gw = _Gateway({"filename": "Q.pdf", "kind": "pdf", "text": "",
+                   "truncated": False, "chars": 50_000, "offset": 50_000,
+                   "next_offset": None})
+    monkeypatch.setattr(ea, "_get", gw.get)
+    monkeypatch.setattr(ea, "_request", gw.request)
+    out = asyncio.run(ea.read_email_attachment(MAIL_ID, PDF_ID, offset=60_000))
+    assert "Nothing at this offset. The text of this attachment has 50000 characters." in out
+    assert "could not read" not in out

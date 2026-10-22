@@ -906,6 +906,12 @@ def _frame_attachment_text(data: dict[str, Any], frame: UntrustedFrame) -> str:
         kind = _ATTACHMENT_KINDS.get(str(data.get("kind") or ""), str(data.get("kind") or "file"))
         head = f"Attachment text ({kind}, {data.get('chars', len(text))} characters)."
         body = [f"File name: {name}", text]
+    elif int(data.get("chars") or 0) > 0:
+        # An offset past the end: the file has text, just not there (review
+        # of #1220, P3). Never say that the file cannot be read.
+        head = (f"Nothing at this offset. The text of this attachment has "
+                f"{int(data.get('chars') or 0)} characters.")
+        body = [f"File name: {name}"]
     else:
         reason = str(data.get("reason") or "The file holds no text that I can read.")
         head = f"I could not read the text of this attachment. {reason}"

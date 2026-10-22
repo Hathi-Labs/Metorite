@@ -254,7 +254,10 @@ def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
     are one unit, so eviction never leaves an orphan tool result or an
     orphan tool call. Each other non-system message is a unit of its own.
     System and developer messages, and the LAST user message (the current
-    request), are in no unit, so eviction never removes them.
+    request), are in no unit, so eviction never removes them. Nor is the
+    NEWEST tool group of the current turn: the model would lose the result it
+    just got, call the tool again, and loop (review of #1220, P2). Character
+    trimming cuts that group instead.
     """
     last_user = max(
         (i for i, m in enumerate(messages) if m.get("role") == "user"),
@@ -275,6 +278,8 @@ def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
                 unit.append(i)
                 i += 1
         units.append(unit)
+    if units and units[-1][0] > last_user:
+        units.pop()
     return units
 
 

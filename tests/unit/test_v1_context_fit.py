@@ -228,3 +228,21 @@ def test_a_tool_turn_that_ends_the_list_goes_whole():
     out, _max_tokens = _fit_context_window(msgs, None, "m", 32000)
     assert _orphans(out) == (set(), set())
     assert any(m.get("content") == "the current request" for m in out)
+
+
+def test_the_newest_tool_group_of_the_turn_is_never_evicted() -> None:
+    """Review of #1220, P2: with the history gone, the guard dropped the
+    tool result the model had just got, and the model called the tool again.
+    The newest tool group stays, and character trimming cuts it instead.
+    Mutation: drop the ``units.pop()`` in ``_eviction_units``."""
+    from gateway.routes.v1_compat import _eviction_units
+
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": "now"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 10},
+    ]
+    assert _eviction_units(msgs) == [[1], [2]]

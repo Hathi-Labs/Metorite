@@ -1255,3 +1255,13 @@ class TestTheOwnerCheckOnARealDatabase:
             ]), "one entry for each row, whatever the spelling"
         finally:
             _purge(p.admin_engine, [acc_a, acc_c])
+
+
+def test_the_cache_holds_at_most_the_cap() -> None:
+    """Review of #1220, P2: one file must not fill Redis. The cap is the
+    furthest that an offset can reach."""
+    from gateway.routes.email.transport import attachments as at
+
+    assert at.MAX_CACHED_TEXT_CHARS == 200_000
+    src = Path(at.__file__).read_text(encoding="utf-8")
+    assert "kept = full[:MAX_CACHED_TEXT_CHARS]" in src
