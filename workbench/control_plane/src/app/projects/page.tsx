@@ -213,6 +213,7 @@ import {
 } from "./lib/tree";
 import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
 import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
+import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
@@ -2617,6 +2618,37 @@ function ProjectsWorkspace() {
       setApp(null);
       setSelected(row.node as ProjectRow);
       return "opened";
+    },
+  });
+  // WS-46 P11 (G22) — `show_view` changes what this page draws: the canvas,
+  // a saved view, the filters and the grouping. It writes nothing, as the
+  // filter bar writes nothing. `lib/chatView.ts` holds the rules.
+  useFrontendTool({
+    name: "projects.show_view",
+    description: "Change the canvas, filters, grouping or saved view of the Projects page.",
+    dispatched: true,
+    handler: (args) => {
+      const plan = planShowView(args);
+      if (typeof plan === "string") return plan;
+      const row = flatten(visibleRoots).find((e) => e.node.id === plan.projectId);
+      if (!row) return "not visible";
+      setApp(null);
+      setSelected(row.node as ProjectRow);
+      if (plan.mode) setChosenMode(plan.mode);
+      let nextGroup = groupBy;
+      let nextLanes = lanes;
+      if (plan.view) {
+        setFilters(plan.view.filters);
+        setShownFields(plan.view.shownFields);
+        setActiveViewId(plan.view.id);
+        nextGroup = plan.view.groupBy;
+        nextLanes = plan.view.lanes;
+      }
+      if (plan.filters) setFilters(plan.filters);
+      if (plan.groupBy) nextGroup = plan.groupBy;
+      setGroupBy(nextGroup);
+      setLanes(lanesAfter(nextLanes, nextGroup, plan.subGroupBy));
+      return "shown";
     },
   });
   useFrontendTool({

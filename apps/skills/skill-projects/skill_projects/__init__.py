@@ -53,7 +53,7 @@ from skill_projects.inbox import (
     triage_intake,
     watchers,
 )
-from skill_projects.nav import open_in_app
+from skill_projects.nav import open_in_app, show_view
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -159,6 +159,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "watchers",
     # Class A — navigation (S6)
     "open_in_app",
+    "show_view",
     # Class A — team intelligence (S7a capacity, S7b fit and rebalancing,
     # S7c conflicts, S7e on-the-fly analysis)
     "team_capacity",
