@@ -1464,6 +1464,40 @@ class AgentRunError(Exception):
         self.mutation_pr = mutation_pr
 
 
+# The longest sub-agent answer that goes back to the orchestrator whole. The
+# orchestrator relays a drafted email or document as it is, so 8000 cut real
+# drafts. Override with SUB_AGENT_MAX_RESULT_CHARS.
+# Fence: tests/unit/test_sub_agent_result_cap.py.
+_SUB_AGENT_RESULT_CHARS_DEFAULT = 24000
+
+
+def _cap_sub_agent_result(text: str, cap: int) -> str:
+    """Cut a sub-agent answer to about *cap* characters, head AND tail kept.
+
+    The end of a draft holds the sign-off and the questions for the reader,
+    so a head-only cut lost them. The cut keeps two thirds from the start
+    and one third from the end, each at a line break when one is near. A
+    marker between them names the number of characters left out.
+    """
+    if cap <= 0 or len(text) <= cap:
+        return text
+    head_len = (cap * 2) // 3
+    tail_len = cap - head_len
+    head = text[:head_len]
+    nl = head.rfind("\n")
+    if nl > head_len // 2:
+        head = head[:nl]
+    tail = text[len(text) - tail_len:]
+    nl = tail.find("\n")
+    if 0 <= nl < tail_len // 2:
+        tail = tail[nl + 1:]
+    left_out = len(text) - len(head) - len(tail)
+    return (
+        f"{head}\n\n[Sub-agent result cut: {left_out} of {len(text)} characters"
+        f" left out here. The start and the end are kept.]\n\n{tail}"
+    )
+
+
 async def _run_sub_agent_streaming(
     agent_name: str,
     message_str: str,
@@ -1746,11 +1780,14 @@ async def _run_sub_agent_streaming(
             text_parts: list[str] = []
 
             # Max chars returned from a sub-agent to the parent (technique #5).
-            # Research: sub-agents explore deeply (10k+ tokens) but the parent
-            # only needs a condensed 1-2k token summary.  Prevents single
-            # sub-agent calls from bloating the orchestrator's context.
+            # Prevents single sub-agent calls from bloating the orchestrator's
+            # context. The bound is high enough for a whole draft, because the
+            # orchestrator relays a draft as it is.
             _MAX_SUB_RESULT_CHARS = int(
-                os.environ.get("SUB_AGENT_MAX_RESULT_CHARS", "8000")
+                os.environ.get(
+                    "SUB_AGENT_MAX_RESULT_CHARS",
+                    str(_SUB_AGENT_RESULT_CHARS_DEFAULT),
+                )
             )
 
             if _sub_is_copilot and hasattr(agent, "run"):
@@ -1891,21 +1928,13 @@ async def _run_sub_agent_streaming(
             if not raw_result:
                 return f"({agent_name!r} returned an empty response)"
             if len(raw_result) > _MAX_SUB_RESULT_CHARS:
-                trimmed = raw_result[:_MAX_SUB_RESULT_CHARS]
-                last_nl = trimmed.rfind("\n")
-                if last_nl > _MAX_SUB_RESULT_CHARS // 2:
-                    trimmed = trimmed[:last_nl]
                 _log.debug(
                     "executor.sub_agent_result_truncated",
                     agent=agent_name,
                     original=len(raw_result),
                     capped=_MAX_SUB_RESULT_CHARS,
                 )
-                return (
-                    trimmed
-                    + f"\n\n[Sub-agent result truncated to"
-                    f" {_MAX_SUB_RESULT_CHARS} chars]"
-                )
+                return _cap_sub_agent_result(raw_result, _MAX_SUB_RESULT_CHARS)
             return raw_result
 
     except Exception as exc:
