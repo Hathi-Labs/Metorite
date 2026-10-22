@@ -1800,7 +1800,7 @@ Four builders work at once, so they keep out of each other's files.
 | **KB-2h** ✅ BUILT 2026-10-21 (#1212) | Backlinks written to `kb_links` from the saved body, and a "Linked from" list |
 | **KB-2k** | ✅ BUILT 2026-10-22 (KB-2k1, KB-2k2 and KB-2k3). `@` mentions of a person, a hover preview on a page link, and "Create page" from a mention with no match. The `@` menu for pages and dates is built (#1225). See "KB-2k in detail" below |
 | **KB-3d** ✅ BUILT 2026-10-22 (branch `ws61-kb3d-search`) | Search view like the Docmost spotlight: chips for Space, Creator, Date and Title only, matched words marked in each snippet, and a match bar on the opened page |
-| **KB-2m** | Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages and attachments, as a zip |
+| **KB-2m** | ✅ BUILT 2026-10-22 (KB-2m1 to KB-2m5). Import of Markdown and HTML files and of a Notion zip, with folders becoming parents. Export of a page or a space as Markdown or HTML, with sub-pages, as a zip. Attachments wait for KB-2c. See "KB-2m in detail" below |
 | **KB-2o** | Labels on pages, a labels list and a page of the pages with one label |
 | **KB-2c** | Files: attachments, video, audio and PDF blocks, and draw.io and Excalidraw blocks that save as attachments. After AM-5 and H-322 |
 
@@ -1818,6 +1818,35 @@ The `@` menu of #1225 already lists pages and dates. KB-2k adds three things to 
 Verify each slice with `cd workbench/control_plane && npx tsc --noEmit && npx vitest run app/knowledge`, and with `npx playwright test --project=ci e2e/knowledge-shortcuts.spec.ts`, which gains a test for each "Done when".
 
 **Built 2026-10-22, with four choices.** The People read waits for at least one typed character. The "Create page" row does not show when the typed words match a date row. The preview card shows the refusal line for any failed read, not only a 403 or a 404. A person chip draws a user icon and the name after "@". The code is in `lib/editor/people.ts`, `chipPreview.ts`, `mention.ts` and `components/editor/PageChipPreview.tsx`.
+
+#### KB-2m in detail (specified 2026-10-22)
+
+KB-2m is frontend only. It adds no gateway route and no migration. Every page it makes goes through the existing `POST /knowledge/pages`, which checks the write grant on the server. Every page it exports comes from the existing reads, so the server decides what the member can see. The code sits in `app/knowledge/lib/importExport/` as pure functions, and the dialogs are thin.
+
+| Slice | What | Done when |
+|---|---|---|
+| **KB-2m1** ✅ BUILT 2026-10-22 | Read the files. A dialog in the space menu and in the page menu ("Import") takes `.md`, `.markdown`, `.html`, `.htm` and `.zip` files. A Markdown file keeps its text as the body. Its title is its first `# heading`, which leaves the body, or else the file name with no extension. An HTML file goes through DOMPurify (the one policy of `src/lib/untrustedHtml.ts`), then through `generateJSON` with `knowledgeExtensions`, then through `writeBody`. Its title is `<title>` or the first `<h1>`. An image becomes its alt text in italics, or `*[image: name]*`. | Two files give two plans. A script tag and an `onerror` attribute are gone from the result. A list, a table and a link keep their shape |
+| **KB-2m2** ✅ BUILT 2026-10-22 | Read a zip. Each `.md` or `.html` entry is a page. A folder that has the base name of a page file beside it (Notion: `Title <32-hex>.md` and `Title <32-hex>/`) makes its entries children of that page. Any other folder is a parent page with an empty body. The trailing 32-hex id leaves each title. | The Notion fixture gives the right tree and the right titles |
+| **KB-2m3** ✅ BUILT 2026-10-22 | The limits. 25 MB for each file, 100 MB in total, 500 entries, 300 pages, a depth of 12. An entry path with `..`, an absolute path or a NUL is refused. The reader checks the declared sizes before it inflates anything, and it checks the real size after. Over a limit, the dialog refuses with a clear message, and it creates nothing. | Each limit has a test. A zip with a declared size over the limit creates nothing |
+| **KB-2m4** ✅ BUILT 2026-10-22 | Create the pages. They are drafts, made parents first through `createPage`, under the space root or under the page that started the import. The dialog shows "12 of 40" and a Cancel that stops after the current page. A second pass rewrites each relative link between imported files to `/knowledge/pages/<new id>` with `PATCH /knowledge/pages/{id}`. A page that fails does not stop the others. Its children are skipped, and the report says so. The final report counts created, skipped and failed, with the reasons. Then the Knowledge cache is invalidated. | The two-file import POSTs two drafts and shows the report. The Notion zip creates the parent before the child, and the PATCH body holds the new link. A reader sees no Import |
+| **KB-2m5** ✅ BUILT 2026-10-22 | Export. "Export page" in the page menu and "Export space" in the space menu take a format (Markdown or HTML) and, for a page, "With sub-pages" (on by default). The reads are `getPage` and `listPages`. The zip has one file for each page, and a folder for each page that has children, in the layout that the import reads. A file name is the title with its unsafe characters removed, and a duplicate gets a number. A link between exported pages becomes a relative file link. A link to a page outside the export stays `/knowledge/pages/<id>`. HTML is `generateHTML` inside a minimal document with a `<title>` and no script. A page with no sub-pages downloads as one `.md` or `.html` file. The download goes through `saveBlob`. | The export of a page with a sub-page gives a zip with the right names and contents. An export then an import gives the same titles, the same tree and the same bodies |
+
+**Attachments wait for KB-2c.** An attachment is not imported and it is not exported. The import dialog says how many files it skipped. The export dialog says in one line that attachments are not in the file. KB-2c adds both when it adds attachments.
+
+**The dependency.** `fflate` (MIT, no dependencies) reads and writes the zip. The dialogs load it with a dynamic `import()`, so the first paint of Knowledge pays nothing.
+
+Verify with `cd workbench/control_plane && npx tsc --noEmit && npx vitest run app/knowledge lib components`, and with `npx playwright test --project=ci e2e/knowledge-import-export.spec.ts e2e/knowledge-chrome.spec.ts e2e/knowledge-pages.spec.ts`.
+
+**Built 2026-10-22, with six choices.**
+
+- The space had no menu, so its landing header gains a `…` menu ("Space actions"). The page menu gains "Export page" and "Import into this page", and the second shows for a writer only.
+- An image becomes its alt text in both paths, even a remote one.
+- The unit runner has no DOM, so the HTML tests run in Chromium, in `e2e/knowledge-import-export.spec.ts`.
+- An HTML export cleans its body with `sanitizeFileHtml` in `src/lib/untrustedHtml.ts`. That function keeps remote images, which the viewer policy blocks.
+- An exported file starts with its title as a heading. An import reads that heading, so the title returns even when the file name had to change.
+- A zip holds no page order, so the siblings of an import follow the file names.
+
+The code is in `lib/importExport/`, `components/ImportDialog.tsx`, `ExportDialog.tsx` and `SpaceMenu.tsx`.
 
 #### What stays with the owner
 

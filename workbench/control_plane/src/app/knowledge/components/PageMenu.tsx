@@ -29,7 +29,9 @@ import { pageHref } from "../lib/links";
 import { markdownFileName, pageMarkdown, pageMenuItems, type PageMenuState } from "../lib/pageMenu";
 import { printPage } from "../lib/printPage";
 import type { PageDetail, Space } from "../lib/types";
+import ExportDialog from "./ExportDialog";
 import { useFavoriteToggle } from "./Favorites";
+import ImportDialog from "./ImportDialog";
 import MovePageDialog from "./MovePageDialog";
 import { useRestorePage } from "./useRestorePage";
 
@@ -51,6 +53,8 @@ export default function PageMenu({
     null,
   );
   const [moving, setMoving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [busy, setBusy] = useState(false);
   const { restoring, restore } = useRestorePage();
@@ -103,6 +107,8 @@ export default function PageMenu({
     "copy-markdown": () => void copy(pageMarkdown(page), `kb-md:${page.id}`, "Markdown copied"),
     "download-md": () =>
       saveBlob(new Blob([pageMarkdown(page)], { type: "text/markdown;charset=utf-8" }), markdownFileName(page.title)),
+    export: () => setExporting(true),
+    import: () => setImporting(true),
     print: () => {
       if (printBody) void printPage(page.title, printBody);
     },
@@ -125,6 +131,9 @@ export default function PageMenu({
           onSelect: () => acts[row.entry.id]?.(),
         },
   );
+
+  const space = spaces.find((s) => s.id === page.space_id);
+  const spaceName = space?.name ?? "this space";
 
   return (
     <>
@@ -169,6 +178,14 @@ export default function PageMenu({
             title: space ? `Moved to ${space.name}` : "Page moved",
           });
         }}
+      />
+      <ImportDialog
+        target={importing ? { spaceId: page.space_id, spaceName, parent: { id: page.id, title: page.title } } : null}
+        onClose={() => setImporting(false)}
+      />
+      <ExportDialog
+        target={exporting ? { spaceId: page.space_id, spaceName, page: { id: page.id, title: page.title } } : null}
+        onClose={() => setExporting(false)}
       />
       <ConfirmDialog
         open={archiving}

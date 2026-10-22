@@ -181,15 +181,17 @@ describe("the page menu", () => {
       expect(shown).not.toContain("archive");
       expect(shown).not.toContain("restore");
     }
-    expect(ids(state())).toEqual(["copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "favorite"]);
+    expect(ids(state())).toEqual(["copy-link", "copy-markdown", "download-md", "export", "print", "|", "full-width", "favorite"]);
+    // KB-2m: a reader may export what they can see, and may not import.
+    expect(ids(state())).not.toContain("import");
   });
 
   it("gives a writer Move, and a manager Archive, with a line between groups", () => {
     expect(ids(state({ canWrite: true }))).toEqual([
-      "copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "favorite", "|", "move",
+      "copy-link", "copy-markdown", "download-md", "export", "print", "|", "full-width", "favorite", "|", "move", "import",
     ]);
     expect(ids(state({ canWrite: true, canManage: true }))).toEqual([
-      "copy-link", "copy-markdown", "download-md", "print", "|", "full-width", "favorite", "|", "move", "|", "archive",
+      "copy-link", "copy-markdown", "download-md", "export", "print", "|", "full-width", "favorite", "|", "move", "import", "|", "archive",
     ]);
   });
 
@@ -200,8 +202,9 @@ describe("the page menu", () => {
     expect(shown).not.toContain("archive");
   });
 
-  it("hides Print, Move and Archive during an edit", () => {
+  it("hides Print, Move, Import and Archive during an edit", () => {
     const shown = ids(state({ canWrite: true, canManage: true, editing: true }));
+    expect(shown).not.toContain("import");
     expect(shown).not.toContain("print");
     expect(shown).not.toContain("move");
     expect(shown).not.toContain("archive");

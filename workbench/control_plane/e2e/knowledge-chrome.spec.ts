@@ -280,7 +280,7 @@ test.describe("Knowledge page chrome", () => {
 
   test("a reader sees no Move, Archive or Restore, and no Archived view", async ({ page }) => {
     await open(page, "kp-one", { [COMPANY]: "read", [OPS]: "read" });
-    expect(await menuItems(page)).toEqual(["Copy link", "Copy as Markdown", "Download as .md", "Print", "Full width", "Favourite"]);
+    expect(await menuItems(page)).toEqual(["Copy link", "Copy as Markdown", "Download as .md", "Export page", "Print", "Full width", "Favourite"]);
 
     await page.goto("/knowledge/pages/kp-old");
     const banner = page.locator("[data-archived-banner]");

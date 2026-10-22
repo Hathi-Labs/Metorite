@@ -26,6 +26,7 @@ import { KNOWLEDGE_HOME, archivedHref, pageHref } from "../lib/links";
 import { buildTree } from "../lib/tree";
 import type { PageSummary } from "../lib/types";
 import { useKnowledge } from "./KnowledgeContext";
+import SpaceMenu from "./SpaceMenu";
 
 export default function SpaceLanding({ spaceId }: { spaceId: string }) {
   const { spaces, openNewPage } = useKnowledge();
@@ -70,6 +71,7 @@ export default function SpaceLanding({ spaceId }: { spaceId: string }) {
               Archived pages
             </Button>
           ) : null}
+          <SpaceMenu space={space} />
         </header>
 
         <section className="mt-5" aria-label={`Pages in ${space.name}`}>
