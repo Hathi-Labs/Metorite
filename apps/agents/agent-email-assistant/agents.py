@@ -4589,13 +4589,13 @@ async def find_contact(
     """Find the email address of a person by name, or by part of a name or
     an address. Use it before send_email, and before you add a person to the
     To, Cc or Bcc of a draft, when the member names a person ("email Priya",
-    "add Kiran from Fracktal to CC") and gives no address. It searches the
+    "add Kiran from Acme to CC") and gives no address. It searches the
     members and the People directory of the organization, the people the
     member wrote to, the contacts and the senders. Each hit names its source.
 
     ``domain`` keeps only the addresses at that domain, for "Kiran from
-    Fracktal". Give the domain when you know it ("fracktal.in"), or the name
-    of the company ("fracktal"). Memory can suggest the domain, but only this
+    Acme". Give the domain when you know it ("acme.com"), or the name
+    of the company ("acme"). Memory can suggest the domain, but only this
     tool gives the address.
 
     When it finds more than one person, or the only hit is ``seen``, ask the
@@ -4615,8 +4615,8 @@ async def find_contact(
     except GatewayError as exc:
         if exc.status != 422 or not dom:
             raise
-        return (f"{domain!r} is not a domain. Give a domain such as fracktal.in, "
-                "or a company name such as fracktal, or leave domain out.")
+        return (f"{domain!r} is not a domain. Give a domain such as acme.com, "
+                "or a company name such as acme, or leave domain out.")
     found = [r for r in rows if isinstance(r, dict) and r.get("email")]
     at = f" at {dom}" if dom else ""
     if not found:
