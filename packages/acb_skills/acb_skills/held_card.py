@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Iterable
+from typing import Any
 
 from acb_common import get_logger
 
@@ -32,6 +33,7 @@ _log = get_logger("acb_skills.held_card")
 
 __all__ = [
     "ADDRESS_MAX",
+    "ATTACHMENT_REF",
     "CLASSES",
     "CLASS_NEW",
     "CLASS_ORG",
@@ -41,17 +43,23 @@ __all__ = [
     "HELD_TEXT_MAX",
     "KIND_BCC",
     "KIND_CC",
+    "KIND_FILE",
     "KIND_TO",
+    "METORITE_FILE_REF",
+    "METORITE_FILE_REFUSED",
     "NEW_MARK",
     "RECIPIENT_KINDS",
     "ROW_KINDS",
     "THREAD_MARK",
+    "WORKSPACE_FILE_REFUSED",
     "address_problem",
     "class_mark",
     "domain_of",
+    "file_label",
     "held_card_send_enabled",
     "lookalike_of",
     "lookalike_warning",
+    "parse_file_ref",
     "recipient_label",
     "strongest_class",
 ]
@@ -121,10 +129,66 @@ def class_mark(cls: str) -> str:
 KIND_TO = "to"
 KIND_CC = "cc"
 KIND_BCC = "bcc"
+#: A file row (§21.1 item 3). The member can untick each one.
+KIND_FILE = "file"
 #: The kinds of a recipient row, in the order the card lists them.
 RECIPIENT_KINDS: tuple[str, ...] = (KIND_TO, KIND_CC, KIND_BCC)
 #: Every kind a row of a held card can have. A later slice adds a kind here.
-ROW_KINDS: frozenset[str] = frozenset(RECIPIENT_KINDS)
+ROW_KINDS: frozenset[str] = frozenset({*RECIPIENT_KINDS, KIND_FILE})
+
+
+# ── The files rule (§21.1 item 3, §21.3 the Attach row) ──────────────────────
+#
+# A file of a held send comes from data, never from the model (§21.2 rule 4).
+# The model names an id. The server resolves it. In this build one source
+# can be a row: a file of a mail of the member's own mailbox, named as
+# ``attachment:<id>``. A workspace path is refused, because the run itself
+# wrote the file, from data that it read. A Metorite file (``file:<id>``) is
+# refused too, until the spec names the store that owns such a file.
+
+#: The head of a reference to a file of a mail of the member's own mailbox.
+ATTACHMENT_REF = "attachment:"
+#: The head of a reference to a Metorite file.
+METORITE_FILE_REF = "file:"
+#: The refusal of a workspace path in a held chat.
+WORKSPACE_FILE_REFUSED = (
+    "A chat that read outside mail cannot attach a file of the workspace, so "
+    "nothing was sent. Attach a file of the member's own mailbox, named as "
+    "attachment:<id> from read_email.")
+#: The refusal of a Metorite file in a held chat (a decision that §21 does
+#: not record yet: which store owns such a file).
+METORITE_FILE_REFUSED = (
+    "A chat that read outside mail cannot attach a Metorite file yet, so "
+    "nothing was sent. Attach a file of the member's own mailbox, named as "
+    "attachment:<id> from read_email.")
+
+
+def parse_file_ref(ref: Any) -> tuple[str, str]:
+    """``(source, id)`` of one file reference of a held send.
+
+    ``("attachment", <uuid>)`` for ``attachment:<uuid>``. Anything else
+    raises ``ValueError`` with the refusal that the member reads: a
+    ``file:<id>`` with :data:`METORITE_FILE_REFUSED`, and a workspace path or
+    any other text with :data:`WORKSPACE_FILE_REFUSED`."""
+    import uuid
+
+    text = str(ref or "").strip()
+    if text.lower().startswith(ATTACHMENT_REF):
+        raw = text[len(ATTACHMENT_REF):].strip()
+        try:
+            return "attachment", str(uuid.UUID(raw))
+        except ValueError:
+            raise ValueError(WORKSPACE_FILE_REFUSED) from None
+    if text.lower().startswith(METORITE_FILE_REF):
+        raise ValueError(METORITE_FILE_REFUSED)
+    raise ValueError(WORKSPACE_FILE_REFUSED)
+
+
+def file_label(name: str, size: str) -> str:
+    """The label of a file row: the name in quotes, and the size. A sender
+    chose the name, so the quotes keep it from reading as a recipient."""
+    quoted = str(name or "file").replace("\\", "\\\\").replace('"', '\\"')
+    return f'File: "{quoted}" ({size})' if size else f'File: "{quoted}"'
 
 #: The longest text that a held card shows. A longer text sends nothing,
 #: because the card shows the whole text or no card shows (open question 8).

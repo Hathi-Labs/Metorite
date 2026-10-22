@@ -297,6 +297,129 @@ def card_rows(record_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# ── The files rule (§21.1 item 3, §21.3 the Attach row) ─────────────────────
+#
+# A file row resolves only from data of the member's own mailbox: an
+# attachment of a mail of the sending mailbox, owned by the member, in the
+# bound tenant. The model names ``attachment:<id>``, and the server reads the
+# name, the size and the mail. A workspace path, a Metorite file, a file of
+# another member and a file of another tenant send nothing.
+
+#: The files of mails of the member's own sending mailbox, by id. The owner
+#: join keeps a file of another member out, and RLS keeps another tenant out.
+OWNED_FILES_SQL = (
+    "SELECT ea.id::text AS id, ea.filename, ea.size_bytes, "
+    "em.id::text AS message_id, em.subject "
+    "FROM email_attachments ea "
+    "JOIN email_messages em ON em.id = ea.message_id "
+    "JOIN email_accounts acc ON acc.id = em.account_id "
+    "WHERE ea.id = ANY(CAST(:ids AS uuid[])) AND acc.user_id = :uid "
+    "AND em.account_id = CAST(:aid AS uuid)"
+)
+#: The files of one mail of the member's own sending mailbox.
+MAIL_FILES_SQL = (
+    "SELECT ea.id::text AS id, ea.filename, ea.size_bytes, "
+    "em.id::text AS message_id, em.subject "
+    "FROM email_attachments ea "
+    "JOIN email_messages em ON em.id = ea.message_id "
+    "JOIN email_accounts acc ON acc.id = em.account_id "
+    "WHERE em.id = CAST(:mid AS uuid) AND acc.user_id = :uid "
+    "AND em.account_id = CAST(:aid AS uuid) ORDER BY ea.created_at, ea.filename"
+)
+#: The most bytes of the files of one held send. A larger set sends nothing.
+MAX_FILES_BYTES = 20 * 1024 * 1024
+#: The answer when a named file is not a file of the member's own mailbox.
+FILE_NOT_OWNED = ("A named file is not a file of a mail of this mailbox of the member, "
+                  "so nothing was sent.")
+
+
+def file_rows(files: Sequence[Any]) -> list[dict[str, Any]]:
+    """The recorded rows of *files*: each starts ticked, and the member can
+    untick it. The label names the file and its size, and the hint names the
+    mail that holds it."""
+    from acb_skills.held_card import KIND_FILE, file_label
+
+    total = sum(int(getattr(f, "size_bytes", 0) or 0) for f in files)
+    if total > MAX_FILES_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"The files are larger than {MAX_FILES_BYTES // (1024 * 1024)} MB "
+                    "together, so nothing was sent."))
+    rows = []
+    for i, f in enumerate(files):
+        subject = " ".join(str(getattr(f, "subject", "") or "(no subject)").split())[:120]
+        rows.append({
+            "id": f"file-{i}",
+            "kind": KIND_FILE,
+            "attachment_id": str(f.id),
+            "label": file_label(str(f.filename or "file"), _size_text(f.size_bytes)),
+            "hint": f'From the mail "{subject}" of your own mailbox.',
+            "checked": True,
+        })
+    return rows
+
+
+async def resolve_file_refs(
+    db: Any, owner: str, account_id: str, refs: Sequence[str],
+) -> list[Any]:
+    """The files that *refs* name, each a file of the member's own mailbox.
+
+    THE resolver of a file of a held send. Each ref must be
+    ``attachment:<id>`` (``acb_skills.held_card.parse_file_ref``), and each id
+    must be a file of a mail of the sending mailbox of *owner*. Else 422 or
+    404, and nothing is sent."""
+    from acb_skills.held_card import parse_file_ref
+
+    ids: list[str] = []
+    for ref in refs:
+        try:
+            _source, fid = parse_file_ref(ref)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        if fid not in ids:
+            ids.append(fid)
+    if not ids:
+        return []
+    rows = (await db.execute(text(OWNED_FILES_SQL),
+                             {"ids": ids, "uid": owner, "aid": account_id})).fetchall()
+    found = {str(r.id): r for r in rows}
+    if any(i not in found for i in ids):
+        raise HTTPException(status_code=404, detail=FILE_NOT_OWNED)
+    return [found[i] for i in ids]
+
+
+async def mail_files(db: Any, owner: str, account_id: str, message_id: str) -> list[Any]:
+    """The files of one mail of the member's own sending mailbox."""
+    return list((await db.execute(text(MAIL_FILES_SQL), {
+        "mid": message_id, "uid": owner, "aid": account_id})).fetchall())
+
+
+def ticked_file_ids(rows: Sequence[dict[str, Any]], ids: frozenset[str]) -> list[str]:
+    """The attachment ids of the ticked RECORDED file rows, in card order."""
+    return [str(r["attachment_id"]) for r in rows
+            if r["kind"] == "file" and r["id"] in ids and r.get("attachment_id")]
+
+
+async def file_payloads(user: UserContext, attachment_ids: Sequence[str]) -> list[dict[str, Any]]:
+    """The bytes of each ticked file, through the ONE owned fetch of a file
+    (``attachments._fetch_owned_attachment``), as attachments of a new mail.
+    The owned fetch checks the owner again."""
+    import base64
+
+    from gateway.routes.email.transport.attachments import _fetch_owned_attachment
+
+    out: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        for aid in attachment_ids:
+            got = await _fetch_owned_attachment(db, aid, user, max_bytes=MAX_FILES_BYTES)
+            out.append({
+                "filename": str(got.row.filename or "file"),
+                "mime_type": str(got.row.mime_type or "application/octet-stream"),
+                "content_b64": base64.b64encode(got.content or b"").decode("ascii"),
+            })
+    return out
+
+
 # ── The record (§21.4 item 1) ────────────────────────────────────────────────
 
 

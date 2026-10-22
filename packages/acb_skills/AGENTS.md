@@ -253,8 +253,9 @@ clone cache.
 5g-1. held_card.py -- what the gateway, the email assistant and the client
    agree on for a held send card (§21). `held_card_send_enabled` is the ONE
    reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. It holds the four
-   classes (`org`, `sent`, `thread`, `new`), the default ticks, the marks,
-   the lookalike flag of a domain (`lookalike_of`) and the row label. The
+   classes (`org`, `sent`, `thread`, `new`), the default ticks and the marks.
+   It also holds the lookalike flag of a domain (`lookalike_of`), the row
+   label, and the files rule (`parse_file_ref` takes `attachment:<id>` only). The
    client mirrors the marks in `sendCard.ts`, and a test holds the two in
    step. Fences: tests/unit/test_held_send_classes.py and
    tests/unit/test_held_send_card_record.py.
