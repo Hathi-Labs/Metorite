@@ -69,7 +69,9 @@ class _World:
         self.kiran_other_org = f"kiran-{tag}@rival-{tag}.test"
         self.kiran_client = f"kiran.k-{tag}@client-{tag}.test"
         self.kiran_stranger = f"kiran.s-{tag}@stranger-{tag}.test"
-        self.emails = [self.owner, self.kiran, self.kiran_other_org]
+        # A removed member keeps a people row (migration 206). Not org.
+        self.removed = f"rita-{tag}@fracktal-{tag}.test"
+        self.emails = [self.owner, self.kiran, self.kiran_other_org, self.removed]
         self.people = [self.geo]
         self.account = ""
 
@@ -87,6 +89,15 @@ class _World:
                     "organization_id) VALUES (:e, :n, 'employee', 'active', "
                     "CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
                     {"e": email, "n": name, "o": org})
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, "
+                "organization_id) VALUES (:e, :n, 'employee', 'removed', "
+                "CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
+                {"e": self.removed, "n": f"Rita {self.tag}", "o": p.org_b})
+            c.execute(text(
+                "INSERT INTO people (organization_id, name, email) VALUES "
+                "(CAST(:o AS uuid), :n, :e)"),
+                {"o": p.org_b, "n": f"Rita {self.tag}", "e": self.removed})
             # A People row with no login.
             c.execute(text(
                 "INSERT INTO people (organization_id, name, email) VALUES "
@@ -161,6 +172,8 @@ async def test_each_hit_names_its_source_and_never_another_org(
         assert got.get(w.kiran_client) == "sent"
         assert got.get(w.kiran_stranger) == "seen"
         assert w.kiran_other_org not in got
+        # A removed member's people row never reads as org (review P2).
+        assert got.get(w.removed) != "org"
         # The member is never offered to themself.
         assert w.owner not in got
     finally:

@@ -713,6 +713,12 @@ async def suggest_contacts(
                       FROM people pp
                      WHERE pp.email IS NOT NULL
                        AND COALESCE(pp.status, 'active') = 'active'
+                       -- A removed or suspended member keeps a people row
+                       -- (migration 206 never rewrites one). It is not org.
+                       AND NOT EXISTS (
+                           SELECT 1 FROM app_user ux
+                            WHERE LOWER(ux.email) = LOWER(pp.email)
+                              AND ux.status IN ('suspended', 'removed'))
                        AND pp.organization_id = CAST(NULLIF(
                              current_setting('app.tenant_id', true), '') AS uuid)
                     UNION ALL
