@@ -454,9 +454,14 @@ def test_the_instructions_carry_the_owners_rule() -> None:
 
 
 def test_the_product_rules_stay_with_their_decisions() -> None:
-    """Kept on purpose: these are decisions, the same for every member."""
+    """Kept on purpose: these are decisions, the same for every member.
+
+    D-PM-35 (archive only) was superseded by the owner on 2026-10-22. The
+    chat deletes behind one card, and asks archive or delete when vague.
+    """
     text = _md_text(INSTRUCTIONS)
-    assert "Archive is the remove verb (D-PM-35)." in text
+    assert "Archive is the remove verb" not in text
+    assert "ask whether they mean archive or delete" in " ".join(text.split())
     assert "The chat does not change who may see a project (D-PM-40)." in text
 
 
