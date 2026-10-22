@@ -497,6 +497,12 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `tests/unit/test_knowledge_tools.py`,
    `tests/unit/test_knowledge_chat_coverage.py` and
    `tests/unit/test_knowledge_index_block.py`.
+   - KB-5a adds `propose_page` and `propose_edit` on the same path. Each
+     shows one card through `request_confirmation` before it builds the
+     request, and sends only on an approve. It sends
+     `X-Actor-Via: chat:knowledge`. The manifest gives both tools
+     `POST /knowledge/proposals` only, through `Route.also`, and the accept
+     and reject routes are class X. Fence: `tests/unit/test_kb_proposals.py`.
 5n. reports.py -- `make_report`, the ONE report tool of the chat
    (`project-docs/specs/projects_ai_chat.md` §14.10). It checks one spec with
    the checks of `documents.py`, and it keeps no copy of them. It writes
