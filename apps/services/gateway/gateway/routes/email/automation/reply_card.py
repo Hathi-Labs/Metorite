@@ -409,11 +409,13 @@ async def reply_card(
     from acb_skills.held_card import held_card_send_enabled
 
     if held_card_send_enabled():
-        # §21: the server classes each person of both choices. The person
-        # that a Reply answers is ``thread``, unless the member knows them.
-        # Each other person that the member does not know is ``new``.
+        # §21: the server classes each person of both choices. Only the From
+        # sender of the mail is ``thread``, unless the member knows them (fix
+        # round 1, P2-a). A Reply-To that is not the sender is classed on its
+        # own merits, because a phishing mail names a stranger there.
         out["classes"] = await _reply_classes(
-            owner, [*reply_to, *reply_cc, *all_to, *all_cc], primary=reply_to)
+            owner, [*reply_to, *reply_cc, *all_to, *all_cc],
+            primary=[mail.sender] if mail.sender else [])
     return out
 
 
@@ -422,7 +424,8 @@ async def _reply_classes(
 ) -> dict[str, str]:
     """The class of each address of a reply card (§21.3, the Reply row).
 
-    Only the person that a Reply answers can be ``thread``. Open question 1
+    Only the From sender of the mail can be ``thread`` (*primary*), never a
+    Reply-To that differs from it (fix round 1, P2-a). Open question 1
     took the safer choice: a person that only Reply all adds, and that the
     member does not know, is ``new``. A fault fails closed: each address is
     ``new``, so the card opens on Reply and marks each one."""

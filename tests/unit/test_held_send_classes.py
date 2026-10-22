@@ -242,3 +242,45 @@ async def test_the_reply_card_route_classes_only_with_the_switch_on(monkeypatch)
     out = await rc.reply_card(req, F.user())
     assert out["classes"] == {F.KNOWN: "thread", F.STRANGER: "new"}
     assert seen[-1][1] == [F.KNOWN]
+
+
+async def test_a_reply_to_that_is_not_the_sender_is_not_thread(monkeypatch) -> None:
+    """Fix round 1 (P2-a). From vendor@x, Reply-To drop@evil: the Reply goes
+    to drop@evil, and drop@evil is ``new``, never "from this thread".
+    Mutation: pass the Reply-To as the thread sender → red."""
+    import types
+
+    from gateway.routes.email.automation import reply_card as rc
+
+    vendor, drop = "vendor@x.test", "drop@evil.example"
+
+    async def load_mail(message_id: str, owner: str):
+        return types.SimpleNamespace(
+            recipients=lambda reply_all: ([drop], []),
+            notices=lambda: [], account_id=F.BOX, mailbox="Work", subject="Q",
+            sender=vendor, sender_name="", received="", excerpt="",
+            thread_id=None, provider_message_id="p", address=F.MEMBER)
+
+    async def keep(*_a, **_k):
+        return "", False
+
+    async def no_record(_mail):
+        return []
+
+    db = F.FakeDb()
+    db.classes = {}
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    monkeypatch.setattr(rc, "_keep_card_draft", keep)
+    monkeypatch.setattr(rc, "_chat_record", no_record)
+    monkeypatch.setattr(rc, "_tenant_session", session)
+    F.flag_on(monkeypatch)
+    out = await rc.reply_card(
+        rc.ReplyCardRequest(message_id="0b0b0b0b-0000-4000-8000-00000000000b", draft="Hi"),
+        F.user())
+    assert out["classes"] == {drop: "new"}
