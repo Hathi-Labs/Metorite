@@ -79,7 +79,7 @@ class TestTheNormalForm:
     @pytest.mark.parametrize(("raw", "norm"), [
         ("How do we raise a credit note?", "how do we raise a credit note"),
         ("  how   DO we\traise a credit-note  ", "how do we raise a credit note"),
-        ("Ｆｕｌｌ width words here", "full width words here"),
+        ("\uff26\uff55\uff4c\uff4c width words here", "full width words here"),
         ("What's the refund window?!", "what s the refund window"),
         ("snake_case words stay apart", "snake case words stay apart"),
         ("", ""),
