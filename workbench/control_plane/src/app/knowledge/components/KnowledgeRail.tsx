@@ -4,7 +4,8 @@
  * The Knowledge rail (WS-61 KB-2a, KB-3b and KB-2e, `knowledge_base.md`
  * §11.1 and §21.5).
  *
- * Two entries today, Search (KB-3b) and Spaces (KB-2a). Files, Sources and
+ * Two entries today, Search (KB-3b) and Spaces (KB-2a), and Gaps (KB-9a) for
+ * a manager of Knowledge when gaps are on for the org. Files, Sources and
  * Review join them with KB-2c, KB-7a and KB-5, and each is ABSENT until
  * then, never a stub. Search sits first, above the tree, so it stays in one
  * place while a space opens. Under Spaces, each space the member can open is
@@ -46,6 +47,7 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
+import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
@@ -77,6 +79,11 @@ export interface KnowledgeRailProps {
   atHome: boolean;
   /** True on `/knowledge/search`. */
   atSearch: boolean;
+  /**
+   * The Gaps row (KB-9a): `null` hides it. The layout shows it to a manager
+   * of Knowledge whose gaps read answered. `count` is the open gaps.
+   */
+  gaps?: { selected: boolean; count: string | null } | null;
   /** Go to an address. On a phone it also closes the drawer. */
   onNavigate: (href: string) => void;
   /** Open the New page form under a row. Absent: the rows offer no `+`. */
@@ -96,6 +103,7 @@ export default function KnowledgeRail({
   selectedPageId,
   atHome,
   atSearch,
+  gaps = null,
   onNavigate,
   onNewSubPage,
   onArchive,
@@ -112,6 +120,17 @@ export default function KnowledgeRail({
         buttonProps={{ "aria-current": atSearch ? "page" : undefined }}
         onSelect={() => onNavigate(KNOWLEDGE_SEARCH)}
       />
+      {gaps ? (
+        <RailRow
+          label="Gaps"
+          tier="group"
+          selected={gaps.selected}
+          icon={<Icon name="MessageCircleQuestion" className={ICON} />}
+          meta={gaps.count ?? undefined}
+          buttonProps={{ "aria-current": gaps.selected ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_GAPS)}
+        />
+      ) : null}
       <RailRow
         label="Spaces"
         tier="group"
