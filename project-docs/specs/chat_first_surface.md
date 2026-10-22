@@ -555,7 +555,15 @@ the Python check and `inAppLink.ts` agree on a shared table of paths.
 test: a replay emits no `onNavigate`. Mutation, seen to fail first: let the
 server accept `//evil.example`, and the twin test fails.
 
-### CF-4 · Starter pills from the feed — AGENT-SAFE
+### CF-4 · Starter pills from the feed — AGENT-SAFE · BUILT 2026-10-22 (#1215)
+
+**Built.** The chat reads the feed through the feed's own cache key, the one
+My Day reads, so no `starter` branch joined the suggestions route.
+`starterPills` in `src/lib/starterPills.ts` is the pure rule: three headlines
+in the feed's order, de-duplicated, cut at a word near 60 characters, else
+the fixed list. Only the one assistant's empty chat reads it, only with the
+flag on, and `starterPills.test.ts`, `assistant.test.ts` and
+`e2e/chat-starter-pills.spec.ts` fence it.
 
 **Files.** `src/app/api/chat/suggestions/route.ts` (the `starter` branch),
 `src/components/AgentChat.tsx` (the empty state reads it with the flag on),
