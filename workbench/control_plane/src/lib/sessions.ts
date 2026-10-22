@@ -637,7 +637,7 @@ export function truncateAtWord(text: string, max: number): string {
  */
 export function enrichSession(
   id: string,
-  info: { firstUserMessage?: string; lastPreview?: string; messageCount?: number },
+  info: { title?: string; firstUserMessage?: string; lastPreview?: string; messageCount?: number },
 ): void {
   const sessions = getSessions();
   const s = sessions.find((x) => x.id === id);
@@ -646,8 +646,11 @@ export function enrichSession(
   // turn, a second device with an old title undid a rename made on the
   // first (D99 review, 2026-10-12). The server keeps a title it has.
   let newTitle: string | undefined;
-  if (info.firstUserMessage && !s.title) {
-    s.title = truncateAtWord(info.firstUserMessage, 60);
+  // A chat that opens on the day's brief takes the brief's title, not the
+  // first pill the member taps (owner report, 2026-10-22).
+  const auto = info.title || info.firstUserMessage;
+  if (auto && !s.title) {
+    s.title = truncateAtWord(auto, 60);
     newTitle = s.title;
   }
   // CF-5: a member turn in this page is the fact, before the server lists it.

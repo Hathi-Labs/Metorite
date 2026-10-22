@@ -5,9 +5,9 @@
  * 2026-10-19). It draws the run state of `lib/runStatus.ts` and decides
  * nothing of its own.
  *
- * Two places, one state: above the composer (`placement="composer"`), and in
- * the thread where the reply will appear (`placement="thread"`), while no
- * live bubble shows the run. While the run works, the row stays mounted and
+ * One place: above the composer (`placement="composer"`). It used to draw a
+ * second time at the foot of the thread, and the member saw the same line
+ * twice (owner report, 2026-10-22). While the run works, the row stays mounted and
  * only its words change, so a long tool call or a delegation never hides it.
  * A change shorter than `FLASH_MS` never shows or hides it
  * (`steadyPresence`).
@@ -103,7 +103,7 @@ export default function RunStatusRow({
   placement,
 }: {
   view: RunView | null;
-  placement: "composer" | "thread";
+  placement: "composer";
 }) {
   if (!view) return null;
   const text = runViewText(view);
@@ -115,10 +115,7 @@ export default function RunStatusRow({
       data-run-status={placement}
       data-run-tone={view.tone}
       title={text}
-      className={[
-        "flex min-w-0 items-center gap-2 text-[11px]",
-        placement === "thread" ? "py-1" : "",
-      ].join(" ")}
+      className="flex min-w-0 items-center gap-2 text-[11px]"
     >
       <Icon
         name={TONE_ICON[view.tone]}

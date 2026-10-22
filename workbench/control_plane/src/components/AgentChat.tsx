@@ -790,21 +790,6 @@ export default function AgentChat({
   const isRunActive = isRunActiveForUi(run);
   const runView = useSteadyRunView(run);
 
-  // The reply's own bubble shows the run while it streams (the thinking
-  // container). The thread's status row stands in for it while no live
-  // bubble shows the run: after a reload before the stream re-attaches,
-  // and while the run state checks a stream that ended with no terminal
-  // event. One state, so the two never disagree.
-  const liveBubble = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (isSteered(m)) continue; // a steer sits below the reply it joins
-      return m.role === "assistant" && !!m.streaming && !!m.isThinkingActive;
-    }
-    return false;
-  }, [messages]);
-  const threadRunView =
-    runView && !liveBubble && (runView.tone === "working" || runView.tone === "finishing") ? runView : null;
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // ── The composer's height (owner request, 2026-10-09) ─────────────────────
@@ -2321,14 +2306,6 @@ export default function AgentChat({
               </div>
             );
           })}
-
-          {/* The run works and no live bubble shows it: the status stands
-              where the reply will appear. */}
-          {threadRunView && (
-            <div className="chat-fade-in">
-              <RunStatusRow view={threadRunView} placement="thread" />
-            </div>
-          )}
 
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
