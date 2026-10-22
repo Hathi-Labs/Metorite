@@ -153,3 +153,19 @@ async def test_send_email_refuses_a_reply_in_a_held_run(monkeypatch) -> None:
     out = await agents.send_email(F.BOX, body="hi", to=[F.KNOWN], reply_all=True)
     assert out == agents._HELD_REPLY_REFUSED
     assert calls == []
+
+
+@pytest.mark.usefixtures("_hermetic")
+def test_only_the_email_agent_holds_a_held_card_tool(monkeypatch) -> None:
+    """Fix round 1 (P3). With the switch on, ``is_egress_tool`` reads the
+    four tools of the held card as card-bound in any run, not only in a held
+    run of the email agent. The scoping is safe only while no other agent
+    holds a tool of those names. Mutation: give another in-repo agent a tool
+    named ``send_email`` → red."""
+    F.flag_on(monkeypatch)
+    holders: dict[str, set[str]] = {}
+    for name, rel in _in_repo_agents().items():
+        held = _run_tools(name, rel, no_egress=False) & set(eg.HELD_CARD_SEND_TOOLS)
+        if held:
+            holders[name] = held
+    assert holders == {"email-assistant": set(eg.HELD_CARD_SEND_TOOLS)}

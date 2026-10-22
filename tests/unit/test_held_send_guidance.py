@@ -198,3 +198,20 @@ def test_the_email_instructions_name_no_fixed_list_of_held_jobs() -> None:
     for line in text.split(". "):
         if "may not" in line or "cannot" in line:
             assert not ("forward" in line and "unsubscribe" in line), line
+
+
+
+def test_the_draft_tools_give_an_in_chat_step() -> None:
+    """Fix round 1 (P3). The docstrings of the draft and send tools name the
+    in-chat step, and not the Email app. Mutation: put "or in the Email app"
+    back in compose_reply or draft_reply → red."""
+    funcs = {"compose_reply", "draft_reply", "send_draft", "schedule_send", "edit_draft"}
+    tree = ast.parse(EMAIL_AGENT.read_text(encoding="utf-8"))
+    docs = [ast.get_docstring(n) or "" for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name in funcs]
+    assert len(docs) == len(funcs)
+    # A sentence that forbids it ("Never tell the member to open the Email
+    # app") may name it.
+    offers = [x for d in docs for x in _sentences(d)
+              if "Email app" in x and not _FORBIDS.search(x)]
+    assert offers == []

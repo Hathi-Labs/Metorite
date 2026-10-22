@@ -1801,8 +1801,7 @@ async def draft_reply(
     A second chat draft of the same email updates the first one. A draft
     that the member wrote or edited is never written over: the new text
     then goes beside it, and the answer says so. The member can finish the
-    draft in the chat, with edit_draft and send_draft, or in the Email app
-    (owner, 2026-10-22). Set
+    draft in the chat, with edit_draft and send_draft (owner, 2026-10-22). Set
     save=false only to show a text in the chat and leave Drafts unchanged.
 
     ``instruction`` carries what the member wants the reply to say, in the
@@ -1993,7 +1992,7 @@ async def compose_reply(
     The text of each card also goes to the member's Drafts. A new card for
     the same email updates the chat's own draft, and never a draft that the
     member wrote or edited. So the member can also finish the reply later,
-    in the chat with edit_draft and send_draft, or in the Email app. The
+    in the chat with edit_draft and send_draft. The
     member's Discard trashes the card's draft, unless the member edited it
     there.
 
