@@ -25,6 +25,10 @@ import FileUploadButton from "@/components/FileUploadButton";
 import { uploadNote } from "@/lib/chatUpload";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
+import { starterPills } from "@/lib/starterPills";
+import { chatFirstOn } from "@/lib/shell/chatFlag";
+import { type FeedAnswer, feedKey, fetchFeed } from "@/lib/shell/feed";
+import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
@@ -630,6 +634,32 @@ export default function AgentChat({
     const t = setTimeout(() => setHistoryLoaderVisible(true), HISTORY_LOADER_DELAY_MS);
     return () => clearTimeout(t);
   }, [loadingHistory]);
+
+  // ── The starter pills (WS-62 CF-4, chat_first_surface.md §4.6) ──────────
+  // With the chat-first flag on, the empty chat of the one assistant draws
+  // its three pills from the member's My Day feed, through the feed's OWN
+  // cache key. My Day reads the same key (`useFeed` in FeedCard.tsx), so a
+  // feed the page already loaded costs the chat no request, and a feed the
+  // chat loaded first answers My Day. The key is null until the empty state
+  // shows, so a chat with messages, or another agent's chat, never reads the
+  // feed. The flag is read once, as the dock reads it. No model writes a
+  // starter pill: `starterPills` is the one pure rule. My Day owns the poll
+  // and the focus read, so the chat only looks.
+  const [chatFirst] = useState(() => chatFirstOn());
+  const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;
+  const starterFeed = useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed(), {
+    revalidateOnFocus: false,
+  });
+  const starterFeedCards = starterFeed.data?.cards;
+  const starters = useMemo(
+    () =>
+      starterPills({
+        chatFirst: starterFeedWanted,
+        cards: starterFeedCards,
+        fallback: AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS,
+      }),
+    [starterFeedWanted, starterFeedCards, currentAgentName],
+  );
 
   // On mount, fetch the authoritative FULL message history from Postgres and
   // sync into memory if it's richer than the local cache (more messages OR
@@ -2214,8 +2244,9 @@ export default function AgentChat({
               {agentDescription && currentAgentName === agentName && (
                 <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed">{agentDescription}</div>
               )}
+              {/* CF-4: the feed's headlines with the flag on, else the fixed list (`starters`). */}
               <SuggestionPills
-                suggestions={AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS}
+                suggestions={starters}
                 onPick={handleChoice}
               />
             </div>
