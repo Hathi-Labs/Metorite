@@ -1943,4 +1943,6 @@ Each AI call goes through the Router and writes one usage row with `module_slug=
 | **KB-4b and KB-10** | Citation chips in the answer (KB-4b), and `kb:read` on MCP (KB-10) | none | A chip opens the cited page. The MCP read uses the same clause |
 | **Later** | Server-side layout-aware parsing (Docling, MIT) and OCR on `tier-vision`, for scans and complex PDFs | `tier-vision` | Not scheduled |
 
-**KB-AI-1 is BUILT, 2026-10-22** (branch `kb-docs-ingest`). It has no migration, no route, no model call and no new dependency. It reuses `mammoth`, the pdf.js of `react-pdf` and `fflate`. The limits are in `lib/importExport/limits.ts`. A file may have 25 MB and an import 100 MB. A PDF may have 300 pages and a deck 500 slides. A sheet keeps 200 rows and 30 columns. A date in a workbook stays as the number that Excel stores, and the report says so.
+**KB-AI-1 is BUILT, 2026-10-22** (branch `kb-docs-ingest`). It has no migration, no route, no model call and no new dependency. It reuses `mammoth`, the pdf.js of `react-pdf` and `fflate`. 
+
+The limits are in `lib/importExport/limits.ts`. A file may have 25 MB and an import 100 MB. A PDF may have 300 pages and a deck 500 slides. A sheet keeps 200 rows and 30 columns. A date in a workbook stays as the number that Excel stores, and the report says so.
