@@ -188,6 +188,8 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   revert_activity: { kind: "edit", verb: V.revert, object: "a change" },
   unarchive_task: { kind: "edit", verb: V.restore, object: "a task" },
   unarchive_project: { kind: "edit", verb: V.restore, object: "a project" },
+  delete_project: { kind: "edit", verb: V.delete, object: "a project" },
+  delete_task: { kind: "edit", verb: V.delete, object: "a task" },
   edit_comment: { kind: "edit", verb: V.edit, object: "a comment" },
   comment: { kind: "edit", verb: V.comment, object: "a task" },
   assign: { kind: "edit", verb: V.assign, object: "a task" },

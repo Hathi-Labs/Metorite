@@ -643,6 +643,15 @@ has. The owner did not take it. That permission means "may edit the
 vocabulary", and to use it for delete is the near-miss §8d.1 warns about.
 Until WS-40, a person deletes in the app.
 
+**Superseded in part (owner, 2026-10-22).** The owner asked for delete from the
+chat, and the chat now has `delete_project` and `delete_task`. Both are class C.
+Each act shows one approval card that leads with the counts, and no argument
+skips the card. A delete has no undo, and the card says so. The tool text offers
+archive first. This does not close H-121: the routes still check read visibility
+only, so the card remains the one brake. WS-40 adds the permission later. The
+bulk `delete` action stays refused. Fence: `test_projects_chat_coverage.py`
+(`test_the_two_hard_deletes_are_guarded_tools`).
+
 ---
 
 ## 6. Data and attribution

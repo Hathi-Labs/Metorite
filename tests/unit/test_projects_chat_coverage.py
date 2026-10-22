@@ -167,12 +167,15 @@ def test_every_excluded_route_carries_a_reason() -> None:
             assert row.reason.strip(), f"{row.method} {row.path} is excluded with no reason"
 
 
-def test_the_two_hard_deletes_are_excluded_by_d_pm_35() -> None:
-    """D-PM-35. The day WS-40 lands, this test is what somebody edits."""
-    for path in ("/projects/nodes/{project_id}", "/projects/tasks/{task_id}"):
+def test_the_two_hard_deletes_are_guarded_tools() -> None:
+    """Owner, 2026-10-22, over D-PM-35: the chat deletes, one card per act."""
+    for path, tool in (
+        ("/projects/nodes/{project_id}", "delete_project"),
+        ("/projects/tasks/{task_id}", "delete_task"),
+    ):
         row = next(r for r in m.MANIFEST if r.method == "DELETE" and r.path == path)
-        assert row.cls == "X"
-        assert "D-PM-35" in row.reason
+        assert row.cls == "C"
+        assert row.tool == tool
 
 
 # ── The client against the manifest ─────────────────────────────────────────
@@ -181,8 +184,6 @@ def test_the_two_hard_deletes_are_excluded_by_d_pm_35() -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("DELETE", "/projects/nodes/0f8fad5b-d9cb-469f-a165-70867728950e"),
-        ("DELETE", "/projects/tasks/0f8fad5b-d9cb-469f-a165-70867728950e"),
         ("POST", "/projects/nodes/0f8fad5b-d9cb-469f-a165-70867728950e/grants"),
         ("PATCH", "/projects/reports/0f8fad5b-d9cb-469f-a165-70867728950e/schedule"),
     ],

@@ -615,11 +615,11 @@ def test_a_false_claim_fails() -> None:
     methods, _ = catalogue()
     tables = _tables()
     tables["UI_ACTIONS"]["projectsApi.createTask"] = "list_tasks"
-    tables["UI_ACTIONS"]["projectsApi.deleteProject"] = "archive_project"
+    tables["UI_ACTIONS"]["projectsApi.setViewState"] = "archive_project"
     tables["UI_ACTIONS"]["projectsApi.tree"] = "no_such_tool"
     bad = false_claims(methods, tables)
     assert any(b.startswith("projectsApi.createTask: list_tasks may not reach POST") for b in bad)
-    assert any(b.startswith("projectsApi.deleteProject: DELETE /projects/nodes/") for b in bad)
+    assert any(b.startswith("projectsApi.setViewState: ") for b in bad)
     assert "projectsApi.tree: no_such_tool is not an exported tool and not in PLANNED" in bad
     assert len(bad) == 3, bad
 
@@ -635,12 +635,12 @@ def test_a_false_exemption_fails() -> None:
     methods, _ = catalogue()
     tables = _tables()
     tables["UI_EXEMPT"]["projectsApi.createTask"] = "The chat does not make tasks, said nobody."
-    tables["UI_EXEMPT"]["projectsApi.deleteTask"] = "short"
+    tables["UI_EXEMPT"]["projectsApi.setPositions"] = "short"
     bad = false_exemptions(methods, tables)
     assert bad == [
         "projectsApi.createTask: create_task reaches POST /projects/tasks. Name the tool "
         "in UI_ACTIONS instead of an exemption.",
-        "projectsApi.deleteTask: no real reason ('short')",
+        "projectsApi.setPositions: no real reason ('short')",
     ]
 
 

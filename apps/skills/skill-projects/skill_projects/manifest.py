@@ -87,11 +87,11 @@ class Route:
             raise ValueError(f"{self.method} {self.path}: class {self.cls} needs a tool")
 
 
-#: Why the two hard deletes are not here. D-PM-35: the routes carry no
-#: authority rule (H-121, WS-40), so a chat tool over them would let any
-#: reader destroy a subtree with a card as the only brake.
+#: Why My Tasks' purge is not a chat route. The chat deletes a task through
+#: `delete_task` (owner, 2026-10-22, over D-PM-35, one card per act). The purge
+#: is the member's own finishing step on a soft delete, and it stays in the app.
 _DELETE_REASON = (
-    "D-PM-35 — hard delete waits for WS-40's authority rule. Archive is the chat's remove verb."
+    "The purge of a soft-deleted personal task is My Tasks' own step. The chat has delete_task."
 )
 #: Delivery is the Reports app's, and arming the schedule is owner-gated
 #: (§9.12.8). The chat renders a report. It never sends one.
@@ -145,7 +145,7 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes", "create_project", "B"),
     Route("PATCH", "/projects/nodes/{project_id}", "update_project", "B"),
     Route("POST", "/projects/nodes/{project_id}/move", "move_project", "C"),
-    Route("DELETE", "/projects/nodes/{project_id}", "", "X", _DELETE_REASON),
+    Route("DELETE", "/projects/nodes/{project_id}", "delete_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
     Route("GET", "/projects/nodes/{project_id}/grants", "project_access", "A"),
@@ -157,7 +157,7 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tasks", "create_task", "B"),
     Route("PATCH", "/projects/tasks/{task_id}", "update_task", "B"),
     Route("POST", "/projects/tasks/{task_id}/move", "move_task", "B"),
-    Route("DELETE", "/projects/tasks/{task_id}", "", "X", _DELETE_REASON),
+    Route("DELETE", "/projects/tasks/{task_id}", "delete_task", "C"),
     Route("POST", "/projects/tasks/{task_id}/archive", "archive_task", "C"),
     Route("POST", "/projects/tasks/{task_id}/unarchive", "unarchive_task", "B"),
     Route("PUT", "/projects/tasks/{task_id}/assignees", "assign", "B"),
@@ -1235,6 +1235,7 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.moveNode": "move_project",
     "projectsApi.archiveProject": "archive_project",
     "projectsApi.unarchiveProject": "unarchive_project",
+    "projectsApi.deleteProject": "delete_project",
     "projectsApi.grants": "project_access",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",
@@ -1271,6 +1272,7 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.patchTask": "update_task",
     "projectsApi.archiveTask": "archive_task",
     "projectsApi.unarchiveTask": "unarchive_task",
+    "projectsApi.deleteTask": "delete_task",
     "projectsApi.previewMove": "move_task",
     "projectsApi.moveTasks": "move_task",
     "projectsApi.mergeTasks": "merge_tasks",
@@ -1350,8 +1352,6 @@ UI_ACTIONS: dict[str, str] = {
 #: exemption only where the route the method calls is class X. Where a tool
 #: reaches the route, the method names the tool in ``UI_ACTIONS``.
 UI_EXEMPT: dict[str, str] = {
-    "projectsApi.deleteProject": _DELETE_REASON,
-    "projectsApi.deleteTask": _DELETE_REASON,
     "projectsApi.setViewState": (
         "The member's own overlay on a saved view (WS-27ae). " + _UI_STATE_REASON
     ),
