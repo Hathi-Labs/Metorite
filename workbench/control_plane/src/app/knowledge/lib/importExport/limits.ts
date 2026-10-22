@@ -15,6 +15,17 @@ export const MAX_ENTRIES = 500;
 export const MAX_PAGES = 300;
 /** The deepest nesting: a page at the top is at depth 1. */
 export const MAX_DEPTH = 12;
+/** The most PDF pages that one file gives. Pages after it are not read. */
+export const MAX_PDF_PAGES = 300;
+/** The most slides that one deck gives. */
+export const MAX_SLIDES = 500;
+/** The most rows and columns that one sheet gives. The rest are counted, not read. */
+export const MAX_SHEET_ROWS = 200;
+export const MAX_SHEET_COLS = 30;
+/** The most parts in an Office file (a zip), and the deepest XML nesting. */
+export const MAX_OFFICE_PARTS = 5000;
+export const MAX_XML_DEPTH = 200;
+
 /** The longest title that the New page form takes. */
 export const MAX_TITLE = 300;
 

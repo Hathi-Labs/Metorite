@@ -11,7 +11,7 @@
 //  - Notion's trailing 32-hex id leaves every title.
 
 import { ImportRefusal, MAX_DEPTH, MAX_PAGES } from "./limits";
-import { dirName, baseName, cleanTitle, imagesToText, pageKind, splitMarkdownTitle, stemOf, stripNotionId, titleFromPath } from "./names";
+import { dirName, baseName, cleanTitle, imagesToText, isDocumentKind, pageKind, splitMarkdownTitle, stemOf, stripNotionId, titleFromPath } from "./names";
 import type { RawEntry } from "./zip";
 
 /** What the HTML converter answers. It needs a browser, so the caller gives it. */
@@ -32,6 +32,9 @@ export interface PageDraft {
 
 /** A page file as a draft. Markdown keeps its text, and HTML goes through `html`. */
 export function toDraft(entry: RawEntry, html: HtmlConverter): PageDraft {
+  if (isDocumentKind(pageKind(entry.path))) {
+    throw new Error("A document file is read by prepareImport, not by toDraft.");
+  }
   if (pageKind(entry.path) === "html") {
     const out = html(entry.text);
     return {
@@ -65,6 +68,12 @@ export interface PlanPage {
   depth: number;
 }
 
+/** A document file that made no page, and why. */
+export interface Unreadable {
+  file: string;
+  reason: string;
+}
+
 export interface ImportPlan {
   /** Parents come before their children. */
   pages: PlanPage[];
@@ -72,14 +81,25 @@ export interface ImportPlan {
   skipped: string[];
   /** Images turned into text. */
   images: number;
+  /** Document files that made no page (KB-AI-1). */
+  unreadable: Unreadable[];
+  /** Plain notes for the report: a cut, a limit, a date rule. */
+  notices: string[];
+}
+
+/** What the document step adds to a plan. */
+export interface PlanExtras {
+  unreadable?: readonly Unreadable[];
+  notices?: readonly string[];
 }
 
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 /** The plan for these drafts. Refuses over the page or depth limit. */
-export function buildPlan(drafts: readonly PageDraft[], skipped: readonly string[] = []): ImportPlan {
-  if (!drafts.length) {
-    throw new ImportRefusal("The files hold no Markdown or HTML page. Nothing was imported.");
+export function buildPlan(drafts: readonly PageDraft[], skipped: readonly string[] = [], extras: PlanExtras = {}): ImportPlan {
+  // A run of document files that all failed is still a plan: the report says why.
+  if (!drafts.length && !extras.unreadable?.length) {
+    throw new ImportRefusal("The files hold no page that can be read. Nothing was imported.");
   }
   const ordered = [...drafts].sort((a, b) => collator.compare(a.path, b.path));
   // The first page file with a given stem owns the folder of that name.
@@ -141,5 +161,11 @@ export function buildPlan(drafts: readonly PageDraft[], skipped: readonly string
     index: i,
     parent: p.parent === null ? null : (remap.get(p.parent) as number),
   }));
-  return { pages: final, skipped: [...skipped], images: ordered.reduce((n, d) => n + d.images, 0) };
+  return {
+    pages: final,
+    skipped: [...skipped],
+    images: ordered.reduce((n, d) => n + d.images, 0),
+    unreadable: [...(extras.unreadable ?? [])],
+    notices: [...(extras.notices ?? [])],
+  };
 }

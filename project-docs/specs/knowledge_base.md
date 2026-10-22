@@ -1893,3 +1893,56 @@ four chips, with the filters in the address (`space`, `author`, `date`,
 its page with `?q=`, and `MatchBar` drives the find engine of KB-2i. The R8
 tests are in `tests/unit/test_kb_search_r8.py`, and the e2e tests are in
 `e2e/knowledge-search-filters.spec.ts`.
+
+
+## 22. AI in Knowledge: the roadmap of 2026-10-22
+
+This section orders the AI work for Knowledge. It adds no decision to D104 or D105. Each slice below keeps the rules of §14 and the retrieval seam of §20. A slice that reads or writes a page uses the same visibility clause as every other read.
+
+### 22.1 Research basis
+
+**Verification gates what the AI may cite.** Guru and Slite give each card an owner and a review date. An expired card is flagged, and the AI answer shows the flag. We take the same pattern in KB-AI-4.
+
+**Permission filtering comes before ranking.** A ranker that sees a page the member cannot read leaks it through the order of the results. Our search already filters first, through `core.visible_pages_clause`, and no AI slice may change that order.
+
+**Contextual retrieval.** Anthropic prefixes each chunk with one sentence of context about its document. With BM25 and a rerank step, this cut retrieval failures by 67%. The cost is about $1.02 per million document tokens when prompt caching is on. We take it in CX-3 and KB-AI-6.
+
+**Parent-child chunks.** Dify matches a small child chunk and returns its larger parent. The match is precise, and the answer keeps its context. CX-3 uses the same shape.
+
+**Gap detection.** Slite lists the questions that the knowledge base could not answer ("Missing Answers"). KB-9 does the same with no model call. A question with no Knowledge hit writes a gap row.
+
+**AI drafts, a human reviews.** The AI never writes to a published page. It files a proposal (KB-5a), and a member with the write grant accepts or refuses it. KB-AI-2 and the draft of KB-9 use this rule.
+
+**Source-scoped chat.** NotebookLM and Copilot Notebooks answer only from the sources that the member chose. "Ask this space" in KB-AI-6 does the same, and the space is a filter on the same visible set.
+
+**Document ingestion libraries.** Docling and MarkItDown are MIT licensed. PyMuPDF4LLM is AGPL, so we avoid it. The Marker weights carry a licence that limits use by revenue, so we do not ship them. KB-AI-1 needs none of these, because it parses in the browser with libraries that the app already has.
+
+### 22.2 The tier map
+
+Each AI call goes through the Router and writes one usage row with `module_slug="knowledge"`. Each paid pass has a flag, default off, and the owner flips it.
+
+| Work | Tier | Note |
+|---|---|---|
+| Upload (KB-AI-1), gaps (KB-9), verification (KB-AI-4) | none | No model call and no credit |
+| "Tidy with AI", page digests (CX-3), chunk context | `tier-fast` | A short, cheap pass |
+| Typed picks: rerank, the narrowing PICK, KB-11 | `tier-decide` | The model picks from a list |
+| Draft a page from a gap or a chat | `tier-balanced` | The result is a proposal |
+| Vectors | `tier-embed` | The card is absorbed, so 0 credits |
+| OCR of scans | `tier-vision` | Later |
+
+### 22.3 The slices, in order
+
+| Slice | What | Tier | Done when |
+|---|---|---|---|
+| **KB-AI-1, upload documents as pages** | The import dialog of KB-2m also takes `.docx`, `.pdf`, `.pptx` and `.xlsx`, and a zip of them. Each file becomes one draft page through the same plan, run and report path. The browser parses it. The server sees only the finished page | none | A Word file keeps its headings, lists and tables. A PDF with a text layer keeps its text, with its headings and a divider for each page. A deck is one page with a section for each slide. A workbook is one page with a table for each sheet. A scan reports "no text layer" and makes no page. One bad file never stops the others |
+| **KB-AI-2, Tidy with AI** | Restructures a draft: title, headings and a summary. It files the result as a KB-5a edit proposal and never writes the page | `tier-fast` | A proposal appears for the owner of the draft. The page body is unchanged until a member accepts |
+| **KB-9, gaps** | A `search_company` call with no Knowledge hit writes a `kb_gaps` row. A second asker within 30 days makes a My Day card, "Draft this page". The draft is a proposal | none, then `tier-balanced` for the draft | The second asker makes one card. The draft needs a click and arrives as a proposal |
+| **KB-AI-4, verified sources** | A page owner and a review interval. An expired page is demoted by the 0.7 factor of CX-1 and flagged in the citation. `search_company` takes a "verified only" option. A maintenance list shows expired, unowned and stale pages | none | An expired page ranks lower and carries the flag. "Verified only" returns no expired page. The list names each page once |
+| **CX-3, page digests and contextual chunks** | A digest for each page and a context line for each chunk (`KNOWLEDGE_DISTILL`) | `tier-fast` | A chunk carries its context line. The usage row names the module |
+| **KB-AI-6, rerank and "Ask this space"** | A rerank of the top hits, and chat that answers from one space | `tier-decide` | The rerank cannot add a page that the clause hides. The chat cites only pages of the space |
+| **KB-4b and KB-10** | Citation chips in the answer (KB-4b), and `kb:read` on MCP (KB-10) | none | A chip opens the cited page. The MCP read uses the same clause |
+| **Later** | Server-side layout-aware parsing (Docling, MIT) and OCR on `tier-vision`, for scans and complex PDFs | `tier-vision` | Not scheduled |
+
+**KB-AI-1 is BUILT, 2026-10-22** (branch `kb-docs-ingest`). It has no migration, no route, no model call and no new dependency. It reuses `mammoth`, the pdf.js of `react-pdf` and `fflate`. 
+
+The limits are in `lib/importExport/limits.ts`. A file may have 25 MB and an import 100 MB. A PDF may have 300 pages and a deck 500 slides. A sheet keeps 200 rows and 30 columns. A date in a workbook stays as the number that Excel stores, and the report says so.

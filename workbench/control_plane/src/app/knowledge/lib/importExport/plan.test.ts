@@ -92,3 +92,26 @@ describe("the page and depth limits", () => {
     expect(() => buildPlan([deep(MAX_DEPTH + 1)])).toThrow(/13 levels deep/);
   });
 });
+
+describe("a plan with document files (KB-AI-1)", () => {
+  it("makes an empty plan, not a refusal, when every document failed", () => {
+    const plan = buildPlan([], [], { unreadable: [{ file: "scan.pdf", reason: "No text layer." }], notices: ["n"] });
+    expect(plan.pages).toEqual([]);
+    expect(plan.unreadable).toEqual([{ file: "scan.pdf", reason: "No text layer." }]);
+    expect(plan.notices).toEqual(["n"]);
+  });
+
+  it("still refuses when there is nothing at all", () => {
+    expect(() => buildPlan([], ["x.png"])).toThrow(/no page that can be read/);
+  });
+
+  it("keeps the failed file beside the pages that were made", () => {
+    const plan = buildPlan([draft("a.docx", "A", "body")], [], { unreadable: [{ file: "b.xlsx", reason: "Empty." }] });
+    expect(plan.pages.map((p) => p.title)).toEqual(["A"]);
+    expect(plan.unreadable).toHaveLength(1);
+  });
+
+  it("does not let toDraft read a document", () => {
+    expect(() => toDraft({ path: "a.pdf", text: "" }, () => ({ title: null, markdown: "", images: 0 }))).toThrow();
+  });
+});

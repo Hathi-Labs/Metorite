@@ -108,3 +108,19 @@ describe("collectSources", () => {
     await expect(collectSources(many)).rejects.toThrow(/over 100 MB/);
   });
 });
+
+describe("document files (KB-AI-1)", () => {
+  it("carries the bytes of a document in a zip and as a loose file, and skips an image", async () => {
+    const bytes = new Uint8Array([80, 75, 3, 4, 9]);
+    const zip = await readZip(await zipOf({ "a/report.pdf": bytes, "a/note.md": "# N", "a/pic.png": new Uint8Array([1]) }));
+    expect(zip.skipped).toEqual(["a/pic.png"]);
+    const pdf = zip.entries.find((e) => e.path === "a/report.pdf");
+    expect(pdf?.bytes).toEqual(bytes);
+    expect(pdf?.text).toBe("");
+    expect(zip.entries.find((e) => e.path === "a/note.md")?.bytes).toBeUndefined();
+
+    const file: SourceFile = { name: "deck.PPTX", size: 5, read: async () => bytes };
+    const out = await collectSources([file]);
+    expect(out.entries).toEqual([{ path: "deck.PPTX", text: "", bytes }]);
+  });
+});

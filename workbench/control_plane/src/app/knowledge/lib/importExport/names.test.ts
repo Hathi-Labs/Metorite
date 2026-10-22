@@ -81,3 +81,16 @@ describe("mapOutsideCode", () => {
     expect(mapOutsideCode("a `a` a\n~~~\na\n~~~\na", (t) => t.replace(/a/g, "b"))).toBe("b `a` b\n~~~\na\n~~~\nb");
   });
 });
+
+describe("document kinds (KB-AI-1)", () => {
+  it("knows the four document kinds and keeps md and html", async () => {
+    const { pageKind, isDocumentKind, stemOf } = await import("./names");
+    expect(["a.DOCX", "b.pdf", "c.pptx", "d.xlsx", "e.md", "f.html", "g.png"].map(pageKind)).toEqual([
+      "docx", "pdf", "pptx", "xlsx", "md", "html", null,
+    ]);
+    expect(isDocumentKind("pdf")).toBe(true);
+    expect(isDocumentKind("md")).toBe(false);
+    expect(isDocumentKind(null)).toBe(false);
+    expect(stemOf("dir/Report.pdf")).toBe("dir/Report");
+  });
+});
