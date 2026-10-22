@@ -922,8 +922,21 @@ CARD_BOUND_KEY = "card_bound"
 #: hash, and acts only when both still match. It takes no link from the tool.
 #: ``name`` stays in the pin because the tool has it today. The held path
 #: does not send it.
+#:
+#: ``update_assistant_settings`` (§21.6). In a held run it changes only the
+#: closed keys of ``held_card.HELD_SETTING_DECISIONS``, of the member's own
+#: mailbox, behind a card that names each key, its old value and its new
+#: value. A free-text key is refused. Its pin is its whole parameter list.
 HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
     "unsubscribe_sender": frozenset({"account_id", "email", "name"}),
+    "update_assistant_settings": frozenset({
+        "account_id", "about", "signature", "auto_run", "cold_email_blocker",
+        "personal_instructions", "writing_style", "draft_replies", "draft_confidence",
+        "follow_up_awaiting_days", "follow_up_needs_reply_days", "follow_up_auto_draft",
+        "digest_frequency", "digest_categories", "digest_day_of_week",
+        "digest_time_of_day", "digest_send_to_email", "multi_rule_execution",
+        "sensitive_data_protection",
+    }),
 }
 
 

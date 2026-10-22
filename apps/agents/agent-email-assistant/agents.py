@@ -3193,7 +3193,10 @@ def _settings_needing_card(
     return out
 
 
-@_annotate_risk(open_world=True)
+# §21.6: ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND is off. With
+# the switch on, a held run keeps this tool, and it changes only the closed
+# keys behind a card (:func:`_held_settings`).
+@_annotate_risk(open_world=True, card_bound=True)
 async def update_assistant_settings(
     account_id: str | None = None,
     about: str | None = None,
@@ -3248,6 +3251,21 @@ async def update_assistant_settings(
     the user named no mailbox. One mailbox then acts. With two or more, the
     tool asks which one and changes nothing (§11.3 rule 4).
     """
+    if _held_card_mode():
+        return await _held_settings(account_id, {
+            "about": about, "signature": signature, "auto_run": auto_run,
+            "cold_email_blocker": cold_email_blocker,
+            "personal_instructions": personal_instructions, "writing_style": writing_style,
+            "draft_replies": draft_replies, "draft_confidence": draft_confidence,
+            "follow_up_awaiting_days": follow_up_awaiting_days,
+            "follow_up_needs_reply_days": follow_up_needs_reply_days,
+            "follow_up_auto_draft": follow_up_auto_draft, "digest_frequency": digest_frequency,
+            "digest_categories": digest_categories, "digest_day_of_week": digest_day_of_week,
+            "digest_time_of_day": digest_time_of_day,
+            "digest_send_to_email": digest_send_to_email,
+            "multi_rule_execution": multi_rule_execution,
+            "sensitive_data_protection": sensitive_data_protection,
+        })
     account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
     if ask:
         return ask
@@ -3309,6 +3327,73 @@ async def update_assistant_settings(
     setif("sensitive_data_protection", sensitive_data_protection)
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
+
+
+def _setting_shown(value: Any) -> str:
+    """One value of a setting, as the held card shows it."""
+    if value is None or value == "":
+        return "(not set)"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return _card_text(value, 60)
+
+
+async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
+    """``update_assistant_settings`` in a held run (§21.6).
+
+    Only the closed keys of ``held_card.HELD_SETTING_DECISIONS`` change, and
+    only in a mailbox of the member. A free-text key, ``digest_send_to_email``
+    and ``digest_categories`` are refused before any card. The card ALWAYS
+    shows, also for a change that asks no card outside a held run, and it
+    names each key, its old value and its new value."""
+    from acb_skills.held_card import (
+        HELD_SETTING_DECISIONS,
+        SETTING_CLOSED,
+        SETTING_REFUSED,
+        closed_setting_value,
+    )
+
+    given = {k: v for k, v in wanted.items() if v is not None}
+    refused = sorted(k for k in given if HELD_SETTING_DECISIONS.get(k) != SETTING_CLOSED)
+    if refused:
+        held = [k for k in refused if HELD_SETTING_DECISIONS.get(k) == SETTING_REFUSED]
+        return ("Nothing changed. This chat read email from outside senders, so it cannot "
+                f"change {', '.join(held or refused)}: free text or a send that a later run "
+                "acts on. Tell the member in one sentence, and change the other settings "
+                "without it.")
+    if not given:
+        return "Nothing changed. Name one setting to change."
+    try:
+        values = {k: closed_setting_value(k, v) for k, v in given.items()}
+    except ValueError as exc:
+        return f"Nothing changed. {exc}."
+    account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
+    if ask:
+        return ask
+    own = {str(a.get("id")) for a in await _accounts()}
+    if str(account_id) not in own:
+        return ("Nothing changed. That mailbox is not a mailbox of the member, so this chat "
+                "cannot change its settings.")
+    cur = await _get("/email/assistant/settings", {"account_id": account_id}) or {}
+    box = await _named(account_id)
+    lines = [f"- {k}: {_setting_shown(cur.get(k))} → {_setting_shown(v)}"
+             for k, v in values.items()]
+    refusal = await _card_refusal(
+        f"Change {len(values)} setting(s) of {box}?",
+        f"Mailbox: {box}. Each change is in the list below, with its old and new value.",
+        "Cancelled — the settings were not changed.",
+        "\n".join(lines),
+    )
+    if refusal:
+        return refusal
+    # The card can wait: read again, so the write keeps each other change.
+    body: dict[str, Any] = dict(
+        await _get("/email/assistant/settings", {"account_id": account_id}) or {})
+    body["account_id"] = account_id
+    body.update(values)
+    await _patch_settings(body)
+    return f"Assistant settings updated for {box}: " + "; ".join(
+        f"{k} is {_setting_shown(v)}" for k, v in values.items()) + "."
 
 
 @_annotate_risk(open_world=False)

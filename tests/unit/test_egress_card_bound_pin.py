@@ -41,7 +41,8 @@ H374_WITHHELD = frozenset({
 #: §21.5: what a held run does not get with the switch on. A new slice that
 #: joins a tool takes it out of this set, in the same change.
 SECTION_21_WITHHELD = H374_WITHHELD - {
-    "unsubscribe_sender",  # slice (c): the stored link, its host and its hash
+    "unsubscribe_sender",         # slice (c): the stored link, its host and its hash
+    "update_assistant_settings",  # slice (d): closed keys, behind a card
 }
 
 

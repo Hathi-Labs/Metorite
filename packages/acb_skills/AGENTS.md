@@ -256,7 +256,10 @@ clone cache.
    reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. It holds the four
    classes (`org`, `sent`, `thread`, `new`), the default ticks and the marks.
    It also holds the lookalike flag of a domain (`lookalike_of`), the row
-   label, and the files rule (`parse_file_ref` takes `attachment:<id>` only). The
+   label, and the files rule (`parse_file_ref` takes `attachment:<id>` only).
+   `HELD_SETTING_DECISIONS` holds the decision for each parameter of
+   `update_assistant_settings` in a held chat: a closed key, the mailbox, or
+   refused. The
    client mirrors the marks in `sendCard.ts`, and a test holds the two in
    step. Fences: tests/unit/test_held_send_classes.py and
    tests/unit/test_held_send_card_record.py.

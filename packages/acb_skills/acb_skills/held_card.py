@@ -40,6 +40,7 @@ __all__ = [
     "CLASS_SENT",
     "CLASS_THREAD",
     "DEFAULT_TICKED",
+    "HELD_SETTING_DECISIONS",
     "HELD_TEXT_MAX",
     "KIND_BCC",
     "KIND_CC",
@@ -50,10 +51,14 @@ __all__ = [
     "NEW_MARK",
     "RECIPIENT_KINDS",
     "ROW_KINDS",
+    "SETTING_CLOSED",
+    "SETTING_MAILBOX",
+    "SETTING_REFUSED",
     "THREAD_MARK",
     "WORKSPACE_FILE_REFUSED",
     "address_problem",
     "class_mark",
+    "closed_setting_value",
     "domain_of",
     "file_label",
     "held_card_send_enabled",
@@ -317,3 +322,88 @@ def recipient_label(kind: str, addr: str) -> str:
         puny = "no punycode form"
     return f"{head}: {addr} (non-ASCII domain: {puny})"
 
+
+
+# ── Settings through closed keys (§21.6) ─────────────────────────────────────
+#
+# A held chat may change the member's own settings of one mailbox, behind a
+# card that names each key, its old value and its new value. Only a key with
+# a fixed set of values, or a number, may change. Free text that a later run
+# reads and acts on stays held, because an injection could persist there.
+
+#: A parameter that names the mailbox. The tool checks that the member owns
+#: it, and the gateway checks the owner again.
+SETTING_MAILBOX = "mailbox"
+#: A key with a fixed set of values, or a number in a fixed range.
+SETTING_CLOSED = "closed"
+#: A key that a held chat may not change.
+SETTING_REFUSED = "refused"
+
+#: The decision for each parameter of ``update_assistant_settings``. A test
+#: holds this map to the tool's parameters, so a new setting needs a
+#: decision here (``tests/unit/test_held_settings.py``).
+HELD_SETTING_DECISIONS: dict[str, str] = {
+    "account_id": SETTING_MAILBOX,
+    "about": SETTING_REFUSED,
+    "signature": SETTING_REFUSED,
+    "personal_instructions": SETTING_REFUSED,
+    "writing_style": SETTING_REFUSED,
+    "auto_run": SETTING_CLOSED,
+    "cold_email_blocker": SETTING_CLOSED,
+    "draft_replies": SETTING_CLOSED,
+    "draft_confidence": SETTING_CLOSED,
+    "follow_up_awaiting_days": SETTING_CLOSED,
+    "follow_up_needs_reply_days": SETTING_CLOSED,
+    "follow_up_auto_draft": SETTING_CLOSED,
+    "digest_frequency": SETTING_CLOSED,
+    # A list of free names that later runs read: held (the safer choice).
+    "digest_categories": SETTING_REFUSED,
+    "digest_day_of_week": SETTING_CLOSED,
+    "digest_time_of_day": SETTING_CLOSED,
+    # §21.6 item 2: digest_* without digest_send_to_email.
+    "digest_send_to_email": SETTING_REFUSED,
+    "multi_rule_execution": SETTING_CLOSED,
+    "sensitive_data_protection": SETTING_CLOSED,
+}
+
+#: The values that each closed key with a fixed set takes.
+_CLOSED_CHOICES: dict[str, frozenset[str]] = {
+    "cold_email_blocker": frozenset({"OFF", "LABEL", "ARCHIVE"}),
+    "draft_confidence": frozenset({"ALL_EMAILS", "STANDARD", "HIGH_CONFIDENCE"}),
+    "digest_frequency": frozenset({"OFF", "DAILY", "WEEKLY"}),
+}
+#: The range of each closed key that is a number.
+_CLOSED_RANGES: dict[str, tuple[int, int]] = {
+    "follow_up_awaiting_days": (0, 365),
+    "follow_up_needs_reply_days": (0, 365),
+    "digest_day_of_week": (0, 6),
+}
+_CLOSED_BOOLS = frozenset({"auto_run", "draft_replies", "follow_up_auto_draft",
+                           "multi_rule_execution", "sensitive_data_protection"})
+
+
+def closed_setting_value(key: str, value: Any) -> Any:
+    """The value of one closed key in its stored form. Raises ``ValueError``
+    with the words that the member reads for a value outside the closed set."""
+    if key in _CLOSED_BOOLS:
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} is on or off")
+        return value
+    if key in _CLOSED_CHOICES:
+        v = str(value or "").strip().upper()
+        if v not in _CLOSED_CHOICES[key]:
+            raise ValueError(f"{key} is one of {', '.join(sorted(_CLOSED_CHOICES[key]))}")
+        return v
+    if key in _CLOSED_RANGES:
+        lo, hi = _CLOSED_RANGES[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ValueError(f"{key} is a whole number from {lo} to {hi}")
+        return value
+    if key == "digest_time_of_day":
+        import re
+
+        v = str(value or "").strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+            raise ValueError(f"{key} is a time as HH:MM, from 00:00 to 23:59")
+        return v
+    raise ValueError(f"{key} is not a setting that this chat can change")
