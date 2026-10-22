@@ -125,3 +125,39 @@ async def test_the_known_domains_hold_the_org_and_the_sent_domains(
         assert f"stranger-{w.tag}.test" not in got  # a sender only
     finally:
         w.purge()
+
+
+async def test_a_mail_of_a_stranger_in_sent_makes_no_one_sent(
+    promoted, app_engine,  # noqa: F811
+) -> None:
+    """Fix round 1 (P1-a). A stranger's mail sits in Sent, for example after a
+    move that the provider did not take. Its To and Cc are not people that
+    the member wrote to, and their domain is not known."""
+    import json
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    _assert_non_priv(app_engine)
+    w = _World(promoted)
+    planted = f"planted-{w.tag}@evilcorp-{w.tag}.test"
+    try:
+        w.seed()
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_messages (account_id, provider_message_id, folder, "
+                "from_address, to_addresses, cc_addresses, subject, received_at, "
+                "organization_id) VALUES (CAST(:a AS uuid), :pm, 'sent', "
+                "CAST(:f AS jsonb), CAST(:t AS jsonb), CAST(:cc AS jsonb), 's', :r, "
+                "CAST(:o AS uuid))"),
+                {"a": w.account, "pm": f"pm-moved-{w.tag}",
+                 "f": json.dumps({"email": w.kiran_stranger}),
+                 "t": json.dumps([{"email": w.owner}]),
+                 "cc": json.dumps([{"email": planted}]),
+                 "r": datetime.now(UTC), "o": w.p.org_b})
+        assert (await _classify(w, [planted]))[planted] == "new"
+        assert f"evilcorp-{w.tag}.test" not in await _domains(w)
+        # The member's own Sent mail still counts.
+        assert (await _classify(w, [w.kiran_client]))[w.kiran_client] == "sent"
+    finally:
+        w.purge()

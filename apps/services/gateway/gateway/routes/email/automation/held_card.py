@@ -133,7 +133,6 @@ _TENANT = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
 CLASSIFY_SQL = f"""
 WITH wanted AS (SELECT DISTINCT LOWER(a) AS addr FROM unnest(CAST(:wanted AS text[])) AS a),
-accts AS (SELECT id FROM email_accounts WHERE user_id = :uid),
 org AS (
     SELECT LOWER(au.email) AS addr FROM app_user au
      WHERE COALESCE(au.status, 'active') = 'active'
@@ -153,11 +152,14 @@ org AS (
 sent AS (
     SELECT DISTINCT LOWER(r->>'email') AS addr
       FROM email_messages em
+      JOIN email_accounts ea ON ea.id = em.account_id AND ea.user_id = :uid
       CROSS JOIN LATERAL jsonb_array_elements(
             COALESCE(em.to_addresses, '[]'::jsonb)
             || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
-     WHERE em.account_id IN (SELECT id FROM accts)
-       AND LOWER(COALESCE(em.folder, '')) = 'sent'
+     WHERE LOWER(COALESCE(em.folder, '')) = 'sent'
+       -- fix round 1 (P1-a): the mailbox itself sent it. A folder alone
+       -- proves nothing, because a mail of a stranger can sit in Sent.
+       AND LOWER(em.from_address->>'email') = LOWER(ea.email_address)
        AND LOWER(r->>'email') IN (SELECT addr FROM wanted)
 ),
 own AS (
@@ -171,7 +173,8 @@ SELECT w.addr,
 
 #: The domains that the member knows, for the lookalike flag: the domains of
 #: the organization's members, of the member's own mailboxes, and of the
-#: people that the newest 2000 Sent mails went to.
+#: people that the newest 2000 Sent mails went to. A Sent mail counts only
+#: when its From is the mailbox's own address (fix round 1, P1-a).
 KNOWN_DOMAINS_SQL = f"""
 SELECT DISTINCT d FROM (
     SELECT SPLIT_PART(LOWER(au.email), '@', 2) AS d FROM app_user au
@@ -183,9 +186,9 @@ SELECT DISTINCT d FROM (
     UNION
     SELECT SPLIT_PART(LOWER(r->>'email'), '@', 2)
       FROM (SELECT em.to_addresses, em.cc_addresses FROM email_messages em
-             WHERE em.account_id IN (
-                   SELECT id FROM email_accounts WHERE user_id = :uid)
-               AND LOWER(COALESCE(em.folder, '')) = 'sent'
+              JOIN email_accounts ea ON ea.id = em.account_id AND ea.user_id = :uid
+             WHERE LOWER(COALESCE(em.folder, '')) = 'sent'
+               AND LOWER(em.from_address->>'email') = LOWER(ea.email_address)
              ORDER BY em.received_at DESC NULLS LAST LIMIT 2000) s
       CROSS JOIN LATERAL jsonb_array_elements(
             COALESCE(s.to_addresses, '[]'::jsonb)

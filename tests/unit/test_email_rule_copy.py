@@ -178,9 +178,9 @@ class TestTheMoveRefuser:
         ("gmail", "Cold Email", False),
         ("gmail", "Archive", False),
         ("gmail", "Inbox", False),
-        ("microsoft", "Sent", False),
+        ("microsoft", "Sent", True),  # §21 fix round 1 (P1-a)
         ("microsoft", "Cold Email", False),
-        ("imap", "Sent", False),
+        ("imap", "Sent", True),  # no move reaches Sent
         ("no-such-provider", "Sent", False),
     ])
     def test_each_case(self, provider, name, refused):
