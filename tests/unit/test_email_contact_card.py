@@ -258,3 +258,53 @@ async def test_suggest_is_best_effort_on_failure() -> None:
         out = await C.suggest_contacts(
             q="ay", account_id=None, limit=8, user=MagicMock(email="me@x.io"))
     assert out == []
+
+
+async def test_suggest_names_the_source_and_reads_the_org_through_the_seam() -> None:
+    """Owner, 2026-10-22: the chat finds a colleague by name. Each hit names
+    its source, and the org rows name the bound tenant in their own predicate,
+    so an unbound GUC matches no row. The R8 half is
+    ``test_email_contact_suggest_r8.py``."""
+    from unittest.mock import MagicMock, patch
+
+    captured: dict = {}
+    rows = []
+    for email, src in (("kiran@fracktal.in", "org"), ("k@client.test", "sent"),
+                       ("k@x.test", "seen"), ("k@y.test", "bogus")):
+        r = MagicMock()
+        r.email, r.name, r.source = email, "Kiran", src
+        rows.append(r)
+
+    class _DB:
+        async def execute(self, clause, params=None):
+            captured["sql"] = str(clause)
+            captured["params"] = params
+            return MagicMock(fetchall=MagicMock(return_value=rows))
+
+    with patch.object(C, "_tenant_session", bind_db(_DB())):
+        out = await C.suggest_contacts(
+            q="Kiran", account_id=None, limit=8, domain="@Fracktal.IN",
+            user=MagicMock(email="me@fracktal.in"))
+
+    assert [s.source for s in out] == ["org", "sent", "seen", "seen"]
+    sql, params = captured["sql"], captured["params"]
+    assert "FROM app_user au" in sql and "FROM people pp" in sql
+    assert sql.count("current_setting('app.tenant_id', true)") == 2
+    assert params["dom"] == r"(^|\.)fracktal\.in$"
+    assert "c.email <> LOWER(:uid)" in sql
+
+
+async def test_suggest_refuses_a_domain_that_is_not_one() -> None:
+    from unittest.mock import MagicMock
+
+    import pytest
+    from fastapi import HTTPException
+
+    for bad in ("a b", "x;y", "a..b", "fracktal.in)|("):
+        with pytest.raises(HTTPException) as err:
+            await C.suggest_contacts(
+                q="k", account_id=None, limit=8, domain=bad,
+                user=MagicMock(email="me@x.io"))
+        assert err.value.status_code == 422
+    assert C._domain_pattern("fracktal") == r"(^|\.)fracktal(\.|$)"
+    assert C._domain_pattern(None) == ""
