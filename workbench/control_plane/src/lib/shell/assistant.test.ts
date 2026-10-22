@@ -50,12 +50,19 @@ import {
   raiseOnNeed,
   setAssistantMode,
   setDockWidth,
+  BRIEF_HOLD_MS,
+  briefAskedToday,
+  holdsForBrief,
+  localDay,
+  markBriefAsked,
   startsFresh,
   stripShowsRun,
   stripText,
   surfaceContext,
   switchTarget,
+  wantsBrief,
 } from "./assistant";
+import { briefPath, requestBrief } from "./briefTurn";
 import { chatFirstOn, shellChatOn } from "./chatFlag";
 import { landingSettled } from "./ChatNudge";
 import { shellSidebar } from "./shellNav";
@@ -211,6 +218,84 @@ describe("a fresh chat, or the last one", () => {
   it("a recent chat is joined, and one from hours ago is not", () => {
     expect(startsFresh({ messageCount: 4, updatedAt: at(STALE_CHAT_MS - 1000) }, now)).toBe(false);
     expect(startsFresh({ messageCount: 4, updatedAt: at(STALE_CHAT_MS + 1000) }, now)).toBe(true);
+  });
+});
+
+describe("the brief as the first turn (WS-62 CF-5, §4.6, D-CF-6)", () => {
+  const phone = { chatFirst: true, phone: true, messageCount: 0, askedFor: false };
+
+  it("a fresh chat on a phone, with the flag on, asks once", () => {
+    expect(wantsBrief(phone)).toBe(true);
+  });
+
+  it("never with the flag off, and never on a desktop (§9.2 Q1: the desktop reads My Day)", () => {
+    expect(wantsBrief({ ...phone, chatFirst: false })).toBe(false);
+    expect(wantsBrief({ ...phone, phone: false })).toBe(false);
+  });
+
+  it("never under the member's own words, and never twice in a day on one page", () => {
+    expect(wantsBrief({ ...phone, messageCount: 1 })).toBe(false);
+    expect(wantsBrief({ ...phone, askedFor: true })).toBe(false);
+  });
+
+  it("the page's mark is the member's local day, and a new member clears it", () => {
+    const d = new Date(2026, 9, 22, 23, 50);
+    expect(localDay(d)).toBe("2026-10-22");
+    expect(briefAskedToday(d)).toBe(false);
+    markBriefAsked(d);
+    expect(briefAskedToday(d)).toBe(true);
+    // Ten minutes later is a new day, so a fresh chat may ask again.
+    expect(briefAskedToday(new Date(2026, 9, 23, 0, 10))).toBe(false);
+    __resetAssistantForTests();
+    expect(briefAskedToday(d)).toBe(false);
+  });
+
+  it("the call reads a 200 with a preview, and nothing else", async () => {
+    const calls: string[] = [];
+    const answer = (status: number, body?: unknown) => (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${init?.method} ${String(url)}`);
+      return new Response(body === undefined ? null : JSON.stringify(body), { status });
+    }) as typeof fetch;
+    expect(await requestBrief("c1", answer(200, { posted: true, message_id: "brief-2026-10-22", preview: "Your day." })))
+      .toEqual({ preview: "Your day." });
+    expect(await requestBrief("c1", answer(204))).toBeNull();
+    expect(await requestBrief("c1", answer(503, { error: "x" }))).toBeNull();
+    expect(await requestBrief("c1", answer(200, { posted: false }))).toBeNull();
+    expect(await requestBrief("c1", (async () => { throw new Error("offline"); }) as typeof fetch)).toBeNull();
+    expect(calls[0]).toBe(`POST ${briefPath("c1")}`);
+    expect(briefPath("a/b")).toBe("/api/chat/sessions/a%2Fb/brief");
+  });
+
+  it("a chat waits only while ITS ask is out, and the hold is capped (review of #1216)", () => {
+    expect(holdsForBrief(null, "c1")).toBe(false);
+    expect(holdsForBrief("c1", "c1")).toBe(true);
+    expect(holdsForBrief("c2", "c1")).toBe(false);
+    expect(holdsForBrief("", "")).toBe(false);
+    expect(BRIEF_HOLD_MS).toBe(4_000);
+    const dock = read("lib/shell/AssistantDock.tsx");
+    // The gate reads the hold alone: no clock, no flag, so no spinner past midnight.
+    expect(dock).toContain("briefPending: (s: ChatSession) => holdsForBrief(briefHold, s.id),");
+    // The hold is set before the paint, and released by the answer or the cap.
+    expect(dock).toMatch(/useLayoutEffect\(\(\) => \{\r?\n\s+if \(!scope \|\| !open \|\| !activeIdForBrief/);
+    expect(dock).toContain("const timer = setTimeout(release, BRIEF_HOLD_MS);");
+  });
+
+  it("the dock asks only through the rule, and marks the day before it asks", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    // One ask, guarded by the rule, and the mark comes first.
+    expect(dock.match(/requestBrief\(/g)?.length).toBe(1);
+    const guard = dock.indexOf("if (!wantsBrief({");
+    const mark = dock.indexOf("markBriefAsked();");
+    const ask = dock.indexOf("requestBrief(");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(mark);
+    expect(mark).toBeLessThan(ask);
+    // The chat mounts only after the ask answers, so its first load reads the row.
+    expect(dock).toContain("{active && !chat.briefPending(active) ? (");
+    // No model call: the ask is a POST with no body, and the server decides.
+    const call = read("lib/shell/briefTurn.ts");
+    expect(call).toContain('{ method: "POST", cache: "no-store" }');
+    expect(call).not.toMatch(/\/api\/agent\//);
   });
 });
 
@@ -828,9 +913,12 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
   });
 
-  it("the nudge retires on the first message, from the dock's one activity seam", () => {
+  it("the nudge retires on the member's first message, from the dock's one activity seam", () => {
     const dock = read("lib/shell/AssistantDock.tsx");
-    expect(dock).toContain("if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
+    // A MEMBER turn, never a bare count: the day's brief is an agent turn
+    // that lands before the member types (CF-5, review of #1216).
+    expect(dock).toContain("if (info.firstUserMessage && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
+    expect(dock).not.toContain("info.messageCount > 0 && chatFirstOn()");
   });
 });
 

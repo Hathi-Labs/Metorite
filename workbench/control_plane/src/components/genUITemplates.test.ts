@@ -10,9 +10,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  BRIEF_PILLS_LABEL,
   TEMPLATE_CATALOG,
   TEMPLATE_REGISTRY,
   isDateCell,
+  reportCardPills,
   shownDelta,
   taskHref,
 } from "./genUITemplates";
@@ -52,6 +54,38 @@ describe("the catalog and the registry", () => {
     for (const name of ["timeline", "taskBoard", "dataGrid", "reportCard", "planCard"]) {
       expect(names.has(name)).toBe(true);
     }
+  });
+});
+
+// ── WS-62 CF-5 — the day's brief as a reportCard with pills ─────────────────
+
+describe("the report card's pills (CF-5)", () => {
+  const brief = {
+    title: "Your day, Thu 22 Oct",
+    pills: ['Reply to Priya Shah: "Q3 pricing" (waiting 40 min)', "Overdue: Send the deck (2 days late)", " ", 7],
+    note: "+2 more on My Day",
+  };
+
+  it("reads the lines, trimmed, and drops an empty one", () => {
+    expect(reportCardPills(brief)).toEqual([
+      'Reply to Priya Shah: "Q3 pricing" (waiting 40 min)',
+      "Overdue: Send the deck (2 days late)",
+      "7",
+    ]);
+    expect(reportCardPills({ title: "Report" })).toEqual([]);
+  });
+
+  it("draws each line as one pill of the one pill component, with the note under them", () => {
+    const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.reportCard(brief, { onAction: () => {} })));
+    expect(html).toContain("Your day, Thu 22 Oct");
+    expect(html).toContain(BRIEF_PILLS_LABEL);
+    expect(html).toContain(">Overdue: Send the deck (2 days late)</button>");
+    expect(html).toContain("+2 more on My Day");
+    // The brief is not a saved report: no Reports link on its title.
+    expect(html).not.toContain('href="/projects?view=reports');
+    // A report with no pills draws as before: no label, no pills.
+    const plain = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.reportCard({ title: "Q3", stats: [] })));
+    expect(plain).not.toContain(BRIEF_PILLS_LABEL);
   });
 });
 

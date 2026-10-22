@@ -47,7 +47,7 @@
  */
 
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -99,6 +99,7 @@ import {
   type ChatSession,
 } from "@/lib/sessions";
 
+import { requestBrief } from "./briefTurn";
 import { chatFirstOn } from "./chatFlag";
 import { markChatFirstMessage } from "./shellPrefs";
 import {
@@ -107,13 +108,17 @@ import {
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  BRIEF_HOLD_MS,
   DOCK_MAX,
   DOCK_MIN,
+  briefAskedToday,
   closeAssistant,
+  holdsForBrief,
   consumeAsk,
   consumeDraft,
   effectiveMode,
   focusAssistant,
+  markBriefAsked,
   navigateAct,
   onChatLink,
   onPageChange,
@@ -130,6 +135,7 @@ import {
   useAssistant,
   useCurrentFacts,
   useViewportWidth,
+  wantsBrief,
   type AssistantMode,
 } from "./assistant";
 import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
@@ -147,14 +153,20 @@ const COMPOSER_FOCUS_TRIES = 40;
  * restored one. The store's `sessionId` is the one answer. This hook fills it
  * when it is empty: the newest chat of the one agent while it is recent, else
  * a new chat (`startsFresh`). `freshSeq` asks for a new chat.
+ *
+ * With the chat-first flag on, a phone's fresh chat asks the server for the
+ * day's brief as its first turn (WS-62 CF-5, §4.6). `briefHold` names the
+ * chat whose ask is out, and the dock mounts that chat only after the
+ * answer, so the chat's first load reads the brief row.
  */
-function useAssistantChat(open: boolean) {
+function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: boolean }) {
   const st = useAssistant();
   const scope = useChatScope();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [restoredId, setRestoredId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
+  const [briefHold, setBriefHold] = useState<string | null>(null);
   // From 0, not from the store: a `/chat?do=new-chat` that asked for a new
   // chat before this mounted must still be honoured (review of 2026-10-12).
   const handledFresh = useRef(0);
@@ -259,6 +271,42 @@ function useAssistantChat(open: boolean) {
     });
     return () => { cancelled = true; };
   }, [scope, open, st.sessionId, refresh]);
+
+  // The brief as the first turn (CF-5). Asked once per page per day, and
+  // only through the rule. The server decides whether a brief exists and
+  // writes the row (D-PM-39); a 204 or a fault opens the chat empty.
+  // A layout effect, so the hold is set before the paint that would mount
+  // the chat, and the chat's first load reads the row. The hold ends when
+  // the route answers, or after BRIEF_HOLD_MS, whichever comes first
+  // (review of #1216): a slow feed never holds the composer.
+  const activeIdForBrief = st.sessionId ?? "";
+  const activeCount = sessions.find((s) => s.id === activeIdForBrief)?.messageCount;
+  useLayoutEffect(() => {
+    if (!scope || !open || !activeIdForBrief || activeCount === undefined) return;
+    if (!wantsBrief({
+      chatFirst: surface.chatFirst, phone: surface.phone,
+      messageCount: activeCount, askedFor: briefAskedToday(),
+    })) return;
+    markBriefAsked();
+    const id = activeIdForBrief;
+    setBriefHold(id);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      setBriefHold((held) => (held === id ? null : held));
+      refresh();
+    };
+    const timer = setTimeout(release, BRIEF_HOLD_MS);
+    void requestBrief(id)
+      .then((posted) => {
+        if (posted) enrichSession(id, { messageCount: 1, lastPreview: posted.preview });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        release();
+      });
+  }, [scope, open, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const activeId = st.sessionId ?? "";
@@ -291,6 +339,13 @@ function useAssistantChat(open: boolean) {
     sessions,
     active,
     activeId,
+    /**
+     * Whether the chat waits for the brief (CF-5): only while its ask is
+     * out. The dock mounts it after the answer, so its first load reads the
+     * brief row. Never a rule read at render time (review of #1216): a
+     * clock read there could hold a chat that no effect would release.
+     */
+    briefPending: (s: ChatSession) => holdsForBrief(briefHold, s.id),
     sendable,
     refresh,
     onSessionRefused,
@@ -326,8 +381,9 @@ function useAssistantChat(open: boolean) {
       enrichSession(activeId, info);
       refresh();
       // CF-2: the member's first message retires the nudge, on the server,
-      // for every device. A chat with a message is a chat they wrote in.
-      if (info.messageCount > 0 && chatFirstOn()) void markChatFirstMessage(boundChatScope());
+      // for every device. Only a MEMBER turn counts (CF-5, review of #1216):
+      // the day's brief is an agent turn that lands before they type.
+      if (info.firstUserMessage && chatFirstOn()) void markChatFirstMessage(boundChatScope());
     },
   };
 }
@@ -535,7 +591,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // page instead of sitting beside it (owner, 2026-10-14).
   const canDock = !phone;
   const floats = dockFloats(vw, phone);
-  const chat = useAssistantChat(st.open);
+  const chat = useAssistantChat(st.open, { phone, chatFirst });
   const pathname = usePathname();
   const router = useRouter();
   const toast = useToast();
@@ -982,7 +1038,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col">
           <div data-assistant-chat="" className="flex min-h-0 w-full flex-1 flex-col">
-            {active ? (
+            {active && !chat.briefPending(active) ? (
               // No page under the assistant renders the side-panel editor
               // (Projects mounts it only with its own chat on, and the flag
               // turns that off). So a file card opens the chat's own viewer,
@@ -1022,7 +1078,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
               </SidePanelFitContext.Provider>
               </PillNavigateContext.Provider>
             ) : (
-              <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground" aria-busy="true">
+              // CF-5: while the brief ask is out, the chat waits here, so its
+              // first load reads the brief row and never an empty list.
+              <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground" aria-busy="true" data-assistant-opening="">
                 <Icon name="Loader2" size={16} className="animate-spin" />
                 Opening your chat…
               </div>

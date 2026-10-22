@@ -14,6 +14,10 @@
  * `a.retiredInBrowser` from `nudgeShows`, and "the browser copy hides it
  * before the read" fails.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearAll, peek, put } from "@/lib/dataCache";
@@ -27,9 +31,13 @@ import {
   asLayout,
   bodyFor,
   markChatFirstMessage,
+  memberWrote,
   nudgeShows,
   saveShellPrefs,
 } from "./shellPrefs";
+
+const SRC = fileURLToPath(new URL("../..", import.meta.url));
+const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
 describe("asLayout", () => {
   it("reads the gateway's layout", () => {
@@ -115,6 +123,24 @@ describe("the nudge (WS-62 CF-2)", () => {
     expect(nudgeShows({ ...shows, chatFirst: false })).toBe(false);
     // Not before the server answers: the browser copy of the layout may be old.
     expect(nudgeShows({ ...shows, fresh: undefined })).toBe(false);
+  });
+
+  it("counts a chat as written in only with a MEMBER turn: the brief alone keeps the nudge (CF-5, review of #1216)", () => {
+    // The day's brief: one agent row, and the server says no member wrote.
+    expect(memberWrote([{ messageCount: 1, hasUserMessage: false }])).toBe(false);
+    expect(memberWrote([])).toBe(false);
+    expect(memberWrote([{ messageCount: 0 }])).toBe(false);
+    // A member turn, from the server or from this page.
+    expect(memberWrote([{ messageCount: 2, hasUserMessage: true }])).toBe(true);
+    expect(memberWrote([{ messageCount: 1, hasUserMessage: false }, { messageCount: 3, hasUserMessage: true }])).toBe(true);
+    // A chat the server has not listed yet: the count stands in, as before.
+    expect(memberWrote([{ messageCount: 1 }])).toBe(true);
+    // The nudge and the dock both read it, and neither counts a bare message.
+    const nudge = read("lib/shell/ChatNudge.tsx");
+    expect(nudge).toContain("const has = memberWrote(list);");
+    expect(nudge).not.toMatch(/messageCount \?\? 0\) > 0/);
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("if (info.firstUserMessage && chatFirstOn()) void markChatFirstMessage(");
   });
 
   it("never for a member who already has a chat with a message, and not before the list answers (review of #1206)", () => {
