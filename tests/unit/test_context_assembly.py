@@ -236,10 +236,10 @@ def test_agent_reserve_reads_maf_instructions_and_tools():
         """Look up one order by its id and return its status line."""
         return order_id
 
-    class _Agent:
-        default_options = {"instructions": "i" * 4000, "tools": [lookup]}
+    from types import SimpleNamespace
 
-    tokens = _agent_prompt_reserve_tokens(_Agent())
+    agent = SimpleNamespace(default_options={"instructions": "i" * 4000, "tools": [lookup]})
+    tokens = _agent_prompt_reserve_tokens(agent)
     assert tokens >= 1000 + 20  # 4000 chars of instructions + one schema
     assert _agent_prompt_reserve_tokens(None) == 0
 
@@ -249,12 +249,13 @@ def test_agent_reserve_reads_copilot_system_message():
 
     Mutation: read only ``instructions``. This agent then measures 0.
     """
+    from types import SimpleNamespace
+
     from orchestrator.executor import _agent_prompt_reserve_tokens
 
-    class _Copilot:
-        _default_options = {"system_message": {"mode": "append", "content": "p" * 8000}}
-
-    assert _agent_prompt_reserve_tokens(_Copilot()) == 2000
+    copilot = SimpleNamespace(
+        _default_options={"system_message": {"mode": "append", "content": "p" * 8000}})
+    assert _agent_prompt_reserve_tokens(copilot) == 2000
 
 
 def test_compose_maf_run_passes_the_agent_reserve():
