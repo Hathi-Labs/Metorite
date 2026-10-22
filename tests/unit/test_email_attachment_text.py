@@ -347,6 +347,40 @@ class TestTheTextRoute:
         assert got.text == body.decode()[:20_000]
         assert got.truncated is True
         assert got.chars == 25_000
+        assert (got.offset, got.next_offset) == (0, 20_000)
+
+    async def test_an_offset_reads_the_next_part_from_the_cache(self, monkeypatch) -> None:
+        """2026-10-22: a file over 20,000 characters can be read to its end.
+
+        Mutation: cache the first part only (``text=full[:MAX]``), or ignore
+        ``offset``. The second part is then empty or the first part again.
+        """
+        body = ("0123456789" * 2_500).encode()
+        h = _Harness(monkeypatch, filename="long.txt", payload=body)
+        parses = _spy_parse(monkeypatch)
+        await _text()
+        rest = await m.attachment_text(ATT_ID, _user(), offset=20_000)
+        assert rest.text == body.decode()[20_000:]
+        assert (rest.offset, rest.next_offset, rest.truncated) == (20_000, None, False)
+        assert parses == [".txt"], "the second part parsed the file again"
+        assert h.provider_calls == 1
+
+    async def test_an_old_cache_entry_with_the_first_part_only_is_a_miss(
+        self, monkeypatch,
+    ) -> None:
+        """An entry from before ``offset`` holds 20,000 characters only.
+
+        Mutation: drop the ``"whole"`` check in ``_cached_text``. The read at
+        offset 20,000 then answers an empty text.
+        """
+        body = ("0123456789" * 2_500).encode()
+        h = _Harness(monkeypatch, filename="long.txt", payload=body)
+        h.text_redis.store[f"cc:{ORG_A}:email-att-text:{ATT_ID}"] = json.dumps({
+            "kind": "txt", "text": body.decode()[:20_000], "truncated": True,
+            "chars": 25_000, "reason": None,
+        })
+        rest = await m.attachment_text(ATT_ID, _user(), offset=20_000)
+        assert rest.text == body.decode()[20_000:]
 
     async def test_a_read_that_the_reader_stopped_is_truncated_too(self, monkeypatch) -> None:
         monkeypatch.setattr(at, "MAX_TEXT_LINES", 2)
