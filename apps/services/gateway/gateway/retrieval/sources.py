@@ -460,6 +460,7 @@ async def _knowledge(
         # ⚠️ Every parameter, by name: the route declares `Query(...)` defaults.
         answer = await kb_search.search_knowledge(
             q=q, space=None, k=k, hybrid=bool(hybrid), user=user,
+            author=None, updated_after=None, title_only=False,
         )
     out: list[Hit] = []
     seen: set[str] = set()

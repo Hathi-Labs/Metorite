@@ -65,6 +65,7 @@ import { loadPageChoices, matchPages, pageLinkHref, type PageChoice } from "../.
 import { knowledgeExtensions } from "../../lib/editor/schema";
 import type { Space } from "../../lib/types";
 import { FindBar } from "./FindBar";
+import { MatchBar } from "./MatchBar";
 import { FormatBubble, ImageDialog, TableTools, scrollParent } from "./menus";
 import { CalloutView, CodeBlockView, DetailsView, ImageView } from "./nodeViews";
 import { TableHandlePlugin } from "./tableDrag";
@@ -326,6 +327,14 @@ export interface KnowledgeEditorProps {
   decorate?: ((doc: PMNode) => DecorationSet | null) | null;
   /** Edit: the page's title field, for the title flow (KB-2i). */
   titleLink?: TitleLink;
+  /**
+   * Read: the words of the search that opened the page (KB-3d). With words,
+   * a match bar marks them and steps through them. It reuses the find
+   * engine of KB-2i and builds no second one.
+   */
+  matchTerms?: readonly string[];
+  /** Read: the match bar was closed. The page drops `?q=`. */
+  onMatchClose?: () => void;
 }
 
 export default function KnowledgeEditor({
@@ -343,6 +352,8 @@ export default function KnowledgeEditor({
   onNavigate,
   decorate,
   titleLink,
+  matchTerms,
+  onMatchClose,
 }: KnowledgeEditorProps) {
   const editable = mode === "edit";
   const onChangeRef = useRef(onChange);
@@ -768,6 +779,9 @@ export default function KnowledgeEditor({
 
   return (
     <div ref={shellRef} className={editable ? "kb-editor-shell is-editing" : "kb-editor-shell"} onClick={onClick}>
+      {editor && !editable && !findOpen && matchTerms?.length && onMatchClose ? (
+        <MatchBar editor={editor} terms={matchTerms} onClose={onMatchClose} scroller={scroller} />
+      ) : null}
       {editor && findOpen ? (
         <FindBar editor={editor} editable={editable} openCount={findOpen} onClose={closeFind} scroller={scroller} />
       ) : null}
