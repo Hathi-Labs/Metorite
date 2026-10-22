@@ -481,6 +481,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "apps": 1,
         "workflows": 1,
         "meetings": 1,
+        # WS-61 KB-5a: the fake holds no proposal of the member. It stays.
+        "knowledge_proposals": 0,
     }
 
 

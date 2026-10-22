@@ -208,6 +208,20 @@ _OTHER_MEANING: dict[Path, frozenset[str]] = {
     GATEWAY / "routes/crm/broker_handlers.py": frozenset({"proposal"}),
 }
 
+#: The same rule for a string key, by file and by exact value. WS-61 KB-5a:
+#: ``/knowledge/proposals`` is the Knowledge route of a proposed page or edit,
+#: another store (``kb_page_proposals``). Only these route literals pass. A
+#: key such as ``"proposals"`` in the same files still fails.
+_KNOWLEDGE_ROUTES = frozenset({
+    "/knowledge/proposals",
+    "/knowledge/proposals/{proposal_id}/accept",
+    "/knowledge/proposals/{proposal_id}/reject",
+})
+_OTHER_KEYS: dict[Path, frozenset[str]] = {
+    REPO / "packages/acb_skills/acb_skills/knowledge_manifest.py": _KNOWLEDGE_ROUTES,
+    REPO / "packages/acb_skills/acb_skills/knowledge_tools.py": _KNOWLEDGE_ROUTES,
+}
+
 #: A name, an attribute or an import that names a proposal, in any case:
 #: ``qs.proposals_of``, ``live_proposals``, ``PROPOSALS``, ``my_proposal``.
 _NAME = re.compile(r"(?i)proposal")
@@ -240,7 +254,9 @@ def _names(node: ast.AST) -> list[str]:
     return []
 
 
-def _offenders(source: str, other: frozenset[str] = frozenset()) -> list[str]:
+def _offenders(
+    source: str, other: frozenset[str] = frozenset(), keys: frozenset[str] = frozenset(),
+) -> list[str]:
     """Each place of *source* that reads or names the proposals."""
     tree = ast.parse(source)
     docs = {id(body[0].value) for parent in ast.walk(tree)
@@ -252,7 +268,8 @@ def _offenders(source: str, other: frozenset[str] = frozenset()) -> list[str]:
             if _NAME.search(name) and name not in other:
                 out.append(f"{node.lineno}:{name}")
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                and id(node) not in docs and _KEY.search(node.value)):
+                and id(node) not in docs and node.value not in keys
+                and _KEY.search(node.value)):
             out.append(f"{node.lineno}:{node.value[:40]!r}")
     return out
 
@@ -268,10 +285,21 @@ def test_no_module_but_the_two_question_modules_reads_proposals() -> None:
         if path in _ALLOWED:
             continue
         found = _offenders(path.read_text(encoding="utf-8"),
-                           _OTHER_MEANING.get(path, frozenset()))
+                           _OTHER_MEANING.get(path, frozenset()),
+                           _OTHER_KEYS.get(path, frozenset()))
         offenders.extend(f"{path.relative_to(REPO)}:{x}" for x in found)
     assert offenders == [], offenders
     assert len(_python_files()) > 50  # the scan reads the trees it names
+
+
+def test_the_knowledge_route_literals_pass_and_a_store_key_does_not() -> None:
+    """WS-61 KB-5a: the exemption names exact route literals only. A key of
+    the CRM store in the same file still fails."""
+    keys = _OTHER_KEYS[REPO / "packages/acb_skills/acb_skills/knowledge_tools.py"]
+    assert _offenders('x = "/knowledge/proposals"\n', keys=keys) == []
+    assert _offenders('x = state.get("proposals")\n', keys=keys)
+    assert _offenders('x = "/knowledge/proposals/all"\n', keys=keys)
+    assert _offenders("live_proposals = 1\n", keys=keys)
 
 
 @pytest.mark.parametrize("reader", [
