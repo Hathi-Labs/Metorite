@@ -5409,9 +5409,10 @@ replaces the rule of §21.1 of 2026-10-18, "ideas only, never code".
    on staging first. I'll test it out and then we'll do it on production."
    A pull request with a ported file merges after its review, and staging
    carries it. Production does not move until the owner has tested staging
-   and says so. The agent holds the nightly release with `RELEASE_HOLD=1`
-   meanwhile (HANDOFF H-362). The licence date of H-370 stays open and binds
-   the production release.
+   and says so. The agent held the nightly release with `RELEASE_HOLD=1`
+   meanwhile. On the owner's word, the agent sent wave 1 to production on
+   2026-10-22 (#1210, #1217), and the owner cleared the hold. ⚠️ That release
+   carries ported Docmost files, and the licence date of H-370 is not set.
 
 **The owner may overrule it.** It changes no price. It changes the licence
 position of the repo, which is why part 4 names the owner.
