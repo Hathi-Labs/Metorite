@@ -74,6 +74,23 @@ function domCellAround(target: HTMLElement | null): HTMLElement | null {
   return node;
 }
 
+/** How far outside the table the grips stay, in px. A grip sits on the edge. */
+const GRIP_REACH_PX = 28;
+
+/** True when the pointer is over the table at `tablePos`, or just outside it. */
+function nearTable(view: EditorView, tablePos: number | null, event: MouseEvent): boolean {
+  if (tablePos === null) return false;
+  const dom = view.nodeDOM(tablePos);
+  if (!(dom instanceof HTMLElement)) return false;
+  const r = dom.getBoundingClientRect();
+  return (
+    event.clientX >= r.left - GRIP_REACH_PX &&
+    event.clientX <= r.right + GRIP_REACH_PX &&
+    event.clientY >= r.top - GRIP_REACH_PX &&
+    event.clientY <= r.bottom + GRIP_REACH_PX
+  );
+}
+
 function hoveringCellOf(view: EditorView, event: MouseEvent): HoveringCellInfo | undefined {
   const domCell = domCellAround(event.target as HTMLElement | null);
   if (!domCell) return undefined;
@@ -376,8 +393,11 @@ export const TableHandlePlugin = Extension.create<object, { drag: TableDrag | nu
                 dispatch(view, { hoveringCell: cell, tableNode: table?.node ?? null, tablePos: table?.pos ?? null });
                 return false;
               }
-              // The pointer left the cells, maybe on its way to a handle:
-              // the handles go back to the caret's cell, or away.
+              // The pointer left the cells. On its way to a grip it crosses
+              // the table's edge, so the grips stay while it is near the
+              // table, or the grip it reaches for would jump away.
+              if (current?.hoveringCell && nearTable(view, current.tablePos, event)) return false;
+              // Farther off, the grips go back to the caret's cell, or away.
               const patch = cellPatch(view.state.selection.$head);
               if (!same(current, patch.hoveringCell ?? null)) dispatch(view, patch);
               return false;
