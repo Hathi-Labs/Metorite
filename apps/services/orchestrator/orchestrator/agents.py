@@ -166,8 +166,7 @@ A decision:
 # on, three parts of the persona change, each by an exact swap: the two
 # legacy retrieval tools leave the tool list, rule 1 becomes the grounding
 # paragraph, and rule 5 cites a full_id. KB-4a adds one line to the first
-# swap, for the two Knowledge reads, and KB-5a one more, for the two
-# proposals. With the flag off the persona IS
+# swap, for the two Knowledge reads. With the flag off the persona IS
 # `_PULL_INSTRUCTIONS`, byte for byte. Fence: tests/unit/test_company_search_tool.py.
 _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
     (
@@ -176,9 +175,7 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "- search_company: find the company's records in every app the member holds:\n"
         "  tasks, email, people, the CRM, artifacts, WhatsApp and Knowledge\n"
         "- read_page, list_spaces: read a Knowledge page when a passage is not enough,\n"
-        "  and list the spaces when the member asks what the company has written down\n"
-        "- propose_page, propose_edit: when the member asks, file a proposed page or\n"
-        "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
+        "  and list the spaces when the member asks what the company has written down\n",
     ),
     (
         "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.\n",
@@ -211,16 +208,35 @@ _RECENCY_SWAP: tuple[str, str] = (
 )
 
 
-def _orchestrator_instructions(company_search: bool, recency: bool = False) -> str:
+# WS-61 KB-5a (knowledge_base.md §8.1 and §13). With KNOWLEDGE_PROPOSALS on
+# too, the tool list of the persona gains the line of the two proposal tools,
+# by one more exact swap. Off, the persona is the KR-2 one, byte for byte.
+# Fence: tests/unit/test_company_search_tool.py.
+_PROPOSALS_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[0][1],
+    _COMPANY_SEARCH_SWAPS[0][1]
+    + "- propose_page, propose_edit: when the member asks, file a proposed page or\n"
+    "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
+)
+
+
+def _orchestrator_instructions(
+    company_search: bool, recency: bool = False, proposals: bool = False,
+) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
-    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and only when
+    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
+    (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
     *company_search* is on too.
     """
     if not company_search:
         return _PULL_INSTRUCTIONS
     text = _PULL_INSTRUCTIONS
-    swaps = _COMPANY_SEARCH_SWAPS + ((_RECENCY_SWAP,) if recency else ())
+    swaps = (
+        _COMPANY_SEARCH_SWAPS
+        + ((_RECENCY_SWAP,) if recency else ())
+        + ((_PROPOSALS_SWAP,) if proposals else ())
+    )
     for old, new in swaps:
         if text.count(old) != 1:
             # A persona edit moved a line the swap names. Fail loud at build,
@@ -237,6 +253,15 @@ def _company_search_enabled() -> bool:
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
         return False
     return company_search_enabled()
+
+
+def _knowledge_propose_enabled() -> bool:
+    """The one reader of ``KNOWLEDGE_PROPOSALS``, in ``acb_skills`` (KB-5a)."""
+    try:
+        from acb_skills.knowledge_tools import knowledge_propose_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return knowledge_propose_enabled()
 
 
 def _context_recency_enabled() -> bool:
@@ -746,9 +771,12 @@ def build_orchestrator_agent(
     # WS-61 CX-1: read once too, so the persona and the tool agree. It acts
     # only with company search on.
     recency = company_search and _context_recency_enabled()
+    # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
+    # Off until KB-5b ships the Review view, where a person accepts.
+    proposals = company_search and _knowledge_propose_enabled()
 
     # Build the instructions; append memory context when present.
-    instructions = _orchestrator_instructions(company_search, recency)
+    instructions = _orchestrator_instructions(company_search, recency, proposals)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -772,7 +800,8 @@ def build_orchestrator_agent(
     # `search_company` takes the place of the two legacy retrievers. This is
     # the ONE path of the tool: not config.json tool_scope, not the floor.
     # KB-4a: the two Knowledge reads join it on the same path, and only then.
-    # KB-5a: the two proposals too. Each asks with a card and never publishes.
+    # KB-5a: the two proposals too, and only with KNOWLEDGE_PROPOSALS on. Each
+    # asks with a card and never publishes.
     if company_search:
         from acb_skills.company_search_tools import search_company, search_company_dated
         from acb_skills.knowledge_tools import (
@@ -785,9 +814,9 @@ def build_orchestrator_agent(
         # CX-1: with CONTEXT_RECENCY on, the tool of the same name that takes
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
-        retrieval_tools: list[Any] = [
-            company_tool, read_page, list_spaces, propose_page, propose_edit,
-        ]
+        retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        if proposals:
+            retrieval_tools += [propose_page, propose_edit]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).

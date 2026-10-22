@@ -100,10 +100,11 @@ old version.
 
 **KB-5a is BUILT, 2026-10-22** (branch `ws61-kb5a-proposals`, migration
 292). It adds the proposal routes, the table `kb_page_proposals`, and the tools
-`propose_page` and `propose_edit` behind one card. The tools are dark behind
-`COMPANY_SEARCH_ENABLED`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS`. Accept and
-reject are web only, so the agent never publishes. KB-5b and KB-5c come next
-(§17).
+`propose_page` and `propose_edit` behind one card. The tools and the POST
+are dark behind `KNOWLEDGE_PROPOSALS`, default off, and the tools need
+`COMPANY_SEARCH_ENABLED` too. The agent turns `KNOWLEDGE_PROPOSALS` on when
+KB-5b ships the Review view. Accept and reject are web only, so the agent
+never publishes. KB-5b and KB-5c come next (§17).
 
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
@@ -474,7 +475,7 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `GET /knowledge/about?entity=task:<id>` | A | Every page that links to this entity (§10.2) |
 | `GET /knowledge/search?q=&space=&kind=` | A | The one search, §6.3 |
 | `POST /knowledge/from-artifact` | B | "Save to Knowledge", §10.1 |
-| `POST /knowledge/proposals` | B | An agent's proposed page or edit (KB-5a). `kind = page` makes a draft with `reason = agent_proposal`. `kind = edit` makes one `kb_page_proposals` row with the page's current version as `base_version`. The tools `propose_page` and `propose_edit` |
+| `POST /knowledge/proposals` | B | An agent's proposed page or edit (KB-5a). `kind = page` makes a draft with `reason = agent_proposal`. `kind = edit` makes one `kb_page_proposals` row at the `base_version` the caller read, and is 409 when the page has a newer version. The tools `propose_page` and `propose_edit` |
 | `GET /knowledge/proposals?status=pending` | A | The proposals the member can see. The Review view of KB-5b reads it |
 | `POST /knowledge/proposals/{id}/accept` | X | A person accepts in the app. A page proposal publishes with an `accept` version. An edit applies when the page is still at `base_version`, else 409. Never on chat (D-KB-4) |
 | `POST /knowledge/proposals/{id}/reject` | X | A person rejects in the app. A page proposal archives as a draft. The gateway marks an edit proposal `rejected`. Never on chat |
@@ -820,7 +821,8 @@ every org, because the registry is static, so `KNOWLEDGE_ORGS` could not
 keep it dark. So the read tools live in `acb_skills/knowledge_tools.py` and
 join the orchestrator's `core_tools` behind `COMPANY_SEARCH_ENABLED`, as
 `search_company` does. KB-5a builds no specialist for `propose_page`. The two
-propose tools join the orchestrator on the same path as the reads.
+propose tools join the orchestrator on the same path as the reads, and only
+while `KNOWLEDGE_PROPOSALS` is on (§13).
 
 The route manifest, `acb_skills/knowledge_manifest.py`, lists every route of
 §5.3 with its class, and the client refuses a route outside it. It lives in
@@ -834,7 +836,7 @@ The route manifest, `acb_skills/knowledge_manifest.py`, lists every route of
 | `list_spaces()` | A | The spaces the member can read, with counts |
 | `browse_source(source_id, parent=None)` | A | One level of a connected tree, names only |
 | `propose_page(title, body, summary, space_id=None)` | B | A draft with `reason = agent_proposal`, behind one card (KB-5a). The card shows the title, the space and the first lines. It files a draft and links to it. It never publishes |
-| `propose_edit(page_id, body, summary, title=None)` | B | One `kb_page_proposals` row behind one card (KB-5a). The card shows the summary and the first lines of the new text. The diff is in the Review view (KB-5b) |
+| `propose_edit(page_id, base_version, body, summary, title=None)` | B | One `kb_page_proposals` row behind one card (KB-5a). `base_version` is the version the assistant read: `read_page` prints it as `Version: <n>`. The POST is 409 when the page has a newer version, so an edit never rests on old text. The card shows the summary and the first lines of the new text. The diff is in the Review view (KB-5b) |
 | `save_to_knowledge(artifact_path, space, title)` | B | §10.1, behind one card. Not in KB-5a |
 | `link_page(page_id, entity)` | B | A typed link, behind one card. Out until `POST /knowledge/pages/{id}/links` exists |
 
@@ -1125,10 +1127,11 @@ The first migration adds, and nothing renames (R6).
 | `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
 | `MY_DAY_PROVIDERS` | as WS-58 | `knowledge` joins the list | MD-10's rule |
 | `KNOWLEDGE_DISTILL` | off | CX-3 writes a digest for each published page on `tier-fast` (`company_context.md` §5) | owner, it spends credits |
+| `KNOWLEDGE_PROPOSALS` | off | KB-5a. The orchestrator gets `propose_page`, `propose_edit` and their persona line, with `COMPANY_SEARCH_ENABLED` on too. `POST /knowledge/proposals` answers. Off, the POST is 404, and the list, accept and reject stay open, so a filed proposal stays decidable. One flag for every org, because the orchestrator builds its tools once | Agent. It spends no credit. Turn it on when KB-5b ships the Review view, where a person accepts |
 | `COMPANY_SEARCH_ENABLED` | off | The assistant gets `search_company` and loses the two legacy retrievers (§20.5) | Agent, under the dev-phase `enforcement-flip` grant. It spends no credit, sends nothing, and reads only what the member can already read. After the grant ends, the owner |
 
 KB-5 adds no flag that spends credits. `propose_page` and `propose_edit` ride
-`COMPANY_SEARCH_ENABLED` with the reads. A draft is not indexed, and an
+`COMPANY_SEARCH_ENABLED` with the reads, and `KNOWLEDGE_PROPOSALS` keeps them dark. A draft is not indexed, and an
 accepted proposal embeds only when `KNOWLEDGE_EMBED` names the org.
 `KNOWLEDGE_EMBED` stays the owner's flip, and KB-5 builds no specialist agent.
 
@@ -1220,7 +1223,7 @@ its own branch, three or four in flight at most.
 | **KB-3a** | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
 | **KB-4a** ✅ BUILT 2026-10-16 | `acb_skills/knowledge_tools.py` with two read tools, `read_page` (one section by heading path, at most 4 000 tokens) and `list_spaces`, behind `COMPANY_SEARCH_ENABLED` in the orchestrator's `core_tools`. `acb_skills/knowledge_manifest.py` lists every Knowledge route with its class, and the client refuses an unmapped route. The index block of §6.5, built in the executor. One line in the flag-on persona names the two tools | With the flag off, the persona and the tools are byte-identical to main. A scripted orchestrator run with "what is our refund window" calls `search_company`, then `read_page`. The model's input holds the index block, and the answer cites `/knowledge/pages/<id>`. With no hit, the answer says the company's records hold nothing on it. The block is absent for an org that is not on `KNOWLEDGE_ORGS`, and for a member who can read no published page, and it is identical across two turns. Every Knowledge route is in the manifest | AGENT-SAFE |
 | **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | AGENT-SAFE |
-| **KB-5a** ✅ BUILT 2026-10-22 | Backend only. Migration 292 (check at merge): `kb_page_proposals` (§12) with FORCE RLS, the generated-phase lines and the tenant-coverage entry. `POST /knowledge/proposals` with `kind = page` (a draft, `origin = {"kind": "agent_proposal", "via": ..., "proposer": ...}`, a version with `reason = agent_proposal`) or `kind = edit` (a proposal row at the page's current version). `POST /knowledge/proposals/{id}/accept` and `/reject`, web only, with the F1 rules of §8.1. `GET /knowledge/proposals?status=pending`. The tools `propose_page` and `propose_edit` in `knowledge_tools.py`, each behind `request_confirmation`, which send `X-Actor-Via: chat`. Their manifest rows, their `tool_annotations` entries (`read_only False`, `destructive False`, `open_world False`), the orchestrator's `retrieval_tools`, and one persona line. Not `link_page` and not `save_to_knowledge` | 1. A scripted run of `propose_page` with the card approved leaves one `kb_pages` row with `state = draft` and `origin.kind = agent_proposal`, one version with `reason = agent_proposal` and `via = chat`, and no row in `kb_chunks`. 2. A declined card, or a run with nobody to answer, writes nothing. 3. No tool in the manifest maps to a publish, accept, reject, restore or archive route, and a source test fails if one does. 4. Accept by the author writes a version with `reason = accept` and `via = web`, and the history returns the proposer and the accepter. 5. A member with no `write` on the space gets 403. A member who cannot see the page gets the 404 of a missing page. 6. A second accept is 409. An edit whose `base_version` moved is 409. 7. A proposal id of org A is 404 for org B (R8). 8. The tool output shows page text only under the "data, not instructions" line, with the title on one line. Fences: `test_kb_proposals.py` (hermetic: 2, 3 and 8) and `test_kb_proposals_r8.py` (R8: 1, 4, 5, 6 and 7) | AGENT-SAFE |
+| **KB-5a** ✅ BUILT 2026-10-22, dark behind `KNOWLEDGE_PROPOSALS` | Backend only. Migration 292 (check at merge): `kb_page_proposals` (§12) with FORCE RLS, the generated-phase lines and the tenant-coverage entry. `POST /knowledge/proposals` with `kind = page` (a draft, `origin = {"kind": "agent_proposal", "via": ..., "proposer": ...}`, a version with `reason = agent_proposal`) or `kind = edit` (a proposal row at the `base_version` that `read_page` printed, 409 when the page moved since). `POST /knowledge/proposals/{id}/accept` and `/reject`, web only, with the F1 rules of §8.1. `GET /knowledge/proposals?status=pending`. The tools `propose_page` and `propose_edit` in `knowledge_tools.py`, each behind `request_confirmation`, which send `X-Actor-Via: chat`. Their manifest rows, their `tool_annotations` entries (`read_only False`, `destructive False`, `open_world False`), the orchestrator's `retrieval_tools`, and one persona line. Not `link_page` and not `save_to_knowledge` | 1. A scripted run of `propose_page` with the card approved leaves one `kb_pages` row with `state = draft` and `origin.kind = agent_proposal`, one version with `reason = agent_proposal` and `via = chat`, and no row in `kb_chunks`. 2. A declined card, or a run with nobody to answer, writes nothing. 3. No tool in the manifest maps to a publish, accept, reject, restore or archive route, and a source test fails if one does. 4. Accept by the author writes a version with `reason = accept` and `via = web`, and the history returns the proposer and the accepter. 5. A member with no `write` on the space gets 403. A member who cannot see the page gets the 404 of a missing page. 6. A second accept is 409. An edit whose `base_version` moved is 409. 7. A proposal id of org A is 404 for org B (R8). 8. The tool output shows page text only under the "data, not instructions" line, with the title on one line. Fences: `test_kb_proposals.py` (hermetic: 2, 3 and 8) and `test_kb_proposals_r8.py` (R8: 1, 4, 5, 6 and 7) | AGENT-SAFE |
 | **KB-5b** | The Review view and the card in the app. A list of the pending proposals over `GET /knowledge/proposals`, Accept and Reject, the diff of an edit proposal, "Proposed by the assistant" on a draft, and the link from the chat card to the draft | A member opens the Review view, sees the proposals of the assistant, and accepts one. The page history then says "Proposed by the assistant, accepted by <member>". The visual review passes in light mode, compact density and a changed accent | AGENT-SAFE |
 | **KB-5c** | The 14-day expiry (§8.4 door 2). A loop marks each pending edit proposal older than 14 days `expired`, and archives each page proposal that nobody answered in 14 days | A proposal 15 days old is `expired` or archived after one tick, and one 13 days old is not. The loop writes one version for each archive, with the actor `system` | AGENT-SAFE |
 | **KB-6** | Save to Knowledge: the artifact card act, the Files panel act, the Artifacts app act, the route, the origin and the back link | A Markdown artifact becomes a page in `me` with provenance. The artifact is unchanged. A later edit shows "Compare" | AGENT-SAFE |

@@ -26,7 +26,14 @@ Mutations this file catches (R7):
   ``test_the_card_shows_before_any_request``;
 * a tool gains the accept or the publish route ->
   ``test_no_tool_reaches_a_publish_accept_reject_restore_or_archive``;
-* the web-only check of accept goes -> ``test_accept_through_the_chat_is_403``.
+* the web-only check of accept goes -> ``test_accept_through_the_chat_is_403``;
+* the web-only check trusts a missing header, so the bare internal token
+  passes -> ``test_a_caller_that_is_no_browser_is_403_with_no_header``;
+* the POST opens with ``KNOWLEDGE_PROPOSALS`` off ->
+  ``test_the_post_is_404_while_the_flag_is_off``;
+* the tool drops ``base_version``, or ``read_page`` stops printing it ->
+  ``test_propose_edit_posts_the_page_id_and_no_identity`` and
+  ``test_read_page_prints_the_newest_version``.
 """
 
 from __future__ import annotations
@@ -109,7 +116,7 @@ def _run_page(**over: Any) -> str:
 
 
 def _run_edit(**over: Any) -> str:
-    args = {"page_id": PAGE, "body": "# Refunds\n\nForty days.",
+    args = {"page_id": PAGE, "base_version": 3, "body": "# Refunds\n\nForty days.",
             "summary": "The window is now forty days."}
     args.update(over)
     return asyncio.run(kt.propose_edit(**args))
@@ -179,6 +186,12 @@ class TestTheCard:
         assert _run_edit(page_id=bad) == kt.BAD_ID
         assert card.calls == [] and gateway.requests == []
 
+    @pytest.mark.parametrize("bad", [None, 0, -1, "three", True, 2**31])
+    def test_a_bad_base_version_has_no_card(self, gateway, monkeypatch, bad):
+        card = _card(monkeypatch, gateway, True)
+        assert _run_edit(base_version=bad) == kt.BAD_VERSION
+        assert card.calls == [] and gateway.requests == []
+
     def test_a_bad_space_id_has_no_card(self, gateway, monkeypatch):
         card = _card(monkeypatch, gateway, True)
         assert _run_page(space_id="../x") == kt.BAD_SPACE
@@ -209,6 +222,7 @@ class TestTheRequest:
         (req,) = gateway.requests
         sent = json.loads(req.content)
         assert sent == {"kind": "edit", "page_id": PAGE, "title": "Refunds",
+                        "base_version": 3,
                         "body_md": "# Refunds\n\nForty days.",
                         "summary": "The window is now forty days."}
         assert not {"proposer", "proposer_email", "organization_id", "email"} & set(sent)
@@ -220,6 +234,17 @@ class TestTheRequest:
         _card(monkeypatch, gateway, True)
         gateway.status = status
         assert _run_edit() == said
+
+    def test_a_stale_base_version_is_its_own_sentence(self, gateway, monkeypatch):
+        """The gateway's 409 for a page that moved since the read."""
+        from gateway.routes.knowledge import proposals
+
+        _card(monkeypatch, gateway, True)
+        gateway.status = 409
+        gateway.body = {"detail": proposals.STALE}
+        assert _run_edit() == kt.STALE
+        gateway.body = {"detail": "The page is archived."}
+        assert _run_edit() == kt.ARCHIVED
 
     def test_a_500_raises(self, gateway, monkeypatch):
         _card(monkeypatch, gateway, True)
@@ -233,6 +258,20 @@ class TestTheRequest:
             with pytest.raises(RuntimeError, match="Knowledge route manifest"):
                 asyncio.run(kt._post(path, {}, tool="propose_page", not_found="x"))
         assert gateway.requests == []
+
+
+def test_read_page_prints_the_newest_version(gateway) -> None:
+    """``propose_edit`` takes its ``base_version`` from this line."""
+    gateway.status = 200
+    gateway.body = {"id": PAGE, "title": "Refunds", "state": "published",
+                    "body_md": "Thirty days.",
+                    "versions": [{"version": 7}, {"version": 6}, {"version": 1}]}
+    out = asyncio.run(kt.read_page(page_id=PAGE))
+    lines = out.splitlines()
+    assert "Version: 7" in lines
+    assert lines.index("Version: 7") < lines.index(kt.PAGE_HEADER)
+    gateway.body = {**gateway.body, "versions": []}
+    assert "Version:" not in asyncio.run(kt.read_page(page_id=PAGE))
 
 
 # ── Item 3: the agent never publishes ───────────────────────────────────────
@@ -258,7 +297,7 @@ def test_the_tool_source_names_no_decision_route() -> None:
         assert word not in source, word
 
 
-def _client(monkeypatch) -> Any:
+def _client(monkeypatch, user: Any = None, proposals: bool = True) -> Any:
     from acb_auth import UserContext, UserRole, build_access, get_current_user
     from acb_common import get_settings
     from fastapi import FastAPI
@@ -268,8 +307,10 @@ def _client(monkeypatch) -> Any:
     settings = get_settings()
     monkeypatch.setattr(settings, "knowledge_enabled", True, raising=False)
     monkeypatch.setattr(settings, "knowledge_orgs", "*", raising=False)
-    user = UserContext(email="m@kb.test", role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:knowledge"]), organization_id=ORG)
+    monkeypatch.setattr(settings, "knowledge_proposals", proposals, raising=False)
+    if user is None:
+        user = UserContext(email="m@kb.test", role=UserRole.EMPLOYEE,
+                           access=build_access(["feature:knowledge"]), organization_id=ORG)
     app = FastAPI()
     app.include_router(kb_package.router)
     app.dependency_overrides[get_current_user] = lambda: user
@@ -285,6 +326,76 @@ def test_accept_through_the_chat_is_403(monkeypatch, via, act) -> None:
     resp = client.post(f"/knowledge/proposals/{PAGE}/{act}", headers={"X-Actor-Via": via})
     assert resp.status_code == 403
     assert "Knowledge app" in resp.json()["detail"]
+
+
+def _no_session(monkeypatch) -> list[int]:
+    """Replace the tenant session with one that records each open."""
+    import contextlib
+
+    from gateway.routes.knowledge import core
+
+    opened: list[int] = []
+
+    @contextlib.asynccontextmanager
+    async def _session():
+        opened.append(1)
+        yield None
+
+    monkeypatch.setattr(core, "_tenant_session", _session)
+    return opened
+
+
+def _caller(kind: str) -> Any:
+    """A caller that is no browser, in the shape ``get_current_user`` gives."""
+    import dataclasses
+
+    from acb_auth import UserContext, UserRole, build_access
+    from acb_auth.access import SERVICE_ACCESS
+
+    if kind == "internal":
+        # Branch 1b: the bare internal token. A tenant is bound here only so
+        # the kill switch lets the call reach the route.
+        return UserContext(email="system:internal", role=UserRole.AGENT,
+                           access=SERVICE_ACCESS, organization_id=ORG)
+    member = UserContext(email="m@kb.test", role=UserRole.EMPLOYEE,
+                         access=build_access(["feature:knowledge"]), organization_id=ORG)
+    if kind == "agent_role":
+        return dataclasses.replace(member, role=UserRole.AGENT)
+    return dataclasses.replace(member, agent=object())  # branch 0, a signed outside agent
+
+
+@pytest.mark.parametrize("kind", ["internal", "agent_role", "outside_agent"])
+@pytest.mark.parametrize("act", ["accept", "reject"])
+def test_a_caller_that_is_no_browser_is_403_with_no_header(monkeypatch, kind, act) -> None:
+    """A1: the web-only check is positive. No ``X-Actor-Via`` is not "web"."""
+    pytest.importorskip("gateway.routes.knowledge")
+    opened = _no_session(monkeypatch)
+    client = _client(monkeypatch, user=_caller(kind))
+    resp = client.post(f"/knowledge/proposals/{PAGE}/{act}")
+    assert resp.status_code == 403, resp.text
+    assert "Knowledge app" in resp.json()["detail"]
+    assert opened == []
+
+
+def test_the_post_is_404_while_the_flag_is_off(monkeypatch) -> None:
+    """KNOWLEDGE_PROPOSALS off: the POST is dark, before any session."""
+    pytest.importorskip("gateway.routes.knowledge")
+    from acb_common import get_settings
+
+    opened = _no_session(monkeypatch)
+    body = {"kind": "page", "title": "T", "base_version": 1}
+    off = _client(monkeypatch, proposals=False).post("/knowledge/proposals", json=body)
+    assert off.status_code == 404 and opened == []
+    # On, the same body passes the flag and meets the route's own 422.
+    on = _client(monkeypatch, proposals=True).post("/knowledge/proposals", json=body)
+    assert on.status_code == 422 and opened == [1]
+    assert get_settings().knowledge_proposals is True
+
+
+def test_the_flag_ships_off() -> None:
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["knowledge_proposals"].default is False
 
 
 @pytest.mark.parametrize("extra", ["proposer_email", "organization_id", "decided_by"])

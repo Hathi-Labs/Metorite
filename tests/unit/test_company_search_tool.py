@@ -24,7 +24,9 @@ Mutations this file catches (R7):
   or keeps ``search_company`` -> ``TestFlagOff``;
 * the swap keeps a legacy retriever or leaves rule 1 -> ``TestFlagOn``;
 * the tool calls the gateway with no member -> ``TestTheMember``;
-* the header or the ``full_id`` line leaves the answer -> ``TestTheAnswer``.
+* the header or the ``full_id`` line leaves the answer -> ``TestTheAnswer``;
+* the two proposal tools, or their persona line, join with
+  ``KNOWLEDGE_PROPOSALS`` off -> ``TestTheProposalsFlag``.
 """
 
 from __future__ import annotations
@@ -149,11 +151,10 @@ class TestFlagOn:
     def test_search_company_replaces_the_two_legacy_retrievers(self, flag, monkeypatch):
         flag(True)
         tools = _build(monkeypatch).kwargs["tools"]
-        # KB-4a: the two Knowledge reads join on the same path. KB-5a: the
-        # two proposals follow them.
+        # KB-4a: the two Knowledge reads join on the same path. The KB-5a
+        # proposals need KNOWLEDGE_PROPOSALS too (TestTheProposalsFlag).
         assert [getattr(t, "__name__", "") for t in tools] == [
-            "search_company", "read_page", "list_spaces", "propose_page", "propose_edit",
-            *MAIN_TOOLS[2:]]
+            "search_company", "read_page", "list_spaces", *MAIN_TOOLS[2:]]
         assert cst.search_company in tools
 
     def test_rule_1_becomes_the_grounding_paragraph(self, flag, monkeypatch):
@@ -188,6 +189,67 @@ class TestFlagOn:
         for name in ("retrieve_entity_context", "retrieve_sales_context"):
             assert name in mod.__all__ and name in pkg.__all__
             assert getattr(pkg, name) is getattr(mod, name)
+
+
+# ── KB-5a: the proposals have their own flag ────────────────────────────────
+
+@pytest.fixture()
+def proposals(monkeypatch):
+    """Set ``KNOWLEDGE_PROPOSALS`` and clear the settings cache, both ways."""
+    from acb_common.settings import get_settings
+
+    def _set(on: bool | None) -> None:
+        if on is None:
+            monkeypatch.delenv("KNOWLEDGE_PROPOSALS", raising=False)
+        else:
+            monkeypatch.setenv("KNOWLEDGE_PROPOSALS", "true" if on else "false")
+        get_settings.cache_clear()
+
+    yield _set
+    monkeypatch.delenv("KNOWLEDGE_PROPOSALS", raising=False)
+    get_settings.cache_clear()
+
+
+PROPOSE = ("propose_page", "propose_edit")
+PROPOSE_LINE = "- propose_page, propose_edit:"
+
+
+class TestTheProposalsFlag:
+    def test_it_ships_off(self, proposals):
+        from acb_skills import knowledge_tools as kt
+
+        proposals(None)
+        assert kt.knowledge_propose_enabled() is False
+
+    @pytest.mark.parametrize("state", [None, False])
+    def test_off_the_tools_and_the_line_are_absent(self, flag, proposals, monkeypatch, state):
+        flag(True)
+        proposals(state)
+        agent = _build(monkeypatch)
+        assert not set(PROPOSE) & set(_names(agent))
+        assert "read_page" in _names(agent)
+        assert "propose_" not in agent.kwargs["instructions"]
+
+    def test_on_the_two_tools_follow_the_reads(self, flag, proposals, monkeypatch):
+        flag(True)
+        proposals(True)
+        agent = _build(monkeypatch)
+        assert _names(agent) == [
+            "search_company", "read_page", "list_spaces", *PROPOSE, *MAIN_TOOLS[2:]]
+        persona = agent.kwargs["instructions"]
+        assert persona.count(PROPOSE_LINE) == 1
+        mod = _orchestrator_module()
+        assert persona == mod._orchestrator_instructions(True, False, True)
+        # Undo the one swap and the KR-2 persona is back, byte for byte.
+        old, new = mod._PROPOSALS_SWAP
+        assert persona.replace(new, old, 1) == mod._orchestrator_instructions(True)
+
+    def test_on_without_company_search_changes_nothing(self, flag, proposals, monkeypatch):
+        flag(False)
+        proposals(True)
+        agent = _build(monkeypatch)
+        assert _names(agent) == MAIN_TOOLS
+        assert agent.kwargs["instructions"] is _orchestrator_module()._PULL_INSTRUCTIONS
 
 
 # ── One path ────────────────────────────────────────────────────────────────

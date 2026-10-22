@@ -10,9 +10,15 @@ Spec: ``project-docs/specs/knowledge_base.md`` §5.3, §8.1 (F1, F2) and §12.
 **Two kinds, two homes.** A proposed PAGE is a draft in ``kb_pages`` with
 ``origin.kind = 'agent_proposal'`` and a version with ``reason =
 'agent_proposal'``. Its proposal id is the page id. A proposed EDIT of a page
-is one ``kb_page_proposals`` row at ``base_version``, the page's newest
-version when the assistant read it. It cannot be a draft page: a page has one
-state, and a draft of a published page would unpublish it and drop its chunks.
+is one ``kb_page_proposals`` row at ``base_version``, the version the
+assistant read. The caller sends it, ``read_page`` prints it, and the POST
+refuses it with 409 when the page has a newer version already. It cannot be a
+draft page: a page has one state, and a draft of a published page would
+unpublish it and drop its chunks.
+
+**Dark behind ``KNOWLEDGE_PROPOSALS`` (default OFF).** Off, the POST answers
+404, the 404 of a route that is not there. The list, accept and reject stay
+reachable, so a person can still decide a proposal filed while it was on.
 
 **F1, who sees and who accepts.** The member who asked the assistant is the
 author of a proposed page, and only that author sees it
@@ -24,8 +30,11 @@ bypass. A proposal the caller cannot see answers the 404 of a missing one.
 
 **F2, the agent never publishes.** The chat tools reach ``POST
 /knowledge/proposals`` only (``acb_skills.knowledge_manifest``). Accept and
-reject refuse a call that came through ``chat`` or ``mcp`` with 403, so a
-person decides, from the web, and the version records ``via = 'web'``.
+reject refuse with 403 a call that came through ``chat`` or ``mcp``, and a
+caller that is not a signed-in member: a signed outside agent
+(``UserContext.agent``), the bare internal token (``system:internal``), and
+any caller with the ``agent`` role. So a person decides, from the web, and
+the version records ``via = 'web'``.
 
 **The tenant and the member come from the session (R5, R11).** The body
 names no proposer, no organization and no decider, and a body that tries is
@@ -41,7 +50,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
-from gateway.routes.knowledge import core, pages
+from gateway.routes.knowledge import core, flags, pages
 from gateway.routes.knowledge.core import router
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -61,6 +70,11 @@ MAX_SUMMARY = 1000
 #: The most rows of each kind that one list returns.
 MAX_LIST = 100
 
+#: The edit rows that one read of the list takes. The decide filter runs
+#: after the read, so the list reads batch after batch until it holds
+#: :data:`MAX_LIST` rows or the rows end.
+_EDIT_BATCH = 500
+
 #: The columns of a proposal row.
 _PROPOSAL_COLUMNS = (
     "pr.id, pr.page_id, pr.base_version, pr.title, pr.body_md, pr.summary, "
@@ -69,6 +83,10 @@ _PROPOSAL_COLUMNS = (
 
 #: What a decision through the chat or an outside agent reads (F2).
 WEB_ONLY = "A person accepts or rejects a proposal in the Knowledge app."
+
+#: The first words of the 409 of a stale ``base_version``. The chat tool
+#: reads them (``acb_skills.knowledge_tools._STALE_DETAIL``).
+STALE = "The page changed since you read it. Read it again, and propose again."
 
 
 class ProposalCreate(BaseModel):
@@ -81,6 +99,8 @@ class ProposalCreate(BaseModel):
     space_id: str | None = Field(None, max_length=64)
     #: For ``edit``: the page to change.
     page_id: str | None = Field(None, max_length=64)
+    #: Required for ``edit``: the page version that the proposer read.
+    base_version: int | None = Field(None, ge=1, le=core.MAX_VERSION)
     #: Required for ``page``. For ``edit``, none keeps the page's title.
     title: str | None = Field(None, min_length=1, max_length=300)
     body_md: str = Field("", max_length=pages.MAX_BODY)
@@ -99,9 +119,29 @@ def _summary(value: str) -> str:
     return " ".join((value or "").split())[:MAX_SUMMARY]
 
 
-def _require_web() -> None:
-    """F2: accept and reject only from the web, never through an agent."""
-    if core.current_via() != "web":
+def _require_web(user: UserContext) -> None:
+    """F2: accept and reject only by a signed-in member, never by an agent.
+
+    It is positive, and it does not trust a missing header. A browser call
+    is branch 1a of ``acb_auth.deps.get_current_user``: the internal bearer
+    of the Next.js proxy with the member's verified email. Each of these is
+    no browser, whatever ``X-Actor-Via`` says or does not say:
+
+    * a signed outside agent, branch 0, which sets ``user.agent``;
+    * the bare internal token, branch 1b, as ``system:internal``;
+    * a caller with the ``agent`` role, or with no member email.
+
+    Then ``X-Actor-Via`` refuses the chat and an outside agent, which call
+    with a member's email.
+    """
+    email = core.viewer_email(user)
+    if (
+        getattr(user, "agent", None) is not None
+        or user.is_agent
+        or "@" not in email
+        or email.startswith("system:")
+        or core.current_via() != "web"
+    ):
         raise core.forbidden(WEB_ONLY)
 
 
@@ -186,7 +226,7 @@ async def _newest_version(db: Any, user: UserContext, page_id: str) -> int:
 async def _propose_page(
     db: Any, user: UserContext, body: ProposalCreate,
 ) -> dict[str, Any]:
-    if body.page_id is not None:
+    if body.page_id is not None or body.base_version is not None:
         raise _unprocessable("A page proposal names a space, not a page.")
     if body.title is None:
         raise _unprocessable("A page proposal needs a title.")
@@ -216,7 +256,10 @@ async def _propose_edit(
         raise _unprocessable("An edit proposal names a page, not a space.")
     if body.page_id is None:
         raise _unprocessable("An edit proposal needs the page id.")
-    page = await core.load_page(db, user, body.page_id)
+    if body.base_version is None:
+        raise _unprocessable("An edit proposal needs the base_version that was read.")
+    # Locked, so a save of the page cannot slip between the check and the row.
+    page = await core.load_page(db, user, body.page_id, lock=True)
     if page is None:
         raise core.not_found()
     if page.state == "archived":
@@ -225,7 +268,11 @@ async def _propose_edit(
     if not core.can_write_page(await core.space_level(db, user, space)):
         raise core.forbidden("Proposing an edit needs a write grant on the page's space.")
     title = pages._title(body.title) if body.title is not None else page.title
-    base = await _newest_version(db, user, str(page.id))
+    # The version the proposer READ, never the one of this call. A newer one
+    # means that the body was built on old text.
+    base = body.base_version
+    if await _newest_version(db, user, str(page.id)) != base:
+        raise pages._conflict(STALE)
     row = (await db.execute(
         text("INSERT INTO kb_page_proposals AS pr "
              "(organization_id, page_id, base_version, title, body_md, summary, "
@@ -247,7 +294,12 @@ async def create_proposal(
     body: ProposalCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """File a proposed page or a proposed edit. Nothing publishes here (F2)."""
+    """File a proposed page or a proposed edit. Nothing publishes here (F2).
+
+    404 while ``KNOWLEDGE_PROPOSALS`` is off: the route is dark.
+    """
+    if not flags.knowledge_proposals_allowed(user.organization_id):
+        raise core.not_found()
     if not core.viewer_email(user):
         raise core.forbidden("Knowledge needs a member with an email address.")
     async with core._tenant_session() as db:
@@ -278,24 +330,52 @@ async def _writable_space_ids(
 
 
 async def _edit_rows(db: Any, user: UserContext, status: str) -> list[dict[str, Any]]:
-    """The edit proposals with *status* whose page the caller sees (F1)."""
+    """The edit proposals with *status* that the caller may see (F1), oldest first.
+
+    The caller sees a row when they see its page AND they are its proposer
+    or hold ``write`` on the page's space. The write level is
+    ``core.level_on`` in Python, and the seam has no SQL form of it. A
+    second grant predicate in SQL would be a second visibility rule. So the
+    read takes rows in batches of :data:`_EDIT_BATCH`, by a key on
+    ``(created_at, id)``, filters each batch, and stops at :data:`MAX_LIST`
+    kept rows or at the end. A LIMIT before the filter would let rows the
+    caller cannot decide fill the page and hide the ones they can.
+    """
     vis, vparams = core.visible_pages_clause(user, "p")
-    rows = (await db.execute(
-        text(f"SELECT {_PROPOSAL_COLUMNS}, p.title AS page_title, p.space_id "
-             "FROM kb_page_proposals pr "
-             "JOIN kb_pages p ON p.id = pr.page_id "
-             "AND p.organization_id = pr.organization_id "
-             f"WHERE pr.organization_id = CAST(:kb_org AS uuid) AND {vis} "
-             "AND pr.status = :status "
-             "ORDER BY pr.created_at, pr.id LIMIT :limit"),
-        {**vparams, "status": status, "limit": MAX_LIST},
-    )).fetchall()
     me = core.viewer_email(user)
-    writable = await _writable_space_ids(db, user, sorted({str(r.space_id) for r in rows}))
-    return [
-        edit_dict(r, page_title=r.page_title) for r in rows
-        if r.proposer_email == me or str(r.space_id) in writable
-    ]
+    kept: list[dict[str, Any]] = []
+    writable: dict[str, bool] = {}
+    after: tuple[Any, str] | None = None
+    while len(kept) < MAX_LIST:
+        page_after = (
+            "AND (pr.created_at, pr.id) > (CAST(:after_at AS timestamptz), CAST(:after_id AS uuid)) "
+            if after is not None else ""
+        )
+        params: dict[str, Any] = {**vparams, "status": status, "batch": _EDIT_BATCH}
+        if after is not None:
+            params.update({"after_at": after[0], "after_id": after[1]})
+        rows = (await db.execute(
+            text(f"SELECT {_PROPOSAL_COLUMNS}, p.title AS page_title, p.space_id "
+                 "FROM kb_page_proposals pr "
+                 "JOIN kb_pages p ON p.id = pr.page_id "
+                 "AND p.organization_id = pr.organization_id "
+                 f"WHERE pr.organization_id = CAST(:kb_org AS uuid) AND {vis} "
+                 f"AND pr.status = :status {page_after}"
+                 "ORDER BY pr.created_at, pr.id LIMIT :batch"),
+            params,
+        )).fetchall()
+        unknown = sorted({str(r.space_id) for r in rows} - writable.keys())
+        found = await _writable_space_ids(db, user, unknown)
+        writable.update({sid: sid in found for sid in unknown})
+        for r in rows:
+            if r.proposer_email == me or writable.get(str(r.space_id)):
+                kept.append(edit_dict(r, page_title=r.page_title))
+                if len(kept) == MAX_LIST:
+                    break
+        if len(rows) < _EDIT_BATCH:
+            break
+        after = (rows[-1].created_at, str(rows[-1].id))
+    return kept
 
 
 #: The draft state of a proposed page for each status. ``expired`` has none
@@ -348,12 +428,15 @@ async def _edit_proposal(db: Any, user: UserContext, proposal_id: str) -> Any:
     )).first()
 
 
-async def _gate_edit(db: Any, user: UserContext, proposal: Any) -> tuple[Any, Any]:
+async def _gate_edit(
+    db: Any, user: UserContext, proposal: Any, *, accept: bool,
+) -> tuple[Any, Any]:
     """F1 for an edit proposal: the locked page and its space, or a refusal.
 
     404 when the caller cannot see the page, or is neither the proposer nor a
     writer of the space. 403 for the proposer with no ``write`` now. 409 for
-    a proposal that is decided, or a page that is archived.
+    a proposal that is decided, and for an ACCEPT on a page that is archived.
+    A reject of a proposal on an archived page passes, so it can be closed.
     """
     page = await core.load_page(db, user, str(proposal.page_id), lock=True)
     if page is None:
@@ -366,7 +449,7 @@ async def _gate_edit(db: Any, user: UserContext, proposal: Any) -> tuple[Any, An
         raise core.forbidden("Deciding this proposal needs a write grant on the page's space.")
     if proposal.status != "pending":
         raise pages._conflict(f"The proposal is {proposal.status}.")
-    if page.state == "archived":
+    if accept and page.state == "archived":
         raise pages._conflict("The page is archived.")
     return page, space
 
@@ -414,14 +497,14 @@ async def accept_proposal(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Accept a proposal. A page publishes, and an edit applies at its base."""
-    _require_web()
+    _require_web(user)
     pid = core.parse_id(proposal_id)
     if pid is None:
         raise core.not_found()
     async with core._tenant_session() as db:
         proposal = await _edit_proposal(db, user, pid)
         if proposal is not None:
-            page, _space = await _gate_edit(db, user, proposal)
+            page, _space = await _gate_edit(db, user, proposal, accept=True)
             if await _newest_version(db, user, str(page.id)) != proposal.base_version:
                 raise pages._conflict(
                     "The page changed after the proposal was made. Ask for a new one.")
@@ -448,14 +531,14 @@ async def reject_proposal(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Reject a proposal. A page archives as a draft, and an edit is marked."""
-    _require_web()
+    _require_web(user)
     pid = core.parse_id(proposal_id)
     if pid is None:
         raise core.not_found()
     async with core._tenant_session() as db:
         proposal = await _edit_proposal(db, user, pid)
         if proposal is not None:
-            page, _space = await _gate_edit(db, user, proposal)
+            page, _space = await _gate_edit(db, user, proposal, accept=False)
             decided = await _decide(db, user, pid, "rejected")
             return edit_dict(decided, page_title=page.title)
         page = await _gate_page(db, user, pid)

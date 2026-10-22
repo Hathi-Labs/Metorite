@@ -23,6 +23,12 @@ phases and two organizations:
    level security;
 
 and the table forces row level security, and the migration replays.
+
+Repair round 1 adds four claims. An edit names the version its proposer
+READ, so a stale ``base_version`` is 409 at the POST. A reject of a proposal
+on an archived page passes, and an accept stays 409. The list filters before
+it stops, so 150 rows the caller cannot decide do not hide the one they can.
+Each test here runs with ``KNOWLEDGE_PROPOSALS`` on, as KB-5b will.
 """
 
 from __future__ import annotations
@@ -64,6 +70,14 @@ pytestmark = _DB_GATE
 _MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
 
 CHAT = {"X-Actor-Via": "chat:knowledge"}
+
+
+@pytest.fixture(autouse=True)
+def _proposals_on(ns, monkeypatch):  # noqa: F811 — a fixture
+    """``KNOWLEDGE_PROPOSALS`` on: the POST is dark without it."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "knowledge_proposals", True, raising=False)
 
 
 def _proposals_migration() -> Path:
@@ -138,7 +152,15 @@ def _rows(_ns: Any, sql: str, **params: Any) -> list[Any]:
         return list(c.execute(text(sql), params).fetchall())
 
 
+async def _base(p: Any, user: Any, page_id: str) -> int:
+    """The newest version of the page, as a read gives it."""
+    page = await _ok(p, user, "GET", f"/knowledge/pages/{page_id}")
+    return page["versions"][0]["version"]
+
+
 async def _propose_edit(p: Any, user: Any, page_id: str, body: str, **extra: Any) -> dict:
+    """An edit proposal at the version *user* reads now, unless *extra* names one."""
+    extra.setdefault("base_version", await _base(p, user, page_id))
     return await _ok(p, user, "POST", "/knowledge/proposals",
                      {"kind": "edit", "page_id": page_id, "body_md": body,
                       "summary": "A change.", **extra},
@@ -209,9 +231,12 @@ async def test_propose_edit_by_the_tool_files_one_row_at_the_page_version(
     writer = _principal(writer_email, ns.org_a)
     space = await _space(ns, admin, "Ops", [{"subject": writer_email, "level": "write"}])
     pid = await _published(ns, writer, space, "Runbook", "old steps")
+    # The REAL read_page prints the version that propose_edit names.
+    read = await _run_tool(ns, writer, monkeypatch, lambda: kt.read_page(page_id=pid))
+    assert "Version: 2" in read.splitlines()
     _approve(monkeypatch)
     out = await _run_tool(ns, writer, monkeypatch, lambda: kt.propose_edit(
-        page_id=pid, body="new steps", summary="Two steps change."))
+        page_id=pid, base_version=2, body="new steps", summary="Two steps change."))
     assert out.startswith("Filed a proposed edit.")
     rows = _rows(ns, "SELECT base_version, status, via, proposer_email, body_md "
                      "FROM kb_page_proposals WHERE page_id = :p", p=pid)
@@ -321,13 +346,16 @@ async def test_no_write_is_403_and_a_hidden_page_is_the_404_of_a_missing_one(
     assert await _status(ns, reader, "POST", "/knowledge/proposals",
                          {"kind": "page", "space_id": space, "title": "X"}) == 403
     assert await _status(ns, reader, "POST", "/knowledge/proposals",
-                         {"kind": "edit", "page_id": pid, "body_md": "y"}) == 403
+                         {"kind": "edit", "page_id": pid, "body_md": "y",
+                          "base_version": 2}) == 403
 
     # A member who cannot see the page gets the answer of a page that is not there.
     hidden = await _call(ns, outsider, "POST", "/knowledge/proposals",
-                         {"kind": "edit", "page_id": pid, "body_md": "y"})
+                         {"kind": "edit", "page_id": pid, "body_md": "y",
+                          "base_version": 2})
     missing = await _call(ns, outsider, "POST", "/knowledge/proposals",
-                          {"kind": "edit", "page_id": str(uuid.uuid4()), "body_md": "y"})
+                          {"kind": "edit", "page_id": str(uuid.uuid4()), "body_md": "y",
+                           "base_version": 2})
     assert hidden.status_code == missing.status_code == 404
     assert hidden.json() == missing.json()
 
@@ -412,6 +440,130 @@ async def test_a_second_accept_and_a_moved_base_are_409(ns, app_engine) -> None:
     assert await _status(ns, writer, "POST", f"/knowledge/proposals/{stale}/accept") == 409
 
 
+async def test_a_stale_base_version_is_refused_at_the_post(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """P1: the assistant read v2, a colleague saved v3 while the card
+    waited. The POST names v2 and is 409, and files nothing. The REAL tool
+    reads the 409 as its own sentence."""
+    _assert_non_priv(app_engine)
+    from acb_skills import knowledge_tools as kt
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Policies", [{"subject": writer_email, "level": "write"}])
+    pid = await _published(ns, writer, space, "Travel", "v2 text")
+    assert await _base(ns, writer, pid) == 2
+    await _ok(ns, writer, "PATCH", f"/knowledge/pages/{pid}", {"body_md": "v3 by a colleague"})
+
+    stale = await _call(ns, writer, "POST", "/knowledge/proposals",
+                        {"kind": "edit", "page_id": pid, "base_version": 2,
+                         "body_md": "built on v2"}, headers=CHAT)
+    assert stale.status_code == 409
+    assert "changed since you read it" in stale.json()["detail"]
+    _approve(monkeypatch)
+    out = await _run_tool(ns, writer, monkeypatch, lambda: kt.propose_edit(
+        page_id=pid, base_version=2, body="built on v2", summary="Old read."))
+    assert out == kt.STALE
+    assert _scalar(ns, "SELECT count(*) FROM kb_page_proposals WHERE page_id = :p", p=pid) == 0
+    # A base from the future is no read either.
+    assert await _status(ns, writer, "POST", "/knowledge/proposals",
+                         {"kind": "edit", "page_id": pid, "base_version": 9,
+                          "body_md": "x"}) == 409
+    # No base at all is a 422, never "the newest".
+    assert await _status(ns, writer, "POST", "/knowledge/proposals",
+                         {"kind": "edit", "page_id": pid, "body_md": "x"}) == 422
+    # At the version read now, it files, at that version.
+    made = await _propose_edit(ns, writer, pid, "built on v3", base_version=3)
+    assert made["base_version"] == 3
+
+
+async def test_a_proposal_on_an_archived_page_can_be_rejected_not_accepted(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2: an archived page keeps its pending proposals decidable by reject."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Old", [{"subject": writer_email, "level": "write"}])
+    pid = await _published(ns, writer, space, "Retired", "v1")
+    prop = (await _propose_edit(ns, writer, pid, "v2"))["id"]
+    # Archiving needs manage, and an archived page shows to a manager only
+    # (the one visibility rule). So the manager decides.
+    await _ok(ns, admin, "POST", f"/knowledge/pages/{pid}/archive")
+
+    assert await _status(ns, admin, "POST", f"/knowledge/proposals/{prop}/accept") == 409
+    assert _scalar(ns, "SELECT status FROM kb_page_proposals WHERE id = :i", i=prop) == "pending"
+    rejected = await _ok(ns, admin, "POST", f"/knowledge/proposals/{prop}/reject")
+    assert (rejected["status"], rejected["decided_by"]) == ("rejected", admin.email.lower())
+    page = await _ok(ns, admin, "GET", f"/knowledge/pages/{pid}")
+    assert (page["state"], page["body_md"]) == ("archived", "v1")
+
+
+async def test_rows_the_caller_cannot_decide_do_not_hide_the_one_they_can(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """P2: 150 older proposals on a page the caller only reads, then one on
+    a page they write. The list filters before it stops, so theirs is there."""
+    _assert_non_priv(app_engine)
+    from gateway.routes.knowledge import proposals
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    viewer_email, other_email = _address("viewer"), _address("other")
+    viewer = _principal(viewer_email, ns.org_a)
+    other = _principal(other_email, ns.org_a)
+    read_only = await _space(ns, admin, "Read only", [
+        {"subject": viewer_email, "level": "read"},
+        {"subject": other_email, "level": "write"},
+    ])
+    colleague_email = _address("colleague")
+    colleague = _principal(colleague_email, ns.org_a)
+    mine = await _space(ns, admin, "Mine", [
+        {"subject": viewer_email, "level": "write"},
+        {"subject": colleague_email, "level": "write"},
+    ])
+    hidden_page = await _published(ns, other, read_only, "Theirs", "v1")
+    my_page = await _published(ns, viewer, mine, "Mine", "v1")
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO kb_page_proposals (organization_id, page_id, base_version, "
+            "title, proposer_email, created_at) "
+            "SELECT CAST(:o AS uuid), CAST(:p AS uuid), 2, 'Theirs', :who, "
+            "now() - interval '1 day' + g * interval '1 second' "
+            "FROM generate_series(1, 150) AS g"),
+            {"o": ns.org_a, "p": hidden_page, "who": other_email.lower()})
+    # A colleague proposes it, so the viewer keeps it by the write grant.
+    made = await _propose_edit(ns, colleague, my_page, "v2 for the viewer")
+
+    assert len((await _ok(ns, other, "GET", "/knowledge/proposals"))["proposals"]) == 100
+    listed = await _ok(ns, viewer, "GET", "/knowledge/proposals")
+    assert [r["id"] for r in listed["proposals"]] == [made["id"]]
+    # The same with small batches, so the read goes round the loop.
+    monkeypatch.setattr(proposals, "_EDIT_BATCH", 40)
+    listed = await _ok(ns, viewer, "GET", "/knowledge/proposals")
+    assert [r["id"] for r in listed["proposals"]] == [made["id"]]
+    assert len((await _ok(ns, other, "GET", "/knowledge/proposals"))["proposals"]) == 100
+
+
+async def test_the_post_is_404_with_the_flag_off(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """P0: dark. With ``KNOWLEDGE_PROPOSALS`` off nothing is filed."""
+    _assert_non_priv(app_engine)
+    from acb_common import get_settings
+
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email = _address("writer")
+    writer = _principal(writer_email, ns.org_a)
+    space = await _space(ns, admin, "Dark", [{"subject": writer_email, "level": "write"}])
+    monkeypatch.setattr(get_settings(), "knowledge_proposals", False, raising=False)
+    assert await _status(ns, writer, "POST", "/knowledge/proposals",
+                         {"kind": "page", "space_id": space, "title": "Dark"}) == 404
+    assert _scalar(ns, "SELECT count(*) FROM kb_pages WHERE title = 'Dark'") == 0
+    # The list stays readable, so a proposal filed while it was on stays decidable.
+    assert (await _ok(ns, writer, "GET", "/knowledge/proposals"))["proposals"] == []
+
+
 async def test_reject_archives_a_proposed_page_as_a_draft(ns, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
@@ -448,7 +600,8 @@ async def test_a_proposal_of_org_a_is_404_for_org_b(ns, app_engine) -> None:  # 
         for act in ("accept", "reject"):
             assert await _status(ns, admin_b, "POST", f"/knowledge/proposals/{prop}/{act}") == 404
     assert await _status(ns, admin_b, "POST", "/knowledge/proposals",
-                         {"kind": "edit", "page_id": pid, "body_md": "x"}) == 404
+                         {"kind": "edit", "page_id": pid, "body_md": "x",
+                          "base_version": 2}) == 404
     for status in ("pending", "accepted", "rejected"):
         listed = await _ok(ns, admin_b, "GET", f"/knowledge/proposals?status={status}")
         assert listed["proposals"] == []

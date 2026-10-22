@@ -37,9 +37,13 @@ non-interactive default to approve). The request carries
 ``X-Actor-Via: chat:knowledge``, so the version records ``via = 'chat'``. The
 card asks whether a proposal may be filed. It never publishes: a person
 accepts in the app (F2), and the manifest gives no tool the accept route.
+An edit names the version that :func:`read_page` printed as ``base_version``,
+and the gateway refuses it with 409 when the page moved since that read.
 
 **One path.** Only the orchestrator holds the tools, in its
-``core_tools``, and only while ``COMPANY_SEARCH_ENABLED`` is on. They are not
+``core_tools``, and only while ``COMPANY_SEARCH_ENABLED`` is on. The two
+proposal tools also need ``KNOWLEDGE_PROPOSALS``, default off
+(:func:`knowledge_propose_enabled`). They are not
 in ``config.json`` ``tool_scope``, not in the floor and not in a skill
 family. Their risk is in ``tool_annotations.TOOL_ANNOTATIONS``
 (``open_world=False``), and ``_H236_UNLISTED`` keeps them out of every risk
@@ -128,6 +132,18 @@ NO_WRITE = "The member cannot write there, so nothing was filed."
 
 #: What the model reads for a 409.
 ARCHIVED = "The space or the page is archived, so nothing was filed."
+
+#: What the model reads when the page moved since its read (a 409 at POST).
+STALE = (
+    "The page changed since you read it, so nothing was filed. Read it again "
+    "with read_page, and propose the edit on the new version."
+)
+
+#: The first words of the gateway's 409 for a stale ``base_version``.
+_STALE_DETAIL = "The page changed since you read it"
+
+#: What the model reads for a ``base_version`` that is not a whole number.
+BAD_VERSION = "Give base_version: the version number that read_page printed."
 
 #: The longest title, body and summary the gateway takes.
 _TITLE_MAX = 300
@@ -238,10 +254,36 @@ async def _post(
     if status == 403:
         raise _Refused(NO_WRITE)
     if status == 409:
-        raise _Refused(ARCHIVED)
+        raise _Refused(STALE if _detail(resp).startswith(_STALE_DETAIL) else ARCHIVED)
     if status == 422:
         raise _Refused("The gateway refused the proposal as malformed. Nothing was filed.")
     raise RuntimeError(f"Knowledge write failed ({status})")
+
+
+def _detail(resp: httpx.Response) -> str:
+    """The ``detail`` of a refusal, or an empty string."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, str) else ""
+
+
+def knowledge_propose_enabled() -> bool:
+    """True when ``KNOWLEDGE_PROPOSALS`` is on (KB-5a). Default OFF. Fails closed.
+
+    The ONE reader of the setting. The orchestrator calls it when it builds
+    the agent, so the tools and the persona line agree. The gateway calls it
+    through ``routes/knowledge/flags.py`` at request time, so the POST and
+    the tools read one flag.
+    """
+    try:
+        from acb_common import get_settings
+
+        return getattr(get_settings(), "knowledge_proposals", False) is True
+    except Exception:
+        return False
 
 
 async def _card(title: str, detail: str, context: str) -> bool:
@@ -366,6 +408,16 @@ def _cap(head: str, body: str) -> str:
 
 # ── The tools ───────────────────────────────────────────────────────────────
 
+def _newest_version(page: dict[str, Any]) -> int | None:
+    """The page's newest version number, from the route's ``versions``."""
+    numbers = [
+        v.get("version") for v in page.get("versions") or []
+        if isinstance(v, dict) and isinstance(v.get("version"), int)
+        and not isinstance(v.get("version"), bool)
+    ]
+    return max(numbers) if numbers else None
+
+
 def format_page(page: dict[str, Any], section: str | None = None) -> str:
     """The route's page as the text the model reads."""
     pid = _page_id(page.get("id")) or ""
@@ -374,12 +426,16 @@ def format_page(page: dict[str, Any], section: str | None = None) -> str:
     space = _line(page.get("space_name"))
     state = _line(page.get("state")) or "unknown"
     updated = str(page.get("updated_at") or "")[:10]
+    version = _newest_version(page)
     head = [
         f"Page: {title}",
         (f"Space: {space}. " if space else "") + f"State: {state}."
         + (f" Updated: {updated}." if updated else ""),
         f"Link: /knowledge/pages/{pid}",
     ]
+    if version is not None:
+        # KB-5a: propose_edit names this number as its base_version.
+        head.append(f"Version: {version}")
     body = str(page.get("body_md") or "")
     if section and section.strip():
         part, paths = section_of(body, section)
@@ -500,6 +556,21 @@ def format_filed(answer: Any) -> str:
     return "\n".join(lines)
 
 
+#: The highest version number (``kb_page_versions.version`` is int4).
+_VERSION_MAX = 2_147_483_647
+
+
+def _version(value: Any) -> int | None:
+    """A version number from the model, or None for one that is not."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if 1 <= number <= _VERSION_MAX else None
+
+
 @_read_tool
 async def propose_page(
     title: str, body: str, summary: str = "", space_id: str | None = None,
@@ -549,15 +620,18 @@ async def propose_page(
 
 @_read_tool
 async def propose_edit(
-    page_id: str, body: str, summary: str, title: str | None = None,
+    page_id: str, base_version: int, body: str, summary: str, title: str | None = None,
 ) -> str:
     """Propose an edit of a Knowledge page. The page does not change until a person accepts.
 
-    Read the page with read_page first. One card asks the member before
-    anything is sent. The edit applies only if nobody changed the page since.
+    Read the page with read_page first, and pass the "Version:" number it
+    printed as base_version. One card asks the member before anything is
+    sent. The edit applies only if nobody changed the page since that read.
 
     Args:
         page_id: The page's id: the UUID in its /knowledge/pages/<id> link.
+        base_version: The "Version:" number that read_page printed for this
+            page. The edit is refused if the page changed since.
         body: The whole new page text in Markdown, not a part of it.
         summary: One line on what the edit changes, for the card.
         title: Optional. A new title. With none, the title stays.
@@ -566,6 +640,9 @@ async def propose_edit(
     pid = _page_id(page_id)
     if pid is None:
         return BAD_ID
+    base = _version(base_version)
+    if base is None:
+        return BAD_VERSION
     problem = _check_text(title, body, summary)
     if problem:
         return problem
@@ -577,8 +654,8 @@ async def propose_edit(
     ):
         return _not_filed()
     payload: dict[str, Any] = {
-        "kind": "edit", "page_id": pid, "body_md": str(body or ""),
-        "summary": _line(summary),
+        "kind": "edit", "page_id": pid, "base_version": base,
+        "body_md": str(body or ""), "summary": _line(summary),
     }
     if title is not None:
         payload["title"] = _line(title)
@@ -655,6 +732,7 @@ __all__ = [
     "format_page",
     "format_spaces",
     "index_block",
+    "knowledge_propose_enabled",
     "list_spaces",
     "propose_edit",
     "propose_page",
