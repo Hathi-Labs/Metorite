@@ -65,3 +65,13 @@ describe("the chat wiring", () => {
     expect(chat).not.toContain('placement="thread"');
   });
 });
+
+describe("the reply card pin", () => {
+  const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
+
+  it("a waiting reply card draws above the composer, and one line in the thread", () => {
+    expect(chat).toContain("const replyCard = confirmations.cards.find((c) => c.reply !== undefined);");
+    expect(chat).toContain("{msg.id === hitlAnchorId && (pinAsk ? <PinnedAskLine /> : renderHitlCards())}");
+    expect(chat).toMatch(/\{pinAsk && \(\s*<div data-pinned-ask/);
+  });
+});

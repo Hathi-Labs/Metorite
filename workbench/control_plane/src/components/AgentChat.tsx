@@ -2390,7 +2390,7 @@ export default function AgentChat({
         {/* The element that waits on the member, while it is out of view. */}
         <AskPin ask={pinAsk ? null : waiting} threadRef={threadRef} />
         {pinAsk && (
-          <div data-pinned-ask className="max-w-3xl mx-auto mb-2 max-h-96 overflow-y-auto rounded-lg">
+          <div data-pinned-ask className="max-w-3xl mx-auto mb-2 max-h-80 overflow-y-auto rounded-lg">
             <DismissableCard onDismiss={() => setUnpinnedAsk(replyCard!.key)}>
               {renderHitlCards()}
             </DismissableCard>
