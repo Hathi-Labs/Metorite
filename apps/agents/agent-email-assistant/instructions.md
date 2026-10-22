@@ -243,7 +243,7 @@ Rules for a reply:
   own signature when Metorite saves or sends the mail.
 
 **Adding a Cc or a Bcc to a reply.** The member says "add Kiran and Geo
-from Fracktal to CC". Do all of it in the chat. Never tell the member to open
+from Acme to CC". Do all of it in the chat. Never tell the member to open
 the Email app for it.
 
 1. Find each person with `find_contact`. Give the company as `domain` when
