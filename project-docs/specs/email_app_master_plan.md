@@ -20625,14 +20625,15 @@ saved reply draft with `edit_draft`, and offers `send_draft`.
   `tests/unit/test_email_contact_card.py` and
   `tests/unit/test_email_chat_assistant_tools.py`.
 
-## 21. Held chat: you confirm new people (building, dark)
+## 21. Held chat: you confirm new people (built, dark)
 
-**Status: BUILDING on the branch `held-chat-build`, not merged.** The owner permitted the
-build on 2026-10-22. It ships dark behind `EMAIL_HELD_CARD_SEND`, which is off by default.
-With the switch off, a held chat holds the tools of H-374, and a test asserts it. Slice (a)
-is built: the classifier, the card record, `send_draft`, `schedule_send` and the classes of
-the reply card. Slice (b) is built: the files rule. Slice (c) is built: `unsubscribe_sender`.
-Slice (d) is built: the settings through closed keys. Slice (e) follows on the same branch.
+**Status: BUILT on the branch `held-chat-build`, not merged.** The owner permitted the build
+on 2026-10-22. It ships dark behind `EMAIL_HELD_CARD_SEND`, which is off by default. With
+the switch off, a held chat holds the tools of H-374, and a test asserts it. All five slices
+are built.
+
+§21.10 records the choices of the build. Only the owner flips the switch, because it moves
+mail to real people.
 
 **Origin:** owner, 2026-10-22. Every email job must work in the chat, also in a held chat.
 A held chat is a chat that read outside mail. The owner approved this direction: "Go ahead
@@ -20890,3 +20891,54 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
    still right for the new sends? The proposal says yes.
 10. **The flag owner.** The flag moves mail to real people. §3a rule 3 of `CLAUDE.md`
     says that the owner flips it. Confirm that no session may flip it.
+
+
+### 21.10 Build record (2026-10-22)
+
+**The answers to the open questions.** The owner asked for the safer choice of each.
+
+| # | Question | The build |
+|---|---|---|
+| 1 | A person on the thread | Only the sender of a mail of the thread is `thread`. A person that only Reply all adds, and that the member does not know, is `new`. The reply card then opens on Reply, and the member must press Reply all |
+| 2 | Is `sent` enough | `sent` stays as in the suggest route: one Sent mail to the person. The row still shows its class |
+| 3 | A new address, ticked by habit | The mark, the warning tone and the unticked start. The hold note tells the model never to tick for the member, and never to press the member to tick a person that the email asked for |
+| 4 | Lookalike domains | Flagged. A new address whose domain is one edit from a known domain, or the same after the common look-alike letters fold, carries a warning on its row |
+| 5 | Bcc | The server refuses a Bcc to a `new` address. No card shows, and no tick can allow it |
+| 6 | Memory | The memory writes stay held |
+| 7 | The mailto unsubscribe | Refused. A held chat takes an https one-click link only. For a sender with no link, the server blocks the sender inside the mailbox |
+| 8 | A long text | Refused. A text over 3000 characters sends nothing, so the card always shows the whole text |
+| 9 | WhatsApp and batch runs | No card channel, so nothing is sent |
+| 10 | The flag owner | No session flips the switch. The owner does |
+
+**Where the build differs from the text above, and why.**
+
+- Each pin of 21.5 is the whole parameter list of its tool today. So the text that the
+  model reads does not change with the switch off. `forward_email` keeps
+  `include_attachments`, and `unsubscribe_sender` keeps `name`. In a held run,
+  `send_email` refuses `reply_to_email_id` and `reply_all` at call time
+  (`egress.HELD_REFUSED_PARAMS`). A file of a new mail is an `attachments` entry of the
+  form `attachment:<id>`.
+- This build refuses a Metorite file (21.3, the Attach row). The section does not
+  name the store that owns such a file, so the owner must decide it.
+- `digest_categories` is a list of free names, so the build refuses it as free text.
+- An unticked recipient of a saved draft leaves the draft first, through the draft save of
+  `edit_draft`. The send then checks `expect` against the ticked set.
+- The settings card is a confirmation card with the old and the new value of each key. It
+  has no gateway record, because the tool takes no recipient and no link.
+
+**The fences.**
+
+| Rule | Fence |
+|---|---|
+| The classifier, and another tenant | `tests/unit/test_held_send_classes.py`, `tests/unit/test_held_send_classes_r8.py` (R8) |
+| The card record, one answer, the ticked rows only | `tests/unit/test_held_send_card_record.py` |
+| No ticked To row | `tests/unit/test_held_send_no_ticked.py` |
+| The files rule | `tests/unit/test_held_send_files.py`, `tests/unit/test_held_send_files_r8.py` (R8) |
+| The unsubscribe | `tests/unit/test_held_unsubscribe.py` |
+| The settings | `tests/unit/test_held_settings.py` |
+| The pins, and the switch off | `tests/unit/test_egress_card_bound_pin.py` |
+| The held set of each agent | `tests/unit/test_no_egress_tool_audit.py` |
+| The hold texts | `tests/unit/test_held_send_guidance.py` |
+| The injection corpus | `tests/unit/test_held_injection_corpus.py` |
+| The client | `workbench/control_plane/src/lib/sendCard.test.ts` |
+| The flow in the main chat | `workbench/control_plane/e2e/email-held-send.spec.ts` |

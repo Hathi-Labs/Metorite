@@ -69,7 +69,7 @@ from gateway.routes.email.automation.drafting import (
 )
 from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.core import _log, _tenant_session, router
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 #: The Redis namespace of a card record (``cc:<org>:held-card:<card id>``).
@@ -521,13 +521,50 @@ class HeldCardRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["draft", "schedule", "unsubscribe"]
-    account_id: str = Field(max_length=64)
+    kind: Literal["draft", "schedule", "unsubscribe", "forward", "new"]
+    account_id: str = Field(default="", max_length=64)
     draft_id: str = Field(default="", max_length=64)
     send_at: str = Field(default="", max_length=64)
     #: ``unsubscribe``: the sender to unsubscribe from. No link: the server
     #: reads the stored ``List-Unsubscribe`` header.
     email: str = Field(default="", max_length=320)
+    #: ``forward``: the mail to forward, a mail of the member's own mailbox.
+    message_id: str = Field(default="", max_length=64)
+    #: ``forward`` and ``new``: the people that the model named. The server
+    #: classes each one, and a new address starts unticked.
+    to: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
+    cc: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
+    bcc: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
+    #: ``forward``: the note above the forwarded mail. ``new``: the text.
+    note: str = Field(default="", max_length=20_000)
+    subject: str = Field(default="", max_length=1000)
+    #: ``forward``: names or ids of the mail's own files. ``new``:
+    #: ``attachment:<id>`` of a file of the member's own mailbox.
+    files: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
+    #: ``forward``: carry every file of the mail when no ``files`` are named.
+    include_attachments: bool = True
+
+    @model_validator(mode="after")
+    def _fields_of_the_kind(self) -> HeldCardRequest:
+        """A field that the kind does not read is a 422, never ignored. So a
+        draft card takes no recipient: the draft row holds them."""
+        allowed = _KIND_FIELDS[self.kind]
+        for name in _KIND_FIELD_NAMES:
+            if name not in allowed and getattr(self, name):
+                raise ValueError(f"a {self.kind} card takes no {name}")
+        return self
+
+
+#: The fields that each kind of held card reads.
+_KIND_FIELDS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"account_id", "draft_id"}),
+    "schedule": frozenset({"account_id", "draft_id", "send_at"}),
+    "unsubscribe": frozenset({"account_id", "email"}),
+    "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files"}),
+    "new": frozenset({"account_id", "to", "cc", "bcc", "note", "subject", "files"}),
+}
+_KIND_FIELD_NAMES = ("draft_id", "send_at", "email", "message_id", "to", "cc", "bcc",
+                     "note", "subject", "files")
 
 
 class HeldCardActRequest(BaseModel):
@@ -800,6 +837,201 @@ async def _act_unsubscribe(
             "archived": int((res or {}).get("archived") or 0)}
 
 
+# ── The card of a forward or a new mail (§21.3, the Forward and New rows) ────
+#
+# The model names the people, and the server classes each one: a new
+# address starts unticked. A file comes from data only (``file_rows``). The
+# card shows the whole note or the whole text, or no card shows.
+
+#: The mail to forward: a mail of the member's own mailbox.
+FORWARD_MAIL_SQL = (
+    "SELECT em.id::text AS id, em.account_id::text AS account_id, em.subject "
+    "FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id "
+    "WHERE em.id = CAST(:mid AS uuid) AND ea.user_id = :uid"
+)
+
+#: The answer of a subject that the card cannot show as it is.
+SUBJECT_REFUSED = ("The subject holds a line break or a hidden character, so nothing was "
+                   "sent. Write the subject again.")
+
+
+def _people(req: HeldCardRequest) -> dict[str, list[str]]:
+    lists = {KIND_TO: [a.strip() for a in req.to if a.strip()],
+             KIND_CC: [a.strip() for a in req.cc if a.strip()],
+             KIND_BCC: [a.strip() for a in req.bcc if a.strip()]}
+    if not lists[KIND_TO]:
+        raise HTTPException(status_code=422, detail="Name one To recipient at least.")
+    total = sum(len(v) for v in lists.values())
+    if total > MAX_ROWS:
+        raise HTTPException(status_code=422,
+                            detail=f"More than {MAX_ROWS} recipients do not fit on one card.")
+    for addrs in lists.values():
+        for a in addrs:
+            why = address_problem(a)
+            if why:
+                raise HTTPException(status_code=422, detail=f"An address {why}, so nothing was sent.")
+    return lists
+
+
+def _clean_text(text_: str) -> str:
+    """The note or the text as the card shows it, and as it leaves. A text
+    that hides characters is refused (``reply_card.reply_body_refusal``)."""
+    from acb_skills.reply_card import reply_body_refusal
+
+    refusal = reply_body_refusal(text_ or "")
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
+    return _check_text(text_ or "")
+
+
+def _clean_subject(subject: str) -> str:
+    from acb_skills.reply_card import is_invisible_char
+
+    raw = str(subject or "")
+    if any(ch in "\r\n" or is_invisible_char(ch) for ch in raw):
+        raise HTTPException(status_code=422, detail=SUBJECT_REFUSED)
+    if len(raw) > 200:
+        raise HTTPException(status_code=422, detail="The subject is longer than 200 characters.")
+    return raw.strip()
+
+
+def _chosen_mail_files(files: list[Any], wanted: list[str], include: bool) -> list[Any]:
+    """The files of the forwarded mail that *wanted* names, by id or by name
+    (case does not count), else every file when *include*. A name that
+    matches no file, or two files, sends nothing."""
+    if not wanted:
+        return list(files) if include else []
+    chosen: list[Any] = []
+    for w in wanted:
+        key = str(w).strip()
+        hits = ([f for f in files if str(f.id) == key.lower()]
+                or [f for f in files if str(f.filename or "").strip().lower() == key.lower()])
+        if len(hits) != 1:
+            names = ", ".join(str(f.filename) for f in files) or "none"
+            raise HTTPException(
+                status_code=422,
+                detail=(f"The mail has no one file named {key!r}, so nothing was sent. "
+                        f"Its files: {names}."))
+        if hits[0] not in chosen:
+            chosen.append(hits[0])
+    return chosen
+
+
+async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
+    owner = _owner(user)
+    _refuse_bad_draft_id(req.message_id)
+    lists = _people(req)
+    note = _clean_text(req.note)
+    async with _tenant_session() as db:
+        mail = (await db.execute(text(FORWARD_MAIL_SQL),
+                                 {"mid": req.message_id, "uid": owner})).fetchone()
+        if mail is None:
+            raise HTTPException(status_code=404, detail="Email not found")
+        if req.account_id and req.account_id.lower() != str(mail.account_id).lower():
+            raise HTTPException(status_code=404,
+                                detail="The email is not in that mailbox, so nothing was sent.")
+        account_id = str(mail.account_id)
+        classes = await classify_addresses(db, owner, [a for v in lists.values() for a in v])
+        known = await known_domains(db, owner)
+        files = _chosen_mail_files(await mail_files(db, owner, account_id, req.message_id),
+                                   req.files, req.include_attachments)
+        me = await resolve_self(db, account_id)
+    rows = recipient_rows(lists, classes, known)
+    _refuse_new_bcc(rows)
+    rows += file_rows(files)
+    if len(rows) > MAX_ROWS:
+        raise HTTPException(status_code=422, detail="Too many rows for one card.")
+    subject = " ".join(str(mail.subject or "(no subject)").split())[:200]
+    context = "\n".join([f"Forwarding the email: {subject}", "",
+                         "Your note above it:", note or "(no note)"])
+    return await _person_card(user, req, rows, context, {
+        "kind": "forward", "account_id": account_id, "message_id": req.message_id,
+        "note": note, "subject": subject,
+    }, title="Forward this email?", mailbox=me)
+
+
+async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
+    from gateway.routes.email.core import _assert_account_owner
+
+    owner = _owner(user)
+    _refuse_bad_draft_id(req.account_id)
+    lists = _people(req)
+    body = _clean_text(req.note)
+    if not body:
+        raise HTTPException(status_code=422, detail="The email has no text, so nothing was sent.")
+    subject = _clean_subject(req.subject)
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, req.account_id, owner)
+        classes = await classify_addresses(db, owner, [a for v in lists.values() for a in v])
+        known = await known_domains(db, owner)
+        files = await resolve_file_refs(db, owner, req.account_id, req.files)
+        me = await resolve_self(db, req.account_id)
+    rows = recipient_rows(lists, classes, known)
+    _refuse_new_bcc(rows)
+    rows += file_rows(files)
+    if len(rows) > MAX_ROWS:
+        raise HTTPException(status_code=422, detail="Too many rows for one card.")
+    context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
+    return await _person_card(user, req, rows, context, {
+        "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
+    }, title="Send this new email?", mailbox=me)
+
+
+async def _person_card(
+    user: UserContext, req: HeldCardRequest, rows: list[dict[str, Any]], context: str,
+    fields: dict[str, Any], *, title: str, mailbox: Any,
+) -> dict[str, Any]:
+    """Record a card of people and files, and give what it shows."""
+    if len(context) > CONTEXT_MAX:
+        raise HTTPException(status_code=422, detail=TEXT_TOO_LONG)
+    box = (f"{mailbox.label} · {mailbox.address}"
+           if mailbox.label and mailbox.label != mailbox.address else mailbox.address)
+    people = [r for r in rows if r["kind"] in RECIPIENT_KINDS]
+    new = sum(1 for r in people if r["class"] == CLASS_NEW)
+    files = len(rows) - len(people)
+    detail = (f"From {box} · {len(people)} recipient(s), {files} file(s). Only a ticked "
+              f"row goes. {new} new address(es) start unticked.")[:DETAIL_MAX]
+    record = {"v": 1, "owner": _owner(user).lower(), "rows": rows, **fields}
+    card_id = await write_record(user, record)
+    _log.info("email.held_card_built", kind=fields["kind"], rows=len(rows), new=new)
+    return {"card_id": card_id, "title": title, "detail": detail, "context": context,
+            "rows": card_rows(rows)}
+
+
+async def _act_forward(
+    rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str], user: UserContext,
+) -> dict[str, Any]:
+    from gateway.routes.email.transport.forward import ForwardEmailRequest, forward_email
+
+    res = await forward_email(ForwardEmailRequest(
+        message_id=rec["message_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
+        bcc=ticked[KIND_BCC] or None, note=rec.get("note") or None,
+        include_attachments=False, attachment_ids=files, account_id=rec["account_id"],
+    ), user=user)
+    return {"ok": True, "action": "forward", "id": (res or {}).get("id"),
+            "files": len(files), **ticked}
+
+
+async def _act_new(
+    rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str],
+    background: BackgroundTasks, user: UserContext,
+) -> dict[str, Any]:
+    from gateway.routes.email.transport.send import (
+        SendAttachment,
+        SendEmailRequest,
+        send_email,
+    )
+
+    attachments = [SendAttachment(**f) for f in await file_payloads(user, files)]
+    res = await send_email(SendEmailRequest(
+        account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
+        bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",
+        body_text=rec["body"], attachments=attachments or None,
+    ), background, user)
+    return {"ok": True, "action": "send", "id": (res or {}).get("id"),
+            "files": len(files), **ticked}
+
+
 @router.post("/held-card")
 async def held_card(
     req: HeldCardRequest,
@@ -812,6 +1044,10 @@ async def held_card(
     _off()
     if req.kind == "unsubscribe":
         return await _unsubscribe_card(req, user)
+    if req.kind == "forward":
+        return await _forward_card(req, user)
+    if req.kind == "new":
+        return await _new_card(req, user)
     return await _draft_card(req, user)
 
 
@@ -951,6 +1187,12 @@ async def held_card_act(
         _log.info("email.held_card_refused", reason="no_to")
         raise HTTPException(status_code=422, detail=NO_TICKED_RECIPIENT)
     _refuse_new_bcc([r for r in rows if r["id"] in ids])
-    out = await _act_draft(rec, ticked, background, user)
+    files = ticked_file_ids(rows, ids)
+    if rec.get("kind") == "forward":
+        out = await _act_forward(rec, ticked, files, user)
+    elif rec.get("kind") == "new":
+        out = await _act_new(rec, ticked, files, background, user)
+    else:
+        out = await _act_draft(rec, ticked, background, user)
     _audit(req.card_id, str(rec["kind"]), rows, ids)
     return {**out, "left_out": len(rows) - len(ids)}

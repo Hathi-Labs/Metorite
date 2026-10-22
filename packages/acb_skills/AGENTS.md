@@ -247,7 +247,8 @@ clone cache.
    offer no new conversation and no paste by hand. Fence:
    tests/unit/test_held_send_guidance.py.
    §21 (`email_app_master_plan.md`): while `EMAIL_HELD_CARD_SEND` is on, a
-   held mail run reads `EGRESS_HOLD_NOTE_MAIL_CARDS`, and the sends of
+   held mail run reads `EGRESS_HOLD_NOTE_MAIL_CARDS` and
+   `EGRESS_HELD_MAIL_ANSWER_CARDS`, and the sends of
    `HELD_CARD_SEND_TOOLS` join a held run, each with its exact pin. With the
    switch off, none joins, and the held set is the set of H-374. A test
    asserts it (tests/unit/test_egress_card_bound_pin.py).

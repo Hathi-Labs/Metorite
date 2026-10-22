@@ -24,6 +24,9 @@ OTHER = "omar@acme.test"
 BOX = "0a0a0a0a-0000-4000-8000-00000000000a"
 DRAFT = "0d0d0d0d-0000-4000-8000-00000000000d"
 THREAD = "th-held-1"
+MAIL = "0c0c0c0c-0000-4000-8000-00000000000c"
+FILE_PDF = "0f0f0f0f-0000-4000-8000-00000000000f"
+FILE_XLS = "0e0e0e0e-0000-4000-8000-00000000000e"
 
 KNOWN = "kim@contoso.test"       # the member wrote to Kim: ``sent``
 COLLEAGUE = "geo@acme.test"      # a member of the organization: ``org``
@@ -115,6 +118,14 @@ class FakeDb:
         self.senders: list[str] = [KNOWN]
         self.files: list[Any] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        #: The mail to forward, and the files of the member's own mailbox.
+        self.mail: dict[str, Any] | None = {"id": MAIL, "account_id": BOX, "subject": "Quote"}
+        self.mail_files: list[Any] = [
+            types.SimpleNamespace(id=FILE_PDF, filename="quote.pdf", size_bytes=4096,
+                                  message_id=MAIL, subject="Quote"),
+            types.SimpleNamespace(id=FILE_XLS, filename="rates.xlsx", size_bytes=2048,
+                                  message_id=MAIL, subject="Quote"),
+        ]
 
     async def execute(self, sql: Any, params: dict[str, Any] | None = None) -> _Result:
         from gateway.routes.email.automation import held_card as hc
@@ -136,6 +147,12 @@ class FakeDb:
             return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
         if q == hc.DRAFT_FILES_SQL:
             return _Result(self.files)
+        if q == hc.FORWARD_MAIL_SQL:
+            return _Result([types.SimpleNamespace(**self.mail)] if self.mail else [])
+        if q == hc.MAIL_FILES_SQL:
+            return _Result(self.mail_files if params["mid"] == MAIL else [])
+        if q == hc.OWNED_FILES_SQL:
+            return _Result([f for f in self.mail_files if f.id in params["ids"]])
         raise AssertionError(f"unexpected SQL: {q[:80]}")
 
 
@@ -151,8 +168,14 @@ def install_db(monkeypatch, db: FakeDb | None = None) -> FakeDb:
     async def me(_db: Any, _aid: str) -> Any:
         return types.SimpleNamespace(label="Work", address=MEMBER, self_addresses={MEMBER})
 
+    async def owner(_db: Any, account_id: str, who: str, **_k: Any) -> None:
+        assert account_id == BOX and who == MEMBER
+
+    from gateway.routes.email import core
+
     monkeypatch.setattr(hc, "_tenant_session", session)
     monkeypatch.setattr(hc, "resolve_self", me)
+    monkeypatch.setattr(core, "_assert_account_owner", owner)
     return db
 
 
@@ -163,6 +186,9 @@ class Sends:
         self.sent: list[Any] = []
         self.scheduled: list[Any] = []
         self.narrowed: list[dict[str, list[str]]] = []
+        self.forwards: list[Any] = []
+        self.mails: list[Any] = []
+        self.fetched: list[str] = []
 
 
 def install_sends(monkeypatch) -> Sends:
@@ -178,8 +204,27 @@ def install_sends(monkeypatch) -> Sends:
         s.narrowed.append(ticked)
         return str(rec["draft_id"])
 
+    async def forward(req: Any, user: Any) -> dict[str, Any]:
+        s.forwards.append(req)
+        return {"id": "fwd-1"}
+
+    async def mail(req: Any, background: Any, user: Any) -> dict[str, Any]:
+        s.mails.append(req)
+        return {"id": "new-1"}
+
+    async def payloads(user: Any, ids: Any) -> list[dict[str, Any]]:
+        s.fetched.extend(ids)
+        return [{"filename": f"{i}.pdf", "mime_type": "application/pdf", "content_b64": "eA=="}
+                for i in ids]
+
+    from gateway.routes.email.transport import forward as fwd
+    from gateway.routes.email.transport import send as snd
+
     monkeypatch.setattr(hc, "send_draft_endpoint", send)
     monkeypatch.setattr(hc, "_narrow_draft", narrow)
+    monkeypatch.setattr(fwd, "forward_email", forward)
+    monkeypatch.setattr(snd, "send_email", mail)
+    monkeypatch.setattr(hc, "file_payloads", payloads)
     return s
 
 

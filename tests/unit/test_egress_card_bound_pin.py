@@ -43,6 +43,8 @@ H374_WITHHELD = frozenset({
 SECTION_21_WITHHELD = H374_WITHHELD - {
     "unsubscribe_sender",         # slice (c): the stored link, its host and its hash
     "update_assistant_settings",  # slice (d): closed keys, behind a card
+    "forward_email",              # slice (e): each person classed, the mail's files
+    "send_email",                 # slice (e): a new mail only
 }
 
 
@@ -126,3 +128,28 @@ def test_a_new_parameter_breaks_a_held_card_pin(monkeypatch, name: str, extra: s
     fn.__tool_risk__ = dict(getattr(agents, name).__tool_risk__)
     assert eg.is_card_bound_send(fn) is False
     assert eg.is_egress_tool(fn) is True
+
+
+async def test_send_email_refuses_a_reply_in_a_held_run(monkeypatch) -> None:
+    """``HELD_REFUSED_PARAMS``: a reply through ``send_email`` sends nothing
+    in a held run, before any card or gateway call. Mutation: drop the
+    refusal of ``_held_new_mail`` → red."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    F.flag_on(monkeypatch)
+    agents = F.load_email_agent("ea_held_reply_refused")
+    bind_artifact_context(no_egress=True, agent_name="email-assistant", session_id="s-1")
+    calls: list = []
+
+    async def no_call(*a, **k):
+        calls.append(a)
+        raise AssertionError("no gateway call")
+
+    monkeypatch.setattr(agents, "_post", no_call)
+    monkeypatch.setattr(agents, "_get", no_call)
+    assert eg.HELD_REFUSED_PARAMS["send_email"] == {"reply_to_email_id", "reply_all"}
+    out = await agents.send_email(F.BOX, body="hi", reply_to_email_id="m-1")
+    assert out == agents._HELD_REPLY_REFUSED
+    out = await agents.send_email(F.BOX, body="hi", to=[F.KNOWN], reply_all=True)
+    assert out == agents._HELD_REPLY_REFUSED
+    assert calls == []

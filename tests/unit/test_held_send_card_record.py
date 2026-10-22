@@ -347,3 +347,89 @@ def test_the_client_draws_the_servers_marks() -> None:
     src = (F.REPO / "workbench/control_plane/src/lib/sendCard.ts").read_text(encoding="utf-8")
     assert f'NEW_MARK = "{held_card.NEW_MARK}"' in src
     assert f'THREAD_MARK = "{held_card.THREAD_MARK}"' in src
+
+
+# ── 7. A forward and a new mail (§21.3, the Forward and New rows) ────────────
+
+
+async def _forward_card(**kw: Any) -> dict[str, Any]:
+    body = {"to": [F.KNOWN], "cc": [F.STRANGER], "note": "FYI, the quote.", **kw}
+    return await hc.held_card(
+        hc.HeldCardRequest(kind="forward", message_id=F.MAIL, **body), F.user())
+
+
+async def test_a_forward_card_classes_each_person_and_lists_the_mails_files(_world) -> None:
+    card = await _forward_card()
+    kinds = [(r["kind"], r.get("class"), r["checked"]) for r in card["rows"]]
+    assert kinds == [("to", "sent", True), ("cc", "new", False),
+                     ("file", None, True), ("file", None, True)]
+    assert "FYI, the quote." in card["context"]
+
+
+async def test_a_forward_sends_only_the_ticked_people_and_files(_world) -> None:
+    """Mutation: send every file of the mail, or the unticked Cc → red."""
+    card = await _forward_card()
+    rows = {r["label"]: r["id"] for r in card["rows"]}
+    answer = F.rows_answer(rows[f"To: {F.KNOWN}"], rows['File: "rates.xlsx" (2 KB)'])
+    await F.record_answer(card["card_id"], answer)
+    out = await _act(card["card_id"], answer)
+    fwd = _world["sends"].forwards[0]
+    assert fwd.to == [F.KNOWN] and fwd.cc is None and fwd.bcc is None
+    assert fwd.attachment_ids == [F.FILE_XLS] and fwd.include_attachments is False
+    assert fwd.note == "FYI, the quote."
+    assert out["left_out"] == 2
+
+
+async def test_a_forward_names_a_file_of_the_mail_only(_world) -> None:
+    with pytest.raises(HTTPException) as e:
+        await _forward_card(files=["passwords.txt"])
+    assert e.value.status_code == 422 and "quote.pdf" in e.value.detail
+    card = await _forward_card(files=["QUOTE.pdf"])
+    assert [r["label"] for r in card["rows"] if r["kind"] == "file"] == [
+        'File: "quote.pdf" (4 KB)']
+
+
+async def test_a_new_mail_sends_the_recorded_text_and_the_ticked_files(_world) -> None:
+    card = await hc.held_card(hc.HeldCardRequest(
+        kind="new", account_id=F.BOX, to=[F.COLLEAGUE], bcc=[F.KNOWN], subject="Rates",
+        note="Here are the rates.", files=[f"attachment:{F.FILE_PDF}"]), F.user())
+    ids = [r["id"] for r in card["rows"]]
+    answer = F.rows_answer(*ids)
+    await F.record_answer(card["card_id"], answer)
+    await _act(card["card_id"], answer)
+    sent = _world["sends"].mails[0]
+    assert sent.to == [F.COLLEAGUE] and sent.bcc == [F.KNOWN]
+    assert sent.subject == "Rates" and sent.body_text == "Here are the rates."
+    assert _world["sends"].fetched == [F.FILE_PDF]
+    assert [a.filename for a in sent.attachments] == [f"{F.FILE_PDF}.pdf"]
+
+
+async def test_a_new_mail_refuses_a_workspace_file(_world) -> None:
+    with pytest.raises(HTTPException) as e:
+        await hc.held_card(hc.HeldCardRequest(
+            kind="new", account_id=F.BOX, to=[F.KNOWN], subject="x", note="y",
+            files=["outputs/rows.csv"]), F.user())
+    assert e.value.status_code == 422 and "workspace" in e.value.detail
+    assert _world["redis"].keys == {}
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("note", "Hi\U000e0041\U000e0042"),           # tag characters
+    ("note", "Hi ‮evil"),                     # a bidi control
+    ("subject", "Rates\nBcc: x@evil.example"),     # a header in a subject
+])
+async def test_a_new_mail_with_hidden_text_is_refused(_world, field: str, value: str) -> None:
+    body = {"to": [F.KNOWN], "subject": "Rates", "note": "Hello", field: value}
+    with pytest.raises(HTTPException) as e:
+        await hc.held_card(hc.HeldCardRequest(kind="new", account_id=F.BOX, **body), F.user())
+    assert e.value.status_code == 422
+    assert _world["redis"].keys == {}
+
+
+def test_each_kind_takes_only_its_own_fields() -> None:
+    """A draft card takes no recipient, and an unsubscribe card no file."""
+    for kind, extra in (("draft", {"to": [F.STRANGER]}), ("schedule", {"files": ["a"]}),
+                        ("unsubscribe", {"note": "x"}), ("forward", {"subject": "x"}),
+                        ("new", {"message_id": F.MAIL}), ("draft", {"email": "a@b.test"})):
+        with pytest.raises(ValidationError):
+            hc.HeldCardRequest(kind=kind, account_id=F.BOX, **extra)

@@ -4004,7 +4004,10 @@ async def _refuse_reply_mailbox(email_id: str, own: str, named: str) -> str:
     )
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# §21 (the New row): ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND
+# is off. With the switch on, a held run keeps this tool for a NEW mail only,
+# through the held card (:func:`_held_new_mail`).
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def send_email(
     account_id: str | None = None,
     *,
@@ -4058,6 +4061,10 @@ async def send_email(
             a file in your own workspace can be attached. Use list_artifacts
             to see what's available; write_artifact to create one first.
     """
+    if _held_card_mode():
+        return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
+                                    bcc=bcc, reply_to_email_id=reply_to_email_id,
+                                    attachments=attachments, reply_all=reply_all)
     to = list(to or [])
     cc = list(cc or [])
     reply_notices: list[str] = []
@@ -4143,6 +4150,42 @@ async def send_email(
     return f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
 
 
+#: The answer of a reply through ``send_email`` in a held run (§21.3, the New row).
+_HELD_REPLY_REFUSED = (
+    "Not sent. In this chat a reply goes through compose_reply, which derives "
+    "the recipients from the email. Call compose_reply with the email_id.")
+
+
+async def _held_new_mail(
+    account_id: str | None, *, body: str, to: list[str] | None, subject: str | None,
+    cc: list[str] | None, bcc: list[str] | None, reply_to_email_id: str | None,
+    attachments: list[str] | None, reply_all: bool,
+) -> str:
+    """``send_email`` in a held run (§21.3, the New row): a new mail only,
+    through the held card. The gateway classes each person, and a new
+    address starts unticked. A file must be ``attachment:<id>`` of the
+    member's own mailbox. The gateway refuses any other file."""
+    if reply_to_email_id or reply_all:
+        return _HELD_REPLY_REFUSED
+    to = [str(a) for a in (to or []) if str(a).strip()]
+    if not to:
+        return "Not sent. No recipient — pass `to`."
+    if not account_id:
+        account_id, ask = await _new_mail_mailbox(to[0])
+        if ask:
+            return ask
+    res = await _held_card({
+        "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
+        "bcc": list(bcc or []), "subject": subject or "", "note": body,
+        "files": [str(a) for a in (attachments or []) if str(a).strip()],
+    }, "Not sent", "Send cancelled — the email was not sent.")
+    if isinstance(res, str):
+        return res
+    files = int(res.get("files") or 0)
+    note = f" with {files} file(s)" if files else ""
+    return _held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
+
+
 def _size_text(size: Any) -> str:
     """A file size for a card: "29 KB", "2.0 MB", or "" when unknown."""
     try:
@@ -4224,7 +4267,32 @@ def _card_file_name(value: Any, limit: int = _CARD_FILE_NAME_LIMIT) -> str:
     return f"{name[:head]}…{name[-_CARD_FILE_NAME_TAIL:]}"
 
 
-@_annotate_risk(destructive=True, open_world=True)
+async def _held_forward(
+    mid: str, *, to: list[str], cc: list[str] | None, bcc: list[str] | None,
+    note: str | None, files: list[str] | None, include_attachments: bool,
+    account_id: str | None,
+) -> str:
+    """``forward_email`` in a held run (§21.3, the Forward row): the held card
+    classes each person, and the mail's own files are rows."""
+    res = await _held_card({
+        "kind": "forward", "message_id": mid, "account_id": str(account_id or ""),
+        "to": [str(t) for t in to], "cc": [str(a) for a in (cc or [])],
+        "bcc": [str(a) for a in (bcc or [])], "note": note or "",
+        "files": [str(f) for f in (files or [])],
+        "include_attachments": bool(include_attachments),
+    }, "Not forwarded", "Forward cancelled. The email was not forwarded.")
+    if isinstance(res, str):
+        return res
+    n = int(res.get("files") or 0)
+    return (_held_sent_text(res, "Forwarded") + f" It carried {n} file(s)"
+            f" (id={res.get('id', '')}).")
+
+
+# §21 (the Forward row): ``card_bound`` keeps nothing while
+# EMAIL_HELD_CARD_SEND is off. With the switch on, a held run keeps this
+# tool, through the held card: each person is classed, and the mail's own
+# files are rows.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def forward_email(
     email_id: str,
     to: list[str],
@@ -4263,6 +4331,10 @@ async def forward_email(
     to = [t for t in (to or []) if str(t).strip()]
     if not to:
         return "Not forwarded. No recipient. Pass `to`."
+    if _held_card_mode():
+        return await _held_forward(mid, to=to, cc=cc, bcc=bcc, note=note, files=files,
+                                   include_attachments=include_attachments,
+                                   account_id=account_id)
     orig = await _get(f"/email/messages/{mid}", {"mark_read": "false"}) or {}
     own = str(orig.get("account_id") or "")
     if own and account_id and own != str(account_id):

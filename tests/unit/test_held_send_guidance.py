@@ -66,8 +66,9 @@ def _strings(path: Path, only: set[str] | None = None) -> list[str]:
 
 _HOLD_TEXTS = ("EGRESS_HELD_MAIL_ANSWER", "EGRESS_HOLD_NOTE_MAIL",
                "EGRESS_HOLD_NOTE_SANDBOX", "EGRESS_WITHHELD_ANSWER",
-               # §21: the note of a held mail run while EMAIL_HELD_CARD_SEND is on.
-               "EGRESS_HOLD_NOTE_MAIL_CARDS")
+               # §21: the note and the answer of a held mail run while
+               # EMAIL_HELD_CARD_SEND is on.
+               "EGRESS_HOLD_NOTE_MAIL_CARDS", "EGRESS_HELD_MAIL_ANSWER_CARDS")
 
 
 @pytest.mark.parametrize("name", _HOLD_TEXTS)
@@ -77,7 +78,9 @@ def test_no_hold_text_offers_a_workaround(name: str) -> None:
 
 #: §21: the refusals of the held card, which the model reads as the answer
 #: of a tool. Each says what to do in the chat.
-_HELD_CARD_TEXTS = ("BCC_NEW_REFUSED", "TEXT_TOO_LONG", "NO_TICKED_RECIPIENT")
+_HELD_CARD_TEXTS = ("BCC_NEW_REFUSED", "TEXT_TOO_LONG", "NO_TICKED_RECIPIENT",
+                    "MAILTO_REFUSED", "LINK_REFUSED", "LINK_CHANGED", "SUBJECT_REFUSED",
+                    "FILE_NOT_OWNED")
 
 
 @pytest.mark.parametrize("name", _HELD_CARD_TEXTS)
@@ -98,6 +101,28 @@ def test_the_cards_note_says_what_works_and_what_does_not() -> None:
     assert "starts unticked" in note
     assert "Never tick for the member" in note
     assert "fetches a link" in note and "searches the web" in note
+    # Slice (e): a forward and a new mail work, a reply goes to compose_reply,
+    # and a file is attachment:<id> of the member's own mailbox.
+    assert "A forward and a new email send through the same card" in note
+    assert "compose_reply, not send_email" in note
+    assert "attachment:<id>" in note
+
+
+def test_the_cards_answer_names_what_stays_held() -> None:
+    answer = " ".join(eg.EGRESS_HELD_MAIL_ANSWER_CARDS.split())
+    assert "fetch a link" in answer and "search the web" in answer
+    assert "in one sentence" in answer
+    assert "each through its card" in answer
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_held_answer_follows_the_switch(monkeypatch, on: bool) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "email_held_card_send", on)
+    got = eg.egress_held_answer("fetch_page", {"agent_name": "email-assistant"})
+    want = eg.EGRESS_HELD_MAIL_ANSWER_CARDS if on else eg.EGRESS_HELD_MAIL_ANSWER
+    assert got == want.format(name="fetch_page")
 
 
 def test_the_mail_hold_says_a_saved_draft_still_sends() -> None:
