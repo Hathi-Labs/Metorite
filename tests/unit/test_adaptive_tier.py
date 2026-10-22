@@ -184,3 +184,9 @@ async def test_the_turn_counts_the_system_and_memory_context(monkeypatch) -> Non
                        "system_context": "s" * 40_000, "memory_context": "m" * 40_000},
         config={}, agent_md_model="", is_copilot=False, emit=False)
     assert run.context_tokens >= tp.CONTEXT_POWERFUL_TOKENS
+
+
+def test_the_decision_waits_long_enough_to_answer() -> None:
+    """Production, 2026-10-22: the turn question answered in 1.1 to 1.5 s, so
+    a 1.5 s wait timed out on 41 of 80 turns. Mutation: set it back to 1.5."""
+    assert tp.TURN_KIND_TIMEOUT_S >= 3.0

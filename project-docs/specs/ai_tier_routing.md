@@ -599,7 +599,9 @@ The question is the kind of the member's message: `chat`, `code`, `plan` or
   of the tools the agent holds. It sends no earlier history.
 - A confidence below the threshold reads as `chat`, so the turn stays on the
   default.
-- The executor waits at most 1.5 s. A timeout reads as `chat`.
+- The executor waits at most 3.0 s. A timeout reads as `chat`. It was 1.5 s
+  until 2026-10-22. Production then measured the answers at 1.1 to 1.5 s,
+  and 41 of 80 questions timed out (51%).
 - The answer sets the tier of every main model request in that turn, unless a
   tool hint raises it.
 - A turn with one short message under 12 words skips the question and reads as
