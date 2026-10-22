@@ -116,3 +116,115 @@ def test_guard_never_breaks_a_call_on_internal_error(monkeypatch):
     out, max_tokens = _fit_context_window(msgs, None, "m", 32000)
     assert out is msgs
     assert max_tokens == 32000
+
+
+# ── The output floor and whole-turn eviction (2026-10-22) ──────────────────
+
+
+def _orphans(out: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    """Return (tool results with no call, tool calls with no result)."""
+    calls = {
+        str(c.get("id"))
+        for m in out if m.get("role") == "assistant"
+        for c in (m.get("tool_calls") or [])
+    }
+    results = {str(m.get("tool_call_id")) for m in out if m.get("role") == "tool"}
+    return results - calls, calls - results
+
+
+def test_history_is_evicted_before_output_drops_below_the_floor():
+    """A long chat drops old turns before the reply shrinks under the floor.
+
+    Mutation: return ``min(max_tokens, room)`` whenever ``room`` is at least
+    ``_CONTEXT_FIT_MIN_OUTPUT`` (the old step 1). The reply then gets about
+    1500 tokens and every old turn stays, so this test fails.
+    """
+    # 8000 window, floor = 2000. Prompt ~= 5900 tokens, room ~= 1500.
+    msgs = (
+        [_msg("system", "s" * 400)]
+        + [_msg("user" if i % 2 == 0 else "assistant", f"turn-{i} " + "x" * 4000)
+           for i in range(5)]
+        + [_msg("user", "the current question " + "q" * 2000)]
+    )
+    room = WINDOW - _count(msgs) - _CONTEXT_FIT_SAFETY_TOKENS
+    assert _CONTEXT_FIT_MIN_OUTPUT <= room < WINDOW // 4
+    out, max_tokens = _fit_context_window(msgs, None, "m", 32000)
+    assert len(out) < len(msgs)
+    assert max_tokens >= WINDOW // 4
+    assert out[-1]["content"].startswith("the current question")
+
+
+def test_large_window_keeps_an_8k_reply(monkeypatch):
+    """On a 64k window the floor is ``_CONTEXT_FIT_PREFERRED_OUTPUT``.
+
+    Mutation: set the floor to ``_CONTEXT_FIT_MIN_OUTPUT``. The guard then
+    keeps every turn and returns about 3000 tokens, so this test fails.
+    """
+    from gateway.routes.v1_compat import _CONTEXT_FIT_PREFERRED_OUTPUT
+
+    monkeypatch.setattr(ctx, "context_window_for", lambda _m: 64000)
+    msgs = (
+        [_msg("system", "s" * 400)]
+        + [_msg("user" if i % 2 == 0 else "assistant", f"turn-{i} " + "x" * 20000)
+           for i in range(12)]
+        + [_msg("user", "now")]
+    )
+    room = 64000 - _count(msgs) - _CONTEXT_FIT_SAFETY_TOKENS
+    assert _CONTEXT_FIT_MIN_OUTPUT <= room < _CONTEXT_FIT_PREFERRED_OUTPUT
+    out, max_tokens = _fit_context_window(msgs, None, "m", 32000)
+    assert max_tokens >= _CONTEXT_FIT_PREFERRED_OUTPUT
+    assert out[-1]["content"] == "now"
+    assert any("turn-11" in str(m.get("content")) for m in out)
+
+
+def test_small_request_is_never_raised():
+    """The floor never grows ``max_tokens`` past what the caller asked for.
+
+    Mutation: drop ``min(requested, ...)`` in ``_output_floor``.
+    """
+    msgs = [_msg("user", "u" * 29000)]
+    _out, max_tokens = _fit_context_window(msgs, None, "m", 900)
+    assert max_tokens <= 900
+
+
+def test_tool_loop_keeps_the_current_user_turn():
+    """Inside a tool loop the last message is a tool result, not the request.
+
+    Mutation: protect only ``out[-1]`` (the old step 2). The current user
+    turn is then the oldest evictable message and goes first.
+    """
+    msgs = [
+        _msg("system", "s" * 200),
+        _msg("user", "the current request"),
+        _msg("assistant", "", tool_calls=[{"id": "c1"}]),
+        _msg("tool", "r" * 12000, tool_call_id="c1"),
+        _msg("assistant", "", tool_calls=[{"id": "c2"}]),
+        _msg("tool", "r" * 12000, tool_call_id="c2"),
+        _msg("assistant", "", tool_calls=[{"id": "c3"}]),
+        _msg("tool", "small", tool_call_id="c3"),
+    ]
+    out, _max_tokens = _fit_context_window(msgs, None, "m", 32000)
+    assert any(m.get("content") == "the current request" for m in out)
+    assert out[0]["role"] == "system"
+    assert _orphans(out) == (set(), set())
+    # The newest tool round survives, the oldest goes.
+    assert any(m.get("tool_call_id") == "c3" for m in out)
+    assert not any(m.get("tool_call_id") == "c1" for m in out)
+
+
+def test_a_tool_turn_that_ends_the_list_goes_whole():
+    """An evicted tool-call turn takes its tool results, even the last message.
+
+    Mutation: stop the tool-result loop one short of the end (the old
+    ``idx < len(out) - 1``). The last tool result then stays as an orphan.
+    """
+    msgs = [
+        _msg("system", "s" * 200),
+        _msg("user", "the current request"),
+        _msg("assistant", "a" * 14000, tool_calls=[{"id": "c1"}, {"id": "c2"}]),
+        _msg("tool", "t" * 14000, tool_call_id="c1"),
+        _msg("tool", "t" * 14000, tool_call_id="c2"),
+    ]
+    out, _max_tokens = _fit_context_window(msgs, None, "m", 32000)
+    assert _orphans(out) == (set(), set())
+    assert any(m.get("content") == "the current request" for m in out)
