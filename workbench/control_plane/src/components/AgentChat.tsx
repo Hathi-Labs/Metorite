@@ -2083,8 +2083,8 @@ export default function AgentChat({
   const [closedDraft, setClosedDraft] = useState<string | null>(null);
   const pin = useMemo(() => draftPin(drafts, closedDraft), [drafts, closedDraft]);
   const pinScope = useMemo(
-    () => ({ pinnedId: pin.pinned?.id ?? null, superseded: pin.superseded }),
-    [pin],
+    () => ({ pinnedId: pinAsk ? null : (pin.pinned?.id ?? null), superseded: pin.superseded }),
+    [pin, pinAsk],
   );
 
   const rollupScope = useMemo<RollupScope>(
@@ -2396,7 +2396,8 @@ export default function AgentChat({
             </DismissableCard>
           </div>
         )}
-        {pin.pinned && (
+        {/* One pin at a time: a waiting reply card wins over a draft. */}
+        {pin.pinned && !pinAsk && (
           <PinnedDraftCard
             event={pin.pinned}
             accountId={emailContext?.accountId}
