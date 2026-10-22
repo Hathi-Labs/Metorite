@@ -88,8 +88,9 @@ test.describe("Knowledge gaps", () => {
     await expect(gapsRow(page)).toBeVisible({ timeout: 60_000 });
     await expect(gapsRow(page)).toContainText("2");
     await gapsRow(page).click();
-    await expect(page).toHaveURL(/\/knowledge\/gaps$/);
-    await expect(page.getByRole("heading", { level: 2, name: "Gaps" })).toBeVisible();
+    // A cold dev server compiles the route on the first visit.
+    await expect(page).toHaveURL(/\/knowledge\/gaps$/, { timeout: 60_000 });
+    await expect(page.getByRole("heading", { level: 2, name: "Gaps" })).toBeVisible({ timeout: 60_000 });
     const first = page.locator('[data-gap-id="g-1"]');
     await expect(first).toContainText("How do we raise a credit note?");
     await expect(first).toContainText("Asked by 3 people");
