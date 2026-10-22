@@ -30,7 +30,12 @@ from gateway.routes.email.automation.assistant import (
     _learned_text,
     _load_assistant_about,
 )
-from gateway.routes.email.automation.draft_budget import DraftParts, plan_draft
+from gateway.routes.email.automation.draft_budget import (
+    INTERACTIVE_CEILING,
+    DraftParts,
+    plan_draft,
+    tier_for_size,
+)
 from gateway.routes.email.automation.draft_files import (
     NO_LIMIT_RULE,
     UNREAD_IMAGE,
@@ -1181,13 +1186,26 @@ async def _llm_draft_reply(
         # larger window, before the call (``draft_budget``). The generic
         # fitter below then has nothing to cut, so it never cuts the middle
         # of the one user message, where the latest mail sits.
+        parts = DraftParts(
+            latest=(email.get("body", "") or "")[:_DRAFT_BODY_MAX_CHARS],
+            thread=thread[:_DRAFT_THREAD_MAX_CHARS],
+            files=list(files.texts) if isinstance(files, DraftFiles) else [],
+            memories=memories[:2000], examples=examples[:2500], voice=voice[:2500])
+        # The tier by the size of the mail (owner, 2026-10-22): a long thread
+        # or files raise it, a short mail keeps the drafter's own tier.
+        sized = tier_for_size(
+            model, len(parts.latest) + len(parts.thread)
+            + sum(len(t) for _n, t, _c in parts.files),
+            has_files=bool(parts.files) or bool(
+                isinstance(files, DraftFiles) and files.images),
+            # The member waits for an interactive draft (review of #1219).
+            ceiling=INTERACTIVE_CEILING if interactive_fallback else None)
+        if sized != model:
+            _log.info("email.draft_tier_by_size", frm=model, to=sized)
+            model = sized
         plan = plan_draft(
             model,
-            DraftParts(
-                latest=(email.get("body", "") or "")[:_DRAFT_BODY_MAX_CHARS],
-                thread=thread[:_DRAFT_THREAD_MAX_CHARS],
-                files=list(files.texts) if isinstance(files, DraftFiles) else [],
-                memories=memories[:2000], examples=examples[:2500], voice=voice[:2500]),
+            parts,
             fixed_chars=(len(sys_prompt) + len(voice_prompt("email")) + len(ctx)
                          + len(head) + len(direction_block) + len(cal)
                          + len(instructions or "") + _PROMPT_FRAME_CHARS),
@@ -1426,10 +1444,20 @@ async def _llm_compose_assist(
         # move to a tier with a larger window (``draft_budget``, H-378). The
         # owner's own text and instruction are never cut: they count as fixed.
         owner_text = current_body[:_DRAFT_BODY_MAX_CHARS] if improving else ""
+        # ``parts`` holds the prompt pieces here, so the fitted parts have a
+        # name of their own.
+        fit_in = DraftParts(latest=reply_to_body[:_DRAFT_BODY_MAX_CHARS],
+                            thread=thread[:_DRAFT_THREAD_MAX_CHARS])
+        # The tier by the size of the mail (owner, 2026-10-22). The owner's
+        # own text counts too: a long draft to improve needs a strong reader.
+        sized = tier_for_size(model, len(fit_in.latest) + len(fit_in.thread)
+                              + len(owner_text), ceiling=INTERACTIVE_CEILING)
+        if sized != model:
+            _log.info("email.compose_tier_by_size", frm=model, to=sized)
+            model = sized
         plan = plan_draft(
             model,
-            DraftParts(latest=reply_to_body[:_DRAFT_BODY_MAX_CHARS],
-                       thread=thread[:_DRAFT_THREAD_MAX_CHARS]),
+            fit_in,
             fixed_chars=(len(sys_prompt) + len(voice_prompt("email")) + len(ctx)
                          + len(owner_text) + len(instruction or "")
                          + len(recipient) + len(subject) + _PROMPT_FRAME_CHARS),
