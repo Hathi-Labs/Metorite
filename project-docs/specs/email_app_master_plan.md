@@ -20524,3 +20524,41 @@ waits, and what failed in the last week with the reason.
 `infra/postgres/290_email_scheduled_sends.sql` ·
 `gateway/routes/email/automation/send_later.py` · the tools in
 `apps/agents/agent-email-assistant/agents.py`.
+
+## 20. Add a Cc in the chat (2026-10-22)
+
+**Status:** built on branch `chat-draft-cc`, not merged. No switch.
+**Origin:** owner, 2026-10-22: "add Kiran and Geo from Fracktal to CC" must
+happen in the chat. The assistant must not send the member to the Email app.
+
+### 20.1 What the member gets
+
+The member asks for a Cc on a reply. The assistant finds each person with
+`find_contact`. When two people match, or only a stranger matches, it asks
+the member with one option for each person. Then it adds the people to the
+saved reply draft with `edit_draft`, and offers `send_draft`.
+
+### 20.2 The rules
+
+1. **The address comes from data.** `GET /email/contacts/suggest` gives each
+   hit a `source`. `org` is a member or a People row of the organization.
+   `sent` is a person that the member wrote to. `seen` is a sender only.
+   Memory can suggest a domain, and never an address.
+2. **Tenancy (R5).** The `org` rows read `app_user` and `people` through the
+   tenant seam. Each predicate also names the bound tenant, so an unbound
+   session matches no row.
+3. **No new egress.** The flow uses `edit_draft` and `send_draft`, and each
+   shows its own card. A run that read outside mail does not hold
+   `send_draft`. Then the assistant says that the draft has the new Cc, and
+   that this chat cannot send it.
+4. **The card shows the change.** The `edit_draft` card starts with each
+   added and each removed address.
+
+### 20.3 Acceptance
+
+- A member of another organization never comes back as a hit.
+- `domain` keeps only the addresses at that domain.
+- The guidance never tells the member to open the Email app for a Cc.
+- Fences: `tests/unit/test_email_contact_suggest_r8.py` (R8),
+  `tests/unit/test_email_contact_card.py` and
+  `tests/unit/test_email_chat_assistant_tools.py`.

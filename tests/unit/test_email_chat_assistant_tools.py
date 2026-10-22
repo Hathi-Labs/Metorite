@@ -249,6 +249,92 @@ async def test_find_contact_never_guesses(gw: _Gw) -> None:
     assert "Ask the member for the address" in out
 
 
+async def test_find_contact_names_each_source_and_asks_with_options(gw: _Gw) -> None:
+    """Owner, 2026-10-22: "add Kiran and Geo from Fracktal to CC". Each hit
+    names its source, and a clash sends the model to ask_questions with one
+    option for each person."""
+    gw.contacts = [
+        {"email": "kiran@fracktal.in", "name": "Kiran R", "source": "org"},
+        {"email": "kiran@client.test", "name": "Kiran K", "source": "sent"},
+        {"email": "kiran@x.test", "name": "Kiran X"},
+    ]
+    out = await agents.find_contact("Kiran", domain="@Fracktal.in")
+    assert gw.gets[-1] == ("/email/contacts/suggest",
+                           {"q": "Kiran", "limit": 8, "domain": "fracktal.in"})
+    assert "- Kiran R <kiran@fracktal.in> · org:" in out
+    assert "- Kiran K <kiran@client.test> · sent:" in out
+    assert "- Kiran X <kiran@x.test> · seen:" in out
+    assert "ask_questions" in out and "one option for each person" in out
+    assert "Never guess" in out
+
+
+async def test_find_contact_asks_before_it_uses_a_seen_address(gw: _Gw) -> None:
+    gw.contacts = [{"email": "geo@x.test", "name": "Geo", "source": "seen"}]
+    out = await agents.find_contact("Geo")
+    assert out.startswith("One person matches, but the member never wrote")
+    assert "ask_questions" in out
+
+
+async def test_find_contact_uses_a_colleague_at_once(gw: _Gw) -> None:
+    gw.contacts = [{"email": "geo@fracktal.in", "name": "Geo", "source": "org"}]
+    out = await agents.find_contact("Geo", domain="fracktal")
+    assert out.startswith("One person matches. Use this address")
+    assert "ask_questions" not in out
+    assert "at fracktal" in out
+
+
+async def test_find_contact_says_a_bad_domain(gw: _Gw, monkeypatch) -> None:
+    async def get(path, params=None):
+        raise agents.GatewayError("domain must be a domain", 422)
+
+    monkeypatch.setattr(agents, "_get", get)
+    out = await agents.find_contact("Geo", domain="a b")
+    assert "is not a domain" in out
+
+
+async def test_edit_draft_card_leads_with_the_added_cc(gw: _Gw) -> None:
+    """The card shows who joins the Cc first, and shows a Cc that the new
+    list left out, so a dropped address cannot pass in silence."""
+    out = await agents.edit_draft(BOX, "d1", cc=["kiran@fracktal.in", "geo@fracktal.in"])
+    [card] = gw.cards
+    ctx = card["context"]
+    assert ctx.startswith("The changes to the recipients:")
+    assert "- Added to Cc: kiran@fracktal.in" in ctx
+    assert "- Added to Cc: geo@fracktal.in" in ctx
+    assert "- Removed from Cc: kim@contoso.test" in ctx
+    assert "Cc: kiran@fracktal.in, geo@fracktal.in." in out
+
+
+# ── 3b. The in-chat Cc guidance (owner, 2026-10-22) ─────────────────────────
+#
+# Fence ``email-chat-cc-in-chat``: the guidance for an added Cc or Bcc keeps
+# the member in the chat (find_contact, ask_questions, edit_draft,
+# send_draft) and never sends them to the Email app.
+
+
+def _cc_block() -> str:
+    text = (_AGENT.parent / "instructions.md").read_text(encoding="utf-8")
+    start = text.index("**Adding a Cc or a Bcc to a reply.**")
+    return text[start:text.index("**Files of the email.**", start)]
+
+
+def test_the_cc_guidance_stays_in_the_chat() -> None:
+    block = _cc_block()
+    for tool in ("find_contact", "ask_questions", "edit_draft", "send_draft",
+                 "compose_reply"):
+        assert f"`{tool}`" in block, tool
+    assert "Never tell the member to open\nthe Email app" in block
+    # Only the "never" line names the app.
+    assert block.count("Email app") == 1
+    text = (_AGENT.parent / "instructions.md").read_text(encoding="utf-8")
+    assert "Put\n  only the added people in `cc`." not in text
+    for doc in (agents.compose_reply.__doc__ or "", agents._CARD_REVISED):
+        flat = " ".join(doc.split())
+        assert "find_contact" in flat and "edit_draft" in flat
+        assert "Never" in flat and "Email app" in flat
+    assert "ask_questions" in (agents.find_contact.__doc__ or "")
+
+
 # ── 4. forward_email(files=) ─────────────────────────────────────────────────
 
 

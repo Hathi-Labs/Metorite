@@ -1874,10 +1874,12 @@ _CARD_REVISED = (
     "they change this mail, change it, keep every part they did not ask to "
     "change, and show a new card with the new text. If they ask about "
     "something else, answer that first, then ask whether to show the card "
-    "again. You cannot add or remove a recipient, a CC or a BCC: the server "
-    "sets them. If the member asks for that, say so in one sentence, and "
-    "tell them to save the reply to Drafts and add the people there. Never "
-    "show the same card again as if you had made the change.")
+    "again. If they ask to add a Cc or a Bcc, find each person with "
+    "find_contact, and ask with ask_questions when names clash. The card "
+    "already saved this reply to Drafts. Add the people to that draft with "
+    "edit_draft, then offer send_draft. After that, change the draft only "
+    "with edit_draft, because a new card resets the Cc. Never send the "
+    "member to the Email app for it.")
 
 
 def _revised(answer: Any) -> bool:
@@ -1963,7 +1965,13 @@ async def compose_reply(
     reply to say in ``instruction``, in the member's words ("accept, but move
     it to Friday"), so the server's text follows it. The card shows the text in full,
     and the member edits it: nothing leaves until the member presses Send.
-    Where no card can show, the tool drafts, saves and sends nothing."""
+    Where no card can show, the tool drafts, saves and sends nothing.
+
+    The card adds no Cc or Bcc. When the member asks for one, do it in the
+    chat: find each person with find_contact. The card saved the reply to
+    Drafts, and the answer names its draft_id. Add the people with
+    edit_draft, and offer send_draft. Never tell the member to open the
+    Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
         from acb_skills import ask_tools
@@ -1989,7 +1997,11 @@ async def compose_reply(
         reply=form,
     )
     if answer is ask_tools.REVISED:
-        return _CARD_REVISED + kept
+        # The id of the card's draft, so a Cc the member asks for goes on it
+        # with edit_draft (owner, 2026-10-22).
+        did = form["draft_id"]
+        ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
+        return _CARD_REVISED + ref + kept
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
@@ -4406,6 +4418,25 @@ async def _draft_row(account_id: str, draft_id: str) -> tuple[dict[str, Any] | N
     return draft, sender
 
 
+def _recipient_changes(
+    old: dict[str, list[str]], new: dict[str, list[str]],
+) -> list[str]:
+    """One line for each address that ``edit_draft`` adds or takes away.
+
+    The card leads with them, so the member sees "Added to Cc: kiran@..."
+    first. A line "Removed from Cc" shows when the model sent a list that
+    left out an address that the draft had."""
+    lines: list[str] = []
+    for key, head, _ in _DRAFT_FIELDS:
+        was = {a.lower() for a in old.get(key) or []}
+        now = {a.lower() for a in new.get(key) or []}
+        lines += [f"- Added to {head}: {_draft_address_line(a)}"
+                  for a in new.get(key) or [] if a.lower() not in was]
+        lines += [f"- Removed from {head}: {_draft_address_line(a)}"
+                  for a in old.get(key) or [] if a.lower() not in now]
+    return lines
+
+
 @_annotate_risk(open_world=False, destructive=False)
 async def edit_draft(
     account_id: str,
@@ -4428,6 +4459,7 @@ async def edit_draft(
     if draft is None:
         return f"Nothing changed. {sender}"
     lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
+    before = {key: list(v) for key, v in lists.items()}
     for key, given in (("to", to), ("cc", cc), ("bcc", bcc)):
         if given is not None:
             lists[key] = [str(a).strip() for a in given if str(a).strip()]
@@ -4451,6 +4483,11 @@ async def edit_draft(
     else:
         text = body
     detail, context = _draft_card(sender, new_subject, lists)
+    changes = _recipient_changes(before, lists)
+    if changes and context:
+        context = "The changes to the recipients:\n" + "\n".join(changes) + "\n\n" + context
+        if len(context) > _CARD_CONTEXT_LIMIT:
+            context = ""
     if not context:
         return "Nothing changed. The draft has too many recipients for one card."
     if keep_body:
@@ -4479,7 +4516,9 @@ async def edit_draft(
                 "pass its whole text, with the change, in body.")
     lost = (" Its formatting and its images could not be kept, so it now "
             "holds the text only.") if res.get("html") == "lost" else ""
-    return f"The draft is saved in {sender}. Nothing was sent.{lost}"
+    now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
+                  if lists[key] and lists[key] != before[key])
+    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}"
 
 
 def _snooze_time(until: str) -> tuple[Any, str]:
@@ -4535,32 +4574,71 @@ async def snooze_email(email_id: str, until: str = "") -> str:
     return done
 
 
+#: What each ``source`` of ``/email/contacts/suggest`` means, for the model.
+_CONTACT_SOURCES = {
+    "org": "org: a member of the organization",
+    "sent": "sent: the member wrote to this address",
+    "seen": "seen: only seen in mail, the member never wrote to it",
+}
+
+
 @_annotate_risk(open_world=False)
-async def find_contact(name: str, account_id: str | None = None) -> str:
+async def find_contact(
+    name: str, account_id: str | None = None, domain: str | None = None,
+) -> str:
     """Find the email address of a person by name, or by part of a name or
-    an address. Use it before send_email when the member names a person
-    ("email Priya") and gives no address. It searches the people the member
-    wrote to, the contacts and the senders. When it finds more than one,
-    ask the member which one. Never guess an address."""
+    an address. Use it before send_email, and before you add a person to the
+    To, Cc or Bcc of a draft, when the member names a person ("email Priya",
+    "add Kiran from Fracktal to CC") and gives no address. It searches the
+    members and the People directory of the organization, the people the
+    member wrote to, the contacts and the senders. Each hit names its source.
+
+    ``domain`` keeps only the addresses at that domain, for "Kiran from
+    Fracktal". Give the domain when you know it ("fracktal.in"), or the name
+    of the company ("fracktal"). Memory can suggest the domain, but only this
+    tool gives the address.
+
+    When it finds more than one person, or the only hit is ``seen``, ask the
+    member with ask_questions: one option for each person, with the name and
+    the full address. Never guess an address."""
     q = " ".join(str(name or "").split())
     if not q:
         return "Give a name to look for."
     params: dict[str, Any] = {"q": q, "limit": 8}
     if account_id:
         params["account_id"] = account_id
-    rows = await _get("/email/contacts/suggest", params) or []
+    dom = str(domain or "").strip().lower().lstrip("@")
+    if dom:
+        params["domain"] = dom
+    try:
+        rows = await _get("/email/contacts/suggest", params) or []
+    except GatewayError as exc:
+        if exc.status != 422 or not dom:
+            raise
+        return (f"{domain!r} is not a domain. Give a domain such as fracktal.in, "
+                "or a company name such as fracktal, or leave domain out.")
     found = [r for r in rows if isinstance(r, dict) and r.get("email")]
+    at = f" at {dom}" if dom else ""
     if not found:
-        return (f"No person matches {q!r} in the mail of this member. Ask the "
-                "member for the address.")
+        return (f"No person matches {q!r}{at} in the mail or the organization of "
+                "this member. Ask the member for the address. Never guess one.")
     lines = []
     for r in found:
         who = _card_text(r.get("name") or "", 80)
         addr = _card_text(r.get("email"), _TARGET_LIMIT)
-        lines.append(f"- {who} <{addr}>" if who else f"- {addr}")
-    lead = ("One person matches" if len(found) == 1 else
-            f"{len(found)} people match. Ask the member which one")
-    return f"{lead} {q!r}:\n" + "\n".join(lines)
+        src = _CONTACT_SOURCES.get(str(r.get("source") or ""), _CONTACT_SOURCES["seen"])
+        lines.append((f"- {who} <{addr}>" if who else f"- {addr}") + f" · {src}")
+    ask = ("Call ask_questions with one option for each person, with the name "
+           "and the full address. Where no card can show, ask in text. Never guess.")
+    if len(found) > 1:
+        lead = f"{len(found)} people match. Ask the member which one they mean. {ask}"
+    elif str(found[0].get("source") or "") not in ("org", "sent"):
+        lead = ("One person matches, but the member never wrote to this address, "
+                "and it is not in the organization. Ask the member to confirm it "
+                f"before you use it. {ask}")
+    else:
+        lead = "One person matches. Use this address"
+    return f"{lead}\nMatches for {q!r}{at}:\n" + "\n".join(lines)
 
 
 #: What a bulk act may do, and its verb on the card.
