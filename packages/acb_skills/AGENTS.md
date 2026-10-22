@@ -490,7 +490,9 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    cuts the body to one heading path on the client, and it caps the answer
    at 16,000 characters. `knowledge_manifest.py` lists every Knowledge route
    with its class, and the client refuses a route that the manifest does not
-   give to the tool. A new Knowledge route needs a row. `index_block` builds
+   give to the tool. A new Knowledge route needs a row. The three gap routes
+   of KB-9a are rows too. The list is class A with no tool yet. Dismiss and
+   answered are class X, because a person closes a gap. `index_block` builds
    the index block of §6.5 for the executor, and it holds no page text. The
    tools reach the orchestrator through `core_tools` only, behind
    `COMPANY_SEARCH_ENABLED`, and they are in no skill family. Fences:

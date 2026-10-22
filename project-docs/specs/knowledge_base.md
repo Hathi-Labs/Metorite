@@ -94,6 +94,14 @@ Markdown shortcut. The link button of the bubble menu opens one popover for a
 page or an address. **KB-2k is BUILT, 2026-10-22** (people mentions, the hover
 preview and Create page, see "KB-2k in detail" in §21.7).
 
+**KB-9a is BUILT, 2026-10-22** (branch `kb-gaps`, migration 293, dark behind
+`KNOWLEDGE_GAPS`). A `search_company` read with no Knowledge hit writes a
+`kb_gaps` row after the search answers, in its own tenant session. The Gaps
+view shows the open questions to a manager, and "Write a page" opens the New
+page form with the question as the title. The gated My Day source `knowledge`
+gives the card `kb_gap` at 2 askers. No model runs. §8.4 door 3 and §9 hold
+the rules, and KB-9b holds the other three kinds.
+
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
 (PR #1069, no migration). `gateway/retrieval/` holds the registry
@@ -1102,6 +1110,7 @@ never a stub. The first screen is the space cards. A card opens its space, and t
 | Files | The connected documents and the files on pages the member can see, as a list with kind, size, space and where it lives. Filter by kind and source. A link opens the Artifacts library for everything members and agents make. This is the "file app" the owner raised, as a view, and the library of `artifact_management.md` stays the one library |
 | Sources | The connected folders, their trees, the include switches, the last sync. An admin connects an org source here. A member connects a personal one here |
 | Review | For a space manager: the drafts proposed by agents, the pages past review, the gaps. Hidden from a member with no `manage` |
+| Gaps | Built at KB-9a, before Review. The questions that Knowledge could not answer, the most asked first, with "Write a page" and Dismiss. The row shows to a holder of `knowledge:manage` while `KNOWLEDGE_GAPS` names the org. A member reaches `/knowledge/gaps` by URL and sees the questions the member asked |
 
 The page view is the editor. It has a title, the body, the files as inline images or cards, and the links
 as pills. A right strip holds the author, the versions, the review date and
@@ -1251,7 +1260,7 @@ its own branch, three or four in flight at most.
 | **KB-7c** | The OneDrive and SharePoint adapter on the Microsoft app the Email app uses | Same checks as 7a on a Microsoft 365 account | AGENT-SAFE. Org-wide `Sites.Read.All` consent: owner |
 | **KB-7d** | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
 | **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
-| **KB-9a** | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss` and `POST /knowledge/gaps/{id}/answered`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-10's rule |
+| **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss` and `POST /knowledge/gaps/{id}/answered`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-9b** | The other three kinds of §9: `doc_needs_review`, `doc_shared_with_me` and `source_sync_failed`, with their reach classes and the cache bumps of a publish and a source failure. `source_sync_failed` waits for KB-7b | A page past review shows a card to its author. A new page in a space the member reads shows a card. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
@@ -1300,6 +1309,14 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.tes
   src/lib/shell/seams.test.ts src/lib/shell/appBar.test.ts src/app/knowledge
 npx playwright test e2e/knowledge-pages.spec.ts      # KB-2a
 npx playwright test e2e/knowledge-search.spec.ts     # KB-3b
+
+# KB-9a, the gaps. The R8 suite needs the ladder database, and a skip is not a pass.
+uv run pytest tests/unit/test_kb_gaps.py tests/unit/test_kb_flags.py \
+  tests/unit/test_knowledge_chat_coverage.py tests/unit/test_company_search_sources.py \
+  tests/unit/test_feed_rank.py tests/unit/test_reach_plan.py tests/unit/test_my_day_prefs.py -q
+uv run pytest tests/unit/test_kb_gaps_r8.py -q -rs
+cd workbench/control_plane && npx vitest run src/app/knowledge/lib/gaps.test.ts \
+  src/lib/shell/feedApps.test.ts && npx playwright test e2e/knowledge-gaps.spec.ts
 
 # Wave 1 of §21.7 (KB-2d, KB-2f, KB-2g, KB-2i)
 uv run pytest tests/unit/test_third_party_notices.py -q
