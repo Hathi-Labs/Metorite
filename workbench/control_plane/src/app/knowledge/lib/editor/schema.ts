@@ -27,6 +27,7 @@ import {
   Extension,
   Node,
   mergeAttributes,
+  textblockTypeInputRule,
   type AnyExtension,
   type JSONContent,
   type MarkdownParseHelpers,
@@ -57,6 +58,7 @@ import {
   renderInline,
 } from "./inline";
 import { keepOrderedTaskBoxes, markerOf, renderList } from "./lists";
+import { chipPageId } from "./pageLinks";
 import { storedFormExtensions, type StoredFormViews } from "./storedForms";
 import { withHtmlTable } from "./htmlTable";
 import { withAlign } from "./textAlign";
@@ -161,6 +163,14 @@ export function codeFence(code: string): string {
 }
 
 const KnowledgeCodeBlock = CodeBlock.extend({
+  // Notion makes the block on the third backtick. The stock rule waits for a
+  // space or a newline after "```" and a language, and still works for that.
+  addInputRules() {
+    return [
+      ...(this.parent?.() ?? []),
+      textblockTypeInputRule({ find: /^```$/, type: this.type }),
+    ];
+  },
   renderMarkdown: (node: JSONContent) => {
     const code = (node.content ?? []).map((c) => c.text ?? "").join("");
     const fence = codeFence(code);
@@ -192,6 +202,14 @@ const KnowledgeCode = Code.extend({
  * `renderMarkdown` covers a caller that renders a link mark alone.
  */
 const KnowledgeLink = Link.extend({
+  // A link to a page of this app draws as a mention chip (`pageChips.ts`).
+  // Only the drawn `<a>` gets the class. The Markdown form stays a link.
+  renderHTML(props) {
+    const out = this.parent?.(props) as unknown as ["a", Record<string, unknown>, 0];
+    const id = chipPageId(String(props.HTMLAttributes.href ?? ""));
+    if (!id) return out as never;
+    return ["a", mergeAttributes(out[1], { class: "kb-page-chip", "data-page-id": id }), 0];
+  },
   parseMarkdown: (token: MarkdownToken, h: MarkdownParseHelpers): MarkdownParseResult => {
     const content = h.parseInline(token.tokens ?? []);
     if (!content.length) return h.createNode("htmlInline", { raw: String(token.raw ?? "") });

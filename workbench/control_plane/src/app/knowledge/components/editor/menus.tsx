@@ -28,10 +28,9 @@ import {
   LINK_REFUSED,
   addressOf,
   isAllowedHref,
+  linkChoices,
   linkedPageId,
   looksLikeAddress,
-  matchPages,
-  pageLinkHref,
   type PageChoice,
 } from "../../lib/editor/pageLinks";
 
@@ -177,8 +176,9 @@ export function FormatBubble({
 // ── The link control ────────────────────────────────────────────────────────
 
 /**
- * One field for an address or a page. Words that are not an address search
- * the member's pages, and a pick writes `/knowledge/pages/<id>`.
+ * One field: "Paste a link or search pages". Words that are not an address
+ * search the member's pages, and a pick writes `/knowledge/pages/<id>`. An
+ * address offers "Link to <address>". Enter takes the active row.
  */
 export function LinkPanel({
   editor,
@@ -201,10 +201,8 @@ export function LinkPanel({
   const [active, setActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const address = looksLikeAddress(text);
-  const rows = useMemo(
-    () => (address || !pages ? [] : matchPages(pages, text, { exclude: currentPageId, limit: 5 })),
-    [address, pages, text, currentPageId],
-  );
+  // An address offers "Link to <address>". Other words search the pages.
+  const rows = useMemo(() => linkChoices(text, pages, { exclude: currentPageId }), [text, pages, currentPageId]);
 
   // A refused address keeps the panel open and says what to type. Before
   // this, a `javascript:` address closed the panel and linked nothing.
@@ -217,7 +215,7 @@ export function LinkPanel({
   };
   const submit = () => {
     const row = rows[active];
-    if (row) apply(pageLinkHref(row.id));
+    if (row) apply(row.href);
     else if (text.trim()) apply(addressOf(text));
   };
 
@@ -227,7 +225,7 @@ export function LinkPanel({
         <Input
           autoFocus
           aria-label="Link address or page"
-          placeholder="Paste a link, or search your pages"
+          placeholder="Paste a link or search pages"
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -273,27 +271,32 @@ export function LinkPanel({
           {error}
         </p>
       ) : null}
-      {!address && text.trim() ? (
-        <div role="listbox" aria-label="Pages" className="space-y-0.5">
-          {pagesLoading && !pages ? <p className="px-2 py-1 text-[11px] text-muted-foreground">Loading pages…</p> : null}
-          {pages && rows.length === 0 ? (
+      {text.trim() ? (
+        <div role="listbox" aria-label="Link choices" className="space-y-0.5">
+          {!address && pagesLoading && !pages ? (
+            <p className="px-2 py-1 text-[11px] text-muted-foreground">Loading pages…</p>
+          ) : null}
+          {!address && pages && rows.length === 0 ? (
             <p className="px-2 py-1 text-[11px] text-muted-foreground">No page has that title. Enter links it as an address.</p>
           ) : null}
-          {rows.map((p, i) => (
+          {rows.map((r, i) => (
             <Button
-              key={p.id}
+              key={r.key}
               role="option"
               aria-selected={i === active}
               variant="ghost"
               size="sm"
-              icon="FileText"
+              icon={r.kind === "url" ? "Link" : r.icon ? undefined : "FileText"}
               layout="flex w-full items-center justify-start gap-2"
               selected={i === active}
               onMouseEnter={() => setActive(i)}
-              onClick={() => apply(pageLinkHref(p.id))}
+              onClick={() => apply(r.href)}
             >
-              <span className="min-w-0 flex-1 truncate text-left">{p.title}</span>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{p.spaceName}</span>
+              {r.kind === "page" && r.icon ? <span aria-hidden>{r.icon}</span> : null}
+              <span className="min-w-0 flex-1 truncate text-left">{r.label}</span>
+              {r.kind === "page" ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{r.hint}</span>
+              ) : null}
             </Button>
           ))}
         </div>

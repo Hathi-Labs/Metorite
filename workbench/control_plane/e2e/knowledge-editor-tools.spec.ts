@@ -214,7 +214,7 @@ test.describe("footnotes (KB-2i)", () => {
     await page.keyboard.press("Enter");
     await page.keyboard.type("Ask first /Footnote");
     const blocks = page.getByRole("listbox", { name: "Blocks" });
-    await expect(blocks.getByRole("option").first()).toHaveText("Footnote");
+    await expect(blocks.getByRole("option").first()).toContainText("Footnote");
     await page.keyboard.press("Enter");
     // The caret moves into the new note, so the next keys write it.
     await page.keyboard.type("Call the desk.");

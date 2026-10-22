@@ -82,6 +82,17 @@ view, over the same Markdown body. **D107 and §21.7 are added,
 2026-10-19.** Docmost core code may be ported, and the plan to match
 Docmost is in §21.7. Wave 1 is KB-2d, KB-2f, KB-2g and KB-2i.
 
+**Notion-style shortcuts are BUILT, 2026-10-22** (branch
+`ws61-notion-shortcuts`, frontend only, no migration). The stored form is
+unchanged. Owner request: "`[[` is weird, do better shortcuts. Try what
+Notion does."
+
+`@` opens a menu of Pages and a Date section. A page pick writes the same
+Markdown link as `[[` did, and `[[` still works. A link to a page by uuid draws
+as a mention chip. The `/` menu has groups, a line for each block and its
+Markdown shortcut. The link button of the bubble menu opens one popover for a
+page or an address. People mentions wait for KB-2k1.
+
 **§20 (D105, 2026-10-15)** adds company
 retrieval across every app. **KR-1 and KR-2 are BUILT, 2026-10-15**
 (PR #1069, no migration). `gateway/retrieval/` holds the registry
