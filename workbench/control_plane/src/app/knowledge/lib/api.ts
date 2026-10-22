@@ -23,6 +23,7 @@ import type {
   Space,
 } from "./types";
 import type { PageVersionBody } from "./history";
+import { updatedAfter, type SearchFilters } from "./searchFilters";
 
 export class KnowledgeError extends Error {
   status: number;
@@ -185,12 +186,24 @@ export const SEARCH_K = 20;
 /**
  * Search the published pages the member can see (KB-3b).
  *
- * It sends `q` and `k` only. `hybrid` stays at the gateway's default, and the
- * view adds no space filter yet. `signal` reaches `fetch`, because `call`
+ * It sends `q` and `k`, and one parameter for each filter that is set
+ * (`space`, `author`, `updated_after`, `title_only`). `hybrid` stays at the
+ * gateway's default. `signal` reaches `fetch`, because `call`
  * spreads `init`, so a newer keystroke cancels this request.
  */
-export function searchKnowledge(q: string, opts: { signal?: AbortSignal } = {}): Promise<SearchAnswer> {
-  return call<SearchAnswer>(`/search?q=${encodeURIComponent(q)}&k=${SEARCH_K}`, { signal: opts.signal });
+export function searchKnowledge(
+  q: string,
+  opts: { signal?: AbortSignal; filters?: SearchFilters; now?: Date } = {},
+): Promise<SearchAnswer> {
+  let url = `/search?q=${encodeURIComponent(q)}&k=${SEARCH_K}`;
+  // KB-3d: each filter adds its parameter, and an unset filter adds none.
+  const f = opts.filters;
+  if (f?.space) url += `&space=${encodeURIComponent(f.space)}`;
+  if (f?.author) url += `&author=${encodeURIComponent(f.author)}`;
+  const after = updatedAfter(f?.date ?? null, opts.now);
+  if (after) url += `&updated_after=${encodeURIComponent(after)}`;
+  if (f?.titleOnly) url += "&title_only=true";
+  return call<SearchAnswer>(url, { signal: opts.signal });
 }
 
 // ── The read-cache keys (`src/lib/dataCache.ts`) ────────────────────────────

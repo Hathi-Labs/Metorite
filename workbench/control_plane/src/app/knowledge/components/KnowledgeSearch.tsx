@@ -9,7 +9,9 @@
  * gives the assistant too (§6.3).
  *
  * The words live in the address (`?q=`), so a search is a link and a reload
- * shows the same hits. The view asks 300 ms after the last keystroke. It
+ * shows the same hits. So do the filter chips of KB-3d (`space`, `author`,
+ * `date` and `title`, `lib/searchFilters.ts`), and a hit opens its page with
+ * `?q=` so the page shows a match bar. The view asks 300 ms after the last keystroke. It
  * cancels the request before, and drops an answer for other words
  * (`lib/search.ts`). It shows nothing for `degraded`.
  *
@@ -29,6 +31,7 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { searchKnowledge } from "../lib/api";
 import { spaceIcon } from "../lib/labels";
 import { pageHref, searchHref } from "../lib/links";
+import { authorsOf, filtersFromParams, filtersKey, type SearchFilters } from "../lib/searchFilters";
 import {
   SEARCH_DEBOUNCE_MS,
   SEARCH_INPUT_ID,
@@ -46,21 +49,34 @@ import {
 import type { SearchHit } from "../lib/types";
 import { useKnowledge } from "./KnowledgeContext";
 import { PageGlyph } from "./PageIcon";
+import SearchFilterBar from "./SearchFilterBar";
 
 /** The last answer the view holds, for the words it answers. */
 interface Answer {
   query: string;
+  /** The filters the answer is for (`filtersKey`). */
+  filters: string;
+  /** The plain words the gateway gave to mark, or `null` for the query. */
+  terms: string[] | null;
   hits: SearchHit[];
 }
 
 /** A request that failed, for the words it asked. The view says why in its own words. */
 interface Failure {
   query: string;
+  filters: string;
 }
 
 export default function KnowledgeSearch() {
   const router = useRouter();
-  const urlQuery = useSearchParams().get("q") ?? "";
+  const params = useSearchParams();
+  const urlQuery = params.get("q") ?? "";
+  // The filters are the address's. A chip writes the address, and the view reads it back.
+  const paramString = params.toString();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `params` follows `paramString`
+  const filters = useMemo(() => filtersFromParams(params), [paramString]);
+  const fKey = filtersKey(filters);
+  const { spaces } = useKnowledge();
 
   const [raw, setRaw] = useState(urlQuery);
   const [answer, setAnswer] = useState<Answer | null>(null);
@@ -85,9 +101,11 @@ export default function KnowledgeSearch() {
 
   // The live words, for an answer that lands after newer keystrokes.
   const live = useRef(query);
+  const liveFilters = useRef(fKey);
   useEffect(() => {
     live.current = query;
-  }, [query]);
+    liveFilters.current = fKey;
+  }, [query, fKey]);
 
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -99,33 +117,44 @@ export default function KnowledgeSearch() {
     const ctrl = new AbortController();
     const timer = setTimeout(async () => {
       try {
-        const res = await searchKnowledge(query, { signal: ctrl.signal });
+        const res = await searchKnowledge(query, { signal: ctrl.signal, filters });
         // An answer for other words is stale. A newer request is on its way.
-        if (!isCurrent(res?.query ?? "", live.current)) return;
-        setAnswer({ query: res.query, hits: res.hits ?? [] });
+        if (!isCurrent(res?.query ?? "", live.current) || fKey !== liveFilters.current) return;
+        setAnswer({ query: res.query, filters: fKey, terms: res.terms ?? null, hits: res.hits ?? [] });
         setFailure(null);
       } catch (err) {
-        if (isAbort(err) || !isCurrent(query, live.current)) return;
-        setFailure({ query });
+        if (isAbort(err) || !isCurrent(query, live.current) || fKey !== liveFilters.current) return;
+        setFailure({ query, filters: fKey });
       }
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       clearTimeout(timer);
       ctrl.abort();
     };
-  }, [query, state, retry]);
+    // `filters` follows `fKey`, which is its string form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, state, retry, fKey]);
 
   // The address, after the same wait, so the history does not fill with
   // each letter. `replace`, so Back leaves the view in one step.
   useEffect(() => {
-    const next = searchHref(raw);
-    if (next === searchHref(written)) return;
+    const next = searchHref(raw, filters);
+    if (next === searchHref(written, filters)) return;
     const timer = setTimeout(() => {
       setWritten(raw.trim() ? raw : "");
       router.replace(next, { scroll: false });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [raw, written, router]);
+  }, [raw, written, router, filters]);
+
+  // A chip writes the address at once. The words in the box go with it.
+  const setFilters = useCallback(
+    (next: SearchFilters) => {
+      setWritten(raw.trim() ? raw : "");
+      router.replace(searchHref(raw, next), { scroll: false });
+    },
+    [raw, router],
+  );
 
   const clear = useCallback(() => {
     setRaw("");
@@ -134,12 +163,14 @@ export default function KnowledgeSearch() {
 
   // Derived, so no effect has to reset them. A request is pending while
   // neither an answer nor a failure is for the live words.
-  const answered = answer !== null && isCurrent(answer.query, query);
-  const failed = failure !== null && isCurrent(failure.query, query);
+  const answered = answer !== null && isCurrent(answer.query, query) && answer.filters === fKey;
+  const failed = failure !== null && isCurrent(failure.query, query) && failure.filters === fKey;
   const pending = state === "ok" && !answered && !failed;
   const error = state === "ok" && failed;
   const shown = state === "ok" ? answer : null;
   const groups = useMemo(() => (shown ? groupHits(shown.hits) : []), [shown]);
+  // The Creator menu offers who wrote the pages in view.
+  const authors = useMemo(() => authorsOf(shown?.hits ?? []), [shown]);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -176,6 +207,7 @@ export default function KnowledgeSearch() {
               spellCheck={false}
             />
           </div>
+          <SearchFilterBar filters={filters} onChange={setFilters} spaces={spaces} authors={authors} />
           <p
             id="knowledge-search-status"
             role="status"
@@ -191,6 +223,7 @@ export default function KnowledgeSearch() {
               shown={shown}
               groups={groups}
               query={query}
+              hasFilters={fKey !== ""}
               onClear={clear}
               onRetry={() => {
                 setFailure(null);
@@ -228,6 +261,7 @@ function Body({
   shown,
   groups,
   query,
+  hasFilters,
   onClear,
   onRetry,
 }: {
@@ -237,6 +271,7 @@ function Body({
   shown: Answer | null;
   groups: SpaceGroup[];
   query: string;
+  hasFilters: boolean;
   onClear: () => void;
   onRetry: () => void;
 }) {
@@ -270,7 +305,7 @@ function Body({
       <EmptyState
         icon="SearchX"
         message={`No published page matches “${shown.query}”.`}
-        hint="Try another word, or fewer words."
+        hint={hasFilters ? "Try another word, or clear a filter." : "Try another word, or fewer words."}
         action={{ label: "Clear the search", icon: "X", onClick: onClear }}
       />
     );
@@ -281,13 +316,21 @@ function Body({
       aria-busy={pending || undefined}
     >
       {groups.map((group) => (
-        <SpaceResults key={group.spaceId} group={group} query={query} />
+        <SpaceResults key={group.spaceId} group={group} query={query} terms={shown.terms} />
       ))}
     </div>
   );
 }
 
-function SpaceResults({ group, query }: { group: SpaceGroup; query: string }) {
+function SpaceResults({
+  group,
+  query,
+  terms,
+}: {
+  group: SpaceGroup;
+  query: string;
+  terms: string[] | null;
+}) {
   const { spaces } = useKnowledge();
   const space = spaces.find((s) => s.id === group.spaceId);
   const headingId = `knowledge-search-space-${group.spaceId}`;
@@ -310,14 +353,14 @@ function SpaceResults({ group, query }: { group: SpaceGroup; query: string }) {
         {group.pages.map((page) => (
           <li key={page.pageId}>
             <Link
-              href={pageHref(page.pageId)}
+              href={pageHref(page.pageId, { q: query })}
               className="cc-link flex gap-3 rounded-lg border border-border bg-card px-4 py-3 tech-transition hover:border-primary/40 hover:bg-muted/40"
             >
               {/* KB-2f: the page icon, else the page mark. */}
               <PageGlyph page={page} size="md" className="mt-0.5 text-muted-foreground" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm font-medium text-foreground">
-                  <Marked text={page.title} query={query} />
+                  <Marked text={page.title} query={query} terms={terms} />
                 </span>
                 {page.snippets.map((snippet, i) => (
                   <span key={i} className="mt-1.5 flex min-w-0 flex-col">
@@ -327,7 +370,7 @@ function SpaceResults({ group, query }: { group: SpaceGroup; query: string }) {
                       </span>
                     ) : null}
                     <span className="line-clamp-2 text-xs text-muted-foreground">
-                      <Marked text={snippet.text} query={query} />
+                      <Marked text={snippet.text} query={query} terms={terms} />
                     </span>
                   </span>
                 ))}
@@ -341,15 +384,12 @@ function SpaceResults({ group, query }: { group: SpaceGroup; query: string }) {
 }
 
 /** A text with the words of the query marked. React text, never HTML. */
-function Marked({ text, query }: { text: string; query: string }) {
+function Marked({ text, query, terms }: { text: string; query: string; terms: string[] | null }) {
   return (
     <>
-      {highlight(text, query).map((part, i) =>
+      {highlight(text, terms ? terms.join(" ") : query).map((part, i) =>
         part.match ? (
-          <mark
-            key={i}
-            className="rounded-sm bg-primary/25 px-0.5 text-foreground"
-          >
+          <mark key={i} className="kb-search-mark">
             {part.text}
           </mark>
         ) : (

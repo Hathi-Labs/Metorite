@@ -28,12 +28,12 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
 /** Recount the matches: the plugin reads the storage on the next transaction. */
-function refresh(editor: Editor) {
+export function refresh(editor: Editor) {
   if (!editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta("kbFind", true));
 }
 
 /** Scroll the match in focus to the middle of the box that scrolls the page. */
-function showCurrent(editor: Editor, scroller: HTMLElement | Window | undefined) {
+export function showCurrent(editor: Editor, scroller: HTMLElement | Window | undefined) {
   if (editor.isDestroyed) return;
   const el = editor.view.dom.querySelector<HTMLElement>(".kb-find-match-current");
   if (!el) return;

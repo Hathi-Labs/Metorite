@@ -5,6 +5,8 @@
 // `/knowledge/search?q=<words>` is the Search view, so a search is a link.
 // `/knowledge?space=<id>&view=archived` is the archived pages of a space (KB-2d).
 
+import { NO_FILTERS, filtersToPairs, type SearchFilters } from "./searchFilters";
+
 export const KNOWLEDGE_HOME = "/knowledge";
 
 /** The path of the Search view, with no query. */
@@ -14,9 +16,11 @@ export function spaceHref(spaceId: string | null): string {
   return spaceId ? `${KNOWLEDGE_HOME}?space=${encodeURIComponent(spaceId)}` : KNOWLEDGE_HOME;
 }
 
-export function pageHref(pageId: string, opts: { edit?: boolean } = {}): string {
+export function pageHref(pageId: string, opts: { edit?: boolean; q?: string } = {}): string {
   const base = `${KNOWLEDGE_HOME}/pages/${encodeURIComponent(pageId)}`;
-  return opts.edit ? `${base}?edit=1` : base;
+  if (opts.edit) return `${base}?edit=1`;
+  // KB-3d: a hit opens its page with the words, and the match bar marks them.
+  return opts.q?.trim() ? `${base}?q=${encodeURIComponent(opts.q.trim())}` : base;
 }
 
 /** The `view` of a space that lists its archived pages (KB-2d). */
@@ -32,9 +36,16 @@ export function headingHref(pageId: string, slug: string): string {
   return `${pageHref(pageId)}#${encodeURIComponent(slug)}`;
 }
 
-/** The Search view for these words. No words, or only spaces, is the bare view. */
-export function searchHref(q = ""): string {
-  return q.trim() ? `${KNOWLEDGE_SEARCH}?q=${encodeURIComponent(q)}` : KNOWLEDGE_SEARCH;
+/**
+ * The Search view for these words and filters (KB-3d). No words and no
+ * filter is the bare view. The words come first in the address.
+ */
+export function searchHref(q = "", filters: SearchFilters = NO_FILTERS): string {
+  const pairs: [string, string][] = [];
+  if (q.trim()) pairs.push(["q", q]);
+  pairs.push(...filtersToPairs(filters));
+  if (!pairs.length) return KNOWLEDGE_SEARCH;
+  return `${KNOWLEDGE_SEARCH}?${pairs.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
 }
 
 /** The page id of a Knowledge path, or `null` off a page. */

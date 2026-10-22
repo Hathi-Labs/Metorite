@@ -1239,6 +1239,13 @@ textarea.kb-title::placeholder { color: var(--muted-foreground); opacity: 0.6; }
   border-radius: 2px;
   padding: 0 0.1em;
 }
+/* KB-3d: a matched word in a search snippet. The look of `.kb-highlight`. */
+.kb-search-mark {
+  background: color-mix(in srgb, var(--cat-12) 32%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
 .kb-editor [data-align="center"] { text-align: center; }
 .kb-editor [data-align="right"] { text-align: right; }
 .kb-editor [data-align="justify"] { text-align: justify; }

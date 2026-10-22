@@ -45,3 +45,4 @@ Add a section per feature as you build it. Example:
 | K-1 | `diff-reviewer` on the whole wave 2 diff, with KB-2h first | KB-2h landed in build mode, with the verifier only | The reviewer reports no P0 on the backlinks write, the read and `read_links` |
 | K-2 | A backfill of `kb_links` for the pages written before KB-2h | Old pages gain links only on their next write | Each live page has the rows its body names, or the spec says why not |
 | K-3 | Visual review of the "Linked from" list | Build mode skipped it | The list reads right in light mode, compact density, a changed accent, and at 390 px |
+| K-4 | A test that `kb_index.query.query(..., title_only=True)` skips the semantic half when a caller passes a vector | Only the route's guard has a test. The second guard in `query.py` has none (KB-3d verify, 2026-10-22) | A test passes a vector with `title_only=True` and finds no semantic hit |
