@@ -7,6 +7,7 @@ EM-T3d), which returns integers only.
 from __future__ import annotations
 
 import asyncio
+import imaplib
 import json
 import re
 from typing import Any
@@ -415,6 +416,40 @@ async def org_connection_counts(
     )
 
 
+#: The wait, in seconds, for the login test of a new IMAP mailbox.
+_IMAP_LOGIN_TIMEOUT = 10.0
+
+
+async def _verify_imap_login(credentials: dict[str, Any]) -> None:
+    """Log in to the IMAP server with the credentials before anything is saved.
+
+    A refused user name or password answers 422. A server that Metorite cannot
+    reach answers 502. The messages are fixed text: they never carry the
+    password, the server's own words or the credentials, and the log line
+    holds the host, the port and the error class only.
+    """
+    from email_ingestion.providers.imap import IMAPProvider
+
+    host = str(credentials.get("imap_host", ""))
+    port = credentials.get("imap_port", 993)
+    try:
+        await IMAPProvider(dict(credentials)).verify_login(_IMAP_LOGIN_TIMEOUT)
+    except imaplib.IMAP4.error as exc:
+        _log.info("email.imap_login_refused", host=host, port=port,
+                  error=type(exc).__name__)
+        raise HTTPException(
+            status_code=422,
+            detail="The mail server refused the user name or password.",
+        ) from None
+    except (OSError, ValueError) as exc:
+        _log.info("email.imap_unreachable", host=host, port=port,
+                  error=type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Metorite could not reach {host}:{port}.",
+        ) from None
+
+
 @router.post("/accounts", response_model=EmailAccountModel, status_code=201)
 async def create_account(
     req: CreateAccountRequest,
@@ -461,6 +496,10 @@ async def create_account(
                 status_code=400,
                 detail=f"Missing IMAP credential fields: {', '.join(missing)}",
             )
+
+    # Test the login BEFORE anything is encrypted or saved, so a wrong
+    # password is an error and not a mailbox that never syncs.
+    await _verify_imap_login(req.credentials)
 
     # Encrypt credentials
     from acb_llm.key_store import get_key_store

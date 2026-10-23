@@ -72,6 +72,8 @@ class IMAPProvider(BaseEmailProvider):
         username = self.credentials.get("imap_username", "")
         password = self.credentials.get("imap_password", "")
         use_ssl = self.credentials.get("imap_use_ssl", True)
+        # A caller that tests a login (``verify_login``) passes a short wait.
+        timeout = float(self.credentials.get("imap_timeout", 30))
 
         if not host or not username or not password:
             raise ValueError(
@@ -80,15 +82,35 @@ class IMAPProvider(BaseEmailProvider):
 
         def _connect() -> imaplib.IMAP4:
             if use_ssl:
-                conn = imaplib.IMAP4_SSL(host, port, timeout=30)
+                conn = imaplib.IMAP4_SSL(host, port, timeout=timeout)
             else:
-                conn = imaplib.IMAP4(host, port, timeout=30)
+                conn = imaplib.IMAP4(host, port, timeout=timeout)
             conn.login(username, password)
             return conn
 
         return await asyncio.to_thread(_connect)
 
     # -- Provider interface --------------------------------------------------
+
+    async def verify_login(self, timeout: float = 10.0) -> None:
+        """Log in once and log out, with a short wait, and say why it failed.
+
+        ``authenticate`` answers a bare bool. This raises, so the caller can
+        tell a refused sign-in (``imaplib.IMAP4.error``) from a server that
+        it cannot reach (``OSError``, which covers a timeout, a refused
+        connection, a name that does not resolve and a TLS failure). The
+        error never carries the password: the caller must not echo it.
+        """
+        saved = self.credentials
+        self.credentials = {**saved, "imap_timeout": timeout}
+        try:
+            conn = await self._connect_imap()
+        finally:
+            self.credentials = saved
+        try:
+            conn.logout()
+        except Exception:  # noqa: BLE001 - the login worked, so the check passed
+            pass
 
     async def authenticate(self) -> bool:
         try:
