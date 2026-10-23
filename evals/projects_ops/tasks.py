@@ -1,6 +1,7 @@
-"""The Projects operations tasks, PO-1 to PO-11 (WS-46 P3 and later slices).
+"""The Projects operations tasks, PO-1 to PO-14 (WS-46 P3 and later slices).
 
 PO-8 is from P6, PO-9 from P7, PO-10 from P13 and PO-11 from H-273.
+PO-12 to PO-14 are from WS-64 OP-6a: make, rename and delete an area.
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -117,6 +118,25 @@ TASKS: tuple[TaskSpec, ...] = (
         "PO-11", "Three new tags in one call",
         "Register these 3 tags",
         "Register these 3 tags in the Launch project: vendor, print and av.",
+        cards=(APPROVE,),
+    ),
+    # WS-64 OP-6a (D-OP-9): the member's own areas, from the chat.
+    TaskSpec(
+        "PO-12", "A new area",
+        "Make an area called Garden",
+        "Make a new area for my own tasks called Garden.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-13", "Rename an area",
+        "Rename my Home area to House",
+        "Rename my area Home to House.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-14", "Delete an area that holds finished tasks",
+        "Delete my Finance area",
+        "Delete my area Finance.",
         cards=(APPROVE,),
     ),
 )

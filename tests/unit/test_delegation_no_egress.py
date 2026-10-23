@@ -763,6 +763,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: sits behind one confirmation card and writes only through the gateway.
 #: 2026-10-16 (projects_ai_chat.md §14.10): make_report joined by scope, with the
 #: same PDF seam, the same writes and open_world=False.
+#: 2026-10-23 (WS-64 OP-6a, D-OP-9): create_area, rename_area and delete_area joined.
+#: Each writes only through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -771,6 +773,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "complete", "create_field", "create_personal_task", "create_project",
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer",
+    "create_area", "delete_area", "rename_area",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",

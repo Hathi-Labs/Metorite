@@ -44,7 +44,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from evals.coding_engine import stub_api as coding_stub
-from evals.projects_ops.dataset import CLOSED, Dataset, Project, ident
+from evals.projects_ops.dataset import AREAS, CLOSED, Dataset, Project, ident
 
 NOT_SERVED = "The eval stub does not serve this route."
 NOT_VISIBLE = "Not found, or not visible to you."
@@ -92,9 +92,16 @@ class OpsStub:
     views: list[dict[str, Any]] = field(default_factory=list)
     #: H-273: the tags each project registers (the stub starts with none).
     tags: list[dict[str, Any]] = field(default_factory=list)
+    #: WS-64 OP-6a: the acting member's own areas.
+    areas: list[dict[str, Any]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
+        self.areas = [
+            {"id": a.id, "name": a.name, "archived": False, "open_tasks": a.open_tasks,
+             "held": a.held}
+            for a in AREAS
+        ]
         for t in self.dataset.tasks:
             project = self.dataset.project(t.project)
             self.tasks[t.id] = {
@@ -158,6 +165,10 @@ class OpsStub:
             ("POST", f"/projects/nodes/{_ID}/views", lambda i, _q, b: self.create_view(i, b)),
             ("GET", f"/projects/nodes/{_ID}/tags", lambda i, _q, _b: self.list_tags(i)),
             ("POST", f"/projects/nodes/{_ID}/tags", lambda i, _q, b: self.create_tag(i, b)),
+            ("GET", "/projects/my/areas", lambda _i, _q, _b: self.list_areas()),
+            ("POST", "/projects/my/areas", lambda _i, _q, b: self.create_area(b)),
+            ("PATCH", f"/projects/my/areas/{_ID}", lambda i, _q, b: self.rename_area(i, b)),
+            ("DELETE", f"/projects/my/areas/{_ID}", lambda i, _q, _b: self.remove_area(i)),
             ("GET", "/projects/assignees", lambda _i, q, _b: self.assignees(q)),
             ("GET", "/projects/people/names", lambda _i, q, _b: self.people_names(q)),
             ("POST", "/projects/tasks", lambda _i, _q, b: self.create_task(b)),
@@ -347,6 +358,58 @@ class OpsStub:
                "color": body.get("color") or "gray", "description": body.get("description")}
         self.tags.append(tag)
         return copy.deepcopy(tag)
+
+    # ── areas (WS-64 OP-6a) ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _area_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {k: row[k] for k in ("id", "name", "archived", "open_tasks")}
+
+    def list_areas(self) -> dict[str, Any]:
+        rows = [self._area_row(a) for a in self.areas if not a["archived"]]
+        return {"rows": rows, "total": len(rows)}
+
+    def _area(self, area_id: str) -> dict[str, Any]:
+        """The route's lookup: another member's area is not found, and so is a gone one."""
+        row = next((a for a in self.areas if a["id"] == area_id), None)
+        if row is None:
+            raise StubError(404, "No such area")
+        return row
+
+    @staticmethod
+    def _area_name(body: dict[str, Any]) -> str:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise StubError(422, "An area needs a name.")
+        if len(name) > 120:
+            raise StubError(422, "An area name is at most 120 characters.")
+        return name
+
+    def create_area(self, body: dict[str, Any]) -> dict[str, Any]:
+        name = self._area_name(body)
+        if any(a["name"].lower() == name.lower() for a in self.areas if not a["archived"]):
+            raise StubError(409, f"You already have an area called {name}.")
+        row = {"id": ident("area", name), "name": name, "archived": False, "open_tasks": 0,
+               "held": 0}
+        self.areas.append(row)
+        return self._area_row(row)
+
+    def rename_area(self, area_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        name = self._area_name(body)
+        row = self._area(area_id)
+        row["name"] = name
+        return self._area_row(row)
+
+    def remove_area(self, area_id: str) -> dict[str, Any]:
+        """The route's two outcomes: an area with no task goes, any other is archived."""
+        row = self._area(area_id)
+        if row["held"] == 0:
+            self.areas.remove(row)
+            outcome = "deleted"
+        else:
+            row["archived"] = True
+            outcome = "archived"
+        return {"id": area_id, "outcome": outcome, "tasks": row["held"]}
 
     def assignees(self, q: dict[str, str]) -> dict[str, Any]:
         words = (q.get("q") or "").strip().lower()

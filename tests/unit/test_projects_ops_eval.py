@@ -118,8 +118,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_eleven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 12)) == T.TASK_IDS
+def test_the_fourteen_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 15)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -131,7 +131,7 @@ def test_the_task_selector() -> None:
     assert [t.id for t in T.select("all")] == list(T.TASK_IDS)
     assert [t.id for t in T.select("PO-4, PO-1")] == ["PO-4", "PO-1"]
     with pytest.raises(ValueError):
-        T.select("PO-12")
+        T.select("PO-99")
 
 
 # ── 2. the scripted sweep, through the REAL executor ────────────────────────
@@ -189,7 +189,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 11
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 14
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -613,6 +613,46 @@ def test_po11_the_wrong_project_fails(harness: R.OpsHarness) -> None:
 def test_po11_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
     steps = _po11(answer="I registered the tags in Launch.")
     assert _failed(_run(harness, "PO-11", steps)) == {"answer_counts_three"}
+
+
+# ── PO-12 to PO-14: the member's own areas (WS-64 OP-6a) ────────────────────
+
+
+def test_po12_to_po14_the_known_good_runs_pass(harness: R.OpsHarness) -> None:
+    for task in ("PO-12", "PO-13", "PO-14"):
+        record = _run(harness, task)
+        assert record["status"] == "pass", (task, record["failure"])
+
+
+def test_po12_a_declined_card_fails_and_writes_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-12"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-12", spec=spec)
+    assert {"one_card", "one_area_made"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po13_the_card_shows_the_old_name_and_the_new_one(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-13")
+    [card] = record["cards"]
+    assert "«Home»" in card["context"] and "«House»" in card["context"]
+
+
+def test_po13_a_rename_of_another_area_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("rename_area", area="Finance", new_name="House"), ("text", "Home is House.")]
+    assert {"one_rename_on_home"} <= _failed(_run(harness, "PO-13", steps))
+
+
+def test_po14_an_answer_that_says_deleted_fails(harness: R.OpsHarness) -> None:
+    """Finance holds two done tasks, so the route archives. 'Deleted' would be false."""
+    steps = [tool("delete_area", area="Finance"), ("text", "I deleted the area Finance.")]
+    assert _failed(_run(harness, "PO-14", steps)) == {"answer_says_archived"}
+
+
+def test_po14_the_card_says_what_the_route_will_do(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-14")
+    [card] = record["cards"]
+    assert "impact: 0 open tasks" in card["context"]
+    assert "archived and everything stays" in card["context"]
 
 
 def test_the_runner_answers_the_rows_of_a_card_as_drawn() -> None:

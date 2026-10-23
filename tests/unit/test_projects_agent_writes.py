@@ -341,6 +341,27 @@ def _answered(call: dict, *tables: Any) -> Any:
     return None
 
 
+#: WS-64 OP-6a. The member's own areas, as `GET /projects/my/areas` returns them.
+AREAS = [
+    {"id": UUID, "name": "Home", "archived": False, "open_tasks": 2},
+    {"id": SALES, "name": "Finance", "archived": False, "open_tasks": 0},
+]
+
+
+def _area_answers(call: dict) -> Any:
+    """WS-64 OP-6a: the member's areas, and the three writes on them."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/my/areas" and method == "GET":
+        return {"rows": AREAS, "total": len(AREAS)}
+    if path == "/projects/my/areas" and method == "POST":
+        return {"id": OTHER, "name": call["json"]["name"], "archived": False, "open_tasks": 0}
+    if path.startswith("/projects/my/areas/") and method == "DELETE":
+        return {"id": path.rsplit("/", 1)[-1], "outcome": "archived", "tasks": 3}
+    if path.startswith("/projects/my/areas/") and method == "PATCH":
+        return {"id": path.rsplit("/", 1)[-1], "name": call["json"]["name"], "archived": False}
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
@@ -352,7 +373,7 @@ def responder(call: dict) -> Any:
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
     answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers,
-                         _subtree_answers)
+                         _subtree_answers, _area_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -549,7 +570,11 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "merge_tags": [{"project_id": UUID, "tag": "urgent", "into": "p0"}],
     "delete_view": [{"project_id": UUID, "view_name": "Board"}],
     "report_delete": [{"report_id": UUID}],
+    "delete_area": [{"area": "Home"}, {"area": SALES}],
+    "rename_area": [{"area": "Home", "new_name": "House"}],
     "delete_attachment": [{"task_id": UUID, "attachment_id": FILE}],
+    # WS-64 OP-6a — a new area of the member's own
+    "create_area": [{"name": "Garden"}],
     # S4 — the forms: an editable card, then the class B card
     "edit_task": [{"task_id": UUID}],
     "edit_project": [{"project_id": UUID}],
@@ -627,6 +652,8 @@ _ONE_ID: dict[str, str] = {
     "delete_view": "view_name",
     "report_delete": "report_id",
     "delete_attachment": "attachment_id",
+    "delete_area": "area",
+    "rename_area": "area",
 }
 
 
@@ -747,6 +774,10 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "unarchive_project",
             "propose_plan",
             "mark_notifications_read",
+            # WS-64 OP-6a: an area is the member's own category, not a task or a project.
+            "create_area",
+            "rename_area",
+            "delete_area",
         )
     ),
 )

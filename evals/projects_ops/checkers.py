@@ -678,6 +678,80 @@ def check_po11(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-12 to PO-14: the member's own areas (WS-64 OP-6a) ───────────────────
+
+_AREAS_PATH = "/projects/my/areas"
+
+
+def _area_id(name: str) -> str:
+    return next(a.id for a in ds_mod.AREAS if a.name == name)
+
+
+def check_po12(ev: Evidence) -> list[Rule]:
+    posts = ev.writes_to("POST", _AREAS_PATH)
+    body = posts[0].body if len(posts) == 1 else {}
+    return [
+        _one_approved_card(ev),
+        _rule("one_area_made", len(posts) == 1 and posts[0].status < 400
+              and isinstance(body, dict) and body.get("name") == "Garden",
+              "one POST /projects/my/areas, named Garden",
+              f"{len(posts)} area creates, with body {body}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the create is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_area", "garden" in ev.answer.lower(),
+              "the answer names Garden", "the answer does not name the area"),
+    ]
+
+
+def check_po13(ev: Evidence) -> list[Rule]:
+    home = _area_id("Home")
+    patches = ev.writes_to("PATCH", f"{_AREAS_PATH}/{home}")
+    body = patches[0].body if len(patches) == 1 else {}
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_old_and_new", "«Home»" in card and "«House»" in card,
+              "the card names the old name and the new name",
+              "the card does not show Home and House"),
+        _rule("one_rename_on_home", len(patches) == 1 and patches[0].status < 400
+              and isinstance(body, dict) and body == {"name": "House"},
+              f"one PATCH on the Home area {home}, with the name House",
+              f"{len(patches)} renames on Home, with body {body}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the rename is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_both", "house" in ev.answer.lower() and "home" in ev.answer.lower(),
+              "the answer names the old and the new name",
+              "the answer does not name both names"),
+    ]
+
+
+def check_po14(ev: Evidence) -> list[Rule]:
+    finance = _area_id("Finance")
+    deletes = ev.writes_to("DELETE", f"{_AREAS_PATH}/{finance}")
+    outcome = (deletes[0].response or {}).get("outcome") if len(deletes) == 1 else None
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_leads_with_impact", "impact:" in card and "archived" in card,
+              "the card shows the impact and says an area with tasks is archived",
+              "the card does not say that an area with tasks is archived"),
+        _rule("one_delete_on_finance", len(deletes) == 1 and deletes[0].status < 400,
+              f"one DELETE on the Finance area {finance}",
+              f"{len(deletes)} deletes on Finance"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the delete is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        # The route archived it, because it holds tasks. "Deleted" would be a lie.
+        _rule("answer_says_archived", outcome == "archived"
+              and bool(re.search(r"\barchiv", ev.answer, re.I))
+              and not re.search(r"\b(was|been|is) deleted\b|\bI deleted\b", ev.answer, re.I),
+              "the answer says the area was archived and the tasks stay",
+              f"the route answered {outcome!r}, and the answer does not say archived"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -692,6 +766,9 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-9": check_po9,
     "PO-10": check_po10,
     "PO-11": check_po11,
+    "PO-12": check_po12,
+    "PO-13": check_po13,
+    "PO-14": check_po14,
 }
 
 
