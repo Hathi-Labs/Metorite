@@ -926,3 +926,31 @@ async def test_p2_2_a_rewrite_of_a_draft_with_no_thread_says_the_text_is_replace
     [card] = gw.cards
     assert "Thank you, Kim." in card["context"]
     assert "replaces the whole text" in card["context"]
+
+
+async def test_p2_3_actions_refuse_a_rule_that_forwards(gw: Gateway) -> None:
+    gw.rules[BOX].append(dict(FORWARD_RULE, actions=[
+        {"type": "FORWARD", "to_address": "out@evil.test"}, {"type": "LABEL", "label": "x"}]))
+    out = await agents.update_rule(BOX, "r2", actions=[{"type": "LABEL", "label": "y"}])
+    assert out.startswith("Nothing changed.") and "remove_action_types" in out
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_p2_3_actions_keep_the_text_and_the_level_and_the_card_names_each_change(
+    gw: Gateway,
+) -> None:
+    gw.rules[BOX][0]["actions"] = [
+        {"id": "a1", "type": "DRAFT_EMAIL", "subject": "Re: quote", "content": "We confirm.",
+         "content_manual": True},
+        {"id": "a2", "type": "NOTIFY_ME", "label": "urgent"},
+        {"id": "a3", "type": "ARCHIVE"}]
+    await agents.update_rule(BOX, "r1", actions=[
+        {"type": "DRAFT_EMAIL", "delay_minutes": 30}, {"type": "NOTIFY_ME"}])
+    [card] = gw.cards
+    assert "- Removed: archives" in card["context"]
+    assert "- Changed: drafts an email → drafts an email after 30 minute(s)" in card["context"]
+    [(_m, _p, body)] = gw.writes
+    assert body["actions"] == [
+        {"id": "a1", "type": "DRAFT_EMAIL", "subject": "Re: quote", "content": "We confirm.",
+         "content_manual": True, "delay_minutes": 30},
+        {"id": "a2", "type": "NOTIFY_ME", "label": "urgent"}]

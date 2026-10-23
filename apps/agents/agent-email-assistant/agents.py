@@ -2849,18 +2849,21 @@ def _rule_card_fits(listing: str) -> bool:
 
 async def _inward_rule_card(
     title: str, detail: str, cancelled: str, rules: list[dict[str, Any]],
-    *, widens: bool = False,
+    *, widens: bool = False, changes: list[str] | None = None,
 ) -> str | None:
     """The card of a rule that sends nothing out, with each rule listed whole
     (:func:`_rule_lines`). None when the member approves. A list that the card
     cannot show whole asks no card, and saves nothing. *widens* says that the
     change widens a saved rule, and then a held run refuses a rule that it may
-    not save (:func:`_held_widening_refusal`)."""
+    not save (:func:`_held_widening_refusal`). *changes* names each action
+    that the change removes, adds or changes, above the list."""
     for rule in rules if widens else []:
         held = _held_widening_refusal(rule, widens)
         if held:
             return held
     listing = _rule_lines(rules)
+    if changes:
+        listing = "The changes to the actions:\n" + "\n".join(changes) + "\n\n" + listing
     if not _rule_card_fits(listing):
         return _RULE_CARD_TOO_LONG
     return await _card_refusal(title, detail, cancelled, listing)
@@ -2925,15 +2928,58 @@ def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
             if not 0 <= minutes <= _MAX_DELAY_MINUTES:
                 return [], (f"Not saved. delay_minutes must be from 0 to "
                             f"{_MAX_DELAY_MINUTES} (30 days).")
-            if minutes:
-                action["delay_minutes"] = minutes
+            # 0 stays explicit, so a kept action loses its old delay
+            # (:func:`_carry_over`).
+            action["delay_minutes"] = minutes
         if item.get("label_ai") is True:
             if "label" not in action:
                 return [], ("Not saved. label_ai needs a label: the prompt that the "
                             "AI turns into a label for each email.")
             action["label_ai"] = True
+        elif item.get("label_ai") is False:
+            action["label_ai"] = False
         out.append(action)
     return out, ""
+
+
+def _carry_over(
+    old: list[dict[str, Any]], new: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Review fix round 1 (P2-3): each item of a new ``actions`` list keeps
+    the fields of the saved action of the same type that it does not name:
+    the text of a draft, the level of a NOTIFY_ME, the id. The items match
+    by type, in order."""
+    used: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for item in new:
+        match = next((i for i, a in enumerate(old)
+                      if i not in used and a.get("type") == item.get("type")), None)
+        if match is None:
+            out.append(dict(item))
+            continue
+        used.add(match)
+        out.append({**old[match], **item})
+    return out
+
+
+def _action_changes(
+    old: list[dict[str, Any]], new: list[dict[str, Any]],
+) -> list[str]:
+    """One card line for each action that a change removes, adds or changes."""
+    used: set[int] = set()
+    lines: list[str] = []
+    for item in new:
+        match = next((i for i, a in enumerate(old)
+                      if i not in used and a.get("type") == item.get("type")), None)
+        if match is None:
+            lines.append(f"- Added: {_rule_acts([item])}")
+            continue
+        used.add(match)
+        if {k: v for k, v in old[match].items() if k != "id"} != \
+                {k: v for k, v in item.items() if k != "id"}:
+            lines.append(f"- Changed: {_rule_acts([old[match]])} → {_rule_acts([item])}")
+    lines += [f"- Removed: {_rule_acts([a])}" for i, a in enumerate(old) if i not in used]
+    return lines
 
 
 def _held_widening_refusal(rule: dict[str, Any], widens: bool) -> str | None:
@@ -3427,10 +3473,14 @@ async def update_rule(
         remove_action_types: remove each action of these types, e.g. ["ARCHIVE"].
         actions: the WHOLE new action list, which replaces every action. Each
             item is {type, label?, delay_minutes?, label_ai?}. Use it to change
-            a label, to add a delay, or to turn on an AI label. FORWARD and
-            CALL_WEBHOOK are not allowed here. A rule that already forwards
-            keeps that action only if you pass the list without it removed —
-            so read the rule first with get_rules_and_settings.
+            a label, to add a delay, or to turn on an AI label (LABEL only).
+            FORWARD and CALL_WEBHOOK are not allowed here, and a rule that
+            forwards or calls a webhook refuses the list: change it with
+            remove_action_types and add_action_type. An item of a type that
+            the rule has keeps that action's other fields, such as a draft
+            text or a NOTIFY_ME level. Read the rule first with
+            get_rules_and_settings. The card names each removed or changed
+            action.
         enabled: set true/false to enable or disable the rule (reversible —
             prefer this over delete_rule when the user wants to pause a rule).
     """
@@ -3458,6 +3508,13 @@ async def update_rule(
     # mail out, so each one asks too.
     was_outward = _has_outward_action(rule.get("actions"))
     first_read = _rule_fingerprint(rule)
+    old_actions = [dict(a) for a in rule.get("actions") or [] if isinstance(a, dict)]
+    if actions is not None and was_outward:
+        # Review fix round 1 (P2-3): the list cannot hold a forward or a
+        # webhook, so it would drop the one that the rule has.
+        return ("Nothing changed. This rule sends mail out, and `actions` cannot "
+                "hold that action. Use remove_action_types and add_action_type "
+                "instead.")
     # Chat parity wave 1: each change that can make the rule act on more mail,
     # or do more, widens it. A rename, a removal, a narrower operator, a
     # proposal instead of an act, or a pause does not.
@@ -3499,7 +3556,7 @@ async def update_rule(
                     "the rule, turn it off with enabled=false, or delete it.")
         rule["actions"] = kept
     if actions is not None:
-        rule["actions"] = replaced
+        rule["actions"] = _carry_over(old_actions, replaced)
     added_outward = False
     if add_action_type:
         action: dict[str, Any] = {"type": add_action_type}
@@ -3531,6 +3588,7 @@ async def update_rule(
             f"{_rule_acts(rule.get('actions'))}"
             + (", and it is on." if rule.get("enabled") else ", and it is off."),
             cancelled, [rule], widens=widens,
+            changes=_action_changes(old_actions, list(rule.get("actions") or [])),
         )
         if refusal:
             return refusal
