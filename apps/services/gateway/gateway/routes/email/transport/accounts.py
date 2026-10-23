@@ -7,10 +7,10 @@ EM-T3d), which returns integers only.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 import imaplib
 import json
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
@@ -19,12 +19,14 @@ from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
+    MAILBOX_LIMIT_DETAIL,
     MAX_MAILBOXES_PER_MEMBER,
     _account_scope,
-    enforce_mailbox_limit,
     _default_label,
     _log,
     _tenant_session,
+    enforce_mailbox_limit,
+    member_mailbox_count,
     router,
 )
 from gateway.routes.email.mailbox_identity import (
@@ -454,10 +456,9 @@ async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[Non
     call for a member, so no limit means no call.
     """
     import hashlib
+    import secrets
 
     from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
-
-    import secrets
 
     token = secrets.token_hex(8)
     who = hashlib.sha256(member.lower().encode("utf-8")).hexdigest()[:24]
@@ -608,8 +609,9 @@ async def create_account(
     # ``imap_timeout`` is read by the provider, and a member must not set it.
     creds = {k: v for k, v in req.credentials.items() if k != "imap_timeout"}
 
-    # The cheap checks run BEFORE any network call: the duplicate (409) first.
-    # The mailbox limit of Q-MB-1 joins here when it merges.
+    # The cheap checks run BEFORE any network call: the duplicate (409), then
+    # the mailbox limit of Q-MB-1 (a plain count, with no lock). The locked
+    # check runs again at the insert below, because two tabs can race.
     async with _tenant_session(org) as db:
         if (await db.execute(
             text(
@@ -625,6 +627,8 @@ async def create_account(
                 status_code=409,
                 detail=f"Account {req.email_address} already exists",
             )
+        if await member_mailbox_count(db, user.email) >= MAX_MAILBOXES_PER_MEMBER:
+            raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
 
     # Test the login BEFORE anything is encrypted or saved, so a wrong
     # password is an error and not a mailbox that never syncs.

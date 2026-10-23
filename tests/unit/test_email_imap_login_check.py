@@ -35,7 +35,8 @@ class _Reached(Exception):
 
 
 class _NoDuplicate:
-    """A session whose duplicate read finds nothing."""
+    """A session whose duplicate read finds nothing, and whose mailbox count
+    (Q-MB-1) is zero."""
 
     async def __aenter__(self):
         return self
@@ -47,6 +48,9 @@ class _NoDuplicate:
         class _R:
             def fetchone(self):
                 return None
+
+            def scalar(self):
+                return 0
 
         return _R()
 
@@ -163,6 +167,25 @@ async def test_a_duplicate_is_409_before_any_network_call(monkeypatch):
     with pytest.raises(HTTPException) as err:
         await accounts.create_account(_req(), user=USER)
     assert err.value.status_code == 409
+
+
+async def test_a_member_at_the_mailbox_limit_is_409_before_any_network_call(monkeypatch):
+    """Q-MB-1: the plain count runs with the cheap checks, before the login
+    test, so a member with five mailboxes cannot start a login test."""
+    def _no_network(*_a, **_k):
+        raise AssertionError("the login test ran for a member at the limit")
+
+    async def _five(_db, _member):
+        from gateway.routes.email.core import MAX_MAILBOXES_PER_MEMBER
+        return MAX_MAILBOXES_PER_MEMBER
+
+    monkeypatch.setattr(accounts, "_tenant_session", lambda *_a, **_k: _NoDuplicate())
+    monkeypatch.setattr(accounts, "member_mailbox_count", _five)
+    monkeypatch.setattr(accounts, "_verify_imap_login", _no_network)
+    with pytest.raises(HTTPException) as err:
+        await accounts.create_account(_req(), user=USER)
+    assert err.value.status_code == 409
+    assert err.value.detail == accounts.MAILBOX_LIMIT_DETAIL
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "169.254.169.254", "10.0.0.5", "::1"])
