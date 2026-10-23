@@ -16,7 +16,10 @@ import type { SubtreeRow } from "./api";
 import {
   afterDeleteTitle,
   buildRows,
+  TOO_MANY_MESSAGE,
   confirmLabel,
+  isAllTicked,
+  tooManyPicked,
   countsOf,
   idsToDelete,
   keptHiddenNote,
@@ -76,7 +79,7 @@ describe("the boxes", () => {
   const rows = buildRows(SERVER);
   it("start clear, so the default is the old behaviour", () => {
     const counts = countsOf(new Set(), rows);
-    expect(counts).toEqual({ deletes: 1, keeps: 6 });
+    expect(counts).toEqual({ deletes: 1, keeps: 6, hidden: 0 });
     expect(idsToDelete(new Set(), rows)).toEqual([]);
   });
   it("a tick on a parent ticks its whole subtree", () => {
@@ -120,10 +123,30 @@ describe("the counts", () => {
   it("count the task itself, in the summary and on the button", () => {
     const ticked = new Set(["b", "b1"]);
     const counts = countsOf(ticked, rows);
-    expect(counts).toEqual({ deletes: 3, keeps: 4 });
+    expect(counts).toEqual({ deletes: 3, keeps: 4, hidden: 0 });
     expect(summaryLine(counts)).toBe("Deletes 3 tasks · keeps 4");
     expect(confirmLabel(counts)).toBe("Delete 3 tasks");
     expect(idsToDelete(ticked, rows)).toEqual(["b", "b1"]);
+  });
+  it("agree when a subtask the member cannot see stays", () => {
+    const all = new Set(rows.map((r) => r.id));
+    expect(summaryLine(countsOf(all, rows, 1))).toBe(
+      `Deletes ${rows.length + 1} tasks · keeps 0 · 1 you cannot see stays`,
+    );
+    expect(summaryLine(countsOf(all, rows, 2))).toContain("2 you cannot see stay");
+  });
+  it("send the all flag for a full tick and refuse a long list", () => {
+    const big = buildRows(
+      Array.from({ length: 260 }, (_, i) => ({
+        id: `s${i}`, parent_task_id: null, title: `t${i}`, status_name: null,
+        status_category: null, archived: false,
+      })) as never,
+    );
+    expect(isAllTicked(setAll(big, true), big)).toBe(true);
+    expect(tooManyPicked(setAll(big, true), big)).toBe(false);
+    const most = new Set(big.slice(0, 250).map((r) => r.id));
+    expect(tooManyPicked(most, big)).toBe(true);
+    expect(TOO_MANY_MESSAGE).toBe("Pick up to 200 subtasks, or choose Delete all.");
   });
   it("say '1 task' for the task alone", () => {
     expect(confirmLabel(countsOf(new Set(), rows))).toBe("Delete 1 task");

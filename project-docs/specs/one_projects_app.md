@@ -527,7 +527,19 @@ are `projects/lib/deleteSubtasks.ts`. Both read `GET /projects/tasks/{id}/subtre
 a new read that shows the visible subtasks and counts the hidden ones. The chat
 card is `delete_task(subtasks_to_delete=)` in `skill_projects/guarded.py`. It uses
 the card with rows, with the task as the first row. Done-when 4 (the visual
-review at 390 and 1280 px) is **not done**: no dev server ran in this build.
+review at 390 and 1280 px) is **met**: it passed on 2026-10-23, at 390 and
+1280 px, in light mode, at compact density and under a changed accent.
+
+**Fix round 1 (2026-10-23).** (1) The chat card draws the tree depth first, so
+a grandchild sits under its own parent. (2) A long list of ids overran the URL.
+`DELETE /projects/tasks/{id}` now takes `?delete_all_subtasks=true`, the core's
+own `delete_all`. The dialog and the chat send it for "all". A list holds at
+most 200 ids, with the message "Pick up to 200 subtasks, or choose Delete all."
+(3) The app always opens the dialog, so a task with only archived or hidden
+subtasks shows the plain words. (4) The summary counts only what the member can
+see, and says "N you cannot see stay". (5) The tag "moves up" wraps under the
+title on a phone. (6) R8 cases for the subtree read are in
+`tests/unit/test_mcp_edge_delete.py`, class `TestTheSubtreeRead`.
 
 Owner, 2026-10-23, verbatim: "Sub tasks should also be deleted. The user
 should be shown that the task has what subtasks and if the subtasks should be

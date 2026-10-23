@@ -109,12 +109,31 @@ export interface DeleteCounts {
   deletes: number;
   /** The visible subtasks that stay. */
   keeps: number;
+  /** The subtasks the member cannot see. A delete always keeps them. */
+  hidden: number;
 }
 
-export function countsOf(ticked: ReadonlySet<string>, rows: TreeRow[]): DeleteCounts {
+/** The most ids the route takes in one list (`MAX_QUERY_DELETE_IDS`). More
+ *  than this goes as "delete all", which sends a flag and no list. */
+export const MAX_PICKED = 200;
+
+export function countsOf(ticked: ReadonlySet<string>, rows: TreeRow[], hidden = 0): DeleteCounts {
   const marked = rows.filter((r) => ticked.has(r.id)).length;
-  return { deletes: 1 + marked, keeps: rows.length - marked };
+  return { deletes: 1 + marked, keeps: rows.length - marked, hidden };
 }
+
+/** True when every row the member can see is ticked: the dialog then sends
+ *  the "all" flag, which has no list to overrun the URL. */
+export function isAllTicked(ticked: ReadonlySet<string>, rows: TreeRow[]): boolean {
+  return rows.length > 0 && rows.every((r) => ticked.has(r.id));
+}
+
+/** True when the pick is a list that the route would refuse as too long. */
+export function tooManyPicked(ticked: ReadonlySet<string>, rows: TreeRow[]): boolean {
+  return !isAllTicked(ticked, rows) && idsToDelete(ticked, rows).length > MAX_PICKED;
+}
+
+export const TOO_MANY_MESSAGE = `Pick up to ${MAX_PICKED} subtasks, or choose Delete all.`;
 
 /** The ids to send, in the tree's order. */
 export function idsToDelete(ticked: ReadonlySet<string>, rows: TreeRow[]): string[] {
@@ -123,8 +142,9 @@ export function idsToDelete(ticked: ReadonlySet<string>, rows: TreeRow[]): strin
 
 const tasks = (n: number) => `${n} task${n === 1 ? "" : "s"}`;
 
-export function summaryLine({ deletes, keeps }: DeleteCounts): string {
-  return `Deletes ${tasks(deletes)} · keeps ${keeps}`;
+export function summaryLine({ deletes, keeps, hidden }: DeleteCounts): string {
+  const base = `Deletes ${tasks(deletes)} · keeps ${keeps}`;
+  return hidden > 0 ? `${base} · ${hidden} you cannot see ${hidden === 1 ? "stays" : "stay"}` : base;
 }
 
 export function confirmLabel({ deletes }: DeleteCounts): string {

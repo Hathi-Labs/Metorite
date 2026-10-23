@@ -701,6 +701,7 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     # D-OP-10 (OP-7): the card sends the ids that the member ticked.
     ("DELETE", "/projects/tasks/{task_id}"): {
         "delete_subtask_ids": "delete_task.subtasks_to_delete",
+        "delete_all_subtasks": "delete_task.subtasks_to_delete",
     },
     ("POST", "/projects/tasks/{task_id}/move"): {
         "parent_task_id": "move_task.parent_task_id",

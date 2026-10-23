@@ -25,21 +25,25 @@ import {
   type TreeRow,
   buildRows,
   confirmLabel,
+  TOO_MANY_MESSAGE,
   countsOf,
   idsToDelete,
   introLine,
+  isAllTicked,
   movesUp,
   setAll,
   summaryLine,
   toggleRow,
+  tooManyPicked,
 } from "../lib/deleteSubtasks";
 
 interface Props {
   taskId: string;
   title: string | null;
   isMobile: boolean;
-  /** Called with the ids of the subtasks that go with the task. */
-  onConfirm: (deleteSubtaskIds: string[]) => void;
+  /** Called with the ids of the subtasks that go with the task, and true
+   *  when every visible one is ticked (the page then sends the "all" flag). */
+  onConfirm: (deleteSubtaskIds: string[], all: boolean) => void;
   onCancel: () => void;
 }
 
@@ -67,7 +71,8 @@ export default function DeleteTaskDialog({ taskId, title, isMobile, onConfirm, o
   }, [taskId]);
 
   const list = useMemo(() => rows ?? [], [rows]);
-  const counts = countsOf(ticked, list);
+  const counts = countsOf(ticked, list, hidden);
+  const tooMany = tooManyPicked(ticked, list);
 
   return (
     <Modal
@@ -94,7 +99,9 @@ export default function DeleteTaskDialog({ taskId, title, isMobile, onConfirm, o
         ) : null}
         {rows && rows.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            None of its subtasks is deleted. They move up a level.
+            {hidden > 0
+              ? "You can see none of its subtasks, so none is deleted."
+              : "This task has no subtasks."}
           </p>
         ) : null}
         {rows && rows.length > 0 ? (
@@ -115,7 +122,7 @@ export default function DeleteTaskDialog({ taskId, title, isMobile, onConfirm, o
               {rows.map((row) => (
                 <li key={row.id}>
                   <label
-                    className="flex min-h-9 cursor-pointer items-center gap-2 py-1 pr-2 hover:bg-secondary/50"
+                    className="flex min-h-9 cursor-pointer flex-wrap items-center gap-x-2 py-1 pr-2 hover:bg-secondary/50"
                     style={{ paddingLeft: `${0.5 + (row.depth - 1) * 1.25}rem` }}
                   >
                     <Checkbox
@@ -135,11 +142,11 @@ export default function DeleteTaskDialog({ taskId, title, isMobile, onConfirm, o
                       </span>
                     ) : null}
                     {movesUp(ticked, list, row.id) ? (
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                      <span className="basis-full pl-7 text-[11px] text-muted-foreground sm:basis-auto sm:shrink-0 sm:pl-0">
                         → moves up
                       </span>
                     ) : row.descendants.length > 0 ? (
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                      <span className="basis-full pl-7 text-[11px] text-muted-foreground sm:basis-auto sm:shrink-0 sm:pl-0">
                         ▸ {row.descendants.length} subtask{row.descendants.length === 1 ? "" : "s"}
                       </span>
                     ) : null}
@@ -148,6 +155,7 @@ export default function DeleteTaskDialog({ taskId, title, isMobile, onConfirm, o
               ))}
             </ul>
             <p className="text-xs font-medium text-foreground">{summaryLine(counts)}</p>
+            {tooMany ? <p className="text-xs text-destructive">{TOO_MANY_MESSAGE}</p> : null}
           </>
         ) : null}
         {hidden > 0 ? (
@@ -165,8 +173,8 @@ export default function DeleteTaskDialog({ taskId, title, isMobile, onConfirm, o
           variant="destructive"
           size="sm"
           icon="Trash2"
-          disabled={rows === null && !failed}
-          onClick={() => onConfirm(idsToDelete(ticked, list))}
+          disabled={(rows === null && !failed) || tooMany}
+          onClick={() => onConfirm(idsToDelete(ticked, list), isAllTicked(ticked, list))}
         >
           {confirmLabel(counts)}
         </Button>

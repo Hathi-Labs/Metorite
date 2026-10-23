@@ -332,6 +332,35 @@ async def delete_project(project_id: str) -> str:
 DELETE_CARD_ROWS = 100
 
 
+#: The most ids one delete sends in its query. Same number as the route's
+#: ``MAX_QUERY_DELETE_IDS``. More than this and "all" sends a flag instead.
+DELETE_QUERY_IDS = 200
+
+
+def _subtree_order(subs: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
+    """The visible subtasks depth first, each parent before its children.
+    A row whose parent the member cannot see counts as a child of the task."""
+    ids = {str(r["id"]) for r in subs}
+    kids: dict[str, list[dict[str, Any]]] = {}
+    for r in subs:
+        p = str(r.get("parent_task_id") or "")
+        kids.setdefault(p if p in ids and p != str(r["id"]) else root, []).append(r)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(pid: str) -> None:
+        for r in kids.get(pid, []):
+            rid = str(r["id"])
+            if rid not in seen:
+                seen.add(rid)
+                out.append(r)
+                walk(rid)
+
+    walk(root)
+    out.extend(r for r in subs if str(r["id"]) not in seen)
+    return out
+
+
 def _subtree_depths(subs: list[dict[str, Any]], root: str) -> dict[str, int]:
     """Each visible subtask's depth below the task. A row whose parent the
     member cannot see counts as a child of the task, as the app draws it."""
@@ -416,7 +445,7 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         depth = _subtree_depths(subs, tid)
         rows = [{"id": tid, "label": f"Delete this task {_ref(task)}", "hint": f"lane {lane}",
                  "checked": True}]
-        for r in subs:
+        for r in _subtree_order(subs, tid):
             rid = str(r["id"])
             state = str(r.get("status_name") or "")
             if r.get("archived"):
@@ -459,7 +488,13 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         chosen = frozenset(answer - {tid})
     elif not answer:
         return CANCELLED
-    params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
+    if len(chosen) > DELETE_QUERY_IDS:
+        # Only "all" gets here: a card with tick boxes holds under 100 rows,
+        # and a wider tree refuses any list above. A flag has no id list to
+        # overrun the URL.
+        params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
+    else:
+        params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
     result = (await delete(f"/projects/tasks/{tid}", params)) or {}
     gone = result.get("cascaded") or {}
     deleted = int(gone.get("subtasks_deleted") or 0)

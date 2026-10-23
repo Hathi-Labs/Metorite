@@ -3165,13 +3165,14 @@ function ProjectsWorkspace() {
     taskId: string,
     confirmed = false,
     deleteSubtaskIds: string[] = [],
+    deleteAllSubtasks = false,
   ) {
     if (!confirmed) {
       setConfirmingDelete({ kind: "one", taskId });
       return;
     }
     try {
-      const done = await projectsApi.deleteTask(taskId, { deleteSubtaskIds });
+      const done = await projectsApi.deleteTask(taskId, { deleteSubtaskIds, deleteAllSubtasks });
       await refreshRef.current();
       setTreeKey((k) => k + 1);
       // The words come from the route's own counts (D-OP-10), so what the
@@ -4554,25 +4555,22 @@ function ProjectsWorkspace() {
 
       {/* One delete confirmation, shared with My Tasks. The words are this
           app's own and true for it: a Projects delete is permanent. */}
-      {confirmingDelete?.kind === "one" && (doomedTask?.subtasks?.total ?? 0) > 0 ? (
+      {confirmingDelete?.kind === "one" ? (
         <DeleteTaskDialog
           key={confirmingDelete.taskId}
           taskId={confirmingDelete.taskId}
           title={doomedTask?.title ?? null}
           isMobile={isMobile}
           onCancel={() => setConfirmingDelete(null)}
-          onConfirm={(ids) => {
+          onConfirm={(ids, all) => {
             const pending = confirmingDelete;
             setConfirmingDelete(null);
-            void deleteTaskById(pending.taskId, true, ids);
+            void deleteTaskById(pending.taskId, true, ids, all);
           }}
         />
       ) : null}
       <ConfirmDialog
-        open={
-          Boolean(confirmingDelete) &&
-          !(confirmingDelete?.kind === "one" && (doomedTask?.subtasks?.total ?? 0) > 0)
-        }
+        open={Boolean(confirmingDelete) && confirmingDelete?.kind !== "one"}
         {...deleteCopy}
         onCancel={() => setConfirmingDelete(null)}
         onConfirm={() => {

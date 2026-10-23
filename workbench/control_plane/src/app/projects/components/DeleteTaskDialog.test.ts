@@ -45,13 +45,24 @@ describe("DeleteTaskDialog", () => {
 });
 
 describe("the page and the client", () => {
-  it("draws the dialog only for a task that has subtasks, else the plain confirm", () => {
+  it("always draws the dialog for one task, so archived and hidden subtasks show", () => {
     expect(page).toContain("<DeleteTaskDialog");
-    expect(page).toContain("(doomedTask?.subtasks?.total ?? 0) > 0");
+    expect(page).toContain('{confirmingDelete?.kind === "one" ? (');
+    expect(page).not.toContain("(doomedTask?.subtasks?.total ?? 0) > 0");
+    expect(page).toContain('confirmingDelete?.kind !== "one"');
+  });
+  it("sends one flag, not a list, when every visible box is ticked", () => {
+    expect(api).toContain("?delete_all_subtasks=true");
+    expect(dialog).toContain("isAllTicked(ticked, list)");
+    expect(page).toContain("{ deleteSubtaskIds, deleteAllSubtasks }");
+  });
+  it("lets the tag wrap under the title on a phone", () => {
+    expect(dialog).toContain("basis-full pl-7");
+    expect(dialog).toContain("flex-wrap");
   });
   it("sends the ticked ids as a repeated delete_subtask_ids value", () => {
     expect(api).toContain("delete_subtask_ids=${encodeURIComponent(id)}");
-    expect(page).toContain("projectsApi.deleteTask(taskId, { deleteSubtaskIds })");
+    expect(page).toContain("projectsApi.deleteTask(taskId, { deleteSubtaskIds, deleteAllSubtasks })");
   });
   it("tells the member how many hidden subtasks were kept", () => {
     expect(page).toContain("afterDeleteTitle(done.cascaded)");

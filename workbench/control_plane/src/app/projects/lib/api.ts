@@ -2130,11 +2130,18 @@ export const projectsApi = {
    * `subtasks_kept_hidden` counts the subtasks the caller cannot see. A
    * delete never removes them.
    */
-  deleteTask: (taskId: string, opts?: { deleteSubtaskIds?: string[] }) => {
+  deleteTask: (
+    taskId: string,
+    opts?: { deleteSubtaskIds?: string[]; deleteAllSubtasks?: boolean },
+  ) => {
+    // `deleteAllSubtasks` sends one flag and no list: a long list of ids
+    // overruns the header limit (about 300 ids).
     const ids = opts?.deleteSubtaskIds ?? [];
-    const query = ids.length
-      ? `?${ids.map((id) => `delete_subtask_ids=${encodeURIComponent(id)}`).join("&")}`
-      : "";
+    const query = opts?.deleteAllSubtasks
+      ? "?delete_all_subtasks=true"
+      : ids.length
+        ? `?${ids.map((id) => `delete_subtask_ids=${encodeURIComponent(id)}`).join("&")}`
+        : "";
     return call<{
       deleted: string;
       cascaded: {

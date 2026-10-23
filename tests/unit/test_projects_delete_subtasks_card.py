@@ -53,10 +53,11 @@ async def test_the_card_lists_the_subtask_tree_with_none_ticked(monkeypatch) -> 
     calls = fake_gateway(monkeypatch, _delete_gateway)
     out = await skill_projects.delete_task(LIVE)
     rows = asked[0]["rows"]
-    assert [r["id"] for r in rows] == [LIVE, SUB_A, SUB_B, SUB_A1]
+    # Depth first: the grandchild sits under its own parent.
+    assert [r["id"] for r in rows] == [LIVE, SUB_A, SUB_A1, SUB_B]
     assert [r["checked"] for r in rows] == [True, False, False, False]
-    assert rows[3]["label"].startswith("— ")  # a grandchild is indented
-    assert "archived" in rows[2]["hint"]
+    assert rows[2]["label"].startswith("— ")  # a grandchild is indented
+    assert "archived" in rows[3]["hint"]
     assert "0 of 3 subtasks marked to delete" in asked[0]["detail"]
     assert "1 subtask hidden from you, kept and moved up" in asked[0]["detail"]
     # The default is the old rule: no ids on the wire.
@@ -141,3 +142,50 @@ async def test_a_wide_tree_draws_no_boxes_and_refuses_a_list(monkeypatch) -> Non
     await skill_projects.delete_task(LIVE, subtasks_to_delete="all")
     assert asked[0].get("rows") is None
     assert len(_task_delete(calls)["params"]["delete_subtask_ids"]) == 100
+
+
+def _uid(n: int) -> str:
+    return f"{n:08x}-d9cb-469f-a165-70867728950e"
+
+
+async def test_two_parents_each_with_a_testing_child_draw_depth_first(monkeypatch) -> None:
+    """The route sends rows by depth. The card draws each parent, its child,
+    its grandchild, and only then the next parent."""
+    asked = approve(monkeypatch)
+    p1, p2, c1, c2, g1, g2 = (_uid(n) for n in (1, 2, 3, 4, 5, 6))
+    tree = [
+        tw._sub(p1, LIVE, "Parent one"),
+        tw._sub(p2, LIVE, "Parent two"),
+        tw._sub(c1, p1, "Testing"),
+        tw._sub(c2, p2, "Testing"),
+        tw._sub(g1, c1, "Fix one"),
+        tw._sub(g2, c2, "Fix two"),
+    ]
+
+    def two(call: dict) -> Any:
+        if call["path"].endswith("/subtree"):
+            return {"task_id": LIVE, "subtasks": tree, "hidden": 0}
+        return _delete_gateway(call)
+
+    fake_gateway(monkeypatch, two)
+    await skill_projects.delete_task(LIVE)
+    assert [r["id"] for r in asked[0]["rows"]] == [LIVE, p1, c1, g1, p2, c2, g2]
+    labels = [r["label"] for r in asked[0]["rows"]][1:4]
+    assert not labels[0].startswith("—")
+    assert labels[1].startswith("— ") and not labels[1].startswith("— —")
+    assert labels[2].startswith("— — ")
+
+
+async def test_all_on_a_long_list_sends_the_flag_and_no_ids(monkeypatch) -> None:
+    approve(monkeypatch)
+    many = [tw._sub(_uid(i), LIVE, f"t{i}") for i in range(1, 251)]
+
+    def wide(call: dict) -> Any:
+        if call["path"].endswith("/subtree"):
+            return {"task_id": LIVE, "subtasks": many, "hidden": 0}
+        return _delete_gateway(call)
+
+    calls = fake_gateway(monkeypatch, wide)
+    await skill_projects.delete_task(LIVE, subtasks_to_delete="all")
+    assert _task_delete(calls)["params"] == {"delete_all_subtasks": "true"}
+

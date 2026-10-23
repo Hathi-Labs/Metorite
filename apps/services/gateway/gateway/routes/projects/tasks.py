@@ -1090,6 +1090,9 @@ async def move_task(
 #: The most subtask ids that one delete names (D-OP-10). ``all`` has no such
 #: cap, because the server finds that set itself.
 MAX_DELETE_IDS = 1_000
+#: The most ids ``DELETE /tasks/{id}`` takes in its query string. A longer
+#: list overruns the header limit, so the caller sends ``delete_all_subtasks``.
+MAX_QUERY_DELETE_IDS = 200
 #: 422: an id of the set is not a descendant that the caller can see.
 #: Nothing changes. A hidden id gets the same code as a wrong id, so the code
 #: says nothing about a hidden task.
@@ -1298,6 +1301,7 @@ async def task_subtree(
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
     delete_subtask_ids: list[str] = Query(default=[]),
+    delete_all_subtasks: bool = Query(default=False),
 ) -> DeleteResponse:
     """Delete a task, and say what went with it.
 
@@ -1314,7 +1318,10 @@ async def delete_task(
     DELETE in this package takes no body. The default is none, so D-PM-38
     holds. ``subtasks_deleted`` counts the ids that went. Each id must be a
     descendant the member can see, or the call is 422 ``subtask_not_below``.
-    One ``pm.task.deleted`` goes out for the task and one for each subtask.
+    ``?delete_all_subtasks=true`` takes every subtask the member can see,
+    with no id list, because a long list overruns the URL. A list is at most
+    ``MAX_QUERY_DELETE_IDS`` ids. One ``pm.task.deleted`` goes out for the
+    task and one for each subtask.
 
     The work is :func:`delete_task_in`. This route opens the session, loads
     the task through the caller's visibility and emits the event.
@@ -1323,10 +1330,19 @@ async def delete_task(
     # object itself, so only a list counts (the reason `require_precondition`
     # gives for `If-Match`).
     ids = clean_task_ids(delete_subtask_ids if isinstance(delete_subtask_ids, list) else [])
+    if len(ids) > MAX_QUERY_DELETE_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pick up to {MAX_QUERY_DELETE_IDS} subtasks, or choose Delete all.",
+        )
+    take_all = delete_all_subtasks is True
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
-        result = await delete_task_in(db, doomed, vis=vis, delete_ids=ids)
+        result = await delete_task_in(
+            db, doomed, vis=vis, delete_ids=frozenset() if take_all else ids,
+            delete_all=take_all,
+        )
 
     for gone in (task_id, *result.subtask_ids):
         await emit("pm.task.deleted", {"task_id": gone})

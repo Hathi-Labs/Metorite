@@ -452,6 +452,11 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
         "task_id": tw.LIVE,
         "subtasks_to_delete": "all",
     },
+    # The same tool, a tree above the 200-id cap: "all" sends the flag.
+    ("DELETE", "/projects/tasks/{task_id}", "delete_all_subtasks"): {
+        "task_id": tw.LIVE,
+        "subtasks_to_delete": "all",
+    },
     # WS-47 WAC-4b: a capture's block needs its start, as the Calendar reads
     # a block by its start.
     ("POST", "/projects/my/tasks", "scheduled_end"): {
@@ -611,6 +616,17 @@ def _responder(call: dict) -> Any:
     return tw.responder(call)
 
 
+def _wide_responder(call: dict) -> Any:
+    """``_responder``, with a subtree of 250 rows (above the 200-id cap)."""
+    if call["method"] == "GET" and call["path"].endswith("/subtree"):
+        rows = [
+            tw._sub(f"{i:08x}-d9cb-469f-a165-70867728950e", tw.LIVE, f"t{i}")
+            for i in range(1, 251)
+        ]
+        return {"task_id": tw.LIVE, "subtasks": rows, "hidden": 0}
+    return _responder(call)
+
+
 def _carries(call: dict, name: str, where: str) -> bool:
     if where == "query":
         return name in (call["params"] or {})
@@ -641,7 +657,9 @@ async def test_every_sends_claim_is_true_on_the_wire(
 ) -> None:
     approve(monkeypatch)
     form_stub(monkeypatch, tw.FORM_ANSWERS)
-    calls = fake_gateway(monkeypatch, _responder)
+    calls = fake_gateway(
+        monkeypatch, _wide_responder if name == "delete_all_subtasks" else _responder
+    )
     kwargs = _call_for(key, name, tool, arg)
     out = await getattr(skill_projects, tool)(**kwargs)
     where = route_fields()[key][name]
