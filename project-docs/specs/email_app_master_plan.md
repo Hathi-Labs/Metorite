@@ -8776,8 +8776,14 @@ Status: built on branch `email-multi-inbox-chat`. The fence is `tests/unit/test_
 
 - **Q-MB-1. How many mailboxes can one member connect?** Each mailbox adds a sync loop, Jev calls
   and up to 500 MB of storage. The proposal is 5 for each member at launch, with an admin view of
-  the count. Until the owner answers, the code sets no limit. The limit is a commercial choice, so
-  the agent does not make it.
+  the count. **Answered by the owner on 2026-10-23: 5 for each member.** Built on branch
+  `email-multi-inbox-chat`. `core.MAX_MAILBOXES_PER_MEMBER` holds the number. The OAuth authorize
+  leg refuses a sixth mailbox with 409 before the redirect. The callback and `POST /email/accounts`
+  check again, under a lock on the member, so two tabs cannot pass together. A reconnect of a
+  mailbox that exists is never refused. The callback sends the reason `mailbox_limit` to the
+  workbench, and the workbench still needs a plain message for it. `GET /email/accounts` carries
+  `mailbox_limit`, and `list_accounts` in the chat prints "N of 5 mailboxes". The fence is
+  `TestTheMailboxLimitOnARealDatabase` in `tests/unit/test_email_multi_inbox.py`.
 
 ---
 

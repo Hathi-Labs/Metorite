@@ -727,6 +727,12 @@ async def list_accounts() -> str:
     # round 1, D-EM-30). Its own line still gives its own count.
     total = sum(a.get("unread_count", 0) for a in accounts if _in_all_inboxes(a))
     lines = [f"Connected accounts ({total} unread total):"]
+    # Q-MB-1: the limit comes from the gateway row. No copy of the number here.
+    limit = max((int(a.get("mailbox_limit") or 0) for a in accounts), default=0)
+    if limit:
+        lines.append(
+            f"{len(accounts)} of {limit} mailboxes. At {limit}, connecting "
+            "another is refused until the member disconnects one.")
     for a in accounts:
         mark = "" if _in_all_inboxes(a) else " (separate)"
         state = _mailbox_state(a)

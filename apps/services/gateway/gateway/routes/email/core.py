@@ -1137,6 +1137,43 @@ def _date_range_clause(
     return clause, params
 
 
+#: Q-MB-1 (``email_app_master_plan.md`` §11.8), owner, 2026-10-23: the most
+#: mailboxes that one member connects. The ONE copy of the number. The chat
+#: agent reads it from ``GET /email/accounts`` (``mailbox_limit``) and never
+#: keeps its own.
+MAX_MAILBOXES_PER_MEMBER = 5
+MAILBOX_LIMIT_DETAIL = (
+    f"You have {MAX_MAILBOXES_PER_MEMBER} mailboxes connected, the most one "
+    "member can have. Disconnect one first."
+)
+
+
+async def member_mailbox_count(db: Any, member: str) -> int:
+    """How many mailboxes ``member`` has in the bound tenant.
+
+    A disconnect deletes the row (``DELETE /email/accounts/{id}``), so every
+    row counts. The caller holds the ``tenant_session``.
+    """
+    return int((await db.execute(
+        text("SELECT count(*) FROM email_accounts WHERE lower(user_id) = :m"),
+        {"m": (member or "").strip().lower()},
+    )).scalar() or 0)
+
+
+async def enforce_mailbox_limit(db: Any, member: str) -> None:
+    """Raise 409 when ``member`` already has the most mailboxes.
+
+    Call it inside the block that inserts the new row, and never for a
+    reconnect. A transaction lock on the member serializes two tabs that race,
+    so both cannot pass the count (Q-MB-1).
+    """
+    key = (member or "").strip().lower()
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                     {"k": f"email-mailbox-limit:{key}"})
+    if await member_mailbox_count(db, key) >= MAX_MAILBOXES_PER_MEMBER:
+        raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
+
+
 def _default_label(provider: str) -> str:
     labels = {"gmail": "Gmail", "microsoft": "Outlook", "imap": "Email"}
     return labels.get(provider, "Email")

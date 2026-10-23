@@ -1054,3 +1054,11 @@ def test_the_instructions_teach_several_mailboxes() -> None:
     text = agents.INSTRUCTIONS
     assert "## Several mailboxes" in text
     assert "apply_settings_to_mailboxes" in text
+
+
+async def test_list_accounts_says_how_many_of_the_limit_are_used(gw: Gateway) -> None:
+    gw.accounts = [{**a, "mailbox_limit": 5} for a in TWO]
+    out = await agents.list_accounts()
+    assert "2 of 5 mailboxes" in out and "refused until" in out
+    gw.accounts = TWO  # an old gateway sends no limit: no line, no guess
+    assert " of " not in (await agents.list_accounts()).split("\n")[1]

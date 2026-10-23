@@ -17,7 +17,9 @@ from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
+    MAX_MAILBOXES_PER_MEMBER,
     _account_scope,
+    enforce_mailbox_limit,
     _default_label,
     _log,
     _tenant_session,
@@ -108,6 +110,9 @@ class EmailAccountModel(BaseModel):
     #: mailbox cannot send until the member reconnects it. Any other sync
     #: error leaves it False: a send does not read the sync status (EM-T8c).
     needs_reconnect: bool = False
+    #: The most mailboxes one member connects (Q-MB-1). The chat reads it here,
+    #: so the number has one copy: ``core.MAX_MAILBOXES_PER_MEMBER``.
+    mailbox_limit: int = MAX_MAILBOXES_PER_MEMBER
     #: When the member connected the mailbox, as ISO text with six digits of
     #: microseconds, so two values sort as text in the order of time. A
     #: disconnect makes the oldest mailbox that is left the default
@@ -487,6 +492,7 @@ async def create_account(
                 detail=f"Account {req.email_address} already exists",
             )
 
+        await enforce_mailbox_limit(db, user.email)
         account_id = str(uuid4())
         # The member's FIRST mailbox in this organization becomes the default
         # (the inbox the UI lands on). The partial unique index of migration
