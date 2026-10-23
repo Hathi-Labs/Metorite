@@ -348,6 +348,20 @@ AREAS = [
 ]
 
 
+def _area_answers(call: dict) -> Any:
+    """WS-64 OP-6a: the member's areas, and the three writes on them."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/my/areas" and method == "GET":
+        return {"rows": AREAS, "total": len(AREAS)}
+    if path == "/projects/my/areas" and method == "POST":
+        return {"id": OTHER, "name": call["json"]["name"], "archived": False, "open_tasks": 0}
+    if path.startswith("/projects/my/areas/") and method == "DELETE":
+        return {"id": path.rsplit("/", 1)[-1], "outcome": "archived", "tasks": 3}
+    if path.startswith("/projects/my/areas/") and method == "PATCH":
+        return {"id": path.rsplit("/", 1)[-1], "name": call["json"]["name"], "archived": False}
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
@@ -359,7 +373,7 @@ def responder(call: dict) -> Any:
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
     answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers,
-                         _subtree_answers)
+                         _subtree_answers, _area_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -388,14 +402,6 @@ def responder(call: dict) -> Any:
         }
     if path.startswith("/projects/nodes/") and path.count("/") == 3:
         return {"id": UUID, "name": "Ops", "status": "active", "lead": None}
-    if path == "/projects/my/areas" and method == "GET":
-        return {"rows": AREAS, "total": len(AREAS)}
-    if path.startswith("/projects/my/areas/") and method == "DELETE":
-        return {"id": path.rsplit("/", 1)[-1], "outcome": "archived", "tasks": 3}
-    if path.startswith("/projects/my/areas/") and method == "PATCH":
-        return {"id": path.rsplit("/", 1)[-1], "name": call["json"]["name"], "archived": False}
-    if path == "/projects/my/areas" and method == "POST":
-        return {"id": OTHER, "name": call["json"]["name"], "archived": False, "open_tasks": 0}
     if path == "/projects/tasks/move/preview":
         return {
             "task_count": 1,
