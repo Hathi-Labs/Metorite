@@ -29,7 +29,11 @@ from acb_auth import UserContext, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE
 from acb_common import get_logger
 from fastapi import Depends, Header, HTTPException, Query
-from gateway.routes.projects.authority import assert_may_delete_task, attach_can_delete
+from gateway.routes.projects.authority import (
+    assert_may_delete_task,
+    assert_may_move_task,
+    attach_can_delete,
+)
 from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
@@ -847,7 +851,7 @@ async def _cross_root_values(
 
 
 async def move_task_in(
-    db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str,
+    db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str, user: Any,
     field_map: dict[str, str] | None = None,
 ) -> dict:
     """The body of ``POST /tasks/{id}/move``, inside a caller's transaction.
@@ -864,6 +868,11 @@ async def move_task_in(
     ``field_map`` is the map the bulk move's card showed for this task's root
     (D-PM-38, S5). Absent, the automatic map for the task's own root applies,
     as it always did.
+
+    ``user`` is the member whose authority a move to another project needs
+    (D-OP-14, :func:`authority.assert_may_move_task`). It has no default, so
+    each caller says it. ``None`` means "a subtask that a checked move
+    carries", and only this module and ``move.py`` pass it.
     """
     task_id = str(task.id)
     values: dict[str, Any] = {}
@@ -899,6 +908,11 @@ async def move_task_in(
         # a caller who cannot see the destination still gets 404 and never
         # learns from a 422 that it exists (R5: 404, never 403).
         await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        # WS-64 OP-8 (D-OP-14). A move to another project changes who sees
+        # the task, so it needs the delete authority on the task as it is.
+        # After the 404 and the shape refusals, before any write.
+        if user is not None:
+            await assert_may_move_task(db, user, task)
         if payload.include_subtasks:
             # A 409 when any descendant is hidden, before anything is written:
             # moving only the visible ones would split the tree unseen.
@@ -1053,6 +1067,8 @@ async def move_task_in(
                     custom_fields=payload.custom_fields,
                 ),
                 by=by,
+                # Carried by the checked move above (D-OP-14).
+                user=None,
             )
             moved_ids.append(str(child.id))
 
@@ -1082,7 +1098,9 @@ async def move_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        result = await move_task_in(db, vis, task, payload, by=actor(user))
+        result = await move_task_in(
+            db, vis, task, payload, by=actor(user), user=user,
+        )
         await attach_agent_state(db, [result])
 
     await emit("pm.task.moved", {"task_id": task_id})

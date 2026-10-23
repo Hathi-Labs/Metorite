@@ -26,6 +26,27 @@ owner's rule is about what the member deletes.
 **Grants (D-OP-11).** Only a lead of the project, or of an ancestor, and a
 ``can_manage_settings`` member write a grant.
 
+**The lead (D-OP-11, fix round 1).** The ``lead`` column IS the authority
+above, so a write to it is a grant write. A change of ``lead`` on a project
+needs :func:`may_write_grant` on that project. A new project that names a
+lead needs :func:`may_write_grant` on its parent. One exception: a member
+who creates a new ROOT may name themself its lead, because a member may
+lead the space they create. Doors: ``POST /nodes`` and ``PATCH /nodes/{id}``.
+The chat tools ``create_project`` and ``update_project`` call those routes.
+
+**Moves (D-OP-14).** A move changes who sees a row, so a move needs more
+than a view. A re-parent of a project needs :func:`may_write_grant` on the
+moved project. A move of a task to another project needs
+:func:`may_delete_task` on the task where it is now. The two rules are the
+same rule, so :func:`may_move_task` is that function and the app reads
+``can_delete`` to hide Move too. A reorder under the same parent, and a
+status move inside one project, need only a view. Doors:
+``POST /nodes/{id}/move``, ``tasks.move_task_in`` (``POST /tasks/{id}/move``
+and the My Tasks organize) and ``POST /tasks/move`` with its preview. The
+chat tools ``move_project`` and ``move_task`` call those routes. A subtask
+that a move carries follows the one check on the task the member names,
+as a delete does.
+
 Each read runs inside the caller's tenant session, so RLS bounds it.
 Fence: ``tests/unit/test_projects_write_authority.py`` (R8).
 """
@@ -52,6 +73,31 @@ PROJECT_DELETE_REFUSED = (
 #: The 403 of a grant write.
 GRANT_WRITE_REFUSED = (
     "Only the project lead or a Projects admin can change who can see this project."
+)
+
+#: The 403 of a change of ``lead``.
+LEAD_WRITE_REFUSED = (
+    "Only the project lead or a Projects admin can change who leads this project."
+)
+#: The 403 of a new project that names a lead under a parent.
+LEAD_CREATE_REFUSED = (
+    "Only the lead of the parent project or a Projects admin can name a lead "
+    "here. Create the project without a lead, or ask them."
+)
+#: The 403 of a new root that names a lead other than its creator.
+LEAD_ROOT_REFUSED = (
+    "You can name only yourself as the lead of a new space. A Projects admin "
+    "can name another member."
+)
+#: The 403 of a re-parent of a project.
+PROJECT_MOVE_REFUSED = (
+    "Only the project lead or a Projects admin can move this project to "
+    "another place."
+)
+#: The 403 of a move of a task to another project.
+TASK_MOVE_REFUSED = (
+    "Only the person who created this task, the project lead or a Projects "
+    "admin can move it to another project."
 )
 
 #: Each project that the member leads, and each project below one. ``UNION``
@@ -132,6 +178,65 @@ async def may_write_grant(
     if can_manage_settings(user):
         return True
     return await _leads(db, user, _field(project, "id"), led)
+
+
+#: D-OP-14. The rule of a task move IS the rule of a task delete, so the
+#: two are one function and the ``can_delete`` flag answers both.
+may_move_task = may_delete_task
+
+
+async def assert_may_move_task(db: Any, user: Any, task: Any) -> None:
+    """403 with :data:`TASK_MOVE_REFUSED`, or return. (D-OP-14.)"""
+    if not await may_move_task(db, user, task):
+        raise HTTPException(status_code=403, detail=TASK_MOVE_REFUSED)
+
+
+async def assert_may_move_project(db: Any, user: Any, project: Any) -> None:
+    """403 with :data:`PROJECT_MOVE_REFUSED`, or return. (D-OP-14.)
+
+    The caller calls this only for a re-parent. A reorder under the same
+    parent changes nobody's view.
+    """
+    if not await may_write_grant(db, user, project):
+        raise HTTPException(status_code=403, detail=PROJECT_MOVE_REFUSED)
+
+
+def _same_person(a: Any, b: Any) -> bool:
+    return str(a or "").strip().lower() == str(b or "").strip().lower()
+
+
+async def assert_may_change_lead(
+    db: Any, user: Any, project: Any, values: dict[str, Any],
+) -> None:
+    """A PATCH that changes ``lead`` needs :func:`may_write_grant`.
+
+    A body that sends the lead the row already has changes nothing, so it
+    passes. A ``null`` clears the lead, and that is a change.
+    """
+    if "lead" not in values or _same_person(values["lead"], _field(project, "lead")):
+        return
+    if not await may_write_grant(db, user, project):
+        raise HTTPException(status_code=403, detail=LEAD_WRITE_REFUSED)
+
+
+async def assert_may_name_lead(
+    db: Any, user: Any, parent: Any | None, lead: Any,
+) -> None:
+    """A new project that names *lead*. *parent* is ``None`` for a new root.
+
+    Under a parent, the caller needs :func:`may_write_grant` on the parent.
+    A new root passes when the lead is the creator, because a member may
+    lead the space they create. Any other lead of a new root needs a
+    Projects admin, because no project above it has a lead to ask.
+    """
+    if not str(lead or "").strip():
+        return
+    if parent is None:
+        if _same_person(lead, _me(user)) or can_manage_settings(user):
+            return
+        raise HTTPException(status_code=403, detail=LEAD_ROOT_REFUSED)
+    if not await may_write_grant(db, user, parent):
+        raise HTTPException(status_code=403, detail=LEAD_CREATE_REFUSED)
 
 
 async def assert_may_delete_task(db: Any, user: Any, task: Any) -> None:

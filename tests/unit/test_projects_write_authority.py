@@ -519,3 +519,217 @@ class TestOneAnswer:
         assert len(asked) == 1 and out.startswith("Deleted"), out
         assert not any(_exists(live, "pm_tasks", t) for t in (by_app, by_agent, by_chat))
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1: the lead, the moves and the recurrence successor
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _col(world, table: str, row_id: str, column: str) -> Any:
+    with world.admin.begin() as c:
+        return c.execute(text(f"SELECT {column} FROM {table} WHERE id = CAST(:i AS uuid)"),
+                         {"i": row_id}).scalar()
+
+
+def _root(world, name: str, maker: str, lead: str | None = None) -> str:
+    """A root project made by *maker*, granted to all four people."""
+    pid = str(world.seeder.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, lead, owns_statuses) VALUES (:n, 'active', 'manual', :m,"
+        " CAST(:o AS uuid), 'Asia/Kolkata', :l, true) RETURNING id",
+        n=name, m=maker, o=world.org, l=lead))
+    for who in PEOPLE:
+        d._grant(world.seeder, pid, who)
+    return pid
+
+
+async def _new_space(world, who: str, name: str, lead: str | None) -> httpx.Response:
+    body: dict[str, Any] = {"name": name}
+    if lead is not None:
+        body["lead"] = lead
+    return await _as(world, who, "POST", "/projects/nodes", body)
+
+
+def test_the_new_doors_call_the_one_module() -> None:
+    """Fix round 1. Each write that sets a lead or moves a row calls the module."""
+    from gateway.routes.projects import move, personal, tasks, tree
+
+    doors = {
+        tree.create_node: "assert_may_name_lead(db, user, parent_row, values.get(\"lead\"))",
+        tree.patch_node: "assert_may_change_lead(db, user, before, values)",
+        tree.move_node: "assert_may_move_project(db, user, moved)",
+        tasks.move_task_in: "assert_may_move_task(db, user, task)",
+        move._plan: "assert_may_move_task(db, user, task)",
+        personal._organize: "user=user",
+    }
+    for fn, call in doors.items():
+        assert call in inspect.getsource(fn), fn.__name__
+    a = _authority()
+    assert a.may_move_task is a.may_delete_task
+
+
+class TestTheLead:
+    """P0-1. The lead IS delete and grant authority, so a write to it is a
+    grant write (D-OP-11)."""
+
+    pytestmark = _DB_GATE
+
+    async def test_7_a_viewer_who_makes_themself_lead_gets_403(self, live, monkeypatch):
+        a = _authority()
+        for project in (live.elsewhere, live.team):
+            before = _col(live, "pm_projects", project, "lead")
+            r = await _as(live, VIEWER, "PATCH", f"/projects/nodes/{project}",
+                          {"lead": VIEWER})
+            assert r.status_code == 403, r.text
+            assert r.json()["detail"] == a.LEAD_WRITE_REFUSED
+            assert _col(live, "pm_projects", project, "lead") == before
+        # A clear is a change too.
+        r = await _as(live, VIEWER, "PATCH", f"/projects/nodes/{live.team}", {"lead": None})
+        assert r.status_code == 403, r.text
+        assert _col(live, "pm_projects", live.team, "lead") == LEAD
+        # The same lead again changes nothing, so a rename that echoes it passes.
+        r = await _as(live, VIEWER, "PATCH", f"/projects/nodes/{live.team}",
+                      {"lead": LEAD.upper()})
+        assert r.status_code == 200, r.text
+        # A child under a project the viewer does not lead, with a lead.
+        r = await _as(live, VIEWER, "POST", "/projects/nodes",
+                      {"name": "op8 lead child", "parent_project_id": live.elsewhere,
+                       "lead": VIEWER})
+        assert r.status_code == 403 and r.json()["detail"] == a.LEAD_CREATE_REFUSED, r.text
+        # The chat tool goes to the same route, and the route refuses.
+        from skill_projects import writes
+        from skill_projects.client import GatewayRefusal
+
+        approve(monkeypatch)
+
+        async def act():
+            try:
+                return await writes.update_project(live.elsewhere, lead=VIEWER)
+            except GatewayRefusal as err:
+                return str(err)
+
+        out = await _chat(live, monkeypatch, VIEWER, act)
+        assert "Not permitted" in out, out
+        assert _col(live, "pm_projects", live.elsewhere, "lead") is None
+
+    async def test_7_a_lead_hands_the_lead_to_another_member(self, live):
+        handed = _root(live, "op8 handover", w.OWNER, lead=LEAD)
+        r = await _as(live, LEAD, "PATCH", f"/projects/nodes/{handed}", {"lead": CREATOR})
+        assert r.status_code == 200, r.text
+        assert _col(live, "pm_projects", handed, "lead") == CREATOR
+        # The old lead has handed the authority on, and cannot take it back.
+        r = await _as(live, LEAD, "PATCH", f"/projects/nodes/{handed}", {"lead": LEAD})
+        assert r.status_code == 403, r.text
+        # The lead of an ancestor names a lead below, and an admin names any.
+        r = await _as(live, LEAD, "POST", "/projects/nodes",
+                      {"name": "op8 lead below", "parent_project_id": live.team,
+                       "lead": CREATOR})
+        assert r.status_code == 201, r.text
+        assert r.json()["lead"] == CREATOR
+        r = await _as(live, ADMIN, "PATCH", f"/projects/nodes/{handed}", {"lead": VIEWER})
+        assert r.status_code == 200, r.text
+
+    async def test_7_a_member_leads_the_space_they_create(self, live):
+        a = _authority()
+        r = await _new_space(live, VIEWER, "op8 my space", VIEWER)
+        assert r.status_code == 201, r.text
+        assert r.json()["lead"] == VIEWER
+        r = await _new_space(live, VIEWER, "op8 their space", CREATOR)
+        assert r.status_code == 403 and r.json()["detail"] == a.LEAD_ROOT_REFUSED, r.text
+        r = await _new_space(live, ADMIN, "op8 admin space", CREATOR)
+        assert r.status_code == 201 and r.json()["lead"] == CREATOR, r.text
+
+
+class TestTheMoves:
+    """P0-2 (D-OP-14). A move changes who sees a row, so a view is not enough."""
+
+    pytestmark = _DB_GATE
+
+    async def test_8_a_new_space_does_not_launder_a_project(self, live):
+        a = _authority()
+        r = await _new_space(live, VIEWER, "op8 launder space", VIEWER)
+        assert r.status_code == 201, r.text
+        space = r.json()["id"]
+        theirs = _sub(live, "op8 their project", CREATOR, live.elsewhere)
+        r = await _as(live, VIEWER, "POST", f"/projects/nodes/{theirs}/move",
+                      {"parent_project_id": space})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == a.PROJECT_MOVE_REFUSED
+        assert str(_col(live, "pm_projects", theirs, "parent_project_id")) == live.elsewhere
+        # The member can delete it no more after the attempt than before.
+        r = await _as(live, VIEWER, "DELETE", f"/projects/nodes/{theirs}")
+        assert r.status_code == 403, r.text
+        # A reorder under the same parent changes nobody's view.
+        r = await _as(live, VIEWER, "POST", f"/projects/nodes/{theirs}/move",
+                      {"parent_project_id": live.elsewhere, "position": 7.0})
+        assert r.status_code == 200, r.text
+
+    async def test_8_a_lead_re_parents_a_project(self, live):
+        below = _sub(live, "op8 lead moves", CREATOR, live.team)
+        r = await _as(live, LEAD, "POST", f"/projects/nodes/{below}/move",
+                      {"parent_project_id": live.elsewhere})
+        assert r.status_code == 200, r.text
+        assert str(_col(live, "pm_projects", below, "parent_project_id")) == live.elsewhere
+
+    async def test_8_a_new_space_does_not_launder_a_task(self, live):
+        a = _authority()
+        r = await _new_space(live, VIEWER, "op8 task launder space", VIEWER)
+        assert r.status_code == 201, r.text
+        space = r.json()["id"]
+        theirs = _task(live, live.team, CREATOR, "op8 their task")
+        r = await _as(live, VIEWER, "POST", f"/projects/tasks/{theirs}/move",
+                      {"project_id": space})
+        assert r.status_code == 403 and r.json()["detail"] == a.TASK_MOVE_REFUSED, r.text
+        body = {"task_ids": [theirs], "destination_project_id": space,
+                "accept_drops": True}
+        for path in ("/projects/tasks/move/preview", "/projects/tasks/move"):
+            r = await _as(live, VIEWER, "POST", path, body)
+            assert r.status_code == 403, (path, r.text)
+            assert r.json()["detail"] == a.TASK_MOVE_REFUSED
+        assert str(_col(live, "pm_tasks", theirs, "project_id")) == live.team
+        # A status move inside the same project needs only a view.
+        doing = live.seeder.status(live.team, "op8 Doing", "in_progress", 5)
+        r = await _as(live, VIEWER, "PATCH", f"/projects/tasks/{theirs}",
+                      {"status_id": doing})
+        assert r.status_code == 200, r.text
+        # The creator moves it, and the lead of its project does too.
+        r = await _as(live, CREATOR, "POST", f"/projects/tasks/{theirs}/move",
+                      {"project_id": space})
+        assert r.status_code == 200, r.text
+        assert str(_col(live, "pm_tasks", theirs, "project_id")) == space
+        led = _task(live, live.team, CREATOR, "op8 lead moves task")
+        r = await _as(live, LEAD, "POST", "/projects/tasks/move",
+                      {"task_ids": [led], "destination_project_id": live.elsewhere,
+                       "accept_drops": True})
+        assert r.status_code == 200, r.text
+        assert str(_col(live, "pm_tasks", led, "project_id")) == live.elsewhere
+
+
+class TestTheSuccessor:
+    """P1. A recurring task's successor keeps the series' creator (D-OP-12)."""
+
+    pytestmark = _DB_GATE
+
+    async def test_9_the_completer_is_not_the_creator_of_the_successor(self, live):
+        a = _authority()
+        done = live.seeder.status(live.elsewhere, "op8 Done", "done", 9)
+        task = _task(live, live.elsewhere, CREATOR, "op8 weekly report")
+        r = await _as(live, CREATOR, "PUT", f"/projects/tasks/{task}/recurrence",
+                      {"freq": "daily", "interval": 1, "anchor": "completed"})
+        assert r.status_code == 200, r.text
+        r = await _as(live, CREATOR, "PUT", f"/projects/tasks/{task}/assignees",
+                      {"assignees": [VIEWER]})
+        assert r.status_code == 200, r.text
+        r = await _as(live, VIEWER, "PATCH", f"/projects/tasks/{task}",
+                      {"status_id": done})
+        assert r.status_code == 200, r.text
+        with live.admin.begin() as c:
+            successor = c.execute(text(
+                "SELECT id, created_by FROM pm_tasks WHERE recurrence_id = "
+                "(SELECT recurrence_id FROM pm_tasks WHERE id = CAST(:t AS uuid))"
+                " AND id <> CAST(:t AS uuid)"), {"t": task}).one()
+        assert successor.created_by == CREATOR
+        r = await _as(live, VIEWER, "DELETE", f"/projects/tasks/{successor.id}")
+        assert r.status_code == 403 and r.json()["detail"] == a.TASK_DELETE_REFUSED, r.text
+        assert _exists(live, "pm_tasks", str(successor.id))

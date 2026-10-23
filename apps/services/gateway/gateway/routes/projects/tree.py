@@ -27,7 +27,10 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.authority import (
+    assert_may_change_lead,
     assert_may_delete_project,
+    assert_may_move_project,
+    assert_may_name_lead,
     assert_may_write_grant,
     attach_can_delete,
 )
@@ -822,6 +825,9 @@ async def create_node(
         if values.get("status") is not None:
             assert_run_state_allowed(level)
         _refuse_identity_off_a_space(values, level)
+        # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
+        # naming one is a grant write. After the parent's 404.
+        await assert_may_name_lead(db, user, parent_row, values.get("lead"))
 
         # WS-29a. This is the ONE place in the package that decides a tenant:
         # `pm_projects` is the root of every other `pm_*` row, and migration
@@ -901,6 +907,8 @@ async def patch_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). A change of lead is a grant write.
+        await assert_may_change_lead(db, user, before, values)
         _refuse_lifecycle_on_child(
             values, getattr(before, "parent_project_id", None),
         )
@@ -972,6 +980,11 @@ async def move_node(
         # not crossable in either direction, and nothing checked it before the
         # Areas routes made a personal tree more than one node deep.
         await assert_project_move_keeps_privacy(db, project_id, new_parent)
+        # WS-64 OP-8 (D-OP-14). A re-parent changes who sees the subtree, so
+        # it needs the lead's authority. A reorder under the same parent
+        # does not. After the 404s and the shape refusals, before any write.
+        if str(new_parent or "") != str(getattr(moved, "parent_project_id", None) or ""):
+            await assert_may_move_project(db, user, moved)
 
         # The grammar holds through a move, with the subtree's own shape in
         # the sum: a project that carries subprojects cannot land under a
