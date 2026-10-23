@@ -530,3 +530,19 @@ async def test_find_contact_says_closest_match_for_a_fuzzy_hit(gw: _Gw) -> None:
     assert "CLOSEST" in out and "No exact match" in out
     assert "Use this address" not in out
     assert "- Veena <veena@fracktal.in>" in out
+
+
+async def test_edit_draft_body_refuses_to_drop_a_quoted_thread(gw: _Gw) -> None:
+    """§22 gap 3: a new body replaces the whole text, so a reply with a
+    quoted thread is refused, and the answer names a chat step."""
+    gw.draft["body_trimmed"] = True
+    out = await agents.edit_draft(BOX, "d1", body="Hi Ravi, new text")
+    assert out.startswith("Nothing changed.") and "compose_reply" in out
+    assert "Email app" not in out
+    assert not [w for w in gw.writes if w[1] == "/email/drafts"]
+    assert gw.cards == []
+
+
+async def test_edit_draft_body_card_says_no_thread_is_dropped(gw: _Gw) -> None:
+    await agents.edit_draft(BOX, "d1", body="Hi Ravi, new text")
+    assert "holds no quoted thread" in gw.cards[-1]["context"]

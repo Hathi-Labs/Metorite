@@ -5818,6 +5818,13 @@ def _recipient_changes(
     return lines
 
 
+#: The answer when ``edit_draft(body=...)`` would drop a quoted thread.
+_QUOTED_THREAD_REFUSAL = (
+    "Nothing changed. This draft holds a quoted thread, and a new body here "
+    "would drop it. Call compose_reply on the same email, with the change as "
+    "its instruction. It writes the reply again and keeps the thread.")
+
+
 @_annotate_risk(open_world=False, destructive=False)
 async def edit_draft(
     account_id: str,
@@ -5855,6 +5862,17 @@ async def edit_draft(
             return ("Nothing changed. This chat read email from outside senders, so "
                     "it cannot write a new email. Tell the member in one sentence.")
         return await _new_draft(account_id, body, subject, to, cc, bcc, rewrite)
+    if body is not None and not rewrite:
+        # §22 gap 3: PUT /email/drafts replaces the whole body, so a new
+        # ``body`` for a reply would drop its quoted thread. The gateway's
+        # keep_body keeps the stored text and takes no new one, so refuse.
+        try:
+            row = await _get(f"/email/messages/{draft_id}",
+                             params={"trim": "true", "mark_read": "false"}) or {}
+        except GatewayError:
+            row = {}
+        if row.get("body_trimmed"):
+            return _QUOTED_THREAD_REFUSAL
     if rewrite:
         if body is None:
             # The new text only, as read_email gives it: the drafter must not
@@ -5916,6 +5934,8 @@ async def edit_draft(
     else:
         if rewrite:
             context += "\n\nThe text below replaces the whole text of the draft."
+        else:
+            context += "\n\nThis draft holds no quoted thread, so nothing is dropped."
         context = _with_draft_text(context, text)
     # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
     # and the card says so first. The send would not go anyway: the schedule
