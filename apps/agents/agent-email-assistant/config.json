@@ -49,6 +49,7 @@
   ],
   "own_tool_scope": [
     "list_accounts",
+    "update_account",
     "query_inbox",
     "narrow_and_read",
     "query_insights",

@@ -608,6 +608,77 @@ async def list_accounts() -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(destructive=True, open_world=False)
+async def update_account(
+    account_id: str,
+    name: str | None = None,
+    color_slot: int | None = None,
+    in_all_inboxes: bool | None = None,
+    make_default: bool = False,
+    disconnect: bool = False,
+) -> str:
+    """Change a connected mailbox: its ``name`` ("" gives back the default
+    name), its colour ``color_slot`` (1 to 12), whether it is in All inboxes
+    (``in_all_inboxes=false`` keeps it separate), or ``make_default=true`` to
+    open the Email app on it.
+
+    ``disconnect=true`` removes the mailbox and all its synced mail from
+    Metorite, and nothing else may change in that call. The mail at the
+    provider stays. Each change shows the user a card first."""
+    where = await _mailbox_name(account_id)
+    if where is None:
+        return (f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts for the ids.")
+    if disconnect:
+        if name is not None or color_slot is not None or in_all_inboxes is not None \
+                or make_default:
+            return "Nothing changed. A disconnect changes nothing else. Ask for it alone."
+        refusal = await _card_refusal(
+            f"Disconnect {where}?",
+            "It removes the mailbox and all its synced mail, rules and settings from "
+            "Metorite. The mail at the provider stays. To use it again, connect it "
+            "again in the Email app.",
+            "Cancelled — the mailbox stays connected.",
+        )
+        if refusal:
+            return refusal
+        await _delete(f"/email/accounts/{account_id}")
+        return f"Disconnected {where}."
+    body: dict[str, Any] = {}
+    lines: list[str] = []
+    if name is not None:
+        body["label"] = name
+        lines.append(f'- Name: "{_card_name(name)}"' if name.strip()
+                     else "- Name: the default name")
+    if color_slot is not None:
+        if isinstance(color_slot, bool) or not isinstance(color_slot, int) \
+                or not 1 <= color_slot <= 12:
+            return "Nothing changed. color_slot is a whole number from 1 to 12."
+        body["color_slot"] = color_slot
+        lines.append(f"- Colour: slot {color_slot}")
+    if in_all_inboxes is not None:
+        body["in_all_inboxes"] = in_all_inboxes
+        lines.append("- In All inboxes" if in_all_inboxes
+                     else "- Kept separate: All inboxes leaves it out")
+    if make_default:
+        lines.append("- The default mailbox: the Email app opens on it")
+    if not lines:
+        return "Nothing changed. Name one change."
+    refusal = await _card_refusal(
+        f"Change the mailbox {where}?",
+        "Each change is in the list below. It changes nothing at the provider.",
+        "Cancelled — the mailbox was not changed.",
+        "\n".join(lines),
+    )
+    if refusal:
+        return refusal
+    if body:
+        await _patch(f"/email/accounts/{account_id}", body)
+    if make_default:
+        await _post(f"/email/accounts/{account_id}/default", {})
+    return f"Changed the mailbox {await _named(account_id)}:\n" + "\n".join(lines)
+
+
 async def search_emails(
     query: str, folder: str = "inbox", account_id: str | None = None
 ) -> str:
@@ -7140,6 +7211,7 @@ async def _test_rules_recent(account_id: str, limit: Any) -> str:
 _TOOLS = [
     # Read / triage
     list_accounts,
+    update_account,
     query_inbox,
     query_insights,
     read_email,
@@ -7242,7 +7314,7 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     # H-375: send later.
     "schedule_send", "cancel_scheduled_send",
     # Chat parity wave 1 (owner, 2026-10-23, §22).
-    "copy_rules", "rule_guidance", "voice_profile",
+    "copy_rules", "rule_guidance", "voice_profile", "update_account",
 })
 
 #: The tools that save a reply draft in the member's OWN Drafts with no card,

@@ -686,3 +686,47 @@ async def test_flag_patches_each_message(gw: Gateway, action: str, flag: bool) -
         ("PATCH", "/email/messages/m1", {"is_flagged": flag}),
         ("PATCH", "/email/messages/m2", {"is_flagged": flag})]
     assert out.endswith("2 message(s).")
+
+
+# ── 11. The mailbox: name, colour, All inboxes, default, disconnect ──────────
+
+
+async def test_update_account_lists_each_change_on_one_card(gw: Gateway) -> None:
+    out = await agents.update_account(BOX, name="Sales", color_slot=4,
+                                      in_all_inboxes=False, make_default=True)
+    [card] = gw.cards
+    assert card["title"] == f"Change the mailbox {BOX_TEXT}?"
+    assert card["context"].splitlines() == [
+        '- Name: "Sales"', "- Colour: slot 4",
+        "- Kept separate: All inboxes leaves it out",
+        "- The default mailbox: the Email app opens on it"]
+    assert gw.writes == [
+        ("PATCH", f"/email/accounts/{BOX}",
+         {"label": "Sales", "color_slot": 4, "in_all_inboxes": False}),
+        ("POST", f"/email/accounts/{BOX}/default", {})]
+    assert out.startswith("Changed the mailbox")
+
+
+@pytest.mark.parametrize("kwargs", [{"color_slot": 13}, {"color_slot": 0}, {}])
+async def test_update_account_refuses_a_bad_change(gw: Gateway, kwargs: dict) -> None:
+    out = await agents.update_account(BOX, **kwargs)
+    assert out.startswith("Nothing changed.") and gw.cards == [] and gw.writes == []
+
+
+async def test_disconnect_asks_alone_and_deletes(gw: Gateway) -> None:
+    out = await agents.update_account(BOX, disconnect=True, name="x")
+    assert out.startswith("Nothing changed.") and gw.cards == []
+    gw.answer = False
+    out = await agents.update_account(BOX, disconnect=True)
+    [card] = gw.cards
+    assert card["title"] == f"Disconnect {BOX_TEXT}?"
+    assert "The mail at the provider stays" in card["detail"]
+    assert gw.writes == [] and out.startswith("Cancelled")
+    gw.answer = True
+    await agents.update_account(BOX, disconnect=True)
+    assert gw.writes == [("DELETE", f"/email/accounts/{BOX}", None)]
+
+
+async def test_an_unknown_mailbox_changes_nothing(gw: Gateway) -> None:
+    out = await agents.update_account("nope", name="x")
+    assert out.startswith("Nothing changed.") and gw.cards == [] and gw.writes == []
