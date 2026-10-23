@@ -754,6 +754,7 @@ class TestTheDelete:
         g1 = _child(live, c1, "h10 g1")
         g2 = _child(live, c2, "h10 g2")
         gg = _child(live, g2, "h10 gg")
+        before = {one: tw._row(live, one).updated_at for one in (g1, c2, gg)}
         body = _structured(await _delete(live, task, subtasks_to_delete=[c1, g2]))
         assert body == {"deleted": task, "subtasks_promoted": 3, "subtasks_deleted": 2}
         for gone in (task, c1, g2):
@@ -766,6 +767,8 @@ class TestTheDelete:
         assert str(tw._row(live, gg).parent_task_id) == c2
         for moved in (g1, c2, gg):
             assert _tombstones(live, moved) == 0
+            # Each moved row is bumped, so a delta client sees the move (P-27).
+            assert tw._row(live, moved).updated_at > before[moved], moved
         assert ("pm.task.deleted", {"task_id": task, "via": tw.R8_VIA}) in events
 
     async def test_h11_none_and_the_plain_delete_keep_d_pm_38(self, live):
