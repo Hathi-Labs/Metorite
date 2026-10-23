@@ -6230,6 +6230,48 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
 - **Added:** 2026-10-23 · Projects chat parity session
 
+### H-388 · Turn on AI proposals in Knowledge once the Review view is live · [OWNER]
+- **Check:** `ssh metorite 'sudo grep -c "^KNOWLEDGE_PROPOSALS=true" /opt/acb/app/.env'` prints 1, and so does the staging `.env`. If both print 1, delete this entry.
+- **Why:** KB-5a (#1236) and KB-5b (the Review view) let the assistant file a page or an edit as a proposal, and a person accepts it. The tools and `POST /knowledge/proposals` stay dark behind `KNOWLEDGE_PROPOSALS`, default off.
+- **Do this:** when KB-5b is merged, turn the flag on in staging first, with `sudo acb-staging-flag` or the staging `.env`. Test a proposal in the chat. Then accept it in Knowledge → Review. Production waits for the owner's word.
+- **Authority:** owner, 2026-10-22. `specs/knowledge_base.md` §8.1 (F1, F2), §13
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-389 · Turn on knowledge gaps and the kb_gap My Day card · [OWNER]
+- **Check:** `KNOWLEDGE_GAPS` names the org and `MY_DAY_PROVIDERS` holds `knowledge` in the production `.env`. If both hold, delete this entry.
+- **Why:** KB-9a (branch `kb-gaps`, migration 293) writes a `kb_gaps` row when the assistant's company search finds no Knowledge page. A question that two members ask within 30 days shows a "Write a page" card to a Knowledge manager. It is dark by default.
+- **Do this:** after KB-9a merges, set both on staging and check the Gaps view in Knowledge. Production waits for the owner's word.
+- **Authority:** `specs/knowledge_base.md` §8.4 door 3, §9, §13
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-390 · Build the next Knowledge AI slices of §22 · [AGENT]
+- **Check:** `grep -nE "KB-5c|KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Why:** §22 of `knowledge_base.md` is the AI roadmap of 2026-10-22. It ranks the slices by value and names the tier of each.
+- **Do this, in order:**
+  1. KB-5c: the 14-day expiry of pending proposals (no model).
+  2. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
+  3. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
+  4. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
+  5. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
+  6. KB-4b citation chips, then KB-10 `kb:read` on MCP.
+  Each paid pass has its own flag, default off, which the owner turns on.
+- **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-391 · Finish the Notion and Confluence parity of wave 2 · [AGENT]
+- **Check:** the wave 2 table of `knowledge_base.md` §21.7 marks KB-2j, KB-2o and KB-2c BUILT. If all three are BUILT, delete this entry.
+- **Why:** KB-2h, KB-2k, KB-3d and KB-2m are built. Three rows remain.
+- **Do this:** KB-2j (math, mermaid, image resize and captions, allowlisted embeds), then KB-2o (labels). KB-2c (files) waits for Artifacts AM-5 and H-322. The `kb_links` row for a person mention (KB-2k1) waits for a reader that needs it.
+- **Authority:** `specs/knowledge_base.md` §21.7
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-392 · Run the hardening pass of the Knowledge build · [AGENT]
+- **Check:** `grep -c "^| K-" project-docs/hardening_backlog.md` prints 0. If it prints 0, delete this entry.
+- **Why:** many WS-61 slices landed in build mode with the verifier only (engineering_practice.md §7a). The backlog holds K-1 to K-8.
+- **Do this:** open one `harden` PR. Run `diff-reviewer` on the whole wave 2 diff. Add the fences that K-4 to K-8 name. Run the visual review. Then close each K row.
+- **Authority:** owner directive, 2026-10-19. `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-23 · Knowledge session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
