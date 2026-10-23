@@ -5793,6 +5793,14 @@ async def edit_draft(
                                  params={"trim": "true", "mark_read": "false"}) or {}
             except GatewayError:
                 row = {}
+            # Review fix round 1 (P2-2): the save replaces the whole body, so
+            # a rewrite of the new text alone would drop the quoted thread
+            # and the HTML of a reply draft. Refuse it then.
+            if row.get("body_trimmed"):
+                return ("Nothing changed. This draft holds a quoted thread, and a "
+                        "rewrite would drop it. Rewrite the new text in the chat, and "
+                        "change the draft in the Email app, or use compose_reply for a "
+                        "new reply.")
             body = str(row.get("body_text") or "")
         body, why = await _rewritten(account_id, body, rewrite, subject, to)
         if why:
@@ -5835,6 +5843,8 @@ async def edit_draft(
     if keep_body:
         context += "\n\nThe text of the draft stays as it is."
     else:
+        if rewrite:
+            context += "\n\nThe text below replaces the whole text of the draft."
         context = _with_draft_text(context, text)
     # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
     # and the card says so first. The send would not go anyway: the schedule

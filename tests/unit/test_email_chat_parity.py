@@ -899,3 +899,30 @@ async def test_p2_1_a_held_chat_writes_no_new_draft(gw: Gateway) -> None:
     assert out.startswith("Nothing changed."), out
     assert "new email" in out
     assert gw.cards == [] and gw.writes == []
+
+
+DRAFT_ROW = {"id": "d1", "account_id": BOX, "folder": "drafts", "subject": "Re: Hi",
+             "to_addresses": [{"email": "kim@contoso.test"}], "cc_addresses": [],
+             "bcc_addresses": [], "body_text": "ok thx"}
+
+
+async def test_p2_2_a_rewrite_never_drops_the_quoted_thread(gw: Gateway) -> None:
+    """A reply draft holds the quoted thread. A rewrite with no body reads
+    only the new text, so its save would drop the thread. It refuses."""
+    gw.answers[("GET", "/email/messages/d1")] = {**DRAFT_ROW, "body_trimmed": True}
+    gw.answers[("POST", "/email/compose-assist")] = {"draft": "Thank you, Kim."}
+    out = await agents.edit_draft(BOX, "d1", rewrite="more formal")
+    assert out.startswith("Nothing changed."), out
+    assert "quoted" in out
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_p2_2_a_rewrite_of_a_draft_with_no_thread_says_the_text_is_replaced(
+    gw: Gateway,
+) -> None:
+    gw.answers[("GET", "/email/messages/d1")] = {**DRAFT_ROW, "body_trimmed": False}
+    gw.answers[("POST", "/email/compose-assist")] = {"draft": "Thank you, Kim."}
+    await agents.edit_draft(BOX, "d1", rewrite="more formal")
+    [card] = gw.cards
+    assert "Thank you, Kim." in card["context"]
+    assert "replaces the whole text" in card["context"]
