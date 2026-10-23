@@ -1963,7 +1963,10 @@ async def draft_reply(
     writes from the email alone. To save or send a text that you and the
     member already agreed, use ``compose_reply`` with ``draft``: this tool
     writes a new text. The draft is always made in the mailbox that received
-    the email, whatever ``account_id`` says."""
+    the email, whatever ``account_id`` says.
+
+    The draft goes to everyone when others are on the mail (Reply all), and
+    to the sender alone when nobody else is. Say which one in the answer."""
     try:
         # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -1977,6 +1980,7 @@ async def draft_reply(
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save,
+         "auto_reply_all": True,
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
@@ -1993,6 +1997,12 @@ async def draft_reply(
     ref = _draft_line(res.get("draft_id"), res.get("subject"))
     if ref:
         note += f" ({ref})"
+    if res.get("to"):
+        who = f"to {_addr_text(res.get('to'))}"
+        if res.get("cc"):
+            note += f" (Reply all: {who}, Cc {_addr_text(res.get('cc'))})"
+        else:
+            note += f" (Reply: {who})"
     read = [str(n) for n in res.get("files_read") or [] if n]
     if read:
         note += f" (used the files: {', '.join(read)})"
@@ -2147,7 +2157,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
-    email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
+    email_id: str, account_id: str, reply_all: bool | None = None, draft: str = "",
     instruction: str = "",
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
@@ -2163,8 +2173,12 @@ async def compose_reply(
     member's Discard trashes the card's draft, unless the member edited it
     there.
 
-    Set ``reply_all=true`` when the member asked to answer everyone on the
-    email. The member can change it on the card. The reply always goes from
+    Leave ``reply_all`` out and the server chooses: Reply all when anyone
+    besides the sender and the member is on the mail, else Reply. Most mail
+    with other people on it needs Reply all. Pass ``reply_all=false`` only
+    when the text is for the sender alone, or when the member says "just to
+    him". Pass ``true`` when the member asks for everyone. Say which choice
+    the card opened on. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
     choose no recipient: the server derives the recipients.
 
@@ -2195,11 +2209,12 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
-    if reply_all:
+    if reply_all is not None:
         # The draft in Drafts takes the recipients that the card opens with.
-        steer["reply_all"] = True
+        # Left out, the server chooses (§22.6).
+        steer["reply_all"] = bool(reply_all)
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
-    form = _reply_form(prep, reply_all)
+    form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if _held_card_mode():
         _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""

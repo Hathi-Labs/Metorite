@@ -2326,6 +2326,26 @@ class DraftReplyRequest(BaseModel):
     # The member's steer for this one draft, from the chat ("say yes to
     # Friday", "keep it short"). It reaches the drafter as extra instructions.
     instruction: str = Field(default="", max_length=2000)
+    #: §22.6: the chat asks for the card's default. The draft takes Reply all
+    #: when anyone besides the sender and the member is on the mail.
+    auto_reply_all: bool = False
+
+
+async def _auto_reply_lists(message_id: str, owner: str) -> tuple[list[str], list[str]]:
+    """``(to, cc)`` of Reply all when it adds anyone, else ``([], [])`` and the
+    caller keeps Reply. A fault gives ``([], [])``: a draft still saves."""
+    try:
+        from gateway.routes.email.automation.reply_card import (  # noqa: PLC0415
+            auto_reply_all,
+            reply_recipients,
+        )
+        r_to, r_cc = await reply_recipients(message_id, owner)
+        a_to, a_cc = await reply_recipients(message_id, owner, reply_all=True)
+        if r_to and auto_reply_all(r_to, r_cc, a_to, a_cc):
+            return a_to, a_cc
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.reply_draft_auto_all_failed", error=type(exc).__name__)
+    return [], []
 
 
 async def _reply_to_list(message_id: str, owner: str, fallback: str) -> list[str]:
@@ -2395,9 +2415,17 @@ async def draft_reply_smart(
         kept_draft = False
         # §22 gap 2: the chat finds the draft again by its id and subject.
         saved_id, saved_subject = "", ""
+        saved_to: list[str] = []
+        saved_cc: list[str] = []
         if req.create_draft:
             reply_to = await _reply_to_list(
                 req.message_id, user.email or "anonymous", email["from"])
+            reply_cc: list[str] | None = None
+            if req.auto_reply_all:
+                all_to, all_cc = await _auto_reply_lists(
+                    req.message_id, user.email or "anonymous")
+                if all_to:
+                    reply_to, reply_cc = all_to, all_cc or None
             try:
                 async with provider_session(
                     db, user.email or "anonymous",
@@ -2423,11 +2451,13 @@ async def draft_reply_smart(
                             reply_to_provider_id=sess.provider_message_id,
                             owner_email=email.get("self") or "",
                             to=reply_to or [email["from"]],
-                            subject=re_subject, body=draft,
+                            subject=re_subject, body=draft, cc=reply_cc,
                         )
                         created, kept_draft = True, wrote.kept_draft
                         saved_id = str(wrote.local_id or "")
                         saved_subject = re_subject or ""
+                        saved_to = list(reply_to or [email["from"]])
+                        saved_cc = list(reply_cc or [])
                 # The wrapper's exit commit lands the mirrored local draft.
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
@@ -2443,6 +2473,7 @@ async def draft_reply_smart(
 
         return {"draft": draft, "created": created, "kept_draft": kept_draft,
                 "draft_id": saved_id, "subject": saved_subject,
+                "to": saved_to, "cc": saved_cc,
                 "files_read": files.read_names(), "notices": files.notices()}
 
 

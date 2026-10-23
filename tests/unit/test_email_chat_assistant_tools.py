@@ -578,3 +578,20 @@ def test_the_drafts_lookup_exists_with_the_parameter_the_text_names() -> None:
     assert "folder" in inspect.signature(agents.search_emails).parameters
     text = Path(agents.__file__).with_name("instructions.md").read_text(encoding="utf-8")
     assert "`search_emails` with `folder` set to `drafts`" in text
+
+
+async def test_draft_reply_asks_for_the_default_and_names_reply_all(gw: _Gw, monkeypatch) -> None:
+    """§22.6: the draft goes to everyone when others are on the mail, and the
+    first line says so."""
+    posts: list[tuple[str, dict[str, Any]]] = []
+
+    async def post(path, body):
+        posts.append((path, body))
+        return {"draft": "Hi all", "created": True, "draft_id": "d5",
+                "subject": "Re: Quote", "to": ["a@x.test"], "cc": ["b@x.test"]}
+
+    monkeypatch.setattr(agents, "_post", post)
+    out = await agents.draft_reply(MSG, BOX)
+    assert posts[0][1]["auto_reply_all"] is True
+    assert "(Reply all: to a@x.test, Cc b@x.test)" in out.splitlines()[0]
+    assert "draft_id=d5" in out.splitlines()[0]

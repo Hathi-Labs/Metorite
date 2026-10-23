@@ -21080,3 +21080,23 @@ Veena. An audit then found four gaps. Each one is closed.
    card says that the draft holds no quoted thread when it does not.
 4. **No "Email app" option.** The too-long answer names `edit_draft` as the chat step.
    Fence: `tests/unit/test_held_send_guidance.py`.
+
+### 22.6 Reply all is the default (2026-10-23)
+
+The owner asked for a smart choice between Reply and Reply all. Most mail with other people
+on it needs Reply all. The default is now Reply all when anyone besides the sender and the
+member is on the mail. Else it is Reply.
+
+- `POST /email/reply-card` takes `reply_all` as `true`, `false` or left out. Left out, the
+  server picks, and the answer names the choice. The card opens on it, and the toggle stays.
+- `compose_reply` sends `reply_all` only when the model sets it. The model sets `false` for
+  text meant for the sender alone, such as a private note.
+- `draft_reply` asks for the same default, and its first line names the choice and the
+  people.
+- Fence: `tests/unit/test_email_chat_reply.py`, `test_auto_reply_all_*` and the card route
+  tests.
+
+**Not built: the held chat.** A held reply card still opens on Reply when Reply all adds a
+new address (section 21). The reply card has no tick boxes. It only marks a new address.
+So the plan to let unticked boxes carry the safety does not hold for this card. The owner
+must decide whether to add tick boxes to the reply card first.
