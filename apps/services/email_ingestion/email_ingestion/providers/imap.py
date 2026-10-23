@@ -80,7 +80,12 @@ class _Deadline:
 
     The socket timeout is per read, so a server that sends one byte every few
     seconds would hold a worker for ever. This timer shuts the socket down at
-    the deadline, and the blocked read or handshake then fails at once."""
+    the deadline, and the blocked read or handshake then fails at once.
+
+    ⚠️ ``SSLContext.wrap_socket`` DETACHES the plain socket (its fileno
+    becomes -1), so a shutdown of the old object fails with EBADF. After a
+    wrap the caller must call :meth:`repoint` with the SSL socket that
+    ``wrap_socket`` returned. :func:`_wrap_tls` does both steps."""
 
     def __init__(self, seconds: float | None) -> None:
         self._seconds = seconds
@@ -93,24 +98,30 @@ class _Deadline:
 
     def arm(self, sock: socket.socket) -> None:
         self._sock = sock
-        if self._seconds is None:
+        if self._seconds is None or self._timer is not None:
             return
         self._timer = threading.Timer(self._seconds, self._expire)
         self._timer.daemon = True
         self._timer.start()
 
+    def repoint(self, sock: socket.socket) -> None:
+        """Aim the timer at a new socket, for example the one after TLS."""
+        self._sock = sock
+        if self.expired:  # the timer fired between the wrap and this call
+            self._kill(sock)
+
+    def _kill(self, sock: socket.socket) -> None:
+        for act in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
+            try:
+                act()
+            except OSError as exc:  # EBADF here means a detached socket
+                _log.debug("imap.deadline.close_failed errno=%s", exc.errno)
+
     def _expire(self) -> None:
         self.expired = True
         sock = self._sock
         if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                sock.close()
-            except OSError:
-                pass
+            self._kill(sock)
 
     def cancel(self) -> None:
         if self._timer is not None:
@@ -122,6 +133,20 @@ def _pinned_socket(ip: str, port: int, timeout: float, deadline: _Deadline) -> s
     sock = socket.create_connection((ip, port), deadline.remaining(timeout))
     deadline.arm(sock)
     return sock
+
+
+def _wrap_tls(
+    sock: socket.socket, context: ssl.SSLContext, hostname: str, deadline: _Deadline,
+) -> ssl.SSLSocket:
+    """TLS over a pinned socket, with the certificate checked against the NAME.
+
+    The handshake is a separate step, so the deadline can aim at the SSL
+    socket before it blocks (``wrap_socket`` has detached the plain one)."""
+    tls = context.wrap_socket(
+        sock, server_hostname=hostname, do_handshake_on_connect=False)
+    deadline.repoint(tls)
+    tls.do_handshake()
+    return tls
 
 
 class _PinnedIMAP4(imaplib.IMAP4):
@@ -148,7 +173,53 @@ class _PinnedIMAP4_SSL(imaplib.IMAP4_SSL):  # noqa: N801 - mirrors imaplib
 
     def _create_socket(self, timeout):  # type: ignore[override]
         sock = _pinned_socket(self._ip, self.port, timeout, self._deadline)
-        return self.ssl_context.wrap_socket(sock, server_hostname=self.host)
+        return _wrap_tls(sock, self.ssl_context, self.host, self._deadline)
+
+
+class _PinnedSMTP(smtplib.SMTP):
+    """SMTP to a pinned address. STARTTLS verifies the certificate against the
+    HOST NAME, and the same deadline covers the handshake."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, timeout=timeout)
+
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        return _pinned_socket(self._ip, port, timeout, self._deadline)
+
+    def starttls(self, *, context=None):  # type: ignore[override]
+        self.ehlo_or_helo_if_needed()
+        if not self.has_extn("starttls"):
+            raise smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+        resp, reply = self.docmd("STARTTLS")
+        if resp != 220:
+            raise smtplib.SMTPResponseException(resp, reply)
+        self.sock = _wrap_tls(
+            self.sock, context or ssl.create_default_context(), self._host, self._deadline)
+        self.file = None
+        self.helo_resp = None
+        self.ehlo_resp = None
+        self.esmtp_features = {}
+        self.does_esmtp = False
+        return resp, reply
+
+
+class _PinnedSMTP_SSL(smtplib.SMTP_SSL):  # noqa: N801 - mirrors smtplib
+    """SMTP over TLS to a pinned address, verified against the host name."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        sock = _pinned_socket(self._ip, port, timeout, self._deadline)
+        return _wrap_tls(sock, self.context, self._host, self._deadline)
+
+
+#: The most seconds one send may hold its worker, from connect to quit.
+SMTP_TOTAL_S = 60.0
 
 
 class IMAPProvider(BaseEmailProvider):
@@ -511,15 +582,28 @@ class IMAPProvider(BaseEmailProvider):
             msg["References"] = ref
 
         def _send() -> str:
-            if use_starttls and smtp_port == 587:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
-                server.starttls()
-            else:
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
-
-            server.login(smtp_username, smtp_password)
-            server.send_message(msg)
-            server.quit()
+            # SSRF: a saved public host can later resolve to a private address.
+            # Resolve ONCE, refuse that, and connect to the checked address.
+            try:
+                ip = pinned_public_address(smtp_host, smtp_port)
+            except PublicAddressRefused as exc:
+                raise OSError(
+                    f"Metorite will not send through {smtp_host}: {exc.reason}."
+                ) from None
+            deadline = _Deadline(SMTP_TOTAL_S)
+            try:
+                if use_starttls and smtp_port == 587:
+                    server: smtplib.SMTP = _PinnedSMTP(
+                        smtp_host, smtp_port, ip=ip, timeout=30, deadline=deadline)
+                    server.starttls()
+                else:
+                    server = _PinnedSMTP_SSL(
+                        smtp_host, smtp_port, ip=ip, timeout=30, deadline=deadline)
+                server.login(smtp_username, smtp_password)
+                server.send_message(msg)
+                server.quit()
+            finally:
+                deadline.cancel()
             ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
             return f"smtp-{ts}-{hash(subject) & 0xFFFF:04x}"
 

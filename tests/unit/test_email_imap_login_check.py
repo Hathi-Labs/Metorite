@@ -349,3 +349,161 @@ async def test_the_sync_connect_refuses_a_private_address(monkeypatch):
     monkeypatch.setattr(pa, "resolve", lambda h, p: ["169.254.169.254"])
     with pytest.raises(OSError):
         await IMAPProvider(dict(CREDS))._connect_imap()
+
+
+# ── TLS: the deadline must reach the SSL socket (P1, round 2) ────────────────
+
+
+@pytest.fixture()
+def tls_pair(tmp_path):
+    """A self-signed certificate for mail.example.test, and the two contexts."""
+    import datetime
+    import ssl
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mail.example.test")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("mail.example.test")]), False)
+            .sign(key, hashes.SHA256()))
+    cert_pem, key_pem = tmp_path / "c.pem", tmp_path / "k.pem"
+    cert_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_pem.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))
+    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server.load_cert_chain(cert_pem, key_pem)
+    client = ssl.create_default_context(cafile=str(cert_pem))
+    return server, client
+
+
+def _tls_server(server_ctx, handler):
+    import socket
+    import threading
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+
+    def _one(raw):
+        try:
+            handler(server_ctx.wrap_socket(raw, server_side=True))
+        except OSError:
+            pass
+
+    def _run():
+        while True:
+            try:
+                raw, _ = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=_one, args=(raw,), daemon=True).start()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return srv
+
+
+async def test_a_tls_drip_feed_server_is_cut_at_the_total_deadline(monkeypatch, tls_pair):
+    import ssl
+    import time
+
+    server_ctx, client_ctx = tls_pair
+
+    def _drip(conn):
+        while True:
+            conn.sendall(b"*")  # valid TLS, one byte, never a full line
+            time.sleep(0.3)
+
+    srv = _tls_server(server_ctx, _drip)
+    _pin_to_loopback(monkeypatch, [])
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **k: client_ctx)
+    creds = {**CREDS, "imap_host": "mail.example.test", "imap_port": srv.getsockname()[1]}
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        await IMAPProvider(creds).verify_login(1.0)
+    # Without the fix the per-read timeout (30 s) never fires, and this blocks.
+    assert time.monotonic() - started < 2.0
+    srv.close()
+
+
+async def test_a_tls_server_with_a_wrong_name_is_refused(monkeypatch, tls_pair):
+    """The certificate is still checked against the host NAME, not the address."""
+    import ssl
+
+    server_ctx, client_ctx = tls_pair
+    srv = _tls_server(server_ctx, lambda c: c.sendall(b"* OK\r\n"))
+    _pin_to_loopback(monkeypatch, [])
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **k: client_ctx)
+    creds = {**CREDS, "imap_host": "evil.example.test", "imap_port": srv.getsockname()[1]}
+    with pytest.raises(OSError):  # ssl.SSLCertVerificationError is an OSError
+        await IMAPProvider(creds).verify_login(3.0)
+    srv.close()
+
+
+# ── SMTP: a pinned, checked address (P2, round 2) ────────────────────────────
+
+
+def _send_args():
+    return dict(to=["a@x.test"], subject="s", body_text="b")
+
+
+async def test_a_send_to_a_private_smtp_address_is_refused(monkeypatch):
+    from acb_common import public_address as pa
+    import smtplib
+
+    monkeypatch.setattr(pa, "resolve", lambda h, p: ["169.254.169.254"])
+
+    def _no_connect(*_a, **_k):
+        raise AssertionError("the send connected to a private address")
+
+    monkeypatch.setattr(smtplib, "SMTP", _no_connect)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _no_connect)
+    monkeypatch.setattr(socket_mod(), "create_connection", _no_connect)
+    with pytest.raises(OSError) as err:
+        await IMAPProvider(dict(CREDS)).send_message(**_send_args())
+    assert "will not send" in str(err.value)
+    assert PASSWORD not in str(err.value)
+
+
+def socket_mod():
+    import socket
+
+    return socket
+
+
+async def test_a_send_connects_to_the_checked_address_and_verifies_the_name(monkeypatch, tls_pair):
+    import ssl
+    import threading
+
+    server_ctx, client_ctx = tls_pair
+    got: list[bytes] = []
+
+    def _smtp(conn):
+        conn.sendall(b"220 ready\r\n")
+        got.append(conn.recv(1024))
+        conn.close()
+
+    srv = _tls_server(server_ctx, _smtp)
+    _pin_to_loopback(monkeypatch, [])
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **k: client_ctx)
+    port = srv.getsockname()[1]
+    good = {**CREDS, "smtp_host": "mail.example.test", "smtp_port": port, "smtp_use_starttls": False}
+    # The name matches the certificate: the TLS handshake passes, and then the
+    # fake server hangs up, so the send fails AFTER TLS (not with a cert error).
+    with pytest.raises(Exception) as ok:
+        await IMAPProvider(good).send_message(**_send_args())
+    assert not isinstance(ok.value, ssl.SSLCertVerificationError)
+    assert got, "the TLS handshake and the greeting went through to the pinned address"
+    bad = {**good, "smtp_host": "evil.example.test"}
+    with pytest.raises(ssl.SSLCertVerificationError):
+        await IMAPProvider(bad).send_message(**_send_args())
+    srv.close()
+    assert threading.active_count() >= 1
