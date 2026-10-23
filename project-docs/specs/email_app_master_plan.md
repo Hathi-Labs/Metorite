@@ -8760,6 +8760,30 @@ In `workbench/control_plane`, also run `npx tsc --noEmit` and `npx vitest run sr
 Then `POST /email/rules/copy` can keep a rule with a FORWARD to an own address, and D-EM-29 can
 change.
 
+#### 11.7.8 Multi-inbox UI pass (2026-10-23)
+
+**Status.** Built on branch `email-multi-inbox-ui`. Frontend only. The owner asked that the chat
+and the UI can manage more than one inbox.
+
+- **Chat app scope.** `/chat` uses `chatScope()` from `lib/chatScope.ts`, the same rule as the
+  email pane. It starts on the scope that the pane remembers. With no memory it opens All inboxes
+  for two or more pooled mailboxes, else the one mailbox. The picker uses `chatMailboxOptions()`,
+  so it shows the display label, the mailbox dot and the "All inboxes" entry. A separate mailbox
+  is an option of its own and never sits inside All inboxes. Fence: `chat-app-shared-scope` in
+  `src/app/chat/chatMailboxScope.test.ts`.
+- **Reconnect mark.** The chat picker marks a mailbox whose sync failed or whose sign-in lapsed.
+  The account switcher already did. Fence: `email-chat-picker-attention`.
+- **Copy rules.** The Rules tab has "Copy rules from..." for two or more mailboxes. The dialog
+  lists the rules that will copy and the rules that stay behind. It asks before it copies. Fence:
+  `email-rules-tab-copy`.
+- **IMAP.** The connect choices have an IMAP and SMTP form. IMAP uses SSL/TLS only. SMTP uses
+  STARTTLS on port 587 or SSL/TLS. Fence: `email-imap-connect`.
+- **Not changed, by design.** The Email Cleaner, the Dashboard and the digest stay in one mailbox.
+  D-EM-18 makes the digest a one-mailbox act, and §11.0 rule 5 says a setting names one mailbox.
+  The header of these views names the mailbox and has a picker. The pooled `/senders` route
+  returns no mailbox for a row, so a chip for each row needs one call for each mailbox. That
+  change needs an owner decision.
+
 ### 11.8 Open owner question
 
 - **Q-MB-1. How many mailboxes can one member connect?** Each mailbox adds a sync loop, Jev calls
