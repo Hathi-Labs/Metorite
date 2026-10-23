@@ -1433,6 +1433,25 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **What EA-13 does not build.** A server filter for "Agent work" (the toggle filters loaded rows). A dismiss of a failed run (EA12-12). A new run state. A status move on a pull request event, which `github_integration.md` §12 owns.
 
+### 12.3 One AI for each task (EA-14a)
+
+Owner directive, 2026-10-20. If one AI session holds a task, no other AI session may claim it or start work on it.
+
+**The rules.**
+
+- A task has at most one open run (`created`, `in_progress`, `awaiting` or `stopping`). This holds across every member and every client. The partial unique index `pm_agent_runs_one_open_per_task` (migration 289) decides a race. The old index `pm_agent_runs_one_open` stays.
+- A claim, a start and the archive request of an agent pass one gate, `_gate_task` in `agent_runs.py`. The caller's own open run (same member, same client) comes back, as before. A free task opens a run. A task that another run holds answers 409 with the code `task_held`. The message names the holder, the client, the start and the last activity, and says: pick another task.
+- The edge maps `task_held` to one fixed text. The text tells the agent to pick another task and not to retry. The agent reads the holder in `held_by`.
+- **The lease.** A run keeps its task while its last activity is newer than two hours. The environment variable `AGENT_RUN_LEASE_SECONDS` changes the lease. Any activity, and any update of the run, is a heartbeat. A run that waits on a question (`awaiting`) keeps the task for three leases.
+- **The takeover.** The next claim takes a task from a run whose lease ended. The old run moves to `abandoned`, and it gets the line "Taken over by <member>/<client>". An agent that writes to an `abandoned` run gets 409 and stops.
+- **The release.** `release_task` (edge) and `POST /projects/agent-runs/{run_id}/release` (gateway) end a run without finishing the task. The run moves to `released`. The task keeps its status and its assignees. An agent releases its own run only. A person releases a run when they are its member, an assignee of the task, or an org admin. The card shows a Release button with a confirm.
+- **The reads.** `list_tasks` and `get_task` carry `held_by` (member, client, since, last activity, `stale`). `list_tasks` takes `unheld`. A task whose holder is stale counts as unheld. `stale` in `held_by` means the lease ended. It is not the idle state of five minutes.
+- A member prompt on a `completed` run opens it again. That move also needs a free task. If another run holds the task, the prompt answers 409 `task_held`.
+
+**Locks.** The gate takes no task row lock. It takes the lock order of EA-13c (run, then task row) and the index decides a race. A takeover locks the old run only, and it checks `last_activity_at`, so a heartbeat that arrives first wins.
+
+**Fence.** `tests/unit/test_agent_run_exclusive.py`.
+
 ## 13. The landing-page scenario
 
 The member connects Claude with `context:read` only. Claude calls `get_company_context` and reads the resource `metorite://company/context`. Claude writes the page in its own window. Metorite stores nothing and holds no Claude key. A second connection with `projects:read` is needed to let Claude read the product backlog. The consent page makes that second grant a separate choice.

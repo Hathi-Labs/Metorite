@@ -9,6 +9,7 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     GET  /projects/agent-runs/{run_id}            → {run, activities, cursor}
     POST /projects/agent-runs/{run_id}/activities → {activity, run, created}
     POST /projects/agent-runs/{run_id}/finish     → {run, activity}
+    POST /projects/agent-runs/{run_id}/release    → {run, released}   (EA-14a)
     POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
     POST /projects/agent-runs/{run_id}/archive-approval
                                                   → {activity, run, created, archived}
@@ -19,6 +20,15 @@ ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
 and the run waits (``awaiting``) until a member writes a ``prompt``. These
 routes are the only writer of ``pm_agent_runs`` and
 ``pm_agent_run_activities``.
+
+**One AI for each task (EA-14a).** A task has at most ONE open run, across
+every member and every client. A start or a claim on a task that another run
+holds answers 409 with the code ``task_held``. A run keeps its task while its
+last activity is newer than the lease (:func:`filters.agent_run_lease_s`, two
+hours, or three leases while it waits on a question). After that, the next
+claim takes the task over: the old run becomes ``abandoned``. The holder, a
+person who owns the run or the task, or an admin may release a run
+(``released``). Fence: ``tests/unit/test_agent_run_exclusive.py``.
 
 The rules, each one stated in the spec:
 
@@ -91,6 +101,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_STATE_SQL,
     agent_runs_enabled,
     attach_agent_state,
+    lease_expired,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
 from gateway.routes.projects.tasks import archive_task_in
@@ -101,16 +112,22 @@ _log = get_logger("gateway.projects.agent_runs")
 
 # ── The vocabulary ──────────────────────────────────────────────────────────
 
-#: The eight statuses of Plane's ``AgentRun``. ``stale`` is never stored: it
+#: The eight statuses of Plane's ``AgentRun``, and the two of EA-14a:
+#: ``abandoned`` (another session took the task over after the lease) and
+#: ``released`` (the holder gave the task up). ``stale`` is never stored: it
 #: is derived on read (:data:`AGENT_RUN_STATE_SQL`). The CHECK of the
-#: migration lists the same eight.
+#: EA-14a migration lists the stored ones.
 RUN_STATUSES: tuple[str, ...] = (
     "created", "in_progress", "awaiting", "completed",
-    "stopping", "stopped", "failed", "stale",
+    "stopping", "stopped", "failed", "stale", "abandoned", "released",
 )
 OPEN_STATUSES: frozenset[str] = frozenset(AGENT_RUN_OPEN_STATUSES)
 #: Terminal for the agent. A member ``prompt`` on ``completed`` opens it again.
-TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "stopped", "failed"})
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "stopped", "failed", "abandoned", "released"},
+)
+#: The stable code of the 409 for a task that another run holds (EA-14a).
+TASK_HELD = "task_held"
 
 ACTIVITY_TYPES: tuple[str, ...] = (
     "prompt", "thought", "action", "response", "elicitation", "error",
@@ -235,6 +252,13 @@ class FinishIn(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class ReleaseIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/release`` (EA-14a). No field: the run
+    is the path, and the actor is the context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ArchiveRequestIn(BaseModel):
     """``POST /projects/tasks/{id}/archive-request`` (EA-6g). The key only.
     The target is the task of the path, the text and the options are the
@@ -321,6 +345,16 @@ _MOVES: dict[str, dict[str, str]] = {
     # The member's first instruction, inside the start of a `created` run
     # (EA-12d). Only `start_agent_run` passes it. No route takes it as input.
     "member_start": {"created": "created"},
+    # EA-14a. The holder (or a person) gives the task up, and a later claim
+    # takes a task over after the lease. Both end an OPEN run only.
+    "release": {
+        "created": "released", "in_progress": "released", "awaiting": "released",
+        "stopping": "released",
+    },
+    "abandon": {
+        "created": "abandoned", "in_progress": "abandoned", "awaiting": "abandoned",
+        "stopping": "abandoned",
+    },
 }
 
 
@@ -338,14 +372,16 @@ def transition(status: str, event: str) -> str:
         raise ValueError(f"unknown event {event!r}")
     to = moves.get(current)
     if to is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "The agent has not picked this run up yet. Wait for it to start, then reply."
-                if status == "created" and event == "member_prompt"
-                else f"This agent run is {status}. It cannot take this activity."
-            ),
-        )
+        if status == "abandoned":
+            detail = (
+                "Another AI session took this task over. This run is abandoned. "
+                "Stop the work on this task."
+            )
+        elif status == "created" and event == "member_prompt":
+            detail = "The agent has not picked this run up yet. Wait for it to start, then reply."
+        else:
+            detail = f"This agent run is {status}. It cannot take this activity."
+        raise HTTPException(status_code=409, detail=detail)
     return to
 
 
@@ -435,7 +471,15 @@ def _activity_out(row: Any) -> dict[str, Any]:
     }
 
 
-_RUN_SELECT = f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state FROM pm_agent_runs r"
+#: EA-14a: every read of a run also carries ``idle_s`` (the seconds since its
+#: last activity, for the lease) and the display name of its member.
+_RUN_SELECT = (
+    f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
+    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    " (SELECT u.display_name FROM app_user u"
+    "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
+    "FROM pm_agent_runs r"
+)
 
 _OPEN_ELICITATIONS_SQL = """
 SELECT DISTINCT ON (a.run_id) a.*
@@ -473,6 +517,14 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "id": key,
             "task_id": str(row.task_id),
             "member_email": row.member_email,
+            # EA-14a: the name for "Held by <member> via <client>", and whether
+            # the lease ended (the run no longer keeps its task).
+            "member_name": getattr(row, "member_name", None) or row.member_email,
+            "lease_expired": bool(
+                row.status in OPEN_STATUSES
+                and getattr(row, "idle_s", None) is not None
+                and lease_expired(row.status, float(row.idle_s))
+            ),
             "connection_id": wire(row.connection_id),
             "client_via": row.client_via,
             # EA-13d: the curated name and the verified host of the stamp, for
@@ -778,6 +830,8 @@ async def _write_activity(
         raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
 
     new_status = transition(run.status, event or _event_of(kind, signal))
+    if run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES:
+        await _clear_for_reopen(db, run, user)
 
     content: dict[str, Any] = {"body": body}
     content_metadata: dict[str, Any] | None = None
@@ -967,6 +1021,145 @@ async def list_task_agent_runs(
         return {"rows": await _runs_out(db, list(rows))}
 
 
+# ── One AI for each task (WS-55 EA-14a) ─────────────────────────────────────
+
+#: The open run of a task, whoever holds it, with its idle time and the name
+#: of its member. At most one row exists, because the partial unique index
+#: ``pm_agent_runs_one_open_per_task`` allows one open run for each task.
+_HOLDER_SQL = (
+    f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
+    " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    " (SELECT u.display_name FROM app_user u"
+    "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
+    "FROM pm_agent_runs r WHERE r.task_id = CAST(:tid AS uuid) "
+    "  AND r.status = ANY(:open) "
+    "ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
+)
+
+_NAME_SQL = (
+    "SELECT display_name FROM app_user WHERE lower(email) = lower(:me) LIMIT 1"
+)
+
+
+async def _member_name(db: Any, email: str) -> str:
+    found = (await db.execute(text(_NAME_SQL), {"me": email})).scalar()
+    return str(found or email)
+
+
+def _task_held(holder: Any) -> HTTPException:
+    """The 409 ``task_held``. The message names the holder, the client, the
+    start and the last activity, and tells the caller to pick another task."""
+    name = holder.member_name or holder.member_email
+    client = agent_oauth.client_label(holder.client_via)
+    since = wire(holder.started_at or holder.created_at)
+    last = wire(holder.last_activity_at)
+    message = (
+        f"Another AI session holds this task. {name} holds it through {client}. "
+        f"The run began at {since}. The last activity was at {last}. "
+        "Pick another task. Do not try this task again."
+    )
+    return HTTPException(status_code=409, detail={
+        "error": TASK_HELD, "message": message,
+        "held_by": {
+            "member": holder.member_email, "member_name": name,
+            "client_via": holder.client_via, "client_name": client,
+            "since": since, "last_activity_at": last,
+        },
+    })
+
+
+async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | None,
+                           body: str) -> None:
+    """One ``response`` row on *run* that the SERVER writes, as the record of
+    a takeover or a release. No comment and no notification."""
+    await db.execute(
+        text(
+            "INSERT INTO pm_agent_run_activities "
+            "(run_id, task_id, type, content, ephemeral, signal, actor, actor_via) "
+            "VALUES (CAST(:rid AS uuid), CAST(:tid AS uuid), 'response', "
+            "        CAST(:content AS jsonb), false, NULL, :actor, :via)"
+        ),
+        {"rid": str(run.id), "tid": str(run.task_id), "actor": actor_email, "via": via,
+         "content": _jsonb({"body": body, "system": True})},
+    )
+
+
+async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
+    """Move a run whose lease ended to ``abandoned``, and write the line
+    "Taken over by <member>/<client>". False when the run moved in the
+    meantime: a heartbeat changes ``last_activity_at``, so the guard misses
+    and the caller reads the holder again."""
+    ts = await _clock(db)
+    moved = (await db.execute(
+        text(
+            "UPDATE pm_agent_runs SET status = :to, ended_at = :ts "
+            " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
+            "   AND last_activity_at = :seen RETURNING id"
+        ),
+        {"to": transition(holder.status, "abandon"), "ts": ts, "rid": str(holder.id),
+         "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at},
+    )).fetchone()
+    if moved is None:
+        return False
+    client = agent_oauth.client_label(via) if via else "the app"
+    await _system_activity(
+        db, holder, actor_email=me, via=via,
+        body=f"Taken over by {await _member_name(db, me)}/{client}",
+    )
+    return True
+
+
+async def _gate_task(db: Any, task_id: str, me: str, *, via: str) -> Any | None:
+    """The ONE gate of EA-14a, before any run opens on *task_id*.
+
+    * The caller's own open run (same member, same client, EA12-6): that run.
+    * No open run: None. The caller may insert.
+    * Another run whose lease ended (and, for a question, three leases): the
+      run moves to ``abandoned``, and None comes back.
+    * Any other open run: 409 ``task_held``.
+
+    There is no task row lock. The arbiter is the partial unique index
+    ``pm_agent_runs_one_open_per_task``: two callers that both read "free"
+    both insert, and the second insert finds no row (``ON CONFLICT DO
+    NOTHING``), so the caller runs this gate again and gets ``task_held``.
+    A takeover locks only the old run, with the guard on ``last_activity_at``.
+    So the gate never takes the task row before a run, which keeps the lock
+    order of ``open_run_for_claim`` (run, then task row).
+    """
+    own = (await db.execute(
+        text(_OPEN_RUN_SQL),
+        _open_run_args(task_id, me, via),
+    )).fetchone()
+    if own is not None:
+        return own
+    for _ in range(3):
+        holder = (await db.execute(
+            text(_HOLDER_SQL), {"tid": task_id, "open": list(AGENT_RUN_OPEN_STATUSES)},
+        )).fetchone()
+        if holder is None:
+            return None
+        if not lease_expired(holder.status, float(holder.idle_s)):
+            raise _task_held(holder)
+        if await _take_over(db, holder, me=me, via=via):
+            return None
+    raise HTTPException(status_code=409, detail="Try the call again.")
+
+
+async def _clear_for_reopen(db: Any, run: Any, user: UserContext) -> None:
+    """A member's prompt opens a ``completed`` run again. The task must have
+    no OTHER open run, or the unique index would refuse the move with a 500.
+    A run whose lease ended is taken over, as a claim would."""
+    holder = (await db.execute(
+        text(_HOLDER_SQL), {"tid": str(run.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchone()
+    if holder is None or str(holder.id) == str(run.id):
+        return
+    if not lease_expired(holder.status, float(holder.idle_s)) or not await _take_over(
+        db, holder, me=_member(user), via=_agent_via(user),
+    ):
+        raise _task_held(holder)
+
+
 _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
@@ -1075,9 +1268,9 @@ async def start_agent_run(
             response.status_code = 200
             return replay
 
-        open_sql = _OPEN_RUN_SQL
-        open_args = _open_run_args(task_id, me, client_via)
-        existing = (await db.execute(text(open_sql), open_args)).fetchone()
+        # EA-14a: ONE AI for each task. The gate returns this caller's own
+        # open run, or None for a free task, or it raises 409 `task_held`.
+        existing = await _gate_task(db, task_id, me, via=client_via)
         if existing is None:
             ts = await _clock(db)
             made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -1095,7 +1288,7 @@ async def start_agent_run(
                 if replay is not None:
                     response.status_code = 200
                     return replay
-                existing = (await db.execute(text(open_sql), open_args)).fetchone()
+                existing = await _gate_task(db, task_id, me, via=client_via)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
         if existing is not None:
@@ -1318,6 +1511,67 @@ async def finish_agent_run(
     return {"run": out_run, "activity": out_activity}
 
 
+# ── Release (WS-55 EA-14a) ──────────────────────────────────────────────────
+
+#: The permission that makes a member an org admin for a release. The same
+#: gate as the billing routes.
+RELEASE_ADMIN_PERMISSION = "admin:members:read"
+
+
+@router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
+async def release_agent_run(
+    run_id: str, payload: ReleaseIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Give a task up without finishing it: the run moves to ``released``.
+    The task keeps its status, and every assignee stays.
+
+    * An agent releases its OWN run only: the same member and the same
+      client stamp.
+    * A person releases a run when they are its member, an assignee of the
+      task, or an org admin.
+    * A caller who cannot see the task gets 404. A caller who sees it and
+      has no right to release gets 403.
+    * A run that is already ``released`` answers 200 again, with no write.
+      Any other terminal run is 409.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    _require_write_scope(user)
+    via = _agent_via(user)
+    me = _member(user)
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if via is not None:
+            allowed = run.member_email == me and run.client_via == via
+        else:
+            assigned = (await db.execute(
+                text(
+                    "SELECT 1 FROM pm_task_assignees WHERE task_id = CAST(:tid AS uuid) "
+                    "AND lower(assignee) = :me LIMIT 1"
+                ),
+                {"tid": str(run.task_id), "me": me},
+            )).fetchone() is not None
+            allowed = (
+                run.member_email == me or assigned
+                or user.has_permission(RELEASE_ADMIN_PERMISSION)
+            )
+        if not allowed:
+            raise HTTPException(
+                status_code=403, detail="You may not release this agent run.",
+            )
+        if run.status != "released":
+            new_status = transition(run.status, "release")
+            ts = await _clock(db)
+            await _move_run(db, run, new_status, ts=ts, user=user, via=via)
+            client = agent_oauth.client_label(via) if via else "the app"
+            await _system_activity(
+                db, run, actor_email=me, via=via,
+                body=f"Released by {await _member_name(db, me)}/{client}",
+            )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+    return {"run": out_run, "released": True}
+
+
 # ── The archive with an approval (EA-6g, EA3-33 and EA3-40) ─────────────────
 
 
@@ -1350,8 +1604,9 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     comment. The id is None only when a concurrent start won the open-run
     index and then rolled back, which the caller answers as a retry.
     """
-    open_args = _open_run_args(task_id, me, via)
-    existing = (await db.execute(text(_OPEN_RUN_SQL), open_args)).fetchone()
+    # EA-14a: the gate returns the caller's own open run, None for a free
+    # task, or raises 409 `task_held`. A lease that ended is taken over.
+    existing = await _gate_task(db, task_id, me, via=via)
     if existing is not None:
         return str(existing.id), False
     ts = await _clock(db)
@@ -1362,8 +1617,9 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     })).fetchone()
     if made is not None:
         return str(made.id), True
-    # A concurrent start won the open-run index. Its run is the answer.
-    existing = (await db.execute(text(_OPEN_RUN_SQL), open_args)).fetchone()
+    # A concurrent start won the open-run index. Its run is the answer when it
+    # is this caller's own. Another member's run is `task_held`.
+    existing = await _gate_task(db, task_id, me, via=via)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -1574,11 +1830,13 @@ __all__ = [
     "MAX_WAIT_S",
     "POLL_S",
     "RUN_STATUSES",
+    "TASK_HELD",
     "ActivityIn",
     "ArchiveApprovalIn",
     "ArchiveRequestIn",
     "FinishIn",
     "OptionIn",
+    "ReleaseIn",
     "StartIn",
     "archive_request_of",
     "transition",
