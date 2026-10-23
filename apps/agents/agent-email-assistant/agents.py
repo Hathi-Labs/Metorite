@@ -681,7 +681,10 @@ async def _per_mailbox(account_id: str | None, one: Any) -> str:
     if len(pooled) == 1:
         return f"Mailbox: {_mailbox_text(pooled[0])}\n" + await one(str(pooled[0]["id"]))
     sections = []
-    for a in pooled[:_MAILBOX_WALK_MAX]:
+    # Not a silent cut: the last section says how many mailboxes it left out.
+    for n, a in enumerate(pooled):
+        if n >= _MAILBOX_WALK_MAX:
+            break
         try:
             body = await one(str(a["id"]))
         except Exception:
