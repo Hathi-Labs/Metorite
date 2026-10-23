@@ -423,10 +423,26 @@ _IMAP_LOGIN_TIMEOUT = 10.0
 #: Login tests that one member may start in 10 minutes. A wrong guess costs one.
 _IMAP_LOGIN_ATTEMPTS = 5
 _IMAP_LOGIN_WINDOW_S = 600
-#: Login tests in flight for the whole gateway. The pool of the provider has
-#: four workers, so more would only queue.
+#: Login tests in flight in THIS gateway process. Each process has its own
+#: 4-worker pool (``LOGIN_POOL``), so a process-local cap matches the pool and
+#: needs no shared state. One semaphore makes the check and the take ONE step.
 _IMAP_LOGINS_IN_FLIGHT_MAX = 4
-_imap_logins_in_flight = 0
+_imap_login_slots = asyncio.Semaphore(_IMAP_LOGINS_IN_FLIGHT_MAX)
+#: The busy key outlives the worst case of one test: 3 name lookups, a 10 s
+#: connect and login, and the queue wait. A late release never frees a newer key.
+_IMAP_LOGIN_BUSY_TTL_S = 60
+
+
+async def _release_if_mine(redis: Any, busy_key: Any, token: str) -> None:
+    """Delete the busy key only when it still holds OUR token, so a release
+    that comes after the key expired cannot free a newer request's key. The
+    tenant client has no script call, so this is a read then a delete. The
+    window is a few microseconds and the 60 s TTL makes it rare."""
+    held = await redis.get(busy_key)
+    if isinstance(held, bytes):
+        held = held.decode("utf-8", errors="replace")
+    if held == token:
+        await redis.delete(busy_key)
 
 
 async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[None]]:
@@ -441,13 +457,16 @@ async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[Non
 
     from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 
+    import secrets
+
+    token = secrets.token_hex(8)
     who = hashlib.sha256(member.lower().encode("utf-8")).hexdigest()[:24]
     try:
         with organization_scope(org):
             redis = get_tenant_redis()
             busy_key = key("imap-login-busy", who)
             count_key = key("imap-login-attempts", who)
-            if not await redis.set(busy_key, "1", nx=True, ex=int(_IMAP_LOGIN_TIMEOUT) * 3):
+            if not await redis.set(busy_key, token, nx=True, ex=_IMAP_LOGIN_BUSY_TTL_S):
                 raise HTTPException(
                     status_code=429,
                     detail="A login test for your mailbox is already running. Wait and try again.")
@@ -455,7 +474,7 @@ async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[Non
             if attempts == 1:
                 await redis.expire(count_key, _IMAP_LOGIN_WINDOW_S)
             if attempts > _IMAP_LOGIN_ATTEMPTS:
-                await redis.delete(busy_key)
+                await _release_if_mine(redis, busy_key, token)
                 raise HTTPException(
                     status_code=429,
                     detail="Too many tries to connect a mailbox. Wait 10 minutes and try again.")
@@ -470,7 +489,7 @@ async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[Non
     async def _release() -> None:
         try:
             with organization_scope(org):
-                await get_tenant_redis().delete(busy_key)
+                await _release_if_mine(get_tenant_redis(), busy_key, token)
         except Exception:  # noqa: BLE001 - the key expires by itself
             pass
 
@@ -489,16 +508,21 @@ async def _verify_imap_login(
     server's own words or the credentials, and the log line holds the host,
     the port and the error class only.
     """
-    global _imap_logins_in_flight
     from acb_common.public_address import PublicAddressRefused, pinned_public_address
     from email_ingestion.providers.imap import LOGIN_POOL, IMAPProvider
 
-    if _imap_logins_in_flight >= _IMAP_LOGINS_IN_FLIGHT_MAX:
+    try:  # take a slot at once or answer 429: no check-then-take gap
+        await asyncio.wait_for(_imap_login_slots.acquire(), timeout=0.05)
+    except TimeoutError:
         raise HTTPException(
             status_code=429,
-            detail="Metorite is testing many mailboxes now. Try again in a minute.")
-    release = await _guard_imap_login(org, member)
-    _imap_logins_in_flight += 1
+            detail="Metorite is testing many mailboxes now. Try again in a minute.",
+        ) from None
+    try:
+        release = await _guard_imap_login(org, member)
+    except BaseException:
+        _imap_login_slots.release()
+        raise
     host = str(credentials.get("imap_host", ""))
     port = credentials.get("imap_port", 993)
     try:
@@ -530,7 +554,7 @@ async def _verify_imap_login(
                 detail=f"Metorite could not reach {host}:{port}.",
             ) from None
     finally:
-        _imap_logins_in_flight -= 1
+        _imap_login_slots.release()
         await release()
 
 

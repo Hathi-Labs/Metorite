@@ -186,12 +186,14 @@ async def test_a_private_host_is_422_and_no_login_runs(monkeypatch, reach_store,
 
 class _FakeRedis:
     def __init__(self):
-        self.data: dict[str, int] = {}
+        self.data: dict = {}
+        self.ttls: dict = {}
 
     async def set(self, k, v, nx=False, ex=None):
         if nx and str(k) in self.data:
             return None
-        self.data[str(k)] = 1
+        self.data[str(k)] = v
+        self.ttls[str(k)] = ex
         return True
 
     async def incr(self, k, amount=1):
@@ -200,6 +202,9 @@ class _FakeRedis:
 
     async def expire(self, k, seconds):
         return True
+
+    async def get(self, k):
+        return self.data.get(str(k))
 
     async def delete(self, *keys):
         for k in keys:
@@ -507,3 +512,42 @@ async def test_a_send_connects_to_the_checked_address_and_verifies_the_name(monk
         await IMAPProvider(bad).send_message(**_send_args())
     srv.close()
     assert threading.active_count() >= 1
+
+
+async def test_the_busy_key_outlives_the_worst_case_and_a_late_release_keeps_a_newer_key(monkeypatch):
+    from acb_common import tenant_redis
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_k: fake)
+    org = "00000000-0000-0000-0000-0000000000a1"
+    old = await accounts._guard_imap_login(org, "m@contoso.test")
+    busy = next(k for k in fake.data if "busy" in k)
+    assert fake.ttls[busy] >= 60
+    fake.data.pop(busy)  # the key expired while the old test still ran
+    new = await accounts._guard_imap_login(org, "m@contoso.test")
+    await old()  # a late release of the OLD request
+    assert busy in fake.data, "the late release deleted a newer request's key"
+    await new()
+    assert busy not in fake.data
+
+
+async def test_the_global_cap_is_a_semaphore_that_answers_429_when_full(monkeypatch, reach_store):
+    import asyncio
+
+    monkeypatch.setattr(accounts, "_imap_login_slots", asyncio.Semaphore(1))
+    hold = asyncio.Event()
+
+    async def _slow(self, timeout=10.0):
+        await hold.wait()
+
+    monkeypatch.setattr(IMAPProvider, "verify_login", _slow)
+    first = asyncio.create_task(accounts.create_account(_req(), user=USER))
+    await asyncio.sleep(0.1)
+    with pytest.raises(HTTPException) as err:
+        await accounts.create_account(_req(), user=USER)
+    assert err.value.status_code == 429
+    hold.set()
+    with pytest.raises(_Reached):
+        await first
+    # the slot came back
+    assert accounts._imap_login_slots._value == 1
