@@ -1328,9 +1328,13 @@ and the held state is real. It runs five turns in one chat off `/email`, with
 two mailboxes. It also proves that a delegated reply card and a confirmation
 card reach the parent's stream.
 
-⚠️ **Not proven:** the browser. Nobody has clicked a delegated draft card in
-the dock. `list_accounts` does not say "needs reconnecting" until PR #1252
-merges, so the orchestrator's mailbox list carries that fact for now.
+The browser twin is `workbench/control_plane/e2e/one-assistant-email.spec.ts`.
+It draws a delegated draft card on the chat page with no email context, and
+the mark above the turn. Save then sends the draft in the step's mailbox.
+
+⚠️ **Not proven:** the live stack. Nobody has sent a delegated draft from the
+dock against a real gateway. The `needs_reconnect` field of
+`GET /email/accounts` came with PR #1252, and the mailbox list reads it.
 
 ### 7.2 One bell
 
