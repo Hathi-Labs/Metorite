@@ -503,7 +503,7 @@ NO_CARD_BRANCHES: dict[tuple[str, str, Any], str] = {
 #: The values of each choice that a registry tool reads as text.
 CHOICES: dict[tuple[str, str], list[Any]] = {
     ("manage_inbox", "action"): ["archive", "trash", "read", "unread", "star",
-                                 "unstar", "move", "label"],
+                                 "unstar", "move", "label", "spam"],
     ("run_rules", "scope"): ["new", "past"],
     ("set_sender_status", "status"): ["cold", "not_cold", "keep"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
@@ -725,6 +725,24 @@ async def test_an_archive_card_names_the_act_the_count_and_the_mailbox(
     await agents.manage_inbox("archive", ["m1", "m2", "m3"])
     assert gw.writes == [("POST", "/email/messages/bulk",
                           {"action": "archive", "message_ids": ["m1", "m2", "m3"]})]
+
+
+async def test_spam_moves_to_the_junk_folder_and_never_to_trash(
+    gw: Gateway,
+) -> None:
+    """"Move this to spam" patches folder=junk (the gateway key that Gmail
+    reads as SPAM and Outlook as Junk Email) after one card that says Spam."""
+    out = await agents.manage_inbox("spam", ["m1", "m2"])
+    [card] = gw.cards
+    assert card["title"] == f"Move 2 messages in {BOX_TEXT} to Spam?"
+    assert gw.writes == [] and out == "Cancelled — nothing was moved to Spam."
+    gw.answer = True
+    out = await agents.manage_inbox("junk", ["m1", "m2"])
+    assert gw.writes == [
+        ("PATCH", "/email/messages/m1", {"folder": "junk"}),
+        ("PATCH", "/email/messages/m2", {"folder": "junk"})]
+    assert out == "Moved 2 message(s) to Spam."
+    assert "trash" not in str(gw.writes).lower()
 
 
 async def test_a_model_rule_that_archives_shows_a_card_before_it_saves(
