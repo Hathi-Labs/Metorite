@@ -315,7 +315,7 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
   const args = event.args as Record<string, unknown> | undefined;
   const threadId = (args?.thread_id as string) || "";
   const emailId = (args?.email_id as string) || "";
-  const acct = (args?.account_id as string) || accountId || undefined;
+  const acct = resolvedMailboxId(event.name, event.result) || (args?.account_id as string) || accountId || undefined;
   const [msgs, setMsgs] = useState<Email[] | null>(null);
   const [state, setState] = useState<"loading" | "error" | "done">("loading");
 
@@ -635,6 +635,30 @@ export async function setRuleEnabled(accountId: string, ruleId: string, enabled:
   return true;
 }
 
+/** Where each tool prints the mailbox it RESOLVED (`_mailbox_line` in
+ *  agent-email-assistant). The twin of `MAILBOX_LINE_TOOLS` in
+ *  `acb_skills/email_chat_context.py`. Only that line counts: a read carries
+ *  a stranger's text, and that text can hold "Mailbox:". */
+export const MAILBOX_LINE_TOOLS: Readonly<Record<string, "last" | "second">> = {
+  create_rule: "last",
+  read_thread: "second",
+};
+const MAILBOX_LINE_RE = /^Mailbox: .* \(account_id ([^)\s]+)\)$/;
+
+/**
+ * The id of the mailbox that the tool says it acted in, or null. The model
+ * can name a mailbox in words ("Personal"), so `args.account_id` is not an
+ * id (navigation_shell.md §7.1.1 rule 4, review P3). A card reads this
+ * first, then the arguments.
+ */
+export function resolvedMailboxId(name: string, result: string | null | undefined): string | null {
+  const where = MAILBOX_LINE_TOOLS[name];
+  const lines = (result || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!where || lines.length < (where === "second" ? 2 : 1)) return null;
+  const hit = MAILBOX_LINE_RE.exec(where === "last" ? lines[lines.length - 1] : lines[1]);
+  return hit ? hit[1] : null;
+}
+
 // ── Draft card ────────────────────────────────────────────────────────────────
 
 /** Editable draft — Save to Drafts or Send. */
@@ -801,7 +825,8 @@ function RuleResultCard({
   accountId?: string | null;
 }) {
   const args = e.args as Record<string, unknown> | undefined;
-  const acctId = (args?.account_id as string) || accountId || "";
+  // The id the tool resolved, never the model's words for the mailbox.
+  const acctId = resolvedMailboxId(e.name, e.result) || (args?.account_id as string) || accountId || "";
   const ruleId = (args?.rule_id as string) || (e.result?.match(RULE_ID_RE)?.[1] ?? "");
   const name = (args?.name as string) || e.result?.match(/'([^']+)'/)?.[1] || "rule";
   const created = e.name === "create_rule";
@@ -809,7 +834,7 @@ function RuleResultCard({
   const conds = ruleConditions(a);
   const actions = ruleActions(a);
   const op = String(a.conditional_operator ?? "OR").toUpperCase() === "AND" ? "and" : "or";
-  const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled">("idle");
+  const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled" | "failed">("idle");
 
   const del = async () => {
     if (!ruleId || !confirm(`Delete rule "${name}"?`)) return;
@@ -825,10 +850,10 @@ function RuleResultCard({
     if (!ruleId || !acctId) return;
     setState("busy");
     try {
-      await setRuleEnabled(acctId, ruleId, false);
-      setState("disabled");
+      // False when the mailbox holds no such rule: say so, never a silent reset.
+      setState((await setRuleEnabled(acctId, ruleId, false)) ? "disabled" : "failed");
     } catch {
-      setState("idle");
+      setState("failed");
     }
   };
 
@@ -843,6 +868,11 @@ function RuleResultCard({
       <CardHead tone={tone.icon}>
         {state === "deleted" && <span data-rule-status="" className="text-[10px] text-destructive">Deleted.</span>}
         {state === "disabled" && <span data-rule-status="" className="text-[10px] text-muted-foreground">Disabled.</span>}
+        {state === "failed" && (
+          <span data-rule-status="" role="alert" className="text-[10px] text-destructive">
+            Could not disable the rule.
+          </span>
+        )}
         {state === "idle" && ruleId && (
           <>
             {acctId && (

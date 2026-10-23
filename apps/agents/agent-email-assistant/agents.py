@@ -423,6 +423,18 @@ def _choices(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return pooled if len(pooled) >= 2 else accounts
 
 
+async def _mailbox_line(account_id: str) -> str:
+    """"Mailbox: label · address (account_id <id>)": the mailbox that a tool
+    RESOLVED, on one stable line (§7.1.1 rule 4, review P3).
+
+    The model may name a mailbox in words, so a tool's ``account_id``
+    argument can be "Personal". The chat cards and the working set read the
+    id from this line, at the place that ``email_chat_context
+    .MAILBOX_LINE_TOOLS`` names. The text never holds ``id=``, because the
+    cards read ``id=`` as the id of a mail or of a rule."""
+    return f"Mailbox: {await _named(account_id)} (account_id {account_id})"
+
+
 async def _named(account_id: str) -> str:
     """"Label · address" of the mailbox that a write acted in, for its answer.
 
@@ -1350,6 +1362,10 @@ async def read_thread(email_id: str = "", thread_id: str = "",
     # The chat card reads "Thread: N message(s), oldest first:" (threadTitle).
     out = [
         f"Thread: {total} message(s), oldest first:",
+        # The mailbox the thread is in, as its id: the card reads it here.
+        # No label, so the read costs no second request.
+        *([f"Mailbox: the mailbox of this thread (account_id {boxes[0]})"]
+          if boxes else []),
         frame.note(_THREAD_DATA_WHAT) + "\n" + frame.wrap("THREAD", "\n\n".join(inner)),
     ]
     if line := _thread_page_line(total, start, len(msgs)):
@@ -3405,7 +3421,8 @@ async def create_rule(
         if refusal:
             return refusal
     res = await _post("/email/rules", rule)
-    return f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
+    return (f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
+            f"\n{await _mailbox_line(account_id)}")
 
 
 @_annotate_risk(open_world=False)
