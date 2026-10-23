@@ -252,7 +252,7 @@ interface AgentChatProps {
    * Never a hex value or a raw palette class. `/chat` sends none, and then
    * the picker draws as before.
    */
-  mailboxes?: { id: string; label: string; accent?: string }[];
+  mailboxes?: { id: string; label: string; accent?: string; attention?: boolean }[];
   /** The mailbox currently in force. Controlled by the parent. */
   activeMailboxId?: string | null;
   /** Raised when the user picks a different mailbox in the composer. */
@@ -2610,6 +2610,9 @@ export default function AgentChat({
                       <span className="truncate">
                         {activeMailbox?.label ?? "Pick mailbox"}
                       </span>
+                      {activeMailbox?.attention && (
+                        <Icon name="AlertCircle" size={10} className="shrink-0 text-warning" aria-label="Needs reconnecting" />
+                      )}
                       <span className="text-muted-foreground/50 shrink-0">▾</span>
                     </button>
                     {showMailboxMenu && (
@@ -2658,6 +2661,9 @@ export default function AgentChat({
                                   />
                                 )}
                                 <span className="truncate">{mb.label}</span>
+                                {mb.attention && (
+                                  <Icon name="AlertCircle" size={10} className="shrink-0 text-warning" aria-label="Needs reconnecting" />
+                                )}
                               </span>
                               {mb.id === activeMailboxId && (
                                 <span className="text-primary text-[10px] shrink-0">✓</span>
