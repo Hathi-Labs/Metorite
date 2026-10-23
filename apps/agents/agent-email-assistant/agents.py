@@ -5601,8 +5601,8 @@ _SUBJECT_MAX = 200
 #: The answer for a draft whose text does not fit on a send card (§21 fix
 #: round 3). The Email app is one choice here, never the only way.
 _DRAFT_TOO_LONG_ANSWER = (
-    "This draft is too long to show on the card. I can shorten it with edit_draft, "
-    "or you can send it from the Email app.")
+    "This draft is too long to show on the card. I can shorten it with edit_draft "
+    "and show it again. Tell me what to cut, or ask me to write it shorter.")
 #: The answers for a draft that a card cannot show whole, by the gateway's
 #: words (``drafting.check_draft_send``).
 _SUBJECT_TOO_LONG_ANSWER = (
