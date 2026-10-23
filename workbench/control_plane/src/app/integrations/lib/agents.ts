@@ -247,6 +247,10 @@ export const DELETE_SWITCH_COPY = {
     "A delete cannot be undone. You choose which subtasks are deleted and which stay.",
   on: "Your agents can delete a task after you say yes.",
   off: "Your agents cannot delete tasks.",
+  /** The error state of the card (DESIGN_SYSTEM §9): what, and what next. */
+  loadError: "This setting did not load.",
+  loadHint: "Try again. If it still does not load, reload the page. Until it loads, the switch stays as it was.",
+  retry: "Try again",
 } as const;
 
 /** The line under the switch, for its state. */

@@ -242,9 +242,13 @@ function DeleteSwitchCard() {
       {access.loading && access.data === undefined ? (
         <SkeletonRows count={1} />
       ) : access.data === undefined ? (
-        <p className="text-xs text-muted-foreground">
-          This setting did not load. {access.error ?? ""}
-        </p>
+        <EmptyState
+          icon="TriangleAlert"
+          message={DELETE_SWITCH_COPY.loadError}
+          hint={DELETE_SWITCH_COPY.loadHint}
+          action={{ label: DELETE_SWITCH_COPY.retry, icon: "RefreshCw", onClick: access.refresh }}
+          className="p-4"
+        />
       ) : (
         <label className="flex cursor-pointer items-start gap-3">
           <Checkbox

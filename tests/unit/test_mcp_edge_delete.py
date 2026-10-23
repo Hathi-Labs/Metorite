@@ -59,6 +59,12 @@ request too, with the measured result of each.
 * D21 (H13). ``G/tasks.py`` ``AgentDeleteIn.subtasks_to_delete`` gets the default ``none``. ``test_h13_a_missing_subtasks_to_delete_gets_422``.
 * D22 (H14). ``G/tasks.py`` ``_agent_delete_ids``: ``all`` takes the direct children only. ``test_h14_all_removes_the_whole_subtree``.
 * D23. ``G/tasks.py`` ``delete_task_in``: the default set is not empty. ``test_the_core_deletes_no_subtask_by_default``.
+* D24 (fix 1). ``G/tasks.py`` ``delete_task_in``: ``seen`` takes every row and drops ``visible``. ``test_all_keeps_a_descendant_hidden_behind_the_assignee_arm``, ``test_all_keeps_a_descendant_outside_the_pins``, ``test_a_hidden_id_in_the_list_gets_422_and_nothing_changes`` and ``test_the_plain_delete_with_a_hidden_id_gets_422``.
+* D25 (fix 1). ``G/tasks.py`` ``agent_delete_task``: the core gets ``vis`` with ``agent=None``, so the pins drop. ``test_all_keeps_a_descendant_outside_the_pins``.
+* D26 (fix 1). ``G/tasks.py`` ``delete_task_in``: ``hidden = 0``. ``test_all_keeps_a_descendant_hidden_behind_the_assignee_arm`` and ``test_all_keeps_a_descendant_outside_the_pins``.
+* D27 (fix 1). ``G/tasks.py`` ``delete_task_in``: ``all`` goes through ``clean_task_ids`` and its cap. ``test_all_has_no_cap_of_its_own``.
+* D28 (fix 1). ``G/tasks.py`` ``delete_task``: one event for the task only. ``test_the_plain_delete_emits_one_event_for_each_task``.
+* D29 (fix 1). ``G/tasks.py`` ``agent_delete_task``: one event for the task only. ``test_the_agent_delete_emits_one_event_for_each_task_with_via`` and ``test_all_keeps_a_descendant_hidden_behind_the_assignee_arm``.
 * D10b, measured GREEN on purpose: ``BYPASSRLS`` alone. The ``vis_org`` predicate of ``load_visible_task`` still hides organization B. D9 alone leaves H6 green too, because FORCE RLS still hides it.
 """
 from __future__ import annotations

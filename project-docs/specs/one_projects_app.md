@@ -356,7 +356,7 @@ authority: the route still checks the member's own access.
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
-| **D-OP-10** | A delete shows the task's subtasks as a tree and lets the member mark each one: keep or delete. Every subtask is kept by default. A kept subtask under a deleted one moves up to its nearest kept ancestor. One transaction, with one tombstone for each deleted row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 (§9 OP-7) |
+| **D-OP-10** | A delete shows the task's subtasks as a tree and lets the member mark each one: keep or delete. Every subtask is kept by default. A kept subtask under a deleted one moves up to its nearest kept ancestor. A delete never removes a subtask that the caller cannot see: it stays, and it moves up too (§9 OP-7, "The rule of the core"). One transaction, with one tombstone for each deleted row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 (§9 OP-7) |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -537,6 +537,15 @@ and `subtasks_to_delete` on the MCP tool. OP-7 builds the app and the chat.
   it moves to the parent of the deleted task. A task at the top has no parent,
   so its kept subtasks become top-level tasks.
 - An id that is not a subtask of this task gets 422, and nothing changes.
+- **A delete removes only the subtasks that the caller can see** (supervisor
+  decision, 2026-10-23, EA-6h fix 1). A hidden subtask is never deleted. It
+  is kept, and it moves up under the rule above. "Delete all" means every
+  subtask that the caller can see. For an agent, "see" also means inside the
+  pins of its connection. An id of a hidden subtask gets the same 422 as a
+  wrong id, so the answer says nothing about the hidden task. The response
+  gives `subtasks_kept_hidden`, a count with no titles.
+- One `pm.task.deleted` event goes out for the task and one for each deleted
+  subtask, after the commit. The agent's events carry `via`.
 
 **The app dialog.**
 

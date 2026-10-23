@@ -74,6 +74,10 @@ describe("the delete switch", () => {
     expect(deleteSwitchHint(false)).toBe(DELETE_SWITCH_COPY.off);
     expect(DELETE_SWITCH_COPY.body).toContain("cannot be undone");
     expect(DELETE_SWITCH_COPY.body).toContain("asks you first");
+    // The error state names a next step and the action that takes it.
+    expect(DELETE_SWITCH_COPY.loadError).toBe("This setting did not load.");
+    expect(DELETE_SWITCH_COPY.loadHint).toContain("Try again");
+    expect(DELETE_SWITCH_COPY.retry).toBe("Try again");
     expect(AGENT_ACCESS_KEY.startsWith(AGENTS_KEY_PREFIX)).toBe(true);
   });
 });
