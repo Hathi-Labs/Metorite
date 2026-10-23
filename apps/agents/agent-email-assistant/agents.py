@@ -808,7 +808,7 @@ async def _email_timeline(email_id: str) -> str:
         line = (f"- {at} rule '{_one_line(e.get('rule_name') or '(none)', 80)}' "
                 f"{str(e.get('status') or e.get('kind') or '').lower()}"
                 + (f": {acts}" if acts else "")
-                + ("" if e.get("automated", True) else " (by hand)"))
+                + ("" if e.get("automated", True) else " (the member ran it)"))
         if e.get("reason"):
             line += f". Why: {_one_line(e['reason'], 200)}"
         if e.get("action_errors"):
