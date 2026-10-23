@@ -511,7 +511,7 @@ NO_CARD_BRANCHES: dict[tuple[str, str, Any], str] = {
 #: The values of each choice that a registry tool reads as text.
 CHOICES: dict[tuple[str, str], list[Any]] = {
     ("manage_inbox", "action"): ["archive", "trash", "read", "unread", "star",
-                                 "unstar", "move", "label"],
+                                 "unstar", "move", "label", "spam", "flag", "unflag"],
     ("run_rules", "scope"): ["new", "past", "estimate", "status", "message",
                              "retry_failed"],
     ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],

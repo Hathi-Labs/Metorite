@@ -655,3 +655,34 @@ async def test_approving_a_suggestion_shows_its_text(gw: Gateway) -> None:
     assert out.startswith("Approved")
     listed = await agents.list_knowledge(BOX)
     assert "knowledge_id k9, suggested, waits for approval" in listed
+
+
+# ── 9. manage_inbox: spam, and the follow-up flag ────────────────────────────
+
+
+async def test_spam_moves_to_the_junk_folder_and_never_to_trash(gw: Gateway) -> None:
+    """The approach of branch ``email-chat-polish`` (H-389): folder=junk,
+    which the gateway reads as Gmail SPAM and as Outlook Junk Email."""
+    gw.answer = False
+    out = await agents.manage_inbox("spam", ["m1", "m2"])
+    [card] = gw.cards
+    assert card["title"].startswith("Move 2 messages") and card["title"].endswith("to Spam?")
+    assert out == "Cancelled — nothing was moved to Spam."
+    assert [w for w in gw.writes if w[1] != "/email/messages/summaries"] == []
+    gw.answer = True
+    out = await agents.manage_inbox("junk", ["m1", "m2"])
+    assert [w for w in gw.writes if w[0] == "PATCH"] == [
+        ("PATCH", "/email/messages/m1", {"folder": "junk"}),
+        ("PATCH", "/email/messages/m2", {"folder": "junk"})]
+    assert out == "Moved 2 message(s) to Spam."
+
+
+@pytest.mark.parametrize(("action", "flag"), [("flag", True), ("unflag", False)])
+async def test_flag_patches_each_message(gw: Gateway, action: str, flag: bool) -> None:
+    out = await agents.manage_inbox(action, ["m1", "m2"])
+    [card] = gw.cards
+    assert card["title"].startswith(f"{action.capitalize()} 2 messages")
+    assert [w for w in gw.writes if w[0] == "PATCH"] == [
+        ("PATCH", "/email/messages/m1", {"is_flagged": flag}),
+        ("PATCH", "/email/messages/m2", {"is_flagged": flag})]
+    assert out.endswith("2 message(s).")

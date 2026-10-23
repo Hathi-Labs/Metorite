@@ -1636,6 +1636,7 @@ async def present_email_groups(groups_json: str) -> str:
 _INBOX_VERBS = {
     "archive": "Archive", "read": "Mark as read", "unread": "Mark as unread",
     "star": "Star", "unstar": "Unstar",
+    "flag": "Flag", "unflag": "Unflag",
 }
 #: The most messages that the card of a bulk act lists, one line each.
 _CARD_MESSAGE_LINES = 20
@@ -1704,6 +1705,10 @@ async def _inbox_card(
         title = f"Move {n} {noun} to Trash?"
         detail = f"They leave the inbox and go to the Trash folder. {where}"
         cancelled = "Cancelled — nothing was moved to Trash."
+    elif action == "spam":
+        title = f"Move {n} {noun}{in_box} to Spam?"
+        detail = f"They leave the folder they are in now and go to Junk. {where}"
+        cancelled = "Cancelled — nothing was moved to Spam."
     elif action == "move":
         title = f"Move {n} {noun}{in_box} to the folder '{_card_name(folder)}'?"
         detail = f"They leave the folder they are in now. {where}"
@@ -1737,12 +1742,21 @@ async def manage_inbox(
 
     Args:
         action: archive | trash | read | unread | star | unstar | move | label
+            | spam. ``spam`` (alias ``junk``) moves the messages to the
+            provider's Spam/Junk folder, the same move as the MARK_SPAM rule
+            action. It is NOT Trash: use ``trash`` only to delete.
+            | flag | unflag — the follow-up flag of Outlook (Gmail has none,
+            so use star there).
         message_ids: ids of the messages to act on
         folder: destination for ``action="move"`` (an existing folder/label —
             e.g. "Archive" or a custom folder; create it with create_label).
         add_labels / remove_labels: label NAMES to add/remove for
             ``action="label"`` (syncs to the provider).
     """
+    if action in ("spam", "junk"):
+        # One folder key for every provider: the gateway reads "junk" as
+        # Gmail SPAM and as Outlook Junk Email, like the MARK_SPAM rule action.
+        action, folder = "spam", "junk"
     if action == "move" and not folder:
         return "Nothing changed. Provide a `folder` to move messages to."
     if action == "label" and not add_labels and not remove_labels:
@@ -1754,7 +1768,7 @@ async def manage_inbox(
     refusal = await _inbox_card(action, message_ids, folder, add_labels, remove_labels)
     if refusal:
         return refusal
-    if action == "move":
+    if action in ("move", "spam"):
         results = await asyncio.gather(
             *(_patch(f"/email/messages/{mid}", {"folder": folder})
               for mid in message_ids),
@@ -1763,7 +1777,21 @@ async def manage_inbox(
         n = sum(1 for r in results if not isinstance(r, BaseException))
         failed = len(message_ids) - n
         note = f" ({failed} failed)" if failed else ""
+        if action == "spam":
+            return f"Moved {n} message(s) to Spam{note}."
         return f"Moved {n} message(s) to '{folder}'{note}."
+    if action in ("flag", "unflag"):
+        # Chat parity wave 1: the bulk route has no flag, so each message
+        # takes its own PATCH, as a move does.
+        results = await asyncio.gather(
+            *(_patch(f"/email/messages/{mid}", {"is_flagged": action == "flag"})
+              for mid in message_ids),
+            return_exceptions=True,
+        )
+        n = sum(1 for r in results if not isinstance(r, BaseException))
+        failed = len(message_ids) - n
+        note = f" ({failed} failed)" if failed else ""
+        return f"{'Flagged' if action == 'flag' else 'Unflagged'} {n} message(s){note}."
     if action == "label":
         patch: dict[str, Any] = {}
         if add_labels:
