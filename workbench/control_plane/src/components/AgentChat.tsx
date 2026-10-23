@@ -2393,7 +2393,7 @@ export default function AgentChat({
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i];
             if (m.role === "assistant" && m.todos && m.todos.length > 0) {
-              return <TodoPanel todos={m.todos} running={!!m.streaming} />;
+              return <TodoPanel todos={m.todos} running={!!m.streaming} startOpen={!phoneChrome} />;
             }
             if (isSteered(m)) continue; // a steer is part of the live turn
             if (m.role === "user") break; // only the current turn's todos

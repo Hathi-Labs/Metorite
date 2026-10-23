@@ -35,6 +35,7 @@
  * and `e2e/email-chat-cards.spec.ts`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { Textarea } from "@/components/ui/Input";
@@ -371,9 +372,9 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
   // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
-      <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-xs whitespace-pre-wrap break-words text-foreground/90">
         {threadText(event.result)}
-      </div>
+      </ShowMore>
     );
   }
   if (msgs.length === 0) {
@@ -1603,9 +1604,9 @@ function EmailRow({
                   From: {body.from}
                 </div>
               )}
-              <div className="max-h-72 overflow-y-auto overflow-x-hidden rounded">
+              <ShowMore className="rounded">
                 <MessageContent html={body.body_html} text={body.body_text} messageId={row.id} />
-              </div>
+              </ShowMore>
             </>
           ) : null}
         </div>
@@ -1987,7 +1988,7 @@ function RulesOverviewCard({
       icon={<AppIcon name="Sparkles" size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="space-y-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin pr-0.5">
+      <ShowMore className="space-y-1">
         {rules.map((r) => (
           <div
             key={r.id}
@@ -2058,7 +2059,7 @@ function RulesOverviewCard({
             )}
           </div>
         ))}
-      </div>
+      </ShowMore>
       {parsed.settings && (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
           {parsed.settings}
@@ -2133,9 +2134,9 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       {/* The read as UI through the one `Readout`: no id, a labelled fact
           for each `key: value`, a chip for a category (follow-up of #716
           and #735). It drew the result as it is before. */}
-      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore>
         <Readout result={text} />
-      </div>
+      </ShowMore>
     </ToolCardShell>
   );
 }
@@ -2163,11 +2164,11 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       <CardHead tone={tone.icon} />
       <RollupBody>
           {/* Compact, and through `Readout`, so an id never shows. The
-              box holds about three lines, and a longer result scrolls. */}
+              body shows about three lines, and "Show all" opens the rest. */}
           {detail && (
-            <div className="mt-0.5 max-h-16 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            <ShowMore cap={64} className="mt-0.5">
               <Readout result={detail} />
-            </div>
+            </ShowMore>
           )}
       </RollupBody>
     </div>

@@ -3,7 +3,8 @@
 /**
  * TodoPanel — VS Code Copilot Chat-style "Todos (n/m)" panel.
  *
- * Pinned above the chat input. Mirrors VS Code's chatTodoListWidget:
+ * Above the chat input, outside the thread. On a phone it opens folded to
+ * its one line (`projects_ai_chat.md` §24.10, rule C1). Mirrors VS Code's chatTodoListWidget:
  *   • Collapsible header with completion count
  *   • Check circles: ✓ done (green), ◐ in-progress (blue pulse), ○ pending
  *   • Auto-expands while the run is active, collapses when all done
@@ -29,11 +30,15 @@ function isActive(s: string): boolean {
 export default function TodoPanel({
   todos,
   running,
+  startOpen = true,
 }: {
   todos: TodoItem[];
   running: boolean;
+  /** False on a phone: the panel sits outside the thread, so it opens
+   *  folded to its one line (`projects_ai_chat.md` §24.10, rule C1). */
+  startOpen?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(startOpen);
   const userToggledRef = useRef(false);
 
   const doneCount = useMemo(
@@ -41,6 +46,7 @@ export default function TodoPanel({
     [todos],
   );
   const allDone = todos.length > 0 && doneCount === todos.length;
+  const activeTitle = todos.find((t) => isActive(t.status))?.title ?? "";
 
   // Auto-collapse shortly after everything completes (unless user toggled).
   useEffect(() => {
@@ -49,8 +55,8 @@ export default function TodoPanel({
       const t = setTimeout(() => setExpanded(false), 1500);
       return () => clearTimeout(t);
     }
-    setExpanded(true);
-  }, [allDone, running]);
+    setExpanded(startOpen);
+  }, [allDone, running, startOpen]);
 
   if (todos.length === 0) return null;
 
@@ -67,6 +73,12 @@ export default function TodoPanel({
         <span className="text-xs font-semibold text-foreground">
           Todos ({doneCount}/{todos.length})
         </span>
+        {/* Folded, the one line still says what the run does now. */}
+        {!expanded && activeTitle && (
+          <span data-todo-active="" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {activeTitle}
+          </span>
+        )}
         {running && !allDone && (
           <span className="w-1.5 h-1.5 rounded-full bg-info chat-pulse-dot shrink-0" />
         )}
