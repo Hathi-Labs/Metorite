@@ -2538,7 +2538,13 @@ def _rule_acts(actions: Any) -> str:
         a_type = a.get("type")
         word = _RULE_ACT_WORDS.get(a_type) or f"does {_card_name(a_type)}"
         if a.get("label") and a_type in ("LABEL", "MOVE_FOLDER"):
-            word += f' "{_card_name(a.get("label"))}"'
+            if a.get("label_ai"):
+                word += f' with a label that the AI picks from "{_card_name(a.get("label"))}"'
+            else:
+                word += f' "{_card_name(a.get("label"))}"'
+        delay = a.get("delay_minutes")
+        if isinstance(delay, int) and delay > 0:
+            word += f" after {delay} minute(s)"
         words.append(word)
     return " and ".join(words) or "does nothing"
 
@@ -2633,6 +2639,67 @@ def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
     return enabled is False and not widens and not _egress_held()
 
 
+#: Chat parity wave 1 (owner, 2026-10-23): the action types that the
+#: ``actions`` list of ``create_rule`` and ``update_rule`` may hold. Each one
+#: stays in the mailbox. A forward or a webhook keeps its own path
+#: (``forward_to`` on ``create_rule``), so the list adds no outward act.
+_LIST_ACTION_TYPES = _RULE_ENGINE_TYPES - _OUTWARD_RULE_TYPES
+#: The keys of one item of that list. An address, a URL, a subject, a body
+#: or a file is refused, so the list names no target and writes no text.
+_LIST_ACTION_KEYS = frozenset({"type", "label", "delay_minutes", "label_ai"})
+#: The longest delay of an action: 30 days, in minutes.
+_MAX_DELAY_MINUTES = 43200
+
+
+def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
+    """``(actions, "")`` for a valid ``actions`` list, else ``([], refusal)``.
+
+    Each item is ``{type, label?, delay_minutes?, label_ai?}``. The type is an
+    act that stays in the mailbox (:data:`_LIST_ACTION_TYPES`). Any other key
+    is refused, so this list never adds a recipient, a URL or a text."""
+    if not isinstance(raw, list) or not raw:
+        return [], "Not saved. `actions` must be a list with one action at least."
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return [], "Not saved. Each item of `actions` must be an object with a `type`."
+        extra = sorted(str(k) for k in item if k not in _LIST_ACTION_KEYS)
+        if extra:
+            return [], (
+                f"Not saved. An action in `actions` cannot hold {', '.join(extra)}. "
+                "Each item takes only type, label, delay_minutes and label_ai. A "
+                "forward goes through create_rule with forward_to.")
+        a_type = str(item.get("type") or "").strip().upper()
+        if a_type not in _LIST_ACTION_TYPES:
+            return [], (
+                f"Not saved. The action type '{_card_name(a_type)}' is not allowed in "
+                f"`actions`. Use one of: {', '.join(sorted(_LIST_ACTION_TYPES))}.")
+        action: dict[str, Any] = {"type": a_type}
+        label = item.get("label")
+        if label is not None and str(label).strip():
+            if len(str(label)) > 200:
+                return [], "Not saved. A label has 200 characters at most."
+            action["label"] = str(label).strip()
+        delay = item.get("delay_minutes")
+        if delay is not None:
+            try:
+                minutes = int(delay)
+            except (TypeError, ValueError):
+                return [], "Not saved. delay_minutes must be a whole number of minutes."
+            if not 0 <= minutes <= _MAX_DELAY_MINUTES:
+                return [], (f"Not saved. delay_minutes must be from 0 to "
+                            f"{_MAX_DELAY_MINUTES} (30 days).")
+            if minutes:
+                action["delay_minutes"] = minutes
+        if item.get("label_ai") is True:
+            if "label" not in action:
+                return [], ("Not saved. label_ai needs a label: the prompt that the "
+                            "AI turns into a label for each email.")
+            action["label_ai"] = True
+        out.append(action)
+    return out, ""
+
+
 def _held_widening_refusal(rule: dict[str, Any], widens: bool) -> str | None:
     """Security review of #1173, P1: a wider condition or a re-enable of a
     rule that a held run may not save sends what it carries to more senders.
@@ -2689,6 +2756,7 @@ async def create_rule(
     draft_content: str | None = None,
     second_action_type: str | None = None,
     second_action_label: str | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> str:
     """Create an automation rule (inbox-zero parity — full condition + action set).
 
@@ -2709,13 +2777,28 @@ async def create_rule(
         draft_subject / draft_content: subject + body for REPLY / DRAFT_EMAIL
             (omit draft_content to let the AI write the body).
         second_action_type / second_action_label: optional 2nd action (e.g.
-            LABEL + ARCHIVE). For 3+ actions, call update_rule afterwards.
+            LABEL + ARCHIVE).
+        actions: the WHOLE action list instead, for 3+ actions, a delay or
+            an AI label. Each item is {type, label?, delay_minutes?,
+            label_ai?}. delay_minutes waits before the action acts.
+            label_ai=true reads the label as a prompt, and the AI picks the
+            label for each email. FORWARD and CALL_WEBHOOK are not allowed
+            here. Do not combine it with action_type, forward_to or the draft
+            fields.
         automated: true = apply automatically; false = propose for approval.
 
     Mailbox: leave ``account_id`` out when the user named no mailbox. One
     mailbox then acts. With two or more, the tool asks which one and creates
     nothing (§11.3 rule 4).
     """
+    listed: list[dict[str, Any]] = []
+    if actions is not None:
+        if forward_to or draft_subject or draft_content or second_action_type:
+            return ("Not saved. Pass `actions` alone, or action_type with its "
+                    "fields. Do not pass both.")
+        listed, bad = _clean_actions(actions)
+        if bad:
+            return bad
     account_id, ask = await _one_mailbox(account_id, "create_rule")
     if ask:
         return ask
@@ -2734,9 +2817,12 @@ async def create_rule(
                 a["content_manual"] = True
         return a
 
-    actions = [_mk_action(action_type, label)]
-    if second_action_type:
-        actions.append(_mk_action(second_action_type, second_action_label))
+    if listed:
+        actions = listed
+    else:
+        actions = [_mk_action(action_type, label)]
+        if second_action_type:
+            actions.append(_mk_action(second_action_type, second_action_label))
     rule = {
         "account_id": account_id,
         "name": name,
@@ -2938,24 +3024,60 @@ async def update_rule(
     add_action_type: str | None = None,
     add_action_label: str | None = None,
     enabled: bool | None = None,
+    name: str | None = None,
+    to_pattern: str | None = None,
+    body_pattern: str | None = None,
+    conditional_operator: str | None = None,
+    automated: bool | None = None,
+    run_on_threads: bool | None = None,
+    remove_action_types: list[str] | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Edit an existing rule's conditions/actions, or enable/disable it.
+    """Edit an existing rule: its name, its conditions, its actions, or turn
+    it on or off.
 
     Use this to FIX a rule that mis-classifies mail — e.g. tighten its
-    plain-English ``instructions``, add a literal ``from_pattern`` /
-    ``subject_pattern``, attach another action, or turn the rule on/off. Only
-    the fields you pass change; everything else on the rule is preserved.
+    plain-English ``instructions``, add a literal pattern, change or remove an
+    action, or turn the rule on/off. Only the fields you pass change;
+    everything else on the rule is preserved. Pass "" to clear a pattern.
 
     Args:
+        name: a new name for the rule.
         instructions: new plain-English condition the AI matches mail against.
-        from_pattern: literal sender substring to match (e.g. "@vendor.com").
-        subject_pattern: literal subject substring to match.
+        from_pattern / to_pattern / subject_pattern / body_pattern: literal
+            text to match in the sender, the recipients, the subject or the
+            body (e.g. "@vendor.com").
+        conditional_operator: "AND" (all conditions) or "OR" (any).
+        automated: true = act automatically; false = propose for approval.
+        run_on_threads: also act on replies in a thread, not only new mail.
         add_action_type: ARCHIVE | LABEL | MARK_READ | STAR | MARK_SPAM | TRASH |
                          MOVE_FOLDER | DRAFT_EMAIL | REPLY | FORWARD.
         add_action_label: label/folder for an added LABEL / MOVE_FOLDER action.
+        remove_action_types: remove each action of these types, e.g. ["ARCHIVE"].
+        actions: the WHOLE new action list, which replaces every action. Each
+            item is {type, label?, delay_minutes?, label_ai?}. Use it to change
+            a label, to add a delay, or to turn on an AI label. FORWARD and
+            CALL_WEBHOOK are not allowed here. A rule that already forwards
+            keeps that action only if you pass the list without it removed —
+            so read the rule first with get_rules_and_settings.
         enabled: set true/false to enable or disable the rule (reversible —
             prefer this over delete_rule when the user wants to pause a rule).
     """
+    replaced: list[dict[str, Any]] = []
+    if actions is not None:
+        if add_action_type or remove_action_types:
+            return ("Nothing changed. Pass `actions` alone, or add_action_type and "
+                    "remove_action_types. Do not pass both.")
+        replaced, bad = _clean_actions(actions)
+        if bad:
+            return bad.replace("Not saved.", "Nothing changed.", 1)
+    if name is not None and not name.strip():
+        return "Nothing changed. A rule needs a name. Give a new name, or leave `name` out."
+    operator = None
+    if conditional_operator is not None:
+        operator = str(conditional_operator).strip().upper()
+        if operator not in ("AND", "OR"):
+            return "Nothing changed. conditional_operator must be AND or OR."
     rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
     rule = next((r for r in rules if r.get("id") == rule_id), None)
     if not rule:
@@ -2965,19 +3087,48 @@ async def update_rule(
     # mail out, so each one asks too.
     was_outward = _has_outward_action(rule.get("actions"))
     first_read = _rule_fingerprint(rule)
+    # Chat parity wave 1: each change that can make the rule act on more mail,
+    # or do more, widens it. A rename, a removal, a narrower operator, a
+    # proposal instead of an act, or a pause does not.
     widens = (
         instructions is not None or from_pattern is not None
-        or subject_pattern is not None or bool(add_action_type)
-        or enabled is True
+        or subject_pattern is not None or to_pattern is not None
+        or body_pattern is not None or bool(add_action_type)
+        or actions is not None or enabled is True or automated is True
+        or run_on_threads is True
+        or (operator == "OR"
+            and str(rule.get("conditional_operator") or "").upper() != "OR")
     )
+    if name is not None:
+        rule["name"] = name.strip()
     if instructions is not None:
         rule["instructions"] = instructions
-    if from_pattern is not None:
-        rule["from_pattern"] = from_pattern
-    if subject_pattern is not None:
-        rule["subject_pattern"] = subject_pattern
+    for field, value in (("from_pattern", from_pattern), ("to_pattern", to_pattern),
+                         ("subject_pattern", subject_pattern),
+                         ("body_pattern", body_pattern)):
+        if value is not None:
+            rule[field] = value or None
+    if operator is not None:
+        rule["conditional_operator"] = operator
+    if automated is not None:
+        rule["automated"] = automated
+    if run_on_threads is not None:
+        rule["run_on_threads"] = run_on_threads
     if enabled is not None:
         rule["enabled"] = enabled
+    if remove_action_types:
+        gone = {str(t).strip().upper() for t in remove_action_types}
+        kept = [a for a in rule.get("actions") or []
+                if not (isinstance(a, dict) and str(a.get("type")).upper() in gone)]
+        if len(kept) == len(rule.get("actions") or []):
+            return ("Nothing changed. The rule has no action of the type "
+                    f"{', '.join(sorted(gone))}. Read it with get_rules_and_settings.")
+        if not kept and not add_action_type:
+            return ("Nothing changed. A rule needs one action at least. To stop "
+                    "the rule, turn it off with enabled=false, or delete it.")
+        rule["actions"] = kept
+    if actions is not None:
+        rule["actions"] = replaced
     added_outward = False
     if add_action_type:
         action: dict[str, Any] = {"type": add_action_type}
@@ -2985,6 +3136,7 @@ async def update_rule(
             action["label"] = add_action_label
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
+    now_outward = _has_outward_action(rule.get("actions"))
     # EM-G11c1: each change asks a card, except a pause of the rule, which
     # turns a write off. One call shows one card. Security review of #1173,
     # P2: in a held run a pause asks the card too, because a mail can ask the
@@ -2992,7 +3144,9 @@ async def update_rule(
     pause_only = _pause_asks_no_card(enabled, widens)
     cancelled = f"Cancelled — the rule '{rule.get('name')}' was not changed."
     carded = False
-    if added_outward or (was_outward and widens):
+    # A change that removes the last outward action asks the inward card,
+    # because the outward card asks nothing for a rule that sends nothing.
+    if now_outward and (added_outward or (was_outward and widens)):
         refusal = await _outward_rule_refusal(
             "Change a rule that sends mail out of the mailbox?", [rule], cancelled,
         )
@@ -3023,10 +3177,13 @@ async def update_rule(
                 "user again."
             )
     await _patch(f"/email/rules/{rule_id}", rule)
-    if enabled is not None and instructions is None and from_pattern is None \
-            and subject_pattern is None and not add_action_type:
+    others = (name, instructions, from_pattern, to_pattern, subject_pattern,
+              body_pattern, conditional_operator, automated, run_on_threads,
+              remove_action_types, actions, add_action_type)
+    if enabled is not None and all(v is None or v == [] for v in others):
         return f"Rule '{rule.get('name')}' is now {'enabled' if enabled else 'disabled'}."
-    return f"Updated rule '{rule.get('name')}'."
+    return (f"Updated rule '{rule.get('name')}': it now "
+            f"{_rule_acts(rule.get('actions'))}.")
 
 
 @_annotate_risk(open_world=False)
