@@ -293,8 +293,84 @@ async def test_r8_an_area_with_a_task_is_archived_and_the_receipt_says_so(
     assert out.startswith("Archived the area «Finance»"), out
     assert "It held 1 task, and they stay" in out
     assert "impact: 0 open tasks" in asked[0]["context"]
-    assert "archived and the tasks stay" in asked[0]["context"]
+    assert "archived and everything stays" in asked[0]["context"]
     assert _areas(world, ALICE)["Finance"] == {"id": area, "archived": True}
+
+
+async def test_r8_an_empty_area_with_a_child_that_holds_a_task_is_archived(
+    world, monkeypatch,
+) -> None:
+    """The cascade fence: A holds no task, B below A does. A hard delete of A
+    would take B and its task (ON DELETE CASCADE), so A is archived."""
+    pytest.importorskip("asyncpg")
+    from sqlalchemy import text
+
+    approve(monkeypatch)
+    await _as(world, monkeypatch, ALICE, lambda: skill_projects.create_area("Outer"))
+    outer = _areas(world, ALICE)["Outer"]["id"]
+    with world.promoted.admin_engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO pm_projects (id, name, parent_project_id, personal_owner, "
+                "organization_id, owns_statuses) SELECT gen_random_uuid(), 'Inner', "
+                "CAST(:a AS uuid), personal_owner, organization_id, false "
+                "FROM pm_projects WHERE id = CAST(:a AS uuid)"
+            ),
+            {"a": outer},
+        )
+        inner = str(c.execute(
+            text("SELECT id FROM pm_projects WHERE name = 'Inner' AND organization_id = CAST(:o AS uuid)"),
+            {"o": world.org},
+        ).scalar_one())
+    task = _task_in(world, ALICE, inner)
+
+    async def by_hand() -> Any:
+        return await delete(f"/projects/my/areas/{outer}")
+
+    out = await _as(world, monkeypatch, ALICE, by_hand)
+    assert out["outcome"] == "archived", out
+    with world.promoted.admin_engine.connect() as c:
+        assert c.execute(
+            text("SELECT archived_at IS NOT NULL FROM pm_projects WHERE id = CAST(:a AS uuid)"),
+            {"a": outer},
+        ).scalar_one() is True
+        assert c.execute(
+            text("SELECT count(*) FROM pm_projects WHERE id = CAST(:i AS uuid)"), {"i": inner},
+        ).scalar_one() == 1
+        assert c.execute(
+            text("SELECT count(*) FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": task},
+        ).scalar_one() == 1
+
+
+async def test_r8_a_rename_to_the_name_of_another_live_area_is_refused(
+    world, monkeypatch,
+) -> None:
+    """Both doors: the tool says so before any card, the route returns 409.
+    A change of case on the area's own name still goes through."""
+    pytest.importorskip("asyncpg")
+    approve(monkeypatch)
+    await _as(world, monkeypatch, ALICE, lambda: skill_projects.create_area("Home"))
+    await _as(world, monkeypatch, ALICE, lambda: skill_projects.create_area("Work"))
+    work = _areas(world, ALICE)["Work"]["id"]
+    asked = approve(monkeypatch)
+    out = await _as(world, monkeypatch, ALICE,
+                    lambda: refusals_as_text(skill_projects.rename_area)("Work", "home!"))
+    assert "already have another area called «Home»" in out, out
+    assert asked == []
+
+    async def by_hand() -> Any:
+        return await patch(f"/projects/my/areas/{work}", {"name": "HOME"})
+
+    with pytest.raises(GatewayRefusal) as err:
+        await _as(world, monkeypatch, ALICE, by_hand)
+    assert err.value.status == 409
+    assert set(_areas(world, ALICE)) == {"Home", "Work"}
+
+    async def own_case() -> Any:
+        return await patch(f"/projects/my/areas/{work}", {"name": "WORK"})
+
+    row = await _as(world, monkeypatch, ALICE, own_case)
+    assert row["name"] == "WORK"
 
 
 async def test_r8_a_declined_card_writes_nothing(world, monkeypatch) -> None:

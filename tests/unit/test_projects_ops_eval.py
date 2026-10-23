@@ -652,7 +652,7 @@ def test_po14_the_card_says_what_the_route_will_do(harness: R.OpsHarness) -> Non
     record = _run(harness, "PO-14")
     [card] = record["cards"]
     assert "impact: 0 open tasks" in card["context"]
-    assert "archived and the tasks stay" in card["context"]
+    assert "archived and everything stays" in card["context"]
 
 
 def test_the_runner_answers_the_rows_of_a_card_as_drawn() -> None:
