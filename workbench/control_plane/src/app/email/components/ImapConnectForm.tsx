@@ -14,7 +14,8 @@ import { useState } from "react";
 
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
-import Input, { Select } from "@/components/ui/Input";
+import Input from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { createEmailAccount } from "../lib/api";
 import { useEmailStore } from "../lib/emailStore";
 import {
@@ -135,10 +136,16 @@ export function ImapConnectForm({
         </Row>
       </div>
       <Row label="SMTP security" htmlFor="smtp-security">
-        <Select id="smtp-security" value={form.smtpSecurity} onChange={(e) => setSecurity(e.target.value as SmtpSecurity)}>
-          <option value="starttls">STARTTLS (port 587)</option>
-          <option value="ssl">SSL/TLS (port 465)</option>
-        </Select>
+        <SelectButton
+          label="SMTP security"
+          value={form.smtpSecurity}
+          options={[
+            { value: "starttls", label: "STARTTLS (port 587)" },
+            { value: "ssl", label: "SSL/TLS (port 465)" },
+          ]}
+          onChange={(v) => setSecurity(v as SmtpSecurity)}
+          widthClass="w-full"
+        />
       </Row>
       <label className="flex items-center gap-2 text-xs text-foreground">
         <Checkbox checked={form.smtpSameLogin} onChange={(e) => set("smtpSameLogin", e.target.checked)} />
