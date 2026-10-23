@@ -29,6 +29,7 @@ from acb_auth import UserContext, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE
 from acb_common import get_logger
 from fastapi import Depends, Header, HTTPException, Query
+from gateway.routes.projects.authority import assert_may_delete_task, attach_can_delete
 from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
@@ -470,6 +471,8 @@ async def list_tasks(
         await attach_relation_counts(db, page_rows, vis)
         # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
         await attach_parent_context(db, vis, page_rows)
+        # WS-64 OP-8 — the app hides Delete where this is false.
+        await attach_can_delete(db, user, page_rows, kind="task")
         return ListResponse(rows=page_rows, total=int(total))
 
 
@@ -492,6 +495,8 @@ async def get_task(
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
         # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
         await attach_agent_state(db, [result])
+        # WS-64 OP-8 — the chat refuses before its card where this is false.
+        await attach_can_delete(db, user, [result], kind="task")
         return result
 
 
@@ -1339,6 +1344,9 @@ async def delete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
+        # WS-64 OP-8 (D-OP-12). Checked on the task the member names. The
+        # subtasks that go with it follow that one check.
+        await assert_may_delete_task(db, user, doomed)
         result = await delete_task_in(
             db, doomed, vis=vis, delete_ids=frozenset() if take_all else ids,
             delete_all=take_all,
@@ -1440,6 +1448,9 @@ async def agent_delete_task(
         # The lock holds the row until the delete commits, so a member's edit
         # cannot land between the two checks and the delete.
         doomed = await lock_task(db, task_id)
+        # WS-64 OP-8 (D-OP-12). The member's own authority, the rule of the
+        # app route. The edge maps this 403 to the same sentence.
+        await assert_may_delete_task(db, user, doomed)
         if doomed.updated_at != expected:
             raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
         if doomed.title != payload.confirm_title:

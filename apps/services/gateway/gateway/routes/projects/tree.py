@@ -26,6 +26,11 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import (
+    assert_may_delete_project,
+    assert_may_write_grant,
+    attach_can_delete,
+)
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -265,8 +270,10 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
         vis = await resolve_visibility(db, user)
         rows = await _visible_projects(db, user, vis)
         counts = await _open_and_done(db, vis)
+        nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
+        # WS-64 OP-8 — the app hides Delete on a node where this is false.
+        await attach_can_delete(db, user, list(nodes.values()), kind="project")
 
-    nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
     roots: list[dict] = []
     for node in nodes.values():
         parent = nodes.get(str(node.get("parent_project_id") or ""))
@@ -400,7 +407,10 @@ async def get_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
-        return row_to_dict(row, ProjectModel)
+        result = row_to_dict(row, ProjectModel)
+        # WS-64 OP-8 — the chat refuses before its card where this is false.
+        await attach_can_delete(db, user, [result], kind="project")
+        return result
 
 
 @router.get("/summary")
@@ -1069,7 +1079,10 @@ async def delete_node(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-12). Checked on the project the member names. The
+        # sub-projects and the tasks inside it, other members' too, follow.
+        await assert_may_delete_project(db, user, node)
 
         subtree = (await db.execute(
             text(
@@ -1322,7 +1335,9 @@ async def create_grant(
     subject = validate_grant_subject(payload.subject)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). A lead or a Projects admin, nobody else.
+        await assert_may_write_grant(db, user, node)
         row = (await db.execute(
             text(
                 "INSERT INTO pm_project_grants (project_id, subject, created_by) "
@@ -1346,7 +1361,9 @@ async def delete_grant(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). The rule of `create_grant`.
+        await assert_may_write_grant(db, user, node)
         row = (await db.execute(
             text(
                 "DELETE FROM pm_project_grants "
