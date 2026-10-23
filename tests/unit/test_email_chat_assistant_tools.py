@@ -583,6 +583,7 @@ def test_the_drafts_lookup_exists_with_the_parameter_the_text_names() -> None:
 async def test_draft_reply_asks_for_the_default_and_names_reply_all(gw: _Gw, monkeypatch) -> None:
     """§22.6: the draft goes to everyone when others are on the mail, and the
     first line says so."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     posts: list[tuple[str, dict[str, Any]]] = []
 
     async def post(path, body):

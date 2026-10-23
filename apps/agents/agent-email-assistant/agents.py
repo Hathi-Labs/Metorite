@@ -1980,7 +1980,9 @@ async def draft_reply(
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save,
-         "auto_reply_all": True,
+         # A held chat keeps Reply: Reply all could put a stranger of an
+         # outside mail on the draft with no card (review of §22.6, P2).
+         **({} if _egress_held() else {"auto_reply_all": True}),
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
@@ -2212,6 +2214,11 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
+    if reply_all is None and _egress_held():
+        # A held chat does not let the server choose Reply all. The card may
+        # open on Reply (§21), and the draft in Drafts must name the same
+        # people as the card (review of §22.6, P2).
+        reply_all = False
     if reply_all is not None:
         # The draft in Drafts takes the recipients that the card opens with.
         # Left out, the server chooses (§22.6).

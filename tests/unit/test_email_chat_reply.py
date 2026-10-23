@@ -697,6 +697,7 @@ def _member_send(kw: dict[str, Any], **choice: Any) -> Any:
 async def test_compose_reply_sends_the_members_answer_and_nothing_of_its_own(
     monkeypatch, gw,
 ) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     cards = _card_answer(monkeypatch, lambda kw: _member_send(kw, body="Edited by Jane."))
     out = await agents.compose_reply(MAIL, BOX)
     assert out == f"Sent to kim@contoso.test, from Work · {MEMBER}."
@@ -717,6 +718,7 @@ async def test_compose_reply_sends_the_members_answer_and_nothing_of_its_own(
 
 async def test_compose_reply_passes_the_agreed_text_to_the_card(monkeypatch, gw) -> None:
     """The chat agreed a text. The card route gets it, and no drafter runs."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     agreed = "Dear Dr Ravikanth,\n\nThree BQs, please."
     await agents.compose_reply(MAIL, BOX, draft=agreed)
@@ -756,6 +758,7 @@ async def test_compose_reply_never_trashes_on_a_discard_or_a_timeout(
     """``request_confirmation`` answers None for Discard and for a timeout
     alike. So the tool trashes nothing, and a card that timed out keeps its
     draft. The member's own Discard click posts the trash (``ReplyCardForm``)."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     _card_answer(monkeypatch, lambda kw: None)
     out = await agents.compose_reply(MAIL, BOX)
     assert out.startswith("Reply discarded") and "Nothing was sent." in out
@@ -1441,6 +1444,7 @@ async def test_the_card_route_keeps_an_explicit_reply(monkeypatch, card_drafts) 
 
 async def test_compose_reply_leaves_reply_all_to_the_server(monkeypatch, gw) -> None:
     """No ``reply_all`` is sent, and the card opens on the server's choice."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     gw.card_extra = {"reply_all": True}
     cards = _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX)
@@ -1453,3 +1457,20 @@ async def test_compose_reply_false_is_sent_on_as_reply(monkeypatch, gw) -> None:
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX, reply_all=False)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False})
+
+
+async def test_compose_reply_in_a_held_run_asks_no_server_reply_all(monkeypatch, gw) -> None:
+    """A held chat does not let the server choose Reply all. The card may open
+    on Reply (§21), and the draft in Drafts must name the same people as the
+    card (review of §22.6, P2)."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
+    await agents.compose_reply(MAIL, BOX)
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False})
+
+
+async def test_compose_reply_outside_a_held_run_lets_the_server_choose(monkeypatch, gw) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
+    await agents.compose_reply(MAIL, BOX)
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL})

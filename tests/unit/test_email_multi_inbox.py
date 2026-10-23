@@ -476,7 +476,8 @@ async def test_the_draft_send_card_names_its_mailbox(chat) -> None:
                    "text_digest": "a" * 64}})]
 
 
-async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:
+async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat, monkeypatch) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     out = await agents.draft_reply("m1", "box-b")
     # A chat draft saves to Drafts (owner, 2026-10-22), in the mailbox of the mail.
     assert chat.posts == [("/email/draft-reply", {
