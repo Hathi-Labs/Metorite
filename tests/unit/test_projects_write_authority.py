@@ -45,6 +45,20 @@ Run::
 * A12. ``E/tools.py`` ``_delete_task``: no ``(403, TEXT_DELETE_NOT_ALLOWED)`` entry. ``test_6_one_answer_for_the_viewer_at_every_door``.
 * A13. ``S/guarded.py`` ``delete_refusal``: returns ``""``. ``test_6_one_answer_for_the_viewer_at_every_door`` and ``test_the_chat_refuses_before_the_card_and_quotes_the_server``.
 * A14. ``G/authority.py`` ``may_write_grant``: the creator arm added. ``test_5_a_lead_and_an_admin_write_a_grant_and_a_viewer_gets_403``.
+
+Fix round 1 (the lead of D-OP-11, the moves of D-OP-14, the successor):
+
+* B1. ``G/tree.py`` ``patch_node``: no ``assert_may_change_lead``. ``test_7_a_viewer_who_makes_themself_lead_gets_403``.
+* B2. ``G/tree.py`` ``create_node``: no ``assert_may_name_lead``. ``test_7_a_viewer_who_makes_themself_lead_gets_403`` and ``test_7_a_member_leads_the_space_they_create``.
+* B3. ``G/authority.py`` ``assert_may_name_lead``: a new root passes any lead. ``test_7_a_member_leads_the_space_they_create``.
+* B4. ``G/tree.py`` ``move_node``: no ``assert_may_move_project``. ``test_8_a_new_space_does_not_launder_a_project``.
+* B5. ``G/tasks.py`` ``move_task_in``: no ``assert_may_move_task``. ``test_8_a_new_space_does_not_launder_a_task``.
+* B6. ``G/move.py`` ``_plan``: no ``assert_may_move_task``. ``test_8_a_new_space_does_not_launder_a_task``.
+* B7. ``G/recurrence.py`` ``spawn_successor``: ``created_by`` is the completer. ``test_9_the_completer_is_not_the_creator_of_the_successor``.
+* B8. ``G/authority.py`` ``assert_may_move_project``: refuses every member. ``test_8_a_lead_re_parents_a_project``.
+* B9. ``G/authority.py`` ``assert_may_change_lead``: refuses every member. ``test_7_a_lead_hands_the_lead_to_another_member``.
+* B10. ``G/personal.py`` ``_organize``: passes ``user=None`` to the move. ``test_the_new_doors_call_the_one_module``.
+* B11. ``G/authority.py`` ``assert_may_change_lead``: a ``null`` lead passes. ``test_7_a_viewer_who_makes_themself_lead_gets_403``.
 """
 
 from __future__ import annotations
