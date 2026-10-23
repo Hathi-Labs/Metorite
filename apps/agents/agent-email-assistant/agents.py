@@ -6200,7 +6200,13 @@ async def find_contact(
         lines.append((f"- {who} <{addr}>" if who else f"- {addr}") + f" · {src}")
     ask = ("Call ask_questions with one option for each person, with the name "
            "and the full address. Where no card can show, ask in text. Never guess.")
-    if len(found) > 1:
+    closest = [r for r in found if r.get("match") == "closest"]
+    if closest:
+        lead = (f"No exact match for {q!r}. These are the CLOSEST matches by "
+                "spelling, not exact ones. Show the member the name and the "
+                "address, and ask if this is the person they mean. Never use "
+                f"one without that confirmation. {ask}")
+    elif len(found) > 1:
         lead = f"{len(found)} people match. Ask the member which one they mean. {ask}"
     elif str(found[0].get("source") or "") not in ("org", "sent"):
         lead = ("One person matches, but the member never wrote to this address, "

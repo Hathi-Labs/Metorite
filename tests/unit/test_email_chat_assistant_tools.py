@@ -519,3 +519,14 @@ async def test_the_route_keeps_the_body_when_asked(monkeypatch, gmail, sent_body
     assert kw["body_text"] == sent_body
     if not gmail:
         assert upserts[0]["body"] == "<stored copy>"
+
+
+async def test_find_contact_says_closest_match_for_a_fuzzy_hit(gw: _Gw) -> None:
+    """Owner, 2026-10-23: "Venna" is Veena. A trigram hit is a guess, so the
+    model must confirm it with the member and not use it at once."""
+    gw.contacts = [{"email": "veena@fracktal.in", "name": "Veena",
+                    "source": "org", "match": "closest"}]
+    out = await agents.find_contact("Venna")
+    assert "CLOSEST" in out and "No exact match" in out
+    assert "Use this address" not in out
+    assert "- Veena <veena@fracktal.in>" in out
