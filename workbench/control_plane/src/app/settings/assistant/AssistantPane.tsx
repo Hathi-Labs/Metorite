@@ -151,6 +151,7 @@ function Choice({
   values,
   labels,
   none,
+  width = "w-full",
   disabled,
   onChange,
 }: {
@@ -159,6 +160,7 @@ function Choice({
   values: readonly string[];
   labels?: Record<string, string>;
   none?: string;
+  width?: string;
   disabled?: boolean;
   onChange: (value: string) => void;
 }) {
@@ -172,7 +174,7 @@ function Choice({
       value={value}
       options={options}
       defaultValue={none ? "" : values[0]}
-      widthClass="w-full"
+      widthClass={width}
       disabled={disabled}
       onChange={onChange}
     />
@@ -409,6 +411,7 @@ function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
               value={f.kind}
               values={FACT_KINDS}
               labels={KIND_LABELS}
+              width="w-36"
               disabled={busy}
               onChange={(x) => v.onEditFact(f.id, { kind: x as FactKind })}
             />
@@ -461,6 +464,7 @@ function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
           value={kind}
           values={FACT_KINDS}
           labels={KIND_LABELS}
+              width="w-36"
           onChange={(x) => setKind(x as FactKind)}
         />
         <Button
