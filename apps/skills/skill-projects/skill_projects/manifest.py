@@ -1035,6 +1035,14 @@ _TASK_PREFIX_REASON = (
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # D-OP-10 (owner, 2026-10-23), built in WS-55 EA-6h. The chat's card gets
+    # the choice in OP-7, and that slice moves this row to SENDS.
+    ("DELETE", "/projects/tasks/{task_id}"): {
+        "subtasks": (
+            "D-OP-10. The chat's card gets the choice in OP-7. Until then the chat "
+            "sends no value, and the route keeps D-PM-38: the subtasks move up."
+        ),
+    },
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
