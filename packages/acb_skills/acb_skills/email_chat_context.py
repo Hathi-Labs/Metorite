@@ -494,6 +494,31 @@ def working_set_lines(ws: Mapping[str, Any], mailboxes: list[Mapping[str, Any]])
     return lines
 
 
+#: The CUSTOM event of a mailbox mark. The browser twin is
+#: ``MAILBOX_MARK_EVENT`` in ``workbench/control_plane/src/lib/mailboxMark.ts``.
+MAILBOX_MARK_EVENT = "email_mailbox_mark"
+
+
+def mailbox_mark(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+    mailboxes: list[Mapping[str, Any]],
+) -> dict[str, str] | None:
+    """The value of a "Now working on <label>" mark, or None (§7.1.1 rule 6).
+
+    A mark when the email work of the chat moved from one mailbox to another.
+    The first mailbox of a chat needs none, and the same mailbox needs none.
+    The label comes from the member's own list. A mailbox that the list does
+    not name gets "another mailbox".
+    """
+    old = clean(before).get("account_id")
+    new = clean(after).get("account_id")
+    if not (old and new) or old == new:
+        return None
+    label = label_for(new, mailboxes)
+    return {"account_id": new, "label": label[:80] if label else "another mailbox"}
+
+
 def subrun_preamble(ws: Mapping[str, Any], mailboxes: list[Mapping[str, Any]]) -> str:
     """The working set for an email-assistant sub-run, or ``""``."""
     lines = working_set_lines(ws, mailboxes)
@@ -524,6 +549,7 @@ def orchestrator_block(ws: Mapping[str, Any], mailboxes: list[Mapping[str, Any]]
 __all__ = [
     "EMAIL_AGENT",
     "FIELDS",
+    "MAILBOX_MARK_EVENT",
     "NAMESPACE",
     "TTL_S",
     "cached_mailboxes",
@@ -534,6 +560,7 @@ __all__ = [
     "label_for",
     "load_working_set",
     "mailbox_label",
+    "mailbox_mark",
     "mailboxes_block",
     "orchestrator_block",
     "prime_mailboxes",

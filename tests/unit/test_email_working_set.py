@@ -348,3 +348,61 @@ class _StubLoaded:
 
 def _stub_loader(name: str, **_k: Any) -> _StubLoaded:
     return _StubLoaded(name)
+
+
+# ── the mailbox mark (§7.1.1 rule 6) ────────────────────────────────────────
+
+
+def test_a_mark_only_when_the_mailbox_moves() -> None:
+    assert ecc.mailbox_mark({}, {"account_id": "acc-work"}, BOXES) is None
+    assert ecc.mailbox_mark({"account_id": "acc-work"}, {"account_id": "acc-work"}, BOXES) is None
+    assert ecc.mailbox_mark({"account_id": "acc-work"}, {"account_id": "acc-home"}, BOXES) == {
+        "account_id": "acc-home", "label": "Personal"}
+    assert ecc.mailbox_mark({"account_id": "acc-work"}, {"account_id": "acc-x"}, BOXES) == {
+        "account_id": "acc-x", "label": "another mailbox"}
+
+
+def test_the_sub_run_sends_the_mark_to_the_parent(monkeypatch, tenant) -> None:
+    """The REAL ``_run_sub_agent_streaming``: a rule in Personal after work in
+    Work puts one CUSTOM ``email_mailbox_mark`` on the parent's queue."""
+    from acb_skills.write_artifact import bind_artifact_context
+    from orchestrator import executor
+
+    async def fake_run_agent(name: str, payload: dict, **_k: Any) -> dict:
+        return {"result": "Rule created.", "tool_calls": [
+            _call("create_rule", {"account_id": "acc-home", "name": "Receipts"},
+                  "Created rule 'Receipts' (id=r-1) in Personal."),
+        ]}
+
+    async def _boxes(_member: str) -> list[dict]:
+        return BOXES
+
+    monkeypatch.setattr(executor, "run_agent", fake_run_agent)
+    monkeypatch.setattr(executor, "_email_ctx_member", lambda: MEMBER)
+    monkeypatch.setattr(executor, "_current_run_org", lambda: ORG)
+    monkeypatch.setattr(ecc, "fetch_accounts", _boxes)
+    monkeypatch.setattr(executor, "load_agent", _stub_loader)
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(executor, "_assert_may_run_agent", _noop)
+    monkeypatch.setattr(executor, "_get_current_head", _empty)
+    monkeypatch.setattr(executor, "_settle_agent_push", _empty)
+    bind_artifact_context(session_id=SESSION, member=MEMBER, agent_name="orchestrator")
+    asyncio.run(ecc.save_working_set({"account_id": "acc-work", "draft_id": "d-9"}))
+
+    async def run() -> list[dict]:
+        queue: asyncio.Queue = asyncio.Queue()
+        await executor._run_sub_agent_streaming("email-assistant", "a rule", "run-3", queue)
+        out = []
+        while not queue.empty():
+            out.append(queue.get_nowait())
+        return out
+
+    events = asyncio.run(run())
+    marks = [e for e in events if e.get("type") == "CUSTOM"]
+    assert marks == [{"type": "CUSTOM", "name": "email_mailbox_mark",
+                      "value": {"account_id": "acc-home", "label": "Personal"}}], events
+    # The steps reach the parent too (rule 5), before the text.
+    kinds = [e["type"] for e in events]
+    assert kinds.index("SUB_AGENT_TOOL_CALL_START") < kinds.index("SUB_AGENT_TEXT_DELTA")
+    assert ecc.cached_working_set() == {"account_id": "acc-home"}
+    bind_artifact_context()

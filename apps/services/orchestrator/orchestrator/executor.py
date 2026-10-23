@@ -1647,7 +1647,6 @@ async def _record_email_working_set(
     Only the sub-run's own tool calls write it, never the model's text. A
     run that :func:`_email_working_set_for` skipped (``before`` None) writes
     nothing. Never raises."""
-    del emit  # The mailbox mark (§7.1.1 rule 6) uses it.
     if before is None or not calls:
         return
     try:
@@ -1660,8 +1659,17 @@ async def _record_email_working_set(
         after = ecc.update_working_set(before, calls, boxes or None)
         if after != before:
             await ecc.save_working_set(after, parent_ctx)
+        mark = ecc.mailbox_mark(before, after, boxes)
     except Exception as exc:
         _log.warning("executor.email_ws_unwritten", error=type(exc).__name__)
+        return
+    if mark is not None:
+        # §7.1.1 rule 6: "Now working on <label>" where the email work moved
+        # to another mailbox. A CUSTOM event, so the turn saves it.
+        try:
+            await emit({"type": "CUSTOM", "name": ecc.MAILBOX_MARK_EVENT, "value": mark})
+        except Exception as exc:
+            _log.warning("executor.email_mark_unsent", error=type(exc).__name__)
 
 
 async def _run_sub_agent_streaming(

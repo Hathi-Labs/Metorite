@@ -45,6 +45,8 @@ import RollupCard, { RollupContext, type RollupScope } from "@/components/Rollup
 import { noActionOf } from "@/components/email/EmailToolCards";
 import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
+import { mailboxMarksOf } from "@/lib/mailboxMark";
+import MailboxMark from "@/components/MailboxMark";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
@@ -2320,6 +2322,13 @@ export default function AgentChat({
                     <div className="flex-1 h-px bg-secondary" />
                   </div>
                 )}
+                {/* The one assistant's mailbox mark (§7.1.1 rule 6): the email
+                    work of this turn moved to another mailbox. Saved with the
+                    turn, so a reload draws it in the same place. */}
+                {msg.role === "assistant" &&
+                  mailboxMarksOf(msg.customEvents).map((label, k) => (
+                    <MailboxMark key={`mbx-run-${msg.id}-${k}`} label={label} />
+                  ))}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
                   onHitlDecline={handleGenUiDecline}
@@ -2340,13 +2349,7 @@ export default function AgentChat({
                 {mailboxMarks
                   .filter((mk) => mk.afterId === msg.id)
                   .map((mk, k) => (
-                    <div key={`mbx-${msg.id}-${k}`} className="flex items-center gap-2 my-3">
-                      <div className="flex-1 h-px bg-primary/25" />
-                      <span className="flex items-center gap-1 text-[10px] text-primary/80 font-medium shrink-0">
-                        <Icon name="Mail" size={10} /> Now working on {mk.label}
-                      </span>
-                      <div className="flex-1 h-px bg-primary/25" />
-                    </div>
+                    <MailboxMark key={`mbx-${msg.id}-${k}`} label={mk.label} />
                   ))}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
