@@ -551,3 +551,31 @@ async def test_the_global_cap_is_a_semaphore_that_answers_429_when_full(monkeypa
         await first
     # the slot came back
     assert accounts._imap_login_slots._value == 1
+
+
+# ── A refused SMTP send answers 502 with words (review, P3) ─────────────────
+
+def test_an_imap_send_refusal_answers_502_with_the_reason() -> None:
+    from fastapi import HTTPException
+    from gateway.routes.email.transport import send as send_mod
+
+    class IMAPProvider:  # the name is what the mapper reads
+        pass
+
+    with pytest.raises(HTTPException) as caught:
+        with send_mod._mail_server_refused(IMAPProvider()):
+            raise OSError("Metorite will not send through smtp.example.test: not public.")
+    assert caught.value.status_code == 502
+    assert caught.value.detail.startswith(send_mod.MAIL_SERVER_REFUSED_PREFIX)
+    assert "not public" in caught.value.detail
+
+
+def test_a_gmail_or_microsoft_send_error_keeps_its_own_path() -> None:
+    from gateway.routes.email.transport import send as send_mod
+
+    class GmailProvider:
+        pass
+
+    with pytest.raises(OSError):
+        with send_mod._mail_server_refused(GmailProvider()):
+            raise OSError("socket closed")
