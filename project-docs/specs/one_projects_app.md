@@ -290,6 +290,42 @@ for each view. `TaskToolbar.tsx` retires in OP-5.
 
 ---
 
+## 5a. Every act of the app from the chat (D-OP-9)
+
+Owner, 2026-10-23, verbatim:
+
+> "The in-app chat should also be allowed to delete with permissions. So it'll
+> just show a permission card and it should be allowed to delete."
+
+> "every single aspect of the control of the project's app should be possible
+> to do with the chat application, including deleting"
+
+**What is true today (measured 2026-10-23).** The chat deletes a task and a
+project behind one card (`skill_projects/guarded.py:287` and :329, #1223,
+in production since 2026-10-22). `skill_projects/manifest.py` maps 165
+Projects routes. The chat reaches 127 of them. 38 are class X.
+
+**The rule.** Every act that a member can do in the Projects app, the chat
+can do too. A class C card guards each act that destroys data, writes access
+or reaches another person. The card is a brake on a mistake. It is not
+authority: the route still checks the member's own access.
+
+**The class X routes, sorted.**
+
+| Group | Routes | OP-6 does |
+|---|---|---|
+| Areas, now Personal folders | `POST/PATCH/DELETE /projects/my/areas…` | Three tools. Rename and delete take a card |
+| Grants | `POST/DELETE /projects/nodes/{id}/grants…` | Two tools, each behind a card. **This reverses D-PM-40** (owner, 2026-10-23) |
+| Nudge | `POST /projects/tasks/{id}/nudge` | One tool behind a card, because it reaches a colleague |
+| Export | `GET /projects/export/tasks.csv` | One tool. The file comes back as a chat document (S8) |
+| Attachments | `POST /projects/tasks/{id}/attachments` | One tool that attaches a file the member uploaded to the chat (H-229) |
+| Report delivery | recipients and schedule | Tools behind a card. The send switch `PROJECT_REPORT_EMAIL_ENABLED` stays the owner's (§3a rule 3) |
+| Agent runs | the eight `PLANNED` tools | The member can approve or decline an agent's archive or delete from the chat |
+| Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
+| Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
+
+---
+
 ## 6. Risks
 
 1. **A personal task leaks to a team view.** The personal root enters the
@@ -319,6 +355,7 @@ for each view. `TaskToolbar.tsx` retires in OP-5.
 | **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so eleven panes are live | Accept, in OP-4 |
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
+| **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -463,6 +500,21 @@ the answers of §8.
    redirect test.
 2. `nav.test.ts` and `launch_surface.md` §2 agree on eleven live panes after
    the flip.
+
+### OP-6 — every act from the chat · AGENT-SAFE · HIGH tier (grants)
+
+**Scope.** §5a. New tools in `skill_projects` for each row that leaves class
+X. Each moves its route from class X to class B or C in `manifest.py`.
+`test_projects_chat_coverage.py` stays the fence.
+
+**Done when.**
+1. Only the routes in the two "Stays X" rows of §5a are class X. Fence: a new
+   test pins that list.
+2. Each new class C tool shows a card before the request, and a declined
+   card writes nothing. Fence: `test_projects_agent_writes.py`.
+3. A grant write from the chat succeeds only where the member could write the
+   grant in the app. Fence: an R8 test with two members.
+4. The chat eval `evals/projects_ops/` gains one case for each new tool.
 
 ### OP-5 — one filter component, and the old shell retires · AGENT-SAFE
 
