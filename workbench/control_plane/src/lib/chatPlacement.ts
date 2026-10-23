@@ -200,6 +200,7 @@ const WRITE: readonly string[] = [
   "propose_plan",
   "save_view",
   "capture_intake",
+  "create_area",
   "triage_intake",
   "mark_notifications_read",
   // ── Projects (class C, the guarded acts) ───────────────────────────────
@@ -222,6 +223,8 @@ const WRITE: readonly string[] = [
   "delete_view",
   "report_delete",
   "delete_attachment",
+  "rename_area",
+  "delete_area",
   // ── Tasks ──────────────────────────────────────────────────────────────
   "my_tasks_capture",
   "my_tasks_capture_many",

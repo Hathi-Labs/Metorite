@@ -65,6 +65,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "amount": { label: "Amount" },
   "archive_after_months": { label: "Archive after (months)" },
   "archived": { label: "Archived", kind: "date" },
+  "area": { label: "Area" },
   "assignees": { label: "Assignees", kind: "person", many: true },
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
