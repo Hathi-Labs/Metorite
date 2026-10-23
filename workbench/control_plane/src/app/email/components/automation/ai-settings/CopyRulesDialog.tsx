@@ -22,7 +22,7 @@ import {
 } from "../../../lib/mailboxSettings";
 import type { AutomationRule, EmailAccount } from "../../../lib/types";
 
-type Source = Pick<EmailAccount, "id" | "emailAddress" | "displayLabel">;
+type Source = Pick<EmailAccount, "id" | "emailAddress" | "displayLabel" | "provider">;
 
 export function CopyRulesDialog({
   targetId,
@@ -42,6 +42,8 @@ export function CopyRulesDialog({
   const [sourceId, setSourceId] = useState<string>(choices[0]?.id ?? "");
   const [sourceRules, setSourceRules] = useState<AutomationRule[] | null>(null);
   const [readFailed, setReadFailed] = useState(false);
+  // The rules of the target. The preview leaves out a rule that it holds already.
+  const [targetRules, setTargetRules] = useState<AutomationRule[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<CopyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +70,30 @@ export function CopyRulesDialog({
     };
   }, [sourceId]);
 
-  const preview = source && sourceRules ? copyRulesPreview(sourceRules, source.label) : null;
+  // The same read for the target. A copy ran in another dialog is in it too.
+  useEffect(() => {
+    let live = true;
+    listRules(targetId)
+      .then((r) => {
+        if (live) setTargetRules(r);
+      })
+      .catch(() => {
+        if (live) setReadFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [targetId]);
+
+  const targetAccount = mailboxes.find((m) => m.id === targetId);
+  const preview =
+    source && sourceRules && targetRules
+      ? copyRulesPreview(sourceRules, source.label, {
+          rules: targetRules,
+          ownAddresses: mailboxes.map((m) => m.emailAddress),
+          provider: targetAccount?.provider ?? "",
+        })
+      : null;
   const done = copier.copied(sourceId, targetId);
 
   const pick = (id: string) => {
@@ -140,9 +165,15 @@ export function CopyRulesDialog({
                     ))}
                   </div>
                 )}
+                {preview.blocked && (
+                  <p role="alert" className="text-xs text-destructive">
+                    Metorite cannot copy part of the list. This mailbox holds some of these rules
+                    already. Delete those rules here, then copy again.
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">
-                  A rule with a name that this mailbox has already gets a new name. A copy of a pair
-                  runs once.
+                  A reply rule keeps its name, and a mailbox keeps one reply rule. A copy of a pair
+                  runs once in this window.
                 </p>
               </div>
             )}
@@ -166,7 +197,7 @@ export function CopyRulesDialog({
             {report ? "Close" : "Cancel"}
           </Button>
           {choices.length > 0 && (
-            <Button onClick={run} disabled={busy || done || !preview || preview.willCopy.length === 0}>
+            <Button onClick={run} disabled={busy || done || !preview || preview.blocked || preview.willCopy.length === 0}>
               {busy ? "Copying…" : COPY_STEP.copyFrom(source?.label ?? "")}
             </Button>
           )}

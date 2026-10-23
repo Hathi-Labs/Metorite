@@ -296,29 +296,150 @@ export interface CopyPreview {
   leftOut: { name: string; why: string }[];
   /** The question that the dialog asks, or the plain "nothing to copy" line. */
   question: string;
+  /**
+   * True when the route would copy a rule that this mailbox holds already.
+   * The route renames it as "X (copy)", and the preview cannot leave it out.
+   * So the dialog does not offer the copy.
+   */
+  blocked: boolean;
+}
+
+/** What the preview reads of the TARGET mailbox. */
+export interface CopyTarget {
+  /** The rules of the target, on or off. */
+  rules: ReadonlyArray<Pick<AutomationRule, "name" | "system_type">>;
+  /** The address of each mailbox of the member (D-EM-29). */
+  ownAddresses: ReadonlyArray<string>;
+  /** The provider of the target: "gmail", "microsoft" or "imap". */
+  provider: string;
+}
+
+/** The words for a rule that the target holds already (client side only). */
+export const ALREADY_HERE_WORDS = "This mailbox has a rule with this name already, or a copy of it.";
+
+// The port of `_left_out_reason` of `rule_copy.py`. Each helper names its twin.
+const REPLY_SYSTEM_TYPES = ["REPLY", "TO_REPLY"]; // rules._REPLY_SYSTEM_TYPES
+const REPLY_RULE_NAMES = ["needs reply", "reply", "to reply"]; // rules._REPLY_RULE_NAMES
+const NAMED_ACTIONS = ["MOVE_FOLDER", "LABEL"]; // rule_copy._NAMED_ACTIONS
+const ADDRESS = /[^\s<>,;"'()]+@[^\s<>,;"'()]+/g; // rule_copy._ADDRESS
+// providers/base.py `_CANONICAL_FOLDERS`, the keys that reach sent or drafts.
+const SENT_OR_DRAFTS = new Set(["sent", "sentitems", "sent items", "sent mail", "drafts", "draft"]);
+const GMAIL_SYSTEM_MOVES = new Set(["inbox", "archive", "trash", "deleteditems", "deleted items", "bin", "junk", "junkemail", "junk email", "spam"]);
+const GMAIL_RESERVED = new Set(["INBOX", "SENT", "DRAFT", "TRASH", "SPAM", "UNREAD", "STARRED", "IMPORTANT", "CHAT"]);
+
+type PreviewRule = Pick<AutomationRule, "name" | "enabled"> &
+  Partial<Pick<AutomationRule, "system_type" | "actions">>;
+
+/** Twin of `rules._is_reply_rule`. */
+function isReplyRule(rule: Pick<AutomationRule, "name" | "system_type">): boolean {
+  return (
+    REPLY_SYSTEM_TYPES.includes((rule.system_type ?? "").toUpperCase()) ||
+    REPLY_RULE_NAMES.includes((rule.name ?? "").trim().toLowerCase())
+  );
+}
+
+/** Twin of `forwards_to_own_address`. */
+function forwardsToOwnAddress(rule: PreviewRule, own: ReadonlySet<string>): boolean {
+  return (rule.actions ?? []).some(
+    (a) =>
+      (a.type ?? "").toUpperCase() === "FORWARD" &&
+      [a.to_address, a.cc_address, a.bcc_address].some((f) =>
+        (f ?? "").match(ADDRESS)?.some((m) => own.has(m.toLowerCase())),
+      ),
+  );
+}
+
+/** Twin of `names_a_folder`. */
+function namesAFolder(rule: PreviewRule): boolean {
+  return (rule.actions ?? []).some((a) => NAMED_ACTIONS.includes((a.type ?? "").toUpperCase()));
 }
 
 /**
- * The preview of the Rules tab copy (multi-inbox UI, item 2). The gateway
- * leaves out a rule that is off (`LEFT_OUT_WORDS.disabled`), so the preview
- * lists the same rules. It reads only the source rules and writes nothing. A
- * rule that the target refuses later (a folder it does not have, a second
- * reply rule) shows in the report after the copy.
+ * Twin of `move_refuser`: true when the provider refuses a move to `name`.
+ * Every provider refuses Sent and Drafts. Gmail also refuses a system label
+ * and a CATEGORY_ label, unless the name is Inbox, Archive, Trash or Junk.
+ */
+function refusesMove(provider: string, name: string): boolean {
+  const key = name.trim().toLowerCase();
+  if (SENT_OR_DRAFTS.has(key)) return true;
+  if (provider !== "gmail") return false;
+  if (key === "" || GMAIL_SYSTEM_MOVES.has(key)) return false;
+  const upper = key.toUpperCase();
+  return GMAIL_RESERVED.has(upper) || upper.startsWith("CATEGORY_");
+}
+
+/** Twin of `refuses_a_move`. */
+function refusesAMove(rule: PreviewRule, provider: string): boolean {
+  return (rule.actions ?? []).some(
+    (a) =>
+      (a.type ?? "").toUpperCase() === "MOVE_FOLDER" &&
+      (a.label ?? "").trim() !== "" &&
+      refusesMove(provider, a.label ?? ""),
+  );
+}
+
+/** True when `held` is `name`, or `name (copy)`, or `name (copy N)`, any case. */
+function holdsNameOrCopy(held: ReadonlySet<string>, name: string): boolean {
+  const base = name.trim().toLowerCase();
+  if (held.has(base)) return true;
+  for (const h of held) {
+    if (h.startsWith(`${base} (copy`) && /^ \(copy( \d+)?\)$/.test(h.slice(base.length))) return true;
+  }
+  return false;
+}
+
+/**
+ * The preview of the Rules tab copy (multi-inbox UI, item 2). It mirrors
+ * `_left_out_reason` of `rule_copy.py`, so "Copy N rules" counts what the route
+ * copies: a rule that is off, a forward to an own address, a folder or label
+ * for a target with no folders (IMAP), a move that the target refuses, and a
+ * reply rule when the target holds one (or the copy took one). A reply rule
+ * keeps its name. It reads only the rules and writes nothing.
+ *
+ * With `target`, the preview also leaves out a rule that the target holds
+ * already, by name or as "(copy)". The route would copy that rule again as
+ * "X (copy)", so `blocked` is true and the dialog does not offer the copy.
  */
 export function copyRulesPreview(
-  rules: ReadonlyArray<Pick<AutomationRule, "name" | "enabled">>,
+  rules: ReadonlyArray<PreviewRule>,
   source: string,
+  target?: CopyTarget,
 ): CopyPreview {
-  const willCopy = rules.filter((r) => r.enabled).map((r) => r.name);
-  const leftOut = rules
-    .filter((r) => !r.enabled)
-    .map((r) => ({ name: r.name, why: LEFT_OUT_WORDS.disabled(source) }));
+  const own = new Set((target?.ownAddresses ?? []).map((a) => a.trim().toLowerCase()));
+  const held = new Set((target?.rules ?? []).map((r) => (r.name ?? "").trim().toLowerCase()));
+  let replyHeld = (target?.rules ?? []).some((r) => isReplyRule(r));
+  const provider = target?.provider ?? "";
+  const hasFolders = !target || provider !== "imap";
+  const willCopy: string[] = [];
+  const leftOut: { name: string; why: string }[] = [];
+  let blocked = false;
+  for (const r of rules) {
+    let why: string | null = null;
+    if (!r.enabled) why = LEFT_OUT_WORDS.disabled(source);
+    else if (target) {
+      if (forwardsToOwnAddress(r, own)) why = LEFT_OUT_WORDS.forward_to_own_address(source);
+      else if (!hasFolders && namesAFolder(r)) why = LEFT_OUT_WORDS.not_supported_by_target(source);
+      else if (refusesAMove(r, provider)) why = LEFT_OUT_WORDS.folder_not_in_target(source);
+      else if (replyHeld && isReplyRule(r)) why = LEFT_OUT_WORDS.reply_rule_exists(source);
+      else if (holdsNameOrCopy(held, r.name)) {
+        why = ALREADY_HERE_WORDS;
+        // The route skips a reply rule with a taken name, and copies any other.
+        if (!isReplyRule(r)) blocked = true;
+      }
+    }
+    if (why !== null) {
+      leftOut.push({ name: r.name, why });
+      continue;
+    }
+    willCopy.push(r.name);
+    if (isReplyRule(r)) replyHeld = true;
+  }
   const n = willCopy.length;
   const question =
     n === 0
       ? `${source} has no rules to copy.`
       : `Copy ${n} ${n === 1 ? "rule" : "rules"} from ${source} into this mailbox?`;
-  return { willCopy, leftOut, question };
+  return { willCopy, leftOut, question, blocked };
 }
 
 /**
