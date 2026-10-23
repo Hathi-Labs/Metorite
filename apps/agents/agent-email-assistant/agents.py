@@ -2932,6 +2932,10 @@ def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
             # (:func:`_carry_over`).
             action["delay_minutes"] = minutes
         if item.get("label_ai") is True:
+            # Review fix round 1 (P3-5): the engine reads label_ai only on a
+            # LABEL action (actions.py).
+            if a_type != "LABEL":
+                return [], "Not saved. label_ai works only on a LABEL action."
             if "label" not in action:
                 return [], ("Not saved. label_ai needs a label: the prompt that the "
                             "AI turns into a label for each email.")

@@ -971,6 +971,16 @@ async def test_p2_4_several_senders_that_the_card_would_cut_change_nothing(
     assert all(b.get("dry_run") for _m, _p, b in gw.writes)
 
 
+@pytest.mark.parametrize("a_type", ["MOVE_FOLDER", "NOTIFY_ME", "ARCHIVE"])
+async def test_p3_5_label_ai_is_refused_on_a_type_that_is_not_label(
+    gw: Gateway, a_type: str,
+) -> None:
+    out = await agents.create_rule(BOX, name="X", actions=[
+        {"type": a_type, "label": "{{vendor}}", "label_ai": True}])
+    assert out.startswith("Not saved.") and "LABEL" in out
+    assert gw.cards == [] and gw.writes == []
+
+
 async def test_p2_4_a_style_guide_that_the_card_would_cut_saves_nothing(gw: Gateway) -> None:
     out = await agents.voice_profile(BOX, action="save", style_guide="word " * 798)
     assert out.startswith("Nothing changed."), out
