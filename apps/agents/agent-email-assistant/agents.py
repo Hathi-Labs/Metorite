@@ -471,7 +471,19 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     only shortens the list of the question.
     """
     if account_id:
-        return str(account_id), ""
+        named, hits = await _named_mailbox(str(account_id))
+        if named:
+            return named, ""
+        word = _one_line(account_id, 60)
+        then = (f"Ask the user, then call {tool} again with the account_id of "
+                "that mailbox.")
+        if hits:
+            return "", _mailbox_choices(
+                f"Which mailbox? \"{word}\" matches more than one, so nothing "
+                "changed yet.", hits, then)
+        return "", _mailbox_choices(
+            f"Which mailbox? No mailbox is called \"{word}\", so nothing "
+            "changed yet.", await _accounts(), then)
     try:
         accounts = await _accounts()
     except Exception:
@@ -491,6 +503,83 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
         "mailbox. If the user says all of them, call it once for each mailbox "
         "and name each one.",
     )
+
+
+#: Words around a mailbox name that name no mailbox: "my personal box".
+_MAILBOX_FILLER = re.compile(
+    r"^(?:the|my|our)\s+|\s+(?:box|mailbox|inbox|account|email|mail)$", re.IGNORECASE)
+#: What an id holds and a name does not: a digit, "-" or "_". A label such
+#: as "Personal" holds none, so an unknown label asks and never reaches the
+#: gateway as an id.
+_ID_SHAPE = re.compile(r"[0-9_\-]")
+
+
+def _mailbox_words(value: str) -> str:
+    """*value* as the words of a mailbox name, in lower case."""
+    text = " ".join(str(value or "").split()).strip().lower().rstrip("…").rstrip(".")
+    for _ in range(3):
+        text = _MAILBOX_FILLER.sub("", text).strip()
+    return text
+
+
+def _match_mailbox(value: str, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mailboxes that *value* names (§7.1.1 rule 4).
+
+    An id first. Then an exact label, address or provider ("gmail"), in any
+    case. Then a unique prefix of a label or an address ("vj@"). Each step
+    that finds one or more mailboxes ends the search, so "Work" never matches
+    "Workshop" when a mailbox is called "Work".
+    """
+    raw = str(value or "").strip()
+    hit = [a for a in accounts if str(a.get("id")) == raw]
+    if hit:
+        return hit
+    want = _mailbox_words(raw)
+    if not want:
+        return []
+
+    def names(a: dict[str, Any]) -> list[str]:
+        return [str(a.get(k) or "").strip().lower()
+                for k in ("display_label", "label", "default_label", "email_address")
+                if str(a.get(k) or "").strip()]
+
+    exact = [a for a in accounts if want in names(a)]
+    if exact:
+        return exact
+    provider = {"gmail": "gmail", "google": "gmail", "outlook": "microsoft",
+                "microsoft": "microsoft", "office": "microsoft", "imap": "imap"}.get(want)
+    if provider:
+        by_kind = [a for a in accounts if str(a.get("provider") or "").lower() == provider]
+        if by_kind:
+            return by_kind
+    if len(want) < 2:
+        return []
+    return [a for a in accounts if any(n.startswith(want) for n in names(a))]
+
+
+async def _named_mailbox(value: str) -> tuple[str, list[dict[str, Any]]]:
+    """The mailbox that a named ``account_id`` means, as ``(id, matches)``.
+
+    The model may pass the member's own words for a mailbox ("Personal",
+    "my gmail", "vj@…") in place of an id (§7.1.1 rule 4). An id of the
+    member's list wins. A name that matches one mailbox gives its id. A name
+    that matches two or more gives ``("", matches)``, and an unknown name
+    gives ``("", [])``, and the caller asks. When the list cannot be read, or
+    the value has the shape of an id and matches no mailbox, the value goes
+    on as before, and the gateway still checks it (D-EM-20).
+    """
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return value, []
+    if not accounts:
+        return value, []
+    hit = _match_mailbox(value, accounts)
+    if len(hit) == 1:
+        return str(hit[0]["id"]), []
+    if not hit and _ID_SHAPE.search(value):
+        return value, []
+    return "", hit
 
 
 async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:

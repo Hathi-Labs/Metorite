@@ -1623,7 +1623,11 @@ async def _record_email_working_set(
     try:
         from acb_skills import email_chat_context as ecc
 
-        after = ecc.update_working_set(before, calls)
+        org, member = _current_run_org(), _email_ctx_member()
+        boxes = ecc.cached_mailboxes(str(org or ""), member) if org and member else []
+        # The member's list, when the turn read one: a mailbox outside it
+        # never enters the set, and a label becomes its id (rule 4).
+        after = ecc.update_working_set(before, calls, boxes or None)
         if after != before:
             await ecc.save_working_set(after, parent_ctx)
     except Exception as exc:

@@ -97,6 +97,11 @@ order:
 4. A rule or a setting belongs to one mailbox. If the user did not say which
    one, leave `account_id` out, and the tool asks "Which mailbox?". If the user
    says all of them, call the tool one time for each mailbox, and name each one.
+   If the user names it in words ("Personal", "my gmail"), put those words in
+   `account_id`. The tool finds the mailbox, or it asks "Which mailbox?".
+5. A task can start with "Working set from this chat". It gives the ids that
+   you worked on last in this chat. When the user says "it", "send it" or "the
+   draft", use those ids. Do not ask the user for an id that it gives.
 
 Always name the mailbox as its label and address, for example
 "Work · dana@acme.example", when you report what you did.

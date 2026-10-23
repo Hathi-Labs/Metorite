@@ -78,7 +78,7 @@ _DRAFT_SENT = re.compile(r"^\s*Draft sent\b")
 #: The first words of a result that did not act. Its arguments name nothing
 #: that the run worked on.
 _NO_ACT = ("Refused", "Not sent", "Nothing changed", "Error", "Could not",
-           "Send cancelled")
+           "Send cancelled", "Which mailbox", "Send from which mailbox")
 
 #: The bound of each process cache.
 _CACHE_MAX = 4096
@@ -112,15 +112,39 @@ def clean(ws: Mapping[str, Any] | None) -> dict[str, str]:
     return out
 
 
+def _owned_account(value: Any, mailboxes: list[Mapping[str, Any]] | None) -> str:
+    """The id of the member's mailbox that *value* names, or ``""``.
+
+    With no mailbox list (``None``), a plain id passes. With a list, only an
+    id of the list passes, or a label or address of exactly one mailbox of
+    it, which gives that mailbox's id. So the set holds only mailboxes the
+    member owns, and a label such as "Personal" becomes the id it means.
+    """
+    raw = _ok_id(value) if mailboxes is None else str(value or "").strip()
+    if mailboxes is None or not raw:
+        return raw
+    ids = {str(a.get("id")) for a in mailboxes}
+    if raw in ids:
+        return _ok_id(raw)
+    want = raw.lower()
+    hit = [a for a in mailboxes
+           if want in {str(a.get(k) or "").strip().lower()
+                       for k in ("display_label", "label", "email_address")}]
+    return _ok_id(hit[0].get("id")) if len(hit) == 1 else ""
+
+
 def update_working_set(
-    ws: Mapping[str, Any] | None, calls: list[Mapping[str, Any]],
+    ws: Mapping[str, Any] | None,
+    calls: list[Mapping[str, Any]],
+    mailboxes: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, str]:
     """The working set after the sub-run's tool *calls*, in order.
 
     Each call is ``{"name", "args", "result", "success"}``, from the sub-run
     itself (never from the model's text). A failed call, or a result that
     says it did not act, changes nothing. A call in another mailbox starts a
-    new set, so a draft of Work is never "it" in Personal.
+    new set, so a draft of Work is never "it" in Personal. *mailboxes* is the
+    member's list: when given, a mailbox outside it never enters the set.
     """
     out = clean(ws)
     for call in calls:
@@ -131,7 +155,7 @@ def update_working_set(
             continue
         name = str(call.get("name") or "")
         args = _args_of(call.get("args"))
-        acct = _ok_id(args.get("account_id"))
+        acct = _owned_account(args.get("account_id"), mailboxes)
         if acct and acct != out.get("account_id"):
             out = {"account_id": acct}
         if name in _EMAIL_ID_TOOLS:
