@@ -25,7 +25,7 @@ of the email router, with the feature gate of the router in place.
 R7, the mutations. Each one turns a test here red (run 2026-10-23):
 
 * M1 return the shared arm with the flag off in ``mailbox_predicate`` ->
-  ``test_the_flag_off_gives_a_grant_no_access`` and two more.
+  ``test_the_flag_off_gives_a_grant_no_access`` and one more.
 * M2 drop ``AND {row}.shared_since IS NULL`` from the private arm ->
   ``test_the_connector_has_no_access_without_a_grant``.
 * M3 make ``levels_at_least`` return every level ->

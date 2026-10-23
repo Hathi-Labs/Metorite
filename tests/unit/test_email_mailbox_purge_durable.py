@@ -1005,6 +1005,11 @@ SELECT c.conrelid::regclass::text AS child, a.attname AS col,
 #: Each table here ALSO cascades on ``account_id``, so the disconnect still
 #: deletes its row. A new edge that does not cascade fails the fence until it
 #: joins this map with a reason.
+#: The children that take a row only on a SHARED mailbox (WS-65 SM-1,
+#: ``shared_mailbox.md`` §4.4 and §5.2). The trigger
+#: ``email_shared_mailbox_only`` refuses each other insert.
+_SHARED_ONLY = frozenset({"email_mailbox_grants", "email_thread_assignments"})
+
 _NOT_CASCADE: dict[tuple[str, str], str] = {
     ("email_executed_rules", "message_id"):
         "19_email_automation.sql: the rule history outlives a trashed mail, "
@@ -1227,8 +1232,20 @@ class TestEachChildIsEmptyAfterADisconnect:
             children = list(c.execute(text(_CHILDREN_SQL)).fetchall())
         ids = {"email_accounts": acc, "email_messages": msg}
         seeder = _Seeder(p.admin_engine, org, ids)
+        tables = sorted({r.child for r in children} - {"email_messages"})
         seeded = {table: seeder.fill(table)
-                  for table in sorted({r.child for r in children} - {"email_messages"})}
+                  for table in tables if table not in _SHARED_ONLY}
+        # WS-65 SM-1: a trigger refuses a row of these tables on a private
+        # mailbox. The seed marks the mailbox shared for their insert only,
+        # then private again, so the delete still meets one row of each.
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE email_accounts SET shared_since = now() "
+                           "WHERE id = CAST(:a AS uuid)"), {"a": acc})
+        seeded.update({table: seeder.fill(table)
+                       for table in tables if table in _SHARED_ONLY})
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE email_accounts SET shared_since = NULL "
+                           "WHERE id = CAST(:a AS uuid)"), {"a": acc})
         seeded["email_messages"] = {"id": msg}
 
         def _counts() -> dict[tuple[str, str], int]:
