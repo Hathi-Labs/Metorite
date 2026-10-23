@@ -11,6 +11,7 @@ from contextlib import contextmanager
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     _tenant_session,
     provider_session,
@@ -306,7 +307,8 @@ async def _reply_target(
     row = (await db.execute(text(
         "SELECT em.provider_message_id, em.thread_id FROM email_messages em "
         "JOIN email_accounts ea ON ea.id = em.account_id "
-        "WHERE em.account_id = CAST(:aid AS uuid) AND ea.user_id = :uid "
+        "WHERE em.account_id = CAST(:aid AS uuid) AND "
+        + mailbox_predicate("ea", uid="uid", level="send") + " "
         f"AND {match} "
         "ORDER BY (em.provider_message_id = :rid) DESC LIMIT 1"
     ), params)).fetchone()

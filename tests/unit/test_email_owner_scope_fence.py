@@ -48,9 +48,15 @@ _OUTSIDE_ROOTS = (_ROOT / "apps", _ROOT / "packages")
 #: download route and the text route call. That helper carries its own SQL
 #: owner predicate, and ``test_the_attachment_fetch_proves_ownership_itself``
 #: checks it, because this fence does not read the helpers that it trusts.
+#: WS-65 SM-2 adds the builders of ``routes/email/mailbox_access.py``, the one
+#: mailbox access seam. Each returns the owner predicate (with the flag off,
+#: the text ``user_id = :uid``), and ``test_email_owner_predicate_seam.py``
+#: and ``test_email_shared_mailbox_r8.py`` check it.
 OWNER_HELPERS = frozenset({
     "_account_scope", "_assert_account_owner", "provider_session",
     "_fetch_owned_attachment",
+    "mailbox_predicate", "mailbox_ids_sql", "private_predicate",
+    "assert_mailbox_access", "may_access", "_owned_accounts_sql",
 })
 #: A SQL owner predicate on ``user_id``: ``user_id = :uid``, ``ea.user_id =
 #: :user_id``, ``LOWER(user_id) = LOWER(:uid)``.
@@ -402,8 +408,11 @@ class TestEveryEmailHandlerProvesOwnership:
         [helper] = [fn for fn in ast.walk(tree)
                     if isinstance(fn, ast.AsyncFunctionDef)
                     and fn.name == "_fetch_owned_attachment"]
-        assert any(_OWNER_PREDICATE.search(s) for s in _strings(helper)), (
-            "_fetch_owned_attachment lost its user_id predicate, and two "
+        # Since WS-65 SM-2 the predicate comes from the one seam, so the
+        # body calls ``mailbox_predicate`` and holds no ``user_id`` literal.
+        assert (any(_OWNER_PREDICATE.search(s) for s in _strings(helper))
+                or "mailbox_predicate" in _called_names(helper)), (
+            "_fetch_owned_attachment lost its owner predicate, and two "
             "routes trust it as an owner proof"
         )
         routes = {name: proof for name, proof in handlers_of(

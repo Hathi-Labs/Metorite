@@ -39,6 +39,7 @@ from acb_skills.attachment_tools import parse_bounded
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from gateway.db import TenantUnbound
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     _tenant_session,
@@ -227,7 +228,8 @@ async def _fetch_owned_attachment(
                FROM email_attachments ea
                JOIN email_messages em ON ea.message_id = em.id
                JOIN email_accounts p ON em.account_id = p.id
-               WHERE ea.id = :aid AND p.user_id = :user_id"""
+               WHERE ea.id = :aid AND """
+            + mailbox_predicate("p", uid="user_id", level="read")
         ),
         {"aid": aid, "user_id": user.email or "anonymous"},
     )

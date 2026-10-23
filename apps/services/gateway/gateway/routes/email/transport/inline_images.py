@@ -51,6 +51,7 @@ from acb_common.tenant_redis import (
 from email_ingestion.providers.base import normalize_content_id
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import Response
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     _decrypt_credentials,
@@ -322,7 +323,8 @@ async def _read_pictures(
                 """SELECT ea.provider, ea.credentials_encrypted
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
-                   WHERE em.id = :mid AND ea.user_id = :user_id"""
+                   WHERE em.id = :mid AND """
+                + mailbox_predicate("ea", uid="user_id", level="read")
             ),
             {"mid": row_id, "user_id": user.email or "anonymous"},
         )).fetchone()
@@ -422,7 +424,8 @@ async def get_inline_image(
                                       ea.provider
                                FROM email_messages em
                                JOIN email_accounts ea ON em.account_id = ea.id
-                               WHERE em.id = :mid AND ea.user_id = :user_id"""
+                               WHERE em.id = :mid AND """
+                            + mailbox_predicate("ea", uid="user_id", level="read")
                         ),
                         {"mid": mid, "user_id": user.email or "anonymous"},
                     )).fetchone()

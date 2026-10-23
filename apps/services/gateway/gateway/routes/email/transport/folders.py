@@ -9,6 +9,7 @@ from email_ingestion import import_window
 from email_ingestion import storage as ingest_storage
 from fastapi import Depends, HTTPException
 from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     _tenant_session,
     _instantiate_provider,
@@ -69,7 +70,8 @@ async def list_folders(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="read")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
@@ -152,7 +154,8 @@ async def create_folder(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="send")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )).fetchone()
@@ -228,7 +231,8 @@ async def list_labels(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="read")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
@@ -292,7 +296,8 @@ async def set_label_color(
                 text(
                     """SELECT provider, credentials_encrypted
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="send")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )
@@ -359,7 +364,8 @@ async def backfill_folder(
                 text(
                     """SELECT provider, credentials_encrypted, stored_bytes
                        FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id"""
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="read")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )

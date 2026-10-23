@@ -71,6 +71,7 @@ from typing import Any
 import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     _log,
     _tenant_session,
@@ -256,7 +257,8 @@ async def forward_email(
                       ea.provider
                  FROM email_messages em
                  JOIN email_accounts ea ON ea.id = em.account_id
-                WHERE em.id = CAST(:mid AS uuid) AND ea.user_id = :uid"""
+                WHERE em.id = CAST(:mid AS uuid) AND """
+            + mailbox_predicate("ea", uid="uid", level="send")
         ), {"mid": mid, "uid": owner})).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Email not found")

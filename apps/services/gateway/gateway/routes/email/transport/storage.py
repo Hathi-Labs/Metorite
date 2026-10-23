@@ -44,6 +44,7 @@ from datetime import UTC, datetime
 from acb_auth import UserContext, get_current_user
 from email_ingestion import storage as ingest_storage
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -187,7 +188,8 @@ async def remove_older_mail(
         found = (await db.execute(
             text(
                 """SELECT organization_id FROM email_accounts
-                   WHERE id = :id AND user_id = :uid"""
+                   WHERE id = :id AND """
+                + mailbox_predicate(uid="uid", level="manage")
             ),
             {"id": account_id, "uid": owner},
         )).fetchone()

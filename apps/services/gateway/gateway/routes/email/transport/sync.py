@@ -16,6 +16,7 @@ from acb_common import get_settings
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from gateway.db import bind_tenant, current_tenant, release_tenant
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _instantiate_provider,
@@ -232,7 +233,8 @@ async def trigger_sync(
     """
     async with _tenant_session() as db:
         own = (await db.execute(text(
-            "SELECT id FROM email_accounts WHERE id = :id AND user_id = :uid"
+            "SELECT id FROM email_accounts WHERE id = :id AND "
+            + mailbox_predicate(uid="uid", level="read")
         ), {"id": req.account_id, "uid": user.email or "anonymous"})).fetchone()
         if not own:
             raise HTTPException(status_code=404, detail="Account not found")
@@ -305,7 +307,8 @@ async def resync_account(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
         own = (await db.execute(text(
-            "SELECT id FROM email_accounts WHERE id = :id AND user_id = :uid"
+            "SELECT id FROM email_accounts WHERE id = :id AND "
+            + mailbox_predicate(uid="uid", level="manage")
         ), {"id": account_id, "uid": user.email or "anonymous"})).fetchone()
         if not own:
             raise HTTPException(status_code=404, detail="Account not found")
