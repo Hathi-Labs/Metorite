@@ -96,6 +96,7 @@ const TONE: Record<CallbackView["kind"], { icon: string; className: string }> = 
   scope_missing: { icon: "ShieldAlert", className: "bg-warning/10 text-warning" },
   workspace_admin_blocked: { icon: "ShieldCheck", className: "bg-warning/10 text-warning" },
   provider_unavailable: { icon: "Clock", className: "bg-muted text-muted-foreground" },
+  mailbox_limit: { icon: "Inbox", className: "bg-warning/10 text-warning" },
   unknown: { icon: "AlertCircle", className: "bg-destructive/10 text-destructive" },
 };
 

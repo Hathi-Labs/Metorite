@@ -128,6 +128,10 @@ def _migration() -> Path:
 # ── hermetic ─────────────────────────────────────────────────────────────────
 
 
+async def _login_ok() -> None:
+    """The login test of a new IMAP mailbox, faked: the host is not real."""
+
+
 class TestTheMigrationText:
 
     def test_it_is_expand_only(self):
@@ -371,6 +375,7 @@ class TestTheApi:
             restarts.append(("remove", account_id))
 
         monkeypatch.setattr(sched, "refresh_account_sync", _refresh)
+        monkeypatch.setattr(accounts, "_verify_imap_login", lambda *_a, **_k: _login_ok())
         monkeypatch.setattr(sched, "remove_account_sync", _remove)
         monkeypatch.setattr(key_store_mod, "get_key_store", lambda: SimpleNamespace(
             encrypt=lambda raw: "blob-" + json.loads(raw)["imap_host"]))

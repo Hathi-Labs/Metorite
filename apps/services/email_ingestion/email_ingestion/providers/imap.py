@@ -27,11 +27,17 @@ import imaplib
 import logging
 import re
 import smtplib
+import socket
+import ssl
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
+
+from acb_common.public_address import PublicAddressRefused, pinned_public_address
 
 from .base import (
     Attachment,
@@ -45,6 +51,175 @@ from .base import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+#: The wait of one IMAP socket step, in seconds. A stored ``imap_timeout`` is
+#: member-controlled data, so :func:`_clamp_timeout` keeps it in this range.
+_TIMEOUT_MIN_S = 5.0
+_TIMEOUT_MAX_S = 60.0
+_TIMEOUT_DEFAULT_S = 30.0
+
+#: The login test of a new mailbox runs on THIS small pool and never on the
+#: shared default executor, so a host that never answers cannot starve the
+#: gateway. Four workers bound the harm, and the route refuses more at once.
+LOGIN_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="imap-login")
+
+
+def _clamp_timeout(raw: Any) -> float:
+    """The IMAP step timeout: a number in 5..60 s, else 30. Booleans, text,
+    NaN and infinity are ignored."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return _TIMEOUT_DEFAULT_S
+    if raw != raw or raw in (float("inf"), float("-inf")):
+        return _TIMEOUT_DEFAULT_S
+    return max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, float(raw)))
+
+
+class _Deadline:
+    """A wall-clock limit for the whole connect and login.
+
+    The socket timeout is per read, so a server that sends one byte every few
+    seconds would hold a worker for ever. This timer shuts the socket down at
+    the deadline, and the blocked read or handshake then fails at once.
+
+    ⚠️ ``SSLContext.wrap_socket`` DETACHES the plain socket (its fileno
+    becomes -1), so a shutdown of the old object fails with EBADF. After a
+    wrap the caller must call :meth:`repoint` with the SSL socket that
+    ``wrap_socket`` returned. :func:`_wrap_tls` does both steps."""
+
+    def __init__(self, seconds: float | None) -> None:
+        self._seconds = seconds
+        self._timer: threading.Timer | None = None
+        self._sock: socket.socket | None = None
+        self.expired = False
+
+    def remaining(self, step: float) -> float:
+        return step if self._seconds is None else max(0.1, min(step, self._seconds))
+
+    def arm(self, sock: socket.socket) -> None:
+        self._sock = sock
+        if self._seconds is None or self._timer is not None:
+            return
+        self._timer = threading.Timer(self._seconds, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def repoint(self, sock: socket.socket) -> None:
+        """Aim the timer at a new socket, for example the one after TLS."""
+        self._sock = sock
+        if self.expired:  # the timer fired between the wrap and this call
+            self._kill(sock)
+
+    def _kill(self, sock: socket.socket) -> None:
+        for act in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
+            try:
+                act()
+            except OSError as exc:  # EBADF here means a detached socket
+                _log.debug("imap.deadline.close_failed errno=%s", exc.errno)
+
+    def _expire(self) -> None:
+        self.expired = True
+        sock = self._sock
+        if sock is not None:
+            self._kill(sock)
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+
+
+def _pinned_socket(ip: str, port: int, timeout: float, deadline: _Deadline) -> socket.socket:
+    """Connect to the CHECKED address (``ip``), never to the name again."""
+    sock = socket.create_connection((ip, port), deadline.remaining(timeout))
+    deadline.arm(sock)
+    return sock
+
+
+def _wrap_tls(
+    sock: socket.socket, context: ssl.SSLContext, hostname: str, deadline: _Deadline,
+) -> ssl.SSLSocket:
+    """TLS over a pinned socket, with the certificate checked against the NAME.
+
+    The handshake is a separate step, so the deadline can aim at the SSL
+    socket before it blocks (``wrap_socket`` has detached the plain one)."""
+    tls = context.wrap_socket(
+        sock, server_hostname=hostname, do_handshake_on_connect=False)
+    deadline.repoint(tls)
+    tls.do_handshake()
+    return tls
+
+
+class _PinnedIMAP4(imaplib.IMAP4):
+    """Plain IMAP to a pinned address."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, timeout)
+
+    def _create_socket(self, timeout):  # type: ignore[override]
+        return _pinned_socket(self._ip, self.port, timeout, self._deadline)
+
+
+class _PinnedIMAP4_SSL(imaplib.IMAP4_SSL):  # noqa: N801 - mirrors imaplib
+    """IMAP over TLS to a pinned address. TLS checks the certificate against
+    the HOST NAME (``server_hostname``), and the socket goes to the address."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, ssl_context=ssl.create_default_context(),
+                         timeout=timeout)
+
+    def _create_socket(self, timeout):  # type: ignore[override]
+        sock = _pinned_socket(self._ip, self.port, timeout, self._deadline)
+        return _wrap_tls(sock, self.ssl_context, self.host, self._deadline)
+
+
+class _PinnedSMTP(smtplib.SMTP):
+    """SMTP to a pinned address. STARTTLS verifies the certificate against the
+    HOST NAME, and the same deadline covers the handshake."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, timeout=timeout)
+
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        return _pinned_socket(self._ip, port, timeout, self._deadline)
+
+    def starttls(self, *, context=None):  # type: ignore[override]
+        self.ehlo_or_helo_if_needed()
+        if not self.has_extn("starttls"):
+            raise smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+        resp, reply = self.docmd("STARTTLS")
+        if resp != 220:
+            raise smtplib.SMTPResponseException(resp, reply)
+        self.sock = _wrap_tls(
+            self.sock, context or ssl.create_default_context(), self._host, self._deadline)
+        self.file = None
+        self.helo_resp = None
+        self.ehlo_resp = None
+        self.esmtp_features = {}
+        self.does_esmtp = False
+        return resp, reply
+
+
+class _PinnedSMTP_SSL(smtplib.SMTP_SSL):  # noqa: N801 - mirrors smtplib
+    """SMTP over TLS to a pinned address, verified against the host name."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        sock = _pinned_socket(self._ip, port, timeout, self._deadline)
+        return _wrap_tls(sock, self.context, self._host, self._deadline)
+
+
+#: The most seconds one send may hold its worker, from connect to quit.
+SMTP_TOTAL_S = 60.0
 
 
 class IMAPProvider(BaseEmailProvider):
@@ -66,29 +241,74 @@ class IMAPProvider(BaseEmailProvider):
         self._imap = await self._connect_imap()
         return self._imap
 
-    async def _connect_imap(self) -> imaplib.IMAP4:
+    async def _connect_imap(
+        self, *, executor: ThreadPoolExecutor | None = None,
+        total_s: float | None = None,
+    ) -> imaplib.IMAP4:
         host = self.credentials.get("imap_host", "")
         port = int(self.credentials.get("imap_port", 993))
         username = self.credentials.get("imap_username", "")
         password = self.credentials.get("imap_password", "")
         use_ssl = self.credentials.get("imap_use_ssl", True)
+        timeout = _clamp_timeout(self.credentials.get("imap_timeout"))
 
         if not host or not username or not password:
             raise ValueError(
                 "Missing IMAP creds: imap_host, imap_username, imap_password"
             )
+        host = str(host)
 
         def _connect() -> imaplib.IMAP4:
-            if use_ssl:
-                conn = imaplib.IMAP4_SSL(host, port, timeout=30)
-            else:
-                conn = imaplib.IMAP4(host, port, timeout=30)
-            conn.login(username, password)
+            # SSRF: resolve ONCE, refuse a private address, and connect to the
+            # checked address (DNS rebinding cannot swap it).
+            try:
+                ip = pinned_public_address(host, port)
+            except PublicAddressRefused as exc:
+                raise OSError(f"{host} {exc.reason}") from None
+            deadline = _Deadline(total_s)
+            try:
+                if use_ssl:
+                    conn: imaplib.IMAP4 = _PinnedIMAP4_SSL(
+                        host, port, ip=ip, timeout=timeout, deadline=deadline)
+                else:
+                    conn = _PinnedIMAP4(
+                        host, port, ip=ip, timeout=timeout, deadline=deadline)
+                conn.login(username, password)
+            except Exception:
+                if deadline.expired:
+                    raise OSError(f"{host} did not answer in time") from None
+                raise
+            finally:
+                deadline.cancel()
             return conn
 
-        return await asyncio.to_thread(_connect)
+        return await asyncio.get_running_loop().run_in_executor(executor, _connect)
 
     # -- Provider interface --------------------------------------------------
+
+    async def verify_login(self, timeout: float = 10.0) -> None:
+        """Log in once and log out, and say why it failed.
+
+        ``authenticate`` answers a bare bool. This raises, so the caller can
+        tell a refused sign-in (``imaplib.IMAP4.error``) from a server that
+        it cannot reach (``OSError``: a timeout, a refused connection, a name
+        that does not resolve, a private address, a TLS failure). The error
+        never carries the password: the caller must not echo it.
+
+        ``timeout`` is a WALL-CLOCK limit for the connect, the TLS handshake
+        and the login together, and not only the wait of one read. The work
+        runs on :data:`LOGIN_POOL`, so it cannot starve the shared executor.
+        """
+        saved = self.credentials
+        self.credentials = {**saved, "imap_timeout": timeout}
+        try:
+            conn = await self._connect_imap(executor=LOGIN_POOL, total_s=timeout)
+        finally:
+            self.credentials = saved
+        try:
+            conn.logout()
+        except Exception:  # noqa: BLE001 - the login worked, so the check passed
+            pass
 
     async def authenticate(self) -> bool:
         try:
@@ -362,15 +582,28 @@ class IMAPProvider(BaseEmailProvider):
             msg["References"] = ref
 
         def _send() -> str:
-            if use_starttls and smtp_port == 587:
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
-                server.starttls()
-            else:
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
-
-            server.login(smtp_username, smtp_password)
-            server.send_message(msg)
-            server.quit()
+            # SSRF: a saved public host can later resolve to a private address.
+            # Resolve ONCE, refuse that, and connect to the checked address.
+            try:
+                ip = pinned_public_address(smtp_host, smtp_port)
+            except PublicAddressRefused as exc:
+                raise OSError(
+                    f"Metorite will not send through {smtp_host}: {exc.reason}."
+                ) from None
+            deadline = _Deadline(SMTP_TOTAL_S)
+            try:
+                if use_starttls and smtp_port == 587:
+                    server: smtplib.SMTP = _PinnedSMTP(
+                        smtp_host, smtp_port, ip=ip, timeout=30, deadline=deadline)
+                    server.starttls()
+                else:
+                    server = _PinnedSMTP_SSL(
+                        smtp_host, smtp_port, ip=ip, timeout=30, deadline=deadline)
+                server.login(smtp_username, smtp_password)
+                server.send_message(msg)
+                server.quit()
+            finally:
+                deadline.cancel()
             ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
             return f"smtp-{ts}-{hash(subject) & 0xFFFF:04x}"
 

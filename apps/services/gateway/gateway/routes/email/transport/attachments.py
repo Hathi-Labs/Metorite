@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import io
-import ipaddress
 import json
 import os
 import re
-import socket
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -24,6 +22,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
+from acb_common.public_address import host_is_public
 from acb_common.tenant_redis import (
     BINARY_POOL_MAX_CONNECTIONS,
     get_tenant_redis,
@@ -78,26 +77,10 @@ def _binary_redis_gate() -> asyncio.Semaphore:
 def _resolve_is_public(host: str) -> bool:
     """True only if every A/AAAA record for host is a public, routable IP.
 
-    Blocks SSRF to loopback/private/link-local/metadata endpoints.
+    Blocks SSRF to loopback/private/link-local/metadata endpoints. The rules
+    live in ``acb_common.public_address``, the one shared test.
     """
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        ):
-            return False
-    return True
+    return host_is_public(host)
 
 
 @router.get("/image-proxy")
