@@ -305,6 +305,7 @@ async def test_a_held_run_saves_a_reply_draft(gw, held) -> None:
     assert gw.cards == []
     assert gw.posts == [("/email/draft-reply",
                          {"account_id": BOX, "message_id": "m-1", "create_draft": True})]
+    # A held run never asks the server for Reply all (review of §22.6, P2).
 
 
 async def test_a_held_run_saves_a_label_rule(gw, held) -> None:

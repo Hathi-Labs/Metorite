@@ -563,6 +563,72 @@ class ContactSuggestion(BaseModel):
     #: the caller wrote to, and ``seen`` is only a contact or a sender. The
     #: chat assistant asks the member before it uses a ``seen`` address.
     source: str = "seen"
+    #: ``exact`` is a substring hit. ``closest`` came from the trigram
+    #: fallback ("Venna" for "Veena"), so the chat assistant confirms it.
+    match: str = "exact"
+
+
+#: The trigram fallback runs when the substring search finds fewer people.
+FUZZY_BELOW = 3
+#: ``similarity()`` floor for the fallback. "venna" against "veena" scores 0.33.
+FUZZY_THRESHOLD = 0.3
+FUZZY_LIMIT = 5
+
+#: Closest members and People rows of the caller's own organization.
+_FUZZY_SQL = """
+    WITH org AS (
+        SELECT LOWER(au.email) AS email, NULLIF(TRIM(au.display_name), '') AS name
+          FROM app_user au
+         WHERE COALESCE(au.status, 'active') = 'active'
+           AND au.organization_id = CAST(NULLIF(
+                 current_setting('app.tenant_id', true), '') AS uuid)
+        UNION ALL
+        SELECT LOWER(pp.email), NULLIF(TRIM(pp.name), '')
+          FROM people pp
+         WHERE pp.email IS NOT NULL
+           AND COALESCE(pp.status, 'active') = 'active'
+           AND NOT EXISTS (
+               SELECT 1 FROM app_user ux
+                WHERE LOWER(ux.email) = LOWER(pp.email)
+                  AND ux.status IN ('suspended', 'removed'))
+           AND pp.organization_id = CAST(NULLIF(
+                 current_setting('app.tenant_id', true), '') AS uuid)
+    ), scored AS (
+        SELECT o.email, o.name,
+               GREATEST(
+                 similarity(LOWER(COALESCE(o.name, '')), :needle),
+                 similarity(SPLIT_PART(LOWER(COALESCE(o.name, '')), ' ', 1), :needle),
+                 similarity(SPLIT_PART(o.email, '@', 1), :needle)) AS sim
+          FROM org o
+         WHERE o.email IS NOT NULL AND POSITION('@' IN o.email) > 1
+           AND (:dom = '' OR SPLIT_PART(o.email, '@', 2) ~ :dom)
+           AND o.email <> LOWER(:uid)
+           AND o.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
+                                WHERE user_id = :uid)
+    )
+    SELECT email, COALESCE(MAX(name), '') AS name, MAX(sim) AS sim
+      FROM scored WHERE sim >= :thr
+     GROUP BY email ORDER BY MAX(sim) DESC, email LIMIT :lim
+"""
+
+
+async def _fuzzy_org_contacts(db: Any, params: dict[str, Any],
+                              have: set[str]) -> list[ContactSuggestion]:
+    """Trigram fallback over members and People. Best-effort: a missing
+    ``pg_trgm`` (migration 170 creates it) logs and answers [], so the
+    typeahead keeps its old behaviour and never errors."""
+    try:
+        async with db.begin_nested():
+            rows = (await db.execute(text(_FUZZY_SQL), {
+                "needle": params["needle"], "dom": params["dom"],
+                "uid": params["uid"], "thr": FUZZY_THRESHOLD,
+                "lim": FUZZY_LIMIT})).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.contact_fuzzy_failed", error=str(exc)[:160])
+        return []
+    return [ContactSuggestion(email=r.email, name=r.name or "", source="org",
+                              match="closest")
+            for r in rows if r.email not in have]
 
 
 #: A domain filter: letters, digits, dots and hyphens only, so the value can
@@ -681,6 +747,7 @@ async def suggest_contacts(
                 "pre": f"{needle}%",
                 "lim": limit,
                 "dom": dom_re,
+                "needle": needle,
             }
             rows = (await db.execute(text(
                 """
@@ -758,9 +825,13 @@ async def suggest_contacts(
                  LIMIT :lim
                 """
             ), params)).fetchall()
-            return [ContactSuggestion(email=r.email, name=r.name or "",
-                                      source=_source(r))
-                    for r in rows]
+            out = [ContactSuggestion(email=r.email, name=r.name or "",
+                                     source=_source(r))
+                   for r in rows]
+            if len(out) < min(FUZZY_BELOW, limit) and len(needle) >= 3:
+                out += await _fuzzy_org_contacts(
+                    db, params, {s.email for s in out})
+            return out[:limit]
     except Exception as exc:  # noqa: BLE001 — typeahead is best-effort
         _log.warning("email.contact_suggest_failed", error=str(exc)[:160])
         return []

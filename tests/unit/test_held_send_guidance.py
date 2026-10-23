@@ -215,3 +215,13 @@ def test_the_draft_tools_give_an_in_chat_step() -> None:
     offers = [x for d in docs for x in _sentences(d)
               if "Email app" in x and not _FORBIDS.search(x)]
     assert offers == []
+
+
+def test_the_too_long_answer_names_a_chat_step_and_not_the_email_app() -> None:
+    """Owner, 2026-10-23: the owner rejects "do it in the Email app"."""
+    flat = [" ".join(t.split()) for t in _strings(EMAIL_AGENT)]
+    hits = [t for t in flat if "too long to show on the card. I can" in t]
+    assert hits
+    for text in hits:
+        assert "Email app" not in text
+        assert "edit_draft" in text

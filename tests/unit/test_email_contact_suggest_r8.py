@@ -194,3 +194,66 @@ async def test_the_domain_keeps_only_its_addresses(
         assert got == {w.kiran_client: "sent"}
     finally:
         w.purge()
+
+
+class _FuzzyWorld(_World):
+    """Veena is a member. A rival org has its own Veena."""
+
+    def seed(self) -> None:
+        super().seed()
+        p = self.p
+        self.veena = f"veena-{self.tag}@fracktal-{self.tag}.test"
+        self.veena_rival = f"veena-{self.tag}@rival-{self.tag}.test"
+        self.emails += [self.veena, self.veena_rival]
+        with p.admin_engine.begin() as c:
+            for email, org in ((self.veena, p.org_b), (self.veena_rival, p.org_a)):
+                c.execute(text(
+                    "INSERT INTO app_user (email, display_name, role, status, "
+                    "organization_id) VALUES (:e, 'Veena', 'employee', 'active', "
+                    "CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
+                    {"e": email, "o": org})
+
+
+async def _suggest_full(w: _World, q: str):
+    p = w.p
+    me = UserContext(email=w.owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+    app_dsn = p.app_url.render_as_string(hide_password=False)
+    token = bind_tenant(p.org_b)
+    try:
+        async with tenant_engine_scope(app_dsn):
+            return await C.suggest_contacts(
+                q=q, account_id=None, limit=20, domain=None, user=me)
+    finally:
+        release_tenant(token)
+
+
+async def test_a_misspelt_name_finds_the_closest_member(
+    promoted, app_engine,  # noqa: F811
+) -> None:
+    """email-suggest-fuzzy: "Venna" finds "Veena" of the bound organization,
+    marked ``closest``. The rival organization's Veena never comes back."""
+    _assert_non_priv(app_engine)
+    w = _FuzzyWorld(promoted)
+    try:
+        w.seed()
+        got = {s.email: s for s in await _suggest_full(w, "Venna")}
+        assert w.veena in got
+        assert got[w.veena].match == "closest" and got[w.veena].source == "org"
+        assert w.veena_rival not in got
+        # An exact hit stays exact and is not marked closest.
+        exact = {s.email: s for s in await _suggest_full(w, "Veena")}
+        assert exact[w.veena].match == "exact"
+    finally:
+        w.purge()
+
+
+async def test_a_name_that_matches_nobody_returns_nothing(
+    promoted, app_engine,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    w = _FuzzyWorld(promoted)
+    try:
+        w.seed()
+        assert await _suggest_full(w, "Zqxjw") == []
+    finally:
+        w.purge()

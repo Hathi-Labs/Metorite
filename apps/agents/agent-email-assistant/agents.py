@@ -1963,7 +1963,10 @@ async def draft_reply(
     writes from the email alone. To save or send a text that you and the
     member already agreed, use ``compose_reply`` with ``draft``: this tool
     writes a new text. The draft is always made in the mailbox that received
-    the email, whatever ``account_id`` says."""
+    the email, whatever ``account_id`` says.
+
+    The draft goes to everyone when others are on the mail (Reply all), and
+    to the sender alone when nobody else is. Say which one in the answer."""
     try:
         # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -1977,6 +1980,9 @@ async def draft_reply(
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save,
+         # A held chat keeps Reply: Reply all could put a stranger of an
+         # outside mail on the draft with no card (review of §22.6, P2).
+         **({} if _egress_held() else {"auto_reply_all": True}),
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
@@ -1990,6 +1996,15 @@ async def draft_reply(
     sender = await _mailbox_name(account_id) or str(account_id)
     # The files go in the first line too, because the card edits the rest.
     # The member then knows which file the draft used, and which it did not.
+    ref = _draft_line(res.get("draft_id"), res.get("subject"))
+    if ref:
+        note += f" ({ref})"
+    if res.get("to"):
+        who = f"to {_addr_text(res.get('to'))}"
+        if res.get("cc"):
+            note += f" (Reply all: {who}, Cc {_addr_text(res.get('cc'))})"
+        else:
+            note += f" (Reply: {who})"
     read = [str(n) for n in res.get("files_read") or [] if n]
     if read:
         note += f" (used the files: {', '.join(read)})"
@@ -2063,6 +2078,20 @@ def _addr_text(addrs: Any) -> str:
     return ", ".join(str(a) for a in (addrs or []) if a)
 
 
+def _draft_line(draft_id: Any, subject: Any) -> str:
+    """The stable last line of every result that makes or changes a draft
+    (§22 gap 2). ``call_agent`` keeps no chat history, so the next turn finds
+    the draft by this id and subject. Empty when the id is unknown."""
+    did = str(draft_id or "").strip()
+    if not did:
+        return ""
+    import textwrap
+
+    subj = textwrap.shorten(" ".join(str(subject or "").split()), 120,
+                            placeholder="...") or "(no subject)"
+    return f"Draft: draft_id={did} | subject: {subj}"
+
+
 def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     """The card's reply form, from the gateway's ``/email/reply-card``."""
     rec = prep.get("recipients") or {}
@@ -2133,7 +2162,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
-    email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
+    email_id: str, account_id: str, reply_all: bool | None = None, draft: str = "",
     instruction: str = "",
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
@@ -2149,8 +2178,12 @@ async def compose_reply(
     member's Discard trashes the card's draft, unless the member edited it
     there.
 
-    Set ``reply_all=true`` when the member asked to answer everyone on the
-    email. The member can change it on the card. The reply always goes from
+    Leave ``reply_all`` out and the server chooses: Reply all when anyone
+    besides the sender and the member is on the mail, else Reply. Most mail
+    with other people on it needs Reply all. Pass ``reply_all=false`` only
+    when the text is for the sender alone, or when the member says "just to
+    him". Pass ``true`` when the member asks for everyone. Say which choice
+    the card opened on. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
     choose no recipient: the server derives the recipients.
 
@@ -2181,11 +2214,17 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
-    if reply_all:
+    if reply_all is None and _egress_held():
+        # A held chat does not let the server choose Reply all. The card may
+        # open on Reply (§21), and the draft in Drafts must name the same
+        # people as the card (review of §22.6, P2).
+        reply_all = False
+    if reply_all is not None:
         # The draft in Drafts takes the recipients that the card opens with.
-        steer["reply_all"] = True
+        # Left out, the server chooses (§22.6).
+        steer["reply_all"] = bool(reply_all)
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
-    form = _reply_form(prep, reply_all)
+    form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if _held_card_mode():
         _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
@@ -2200,7 +2239,8 @@ async def compose_reply(
         # with edit_draft (owner, 2026-10-22).
         did = form["draft_id"]
         ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
-        return _CARD_REVISED + ref + kept
+        line = _draft_line(did, form["subject"])
+        return _CARD_REVISED + ref + kept + (f"\n{line}" if line else "")
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
@@ -2224,7 +2264,9 @@ async def compose_reply(
     did = str(res.get("draft_id") or "")
     # The id lets the agent schedule the draft (``schedule_send``, H-375).
     ref = f" (draft_id {did})" if did else ""
-    return f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
+    line = _draft_line(did, res.get("subject") or form["subject"])
+    return (f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
+            + (f"\n{line}" if line else ""))
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -5601,8 +5643,8 @@ _SUBJECT_MAX = 200
 #: The answer for a draft whose text does not fit on a send card (§21 fix
 #: round 3). The Email app is one choice here, never the only way.
 _DRAFT_TOO_LONG_ANSWER = (
-    "This draft is too long to show on the card. I can shorten it with edit_draft, "
-    "or you can send it from the Email app.")
+    "This draft is too long to show on the card. I can shorten it with edit_draft "
+    "and show it again. Tell me what to cut, or ask me to write it shorter.")
 #: The answers for a draft that a card cannot show whole, by the gateway's
 #: words (``drafting.check_draft_send``).
 _SUBJECT_TOO_LONG_ANSWER = (
@@ -5818,6 +5860,13 @@ def _recipient_changes(
     return lines
 
 
+#: The answer when ``edit_draft(body=...)`` would drop a quoted thread.
+_QUOTED_THREAD_REFUSAL = (
+    "Nothing changed. This draft holds a quoted thread, and a new body here "
+    "would drop it. Call compose_reply on the same email, with the change as "
+    "its instruction. It writes the reply again and keeps the thread.")
+
+
 @_annotate_risk(open_world=False, destructive=False)
 async def edit_draft(
     account_id: str,
@@ -5855,6 +5904,17 @@ async def edit_draft(
             return ("Nothing changed. This chat read email from outside senders, so "
                     "it cannot write a new email. Tell the member in one sentence.")
         return await _new_draft(account_id, body, subject, to, cc, bcc, rewrite)
+    if body is not None and not rewrite:
+        # §22 gap 3: PUT /email/drafts replaces the whole body, so a new
+        # ``body`` for a reply would drop its quoted thread. The gateway's
+        # keep_body keeps the stored text and takes no new one, so refuse.
+        try:
+            row = await _get(f"/email/messages/{draft_id}",
+                             params={"trim": "true", "mark_read": "false"}) or {}
+        except GatewayError:
+            row = {}
+        if row.get("body_trimmed"):
+            return _QUOTED_THREAD_REFUSAL
     if rewrite:
         if body is None:
             # The new text only, as read_email gives it: the drafter must not
@@ -5916,6 +5976,8 @@ async def edit_draft(
     else:
         if rewrite:
             context += "\n\nThe text below replaces the whole text of the draft."
+        else:
+            context += "\n\nThis draft holds no quoted thread, so nothing is dropped."
         context = _with_draft_text(context, text)
     # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
     # and the card says so first. The send would not go anyway: the schedule
@@ -5945,7 +6007,9 @@ async def edit_draft(
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
     cancelled = await _cancel_schedules(pending)
-    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+    line = _draft_line(draft_id, new_subject)
+    return (f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+            + (f"\n{line}" if line else ""))
 
 
 def _edit_save_refusal(exc: Exception) -> str:
@@ -6024,8 +6088,10 @@ async def _new_draft(
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
+    line = _draft_line(res.get("id"), subject)
     return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
-            "Nothing was sent. Send it with send_draft when the member asks.")
+            "Nothing was sent. Send it with send_draft when the member asks."
+            + (f"\n{line}" if line else ""))
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:
@@ -6200,7 +6266,13 @@ async def find_contact(
         lines.append((f"- {who} <{addr}>" if who else f"- {addr}") + f" · {src}")
     ask = ("Call ask_questions with one option for each person, with the name "
            "and the full address. Where no card can show, ask in text. Never guess.")
-    if len(found) > 1:
+    closest = [r for r in found if r.get("match") == "closest"]
+    if closest:
+        lead = (f"No exact match for {q!r}. These are the CLOSEST matches by "
+                "spelling, not exact ones. Show the member the name and the "
+                "address, and ask if this is the person they mean. Never use "
+                f"one without that confirmation. {ask}")
+    elif len(found) > 1:
         lead = f"{len(found)} people match. Ask the member which one they mean. {ask}"
     elif str(found[0].get("source") or "") not in ("org", "sent"):
         lead = ("One person matches, but the member never wrote to this address, "

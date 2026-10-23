@@ -99,7 +99,9 @@ class ReplyCardRequest(BaseModel):
     instruction: str = Field(default="", max_length=2000)
     #: The Reply all choice that the card opens with. The draft in Drafts
     #: takes the recipients of that choice. The server still derives them.
-    reply_all: bool = False
+    #: ``None`` lets the server choose (§22.6): Reply all when anyone besides
+    #: the sender and the member is on the mail, else Reply.
+    reply_all: bool | None = None
 
 
 class ReplyCardDiscardRequest(BaseModel):
@@ -195,6 +197,14 @@ def derive_reply_recipients(
     to_out = _unique([*first, *to], seen)
     cc_out = _unique(cc, seen)
     return to_out, cc_out
+
+
+def auto_reply_all(reply_to: Sequence[str], reply_cc: Sequence[str],
+                   all_to: Sequence[str], all_cc: Sequence[str]) -> bool:
+    """The default choice of a card (§22.6, owner 2026-10-23): Reply all when
+    Reply all adds anyone besides the sender and the member. Else Reply."""
+    first = {a.strip().lower() for a in [*reply_to, *reply_cc] if a}
+    return any(a.strip().lower() not in first for a in [*all_to, *all_cc] if a)
 
 
 def _mailbox_text(label: str, address: str) -> str:
@@ -359,6 +369,8 @@ async def reply_card(
     all_to, all_cc = mail.recipients(True)
     if not reply_to:
         raise HTTPException(status_code=422, detail="This mail has no one to reply to.")
+    reply_all = (req.reply_all if req.reply_all is not None
+                 else auto_reply_all(reply_to, reply_cc, all_to, all_cc))
     # The chat agreed a text with the member: the card shows that text, and
     # the drafter does not write a second, different one.
     agreed = clean_reply_body(strip_placeholder_lines(req.draft))
@@ -378,7 +390,7 @@ async def reply_card(
         strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
     draft_id, kept_draft = "", False
     if body.strip():
-        to, cc = (all_to, all_cc) if req.reply_all else (reply_to, reply_cc)
+        to, cc = (all_to, all_cc) if reply_all else (reply_to, reply_cc)
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, to, cc, _reply_subject(mail.subject), body, prior=prior)
     out: dict[str, Any] = {
@@ -400,6 +412,7 @@ async def reply_card(
             "reply": {"to": reply_to, "cc": reply_cc},
             "reply_all": {"to": all_to, "cc": all_cc},
         },
+        "reply_all": reply_all,
         "body": body,
         "skipped": (drafted or {}).get("skipped"),
         "draft_id": draft_id,
