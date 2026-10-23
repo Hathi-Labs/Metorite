@@ -7,6 +7,7 @@ EM-T3d), which returns integers only.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import imaplib
 import json
 import re
@@ -416,38 +417,121 @@ async def org_connection_counts(
     )
 
 
-#: The wait, in seconds, for the login test of a new IMAP mailbox.
+#: The wall-clock limit, in seconds, for the whole login test of a new IMAP
+#: mailbox (connect, TLS and login together).
 _IMAP_LOGIN_TIMEOUT = 10.0
+#: Login tests that one member may start in 10 minutes. A wrong guess costs one.
+_IMAP_LOGIN_ATTEMPTS = 5
+_IMAP_LOGIN_WINDOW_S = 600
+#: Login tests in flight for the whole gateway. The pool of the provider has
+#: four workers, so more would only queue.
+_IMAP_LOGINS_IN_FLIGHT_MAX = 4
+_imap_logins_in_flight = 0
 
 
-async def _verify_imap_login(credentials: dict[str, Any]) -> None:
+async def _guard_imap_login(org: str, member: str) -> Callable[[], Awaitable[None]]:
+    """Admit ONE login test for this member, or answer 429. Returns the release.
+
+    Two limits through the tenant-prefixed Redis client (R5): one test in
+    flight for each member, and five attempts for each member in 10 minutes.
+    A Redis fault refuses the test (fail closed): the test makes a network
+    call for a member, so no limit means no call.
+    """
+    import hashlib
+
+    from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+    who = hashlib.sha256(member.lower().encode("utf-8")).hexdigest()[:24]
+    try:
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            busy_key = key("imap-login-busy", who)
+            count_key = key("imap-login-attempts", who)
+            if not await redis.set(busy_key, "1", nx=True, ex=int(_IMAP_LOGIN_TIMEOUT) * 3):
+                raise HTTPException(
+                    status_code=429,
+                    detail="A login test for your mailbox is already running. Wait and try again.")
+            attempts = int(await redis.incr(count_key))
+            if attempts == 1:
+                await redis.expire(count_key, _IMAP_LOGIN_WINDOW_S)
+            if attempts > _IMAP_LOGIN_ATTEMPTS:
+                await redis.delete(busy_key)
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many tries to connect a mailbox. Wait 10 minutes and try again.")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail closed, say nothing of the fault
+        _log.warning("email.imap_login_guard_unavailable", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Metorite cannot test a mailbox login now. Try again soon.") from None
+
+    async def _release() -> None:
+        try:
+            with organization_scope(org):
+                await get_tenant_redis().delete(busy_key)
+        except Exception:  # noqa: BLE001 - the key expires by itself
+            pass
+
+    return _release
+
+
+async def _verify_imap_login(
+    credentials: dict[str, Any], *, org: str, member: str,
+) -> None:
     """Log in to the IMAP server with the credentials before anything is saved.
 
-    A refused user name or password answers 422. A server that Metorite cannot
-    reach answers 502. The messages are fixed text: they never carry the
-    password, the server's own words or the credentials, and the log line
-    holds the host, the port and the error class only.
+    Order: the per-member guard (429), then the address check on the IMAP and
+    SMTP hosts (a private address answers 422), then the login. A refused user
+    name or password answers 422. A server that Metorite cannot reach answers
+    502. The messages are fixed text: they never carry the password, the
+    server's own words or the credentials, and the log line holds the host,
+    the port and the error class only.
     """
-    from email_ingestion.providers.imap import IMAPProvider
+    global _imap_logins_in_flight
+    from acb_common.public_address import PublicAddressRefused, pinned_public_address
+    from email_ingestion.providers.imap import LOGIN_POOL, IMAPProvider
 
+    if _imap_logins_in_flight >= _IMAP_LOGINS_IN_FLIGHT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="Metorite is testing many mailboxes now. Try again in a minute.")
+    release = await _guard_imap_login(org, member)
+    _imap_logins_in_flight += 1
     host = str(credentials.get("imap_host", ""))
     port = credentials.get("imap_port", 993)
     try:
-        await IMAPProvider(dict(credentials)).verify_login(_IMAP_LOGIN_TIMEOUT)
-    except imaplib.IMAP4.error as exc:
-        _log.info("email.imap_login_refused", host=host, port=port,
-                  error=type(exc).__name__)
-        raise HTTPException(
-            status_code=422,
-            detail="The mail server refused the user name or password.",
-        ) from None
-    except (OSError, ValueError) as exc:
-        _log.info("email.imap_unreachable", host=host, port=port,
-                  error=type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Metorite could not reach {host}:{port}.",
-        ) from None
+        loop = asyncio.get_running_loop()
+        for name, p in (("imap", port), ("smtp", credentials.get("smtp_port", 587))):
+            h = str(credentials.get(f"{name}_host", ""))
+            try:
+                await loop.run_in_executor(LOGIN_POOL, pinned_public_address, h, int(p))
+            except (PublicAddressRefused, ValueError, TypeError):
+                _log.info("email.imap_host_refused", which=name, host=h[:100])
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Metorite cannot connect to {h[:100]}. Use the public address of your mail server.",
+                ) from None
+        try:
+            await IMAPProvider(dict(credentials)).verify_login(_IMAP_LOGIN_TIMEOUT)
+        except imaplib.IMAP4.error as exc:
+            _log.info("email.imap_login_refused", host=host, port=port,
+                      error=type(exc).__name__)
+            raise HTTPException(
+                status_code=422,
+                detail="The mail server refused the user name or password.",
+            ) from None
+        except (OSError, ValueError) as exc:
+            _log.info("email.imap_unreachable", host=host, port=port,
+                      error=type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Metorite could not reach {host}:{port}.",
+            ) from None
+    finally:
+        _imap_logins_in_flight -= 1
+        await release()
 
 
 @router.post("/accounts", response_model=EmailAccountModel, status_code=201)
@@ -497,14 +581,35 @@ async def create_account(
                 detail=f"Missing IMAP credential fields: {', '.join(missing)}",
             )
 
+    # ``imap_timeout`` is read by the provider, and a member must not set it.
+    creds = {k: v for k, v in req.credentials.items() if k != "imap_timeout"}
+
+    # The cheap checks run BEFORE any network call: the duplicate (409) first.
+    # The mailbox limit of Q-MB-1 joins here when it merges.
+    async with _tenant_session(org) as db:
+        if (await db.execute(
+            text(
+                """SELECT id FROM email_accounts
+                   WHERE organization_id = CAST(:org AS uuid)
+                     AND user_id = :user_id AND provider = :provider
+                     AND email_address = :email"""
+            ),
+            {"org": org, "user_id": user.email, "provider": req.provider,
+             "email": req.email_address},
+        )).fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Account {req.email_address} already exists",
+            )
+
     # Test the login BEFORE anything is encrypted or saved, so a wrong
     # password is an error and not a mailbox that never syncs.
-    await _verify_imap_login(req.credentials)
+    await _verify_imap_login(creds, org=org, member=user.email)
 
     # Encrypt credentials
     from acb_llm.key_store import get_key_store
     store = get_key_store()
-    encrypted_creds = store.encrypt(json.dumps(req.credentials))
+    encrypted_creds = store.encrypt(json.dumps(creds))
 
     async with _tenant_session(org) as db:
         # Check for duplicate account. The organization is in the predicate

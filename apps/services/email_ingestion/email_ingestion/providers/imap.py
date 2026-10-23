@@ -27,11 +27,17 @@ import imaplib
 import logging
 import re
 import smtplib
+import socket
+import ssl
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
+
+from acb_common.public_address import PublicAddressRefused, pinned_public_address
 
 from .base import (
     Attachment,
@@ -45,6 +51,104 @@ from .base import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+#: The wait of one IMAP socket step, in seconds. A stored ``imap_timeout`` is
+#: member-controlled data, so :func:`_clamp_timeout` keeps it in this range.
+_TIMEOUT_MIN_S = 5.0
+_TIMEOUT_MAX_S = 60.0
+_TIMEOUT_DEFAULT_S = 30.0
+
+#: The login test of a new mailbox runs on THIS small pool and never on the
+#: shared default executor, so a host that never answers cannot starve the
+#: gateway. Four workers bound the harm, and the route refuses more at once.
+LOGIN_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="imap-login")
+
+
+def _clamp_timeout(raw: Any) -> float:
+    """The IMAP step timeout: a number in 5..60 s, else 30. Booleans, text,
+    NaN and infinity are ignored."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return _TIMEOUT_DEFAULT_S
+    if raw != raw or raw in (float("inf"), float("-inf")):
+        return _TIMEOUT_DEFAULT_S
+    return max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, float(raw)))
+
+
+class _Deadline:
+    """A wall-clock limit for the whole connect and login.
+
+    The socket timeout is per read, so a server that sends one byte every few
+    seconds would hold a worker for ever. This timer shuts the socket down at
+    the deadline, and the blocked read or handshake then fails at once."""
+
+    def __init__(self, seconds: float | None) -> None:
+        self._seconds = seconds
+        self._timer: threading.Timer | None = None
+        self._sock: socket.socket | None = None
+        self.expired = False
+
+    def remaining(self, step: float) -> float:
+        return step if self._seconds is None else max(0.1, min(step, self._seconds))
+
+    def arm(self, sock: socket.socket) -> None:
+        self._sock = sock
+        if self._seconds is None:
+            return
+        self._timer = threading.Timer(self._seconds, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _expire(self) -> None:
+        self.expired = True
+        sock = self._sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+
+
+def _pinned_socket(ip: str, port: int, timeout: float, deadline: _Deadline) -> socket.socket:
+    """Connect to the CHECKED address (``ip``), never to the name again."""
+    sock = socket.create_connection((ip, port), deadline.remaining(timeout))
+    deadline.arm(sock)
+    return sock
+
+
+class _PinnedIMAP4(imaplib.IMAP4):
+    """Plain IMAP to a pinned address."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, timeout)
+
+    def _create_socket(self, timeout):  # type: ignore[override]
+        return _pinned_socket(self._ip, self.port, timeout, self._deadline)
+
+
+class _PinnedIMAP4_SSL(imaplib.IMAP4_SSL):  # noqa: N801 - mirrors imaplib
+    """IMAP over TLS to a pinned address. TLS checks the certificate against
+    the HOST NAME (``server_hostname``), and the socket goes to the address."""
+
+    def __init__(self, host: str, port: int, *, ip: str, timeout: float,
+                 deadline: _Deadline) -> None:
+        self._ip, self._deadline = ip, deadline
+        super().__init__(host, port, ssl_context=ssl.create_default_context(),
+                         timeout=timeout)
+
+    def _create_socket(self, timeout):  # type: ignore[override]
+        sock = _pinned_socket(self._ip, self.port, timeout, self._deadline)
+        return self.ssl_context.wrap_socket(sock, server_hostname=self.host)
 
 
 class IMAPProvider(BaseEmailProvider):
@@ -66,45 +170,68 @@ class IMAPProvider(BaseEmailProvider):
         self._imap = await self._connect_imap()
         return self._imap
 
-    async def _connect_imap(self) -> imaplib.IMAP4:
+    async def _connect_imap(
+        self, *, executor: ThreadPoolExecutor | None = None,
+        total_s: float | None = None,
+    ) -> imaplib.IMAP4:
         host = self.credentials.get("imap_host", "")
         port = int(self.credentials.get("imap_port", 993))
         username = self.credentials.get("imap_username", "")
         password = self.credentials.get("imap_password", "")
         use_ssl = self.credentials.get("imap_use_ssl", True)
-        # A caller that tests a login (``verify_login``) passes a short wait.
-        timeout = float(self.credentials.get("imap_timeout", 30))
+        timeout = _clamp_timeout(self.credentials.get("imap_timeout"))
 
         if not host or not username or not password:
             raise ValueError(
                 "Missing IMAP creds: imap_host, imap_username, imap_password"
             )
+        host = str(host)
 
         def _connect() -> imaplib.IMAP4:
-            if use_ssl:
-                conn = imaplib.IMAP4_SSL(host, port, timeout=timeout)
-            else:
-                conn = imaplib.IMAP4(host, port, timeout=timeout)
-            conn.login(username, password)
+            # SSRF: resolve ONCE, refuse a private address, and connect to the
+            # checked address (DNS rebinding cannot swap it).
+            try:
+                ip = pinned_public_address(host, port)
+            except PublicAddressRefused as exc:
+                raise OSError(f"{host} {exc.reason}") from None
+            deadline = _Deadline(total_s)
+            try:
+                if use_ssl:
+                    conn: imaplib.IMAP4 = _PinnedIMAP4_SSL(
+                        host, port, ip=ip, timeout=timeout, deadline=deadline)
+                else:
+                    conn = _PinnedIMAP4(
+                        host, port, ip=ip, timeout=timeout, deadline=deadline)
+                conn.login(username, password)
+            except Exception:
+                if deadline.expired:
+                    raise OSError(f"{host} did not answer in time") from None
+                raise
+            finally:
+                deadline.cancel()
             return conn
 
-        return await asyncio.to_thread(_connect)
+        return await asyncio.get_running_loop().run_in_executor(executor, _connect)
 
     # -- Provider interface --------------------------------------------------
 
     async def verify_login(self, timeout: float = 10.0) -> None:
-        """Log in once and log out, with a short wait, and say why it failed.
+        """Log in once and log out, and say why it failed.
 
         ``authenticate`` answers a bare bool. This raises, so the caller can
         tell a refused sign-in (``imaplib.IMAP4.error``) from a server that
-        it cannot reach (``OSError``, which covers a timeout, a refused
-        connection, a name that does not resolve and a TLS failure). The
-        error never carries the password: the caller must not echo it.
+        it cannot reach (``OSError``: a timeout, a refused connection, a name
+        that does not resolve, a private address, a TLS failure). The error
+        never carries the password: the caller must not echo it.
+
+        ``timeout`` is a WALL-CLOCK limit for the connect, the TLS handshake
+        and the login together, and not only the wait of one read. The work
+        runs on :data:`LOGIN_POOL`, so it cannot starve the shared executor.
         """
         saved = self.credentials
         self.credentials = {**saved, "imap_timeout": timeout}
         try:
-            conn = await self._connect_imap()
+            conn = await self._connect_imap(executor=LOGIN_POOL, total_s=timeout)
         finally:
             self.credentials = saved
         try:
