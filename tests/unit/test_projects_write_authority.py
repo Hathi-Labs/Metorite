@@ -34,7 +34,8 @@ Run::
 * A2. ``G/authority.py`` ``_made_by``: returns False. ``test_1_the_creator_deletes_and_a_viewer_gets_403`` and ``test_4_the_creator_of_a_sub_project_deletes_it_with_its_tasks``.
 * A3. ``G/authority.py`` ``_leads``: returns False. ``test_2_the_lead_deletes_a_task_another_member_made`` and ``test_5_a_lead_and_an_admin_write_a_grant_and_a_viewer_gets_403``.
 * A4. ``G/authority.py`` ``_LED_SUBTREE_SQL``: no recursive arm, so only the led project itself counts. ``test_2_the_lead_deletes_a_task_another_member_made``.
-* A5. ``G/authority.py``: ``can_manage_settings`` arms removed. ``test_3_an_admin_deletes_any_task_and_any_project``.
+* A5. ``G/authority.py`` ``may_delete_task``: no ``can_manage_settings`` arm. ``test_3_an_admin_deletes_any_task_and_any_project``.
+* A5b. ``G/authority.py`` ``may_delete_project``: no ``can_manage_settings`` arm. ``test_3_an_admin_deletes_any_task_and_any_project``.
 * A6. ``G/tasks.py`` ``delete_task``: no ``assert_may_delete_task``. ``test_1_the_creator_deletes_and_a_viewer_gets_403``.
 * A7. ``G/tasks.py`` ``agent_delete_task``: no ``assert_may_delete_task``. ``test_6_one_answer_for_the_viewer_at_every_door``.
 * A8. ``G/tree.py`` ``delete_node``: no ``assert_may_delete_project``. ``test_4_the_creator_of_a_sub_project_deletes_it_with_its_tasks``.
