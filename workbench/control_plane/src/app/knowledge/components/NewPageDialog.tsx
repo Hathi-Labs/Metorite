@@ -9,6 +9,10 @@
  * its parent's space, so the form shows the parent and no space choice.
  *
  * On save the page opens in the editor, because a new page is empty.
+ *
+ * KB-9a: an ask may carry a title and the gap the page answers. The form
+ * starts with that title, and names the question. The layout marks the gap
+ * answered after the page is made.
  */
 
 import { useId, useState } from "react";
@@ -64,7 +68,7 @@ function NewPageForm({
 }) {
   const choices = writableSpaces(spaces);
   const parent = ask.parent ?? null;
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(ask.title ?? "");
   const [space, setSpace] = useState(() =>
     parent ? parent.spaceId : defaultSpaceChoice(spaces, ask.spaceId ?? null),
   );
@@ -122,6 +126,12 @@ function NewPageForm({
             />
           </div>
         )}
+        {ask.gap ? (
+          <p className="text-xs text-muted-foreground" data-new-page-gap={ask.gap.id}>
+            This page answers the question{" "}
+            <span className="font-medium text-foreground">{ask.gap.question}</span>
+          </p>
+        ) : null}
         <p className="text-xs text-muted-foreground">
           The page starts as a draft. Only you see it until you publish it.
         </p>

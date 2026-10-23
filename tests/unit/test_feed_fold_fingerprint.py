@@ -114,6 +114,10 @@ def _real(kind: str) -> shell.Signal | None:
     if kind == "crm_open_questions":
         # WS-53 CRM-Q32-4: the open questions of the CRM, for a CRM admin.
         return feed._questions_signal({"new_at": NOW, "count": 2, "open": 5, "money": True})
+    if kind == "kb_gap":
+        # WS-61 KB-9a: a question that Knowledge could not answer.
+        return feed._gap_signal({"id": "g-1", "question": "how do we raise a credit note",
+                                 "ask_count": 3, "last_asked_at": NOW})
     if kind == "no_answer":
         return feed._no_answer_signal({
             "thread_id": THREAD, "message_id": "m-2", "subject": "S", "who": "dana",

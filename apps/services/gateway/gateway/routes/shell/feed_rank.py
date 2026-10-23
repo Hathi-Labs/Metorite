@@ -87,6 +87,10 @@ BASE: dict[str, int] = {
     # WS-53 CRM-Q32-4: the CRM holds a new question about the data of the
     # org, for a CRM admin. One card a day at most, below `digest_ready`.
     "crm_open_questions": 22,
+    # WS-61 KB-9a: a question that two members asked and Knowledge could
+    # not answer, for a manager of Knowledge. A thing to know, below every
+    # other kind.
+    "kb_gap": 20,
 }
 
 #: The urgency terms (§7).
@@ -194,7 +198,7 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "needs_you"
     if kind == "unblocked":
         return "ready"
-    if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready"):
+    if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready", "kb_gap"):
         return "fyi"
     if kind == "crm_open_questions":
         # CRM-Q32-4: needs you while a question about money is open.

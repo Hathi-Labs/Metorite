@@ -34,6 +34,13 @@ export interface NewPageAsk {
   spaceId?: string | null;
   /** A sub-page: the parent fixes the space. */
   parent?: { id: string; title: string; spaceId: string } | null;
+  /** The title the form starts with. The member may change it. */
+  title?: string;
+  /**
+   * The gap this page answers (KB-9a). After the page is made, the layout
+   * marks the gap answered with it.
+   */
+  gap?: { id: string; question: string } | null;
 }
 
 /** What a page with unsaved changes registers. */

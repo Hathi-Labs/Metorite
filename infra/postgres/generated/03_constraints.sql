@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 182
+-- Tables in this phase: 183
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2257,3 +2257,15 @@ ALTER TABLE kb_page_proposals ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_page_proposals ADD CONSTRAINT kb_page_proposals_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_page_proposals_org_idx ON kb_page_proposals (organization_id);
+
+-- kb_gaps
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_gaps WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_gaps still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_gaps ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_gaps ADD CONSTRAINT kb_gaps_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_gaps_org_idx ON kb_gaps (organization_id);

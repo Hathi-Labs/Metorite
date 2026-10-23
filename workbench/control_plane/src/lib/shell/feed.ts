@@ -57,14 +57,16 @@ import { ACT_HOLD_MS } from "./needsActs";
 /**
  * The app ids of the feed apps that are never a needs app, and the pane each
  * one opens. `calendar` came with MD-1. `crm`, `people` and `chat` come with
- * MD-3b (§5.8 item 6), before any of their kinds. A card's icon is the icon
- * of this pane in the manifest (`feedAppIcon`).
+ * MD-3b (§5.8 item 6), before any of their kinds. `knowledge` comes with
+ * WS-61 KB-9a (`knowledge_base.md` §9). A card's icon is the icon of this
+ * pane in the manifest (`feedAppIcon`).
  */
 const FEED_ONLY_APP_HREF = {
   calendar: "/calendar",
   crm: "/crm",
   people: "/people",
   chat: "/chat",
+  knowledge: "/knowledge",
 } as const;
 
 /** The app ids of the feed: the needs apps, and the feed-only apps above. */
@@ -885,6 +887,7 @@ export const FEED_APP_NAMES: Readonly<Record<FeedApp, string>> = {
   crm: "CRM",
   people: "People",
   chat: "Chat",
+  knowledge: "Knowledge",
 };
 
 /** A card's icon: its app's own icon from the manifest, never a second list. */
@@ -923,6 +926,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   digest_ready: "Weekly digest",
   // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.
   crm_open_questions: "Open questions",
+  // WS-61 KB-9a: a question that Knowledge could not answer.
+  kb_gap: "Unanswered question",
 };
 
 /**
@@ -972,6 +977,7 @@ const FEED_ONLY_MISSING: Readonly<Record<keyof typeof FEED_ONLY_APP_HREF, string
   crm: "follow-ups and deals",
   people: "news about colleagues",
   chat: "questions from the assistant",
+  knowledge: "unanswered questions",
 };
 
 /**

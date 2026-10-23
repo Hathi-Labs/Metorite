@@ -451,6 +451,15 @@ class Settings(BaseSettings):
     # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
     # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
     knowledge_proposals: bool = False
+    # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
+    # ids whose `search_company` reads with no Knowledge hit write a
+    # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
+    # Empty, the default, means no organization: nothing writes a gap, the
+    # gap routes answer 404 and the `kb_gap` card stays dark. The one reader
+    # is `gateway.routes.knowledge.flags`. It spends no credit. A flip for an
+    # org is the owner's, gate `enforcement-flip`.
+    # Fence: tests/unit/test_kb_gaps.py.
+    knowledge_gaps: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""

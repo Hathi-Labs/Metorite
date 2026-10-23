@@ -928,6 +928,15 @@ async def purge_crm_member(db: Any, org_id: str, email: str) -> None:
     await crm_questions.forget_member_keys(str(org_id), email)
 
 
+async def purge_knowledge_member(db: Any, org_id: str, email: str) -> None:
+    """The Knowledge half of a purge (WS-61 KB-9a). The address leaves the
+    ``askers`` and the ``dismissed_by`` of each gap (``gaps.scrub_member``).
+    The gap and its count stay. The SQL runs in the caller's transaction."""
+    from gateway.routes.knowledge import gaps as kb_gaps
+
+    await kb_gaps.scrub_member(db, str(org_id), email)
+
+
 async def purge_member_rows(
     db: Any,
     org_id: str,
@@ -1001,6 +1010,8 @@ async def purge_member_rows(
     # WS-53 CRM-Q33: the member's address in the CRM state that no delete
     # above reaches, in this transaction, and the member's CRM keys.
     await purge_crm_member(db, org_id, addr)
+    # WS-61 KB-9a: the member's address in the Knowledge gaps.
+    await purge_knowledge_member(db, org_id, addr)
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.

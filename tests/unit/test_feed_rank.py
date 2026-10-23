@@ -49,6 +49,8 @@ class TestTheTable:
             "digest_ready": 24,
             # WS-53 CRM-Q32-4: the open questions, below the digest.
             "crm_open_questions": 22,
+            # WS-61 KB-9a: a Knowledge gap, below every other kind.
+            "kb_gap": 20,
         }
 
     def test_the_needs_kinds_start_above_every_other_kind(self):
@@ -181,6 +183,8 @@ class TestTheGroupTable:
         ("crm_open_questions", {"money": True}, "needs_you"),
         ("crm_open_questions", {"money": False}, "fyi"),
         ("crm_open_questions", {}, "fyi"),
+        # WS-61 KB-9a: a Knowledge gap is a thing to know.
+        ("kb_gap", {"askers": 3}, "fyi"),
     ])
     def test_each_row_of_section_4_3(self, kind, facts, group):
         assert feed_rank.group(kind, facts, NOW, TODAY) == group

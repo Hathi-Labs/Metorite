@@ -4,7 +4,8 @@
  * The Knowledge rail (WS-61 KB-2a, KB-3b and KB-2e, `knowledge_base.md`
  * §11.1 and §21.5).
  *
- * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a).
+ * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a),
+ * and Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org.
  * Review shows only while a proposal of the assistant waits (with the
  * count) or while the member is on it. Files and Sources join them with
  * KB-2c and KB-7a, and each is ABSENT until then, never a stub. Search sits first, above the tree, so it stays in one
@@ -47,6 +48,7 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
+import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
@@ -78,6 +80,11 @@ export interface KnowledgeRailProps {
   atHome: boolean;
   /** True on `/knowledge/search`. */
   atSearch: boolean;
+  /**
+   * The Gaps row (KB-9a): `null` hides it. The layout shows it to a manager
+   * of Knowledge whose gaps read answered. `count` is the open gaps.
+   */
+  gaps?: { selected: boolean; count: string | null } | null;
   /** True on `/knowledge/review` (KB-5b). */
   atReview?: boolean;
   /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
@@ -101,6 +108,7 @@ export default function KnowledgeRail({
   selectedPageId,
   atHome,
   atSearch,
+  gaps = null,
   atReview = false,
   reviewCount = 0,
   onNavigate,
@@ -130,6 +138,17 @@ export default function KnowledgeRail({
           metaTone="attention"
           buttonProps={{ "aria-current": atReview ? "page" : undefined }}
           onSelect={() => onNavigate(KNOWLEDGE_REVIEW)}
+        />
+      ) : null}
+      {gaps ? (
+        <RailRow
+          label="Gaps"
+          tier="group"
+          selected={gaps.selected}
+          icon={<Icon name="MessageCircleQuestion" className={ICON} />}
+          meta={gaps.count ?? undefined}
+          buttonProps={{ "aria-current": gaps.selected ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_GAPS)}
         />
       ) : null}
       <RailRow

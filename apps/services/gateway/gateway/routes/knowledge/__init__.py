@@ -7,6 +7,8 @@ the four space routes (``spaces.py``) and the nine page routes
 home lists and the favourites (``home.py``) and the page icon (``icon.py``).
 KB-2g adds ``GET /knowledge/pages/{id}/versions/{n}`` (``history.py``), one old
 version with its body. KB-5a adds the four proposal routes (``proposals.py``).
+KB-9a adds the gap routes (``gaps.py``): the questions that Knowledge
+could not answer, behind ``KNOWLEDGE_GAPS``.
 
 Same layout as ``routes/crm``: ``core`` is the leaf. It holds the router, the
 one visibility rule (``visible_pages_clause``) and the data helpers. The
@@ -24,6 +26,7 @@ organization is on ``KNOWLEDGE_ORGS`` (``flags.py``), then 403 without
 
 from gateway.routes.knowledge import (  # noqa: F401 — registers routes
     backlinks,
+    gaps,
     history,
     home,
     pages,
