@@ -329,6 +329,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "rebalance": {},
     "render_report": {"template": "team pulse"},
     "render_timeline": {"task_id": UUID},
+    # WS-64 OP-6a: the area is in the fake gateway's list (tw.AREAS)
+    "rename_area": {"area": "Home", "new_name": "House"},
     "report_save": {"name": "Weekly", "sections": "finished"},
     "save_view": {"project_id": UUID, "name": "Mine"},
     "set_my_overlay": {"task_id": UUID, "disposition": "someday"},

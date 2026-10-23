@@ -153,6 +153,31 @@ def _po11(ds: Dataset) -> list[Step]:
     ]
 
 
+def _po12(ds: Dataset) -> list[Step]:
+    return [
+        tool("my_areas"),
+        tool("create_area", name="Garden"),
+        ("text", "I made the area «Garden». Only you see it."),
+    ]
+
+
+def _po13(ds: Dataset) -> list[Step]:
+    return [
+        tool("my_areas"),
+        tool("rename_area", area="Home", new_name="House"),
+        ("text", "I renamed the area «Home» to «House». Its 2 open tasks stay in it."),
+    ]
+
+
+def _po14(ds: Dataset) -> list[Step]:
+    return [
+        tool("my_areas"),
+        tool("delete_area", area="Finance"),
+        ("text", "I archived the area «Finance», and did not delete it. It holds 2 finished "
+                 "tasks, and they stay."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -164,6 +189,9 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-9": _po9,
     "PO-10": _po10,
     "PO-11": _po11,
+    "PO-12": _po12,
+    "PO-13": _po13,
+    "PO-14": _po14,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

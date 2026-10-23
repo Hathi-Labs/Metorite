@@ -288,41 +288,18 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/my/today", "my_work", "A"),
     # WS-39 S6e — the projects I lead, with their open work and mine.
     Route("GET", "/projects/my/led", "my_led_projects", "A"),
-    # WS-39 S6b — a member's own categories. The READ is on the surface,
-    # because "file this under Home" needs to know Home exists. The three
-    # writes are not, and that is a decision rather than an oversight: an
-    # Area is the member's own filing scheme, the names are theirs and often
-    # near-duplicates ("Home" / "House"), and an assistant that renames or
-    # deletes one on a guess is the kind of help nobody asked for. S6c owns
-    # the promote door; if the chat should ever shape a member's tree, that
-    # is its own decision with its own card.
+    # WS-39 S6b — a member's own categories. WS-64 OP-6a (2026-10-23, D-OP-9):
+    # the chat now makes, renames and deletes an area. Before this, the three
+    # writes were class X on the worry that a guess renames the wrong
+    # category. The tools answer that worry: a name resolves among the
+    # member's own areas only, two near-equal names are a question to the
+    # member (`_my_area`), and a rename or a delete shows a card first. The
+    # card is a brake and not authority: the route finds an area by its owner,
+    # so another member's area is NOT FOUND (`_load_my_area`).
     Route("GET", "/projects/my/areas", "my_areas", "A"),
-    Route(
-        "POST",
-        "/projects/my/areas",
-        "",
-        "X",
-        "A member's categories are theirs to make. The chat can file a task "
-        "into one (my_areas reads them), and minting one is a shaping act "
-        "the member should perform where they can see the whole list.",
-    ),
-    Route(
-        "PATCH",
-        "/projects/my/areas/{area_id}",
-        "",
-        "X",
-        "Renaming somebody's own category on a guess. Two of a member's "
-        "areas are often near-synonyms, and the chat cannot tell which was "
-        "meant from a sentence.",
-    ),
-    Route(
-        "DELETE",
-        "/projects/my/areas/{area_id}",
-        "",
-        "X",
-        "An empty area is hard-deleted by this route. That is not a verb to "
-        "reach through a guess at which area was meant.",
-    ),
+    Route("POST", "/projects/my/areas", "create_area", "B"),
+    Route("PATCH", "/projects/my/areas/{area_id}", "rename_area", "C"),
+    Route("DELETE", "/projects/my/areas/{area_id}", "delete_area", "C"),
     Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B"),
     Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B"),
     Route("POST", "/projects/tasks/{task_id}/nudge", "", "X", _NUDGE_REASON),
@@ -886,6 +863,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     },
     # WS-46 P7 (G17)
     ("GET", "/projects/my/areas"): {"include_archived": "my_areas.include_archived"},
+    # WS-64 OP-6a
+    ("POST", "/projects/my/areas"): {"name": "create_area.name"},
+    ("PATCH", "/projects/my/areas/{area_id}"): {"name": "rename_area.new_name"},
     ("POST", "/projects/my/tasks"): {
         "title": "create_personal_task.title",
         "next_action": "create_personal_task.next_action",

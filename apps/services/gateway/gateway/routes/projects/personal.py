@@ -3339,6 +3339,18 @@ async def rename_my_area(
     name = _clean_area_name(payload.name)
     async with _tenant_session() as db:
         area = await _load_my_area(db, email, area_id)
+        # The same lookup as create's 409, but not the area itself, so a
+        # change of case on its own name still goes through.
+        root = await _load_personal_project(db, email)
+        twin = (
+            await find_personal_child(db, email, root, name)
+            if root is not None else None
+        )
+        if twin is not None and str(twin.id) != str(area.id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"You already have an area called {name}.",
+            )
         await db.execute(
             text(
                 "UPDATE pm_projects SET name = :name, updated_at = now() "
@@ -3360,7 +3372,8 @@ async def remove_my_area(
 
     Two outcomes, and the row count decides which:
 
-    - **Empty** — the row goes. A category somebody made by accident should
+    - **Empty** — no child node and no task in the whole subtree (any
+      status, archived too): the row goes. A category somebody made by accident should
       not leave a tombstone in their own sidebar.
     - **Holds tasks** — ARCHIVED, never deleted. `pm_tasks.project_id` is what
       a task lives on, so deleting the project would take the work with it, or
@@ -3382,8 +3395,25 @@ async def remove_my_area(
             ),
             {"aid": str(area.id)},
         )).scalar() or 0)
+        # The whole subtree, because `parent_project_id` and
+        # `pm_tasks.project_id` are ON DELETE CASCADE: a hard delete takes
+        # every child node and every task below it, of any status, archived
+        # too. The area is deletable only when the subtree is just itself
+        # and holds no task.
+        below = (await db.execute(
+            text(
+                "WITH RECURSIVE sub AS ( "
+                "  SELECT id FROM pm_projects WHERE id = CAST(:aid AS uuid) "
+                "  UNION ALL "
+                "  SELECT c.id FROM pm_projects c JOIN sub ON c.parent_project_id = sub.id "
+                ") SELECT (SELECT count(*) FROM sub) - 1 AS nodes, "
+                "         (SELECT count(*) FROM pm_tasks t WHERE t.project_id IN "
+                "            (SELECT id FROM sub)) AS tasks"
+            ),
+            {"aid": str(area.id)},
+        )).fetchone()
 
-        if held == 0:
+        if held == 0 and int(below.nodes or 0) == 0 and int(below.tasks or 0) == 0:
             await db.execute(
                 text("DELETE FROM pm_projects WHERE id = CAST(:aid AS uuid)"),
                 {"aid": str(area.id)},
