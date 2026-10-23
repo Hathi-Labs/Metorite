@@ -5777,6 +5777,12 @@ async def edit_draft(
     if refused:
         return refused
     if not (draft_id or "").strip():
+        # Review fix round 1 (P2-1): a held chat writes no new mail. With the
+        # held card off, send_draft could then send a mail whose recipient and
+        # text the model chose, which §22 promises a held chat cannot do.
+        if _egress_held() and not _held_card_mode():
+            return ("Nothing changed. This chat read email from outside senders, so "
+                    "it cannot write a new email. Tell the member in one sentence.")
         return await _new_draft(account_id, body, subject, to, cc, bcc, rewrite)
     if rewrite:
         if body is None:

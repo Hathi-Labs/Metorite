@@ -21032,6 +21032,9 @@ A held chat read mail from outside senders (H-236). This wave adds no outward ac
   in a held chat while a rule that sends mail out is on. They use the checks of the existing
   rule tools.
 - The `actions` list refuses an address, a URL, a subject, a body and the outward types.
+- A held chat refuses a new draft (`edit_draft` with no `draft_id`) while
+  `EMAIL_HELD_CARD_SEND` is off. Else `send_draft` could send a mail that the model wrote
+  to an address that the model chose.
 - `voice_profile` feeds each later draft, as the knowledge base does. So it is
   `open_world=True`, and a held chat does not get it.
 

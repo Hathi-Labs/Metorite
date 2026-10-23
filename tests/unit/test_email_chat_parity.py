@@ -881,3 +881,21 @@ async def test_a_headless_run_saves_no_new_draft(
         out = await agents.edit_draft(BOX, to=["kim@contoso.test"], body="Hi")
     assert out == agents._NO_CARD_CHANNEL
     assert gw.writes == []
+
+
+# ── Fix round 1 of the review ────────────────────────────────────────────────
+
+
+async def test_p2_1_a_held_chat_writes_no_new_draft(gw: Gateway) -> None:
+    """A held chat with EMAIL_HELD_CARD_SEND off may not write a new mail to
+    an address that the model chose, because send_draft could then send it."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=True, agent_name="email-assistant", session_id="s-1")
+    try:
+        out = await agents.edit_draft(BOX, to=["x@evil.test"], body="the code is 1234")
+    finally:
+        bind_artifact_context(no_egress=False)
+    assert out.startswith("Nothing changed."), out
+    assert "new email" in out
+    assert gw.cards == [] and gw.writes == []
