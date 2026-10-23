@@ -27,6 +27,9 @@ class MemoryMarkClient:
         self.values[name] = value
         return True
 
+    async def get(self, name: str) -> str | None:
+        return self.values.get(name)
+
     async def exists(self, *names: str) -> int:
         return sum(1 for n in names if n in self.values)
 
@@ -47,6 +50,15 @@ def install_memory_mark_store(patcher: Any) -> MemoryMarkClient | None:
     client = MemoryMarkClient()
     store = TenantRedis(client)
     patcher.setattr(egress, "get_tenant_redis", lambda: store)
+    # The email working set of the one assistant (navigation_shell.md
+    # §7.1.1) lives in the same tenant Redis, and a run reads it on each
+    # email hand-off. The same store, so no run waits on a Redis it lacks.
+    try:
+        from acb_skills import email_chat_context
+    except ImportError:
+        pass
+    else:
+        patcher.setattr(email_chat_context, "get_tenant_redis", lambda: store)
     clear_marks()
     return client
 
@@ -59,3 +71,8 @@ def clear_marks() -> None:
         return
     with egress._MARKED_LOCK:
         egress._MARKED_SESSIONS.clear()
+    try:
+        from acb_skills import email_chat_context
+    except ImportError:
+        return
+    email_chat_context.clear_cache()

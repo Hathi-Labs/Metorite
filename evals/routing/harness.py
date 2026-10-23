@@ -313,6 +313,8 @@ class RoutingHarness:
         self.sent: list[str] = []
         #: Live: each delegation the stand-in took, ``(agent, message)``.
         self.delegated: list[tuple[str, str]] = []
+        #: The member's mailboxes, as ``GET /email/accounts`` lists them.
+        self.mailboxes: list[dict[str, Any]] = []
         self._mp: Any = None
         self._root: Path | None = None
         self._modules: dict[str, Any] = {}
@@ -381,6 +383,16 @@ class RoutingHarness:
         from orchestrator import app_tools
 
         mp.setattr(app_tools, "_granted_live_apps", lambda _agent: [])
+        # §7.1.1: the member's mailboxes, which each orchestrator turn reads
+        # from the gateway. None here, so a scripted run sends nothing. A test
+        # that wants mailboxes sets :attr:`mailboxes`.
+        from acb_skills import email_chat_context
+
+        async def _mailboxes(_member: str) -> list[dict[str, Any]]:
+            return [dict(a) for a in self.mailboxes]
+
+        mp.setattr(email_chat_context, "fetch_accounts", _mailboxes)
+        email_chat_context.clear_cache()
         mp.setitem(sys.modules, "ddgs", None)
         mp.setitem(sys.modules, "duckduckgo_search", None)
         if self.live:

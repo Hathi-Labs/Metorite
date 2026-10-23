@@ -880,6 +880,72 @@ def _knowledge_index_block(agent_name: str) -> str:
     return hit[1] if hit else ""
 
 
+# ── The one assistant's email context (navigation_shell.md §7.1.1) ─────────
+#: The agent whose per-turn context names the member's mailboxes and the
+#: email working set of the chat.
+_EMAIL_CTX_AGENT = "orchestrator"
+
+
+def _email_ctx_member() -> str:
+    """The member whose mail the email context may name, or ``""``.
+
+    The run's verified member, and only when the run's tools act as that
+    member. A shared room acts as ``room:<thread>``, so it gets no mailbox
+    list and no working set (the KB-4a rule, P1-a). From the run boundary,
+    never from the payload or the model (R5).
+    """
+    member = _verified_run_member()
+    if not member:
+        return ""
+    try:
+        from acb_skills.memory_tools import _get_memory_user_id
+
+        acting = str(_get_memory_user_id() or "").strip().lower()
+    except Exception:
+        return ""
+    return member if acting == member else ""
+
+
+async def _prime_email_context(agent_name: str) -> None:
+    """Read the member's mailboxes and this chat's working set into their
+    process caches, so the sync :func:`_context_preamble_parts` reads them.
+    Never raises. Awaited once per turn, after the artifact context binds."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return
+    member = _email_ctx_member()
+    org = _current_run_org()
+    if not (member and org):
+        return
+    try:
+        from acb_skills import email_chat_context as ecc
+
+        await ecc.prime_mailboxes(str(org), member)
+        await ecc.load_working_set()
+    except Exception as exc:  # a block, never the turn
+        _log.warning("executor.email_context_failed", error=type(exc).__name__)
+
+
+def _email_context_block(agent_name: str) -> str:
+    """The orchestrator's block of the member's mailboxes and of this chat's
+    email working set, from the caches, or ``""``. It reads no gateway and
+    no Redis."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return ""
+    member = _email_ctx_member()
+    org = _current_run_org()
+    if not (member and org):
+        return ""
+    try:
+        from acb_skills import email_chat_context as ecc
+
+        boxes = ecc.cached_mailboxes(str(org), member)
+        parts = [ecc.mailboxes_block(boxes),
+                 ecc.orchestrator_block(ecc.cached_working_set(), boxes)]
+    except Exception:
+        return ""
+    return "\n\n".join(p for p in parts if p)
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -1498,6 +1564,72 @@ def _cap_sub_agent_result(text: str, cap: int) -> str:
     )
 
 
+async def _email_working_set_for(
+    agent_name: str, parent_ctx: Any,
+) -> tuple[dict[str, str] | None, str]:
+    """The working set of the calling chat and its preamble, for an email
+    sub-run (§7.1.1). ``(None, "")`` for any other agent, and for a run whose
+    tools do not act as its verified member (a shared room). Never raises."""
+    try:
+        from acb_skills import email_chat_context as ecc
+    except Exception:
+        return None, ""
+    if agent_name != ecc.EMAIL_AGENT:
+        return None, ""
+    member = _email_ctx_member()
+    org = _current_run_org()
+    if not (member and org):
+        return None, ""
+    try:
+        ws = await ecc.load_working_set(parent_ctx)
+        await ecc.prime_mailboxes(str(org), member)
+        return ws, ecc.subrun_preamble(ws, ecc.cached_mailboxes(str(org), member))
+    except Exception as exc:
+        _log.warning("executor.email_ws_unread", error=type(exc).__name__)
+        return {}, ""
+
+
+def _note_sub_call(calls: list[dict[str, Any]], ev: dict[str, Any]) -> None:
+    """Keep one streamed ``SUB_AGENT_TOOL_CALL_*`` event of a Copilot sub-run
+    as a call, in the shape of :func:`_tool_calls_of`."""
+    kind = ev.get("type")
+    if kind == "SUB_AGENT_TOOL_CALL_START":
+        calls.append({"id": str(ev.get("toolCallId") or ""),
+                      "name": str(ev.get("toolCallName") or ""),
+                      "args": ev.get("args") or {}, "result": "", "success": True})
+    elif kind == "SUB_AGENT_TOOL_CALL_RESULT":
+        cid = str(ev.get("toolCallId") or "")
+        for c in calls:
+            if c["id"] == cid:
+                c["result"] = str(ev.get("content") or "")
+                c["success"] = ev.get("success") is not False
+
+
+async def _record_email_working_set(
+    agent_name: str,
+    parent_ctx: Any,
+    before: dict[str, str] | None,
+    calls: list[dict[str, Any]],
+    emit: Any,
+) -> None:
+    """Write the working set after an email sub-run's *calls* (§7.1.1).
+
+    Only the sub-run's own tool calls write it, never the model's text. A
+    run that :func:`_email_working_set_for` skipped (``before`` None) writes
+    nothing. Never raises."""
+    del emit  # The mailbox mark (§7.1.1 rule 6) uses it.
+    if before is None or not calls:
+        return
+    try:
+        from acb_skills import email_chat_context as ecc
+
+        after = ecc.update_working_set(before, calls)
+        if after != before:
+            await ecc.save_working_set(after, parent_ctx)
+    except Exception as exc:
+        _log.warning("executor.email_ws_unwritten", error=type(exc).__name__)
+
+
 async def _run_sub_agent_streaming(
     agent_name: str,
     message_str: str,
@@ -1570,6 +1702,11 @@ async def _run_sub_agent_streaming(
     # skip the mark. After the no_egress decision, so the sub-run's tools do
     # not change. The specialist tools and delegate_to_agent come here.
     await _mark_untrusted_session(agent_name, _parent_ctx_sub)
+    # §7.1.1 (D99): the email working set of the calling chat. An email
+    # sub-run gets its ids as context, and the calls it makes update it. The
+    # held state above is decided first, and nothing here changes it.
+    _ws_before, _ws_preamble = await _email_working_set_for(agent_name, _parent_ctx_sub)
+    _sub_calls: list[dict[str, Any]] = []
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -1883,7 +2020,10 @@ async def _run_sub_agent_streaming(
                 for _a in agents:
                     carry_run_context(_a)
                 async with agent:
-                    stream = agent.run(message_str, stream=True)
+                    stream = agent.run(
+                        f"{_ws_preamble}\n\n{message_str}" if _ws_preamble else message_str,
+                        stream=True,
+                    )
                     # ONE canonical mapping, sub-agent envelope on top —
                     # only the wrapper differs from the parent stream paths.
                     _sub_t_state = _TranslationState(run_id)
@@ -1894,6 +2034,7 @@ async def _run_sub_agent_streaming(
                         ):
                             if _sev["type"] == "SUB_AGENT_TEXT_DELTA":
                                 text_parts.append(_sev["delta"])
+                            _note_sub_call(_sub_calls, _sev)
                             await _emit_sub_event(_sev)
             else:
                 # MAF or unknown runtime: batch run, emit one result delta.
@@ -1905,11 +2046,15 @@ async def _run_sub_agent_streaming(
                 # the batch path binds it for this sub-run's acb_graph writes.
                 result = await run_agent(
                     agent_name,
-                    {"message": message_str, "mode": "sub_task"},
+                    {"message": message_str, "mode": "sub_task",
+                     # §7.1.1: the working set, as context and never as the
+                     # member's words. Absent when the chat has none.
+                     **({"system_context": _ws_preamble} if _ws_preamble else {})},
                     run_id=run_id,
                     model=model,
                     organization_id=_resolve_sub_agent_org(),
                 )
+                _sub_calls = list(result.get("tool_calls") or [])
                 text = result.get("result") or result.get("answer") or ""
                 if isinstance(text, dict):
                     text = text.get("content", str(text))
@@ -1922,6 +2067,11 @@ async def _run_sub_agent_streaming(
                         "runId": run_id,
                         "delta": final_text,
                     })
+
+            # §7.1.1: the ids this email sub-run worked on, for the next turn.
+            await _record_email_working_set(
+                agent_name, _parent_ctx_sub, _ws_before, _sub_calls, _emit_sub_event,
+            )
 
             # ── Technique #5: sub-agent result compression ───────────────
             # Anthropic multi-agent research: sub-agents explore with 10k+
@@ -5141,6 +5291,9 @@ async def run_agent_stream(
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
             )
+            # §7.1.1: the mailboxes and the email working set of this chat,
+            # read now that the session is bound, for the sync context.
+            await _prime_email_context(agent_name)
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -7502,7 +7655,52 @@ async def _run_with_maf_agent(
 
     text: str = getattr(response, "text", "") or ""
     return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
-            "steps": _step_texts(response)}
+            "steps": _step_texts(response), "tool_calls": _tool_calls_of(response)}
+
+
+def _tool_calls_of(response: Any) -> list[dict[str, Any]]:
+    """Each tool call of a batch run, in order: ``{"id", "name", "args",
+    "result", "success"}``. The result is whole, never capped here.
+
+    A batch run streams nothing, so a delegated MAF run showed no step and no
+    card in the one assistant (§7.1.1). ``_run_sub_agent_streaming`` sends
+    these as ``SUB_AGENT_TOOL_CALL_*`` events, and it builds the email
+    working set from them. Never raises.
+    """
+    import json as _json
+
+    calls: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    try:
+        from acb_common.tool_refusals import is_refusal
+    except Exception:
+        def is_refusal(_r: Any) -> bool:  # type: ignore[misc]
+            return False
+    try:
+        for message in list(getattr(response, "messages", None) or []):
+            for content in list(getattr(message, "contents", None) or []):
+                ctype = getattr(content, "type", None)
+                cid = str(getattr(content, "call_id", "") or "")
+                if ctype == "function_call" and cid:
+                    raw = getattr(content, "arguments", None)
+                    if isinstance(raw, str):
+                        try:
+                            raw = _json.loads(raw) if raw.strip() else {}
+                        except ValueError:
+                            raw = {}
+                    if cid not in calls:
+                        order.append(cid)
+                    calls[cid] = {"id": cid, "name": str(getattr(content, "name", "") or "tool"),
+                                  "args": raw if isinstance(raw, dict) else {},
+                                  "result": "", "success": True}
+                elif ctype == "function_result" and cid in calls:
+                    exc = getattr(content, "exception", None)
+                    result = getattr(content, "result", "") or ""
+                    calls[cid]["result"] = str(exc) if exc else str(result)
+                    calls[cid]["success"] = exc is None and not is_refusal(result)
+    except Exception:
+        _log.warning("executor.tool_calls_unread")
+    return [calls[c] for c in order]
 
 
 def _step_texts(response: Any) -> list[str]:
@@ -8490,6 +8688,13 @@ def _context_preamble_parts(
     knowledge_index = _knowledge_index_block(agent_name)
     if knowledge_index:
         parts.append(knowledge_index)
+
+    # §7.1.1 (D99): the member's mailboxes and this chat's email working set,
+    # for the orchestrator only, so it names them on every surface. Ids and
+    # labels, never mail text. From the caches `_prime_email_context` filled.
+    email_ctx = _email_context_block(agent_name)
+    if email_ctx:
+        parts.append(email_ctx)
 
     # Memory context (pre-enriched by the route handler from Mem0) —
     # inject as a system-level preamble so Tier 2 agents also benefit.
