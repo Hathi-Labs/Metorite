@@ -10,6 +10,10 @@ invariants) and the feature modules import from it, never from each other.
 
 # Importing the modules attaches their routes to the shared `router`.
 from gateway.routes.admin import access_requests as _access_requests  # noqa: F401
+
+# `assistant_profile` attaches `/auth/me/assistant-profile` to `me_router`
+# (WS-63 PZ-1).
+from gateway.routes.admin import assistant_profile as _assistant_profile  # noqa: F401
 from gateway.routes.admin import groups as _groups  # noqa: F401
 from gateway.routes.admin import members as _members  # noqa: F401
 from gateway.routes.admin import organization as _organization  # noqa: F401

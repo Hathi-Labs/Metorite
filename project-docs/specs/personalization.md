@@ -1,7 +1,10 @@
 # Personalization — the assistant knows who it talks to
 
-**Status: PROPOSED, 2026-10-23. Nothing is built.** Owner directive of
-2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
+**Status: PROPOSED, 2026-10-23. PZ-1 BUILT 2026-10-23** (migration 294,
+the routes of §4.3 in `routes/admin/assistant_profile.py`, and the fix of
+§2.1). No flag yet, and nothing reads the profile until PZ-2.
+
+Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
 
