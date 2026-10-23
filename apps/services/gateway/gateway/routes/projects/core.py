@@ -3014,6 +3014,8 @@ async def lock_task(db: Any, task_id: str) -> Any:
     the lock read it. Only ``claim_task`` calls it. The claim has passed its
     visibility load, so the lock reads by id only. 404 when a delete crossed
     that load."""
+    # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
+    # visibility load, so the version and title checks hold until the delete.
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")

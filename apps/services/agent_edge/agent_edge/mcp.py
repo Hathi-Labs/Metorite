@@ -340,7 +340,11 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
     if method == "ping":
         return _result(request_id, {})
     if method == "tools/list":
-        return _result(request_id, {"tools": tools.listed(caller.scopes)})
+        # EA-6h: one signed read of the member's switch, so `delete_task`
+        # shows only while the member turned it on. The instructions and the
+        # prompt never name a delete, so they need no read.
+        listed = await tools.listed_for(tools.Context(caller=caller, key=key))
+        return _result(request_id, {"tools": listed})
     if method == "prompts/list":
         return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
     if method == "prompts/get":

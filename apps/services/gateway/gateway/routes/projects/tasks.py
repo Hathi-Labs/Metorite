@@ -10,6 +10,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``tasks.py`` row).
     POST   /projects/tasks/{id}/move
     PUT    /projects/tasks/{id}/assignees        → replaces the set
     POST   /projects/tasks/{id}/claim            → add the caller, and start it
+    POST   /projects/tasks/{id}/agent-delete     → an MCP agent deletes (EA-6h)
     POST   /projects/tasks/{id}/links
     DELETE /projects/tasks/{id}/links/{link_id}
 
@@ -20,11 +21,14 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Header, HTTPException
+from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE
+from acb_common import get_logger
+from fastapi import Depends, Header, HTTPException, Query
 from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
@@ -69,6 +73,7 @@ from gateway.routes.projects.core import (
     node_kind,
     now,
     parent_lane_status,
+    parse_precondition,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -119,8 +124,10 @@ from gateway.routes.projects.relations import (
 from gateway.routes.projects.tags import apply_task_tags
 from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from sqlalchemy import text
+
+_log = get_logger("gateway.projects.tasks")
 
 #: Fields whose change earns a timeline entry. `status_id` is absent on purpose:
 #: a status move is a TRANSITION and gets its own richer activity, so listing it
@@ -272,6 +279,14 @@ class LinkIn(BaseModel):
 class DeleteResponse(BaseModel):
     deleted: str
     cascaded: dict[str, int]
+    #: The ids of the subtasks that :func:`delete_task_in` deleted, for the
+    #: caller's ``pm.task.deleted`` events (D-OP-10). Not in the response.
+    _subtask_ids: list[str] = PrivateAttr(default_factory=list)
+
+    @property
+    def subtask_ids(self) -> list[str]:
+        """The deleted subtasks, sorted. The task itself is not in the list."""
+        return list(self._subtask_ids)
 
 
 # ── List ────────────────────────────────────────────────────────────────────
@@ -1072,24 +1087,136 @@ async def move_task(
     return result
 
 
-async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
+#: The most subtask ids that one delete names (D-OP-10). ``all`` has no such
+#: cap, because the server finds that set itself.
+MAX_DELETE_IDS = 1_000
+#: 422: an id of the set is not a descendant that the caller can see.
+#: Nothing changes. A hidden id gets the same code as a wrong id, so the code
+#: says nothing about a hidden task.
+SUBTASK_NOT_BELOW = "subtask_not_below"
+
+
+def clean_task_ids(ids: Any) -> frozenset[str]:
+    """The ids as canonical UUID strings, or 422 for a value that is not one."""
+    out: set[str] = set()
+    for raw in ids:
+        try:
+            out.add(str(uuid.UUID(str(raw))))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="A subtask id is not a task id.",
+            ) from None
+    if len(out) > MAX_DELETE_IDS:
+        raise HTTPException(
+            status_code=422, detail=f"At most {MAX_DELETE_IDS} subtask ids in one delete.",
+        )
+    return frozenset(out)
+
+
+def kept_parents(
+    tree: dict[str, str], task_id: str, grandparent: str | None, gone: frozenset[str],
+) -> dict[str, str | None]:
+    """The new parent of each KEPT descendant whose parent is deleted.
+
+    It is the nearest ancestor that survives. When no ancestor below the
+    task survives, it is the task's own parent, *grandparent* (D-PM-38,
+    generalised by D-OP-10). A kept descendant whose parent survives does
+    not move.
+    """
+    dead = gone | {task_id}
+    moves: dict[str, str | None] = {}
+    for kid, parent in tree.items():
+        if kid in dead or parent not in dead:
+            continue
+        up = parent
+        # Each step goes one level up inside the tree, so the walk ends after
+        # at most `len(tree)` steps. The cap holds even on a bad row.
+        for _ in range(len(tree) + 1):
+            if up not in dead or up == task_id:
+                break
+            up = tree.get(up, task_id)
+        moves[kid] = grandparent if up in dead else up
+    return moves
+
+
+async def delete_task_in(
+    db: Any, doomed: Any, *, vis: Any = None,
+    delete_ids: frozenset[str] = frozenset(), delete_all: bool = False,
+) -> DeleteResponse:
     """The body of ``DELETE /tasks/{id}``, inside a caller's transaction.
 
     Split out on 2026-09-24 (WS-39 S6g) so My Tasks' purge
     (``DELETE /projects/my/tasks/{id}``) can refuse a task outside the
     member's personal tree and delete in the SAME transaction as that check.
-    ``doomed`` is the row ``load_visible_task`` returned. The caller emits.
+    ``doomed`` is the row ``load_visible_task`` returned. The caller emits
+    one ``pm.task.deleted`` for the task and one for each id of
+    ``subtask_ids`` on the result.
+
+    *delete_ids* and *delete_all* (D-OP-10, owner 2026-10-23). The
+    descendants, at any depth, that go with the task. *delete_all* takes
+    every descendant that *vis* can see. Each id of *delete_ids* must be a
+    descendant that *vis* can see, or the call is 422 and nothing changes.
+    A hidden descendant is never deleted. It is kept, as each descendant
+    not in the set is. A kept one whose parent goes moves up to its nearest
+    surviving ancestor, or to the task's own parent when none below the task
+    survives (:func:`kept_parents`). ``subtasks_kept_hidden`` counts the
+    hidden ones, with no title. Each row goes through a plain ``DELETE``, so
+    the trigger of migration 168 writes one tombstone for each. With neither
+    argument the rule is D-PM-38, the rule before D-OP-10.
     """
     task_id = str(doomed.id)
-    # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
-    # parent, before the row goes. The FK's SET NULL would make them
-    # top-level, which is two levels for a subtask of a subtask. In the same
-    # transaction as the delete, so a failure leaves both as they were.
-    #
-    # WS-27ae / P-27 — the moved ids come back from the UPDATE, because their
-    # `parent_task_id` changed and `updated_at` did not. Without the bump
-    # below, a promoted subtask is an edit no delta client can ever see.
-    children = await lift_subtasks_to_grandparent(db, task_id)
+    removed: list[str] = []
+    hidden = 0
+    if delete_ids or delete_all:
+        if vis is None:
+            # A caller that names subtasks must say who can see them. Fail
+            # closed, and never read "no visibility" as "sees everything".
+            raise ValueError("delete_task_in needs vis to delete subtasks")
+        # One seam (cascade.load_subtree): the whole subtree, each row with
+        # `visible`, through the caller's visibility and the agent's pins.
+        rows = await load_subtree(db, vis, task_id)
+        tree = {str(r.id): str(r.parent_task_id) for r in rows}
+        seen = frozenset(str(r.id) for r in rows if r.visible)
+        hidden = len(tree) - len(seen)
+        if delete_all:
+            ids = seen
+        else:
+            ids = clean_task_ids(delete_ids)
+            if ids - seen:
+                raise HTTPException(status_code=422, detail=SUBTASK_NOT_BELOW)
+        # The grandparent is read from the database, for the reason that
+        # `lift_subtasks_to_grandparent` gives.
+        row = (await db.execute(
+            text("SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+            {"tid": task_id},
+        )).fetchone()
+        grand = getattr(row, "parent_task_id", None) if row is not None else None
+        moves = kept_parents(tree, task_id, str(grand) if grand else None, ids)
+        # The moves go BEFORE the deletes. The FK's SET NULL would otherwise
+        # make each kept row top-level first.
+        for kid, parent in moves.items():
+            await db.execute(
+                text("UPDATE pm_tasks SET parent_task_id = CAST(:p AS uuid)"
+                     " WHERE id = CAST(:k AS uuid)"),
+                {"p": parent, "k": kid},
+            )
+        children = list(moves)
+        removed = sorted(ids)
+        if removed:
+            await db.execute(
+                text("DELETE FROM pm_tasks WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": removed},
+            )
+    else:
+        # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
+        # parent, before the row goes. The FK's SET NULL would make them
+        # top-level, which is two levels for a subtask of a subtask. In the
+        # same transaction as the delete, so a failure leaves both as they were.
+        #
+        # WS-27ae / P-27 — the moved ids come back from the UPDATE, because
+        # their `parent_task_id` changed and `updated_at` did not. Without the
+        # bump below, a promoted subtask is an edit no delta client can see.
+        children = await lift_subtasks_to_grandparent(db, task_id)
     promoted = len(children)
     activities = await count_where(db, "pm_activities", "task_id", task_id)
     assignees = (await db.execute(
@@ -1119,20 +1246,25 @@ async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
     # of tasks at once. What this function still owes is the bump on the
     # rows the delete CHANGED but did not remove.
     await touch_task(db, getattr(doomed, "parent_task_id", None), *children)
-    return DeleteResponse(
+    out = DeleteResponse(
         deleted=task_id,
         cascaded={
             "activities": int(activities),
             "assignees": int(assignees),
             "links": int(links),
             "subtasks_promoted": int(promoted),
+            "subtasks_deleted": len(removed),
+            "subtasks_kept_hidden": int(hidden),
         },
     )
+    out._subtask_ids.extend(removed)
+    return out
 
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    delete_subtask_ids: list[str] = Query(default=[]),
 ) -> DeleteResponse:
     """Delete a task, and say what went with it.
 
@@ -1144,15 +1276,139 @@ async def delete_task(
     the exact class of lie the N8 purge shipped: a count that reassures in the
     wrong direction.
 
+    ``?delete_subtask_ids=<id>``, once for each id (D-OP-10), names the
+    descendants that go with the task. A query and not a body, because a
+    DELETE in this package takes no body. The default is none, so D-PM-38
+    holds. ``subtasks_deleted`` counts the ids that went. Each id must be a
+    descendant the member can see, or the call is 422 ``subtask_not_below``.
+    One ``pm.task.deleted`` goes out for the task and one for each subtask.
+
     The work is :func:`delete_task_in`. This route opens the session, loads
     the task through the caller's visibility and emits the event.
     """
+    # A direct call, as most tests of this package make, gets the `Query`
+    # object itself, so only a list counts (the reason `require_precondition`
+    # gives for `If-Match`).
+    ids = clean_task_ids(delete_subtask_ids if isinstance(delete_subtask_ids, list) else [])
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
-        result = await delete_task_in(db, doomed)
+        result = await delete_task_in(db, doomed, vis=vis, delete_ids=ids)
 
-    await emit("pm.task.deleted", {"task_id": task_id})
+    for gone in (task_id, *result.subtask_ids):
+        await emit("pm.task.deleted", {"task_id": gone})
+    return result
+
+
+# ── The delete of an agent, with the member's yes (WS-55 EA-6h, EA3-51) ─────
+
+#: The coded refusals of ``agent-delete``. The MCP edge maps each one to a
+#: fixed text, and never shows the detail itself.
+#: 403: the member's switch "Let my AI agents delete tasks" is off.
+AGENT_DELETE_OFF = "agent_delete_off"
+#: 409: the task changed after the agent read it.
+AGENT_DELETE_STALE = "agent_delete_stale"
+#: 409: ``confirm_title`` is not the exact current title.
+AGENT_DELETE_TITLE = "agent_delete_title"
+
+#: The longest ``confirm_title``. The edge takes the same cap.
+AGENT_DELETE_TITLE_MAX = 2_000
+
+
+class AgentDeleteIn(BaseModel):
+    """``POST /projects/tasks/{id}/agent-delete`` (EA-6h). The agent sends
+    the version and the title that it read, so it must read the task and
+    name it (EA3-51 layer 3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: str = Field(min_length=1, max_length=64)
+    confirm_title: str = Field(min_length=1, max_length=AGENT_DELETE_TITLE_MAX)
+    #: The member's answer (D-OP-10). Required, with no default: the agent
+    #: lists the subtasks to the person and passes what they chose. ``none``
+    #: keeps every one, ``all`` deletes the whole subtree, and a list names
+    #: the ids that go.
+    subtasks_to_delete: Literal["none", "all"] | Annotated[
+        list[str], Field(max_length=MAX_DELETE_IDS)]
+
+
+def _agent_delete_via(user: UserContext) -> str:
+    """The ``mcp:<slug>`` stamp of the signed agent caller, or 403.
+
+    A member deletes with ``DELETE /projects/tasks/{id}``. This route is the
+    agent's only, and it needs ``projects:write`` (branch 0 checks it too).
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an agent uses this route. A member deletes a task in Metorite.",
+        )
+    via = str(getattr(agent, "actor_via", "") or "")
+    if not (via.startswith("mcp:") and ACTOR_VIA_PATTERN.fullmatch(via)):
+        raise HTTPException(status_code=403, detail="This agent connection has no client stamp.")
+    if PROJECTS_WRITE not in tuple(getattr(agent, "scopes", ()) or ()):
+        raise HTTPException(status_code=403, detail="This connection may not write.")
+    return via
+
+
+@router.post("/tasks/{task_id}/agent-delete")
+async def agent_delete_task(
+    task_id: str, payload: AgentDeleteIn,
+    user: UserContext = Depends(get_current_user),
+) -> DeleteResponse:
+    """An MCP agent deletes one task, after the member said yes (EA3-51).
+
+    The four layers of EA3-51. (1) The member's switch, read here in the
+    transaction of the delete: off answers 403 ``agent_delete_off``. (2) The
+    tool's ``destructiveHint`` and its text, at the edge. (3) The task row,
+    locked: a version other than ``updated_at`` or a title other than the
+    exact current title answers 409, and nothing changes. (4) The delete goes
+    through :func:`delete_task_in`, the one core, and the trigger of
+    migration 168 writes each tombstone. ``subtasks_to_delete`` is the
+    member's answer (D-OP-10). ``all`` takes each descendant that the member
+    can see through the connection's pins, and keeps each hidden one. An id
+    that is not such a descendant is 422 ``subtask_not_below``, and nothing
+    changes.
+
+    A task outside the member's visibility, or the connection's pins, is 404.
+    One ``pm.task.deleted`` goes out for the task and one for each deleted
+    subtask, after the commit. Each carries the client stamp as ``via``.
+    """
+    via = _agent_delete_via(user)
+    try:
+        task_id = str(uuid.UUID(task_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    expected = parse_precondition(payload.expected_version)
+    from gateway.routes.admin.agent_access_switch import delete_enabled
+
+    async with _tenant_session() as db:
+        if not await delete_enabled(db, getattr(user, "email", None) or ""):
+            raise HTTPException(status_code=403, detail=AGENT_DELETE_OFF)
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, task_id)
+        # The lock holds the row until the delete commits, so a member's edit
+        # cannot land between the two checks and the delete.
+        doomed = await lock_task(db, task_id)
+        if doomed.updated_at != expected:
+            raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
+        if doomed.title != payload.confirm_title:
+            raise HTTPException(status_code=409, detail=AGENT_DELETE_TITLE)
+        # `vis` carries the agent's pins (`core._narrow_for_agent`), so a
+        # descendant outside them reads as hidden and stays.
+        choice = payload.subtasks_to_delete
+        result = await delete_task_in(
+            db, doomed, vis=vis, delete_all=choice == "all",
+            delete_ids=frozenset() if isinstance(choice, str) else clean_task_ids(choice),
+        )
+
+    _log.info("projects.task.agent_deleted", task_id=task_id, via=via,
+              subtasks_deleted=len(result.subtask_ids),
+              subtasks_kept_hidden=result.cascaded.get("subtasks_kept_hidden", 0),
+              connection_id=str(getattr(user.agent, "connection_id", "")))
+    for gone in (task_id, *result.subtask_ids):
+        await emit("pm.task.deleted", {"task_id": gone, "via": via})
     return result
 
 
