@@ -19,6 +19,7 @@
 
 import Button from "@/components/ui/Button";
 
+import { visibleAgentItems } from "../lib/compactChrome";
 import {
   AGENT_STRIP,
   type AgentFocus,
@@ -31,9 +32,14 @@ interface Props {
   /** The count button that is on, or null. */
   focus: AgentFocus | null;
   onFocus: (next: AgentFocus | null) => void;
+  /**
+   * WS-64 OP-1 (the compact chrome): a count of zero draws no button, except
+   * the one that is on. Off, the strip draws all five as it always did.
+   */
+  hideZero?: boolean;
 }
 
-export function AgentWorkStrip({ summary, focus, onFocus }: Props) {
+export function AgentWorkStrip({ summary, focus, onFocus, hideZero = false }: Props) {
   if (!summary || !(stripVisible(summary) || focus)) return null;
   return (
     <div
@@ -42,7 +48,7 @@ export function AgentWorkStrip({ summary, focus, onFocus }: Props) {
       data-agent-work-strip=""
       className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5"
     >
-      {AGENT_STRIP.map((item) => {
+      {(hideZero ? visibleAgentItems(summary, focus) : AGENT_STRIP).map((item) => {
         const count = summary[item.field] ?? 0;
         const on = focus === item.focus;
         return (
