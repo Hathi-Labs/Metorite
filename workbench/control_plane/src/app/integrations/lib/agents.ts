@@ -223,3 +223,59 @@ export async function revoke(id: string, admin: boolean): Promise<"revoked" | "g
   if (res.status === 404) return "gone";
   throw new AgentsError(`The agent was not revoked (${res.status}).`, res.status);
 }
+
+// ── The delete switch (WS-55 EA-6h, EA3-51) ───────────────────────────────
+//
+//     GET /api/auth/me/agent-access   the member's switch
+//     PUT /api/auth/me/agent-access   set it, body {delete_enabled}
+//
+// One switch, default off. With it on, a connected agent may delete a task
+// after the member says yes in the agent. The gateway checks it on each delete.
+
+/** The cache key of the switch. It shares the prefix, so a revoke wakes it too. */
+export const AGENT_ACCESS_KEY = "agents:access";
+
+export interface AgentAccess {
+  delete_enabled: boolean;
+}
+
+/** The words of the card. They must be true of what the gateway does. */
+export const DELETE_SWITCH_COPY = {
+  title: "Let my AI agents delete tasks",
+  body:
+    "A connected agent asks you first, in the agent, and names the task. " +
+    "A delete cannot be undone. You choose which subtasks are deleted and which stay.",
+  on: "Your agents can delete a task after you say yes.",
+  off: "Your agents cannot delete tasks.",
+} as const;
+
+/** The line under the switch, for its state. */
+export function deleteSwitchHint(on: boolean): string {
+  return on ? DELETE_SWITCH_COPY.on : DELETE_SWITCH_COPY.off;
+}
+
+async function readAccess(res: Response, failed: string): Promise<AgentAccess> {
+  if (!res.ok) throw new AgentsError(`${failed} (${res.status}).`, res.status);
+  const body = (await res.json().catch(() => ({}))) as { delete_enabled?: unknown };
+  // A body with no boolean is an error, never "off": the card must not draw
+  // a state that the gateway did not give.
+  if (typeof body.delete_enabled !== "boolean") throw new AgentsError(`${failed}.`, res.status);
+  return { delete_enabled: body.delete_enabled };
+}
+
+/** The member's switch. `null` when agent connections are off (404). */
+export async function readAgentAccess(): Promise<AgentAccess | null> {
+  const res = await fetch("/api/auth/me/agent-access", { cache: "no-store" });
+  if (res.status === 404) return null;
+  return readAccess(res, "The setting did not load");
+}
+
+/** Set the switch. Returns what the gateway stored. */
+export async function saveAgentAccess(on: boolean): Promise<AgentAccess> {
+  const res = await fetch("/api/auth/me/agent-access", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ delete_enabled: on }),
+  });
+  return readAccess(res, "The setting was not saved");
+}

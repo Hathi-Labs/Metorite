@@ -58,6 +58,8 @@ request too, with the measured result of each.
 * D20 (H12). ``G/tasks.py`` ``delete_task_in``: no check that each id is a descendant. ``test_h12_an_id_that_is_not_a_descendant_gets_422``.
 * D21 (H13). ``G/tasks.py`` ``AgentDeleteIn.subtasks_to_delete`` gets the default ``none``. ``test_h13_a_missing_subtasks_to_delete_gets_422``.
 * D22 (H14). ``G/tasks.py`` ``_agent_delete_ids``: ``all`` takes the direct children only. ``test_h14_all_removes_the_whole_subtree``.
+* D23. ``G/tasks.py`` ``delete_task_in``: the default set is not empty. ``test_the_core_deletes_no_subtask_by_default``.
+* D10b, measured GREEN on purpose: ``BYPASSRLS`` alone. The ``vis_org`` predicate of ``load_visible_task`` still hides organization B. D9 alone leaves H6 green too, because FORCE RLS still hides it.
 """
 from __future__ import annotations
 
