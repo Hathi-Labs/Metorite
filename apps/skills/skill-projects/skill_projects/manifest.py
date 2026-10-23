@@ -93,6 +93,13 @@ class Route:
 _DELETE_REASON = (
     "The purge of a soft-deleted personal task is My Tasks' own step. The chat has delete_task."
 )
+#: WS-55 EA-6h (EA3-51). An outside agent deletes a task over MCP, after the
+#: member said yes in the agent and turned on their own switch. The chat
+#: deletes through `delete_task` and its card (D-PM-35 binds the chat).
+_AGENT_DELETE_REASON = (
+    "The MCP door only (EA3-51): an outside agent deletes after the member's yes. "
+    "The chat deletes through delete_task and its card."
+)
 #: Delivery is the Reports app's, and arming the schedule is owner-gated
 #: (§9.12.8). The chat renders a report. It never sends one.
 _DELIVERY_REASON = (
@@ -461,6 +468,10 @@ MANIFEST: tuple[Route, ...] = (
     # class C, and it stays out of MCP_ROUTES (external_agent_access.md §9.5).
     Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "approve_task_archive", "C"),
+    # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It
+    # is class X: the chat never reaches it. `test_mcp_edge_coverage.py`
+    # names it as the one class X pair that the edge may hold (§9.5).
+    Route("POST", "/projects/tasks/{task_id}/agent-delete", "", "X", _AGENT_DELETE_REASON),
     # ── agent_summary.py — the strip above the board (WS-55 EA-13e, EA3-43) ──
     # Five counts over the tasks the caller can see. A read, so class A. The
     # chat reads the same counts through a tool after EA-12e.
