@@ -73,6 +73,7 @@ READ_POSTS = {
     "/email/rules/test": "a dry run of the rules on one email",
     "/email/rules/test/recent": "a dry run of the rules on the newest inbox mail",
     "/email/voice-profile/sample": "a sample text in the voice, saves nothing",
+    "/email/compose-assist": "the drafter writes a text and saves nothing",
 }
 #: Each POST that writes only a reply draft in the member's OWN Drafts, by
 #: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in

@@ -5750,12 +5750,13 @@ def _recipient_changes(
 @_annotate_risk(open_world=False, destructive=False)
 async def edit_draft(
     account_id: str,
-    draft_id: str,
+    draft_id: str = "",
     body: str | None = None,
     subject: str | None = None,
     to: list[str] | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    rewrite: str | None = None,
 ) -> str:
     """Change a draft that is in Drafts: its text, its subject or its
     recipients. Pass only what changes. Each part that you leave out stays
@@ -5763,11 +5764,33 @@ async def edit_draft(
     read_email, change what the member asked, and keep the rest word for
     word. ``to``, ``cc`` and ``bcc`` each replace that whole list.
 
-    Shows the member the changed draft on a card. Sends nothing: send it
-    after with send_draft, which shows its own card."""
+    Leave ``draft_id`` out to save a NEW email (not a reply) in Drafts, with
+    ``to``, ``subject`` and ``body``. For a reply, use compose_reply.
+
+    ``rewrite`` asks the drafter to write or improve the text first, in the
+    member's words ("make it shorter", "more formal"). It works on ``body``,
+    or on the text of the draft when you leave ``body`` out.
+
+    Shows the member the draft on a card. Sends nothing: send it after with
+    send_draft, which shows its own card."""
     refused, body, subject = _edit_text(body, subject)
     if refused:
         return refused
+    if not (draft_id or "").strip():
+        return await _new_draft(account_id, body, subject, to, cc, bcc, rewrite)
+    if rewrite:
+        if body is None:
+            # The new text only, as read_email gives it: the drafter must not
+            # rewrite the quoted thread.
+            try:
+                row = await _get(f"/email/messages/{draft_id}",
+                                 params={"trim": "true", "mark_read": "false"}) or {}
+            except GatewayError:
+                row = {}
+            body = str(row.get("body_text") or "")
+        body, why = await _rewritten(account_id, body, rewrite, subject, to)
+        if why:
+            return why
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Nothing changed. {sender}"
@@ -5849,6 +5872,73 @@ def _edit_save_refusal(exc: Exception) -> str:
                 "read_email, and pass its whole text again in plain text in body.")
     return (f"Nothing changed. {exc}. Read the draft with read_email, and "
             "pass its whole text, with the change, in body.")
+
+
+async def _rewritten(
+    account_id: str, body: str | None, instruction: str, subject: str | None,
+    to: list[str] | None,
+) -> tuple[str, str]:
+    """``(text, "")``: the drafter's text for *instruction*, from
+    ``POST /email/compose-assist``. It writes nothing. Else ``("", refusal)``."""
+    res = await _post("/email/compose-assist", {
+        "account_id": account_id, "body": body or "", "instruction": instruction,
+        "mode": "new", "subject": subject or "",
+        "to": [str(a) for a in to or []] or None,
+    }) or {}
+    text = str(res.get("draft") or "").strip()
+    if not text:
+        return "", ("Nothing changed. The drafter wrote no text for that. Write the "
+                    "text yourself in body, or ask the member for more detail.")
+    from acb_skills.reply_card import visible_spacing
+
+    return visible_spacing(text), ""
+
+
+async def _new_draft(
+    account_id: str, body: str | None, subject: str | None, to: list[str] | None,
+    cc: list[str] | None, bcc: list[str] | None, rewrite: str | None,
+) -> str:
+    """``edit_draft`` with no ``draft_id``: a new email saved in Drafts,
+    behind the draft card. ``PUT /email/drafts`` with no ``draft_id`` and no
+    ``reply_to_message_id`` makes a standalone draft. Nothing is sent."""
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts and use the mailbox to write from.")
+    lists = {"to": [str(a).strip() for a in to or [] if str(a).strip()],
+             "cc": [str(a).strip() for a in cc or [] if str(a).strip()],
+             "bcc": [str(a).strip() for a in bcc or [] if str(a).strip()]}
+    if not lists["to"]:
+        return "Nothing changed. A new draft needs one To at least."
+    if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
+        return f"Nothing changed. An address is longer than {_TARGET_LIMIT} characters."
+    if rewrite:
+        body, why = await _rewritten(account_id, body, rewrite, subject, lists["to"])
+        if why:
+            return why
+    if body is None or not body.strip():
+        return "Nothing changed. Give the text in body, or ask the drafter with rewrite."
+    detail, context = _draft_card(sender, subject or "", lists)
+    if not context:
+        return "Nothing changed. The draft has too many recipients for one card."
+    refusal = await _card_refusal(
+        "Save this new email in Drafts?",
+        detail + " · Nothing is sent.",
+        "Cancelled. No draft was saved.",
+        _with_draft_text(context, body),
+    )
+    if refusal:
+        return refusal
+    try:
+        res = await _put("/email/drafts", {
+            "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
+            "bcc": lists["bcc"], "subject": subject or "", "body": body,
+            "from_chat": True,
+        }) or {}
+    except GatewayError as exc:
+        return _edit_save_refusal(exc)
+    return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
+            "Nothing was sent. Send it with send_draft when the member asks.")
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:

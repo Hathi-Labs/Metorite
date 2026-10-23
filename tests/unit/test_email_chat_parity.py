@@ -790,3 +790,68 @@ async def test_a_label_colour_asks_and_patches_the_label(gw: Gateway) -> None:
     assert out.endswith("with the colour preset7.")
     out = await agents.create_label(BOX, "Finance", color="red")
     assert out.startswith("Nothing changed.") and len(gw.cards) == 1
+
+
+# ── 13. A new email in Drafts, and the drafter's rewrite ─────────────────────
+
+
+async def test_a_new_draft_shows_each_recipient_and_the_text_then_saves(
+    gw: Gateway,
+) -> None:
+    gw.answers[("PUT", "/email/drafts")] = {"id": "d9"}
+    gw.answer = False
+    out = await agents.edit_draft(BOX, to=["kim@contoso.test"], cc=["lee@contoso.test"],
+                                  subject="Quote", body="Hi Kim,\n\nThe quote is attached.")
+    [card] = gw.cards
+    assert card["title"] == "Save this new email in Drafts?"
+    assert "- To: kim@contoso.test" in card["context"]
+    assert "- Cc: lee@contoso.test" in card["context"]
+    assert "The quote is attached." in card["context"]
+    assert "Nothing is sent." in card["detail"]
+    assert gw.writes == [] and out.startswith("Cancelled")
+    gw.answer = True
+    out = await agents.edit_draft(BOX, to=["kim@contoso.test"], subject="Quote",
+                                  body="Hi Kim,")
+    [(method, path, body)] = gw.writes
+    assert (method, path) == ("PUT", "/email/drafts")
+    assert "draft_id" not in body and "reply_to_message_id" not in body
+    assert body["to"] == ["kim@contoso.test"] and body["from_chat"] is True
+    assert "draft_id d9" in out and "Nothing was sent" in out
+
+
+async def test_a_rewrite_asks_the_drafter_and_shows_its_text(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/compose-assist")] = {"draft": "Dear Kim,\n\nShort text."}
+    await agents.edit_draft(BOX, to=["kim@contoso.test"], subject="Quote",
+                            body="hi kim here is the quote thx", rewrite="more formal")
+    [card] = gw.cards
+    assert "Short text." in card["context"]
+    assist = [b for _m, p, b in gw.writes if p == "/email/compose-assist"]
+    assert assist == [{"account_id": BOX, "body": "hi kim here is the quote thx",
+                       "instruction": "more formal", "mode": "new", "subject": "Quote",
+                       "to": ["kim@contoso.test"]}]
+    [(_m, _p, saved)] = [w for w in gw.writes if w[1] == "/email/drafts"]
+    assert saved["body"] == "Dear Kim,\n\nShort text."
+
+
+async def test_a_new_draft_needs_a_recipient_and_a_text(gw: Gateway) -> None:
+    assert (await agents.edit_draft(BOX, body="Hi")).startswith("Nothing changed.")
+    assert (await agents.edit_draft(BOX, to=["a@b.test"])).startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_a_headless_run_saves_no_new_draft(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from acb_skills import ask_tools
+
+    monkeypatch.undo()
+
+    async def fake_request(method: str, path: str, **kwargs: Any) -> _Resp:
+        gw.calls.append((method, path, kwargs.get("json"), dict(kwargs.get("params") or {})))
+        return _Resp(gw.answer_of(method, path, kwargs.get("json"), {}))
+
+    monkeypatch.setattr(agents, "_request", fake_request)
+    with ask_tools.refuse_cards():
+        out = await agents.edit_draft(BOX, to=["kim@contoso.test"], body="Hi")
+    assert out == agents._NO_CARD_CHANNEL
+    assert gw.writes == []
