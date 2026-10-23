@@ -321,7 +321,7 @@ class TestTheTool:
         risk = getattr(agents.query_insights, "__tool_risk__", {})
         assert risk.get("open_world") is False and risk.get("destructive") is False
 
-    def test_the_two_tool_lists_agree_with_57_names(self):
+    def test_the_two_tool_lists_agree_with_58_names(self):
         config = json.loads((_AGENT_DIR / "config.json").read_text(encoding="utf-8"))
         # WS-48 N2: ``narrow_and_read`` is in the scope, and only a build
         # with ``NARROWING_AGENTS`` on holds it (test_own_tool_scope_parity.py).
@@ -338,7 +338,8 @@ class TestTheTool:
         # and cancel_scheduled_send (test_email_send_later.py).
         # 57 since chat parity wave 1 (§22): copy_rules, rule_guidance,
         # voice_profile and update_account (test_email_chat_parity.py).
-        assert len(scope) == len(set(scope)) == 57
+        # 58 since apply_settings_to_mailboxes (multi-inbox chat wave).
+        assert len(scope) == len(set(scope)) == 58
         assert "query_insights" in scope
 
 

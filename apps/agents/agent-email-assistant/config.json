@@ -92,6 +92,7 @@
     "list_rule_history",
     "resolve_execution",
     "update_assistant_settings",
+    "apply_settings_to_mailboxes",
     "list_knowledge",
     "save_knowledge",
     "delete_knowledge",
