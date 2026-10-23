@@ -465,9 +465,17 @@ class TestTheRead:
         assert _client().get(_URL).json() == {
             "v": 1, "learning": True,
             "address": {"name": "VJ"}, "style": {"length": "short"},
-            "facts": [{"id": "f1", "text": "ok", "kind": "about"}],
+            "facts": [{"id": "f1", "text": "ok", "kind": "about"},
+                      {"id": "f2", "text": "bad kind", "kind": "about"}],
             "aliases": [{"id": "a2", "alias": "Mo", "email": "mo@a.b"}],
         }
+
+    def test_an_edit_of_an_item_the_read_drops_is_not_a_503(self, fake: _FakeDB) -> None:
+        # PZ-1 verify, finding 2: the write commits, so the answer is a 200.
+        fake.row = {"aliases": [{"id": "a1", "alias": "Raj", "email": "bad"}]}
+        res = _client().patch(f"{_URL}/aliases/a1", json={"alias": "R"})
+        assert res.status_code == 200, res.text
+        assert res.json()["id"] == "a1"
 
     def test_a_json_string_column_reads_too(self, fake: _FakeDB) -> None:
         fake.row = json.dumps({"learning": False})

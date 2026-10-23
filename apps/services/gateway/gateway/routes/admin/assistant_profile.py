@@ -296,9 +296,13 @@ def _stored_fact(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict) or not isinstance(item.get("id"), str):
         return None
     text = _lenient(lambda v: _text(v, FACT_MAX, "a fact"), item.get("text"))
-    if text is None or item.get("kind") not in FACT_KINDS:
+    if text is None:
         return None
-    out: dict[str, Any] = {"id": item["id"], "text": text, "kind": item["kind"]}
+    # A kind this build does not know (a later slice may add one) reads as
+    # ``about``. The fact still counts against the caps, so the member must
+    # see it to delete it (PZ-1 verify, finding 2).
+    kind = item.get("kind") if item.get("kind") in FACT_KINDS else "about"
+    out: dict[str, Any] = {"id": item["id"], "text": text, "kind": kind}
     if item.get("source") in FACT_SOURCES:
         out["source"] = item["source"]
     if isinstance(item.get("at"), str):
@@ -537,11 +541,21 @@ def _new_id(prefix: str) -> str:
 
 
 def _item(stored: Any, key: str, item_id: str) -> dict[str, Any]:
+    """The item *item_id* of a committed write, as the read shows it.
+
+    The write has committed when this runs, so it never answers an error. An
+    item that the lenient read drops answers as stored (PZ-1 verify, finding
+    2: a 503 here reported a committed change as a failure).
+    """
     for one in stored_profile(stored).get(key, []):
         if one["id"] == item_id:
             return dict(one)
-    # The write passed every check, so the lenient read keeps the item.
-    raise HTTPException(status_code=503, detail="unavailable")
+    raw = _as_dict(stored)
+    items = raw.get(key) if isinstance(raw, dict) else None
+    for one in items if isinstance(items, list) else []:
+        if isinstance(one, dict) and one.get("id") == item_id:
+            return dict(one)
+    return {"id": item_id}
 
 
 @me_router.get("/me/assistant-profile", summary="The caller's assistant profile (PZ-1)")
