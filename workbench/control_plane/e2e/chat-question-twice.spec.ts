@@ -38,8 +38,8 @@ function askFrame(a: Ask): Record<string, unknown> {
   };
 }
 
-async function install(page: Page, asks: Ask[]) {
-  await page.addInitScript(({ asks, frames }) => {
+async function install(page: Page, asks: Ask[], opts: { respondFails?: boolean } = {}) {
+  await page.addInitScript(({ asks, frames, respondFails }) => {
     window.localStorage.clear();
     const w = window as unknown as Record<string, unknown>;
     const bodies: Record<string, unknown>[] = [];
@@ -55,6 +55,7 @@ async function install(page: Page, asks: Ask[]) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/agent/respond-input")) {
         bodies.push(JSON.parse(String(init?.body ?? "{}")));
+        if (respondFails) throw new TypeError("Failed to fetch");
         setTimeout(() => gates[bodies.length - 1]?.(), 50);
         return json({ ok: true });
       }
@@ -95,7 +96,7 @@ async function install(page: Page, asks: Ask[]) {
       }
       return orig(input, init);
     };
-  }, { asks, frames: asks.map(askFrame) });
+  }, { asks, frames: asks.map(askFrame), respondFails: !!opts.respondFails });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -201,6 +202,19 @@ test.describe("a typed message answers the one waiting question", () => {
     await expect(box).toHaveValue("");
     const chats = await page.evaluate(() => ((window as unknown as { __chat: unknown[] }).__chat ?? []).length);
     expect(chats).toBe(1);
+  });
+
+  test("ask_user: an answer that does not reach the run goes back in the box", async ({ page }) => {
+    await install(page, [{ kind: "user", rid: "g".repeat(32), options: [], freeform: true }], { respondFails: true });
+    await startTurn(page);
+
+    await expect(page.locator('[data-elicitation-card="open"]')).toBeVisible({ timeout: 15_000 });
+    const box = page.getByRole("textbox", { name: /^Message / });
+    await box.fill("veena@fracktal.in");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(async () => (await respond(page)).length).toBeGreaterThan(0);
+    await expect(box).toHaveValue("veena@fracktal.in");
+    await expect(page.locator('[data-elicitation-card="open"]')).toBeVisible();
   });
 
   test("ask_questions of one pick-only question: a typed message steers", async ({ page }) => {

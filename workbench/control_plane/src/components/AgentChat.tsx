@@ -10,7 +10,6 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { DismissableCard } from "@/components/ToolCardShell";
 import { useState, useRef, useEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from "react";
 import React from "react";
 import Link from "next/link";
@@ -1924,7 +1923,9 @@ export default function AgentChat({
   const elicitationWaits = !!elicitation && elicitation.answered === undefined && !elicitation.declined;
   const userInputWaits = !!userInput && userInput.answered === undefined && !userInput.declined;
   // A card's answer, from its own Submit or from the composer.
-  const answerElicitation = (answers: ElicitationAnswers) => {
+  // `giveBack` puts typed words back in the box when the answer did not
+  // reach the run, so they are never lost (review of this change, P2).
+  const answerElicitation = (answers: ElicitationAnswers, giveBack?: () => void) => {
     if (!elicitation) return;
     if (elicitation.requestId) {
       // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
@@ -1936,7 +1937,7 @@ export default function AgentChat({
       noteCardAnswered(sessionId, reqId, summary);
       postRespondInput(
         { request_id: reqId, answer, was_freeform: wasFreeform },
-        () => setElicitation(card),
+        () => { setElicitation(card); giveBack?.(); },
         // A 4xx says no question waits on this id (a stale card).
         // The answer goes out as a message, as the genUI path
         // does, so it is never lost (2026-10-09). The message
@@ -1947,7 +1948,9 @@ export default function AgentChat({
           // A card redrawn from the log may be one the run already
           // took an answer for: a refusal then is no lost answer,
           // and a steer would send it twice (review of #1171, P1).
-          if (outcome === "drop" && !redrawnRef.current.all.has(reqId)) submitText(answer);
+          if (outcome !== "drop") return;
+          if (!redrawnRef.current.all.has(reqId)) submitText(answer);
+          else giveBack?.();
         },
       );
     } else {
@@ -1955,7 +1958,7 @@ export default function AgentChat({
       setElicitation(null);
     }
   };
-  const answerUserInput = (answers: ElicitationAnswers) => {
+  const answerUserInput = (answers: ElicitationAnswers, giveBack?: () => void) => {
     if (!userInput) return;
     const { answer, wasFreeform } = userInputAnswer(answers);
     const card = userInput;
@@ -1963,11 +1966,13 @@ export default function AgentChat({
     noteCardAnswered(sessionId, card.requestId, answer);
     postRespondInput(
       { request_id: card.requestId, answer, was_freeform: wasFreeform },
-      () => setUserInput(card),
+      () => { setUserInput(card); giveBack?.(); },
       (outcome) => {
         if (outcome === "ok") return;
         setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
-        if (outcome === "drop" && answer && !redrawnRef.current.all.has(card.requestId)) submitText(answer);
+        if (outcome !== "drop" || !answer) return;
+        if (!redrawnRef.current.all.has(card.requestId)) submitText(answer);
+        else giveBack?.();
       },
     );
   };
@@ -1975,8 +1980,9 @@ export default function AgentChat({
   // (`lib/typedAnswer.ts`, owner report 2026-10-23). Else it steers.
   const typedTarget = typedAnswerTarget({ userInput, elicitation });
   const answerTyped = (text: string): boolean => {
-    if (typedTarget === "userInput") answerUserInput(typedAnswers("userInput", text));
-    else if (typedTarget === "elicitation") answerElicitation(typedAnswers("elicitation", text, elicitation?.questions));
+    const giveBack = () => setInput((prev) => (prev.trim() ? prev : text));
+    if (typedTarget === "userInput") answerUserInput(typedAnswers("userInput", text), giveBack);
+    else if (typedTarget === "elicitation") answerElicitation(typedAnswers("elicitation", text, elicitation?.questions), giveBack);
     else return false;
     return true;
   };
