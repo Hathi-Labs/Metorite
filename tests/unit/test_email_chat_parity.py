@@ -954,3 +954,24 @@ async def test_p2_3_actions_keep_the_text_and_the_level_and_the_card_names_each_
         {"id": "a1", "type": "DRAFT_EMAIL", "subject": "Re: quote", "content": "We confirm.",
          "content_manual": True, "delay_minutes": 30},
         {"id": "a2", "type": "NOTIFY_ME", "label": "urgent"}]
+
+
+_LONG_SENDERS = [f"{'n' * 90}{i}@list.test" for i in range(50)]
+
+
+async def test_p2_4_several_senders_that_the_card_would_cut_change_nothing(
+    gw: Gateway,
+) -> None:
+    out = await agents.set_sender_status(BOX, status="block", emails=_LONG_SENDERS)
+    assert out.startswith("Nothing changed.") and "Split" in out
+    gw.answers[("POST", "/email/messages/bulk")] = {"matched": 3}
+    out = await agents.bulk_manage_inbox("archive", sender_emails=_LONG_SENDERS)
+    assert out.startswith("Nothing changed.") and "Split" in out
+    assert gw.cards == []
+    assert all(b.get("dry_run") for _m, _p, b in gw.writes)
+
+
+async def test_p2_4_a_style_guide_that_the_card_would_cut_saves_nothing(gw: Gateway) -> None:
+    out = await agents.voice_profile(BOX, action="save", style_guide="word " * 798)
+    assert out.startswith("Nothing changed."), out
+    assert gw.cards == [] and gw.writes == []

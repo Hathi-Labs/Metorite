@@ -4220,6 +4220,11 @@ async def voice_profile(
         if enabled is not None:
             body["enabled"] = enabled
             lines.append(f"The profile is {'on' if enabled else 'off'}.")
+        # Review fix round 1 (P2-4): the card shows the whole guide, or the
+        # tool saves nothing.
+        if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
+            return ("Nothing changed. The style guide is too long to show on one card. "
+                    "Ask the member for a shorter guide.")
         refusal = await _card_refusal(
             f"Change the voice profile of {box}?",
             f"The drafter follows the profile in each later reply. Mailbox: {box}.",
@@ -6352,6 +6357,10 @@ async def _bulk_by_senders(
         where.append(", already read")
     lines = ["Each sender, with its count:"] + [
         f"- {_card_text(a, _TARGET_LIMIT)}: about {n}" for a, n in todo]
+    # Review fix round 1 (P2-4): a list that the card would cut acts on nothing.
+    if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
+        return ("Nothing changed. These senders are too many to show on one card. "
+                "Split the list, and call again for each part.")
     refusal = await _card_refusal(
         f"{_BULK_VERBS[action]} about {total} emails from {len(todo)} senders?",
         f"Each email from a sender below{''.join(where)}{box}. The count can "
@@ -6811,14 +6820,20 @@ async def set_sender_status(
     box = await _named(account_id)
     many = len(senders) > 1
     who = f"{len(senders)} senders" if many else _card_text(senders[0], 120)
+    listing = ("Each sender:\n" + "\n".join(f"- {_card_text(x, _TARGET_LIMIT)}"
+                                            for x in senders) if many else "")
+    # Review fix round 1 (P2-4): ``request_confirmation`` cuts the context at
+    # 4000 characters with no mark, and the tool acts on each sender.
+    if len(listing) > _CARD_CONTEXT_LIMIT:
+        return ("Nothing changed. These senders are too many to show on one card. "
+                "Split the list, and call again for each part.")
     refusal = await _card_refusal(
         title.format(who=who, box=box),
         detail.replace("this sender", "each sender").replace("the sender", "each sender")
         if many else detail,
         "Cancelled — the sender was not changed." if not many
         else "Cancelled — no sender was changed.",
-        "Each sender:\n" + "\n".join(f"- {_card_text(x, _TARGET_LIMIT)}" for x in senders)
-        if many else "",
+        listing,
     )
     if refusal:
         return refusal
