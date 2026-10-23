@@ -1,11 +1,11 @@
 # One Projects app — My Tasks becomes a view, and the phone shows the work
 
-**Status: PROPOSED, 2026-10-23.** Owner directive of 2026-10-23, recorded in §1.
+**Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
 **WS-64**. Nothing is built.
 
-§7 proposes **D-OP-1** to **D-OP-8**. Each has a default. The owner must
-answer the four questions of §8 before slice OP-4. Every slice in §9 is
+§7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
+2026-10-23 (§8). Every slice in §9 is
 AGENT-SAFE to build dark, except where §9 says OWNER-GATE.
 
 **What this spec owns.**
@@ -323,16 +323,28 @@ for each view. `TaskToolbar.tsx` retires in OP-5.
 
 ---
 
-## 8. Questions for the owner
+## 8. The owner's answers (2026-10-23)
 
-1. **The name.** "My work" (default), "My tasks" or "Me"?
-2. **The landing view.** When I open Projects, do I land on My work → Today
-   (default), or on the last space I opened?
-3. **The nav.** Does "My Tasks" leave the left nav at OP-4 (default), or stay
-   one release as a link into Projects?
-4. **The Personal space for others.** Can a member share one personal folder
-   with a colleague? The default is **no**. A shared folder is a company
-   project, and "Move to a project" makes one.
+The owner accepted every default in chat on 2026-10-23: "go ahead with your
+recommendations for all the open questions". So D-OP-1 to D-OP-8 are
+**ACCEPTED**.
+
+1. **The name** is **My work**.
+2. **The landing view.** Projects opens on My work → Today. A deep link to a
+   space still opens that space.
+3. **The nav.** "My Tasks" leaves the left nav when the OP-4 flag goes on.
+   `/tasks` redirects from that release.
+4. **Sharing.** A member cannot share a Personal folder. "Move to a project"
+   makes a company project, and that is the way to share.
+
+---
+
+## 8a. The board of the project "Projects/Tasks App"
+
+The Metorite project "Projects/Tasks App" held 41 tasks on 2026-10-23. Each
+open task was checked against the code. The build record of WS-64 lists which
+task folds into which slice, which task closed as built, and which task left
+the board.
 
 ---
 
