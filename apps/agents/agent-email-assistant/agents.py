@@ -1340,8 +1340,11 @@ async def get_account_overview(account_id: str, days: int = 30) -> str:
     noisy = [s for s in overview.get("noisy_senders") or [] if isinstance(s, dict)]
     if noisy:
         # The route gives 12 at most: the senders you never answered.
-        lines.append("Noisy senders you never answer: " + ", ".join(
-            f"{s.get('name') or s.get('email')} ({s.get('messages')})" for s in noisy))
+        # Review fix round 1 (P3-6): a sender chooses the display name, so
+        # the list goes in the untrusted frame, as read_email's text does.
+        lines.append(_frame_email("Noisy senders you never answer: " + ", ".join(
+            f"{_one_line(s.get('name') or s.get('email'), 80)} ({s.get('messages')})"
+            for s in noisy)))
     counts = cats.get("counts", {})
     if counts:
         lines.append(
@@ -2344,10 +2347,11 @@ async def _cleaner(account_id: str, mode: str, since_date: str | None) -> str:
         # The route gives the 25 senders with the most, and no more.
         top = [s for s in data.get("top_senders") or [] if isinstance(s, dict)]
         if top:
-            lines.append("The senders with the most:")
-            lines += [f"- {_one_line(s.get('name') or s.get('email'), 80)} "
-                      f"<{_one_line(s.get('email'), _TARGET_LIMIT)}>: {int(s.get('count') or 0)}"
-                      for s in top]
+            # Review fix round 1 (P3-6): a sender chooses the display name.
+            lines.append(_frame_email("The senders with the most:\n" + "\n".join(
+                f"- {_one_line(s.get('name') or s.get('email'), 80)} "
+                f"<{_one_line(s.get('email'), _TARGET_LIMIT)}>: {int(s.get('count') or 0)}"
+                for s in top)))
         return "\n".join(lines)
     if mode not in ("backfill", "restore_labels"):
         return ("Nothing changed. mode must be one of: sweep | status | uncategorized | "
