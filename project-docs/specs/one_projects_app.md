@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is built, not merged. Fix round 1 is done, and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-2 to OP-6 are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258). Fix round 1 is done, and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is built, not merged, and records fix round 1 (an area with a child folder or any task below it is archived, and a rename to a twin name is refused). OP-2 to OP-5 and OP-6b to OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -302,8 +302,9 @@ Owner, 2026-10-23, verbatim:
 
 **What is true today (measured 2026-10-23).** The chat deletes a task and a
 project behind one card (`skill_projects/guarded.py:287` and :329, #1223,
-in production since 2026-10-22). `skill_projects/manifest.py` maps 165
-Projects routes. The chat reaches 127 of them. 38 are class X.
+in production since 2026-10-22). `skill_projects/manifest.py` maps 167
+Projects routes. The chat reached 128 of them. 39 were class X (an earlier
+count said 38). OP-6a gave the three area routes a tool, so 36 are class X now.
 
 **The rule.** Every act that a member can do in the Projects app, the chat
 can do too. A class C card guards each act that destroys data, writes access
@@ -314,15 +315,20 @@ authority: the route still checks the member's own access.
 
 | Group | Routes | OP-6 does |
 |---|---|---|
-| Areas, now Personal folders | `POST/PATCH/DELETE /projects/my/areas…` | Three tools. Rename and delete take a card |
+| Areas, now Personal folders | `POST/PATCH/DELETE /projects/my/areas…` | Three tools: `create_area`, `rename_area`, `delete_area`. **BUILT in OP-6a.** Rename and delete take a card |
 | Grants | `POST/DELETE /projects/nodes/{id}/grants…` | Two tools, each behind a card. **This reverses D-PM-40** (owner, 2026-10-23) |
 | Nudge | `POST /projects/tasks/{id}/nudge` | One tool behind a card, because it reaches a colleague |
 | Export | `GET /projects/export/tasks.csv` | One tool. The file comes back as a chat document (S8) |
 | Attachments | `POST /projects/tasks/{id}/attachments` | One tool that attaches a file the member uploaded to the chat (H-229) |
 | Report delivery | recipients and schedule | Tools behind a card. The send switch `PROJECT_REPORT_EMAIL_ENABLED` stays the owner's (§3a rule 3) |
-| Agent runs | the eight `PLANNED` tools | The member can approve or decline an agent's archive or delete from the chat |
+| Agent runs | the eight `PLANNED` tools | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
 | Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
+| Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
+
+`tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 27
+routes that stay class X, and it names the 9 routes that OP-6b to OP-6d still
+owe, each with its slice.
 
 ---
 
@@ -357,6 +363,9 @@ authority: the route still checks the member's own access.
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
 | **D-OP-10** | A delete shows the task's subtasks as a tree and lets the member mark each one: keep or delete. Every subtask is kept by default. A kept subtask under a deleted one moves up to its nearest kept ancestor. A delete never removes a subtask that the caller cannot see: it stays, and it moves up too (§9 OP-7, "The rule of the core"). One transaction, with one tombstone for each deleted row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 (§9 OP-7) |
+| **D-OP-11** | A project's access grants are written by its lead and by a member who may manage Projects settings (`can_manage_settings`), and by nobody else. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, in chat ("Lead + admins") |
+| **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
+| **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -504,20 +513,114 @@ the answers of §8.
 2. `nav.test.ts` and `launch_surface.md` §2 agree on eleven live panes after
    the flip.
 
-### OP-6 — every act from the chat · AGENT-SAFE · HIGH tier (grants)
+### OP-6 — every act from the chat · AGENT-SAFE · split into OP-6a to OP-6e
 
-**Scope.** §5a. New tools in `skill_projects` for each row that leaves class
-X. Each moves its route from class X to class B or C in `manifest.py`.
-`test_projects_chat_coverage.py` stays the fence.
+The spec-auditor split OP-6 on 2026-10-23, because one slice cannot hold a
+HIGH grant change, a file upload and a report schedule. **Scope.** §5a. New
+tools in `skill_projects` for each row that leaves class X. Each moves its
+route from class X to class B or C in `manifest.py`.
+`test_projects_chat_coverage.py` stays the fence, and
+`test_projects_chat_x_pin.py` pins the routes that stay X.
 
-**Done when.**
-1. Only the routes in the two "Stays X" rows of §5a are class X. Fence: a new
-   test pins that list.
+**Done when, for the whole of OP-6.**
+1. Only the routes in the three "Stays X" rows of §5a are class X. Fence:
+   `test_projects_chat_x_pin.py`, when `PENDING_OP6` is empty.
 2. Each new class C tool shows a card before the request, and a declined
    card writes nothing. Fence: `test_projects_agent_writes.py`.
 3. A grant write from the chat succeeds only where the member could write the
    grant in the app. Fence: an R8 test with two members.
 4. The chat eval `evals/projects_ops/` gains one case for each new tool.
+
+#### OP-6a — the member's areas, and the pin · MEDIUM · AGENT-SAFE
+
+**Status: BUILT 2026-10-23 on branch `ws64-op6a-chat-areas-mt-e22721d2`, not yet merged.**
+Three tools in `skill_projects`. `create_area` (class B) is in `inbox.py`.
+`rename_area` and `delete_area` (class C) are in `guarded.py`. A name resolves
+among the member's own live areas only. Two near-equal names ("Home" and
+"home!") are a question to the member, never a guess.
+
+The delete card says what the route does. An area with no task at all is
+deleted for good. An area with any task, open or done, is archived and its
+tasks stay. The card shows the open count, and the receipt says which one
+happened. The card is not authority. `_load_my_area` in
+`routes/projects/personal.py` finds an area by its owner, so another member's
+area is not found.
+
+Fences: the three tools in `test_projects_agent_writes.py`, then
+`test_projects_area_tools_r8.py` (R8, two members) and
+`test_projects_chat_x_pin.py`. The cases PO-12 to PO-14 in
+`evals/projects_ops/` run the tools end to end.
+
+⚠️ The auditor wrote "class B, no card" for `create_area`. The fence
+`test_every_class_b_tool_awaits_the_one_confirm_door` holds that every class B
+tool shows one card. So `create_area` shows a short card with the name. A tool
+with no card is a new class, and the owner must decide on it.
+
+#### OP-6b — grants from the chat · HIGH · after OP-8
+
+Two tools for `POST/DELETE /projects/nodes/{id}/grants…`, each behind a class
+C card. **This reverses D-PM-40.** OP-8 first puts D-OP-11 on the two routes,
+so the chat can write a grant only where the member may write it in the app.
+Invert the D-PM-40 sentence in `agent-projects/instructions.md` and its pin in
+`test_projects_agent_grants.py`.
+
+#### OP-6c — nudge, export, attach · MEDIUM
+
+1. **Nudge.** One tool behind a class C card, because it reaches a colleague.
+   It sends an in-app notification only, and it never loops.
+2. **Export.** One tool. The file comes back as a chat document through the
+   safe write of `acb_skills/documents.py`. The route answers 422 above
+   `MAX_EXPORT_ROWS`, and the tool says that in words.
+3. **Attach.** One tool that attaches a file the member uploaded to the chat.
+   The bytes come through `read_attachment` in `acb_skills/attachment_tools.py`.
+   A task that others share takes a card.
+
+#### OP-6d — report recipients and schedule · HIGH-adjacent
+
+Tools for the four recipient and schedule routes, each behind a class C card.
+They never touch `PROJECT_REPORT_EMAIL_ENABLED`, which stays the owner's
+(§3a rule 3). A recipient is a person outside the chat, so the card names the
+address.
+
+#### OP-6e — agent runs in the chat · MEDIUM
+
+D-OP-13. The chat lists the waiting agent requests of the member, and each
+row links to its task card. No chat tool answers a request, and
+`approve_task_archive` stays out of the chat. The other parity tools of
+`PLANNED` go to EA-12e.
+
+### OP-8 — who may delete and who may write a grant · HIGH · AGENT-SAFE
+
+**Scope.** D-OP-11 and D-OP-12 on the server. One helper in
+`routes/projects/`, for example `may_delete(db, user, row)` and
+`may_write_grant(db, user, project)`. Every door calls it:
+
+- `DELETE /projects/tasks/{id}`, `POST /projects/tasks/{id}/agent-delete` and
+  the chat's `delete_task`.
+- `DELETE /projects/nodes/{id}` and the chat's `delete_project`. A project
+  delete also takes the tasks of other members inside it. The card and the
+  dialog name that count.
+- `POST/DELETE /projects/nodes/{id}/grants…` (`tree.py` `create_grant`,
+  `delete_grant`).
+- The bulk delete of the board.
+
+A refusal is 403 with a sentence that names who may do it, for example "Only
+the person who created this task, the project lead or a Projects admin can
+delete it." The app hides or disables Delete where the member may not use it.
+The MCP tool and the chat card say the same sentence.
+
+**Done when.** Each is an R8 test with three members, red first under a named
+mutation:
+
+1. The creator of a task deletes it. A member who only sees it gets 403, and
+   nothing changes.
+2. The lead of the project deletes a task that another member made.
+3. A member with `can_manage_settings` deletes any task and any project.
+4. The creator of a sub-project deletes it, with its tasks.
+5. A grant write by the lead and by an admin succeeds. A grant write by a
+   member who only sees the project gets 403.
+6. The agent route, the chat tool and the app route give the same answer for
+   the same member.
 
 ### OP-7 — choose which subtasks go, in the app and in the chat · AGENT-SAFE
 

@@ -39,9 +39,11 @@ from skill_projects.client import (
     data,
     delete,
     get,
+    patch,
     post,
     uuid_of,
 )
+from skill_projects.inbox import _area_key, _clean_area_name, _my_area
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -1668,6 +1670,84 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
     return f"Detached {data(row.get('name'))} from {_ref(task)}.\n  full_id: {tid}"
 
 
+# ── The member's own areas (WS-64 OP-6a, D-OP-9) ─────────────────────────────
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def rename_area(area: str, new_name: str) -> str:
+    """Rename one of the member's own areas, the categories of their private
+    tasks. area is its project_id from my_areas, or its exact name. The card
+    shows the old name and the new name. Tasks in the area stay in it."""
+    if _many(area):
+        return f"rename_area {ONE_ACT.replace('id', 'area')}"
+    row = await _my_area(area)
+    aid = uuid_of(str(row.get("id")), "area")
+    clean = _clean_area_name(new_name)
+    if clean == str(row.get("name") or ""):
+        return f"The area is already called {data(clean)}. Nothing changed.\n  area_id: {aid}"
+    rows = ((await get("/projects/my/areas")) or {}).get("rows") or []
+    key = _area_key(clean)
+    twin = next(
+        (r for r in rows if not r.get("archived") and str(r.get("id")) != aid
+         and _area_key(r.get("name")) == key),
+        None,
+    )
+    if twin is not None:
+        return (
+            f"You already have another area called {data(twin.get('name'))}. "
+            f"Choose a different name.\n  area_id: {aid}"
+        )
+    held = int(row.get("open_tasks") or 0)
+    impact = (
+        f"1 area renamed {data(row.get('name'))} → {data(clean)} · "
+        f"{held} open task{'' if held == 1 else 's'} in it, none moved"
+    )
+    if not await _confirm(
+        title="Rename this area?",
+        detail=f"{data(row.get('name'))} → {data(clean)}",
+        context=_guard_card(impact, {"area": data(row.get("name")), "name": data(clean)}),
+    ):
+        return CANCELLED
+    result = (await patch(f"/projects/my/areas/{aid}", {"name": clean})) or {}
+    return f"Renamed the area to {data(result.get('name') or clean)}.\n  area_id: {aid}"
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_area(area: str) -> str:
+    """Delete one of the member's own areas. The route deletes an area that
+    holds no task and no folder inside it. Any other area is archived and
+    everything in it stays. The card says which, with the open count,
+    and the receipt says which happened. area is its project_id from
+    my_areas, or its exact name."""
+    if _many(area):
+        return f"delete_area {ONE_ACT.replace('id', 'area')}"
+    row = await _my_area(area)
+    aid = uuid_of(str(row.get("id")), "area")
+    held = int(row.get("open_tasks") or 0)
+    impact = (
+        f"{held} open task{'' if held == 1 else 's'} in the area. "
+        "An area with no task and no folder inside is deleted for good. "
+        "Otherwise it is archived and everything stays. "
+        "The receipt says which happened"
+    )
+    if not await _confirm(
+        title="Delete this area?",
+        detail=data(row.get("name")),
+        context=_guard_card(impact, {"area": data(row.get("name"))}),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/my/areas/{aid}")) or {}
+    tasks = int(result.get("tasks") or 0)
+    if result.get("outcome") == "archived":
+        return (
+            f"Archived the area {data(row.get('name'))}. It held {tasks} "
+            f"task{'' if tasks == 1 else 's'}, and they stay.\n  area_id: {aid}"
+        )
+    if result.get("outcome") == "deleted":
+        return f"Deleted the empty area {data(row.get('name'))}.\n  area_id: {aid}"
+    return f"Removed the area {data(row.get('name'))}.\n  area_id: {aid}"
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
@@ -1686,4 +1766,6 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "delete_view",
     "report_delete",
     "delete_attachment",
+    "rename_area",
+    "delete_area",
 ]

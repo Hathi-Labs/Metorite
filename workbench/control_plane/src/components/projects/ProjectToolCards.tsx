@@ -183,6 +183,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   delete_view: { icon: "Trash2", label: "View deleted" },
   report_delete: { icon: "Trash2", label: "Report deleted" },
   delete_attachment: { icon: "Paperclip", label: "File detached" },
+  rename_area: { icon: "Layers", label: "Area renamed" },
+  delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
   edit_project: { icon: "PenLine", label: "Project updated" },
@@ -197,6 +199,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   // S5 — the rest of the writes
   save_view: { icon: "LayoutList", label: "View saved" },
   capture_intake: { icon: "Inbox", label: "Captured into intake" },
+  create_area: { icon: "Layers", label: "Area made" },
   triage_intake: { icon: "Inbox", label: "Intake decided" },
   mark_notifications_read: { icon: "BellOff", label: "Bell cleared" },
 };
@@ -275,6 +278,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "delete_view",
   "report_delete",
   "delete_attachment",
+  "rename_area",
+  "delete_area",
 ]);
 
 /**

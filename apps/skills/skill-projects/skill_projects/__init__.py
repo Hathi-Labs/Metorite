@@ -21,6 +21,7 @@ from skill_projects.guarded import (
     archive_project,
     archive_task,
     bulk_update,
+    delete_area,
     delete_attachment,
     delete_comment,
     delete_field,
@@ -33,6 +34,7 @@ from skill_projects.guarded import (
     merge_tags,
     merge_tasks,
     move_project,
+    rename_area,
     report_delete,
     revert_activity,
     set_status_set,
@@ -41,6 +43,7 @@ from skill_projects.guarded import (
 from skill_projects.inbox import (
     calendar,
     capture_intake,
+    create_area,
     intake_queue,
     mark_notifications_read,
     my_areas,
@@ -213,6 +216,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "file_tasks",
     # Class B — several links between tasks, one card (2026-10-19)
     "link_tasks_batch",
+    # Class B — WS-64 OP-6a, a new area of the member's own
+    "create_area",
     # Class B — the rest of the writes (S5)
     "capture_intake",
     "mark_notifications_read",
@@ -222,6 +227,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "archive_project",
     "archive_task",
     "bulk_update",
+    "delete_area",
     "delete_attachment",
     "delete_comment",
     "delete_field",
@@ -234,6 +240,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "merge_tags",
     "merge_tasks",
     "move_project",
+    "rename_area",
     "report_delete",
     "revert_activity",
     "set_status_set",

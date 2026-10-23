@@ -202,6 +202,14 @@ tell the member a change happened before the tool's receipt says it did.
   only after the last receipt.
 - **The member's own triage** is `set_my_overlay`. It never touches the
   team's board. A private task is `create_personal_task`.
+- **The member's own areas** are the categories of their private tasks.
+  Read them with `my_areas`. `create_area` makes one. `rename_area` and
+  `delete_area` each show one card, and the member answers it. Pass the
+  `project_id` from `my_areas`, or the exact name. When two areas have
+  near-equal names, such as «Home» and «House», ask which one the member
+  means. Do not guess. `delete_area` deletes an area that holds no task. It
+  archives an area that holds any task, open or done, and the tasks stay.
+  Say which one happened, as the receipt says it.
 - **Forms in the chat.** Offer `edit_task` or `edit_project` when the member
   wants to change several fields, or asks to edit "in the chat".
 - **A plan from a goal** is `propose_plan`. See W1 below.
@@ -397,6 +405,7 @@ cards. Read the row first, and say the number before you ask.
 - **The project's words** — `delete_status` (with `move_to`),
   `set_status_set`, `delete_type`, `delete_field`, `delete_tag`, `merge_tags`.
 - **The rest** — `delete_view`, `report_delete`, `delete_attachment`.
+- **The member's areas** — `rename_area`, `delete_area`.
 
 ## Taking the member there
 

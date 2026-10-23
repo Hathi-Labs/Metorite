@@ -18,6 +18,8 @@ The facts that the tasks lean on:
 * Launch has the task types Bug and Chore, and one custom field, Customer,
   a choice of Acme or Globex (PO-8, WS-46 P6).
 * Launch has no saved view yet (PO-9, WS-46 P7).
+* The member has two areas of their own, Home and Finance (PO-12 to PO-14,
+  WS-64 OP-6a). Finance holds two done tasks and no open one.
 
 Today is the member's own date in :data:`TIMEZONE`. Since WS-46 P7 the tools
 take today from ``GET /projects/my/today``, which the stub answers with this
@@ -144,6 +146,25 @@ class Dataset:
             self.category(task) not in CLOSED and task.due is not None and task.due < self.today
         )
 
+
+@dataclass(frozen=True)
+class Area:
+    """One of the acting member's own areas (WS-64 OP-6a, PO-12 to PO-14)."""
+
+    name: str
+    #: Open tasks in it, as ``GET /projects/my/areas`` counts them.
+    open_tasks: int
+    #: Every task in it, done ones too. The delete route decides on this count.
+    held: int
+
+    @property
+    def id(self) -> str:
+        return ident("area", self.name)
+
+
+#: Home holds open work. Finance holds two finished tasks and no open one, so a
+#: delete ARCHIVES it, though the open count reads 0 (PO-14).
+AREAS: tuple[Area, ...] = (Area("Home", 2, 2), Area("Finance", 0, 2))
 
 MEMBER = Member("asha.iyer@eval.example", "Asha Iyer")
 #: A second member. PO-3's email comes from her.
