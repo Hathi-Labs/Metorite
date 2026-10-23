@@ -112,24 +112,69 @@ def clean(ws: Mapping[str, Any] | None) -> dict[str, str]:
     return out
 
 
+#: Words around a mailbox name that name no mailbox: "my personal box".
+_MAILBOX_FILLER = re.compile(
+    r"^(?:the|my|our)\s+|\s+(?:box|mailbox|inbox|account|email|mail)$", re.IGNORECASE)
+#: A provider as a member names it, and its value in ``GET /email/accounts``.
+_PROVIDER_WORDS = {"gmail": "gmail", "google": "gmail", "outlook": "microsoft",
+                   "microsoft": "microsoft", "office": "microsoft", "imap": "imap"}
+
+
+def mailbox_words(value: Any) -> str:
+    """*value* as the words of a mailbox name, in lower case, with no filler."""
+    text = " ".join(str(value or "").split()).strip().lower().rstrip("…").rstrip(".")
+    for _ in range(3):
+        text = _MAILBOX_FILLER.sub("", text).strip()
+    return text
+
+
+def match_mailbox(value: Any, accounts: list[Any]) -> list[Any]:
+    """The mailboxes of *accounts* that *value* names (§7.1.1 rule 4).
+
+    THE one matcher: ``agent-email-assistant`` ``_one_mailbox`` and the
+    working set both call it. An id first. Then an exact label, address or
+    provider ("gmail"), in any case. Then a prefix of a label or an address
+    ("vj@"). Each step that finds a mailbox ends the search, so "Work" never
+    matches "Workshop" when a mailbox is called "Work". The caller decides
+    what two matches mean.
+    """
+    raw = str(value or "").strip()
+    hit = [a for a in accounts if str(a.get("id")) == raw]
+    if hit:
+        return hit
+    want = mailbox_words(raw)
+    if not want:
+        return []
+
+    def names(a: Mapping[str, Any]) -> list[str]:
+        return [str(a.get(k) or "").strip().lower()
+                for k in ("display_label", "label", "default_label", "email_address")
+                if str(a.get(k) or "").strip()]
+
+    exact = [a for a in accounts if want in names(a)]
+    if exact:
+        return exact
+    provider = _PROVIDER_WORDS.get(want)
+    if provider:
+        by_kind = [a for a in accounts if str(a.get("provider") or "").lower() == provider]
+        if by_kind:
+            return by_kind
+    if len(want) < 2:
+        return []
+    return [a for a in accounts if any(n.startswith(want) for n in names(a))]
+
+
 def _owned_account(value: Any, mailboxes: list[Mapping[str, Any]] | None) -> str:
     """The id of the member's mailbox that *value* names, or ``""``.
 
-    With no mailbox list (``None``), a plain id passes. With a list, only an
-    id of the list passes, or a label or address of exactly one mailbox of
-    it, which gives that mailbox's id. So the set holds only mailboxes the
-    member owns, and a label such as "Personal" becomes the id it means.
+    With no mailbox list (``None``), a plain id passes. With a list, only a
+    value that names exactly one mailbox of it passes (:func:`match_mailbox`),
+    and gives that mailbox's id. So the set holds only mailboxes the member
+    owns, and "my personal box" becomes the id that the tool acted in.
     """
-    raw = _ok_id(value) if mailboxes is None else str(value or "").strip()
-    if mailboxes is None or not raw:
-        return raw
-    ids = {str(a.get("id")) for a in mailboxes}
-    if raw in ids:
-        return _ok_id(raw)
-    want = raw.lower()
-    hit = [a for a in mailboxes
-           if want in {str(a.get(k) or "").strip().lower()
-                       for k in ("display_label", "label", "email_address")}]
+    if mailboxes is None:
+        return _ok_id(value)
+    hit = match_mailbox(value, list(mailboxes))
     return _ok_id(hit[0].get("id")) if len(hit) == 1 else ""
 
 
@@ -561,7 +606,9 @@ __all__ = [
     "load_working_set",
     "mailbox_label",
     "mailbox_mark",
+    "mailbox_words",
     "mailboxes_block",
+    "match_mailbox",
     "orchestrator_block",
     "prime_mailboxes",
     "save_working_set",

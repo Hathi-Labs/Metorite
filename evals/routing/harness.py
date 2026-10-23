@@ -481,20 +481,23 @@ class RoutingHarness:
         timeout: float = 120.0,
         shows_cards: bool = True,
         agent: str = ORCHESTRATOR,
+        thread_id: str | None = None,
     ) -> RunRecord:
         """One chat turn of the one assistant, through ``run_agent_stream``.
 
         *shows_cards* is what the caller declares. The web chat draws cards,
         so it is True by default. *agent* is the run's own agent: the
         orchestrator, or a specialist when a test needs a specialist that
-        calls the orchestrator (``test_show_in_app.py``)."""
+        calls the orchestrator (``test_show_in_app.py``). *thread_id*
+        continues a chat: a turn with the thread id of an earlier turn is the
+        next turn of the same chat (``test_one_assistant_email.py``)."""
         from acb_common.db import bind_tenant, release_tenant
         from acb_skills.write_artifact import bind_artifact_context
         from orchestrator import executor
 
         from tests.unit._native_maf_harness import parse_frames
 
-        record = RunRecord(thread_id=str(uuid.uuid4()))
+        record = RunRecord(thread_id=thread_id or str(uuid.uuid4()))
         calls: dict[str, dict[str, str]] = {}
         agents = frozenset(self._registry)
         payload = {"mode": "chat", "message": words, "user_email": member,

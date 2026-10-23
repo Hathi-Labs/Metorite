@@ -226,6 +226,11 @@ def test_the_working_set_keeps_only_an_owned_mailbox_and_maps_a_label() -> None:
     call = {"name": "create_rule", "args": {"account_id": "Personal"},
             "result": "Rule created in Personal.", "success": True}
     assert ecc.update_working_set({}, [call], BOXES) == {"account_id": HOME}
+    # The same matcher as the tool: the member's words give the same id.
+    words = {**call, "args": {"account_id": "my personal box"}}
+    assert ecc.update_working_set({}, [words], BOXES) == {"account_id": HOME}
+    two = {**call, "args": {"account_id": "outlook"}}
+    assert ecc.update_working_set({}, [two], BOXES) == {}
     stranger = {**call, "args": {"account_id": "acc-not-mine"}}
     assert ecc.update_working_set({}, [stranger], BOXES) == {}
     asked = {**call, "result": "Which mailbox? No mailbox is called x"}

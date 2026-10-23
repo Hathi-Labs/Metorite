@@ -505,56 +505,21 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     )
 
 
-#: Words around a mailbox name that name no mailbox: "my personal box".
-_MAILBOX_FILLER = re.compile(
-    r"^(?:the|my|our)\s+|\s+(?:box|mailbox|inbox|account|email|mail)$", re.IGNORECASE)
 #: What an id holds and a name does not: a digit, "-" or "_". A label such
 #: as "Personal" holds none, so an unknown label asks and never reaches the
 #: gateway as an id.
 _ID_SHAPE = re.compile(r"[0-9_\-]")
 
 
-def _mailbox_words(value: str) -> str:
-    """*value* as the words of a mailbox name, in lower case."""
-    text = " ".join(str(value or "").split()).strip().lower().rstrip("…").rstrip(".")
-    for _ in range(3):
-        text = _MAILBOX_FILLER.sub("", text).strip()
-    return text
-
-
 def _match_mailbox(value: str, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The mailboxes that *value* names (§7.1.1 rule 4).
-
-    An id first. Then an exact label, address or provider ("gmail"), in any
-    case. Then a unique prefix of a label or an address ("vj@"). Each step
-    that finds one or more mailboxes ends the search, so "Work" never matches
-    "Workshop" when a mailbox is called "Work".
-    """
-    raw = str(value or "").strip()
-    hit = [a for a in accounts if str(a.get("id")) == raw]
-    if hit:
-        return hit
-    want = _mailbox_words(raw)
-    if not want:
-        return []
-
-    def names(a: dict[str, Any]) -> list[str]:
-        return [str(a.get(k) or "").strip().lower()
-                for k in ("display_label", "label", "default_label", "email_address")
-                if str(a.get(k) or "").strip()]
-
-    exact = [a for a in accounts if want in names(a)]
-    if exact:
-        return exact
-    provider = {"gmail": "gmail", "google": "gmail", "outlook": "microsoft",
-                "microsoft": "microsoft", "office": "microsoft", "imap": "imap"}.get(want)
-    if provider:
-        by_kind = [a for a in accounts if str(a.get("provider") or "").lower() == provider]
-        if by_kind:
-            return by_kind
-    if len(want) < 2:
-        return []
-    return [a for a in accounts if any(n.startswith(want) for n in names(a))]
+    """The mailboxes that *value* names (§7.1.1 rule 4), by the ONE matcher
+    that the email working set uses too (``acb_skills.email_chat_context``).
+    An older platform with no matcher matches an id only."""
+    try:
+        from acb_skills.email_chat_context import match_mailbox
+    except ImportError:
+        return [a for a in accounts if str(a.get("id")) == str(value or "").strip()]
+    return match_mailbox(value, accounts)
 
 
 async def _named_mailbox(value: str) -> tuple[str, list[dict[str, Any]]]:
