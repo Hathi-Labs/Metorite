@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from acb_auth import UserContext, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE
 from acb_common import get_logger
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
@@ -1079,24 +1079,61 @@ async def move_task(
     return result
 
 
-async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
+#: What a delete does with the subtasks (D-OP-10, owner 2026-10-23).
+#: ``promote`` is D-PM-38: they move up one level. ``delete`` takes the
+#: whole subtree with the task.
+SUBTASK_CHOICES: tuple[str, ...] = ("promote", "delete")
+SubtaskChoice = Literal["promote", "delete"]
+
+#: Every descendant of one task, at any depth. ``UNION`` and not ``UNION
+#: ALL``, so a cycle that a bad row made ends the walk instead of looping.
+_SUBTREE_SQL = (
+    "WITH RECURSIVE sub(id) AS ("
+    " SELECT id FROM pm_tasks WHERE parent_task_id = CAST(:tid AS uuid)"
+    " UNION SELECT t.id FROM pm_tasks t JOIN sub ON t.parent_task_id = sub.id"
+    ") SELECT id FROM sub"
+)
+
+
+async def delete_task_in(
+    db: Any, doomed: Any, *, subtasks: SubtaskChoice = "promote",
+) -> DeleteResponse:
     """The body of ``DELETE /tasks/{id}``, inside a caller's transaction.
 
     Split out on 2026-09-24 (WS-39 S6g) so My Tasks' purge
     (``DELETE /projects/my/tasks/{id}``) can refuse a task outside the
     member's personal tree and delete in the SAME transaction as that check.
     ``doomed`` is the row ``load_visible_task`` returned. The caller emits.
+
+    *subtasks* (D-OP-10). ``promote``, the default, is D-PM-38. ``delete``
+    deletes every descendant in the same transaction, each row through a
+    plain ``DELETE``, so the trigger of migration 168 writes one tombstone
+    for each. The subtree is the whole tree under the task, as the bound
+    tenant holds it, and not only the rows that the caller can see.
     """
     task_id = str(doomed.id)
-    # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
-    # parent, before the row goes. The FK's SET NULL would make them
-    # top-level, which is two levels for a subtask of a subtask. In the same
-    # transaction as the delete, so a failure leaves both as they were.
-    #
-    # WS-27ae / P-27 — the moved ids come back from the UPDATE, because their
-    # `parent_task_id` changed and `updated_at` did not. Without the bump
-    # below, a promoted subtask is an edit no delta client can ever see.
-    children = await lift_subtasks_to_grandparent(db, task_id)
+    if subtasks not in SUBTASK_CHOICES:
+        raise HTTPException(status_code=422, detail=f"subtasks must be one of {list(SUBTASK_CHOICES)}.")
+    children: list[Any] = []
+    removed: list[str] = []
+    if subtasks == "delete":
+        removed = [str(r[0]) for r in (await db.execute(
+            text(_SUBTREE_SQL), {"tid": task_id})).fetchall()]
+        if removed:
+            await db.execute(
+                text("DELETE FROM pm_tasks WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": removed},
+            )
+    else:
+        # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
+        # parent, before the row goes. The FK's SET NULL would make them
+        # top-level, which is two levels for a subtask of a subtask. In the
+        # same transaction as the delete, so a failure leaves both as they were.
+        #
+        # WS-27ae / P-27 — the moved ids come back from the UPDATE, because
+        # their `parent_task_id` changed and `updated_at` did not. Without the
+        # bump below, a promoted subtask is an edit no delta client can see.
+        children = await lift_subtasks_to_grandparent(db, task_id)
     promoted = len(children)
     activities = await count_where(db, "pm_activities", "task_id", task_id)
     assignees = (await db.execute(
@@ -1133,6 +1170,7 @@ async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
             "assignees": int(assignees),
             "links": int(links),
             "subtasks_promoted": int(promoted),
+            "subtasks_deleted": len(removed),
         },
     )
 
@@ -1140,6 +1178,7 @@ async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    subtasks: SubtaskChoice = Query("promote"),
 ) -> DeleteResponse:
     """Delete a task, and say what went with it.
 
@@ -1151,13 +1190,16 @@ async def delete_task(
     the exact class of lie the N8 purge shipped: a count that reassures in the
     wrong direction.
 
+    ``?subtasks=delete`` (D-OP-10) deletes the whole subtree instead, and
+    ``subtasks_deleted`` counts it.
+
     The work is :func:`delete_task_in`. This route opens the session, loads
     the task through the caller's visibility and emits the event.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
-        result = await delete_task_in(db, doomed)
+        result = await delete_task_in(db, doomed, subtasks=subtasks)
 
     await emit("pm.task.deleted", {"task_id": task_id})
     return result
@@ -1187,6 +1229,9 @@ class AgentDeleteIn(BaseModel):
 
     expected_version: str = Field(min_length=1, max_length=64)
     confirm_title: str = Field(min_length=1, max_length=AGENT_DELETE_TITLE_MAX)
+    #: The member's answer (D-OP-10). Required, with no default: the agent
+    #: names the subtasks to the person and passes the choice.
+    subtasks: SubtaskChoice
 
 
 def _agent_delete_via(user: UserContext) -> str:
@@ -1221,8 +1266,10 @@ async def agent_delete_task(
     tool's ``destructiveHint`` and its text, at the edge. (3) The task row,
     locked: a version other than ``updated_at`` or a title other than the
     exact current title answers 409, and nothing changes. (4) The delete goes
-    through :func:`delete_task_in`, the one core: the subtasks move up one
-    level (D-PM-38), and the trigger of migration 168 writes the tombstone.
+    through :func:`delete_task_in`, the one core, and the trigger of
+    migration 168 writes each tombstone. ``subtasks`` is the member's answer
+    (D-OP-10): ``promote`` moves them up one level (D-PM-38), and
+    ``delete`` deletes the whole subtree.
 
     A task outside the member's visibility, or the connection's pins, is 404.
     ``pm.task.deleted`` carries the client stamp as ``via``.
@@ -1247,9 +1294,10 @@ async def agent_delete_task(
             raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
         if doomed.title != payload.confirm_title:
             raise HTTPException(status_code=409, detail=AGENT_DELETE_TITLE)
-        result = await delete_task_in(db, doomed)
+        result = await delete_task_in(db, doomed, subtasks=payload.subtasks)
 
     _log.info("projects.task.agent_deleted", task_id=task_id, via=via,
+              subtasks=payload.subtasks,
               connection_id=str(getattr(user.agent, "connection_id", "")))
     await emit("pm.task.deleted", {"task_id": task_id, "via": via})
     return result
