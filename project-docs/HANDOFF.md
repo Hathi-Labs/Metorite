@@ -6111,20 +6111,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `email_app_master_plan.md` §18 · PRs #1201, #1202, #1203
 - **Added:** 2026-10-21 · email chat collaboration session
 
-### H-374 · Decide which sends a held run may keep after the chat reads outside mail · [OWNER] · security
-- **Check:** `grep -n "CARD_BOUND_REPLY_TOOLS" -A4 packages/acb_skills/acb_skills/egress.py`
-  names `compose_reply` only. Then the decision is still open.
-- **Why:** after the chat reads mail from outside senders, the egress hold
-  (H-236) keeps only the reply card. A forward, a new mail, a send of a draft
-  and a reply with a file are refused. That defends against an injected mail.
-  It also stops "forward it to Priya" in the same chat.
-- **Recommendation:** make `send_draft` card-bound. The draft's own row holds
-  its recipients, and the card now shows its text and each recipient. Keep
-  `forward_email` and `send_email` held, because the model names their
-  recipients. Answer yes or no.
-- **Authority:** `acb_skills/egress.py` `CARD_BOUND_REPLY_TOOLS` · H-236
-- **Added:** 2026-10-21 · email chat collaboration session
-
 ### H-376 · Turn on images in reply drafts when a tier reads images · [OWNER]
 - **Check:** an agent cannot read the box's settings without the `secrets`
   grant. The owner confirms that `EMAIL_DRAFT_READS_IMAGES` is on in the
@@ -6151,6 +6137,219 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `email_app_master_plan.md` §19 · `acb_common/settings.py`
   `email_send_later`
 - **Added:** 2026-10-21 · email chat collaboration session
+
+### H-380 · The Projects chat cannot attach a file to a task (WS-46 P10, G21) · [AGENT]
+- **Check:** `grep -n "attachments\", \"\", \"X\"" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit means the upload route is still class X, so the gap is open.
+- **Why:** the owner wants the chat to do all that the Projects screens do
+  (2026-10-22). The manifest reason "The chat has no file input" has been
+  false since H-229.
+- **Do this:** build slice P10 of `projects_agent_parity.md` §12. Add a class B
+  tool that sends a file of this thread to `POST /projects/tasks/{id}/attachments`.
+  Add a multipart request to `client.py`. Move the route from X to B, and
+  remove `attachmentsApi.upload` from `UI_PLANNED`.
+- **Authority:** `projects_agent_parity.md` §3.3 G21, §12 P10
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-381 · A chat plan cannot make subprojects or repeat rules (WS-46 P8, G19, G20) · [AGENT]
+- **Check:** `uv run python -m evals.projects_ops.run --scripted`. PO-3 reads
+  `xfail` while P8 and P9 are open.
+- **Why:** `propose_plan` writes one node, and `capture_intake` and
+  `create_personal_task` take no repeat rule.
+- **Do this:** build slice P8 of `projects_agent_parity.md` §12.
+- **Authority:** `projects_agent_parity.md` §3.3 G19 and G20, §12 P8
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-382 · The Projects chat does not make tasks from email or CRM context (WS-46 P9, G10, G11) · [AGENT]
+- **Check:** `grep -n "G10\|G11" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit in `FIELD_PLANNED` means `source` and `source_ref` are not sent.
+- **Why:** a task made from an email does not record where it came from.
+- **Do this:** build slice P9 of `projects_agent_parity.md` §12, then PO-3.
+- **Authority:** `projects_agent_parity.md` §3.3, §10, §12 P9
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-383 · The Projects chat has no agent-run tools (WS-55 EA-12e, G23) · [AGENT]
+- **Check:** `grep -n "EA-12e" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit in `PLANNED` means the four tools are not built.
+- **Why:** an outside agent can start, report and finish a run on a task over
+  MCP. The in-product chat cannot.
+- **Do this:** build `agent_runs`, `start_agent_run`, `post_agent_activity` and
+  `finish_agent_run` as chat tools. Clear their `PLANNED` and `FIELD_PLANNED`
+  rows. `approve_task_archive` stays out: only the member answers it.
+- **Authority:** `external_agent_access.md` §12.1 · `projects_agent_parity.md` §3.3 G23
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-384 · Run the Projects eval with the live model, and add tasks for delete and show_view · [OWNER]
+- **Check:** `ls evals/projects_ops/results/`. No run made with `--tier` means
+  the sweep has never run. `grep -n "show_view\|delete_task" evals/projects_ops/tasks.py`
+  shows whether the new tasks exist.
+- **Why:** the scripted run proves the tools. Only the model sweep proves that
+  the model picks them. The spec makes the sweep on the production Router
+  owner-gated, because it costs money.
+- **Do this (agent):** add eval tasks for "delete this task" (one card, one
+  `DELETE`), "remove it" (asks archive or delete) and "show overdue by owner"
+  (one `show_view`, no write). **Do this (owner):** choose the tier, then run
+  `uv run python -m evals.projects_ops.run --tier <chosen> --repeat 3`.
+- **Authority:** `evals/projects_ops/README.md` · `projects_agent_parity.md` §11
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-385 · Decide which excluded Projects acts move into the chat · [OWNER]
+- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sum(r.cls=='X' for r in m.MANIFEST))"`
+  from `apps/skills/skill-projects`. It printed 38 on 2026-10-22.
+- **Why:** the owner wants the chat to do all that the screens do. Some acts
+  are left out of the chat by a past decision. Each one needs the owner's
+  answer before an agent builds it.
+- **Do this (owner):** answer yes or no for each. Grant writes (D-PM-40).
+  Report recipients and schedule (§9.12.8). The nudge (Q3). The CSV export.
+  The file import. The day planner (Calendar's). Your own areas in My Tasks:
+  create, rename, delete. Bulk delete.
+- **Authority:** `skill_projects/manifest.py` class X rows · `projects_agent_parity.md` §3.3
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-386 · Try the three Projects chat changes of 2026-10-22 in a browser · [OWNER]
+- **Check:** the owner confirms each item below on `app.metorite.com`. An agent
+  cannot sign in with Google or Microsoft.
+- **Why:** #1218, #1223 and #1234 shipped with green tests, but nobody looked
+  at them on a real page.
+- **Do this (owner):** (1) archive a project. It leaves the tree and shows
+  under Archived at the foot of the rail. (2) Ask the chat to delete a task. An
+  approval card shows, and Approve deletes it. (3) Ask "show overdue tasks
+  grouped by owner on the board". The page switches.
+- **Authority:** PRs #1218, #1223 and #1234
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-387 · Check that the Projects tools run from the assistant outside /projects · [AGENT]
+- **Check:** nobody has measured it. Delete this entry when the answer is
+  recorded in `projects_agent_parity.md`.
+- **Why:** the one assistant sits in the top bar of every app (D99). A member
+  on `/tasks` or `/calendar` may not reach the Projects tools, and
+  `show_view` only acts on an open Projects page.
+- **Do this:** find which agent the top-bar assistant runs on each page, and
+  whether it holds the `skill_projects` tools. Record the answer, and open a
+  slice for any gap.
+- **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-388 · Turn on the held-chat send cards in production, after #1237 ships · [OWNER]
+- **Check:** `curl -s https://api.metorite.com/version` names an `applied_sha`
+  whose history holds `6097556` (#1237). Then `ssh metorite "sudo grep -c
+  '^EMAIL_HELD_CARD_SEND=true' /opt/acb/app/.env"` prints 1. If both pass,
+  delete this entry.
+- **Why:** #1237 built spec §21 dark behind `EMAIL_HELD_CARD_SEND`, default
+  off. The owner asked on 2026-10-22: "Turn it on after build, the flag". A
+  staging test of the switch is not possible: `acb-staging-flag` refuses every
+  EMAIL and SEND key, because staging keeps outbound switches off.
+- **Do this (agent, with the owner's approval of the command):** wait for
+  the nightly release that carries #1237. Copy the production `.env` to a
+  backup. Set `EMAIL_HELD_CARD_SEND=true`. Restart `acb-gateway`, and wait
+  for `/health`. Report the box, the restart and the evidence in the same
+  message (CLAUDE.md §3a rule 2).
+- **Then (owner):** in a chat that read outside mail, ask "reply to Dr
+  Sagar, CC Geo and Kiran, send it". Each step must stay in the chat.
+- **Authority:** `email_app_master_plan.md` §21 · #1237
+- **Added:** 2026-10-23 · email chat session
+
+### H-389 · Finish the email chat polish branch · [AGENT]
+- **Check:** `git log origin/main --oneline | grep -i "spam action"` prints a
+  line. If it does, delete this entry.
+- **Why:** the branch `email-chat-polish` (728061816) holds three changes
+  that nobody verified or reviewed. They are a `spam` action in
+  `manage_inbox`, one retry of a read on a 503, and a plain sentence for a bare
+  403 or 404. Its builder stopped. The branch is cut from main before #1237,
+  so `agents.py` conflicts.
+- **Do this:** rebase it onto main, and fix the conflicts. Run the tests of
+  the changed code, then the verifier. Open a PR. Report the database pool
+  setting and the background jobs that share it (see H-390). Report what an
+  email write over WhatsApp needs (see H-391).
+- **Authority:** the audit of 2026-10-22 in this session's PRs (#1237 body)
+- **Added:** 2026-10-23 · email chat session
+
+### H-390 · Email reads answer 503 when the gateway's database pool is full · [AGENT]
+- **Check:** `ssh metorite "sudo journalctl -u acb-gateway --since -24h -o cat
+  | grep -c 'QueuePool limit'"` prints 0. If it does for a week, delete this
+  entry.
+- **Why:** on 2026-10-22 the logs held `QueuePool limit of size 7 overflow 2
+  reached`. `query_inbox` and `get_account_overview` answered 503 to a
+  member. Sync, rule, classify and embed jobs share the same pool
+  (`packages/acb_common/acb_common/db.py` near line 153).
+- **Do this:** measure which jobs hold the connections. Then raise the pool
+  size, or cap the jobs' concurrency. Check the Postgres connection limit
+  first.
+- **Authority:** `engineering_practice.md` §1
+- **Added:** 2026-10-23 · email chat session
+
+### H-391 · An email write over WhatsApp says "ask in the app" · [AGENT]
+- **Check:** in a WhatsApp chat, ask the assistant to archive one mail. If it
+  does so after a confirm, delete this entry.
+- **Why:** WhatsApp has no card channel. So each email write answers
+  `_NO_CARD_CHANNEL` in `agent-email-assistant/agents.py`. The owner wants
+  every email job to work from the chat.
+- **Do this:** find whether a confirm-by-reply flow exists for WhatsApp
+  (grep `wac_untrusted_confirm`). Write a spec slice for email writes over
+  WhatsApp, with the same server checks as the chat cards.
+- **Authority:** `email_app_master_plan.md` §21 · the owner rule "a channel
+  changes delivery, not function"
+- **Added:** 2026-10-23 · email chat session
+
+### H-392 · Decide which store a Metorite file comes from, for an email attachment · [OWNER]
+- **Check:** `email_app_master_plan.md` §21 names a store for a Metorite file
+  row. If it does, delete this entry.
+- **Why:** #1237 lets a held chat attach only a file of the member's own
+  mail. A file from Artifacts, Knowledge or a task cannot be attached,
+  because the spec names no owner for it. The reply card also has no tick per
+  address yet, so a held reply opens on Reply and not Reply all.
+- **Do this (owner):** choose the store, for example Artifacts. Then an
+  agent builds the file rows and the ticks per address.
+- **Authority:** `email_app_master_plan.md` §21.10
+- **Added:** 2026-10-23 · email chat session
+
+### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
+- **Check:** a fence refuses a word that mixes scripts, for example a
+  Cyrillic letter in a Latin word, at a chat send. If one exists, delete
+  this entry.
+- **Why:** the #1237 review rated this P2. It carries about one bit for each
+  letter, and the letters are visible. `compose_reply` on main has the same
+  gap.
+- **Do this:** add a mixed-script check for each word to
+  `reply_card.has_hidden_text`. Keep Hindi, Bengali and other single-script
+  text working. Add a fence.
+- **Authority:** `email_app_master_plan.md` §21.10
+- **Added:** 2026-10-23 · email chat session
+
+### H-394 · Three tests are red on main for a reason in the test setup · [AGENT]
+- **Check:** `uv run pytest -q tests/unit/test_delegation_no_egress.py
+  tests/unit/test_customer_console_router.py` passes on main. If it does,
+  delete this entry.
+- **Why:** two tests in `test_delegation_no_egress.py` fail, because the
+  openai client's platform probe starts a subprocess that the test refuses.
+  `test_the_customer_never_sees_the_provider_secret` also fails on main.
+  Each review this week had to prove that the red was not new.
+- **Do this:** fix the test setup, or stub the probe. Do not weaken the
+  subprocess guard.
+- **Added:** 2026-10-23 · email chat session
+
+### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]
+- **Check:** a query of `email_rules` for a MOVE_FOLDER action to a Sent or
+  Drafts folder returns no row. If it does, delete this entry.
+- **Why:** #1237 refuses a move into Sent or Drafts for every provider. A
+  held chat could use that move to fake a `sent` contact. An Outlook or IMAP
+  rule that moved mail there now fails at run time.
+- **Do this:** find such rules. Tell each owner, or change the rule.
+- **Authority:** `email_app_master_plan.md` §21.10
+- **Added:** 2026-10-23 · email chat session
+
+### H-396 · Try the chat fixes of 2026-10-22 on a phone · [OWNER]
+- **Check:** the owner says each item below works. Then delete this entry.
+- **Why:** these shipped without a phone test:
+  - #1222: the reply card stays above the message box, and the status line
+    shows once.
+  - #1228: the chat stays open while a run works in an app.
+  - #1226: one draft for each email in Drafts.
+  - #1229: Cc and Bcc in the chat.
+  - #1237: send a saved draft from any chat.
+- **Do this (owner):** use the assistant on a phone for a real reply with a
+  Cc. Report each step that leaves the chat.
+- **Added:** 2026-10-23 · email chat session
 
 # DONE — deleted, not archived
 

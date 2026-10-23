@@ -55,6 +55,7 @@ import {
 } from "./components/KnowledgeContext";
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
+import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
 import {
   GAPS_KEY,
@@ -66,7 +67,7 @@ import {
   type GapList,
 } from "./lib/gaps";
 import type { PageSummary, Space } from "./lib/types";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
+import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
   KNOWLEDGE_OFF_TITLE,
   LOAD_FAILED_BODY,
@@ -194,6 +195,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const pageId = pageIdOf(pathname);
   const atHomePath = pathname === KNOWLEDGE_HOME;
   const atSearch = pathname === KNOWLEDGE_SEARCH;
+  const atReview = pathname === KNOWLEDGE_REVIEW;
+  const reviewCount = usePendingCount();
+
   const atGaps = pathname === KNOWLEDGE_GAPS;
 
   // KB-9a: the Gaps row, for a manager of Knowledge. The read is the Gaps
@@ -279,6 +283,8 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     selectedPageId: pageId,
     atHome: atHomePath && !spaceParam,
     atSearch,
+    atReview,
+    reviewCount,
     gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
     onArchive: setArchiving,
   };

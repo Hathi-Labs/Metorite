@@ -178,9 +178,9 @@ class TestTheMoveRefuser:
         ("gmail", "Cold Email", False),
         ("gmail", "Archive", False),
         ("gmail", "Inbox", False),
-        ("microsoft", "Sent", False),
+        ("microsoft", "Sent", True),  # §21 fix round 1 (P1-a)
         ("microsoft", "Cold Email", False),
-        ("imap", "Sent", False),
+        ("imap", "Sent", True),  # no move reaches Sent
         ("no-such-provider", "Sent", False),
     ])
     def test_each_case(self, provider, name, refused):
@@ -980,14 +980,17 @@ class TestAMoveThatGmailRefuses:
         assert [w.name for w in out.will_create] == ["Cold Email"]
         assert set(_rules_of(p.admin_engine, dst)) == {"Cold Email"}
 
-    async def test_outlook_to_outlook_copies_the_same_rule(
+    async def test_outlook_to_outlook_leaves_out_a_move_into_sent(
         self, member, promoted,  # noqa: F811
     ):
+        """§21 fix round 1 (P1-a): no provider moves a mail into Sent, so an
+        Outlook target refuses the rule too. It copied before."""
         p = promoted
         src, dst = member.box(), member.box()
         sent = _rule(p.admin_engine, org=p.org_b, account=src, name="File as sent")
         _action(p.admin_engine, org=p.org_b, rule=sent, type_="MOVE_FOLDER",
                 label="Sent Items")
         out = await member.copy(src, dst)
-        assert out.copied == ["File as sent"]
-        assert out.left_out == [] and out.will_create == []
+        assert out.copied == []
+        assert [(x.name, x.reason) for x in out.left_out] == [
+            ("File as sent", rule_copy.LEFT_OUT_FOLDER_NOT_IN_TARGET)]

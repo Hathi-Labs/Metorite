@@ -3280,6 +3280,14 @@ async def _upsert_reply_draft(
     draft. The local copy runs in a savepoint, and a failed copy is logged.
     A failed provider write raises. Fence:
     ``tests/unit/test_email_reply_draft_upsert.py``."""
+    from acb_skills.reply_card import visible_spacing
+
+    # §21 fix rounds 3 and 4: a draft that the chat writes (the drafter of
+    # /email/draft-reply, the reply card, /email/drafts/save) is saved in the
+    # form that the card shows: no NBSP, no line-end space, one blank line
+    # for a run, and no blank edge. A chat send of it is never refused.
+    body = visible_spacing(body)
+    subject = " ".join(str(subject or "").split())
     cc_list = [c for c in (cc or []) if c]
     rows: list[Any] = []
     if thread_id:
@@ -3393,6 +3401,11 @@ class DraftUpsertRequest(BaseModel):
     # A Gmail save rebuilds the whole message, so it still needs ``body``,
     # and ``keep_html`` keeps its HTML. Only an update by ``draft_id`` reads it.
     keep_body: bool = False
+    # §21 fix round 2: the email assistant's ``edit_draft`` sets it. Then a
+    # text with hidden characters is refused, and NBSP and trailing spaces
+    # are normalised before the save. The Email app's composer sends False,
+    # so its saves are as before.
+    from_chat: bool = False
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3474,6 +3487,22 @@ async def _gmail_signed_html(
     return text_html
 
 
+def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
+    """A chat save of a draft (§21 fix round 2): 422 for hidden characters in
+    the subject or the text, else the text with NBSP and trailing spaces
+    normalised (``reply_card.visible_spacing``)."""
+    from acb_skills.reply_card import visible_spacing
+
+    try:
+        check_draft_text(req.subject, req.body)
+    except HiddenDraftText:
+        raise HTTPException(status_code=422, detail=DRAFT_HIDDEN_TEXT_DETAIL) from None
+    subject = " ".join(visible_spacing(req.subject).split())
+    if len(subject) > SUBJECT_MAX:  # §21 fix round 3: a card shows it whole
+        raise HTTPException(status_code=422, detail=DRAFT_SUBJECT_TOO_LONG_DETAIL)
+    return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -3487,6 +3516,8 @@ async def upsert_draft(
     neither → a standalone draft. Returns the persisted message so the UI can show
     it in the Drafts folder and in-thread at once."""
     _refuse_bad_draft_id(req.draft_id)
+    if req.from_chat:
+        req = _chat_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         # The signature lives IN the draft body so the upstream (provider)
@@ -3494,6 +3525,12 @@ async def upsert_draft(
         # the idempotent backstop for bodies that arrived without it.
         body = append_signature_text(
             await _account_signature(db, req.account_id), req.body)
+        if req.from_chat:
+            # §21 fix round 3: the signature can carry NBSP or a line-end
+            # space ("-- "). A chat draft keeps none, so its send is clean.
+            from acb_skills.reply_card import strip_invisible_spacing
+
+            body = strip_invisible_spacing(body)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
@@ -3597,11 +3634,19 @@ async def upsert_draft(
 
 
 class DraftExpect(BaseModel):
-    """The recipients that the chat card showed (WS-17 EM-T13b-1)."""
+    """The recipients that the chat card showed (WS-17 EM-T13b-1), and the
+    seal of its text (§21 fix round 1, P1-b).
+
+    ``text_digest`` is :func:`draft_text_seal` of the draft as the card read
+    it: its subject, its stored text and the live text at the provider. A
+    send checks it again before any provider write, so an edit after the card
+    sends nothing. It is optional and expand-only (R6): a schedule stored
+    before it carries no key, and its send checks the recipients only."""
 
     to: list[str] = []
     cc: list[str] = []
     bcc: list[str] = []
+    text_digest: str | None = Field(default=None, max_length=64)
 
 
 class DraftSendRequest(BaseModel):
@@ -3642,6 +3687,130 @@ def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
     })
 
 
+#: The answer when the text of the draft changed after the card (§21 fix
+#: round 1, P1-b). The send-later job shows it as the reason of a failed row.
+DRAFT_TEXT_CHANGED_DETAIL = (
+    "The subject or the text of this draft changed after the card showed it. "
+    "Nothing was sent.")
+#: The answer when the provider did not give the text of the draft.
+DRAFT_TEXT_READ_FAILED_DETAIL = (
+    "The mail provider did not give the text of this draft, so the send could "
+    "not check it. Nothing was sent.")
+
+
+#: The answer when a draft holds hidden characters (§21 fix round 2). The
+#: chat reads it, so it says what to do next in the chat.
+DRAFT_HIDDEN_TEXT_DETAIL = (
+    "This draft holds hidden characters, so it was not sent. Clean the text with "
+    "edit_draft, and show the card again.")
+
+
+#: The longest subject that a chat card shows whole (§21 fix round 3).
+SUBJECT_MAX = 200
+#: The answer for a subject that a card cannot show whole.
+DRAFT_SUBJECT_TOO_LONG_DETAIL = (
+    f"The subject of this draft is longer than {SUBJECT_MAX} characters, so a card "
+    "cannot show it whole. It was not sent. Shorten it with edit_draft.")
+#: The answer for spaces that a card cannot show.
+DRAFT_SPACING_DETAIL = (
+    "This draft holds spaces that a card cannot show: a no-break space, or a space "
+    "at the end of a line. It was not sent. Clean the text with edit_draft.")
+
+
+class DraftTextRefused(ValueError):
+    """A draft that a chat card cannot show whole (§21 fix rounds 2 and 3).
+    ``detail`` is the answer of the route."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class HiddenDraftText(DraftTextRefused):
+    """A part of a draft holds a character that a reader cannot see."""
+
+
+def check_draft_text(*parts: Any) -> None:
+    """Raise :class:`HiddenDraftText` when a part holds hidden content: a tag
+    character, a zero-width character, a bidi control (``reply_card.
+    has_hidden_text``). NBSP and trailing spaces are not hidden."""
+    from acb_skills.reply_card import has_hidden_text
+
+    if any(has_hidden_text(str(p or "")) for p in parts):
+        raise HiddenDraftText(DRAFT_HIDDEN_TEXT_DETAIL)
+
+
+def check_draft_send(subject: Any, body: Any) -> None:
+    """Raise :class:`DraftTextRefused` unless a chat card can show the
+    subject and the text of a draft whole: no hidden character, a subject of
+    :data:`SUBJECT_MAX` characters at most, and no NBSP and no space at the
+    end of a line (§21 fix round 3). THE one check of a chat send of a
+    draft: the card, the send and the fire of a schedule."""
+    from acb_skills.reply_card import has_invisible_spacing
+
+    check_draft_text(subject, body)
+    if len(str(subject or "")) > SUBJECT_MAX:
+        raise DraftTextRefused(DRAFT_SUBJECT_TOO_LONG_DETAIL)
+    if has_invisible_spacing(str(subject or "")) or has_invisible_spacing(str(body or "")):
+        raise DraftTextRefused(DRAFT_SPACING_DETAIL)
+
+
+async def draft_text_seal(
+    provider: Any, provider_message_id: str, subject: Any, body_text: Any, signature: str,
+) -> str:
+    """The seal of a draft's text: its subject, its stored text, and its live
+    text at the provider. THE one rule (§21 fix round 1, P1-b).
+
+    Each part is folded as ``_fold_draft`` folds it (the signature out, the
+    whitespace and the case folded), so a sync that only reflows text keeps
+    the seal. Any edit of a word changes it. A failed or slow read of the
+    provider raises, and the caller sends nothing.
+
+    A part with hidden content raises :class:`HiddenDraftText` (§21 fix
+    round 2): the fold keeps a zero-width character, so a seal of it would
+    cover the hidden data and not catch it."""
+    import hashlib
+
+    check_draft_send(subject, body_text)
+    live = await asyncio.wait_for(
+        provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
+    check_draft_text(_live_draft_text(live))
+    parts = (_normalize_text(str(subject or "")), _fold_draft(signature, str(body_text or "")),
+             _fold_draft(signature, _live_draft_text(live)))
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+async def _check_text_seal(provider: Any, drow: Any, expect: DraftExpect, signature: str) -> None:
+    """409 when the draft's text is not the text the card sealed, 502 when the
+    provider gives no text. Nothing is sent in either case."""
+    try:
+        seal = await draft_text_seal(provider, drow.provider_message_id, drow.subject,
+                                     drow.body_text, signature)
+    except DraftTextRefused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+    except Exception as exc:  # any failed read sends nothing
+        raise HTTPException(status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
+    if seal != expect.text_digest:
+        raise HTTPException(status_code=409, detail=DRAFT_TEXT_CHANGED_DETAIL)
+
+
+async def _check_chat_send(
+    provider: Any, drow: Any, expect: DraftExpect, signature: str,
+) -> None:
+    """The checks of a send from a chat card (``expect``), before any
+    provider write. A schedule fires through here too.
+
+    §21 fix rounds 2 and 3: the card can show the draft whole
+    (:func:`check_draft_send`), also for a schedule stored before the seal.
+    Fix round 1 (P1-b): the text is the text the card sealed."""
+    try:
+        check_draft_send(drow.subject, drow.body_text)
+    except DraftTextRefused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+    if expect.text_digest:
+        await _check_text_seal(provider, drow, expect, signature)
+
+
 #: The answer when the PROVIDER draft holds other recipients than the card.
 DRAFT_PROVIDER_CHANGED_DETAIL = (
     "The recipients of this draft changed in your mail app. Nothing was sent.")
@@ -3671,6 +3840,48 @@ async def _check_provider_recipients(
             status_code=502, detail=DRAFT_PROVIDER_READ_FAILED_DETAIL) from exc
     if not isinstance(held, dict) or not _same_recipients(expect, held):
         raise HTTPException(status_code=409, detail=DRAFT_PROVIDER_CHANGED_DETAIL)
+
+
+@router.get("/drafts/seal")
+async def draft_seal(
+    account_id: str,
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The seal of a draft that a chat card shows (§21 fix round 1, P1-b).
+
+    It answers the subject and the text that the seal covers, so the card
+    shows exactly them, and ``text_digest``, which the send and the schedule
+    carry in ``expect``. A read: it writes nothing."""
+    from gateway.routes.email.account_ref import resolve_account_filter
+
+    _refuse_bad_draft_id(draft_id)
+    async with _tenant_session() as db:
+        # The one reader of an ``account_id`` of a route (an id, "all" or an
+        # address). A seal acts on one mailbox, so it is required.
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
+        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        drow = (await db.execute(text(
+            "SELECT provider_message_id, subject, body_text FROM email_messages "
+            "WHERE id = :id AND account_id = :aid AND LOWER(folder) IN ('drafts', 'draft')"
+        ), {"id": draft_id, "aid": account_id})).fetchone()
+        if not drow:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        signature = await _account_signature(db, account_id)
+        async with provider_session(
+            db, user.email or "anonymous", account_id=account_id,
+        ) as sess:
+            try:
+                seal = await draft_text_seal(sess.provider, drow.provider_message_id,
+                                             drow.subject, drow.body_text, signature)
+            except DraftTextRefused as exc:
+                raise HTTPException(status_code=422, detail=exc.detail) from exc
+            except Exception as exc:  # the card shows nothing it cannot seal
+                raise HTTPException(
+                    status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
+    return {"text_digest": seal, "subject": drow.subject or "",
+            "body_text": drow.body_text or ""}
 
 
 @router.post("/drafts/send")
@@ -3718,6 +3929,8 @@ async def send_draft_endpoint(
                 "WHERE account_id = :aid"
             ), {"aid": req.account_id})).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
+            if req.expect is not None:
+                await _check_chat_send(provider, drow, req.expect, signature)
             # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
             # F1 and F2). Gmail rebuilds the whole draft on the signing
             # update, and Outlook PATCHes each list that it gets.

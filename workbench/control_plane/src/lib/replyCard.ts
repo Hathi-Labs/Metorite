@@ -19,6 +19,8 @@
  * environment. Fence: `src/lib/replyCard.test.ts`.
  */
 
+import { classOf, type PersonClass } from "@/lib/sendCard";
+
 /** The prefix of an Approve with a payload (`REPLY_ANSWER_PREFIX`). */
 export const REPLY_ANSWER_PREFIX = "APPROVE ";
 
@@ -60,6 +62,11 @@ export interface ReplyForm {
    * 2026-10-22). The member's Discard names it, and only it can go.
    */
   draftId?: string;
+  /**
+   * §21, a held chat only: the server's class of each address, by its lower
+   * case. A form with none is exactly as before, and draws no mark.
+   */
+  classes?: Record<string, PersonClass>;
 }
 
 export type ReplyAction = "send" | "save";
@@ -119,7 +126,29 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
     body: text(v.body, MAX_REPLY_BODY),
     note: text(v.note),
     draftId: text(v.draft_id, 64),
+    ...classesOf(v.classes),
   };
+}
+
+/** The classes of a form, or nothing for a form with none. */
+function classesOf(value: unknown): { classes?: Record<string, PersonClass> } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, PersonClass> = {};
+  for (const [addr, cls] of Object.entries(value as Record<string, unknown>)) {
+    const c = classOf(cls);
+    if (addr && c) out[addr.trim().toLowerCase()] = c;
+  }
+  return Object.keys(out).length > 0 ? { classes: out } : {};
+}
+
+/**
+ * The class of one address of a held reply card, or undefined on a card
+ * with no classes. An address that the server did not class reads as `new`,
+ * so a drift marks the person rather than hiding the mark.
+ */
+export function classOfAddress(form: ReplyForm, address: string): PersonClass | undefined {
+  if (!form.classes) return undefined;
+  return form.classes[address.trim().toLowerCase()] ?? "new";
 }
 
 /**

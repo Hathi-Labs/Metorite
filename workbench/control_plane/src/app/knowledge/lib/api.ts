@@ -23,6 +23,7 @@ import type {
   Space,
 } from "./types";
 import type { PageVersionBody } from "./history";
+import type { Proposal } from "./review";
 import { updatedAfter, type SearchFilters } from "./searchFilters";
 
 export class KnowledgeError extends Error {
@@ -230,4 +231,22 @@ export function pageKey(pageId: string): string {
 /** The pages that link to one page (KB-2h). Under the prefix, so a write re-reads it. */
 export function backlinksKey(pageId: string): string {
   return `knowledge/page/${pageId}/backlinks`;
+}
+
+// ── The proposals of the assistant (KB-5b) ──────────────────────────────────
+
+/** The proposals that wait for the member. Page proposals first, then edits. */
+export async function listProposals(): Promise<Proposal[]> {
+  const out = await call<{ proposals: Proposal[] }>("/proposals?status=pending");
+  return out?.proposals ?? [];
+}
+
+/** Accept a proposal: a page publishes, and an edit applies. Web only (F2). */
+export function acceptProposal(id: string): Promise<unknown> {
+  return call<unknown>(`/proposals/${encodeURIComponent(id)}/accept`, { method: "POST" });
+}
+
+/** Reject a proposal. A page archives as a draft, and an edit is marked. */
+export function rejectProposal(id: string): Promise<unknown> {
+  return call<unknown>(`/proposals/${encodeURIComponent(id)}/reject`, { method: "POST" });
 }

@@ -64,6 +64,20 @@ _OWNER_PREDICATE = re.compile(
 #: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
 #: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
+    "held_card": (
+        "§21. Dispatches by kind. DRAFT_ROW_SQL and FORWARD_MAIL_SQL join "
+        "ea.user_id = :uid, _stored_target and _new_card call "
+        "_assert_account_owner, and OWNED_FILES_SQL and MAIL_FILES_SQL join "
+        "acc.user_id = :uid (R8: test_held_send_files_r8.py)."
+    ),
+    "held_card_act": (
+        "§21. Takes the caller's own answer and card record (take_record "
+        "checks the owner of the record). Each act then calls a route that "
+        "proves the owner again: send_draft_endpoint, schedule_draft, "
+        "unsubscribe_sender and upsert_newsletter call _assert_account_owner, "
+        "forward_email joins user_id, and a file comes through "
+        "_fetch_owned_attachment."
+    ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."

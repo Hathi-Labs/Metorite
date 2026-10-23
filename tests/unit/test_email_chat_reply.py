@@ -508,7 +508,7 @@ async def test_a_card_with_no_text_writes_no_draft(monkeypatch, card_drafts) -> 
 def test_the_parameter_fence_pins_compose_reply() -> None:
     params = list(inspect.signature(agents.compose_reply).parameters)
     assert params == ["email_id", "account_id", "reply_all", "draft", "instruction"]
-    assert frozenset(params) == eg.CARD_BOUND_REPLY_TOOLS["compose_reply"]
+    assert frozenset(params) == eg.CARD_BOUND_SEND_TOOLS["compose_reply"]
     assert agents.compose_reply.__tool_risk__ == {
         "read_only": False, "destructive": True, "idempotent": False,
         "open_world": True, eg.CARD_BOUND_KEY: True}
@@ -528,10 +528,10 @@ def _variant(extra: str) -> Any:
 @pytest.mark.parametrize("extra", ["to", "cc", "bcc", "recipients", "attachments", "body",
                                    "forward_to"])
 def test_the_parameter_fence_fails_when_a_parameter_is_added(extra: str) -> None:
-    assert eg.is_card_bound_reply(agents.compose_reply) is True
+    assert eg.is_card_bound_send(agents.compose_reply) is True
     assert eg.is_egress_tool(agents.compose_reply) is False
     variant = _variant(extra)
-    assert eg.is_card_bound_reply(variant) is False
+    assert eg.is_card_bound_send(variant) is False
     assert eg.is_egress_tool(variant) is True
 
 
@@ -549,11 +549,94 @@ def test_the_mark_alone_keeps_nothing() -> None:
     assert eg.is_egress_tool(fn) is True
 
 
-def test_a_held_run_sends_only_through_the_reply_card() -> None:
+def test_a_held_run_sends_only_through_a_card() -> None:
+    """H-374 (owner, "Drafts, with a card" and "Schedule a send",
+    2026-10-22): a held run keeps the reply card, send_draft and
+    schedule_send. A forward, a new mail and an unsubscribe stay held,
+    because the model names their recipients or their link."""
     tools = {fn.__name__: fn for fn in agents._agent_tools()}
-    assert eg.is_egress_tool(tools["compose_reply"]) is False
-    for name in ("send_email", "forward_email", "send_draft"):
+    for name in ("compose_reply", "send_draft", "schedule_send"):
+        assert eg.is_egress_tool(tools[name]) is False, name
+    for name in ("send_email", "forward_email", "unsubscribe_sender"):
         assert eg.is_egress_tool(tools[name]) is True, name
+    assert set(eg.CARD_BOUND_SEND_TOOLS) == {"compose_reply", "send_draft", "schedule_send"}
+
+
+# ── 4b. send_draft (H-374): pinned to the mailbox and the draft id ───────────
+
+
+def test_the_parameter_fence_pins_send_draft() -> None:
+    params = list(inspect.signature(agents.send_draft).parameters)
+    assert params == ["account_id", "draft_id"]
+    assert frozenset(params) == eg.CARD_BOUND_SEND_TOOLS["send_draft"]
+    assert agents.send_draft.__tool_risk__ == {
+        "read_only": False, "destructive": True, "idempotent": False,
+        "open_world": True, eg.CARD_BOUND_KEY: True}
+    assert eg.is_card_bound_send(agents.send_draft) is True
+    assert eg.is_card_bound_send("send_draft") is True
+
+
+def _send_draft_variant(extra: str) -> Any:
+    """``send_draft`` with one more parameter, as a careless change adds."""
+    ns: dict[str, Any] = {}
+    exec(  # a fixed test source
+        f"async def send_draft(account_id, draft_id, {extra}=None):\n"
+        "    return ''\n", ns)
+    fn = ns["send_draft"]
+    fn.__tool_risk__ = dict(agents.send_draft.__tool_risk__)
+    return fn
+
+
+@pytest.mark.parametrize("extra", ["to", "cc", "bcc", "recipients", "attachments", "body",
+                                   "forward_to", "send_at"])
+def test_an_extra_parameter_on_send_draft_breaks_the_pin(extra: str) -> None:
+    variant = _send_draft_variant(extra)
+    assert eg.is_card_bound_send(variant) is False
+    assert eg.is_egress_tool(variant) is True
+
+
+def test_send_draft_with_no_mark_is_an_egress_tool() -> None:
+    async def send_draft(account_id: str, draft_id: str) -> str:
+        return ""
+
+    hints = dict(agents.send_draft.__tool_risk__)
+    hints.pop(eg.CARD_BOUND_KEY)
+    send_draft.__tool_risk__ = hints  # type: ignore[attr-defined]
+    assert eg.is_egress_tool(send_draft) is True
+
+
+def test_the_parameter_fence_pins_schedule_send() -> None:
+    params = list(inspect.signature(agents.schedule_send).parameters)
+    assert params == ["account_id", "draft_id", "send_at"]
+    assert frozenset(params) == eg.CARD_BOUND_SEND_TOOLS["schedule_send"]
+    assert agents.schedule_send.__tool_risk__[eg.CARD_BOUND_KEY] is True
+    assert eg.is_card_bound_send(agents.schedule_send) is True
+
+
+@pytest.mark.parametrize("extra", ["to", "cc", "bcc", "attachments", "body"])
+def test_an_extra_parameter_on_schedule_send_breaks_the_pin(extra: str) -> None:
+    ns: dict[str, Any] = {}
+    exec(  # a fixed test source
+        f"async def schedule_send(account_id, draft_id, send_at, {extra}=None):\n"
+        "    return ''\n", ns)
+    fn = ns["schedule_send"]
+    fn.__tool_risk__ = dict(agents.schedule_send.__tool_risk__)
+    assert eg.is_card_bound_send(fn) is False
+    assert eg.is_egress_tool(fn) is True
+
+
+def test_the_other_sends_join_no_pin_with_the_switch_off(monkeypatch) -> None:
+    """§21 (``email_app_master_plan.md``): a send of the held card may carry
+    the mark, and the mark alone keeps nothing. While EMAIL_HELD_CARD_SEND is
+    off, these sends are on no pin, so a held run holds none of them."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "email_held_card_send", False)
+    for name in ("send_email", "forward_email", "unsubscribe_sender"):
+        fn = getattr(agents, name)
+        assert name not in eg.CARD_BOUND_SEND_TOOLS, name
+        assert eg.is_card_bound_send(fn) is False, name
+        assert eg.is_egress_tool(fn) is True, name
 
 
 class _Gateway:
