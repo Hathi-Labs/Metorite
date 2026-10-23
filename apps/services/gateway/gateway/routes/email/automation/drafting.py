@@ -2134,7 +2134,7 @@ async def _reply_target(
     if row or not from_any_owned_mailbox:
         return row
     params: dict[str, Any] = {"mid": message_id, "uid": user_email or ""}
-    owned = _account_scope(None, params)
+    owned = _account_scope(None, params, level="send")
     return (await db.execute(text(
         f"""SELECT {_REPLY_TARGET_COLUMNS}
            FROM email_messages em
@@ -2374,7 +2374,7 @@ async def draft_reply_smart(
     sales/task-manager). Returns the draft text; optionally also creates a
     provider draft in the user's Drafts."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         email = await _build_reply_context(
             db, req.account_id, req.message_id, user.email or "anonymous")
         if email is None:
@@ -2524,7 +2524,7 @@ class _ComposeStep:
         on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None,
     ) -> None:
         """Block 1: reads only. It also loads the provider of the target."""
-        await _assert_account_owner(db, req.account_id, user_email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user_email or "anonymous", level="send")
         await _emit_activity(
             on_activity, kind="stage", id="context", status="start")
         # Rank the KB by what's being composed, not recency (3.5).
@@ -3555,7 +3555,7 @@ async def upsert_draft(
     if req.from_chat:
         req = _chat_draft_text(req)
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         # The signature lives IN the draft body so the upstream (provider)
         # draft shows it too. The composer normally seeds it already — this is
         # the idempotent backstop for bodies that arrived without it.
@@ -3897,7 +3897,7 @@ async def draft_seal(
         # address). A seal acts on one mailbox, so it is required.
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, body_text FROM email_messages "
             "WHERE id = :id AND account_id = :aid AND LOWER(folder) IN ('drafts', 'draft')"
@@ -3931,7 +3931,7 @@ async def send_draft_endpoint(
     native send-draft primitive."""
     _refuse_bad_draft_id(req.draft_id)
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, to_addresses, cc_addresses,"
             " bcc_addresses, body_text, thread_id"
@@ -4089,7 +4089,7 @@ async def save_draft(
     the user edits it inline, then saves it to their Drafts folder verbatim. The
     draft is mirrored locally so it shows in Drafts/in-thread immediately."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             "SELECT subject, thread_id, from_address FROM email_messages "
             "WHERE id = :mid AND account_id = :aid"

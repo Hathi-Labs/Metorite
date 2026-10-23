@@ -706,6 +706,8 @@ async def _mailbox_limit_reached(
                 return False
             if hint:
                 row = (await db.execute(
+                    # private-only: the connect flow reads the member's own rows. It mirrors
+                    # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                     text("SELECT 1 FROM email_accounts WHERE lower(user_id) = :m "
                          "AND lower(email_address) = :a LIMIT 1"),
                     {"m": member, "a": hint.strip().lower()},
@@ -729,6 +731,8 @@ async def _member_has_mailbox(org: str, member: str, provider: str) -> bool:
     async with _tenant_session(org) as db:
         row = (await db.execute(
             text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                 """SELECT 1 FROM email_accounts
                    WHERE lower(user_id) = :member AND provider = :provider
                    LIMIT 1"""
@@ -772,6 +776,8 @@ async def _save_account(
         # keeps Gmail out of the connect flow until EM-G10 (EM-G7).
         existing_row = (await db.execute(
             text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                 """SELECT id FROM email_accounts
                    WHERE lower(user_id) = :member
                      AND provider = :provider
@@ -800,6 +806,8 @@ async def _save_account(
         nothing_old = import_months == 0
         result = await db.execute(
             text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                 f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,

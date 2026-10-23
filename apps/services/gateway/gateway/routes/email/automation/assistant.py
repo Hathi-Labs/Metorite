@@ -280,7 +280,7 @@ async def get_assistant_settings(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             """SELECT about, signature, auto_run, cold_email_blocker,
                       digest_frequency, personal_instructions, writing_style,
@@ -558,7 +558,7 @@ async def list_knowledge(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         # Suggested entries (voice-profile candidates awaiting review) first,
         # so they surface for approval instead of sinking below the fold.
         rows = (await db.execute(text(
@@ -756,7 +756,7 @@ async def list_learned_patterns(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         rows = (await db.execute(text(
             """SELECT id, pattern, weight, kind, scope_type, scope_value
                FROM email_learned_patterns

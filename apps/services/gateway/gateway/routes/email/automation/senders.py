@@ -113,8 +113,8 @@ async def list_senders(
         # (EM-T8g-1, D-EM-30). The three "never list the user" subqueries
         # below keep EVERY mailbox of the member: a separate mailbox is still
         # the member (D-EM-27).
-        scope = _account_scope(account_id, params, pooled_only=True)
-        owned = _owned_accounts_sql(account_id, params, pooled_only=True)
+        scope = _account_scope(account_id, params, pooled_only=True, level="read")
+        owned = _owned_accounts_sql(account_id, params, pooled_only=True, level="read")
         # Already-disposed mail never counts toward "how noisy is this sender".
         folder_sql = f" AND {_NOT_DISPOSED}"
         if not include_archived:
@@ -190,7 +190,7 @@ async def list_senders(
         nl_params: dict[str, Any] = {"uid": user.email or "anonymous"}
         nl_scope = (
             "account_id IN ("
-            + _owned_accounts_sql(account_id, nl_params, pooled_only=True)
+            + _owned_accounts_sql(account_id, nl_params, pooled_only=True, level="read")
             + ")"
         )
         nl_rows = (await db.execute(text(
@@ -416,7 +416,7 @@ async def bulk_action(
     async with _tenant_session() as db:
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
         scope = _account_scope(
-            req.account_id, params, pooled_only=not req.message_ids)
+            req.account_id, params, pooled_only=not req.message_ids, level="send")
         clauses = [scope]
         if req.message_ids:
             clauses.append("em.id::text = ANY(:ids)")
@@ -941,7 +941,7 @@ async def unsubscribe_target(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         link = await _stored_unsubscribe_link(db, account_id, email)
     kind = _unsubscribe_kind(link)
     host: str | None = None
@@ -978,7 +978,7 @@ async def unsubscribe_sender(
     sender's existing inbox mail is archived. Returns what was actually done so
     the UI can tell the user (unsubscribed vs blocked)."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
 
         # Use the link the UI passed; otherwise recover the best one we stored.
         link = req.unsubscribe_link
@@ -1272,7 +1272,7 @@ async def sender_categories(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """SELECT category, COUNT(*) AS c FROM email_senders
                WHERE account_id = :aid AND category IS NOT NULL
@@ -1562,7 +1562,7 @@ async def list_cold_senders(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """SELECT from_email, status, reason, updated_at
                FROM email_cold_senders WHERE account_id = :aid

@@ -271,7 +271,7 @@ async def needs_reply_threads(
     404 before any read. It writes nothing and starts no backfill. Not a
     route: the shell calls it after its own ``feature:email`` check."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         return await _digest_thread_list(
             db, account_id, "NEEDS_REPLY", limit, with_time=True)
 
@@ -287,7 +287,7 @@ async def needs_reply_count(user: UserContext, account_id: str) -> int:
     cap, so its row can say the real number. Not a route.
     """
     async with _tenant_session() as db:
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         return int(await _digest_needs_reply(db, account_id))
 
 
@@ -332,7 +332,7 @@ async def awaiting_threads(
     Not a route: the shell calls it after its own ``feature:email`` check."""
     async with _tenant_session() as db:
         await _assert_account_owner(
-            db, account_id, user.email or "anonymous", this_tenant=True)
+            db, account_id, user.email or "anonymous", this_tenant=True, level="read")
         if before is None:
             before = await _awaiting_cutoff(db, account_id)
         return await _digest_thread_list(
@@ -512,7 +512,7 @@ async def promise_tasks(
 
     async with _tenant_session() as db:
         await _assert_account_owner(
-            db, account_id, user.email or "anonymous", this_tenant=True)
+            db, account_id, user.email or "anonymous", this_tenant=True, level="read")
         at, picked, latest = await _commitments_core(
             db, account_id, horizon_days=horizon_days, limit=limit,
             commitment=True, this_tenant=True, now=now,
@@ -961,7 +961,7 @@ async def get_digest(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         days = 7 if period == "week" else 1
         cats = await _configured_categories(db, account_id)
         # The in-app view is the DASHBOARD projection: full lists + ids so

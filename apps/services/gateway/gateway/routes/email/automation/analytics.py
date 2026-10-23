@@ -65,7 +65,7 @@ async def analytics_overview(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "days": days}
-        scope = _account_scope(account_id, params)
+        scope = _account_scope(account_id, params, level="read")
         # _account_scope names the table `em`; these queries alias it `m`.
         scope = scope.replace("em.account_id", "m.account_id")
 

@@ -23,6 +23,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, mailbox_predicate, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import _account_scope, _tenant_session, _log, router
 from pydantic import BaseModel
@@ -406,7 +407,7 @@ async def contact_card(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "addr": address}
-        scope = _account_scope(account_id, params)
+        scope = _account_scope(account_id, params, level="read")
         # Mail FROM this person. Drafts are excluded: an unsent draft of the
         # user's own is not correspondence from them, and a provider that echoes
         # the address would otherwise pad every count.
@@ -462,14 +463,14 @@ async def contact_card(
         # Sender rollups: the category the classifier assigned, and whether the
         # Email Cleaner has a disposition on file.
         rollup = (await db.execute(text(
-            """SELECT (SELECT category FROM email_senders se
+            f"""SELECT (SELECT category FROM email_senders se
                         WHERE se.account_id IN (
-                              SELECT id FROM email_accounts WHERE user_id = :uid)
+                              {mailbox_ids_sql(uid="uid", level="read")})
                           AND LOWER(se.email) = :addr
                         ORDER BY se.updated_at DESC NULLS LAST LIMIT 1) AS category,
                       (SELECT status FROM email_newsletters ne
                         WHERE ne.account_id IN (
-                              SELECT id FROM email_accounts WHERE user_id = :uid)
+                              {mailbox_ids_sql(uid="uid", level="read")})
                           AND LOWER(ne.email) = :addr
                         ORDER BY ne.updated_at DESC NULLS LAST LIMIT 1) AS status"""
         ), {"uid": params["uid"], "addr": address})).fetchone()
@@ -575,6 +576,8 @@ FUZZY_THRESHOLD = 0.3
 FUZZY_LIMIT = 5
 
 #: Closest members and People rows of the caller's own organization.
+# private-only: the caller's own addresses leave the list. "Self" is the
+# member's private mailboxes only (D-SM-5, WS-65 SM-2).
 _FUZZY_SQL = """
     WITH org AS (
         SELECT LOWER(au.email) AS email, NULLIF(TRIM(au.display_name), '') AS name
@@ -681,7 +684,7 @@ async def sent_from(
     try:
         async with _tenant_session() as db:
             rows = (await db.execute(text(
-                """
+                f"""
                 SELECT DISTINCT ON (a.addr) a.addr, em.account_id
                   FROM email_messages em
                   JOIN email_accounts ea ON ea.id = em.account_id
@@ -689,7 +692,7 @@ async def sent_from(
                         COALESCE(em.to_addresses, '[]'::jsonb)
                         || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
                  CROSS JOIN LATERAL (SELECT LOWER(r->>'email') AS addr) AS a
-                 WHERE ea.user_id = :uid
+                 WHERE {mailbox_predicate("ea", uid="uid", level="send")}
                    AND LOWER(COALESCE(em.folder, '')) = 'sent'
                    AND a.addr = ANY(:wanted)
                  ORDER BY a.addr, em.received_at DESC NULLS LAST
@@ -750,10 +753,10 @@ async def suggest_contacts(
                 "needle": needle,
             }
             rows = (await db.execute(text(
-                """
+                f"""
                 WITH accts AS (
                     SELECT id FROM email_accounts
-                     WHERE user_id = :uid AND (:aid = '' OR id::text = :aid)
+                     WHERE {mailbox_predicate(uid="uid", level="read")} AND (:aid = '' OR id::text = :aid)
                 ),
                 cands (email, name, weight, last_at, src) AS (
                     -- People the user has WRITTEN to — the strongest signal.
@@ -818,7 +821,7 @@ async def suggest_contacts(
                    AND c.email <> LOWER(:uid)
                    AND c.email NOT IN (
                        SELECT LOWER(email_address) FROM email_accounts
-                        WHERE user_id = :uid)
+                        WHERE {private_predicate(uid="uid")})
                  GROUP BY c.email
                  ORDER BY prefix_hit DESC, weight DESC, hits DESC,
                           last_at DESC NULLS LAST

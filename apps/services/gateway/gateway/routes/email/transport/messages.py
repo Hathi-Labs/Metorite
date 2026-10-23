@@ -499,7 +499,7 @@ async def priority_inbox(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """WITH latest AS (
                  SELECT DISTINCT ON (em.thread_id)

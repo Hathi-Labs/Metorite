@@ -484,7 +484,7 @@ async def get_voice_profile(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             """SELECT enabled, status, style_guide, traits, sources,
                       range_start, range_end, analyzed_count, last_error,
@@ -511,7 +511,7 @@ async def preview_voice_profile(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         counts: dict[str, int] = {}
         for folder in _VALID_SOURCES:
             if folder not in src:

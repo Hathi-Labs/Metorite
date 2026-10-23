@@ -212,7 +212,7 @@ async def search_messages(
 
         # Search in All inboxes leaves out a separate mailbox. Its own
         # account_id still searches it (EM-T8g-1, D-EM-30).
-        where = [_account_scope(account_id, params, pooled_only=True)]
+        where = [_account_scope(account_id, params, pooled_only=True, level="read")]
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
         if text_q:
             where.append(

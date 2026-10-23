@@ -146,7 +146,8 @@ class TestTheInputs:
     def test_the_handler_reads_through_the_owner_scope(self):
         """The handler names ``_account_scope`` with ``pooled_only=True``."""
         src = Path(route.__file__).read_text(encoding="utf-8")
-        assert "_account_scope(account_id or None, params, pooled_only=True)" in src
+        assert ("_account_scope(account_id or None, params, pooled_only=True, level=\"read\")"
+                in src)
 
 
 # ── hermetic: the tool ───────────────────────────────────────────────────────

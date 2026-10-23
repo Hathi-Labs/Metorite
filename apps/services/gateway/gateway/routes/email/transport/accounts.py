@@ -17,6 +17,7 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user, require_permission
 from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
+from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     MAILBOX_LIMIT_DETAIL,
@@ -253,7 +254,7 @@ async def _unread_counts(
     shows it for each mailbox, and All inboxes shows the sum.
     """
     params: dict[str, Any] = {"uid": owner}
-    scope = _account_scope(account_id, params)
+    scope = _account_scope(account_id, params, level="read")
     rows = (await db.execute(text(
         "SELECT em.account_id, count(*) AS unread FROM email_messages em "
         f"WHERE {scope} AND em.is_read = false "
@@ -292,7 +293,7 @@ async def _display_labels(db: Any, owner: str) -> tuple[dict[str, str], dict[str
     """
     rows = (await db.execute(text(
         "SELECT id, email_address, label FROM email_accounts "
-        "WHERE user_id = :uid"
+        "WHERE " + mailbox_predicate(uid="uid", level="read")
     ), {"uid": owner})).fetchall()
     triples = [(str(r.id), r.email_address, r.label) for r in rows]
     return display_labels(triples), default_labels(triples)
@@ -317,7 +318,7 @@ async def list_accounts(
                           onboarding_done_at, color_slot, created_at,
                           in_all_inboxes, {_PROGRESS_COLUMNS}
                    FROM email_accounts
-                   WHERE user_id = :user_id
+                   WHERE {mailbox_predicate(uid="user_id", level="read")}
                    ORDER BY is_default DESC, created_at"""
             ),
             {"user_id": owner},
@@ -373,8 +374,8 @@ async def feed_mailboxes(user: UserContext) -> list[dict[str, Any]]:
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
-                """SELECT id, in_all_inboxes FROM email_accounts
-                   WHERE user_id = :user_id
+                f"""SELECT id, in_all_inboxes FROM email_accounts
+                   WHERE {mailbox_predicate(uid="user_id", level="read")}
                    ORDER BY is_default DESC, created_at"""
             ),
             {"user_id": owner},
@@ -615,6 +616,9 @@ async def create_account(
     async with _tenant_session(org) as db:
         if (await db.execute(
             text(
+                # private-only: the duplicate check of a connect mirrors the
+                # unique index of migration 223, which counts each row of
+                # user_id, a shared row of the connector too (WS-65 SM-2).
                 """SELECT id FROM email_accounts
                    WHERE organization_id = CAST(:org AS uuid)
                      AND user_id = :user_id AND provider = :provider
@@ -645,6 +649,7 @@ async def create_account(
         # unique index of migration 223 with or without row level security.
         existing = await db.execute(
             text(
+                # private-only: the same index as the cheap check above.
                 """SELECT id FROM email_accounts
                    WHERE organization_id = CAST(:org AS uuid)
                      AND user_id = :user_id
@@ -672,6 +677,8 @@ async def create_account(
         # names organization_id: a write names its tenant (R5).
         is_default_row = await db.execute(
             text(
+                # private-only: the first-mailbox test mirrors the partial
+                # unique index of one default for each user_id (migration 223).
                 f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
@@ -746,8 +753,10 @@ async def set_default_account(
             db, account_id, user.email or "anonymous", required=True)
         owner = user.email or "anonymous"
         # Verify ownership before mutating anything.
+        # A default is the member's own private mailbox (WS-65 SM-2).
         owned = await db.execute(
-            text("SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"),
+            text("SELECT 1 FROM email_accounts WHERE id = :id AND "
+                 + private_predicate(uid="uid")),
             {"id": account_id, "uid": owner},
         )
         if not owned.fetchone():
@@ -757,6 +766,8 @@ async def set_default_account(
         # one-default-per-user index can't transiently see two.
         await db.execute(
             text(
+                # private-only: the demote mirrors the partial unique index of
+                # one default for each user_id (migration 223).
                 """UPDATE email_accounts SET is_default = false, updated_at = now()
                    WHERE user_id = :uid AND is_default AND id <> :id"""
             ),
@@ -766,7 +777,7 @@ async def set_default_account(
             text(
                 f"""UPDATE email_accounts
                    SET is_default = true, updated_at = now()
-                   WHERE id = :id AND user_id = :uid
+                   WHERE id = :id AND {private_predicate(uid="uid")}
                    RETURNING id, provider, email_address, label, avatar_color,
                              sync_enabled, sync_status, sync_error,
                              last_synced_at, is_default, initial_sync_done,
@@ -884,7 +895,9 @@ async def delete_account(
             result = await db.execute(
                 text(
                     """DELETE FROM email_accounts
-                       WHERE id = :id AND user_id = :user_id
+                       WHERE id = :id AND """
+                    + mailbox_predicate(uid="user_id", level="manage")
+                    + """
                        RETURNING is_default, provider, credentials_encrypted,
                                  webhook_subscription_id, email_address"""
                 ),
@@ -904,6 +917,8 @@ async def delete_account(
             if bool(deleted.is_default):
                 await db.execute(
                     text(
+                        # private-only: the re-election mirrors the partial
+                        # unique index of one default for each user_id.
                         """UPDATE email_accounts
                            SET is_default = true, updated_at = now()
                            WHERE id = (
@@ -1069,7 +1084,7 @@ async def update_account(
             text(
                 f"""UPDATE email_accounts
                     SET {', '.join(set_clauses)}
-                    WHERE id = :id AND user_id = :user_id
+                    WHERE id = :id AND {mailbox_predicate(uid="user_id", level="manage")}
                     RETURNING id, provider, email_address, label, avatar_color,
                               sync_enabled, sync_status, sync_error, last_synced_at,
                               initial_sync_done, import_since,

@@ -205,7 +205,7 @@ async def list_rules(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         return {"rules": await _load_rules(db, account_id)}
 
 
@@ -819,7 +819,7 @@ async def rule_policies(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         cb_row = (await db.execute(text(
             "SELECT cold_email_blocker FROM email_assistant_settings "
             "WHERE account_id = :aid"
@@ -1186,7 +1186,7 @@ async def list_rule_guidance(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         rows = (await db.execute(text(
             """SELECT g.id, g.rule_id, r.name AS rule_name, g.guidance,
                       g.source, g.thread_id, g.created_at
@@ -1493,7 +1493,7 @@ async def list_rule_patterns(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         try:
             rows = (await db.execute(text(
                 f"""SELECT p.id, p.rule_id, r.name AS rule_name, p.pattern_type,
