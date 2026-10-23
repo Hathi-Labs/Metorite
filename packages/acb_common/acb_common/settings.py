@@ -442,6 +442,15 @@ class Settings(BaseSettings):
     # sweep reads it inside its start function. Fence:
     # tests/unit/test_kb_embed_sweep.py.
     knowledge_embed_sweep: bool = True
+    # WS-61 KB-5a (knowledge_base.md §8.1 and §13). The assistant's proposals,
+    # default OFF. ON gives the orchestrator `propose_page`, `propose_edit` and
+    # their persona line, and opens `POST /knowledge/proposals`. OFF keeps the
+    # tools out and the POST answers 404. It stays off until KB-5b ships the
+    # Review view, where a person accepts. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_propose_enabled`, and the gateway
+    # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
+    # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
+    knowledge_proposals: bool = False
     # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
     # ids whose `search_company` reads with no Knowledge hit write a
     # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.

@@ -4,7 +4,7 @@
 // become one `RawEntry`. A file of any other kind is counted as skipped.
 
 import { ImportRefusal, MAX_FILE_BYTES, MAX_TOTAL_BYTES, mb } from "./limits";
-import { pageKind } from "./names";
+import { isDocumentKind, pageKind } from "./names";
 import { readZip, type RawEntry } from "./zip";
 
 /** What the dialog hands over for each chosen file. */
@@ -47,7 +47,10 @@ export async function collectSources(files: readonly SourceFile[]): Promise<Coll
       if (bytes > MAX_TOTAL_BYTES) {
         throw new ImportRefusal(`The files are over ${mb(MAX_TOTAL_BYTES)}. Nothing was imported.`);
       }
-      entries.push({ path: file.name, text: new TextDecoder("utf-8").decode(await file.read()) });
+      const data = await file.read();
+      entries.push(
+        isDocumentKind(pageKind(lower)) ? { path: file.name, text: "", bytes: data } : { path: file.name, text: new TextDecoder("utf-8").decode(data) },
+      );
     } else {
       skipped.push(file.name);
     }

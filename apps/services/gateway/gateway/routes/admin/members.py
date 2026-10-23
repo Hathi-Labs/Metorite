@@ -769,6 +769,13 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     _PersonRows("apps", "apps", "lower(owner_email) = :email"),
     _PersonRows("workflows", "workflows", "lower(owner_email) = :email"),
     _PersonRows("meetings", "meeting", "lower(owner_email) = :email"),
+    # WS-61 KB-5a: the edits that the assistant proposed for the member. A
+    # proposal is authored work about a company page, as the member's pages
+    # are, and a decided one is the record of who proposed and who accepted.
+    # A pending one stays for a writer of the space to decide. KB-5c expires
+    # it after 14 days. Kept whole, so the table is on one side only.
+    _PersonRows("knowledge_proposals", "kb_page_proposals",
+                "lower(proposer_email) = :email"),
 )
 
 

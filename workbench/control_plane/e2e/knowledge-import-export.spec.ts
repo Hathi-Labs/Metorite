@@ -232,6 +232,208 @@ test.describe("Knowledge import", () => {
   });
 });
 
+// ── Documents as pages (WS-61 KB-AI-1) ──────────────────────────────────────
+//
+// Every file below is built here, in the test: a DOCX, a PPTX and an XLSX are
+// zips of XML (`fflate`), and the PDF is a hand-written minimal PDF. No binary
+// fixture is in the repo.
+
+const xml = (body: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${body}`;
+const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+const A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"';
+
+function zipBuffer(parts: Record<string, string>): Buffer {
+  const tree: Record<string, Uint8Array> = {};
+  for (const [name, text] of Object.entries(parts)) tree[name] = strToU8(text);
+  return Buffer.from(zipSync(tree));
+}
+
+const wp = (text: string, style?: string, num?: boolean) =>
+  `<w:p><w:pPr>${style ? `<w:pStyle w:val="${style}"/>` : ""}${num ? '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' : ""}</w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+
+function docx(): Buffer {
+  const body = [
+    wp("Travel policy", "Heading1"),
+    wp("Book early.", undefined),
+    wp("Allowed costs", "Heading2"),
+    wp("Flights", undefined, true),
+    wp("Hotels", undefined, true),
+    '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Item</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Limit</w:t></w:r></w:p></w:tc></w:tr>' +
+      '<w:tr><w:tc><w:p><w:r><w:t>Meal</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>40</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
+  ].join("");
+  return zipBuffer({
+    "[Content_Types].xml": xml(
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+        '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+        '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>',
+    ),
+    "_rels/.rels": xml(
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    ),
+    "word/_rels/document.xml.rels": xml(
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>',
+    ),
+    "word/styles.xml": xml(
+      `<w:styles ${W}><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style></w:styles>`,
+    ),
+    "word/numbering.xml": xml(
+      `<w:numbering ${W}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="-"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`,
+    ),
+    "word/document.xml": xml(`<w:document ${W}><w:body>${body}</w:body></w:document>`),
+  });
+}
+
+const ap = (text: string, lvl?: number) => `<a:p>${lvl ? `<a:pPr lvl="${lvl}"/>` : ""}<a:r><a:t>${text}</a:t></a:r></a:p>`;
+const asp = (ph: string | null, ...paras: string[]) =>
+  `<p:sp><p:nvSpPr><p:cNvPr id="1" name="s"/><p:cNvSpPr/><p:nvPr>${ph ? `<p:ph type="${ph}"/>` : ""}</p:nvPr></p:nvSpPr><p:txBody><a:bodyPr/>${paras.join("")}</p:txBody></p:sp>`;
+const slideXml = (...shapes: string[]) => xml(`<p:sld ${A}><p:cSld><p:spTree>${shapes.join("")}</p:spTree></p:cSld></p:sld>`);
+
+function pptx(): Buffer {
+  return zipBuffer({
+    "[Content_Types].xml": xml('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'),
+    "ppt/slides/slide1.xml": slideXml(asp("title", ap("Roadmap")), asp("body", ap("Ship search"), ap("Tune ranking", 1))),
+    "ppt/slides/slide2.xml": slideXml(asp("title", ap("Risks")), asp(null, ap("Budget"))),
+    "ppt/slides/_rels/slide2.xml.rels": xml(
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/></Relationships>',
+    ),
+    "ppt/notesSlides/notesSlide1.xml": xml(`<p:notes ${A}><p:cSld><p:spTree>${asp("body", ap("Mention the vendor"))}</p:spTree></p:cSld></p:notes>`),
+  });
+}
+
+function xlsx(): Buffer {
+  const S = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+  return zipBuffer({
+    "[Content_Types].xml": xml('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'),
+    "xl/workbook.xml": xml(`<workbook ${S}><sheets><sheet name="Prices" sheetId="1" r:id="rId1"/><sheet name="Empty" sheetId="2" r:id="rId2"/></sheets></workbook>`),
+    "xl/_rels/workbook.xml.rels": xml(
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x/worksheet" Target="worksheets/sheet2.xml"/></Relationships>',
+    ),
+    "xl/sharedStrings.xml": xml(`<sst ${S}><si><t>Plan</t></si><si><t>Cost</t></si><si><t>Core</t></si></sst>`),
+    "xl/worksheets/sheet1.xml": xml(
+      `<worksheet ${S}><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>500</v></c></row></sheetData></worksheet>`,
+    ),
+    "xl/worksheets/sheet2.xml": xml(`<worksheet ${S}><sheetData/></worksheet>`),
+  });
+}
+
+/** A minimal one-page PDF. `text` lines are drawn in Helvetica at the given sizes, or none for a scan. */
+function pdf(lines: Array<{ text: string; size: number; y: number }>): Buffer {
+  const content = lines.map((l) => `BT /F1 ${l.size} Tf 72 ${l.y} Td (${l.text}) Tj ET`).join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objects.forEach((o, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) out += `${String(off).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
+const binary = (name: string, buffer: Buffer) => ({ name, mimeType: "application/octet-stream", buffer });
+
+async function runImportOf(page: Page, files: ReturnType<typeof binary> | ReturnType<typeof binary>[]) {
+  await openSpaceMenu(page, "Import pages");
+  await expect(page.getByRole("dialog", { name: "Import pages" })).toContainText("Markdown, HTML, Word, PDF, PowerPoint, Excel, or a zip of them");
+  await input(page).setInputFiles(files);
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const report = page.getByTestId("kb-import-report");
+  await expect(report).toContainText(/Import (finished|stopped)/, { timeout: 60_000 });
+  return report;
+}
+
+test.describe("Knowledge import of documents", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  test("a Word file keeps its title, heading, list and table", async ({ page }) => {
+    const kb = await setup(page);
+    const report = await runImportOf(page, binary("Travel.docx", docx()));
+    await expect(report).toContainText("Created 1 page as a draft");
+    expect(kb.made).toHaveLength(1);
+    expect(kb.made[0].title).toBe("Travel policy");
+    const body = kb.made[0].body_md;
+    expect(body).toContain("Book early.");
+    expect(body).toContain("## Allowed costs");
+    expect(body).toMatch(/^- Flights$/m);
+    expect(body).toMatch(/^- Hotels$/m);
+    expect(body).toContain("| Item | Limit |");
+    expect(body).toContain("| Meal | 40 |");
+    expect(body).not.toContain("# Travel policy");
+  });
+
+  test("a PowerPoint file is one page with a section for each slide and the notes", async ({ page }) => {
+    const kb = await setup(page);
+    const report = await runImportOf(page, binary("Plan.pptx", pptx()));
+    await expect(report).toContainText("Created 1 page as a draft");
+    expect(kb.made[0].title).toBe("Plan");
+    const body = kb.made[0].body_md;
+    expect(body).toContain("## Slide 1: Roadmap");
+    expect(body).toMatch(/^- Ship search$/m);
+    expect(body).toMatch(/^ {2}- Tune ranking$/m);
+    expect(body).toContain("## Slide 2: Risks");
+    expect(body).toContain("**Notes**");
+    expect(body).toContain("Mention the vendor");
+  });
+
+  test("an Excel file is one page with a table for each sheet, and the report says dates stay numbers", async ({ page }) => {
+    const kb = await setup(page);
+    const report = await runImportOf(page, binary("Prices.xlsx", xlsx()));
+    await expect(report).toContainText("Created 1 page as a draft");
+    await expect(report).toContainText("Dates in Excel files stay as the numbers that Excel stores");
+    const body = kb.made[0].body_md;
+    expect(body).toContain("## Prices");
+    expect(body).toContain("| Plan | Cost |");
+    expect(body).toContain("| Core | 500 |");
+    expect(body).toContain("## Empty");
+    expect(body).toContain("This sheet is empty");
+  });
+
+  test("a PDF with a text layer keeps its text and its heading", async ({ page }) => {
+    const kb = await setup(page);
+    const file = pdf([
+      { text: "Quarterly Report", size: 24, y: 720 },
+      { text: "Revenue grew in the third quarter of the year.", size: 12, y: 680 },
+      { text: "Costs stayed flat across every region we serve.", size: 12, y: 664 },
+    ]);
+    const report = await runImportOf(page, binary("Report.pdf", file));
+    await expect(report).toContainText("Created 1 page as a draft");
+    expect(kb.made[0].title).toBe("Quarterly Report");
+    expect(kb.made[0].body_md).toContain("Revenue grew in the third quarter of the year. Costs stayed flat across every region we serve.");
+  });
+
+  test("a PDF with no text layer reports a scan and makes no page", async ({ page }) => {
+    const kb = await setup(page);
+    const report = await runImportOf(page, binary("Scan.pdf", pdf([])));
+    await expect(report).toContainText("Created 0 pages");
+    await expect(page.getByTestId("kb-import-unreadable")).toContainText("Scan.pdf");
+    await expect(page.getByTestId("kb-import-unreadable")).toContainText("This PDF has no text layer (a scan). OCR is not available yet");
+    expect(kb.made).toHaveLength(0);
+  });
+
+  test("one bad file is reported and the others still import, also inside a zip", async ({ page }) => {
+    const kb = await setup(page);
+    const zip = Buffer.from(zipSync({ "docs/Prices.xlsx": new Uint8Array(xlsx()), "docs/broken.docx": strToU8("not a zip at all") }));
+    const report = await runImportOf(page, [binary("Pack.zip", zip), file("note.md", "# Note\n\nHi")]);
+    await expect(report).toContainText("Created 3 pages");
+    await expect(page.getByTestId("kb-import-unreadable")).toContainText("broken.docx");
+    expect(kb.made.map((p) => p.title).sort()).toEqual(["Note", "Prices", "docs"]);
+  });
+});
+
 test.describe("Knowledge export", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });

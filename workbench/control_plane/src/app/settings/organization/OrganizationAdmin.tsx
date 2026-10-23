@@ -145,6 +145,8 @@ const PURGE_LABELS: Record<string, string> = {
   apps: "app",
   workflows: "workflow",
   meetings: "meeting",
+  // WS-61 KB-5a: an edit the assistant proposed for the member, kept.
+  knowledge_proposals: "proposed Knowledge edit",
 };
 
 function purgeLabel(key: string, n: number): string {

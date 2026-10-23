@@ -17,13 +17,16 @@ import {
   mb,
   safeEntryPath,
 } from "./limits";
-import { baseName, pageKind } from "./names";
+import { baseName, isDocumentKind, pageKind } from "./names";
 
 /** One page file read from a zip or from the disk. */
 export interface RawEntry {
   /** The path in the zip, or the file name for a loose file. */
   path: string;
+  /** The text of a Markdown or HTML file. Empty for a document. */
   text: string;
+  /** The bytes of a Word, PDF, PowerPoint or Excel file (KB-AI-1). */
+  bytes?: Uint8Array;
 }
 
 export interface ZipRead {
@@ -90,7 +93,8 @@ export async function readZip(data: Uint8Array, alreadyBytes = 0): Promise<ZipRe
         `The files are over ${mb(MAX_TOTAL_BYTES)} when they are read. The limit for one import is ${mb(MAX_TOTAL_BYTES)}. Nothing was imported.`,
       );
     }
-    entries.push({ path: safeEntryPath(name), text: strFromU8(content) });
+    const path = safeEntryPath(name);
+    entries.push(isDocumentKind(pageKind(path)) ? { path, text: "", bytes: content } : { path, text: strFromU8(content) });
   }
   return { entries, skipped, bytes };
 }

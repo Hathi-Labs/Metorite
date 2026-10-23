@@ -43,6 +43,7 @@ same visible siblings.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -67,6 +68,18 @@ MAX_POSITION = 100_000
 #: One tree write at a time in one space (KB-2e). The key names the org and
 #: the space, so two spaces never wait for each other.
 _TREE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
+#: The SET of a publish. ``publish_page`` and the accept of a page proposal
+#: (``proposals.py``, KB-5a) both write it, so the two cannot drift.
+PUBLISH_SETS = (
+    "state = 'published', published_at = now(), archived_at = NULL, "
+    f"review_at = now() + interval '{core.REVIEW_DAYS} days'"
+)
+
+#: The SET of an archive. The right side reads the row as it was, so the
+#: prior state is kept. ``archive_page`` and the reject of a page proposal
+#: (KB-5a) both write it.
+ARCHIVE_SETS = "state = 'archived', archived_at = now(), archived_from_state = state"
 
 
 class PageCreate(BaseModel):
@@ -156,6 +169,56 @@ async def _written(
     out = core.page_dict(row, position=rank)
     out["version"] = version
     return out
+
+
+async def writable_space(db: Any, user: UserContext, space_id: str | None) -> Any:
+    """The space a new draft lands in, checked. The ``me`` space with none.
+
+    404 for a space the caller cannot open, 403 without ``write`` on it at the
+    time of the call, and 409 for an archived space. ``create_page`` and a
+    page proposal (KB-5a) both call it.
+    """
+    if space_id is None:
+        space = await core.ensure_me_space(db, user)
+    else:
+        space = await core.load_space(db, user, space_id)
+        if space is None:
+            raise core.not_found()
+        level = await core.space_level(db, user, space)
+        if core.LEVEL_RANK.get(level or "", 0) < core.LEVEL_RANK["write"]:
+            raise core.forbidden("Writing in this space needs a write grant.")
+    if space.archived_at is not None:
+        raise _conflict("The space is archived.")
+    return space
+
+
+async def insert_draft(
+    db: Any, user: UserContext, space: Any, *, parent_id: str | None, title: str,
+    body_md: str, reviewers: list[str], origin: dict[str, Any] | None = None,
+) -> Any:
+    """Insert one draft, last among its siblings, and return the new row.
+
+    The caller has checked the space (:func:`writable_space`) and the parent.
+    The author is the session's member, never a body field. *origin* is the
+    provenance of the draft, for an agent's proposal (KB-5a), or None. The
+    caller then ends the write in :func:`_written`, which appends the version.
+    """
+    # KB-2e: a new page goes last among its siblings, under the tree lock.
+    await _lock_trees(db, user, str(space.id))
+    position = await core.next_position(db, user, str(space.id), parent_id)
+    return (await db.execute(
+        text("INSERT INTO kb_pages AS p "
+             "(organization_id, space_id, parent_id, position, title, body_md, "
+             "state, author_email, reviewers, origin) "
+             "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), "
+             "CAST(:parent AS uuid), :position, :title, :body, 'draft', :author, "
+             "CAST(:reviewers AS text[]), CAST(:origin AS jsonb)) "
+             f"RETURNING {core.PAGE_COLUMNS}"),
+        {"org": core.org_of(user), "sid": str(space.id), "parent": parent_id,
+         "position": position, "title": title, "body": body_md,
+         "author": core.viewer_email(user), "reviewers": reviewers,
+         "origin": json.dumps(origin) if origin is not None else None},
+    )).first()
 
 
 async def _lock_trees(db: Any, user: UserContext, *space_ids: str) -> None:
@@ -354,17 +417,7 @@ async def create_page(
     title = _title(body.title)
     reviewers = core.clean_reviewers(body.reviewers)
     async with core._tenant_session() as db:
-        if body.space_id is None:
-            space = await core.ensure_me_space(db, user)
-        else:
-            space = await core.load_space(db, user, body.space_id)
-            if space is None:
-                raise core.not_found()
-            level = await core.space_level(db, user, space)
-            if core.LEVEL_RANK.get(level or "", 0) < core.LEVEL_RANK["write"]:
-                raise core.forbidden("Writing in this space needs a write grant.")
-        if space.archived_at is not None:
-            raise _conflict("The space is archived.")
+        space = await writable_space(db, user, body.space_id)
         if space.kind == "me" and reviewers:
             raise HTTPException(
                 status_code=422,
@@ -381,21 +434,10 @@ async def create_page(
                     detail="The parent must be a live page in the same space.",
                 )
             parent_id = str(parent.id)
-        # KB-2e: a new page goes last among its siblings, under the tree lock.
-        await _lock_trees(db, user, str(space.id))
-        position = await core.next_position(db, user, str(space.id), parent_id)
-        row = (await db.execute(
-            text("INSERT INTO kb_pages AS p "
-                 "(organization_id, space_id, parent_id, position, title, body_md, "
-                 "state, author_email, reviewers) "
-                 "VALUES (CAST(:org AS uuid), CAST(:sid AS uuid), "
-                 "CAST(:parent AS uuid), :position, :title, :body, 'draft', :author, "
-                 "CAST(:reviewers AS text[])) "
-                 f"RETURNING {core.PAGE_COLUMNS}"),
-            {"org": core.org_of(user), "sid": str(space.id), "parent": parent_id,
-             "position": position, "title": title, "body": body.body_md,
-             "author": core.viewer_email(user), "reviewers": reviewers},
-        )).first()
+        row = await insert_draft(
+            db, user, space, parent_id=parent_id, title=title, body_md=body.body_md,
+            reviewers=reviewers,
+        )
         return await _written(db, user, row, "create")
 
 
@@ -476,12 +518,7 @@ async def publish_page(
         level = await core.space_level(db, user, space)
         if not core.can_write_page(level):
             raise core.forbidden("Publishing this page needs a write grant on its space.")
-        row = await _update(
-            db, user, str(page.id),
-            "state = 'published', published_at = now(), archived_at = NULL, "
-            f"review_at = now() + interval '{core.REVIEW_DAYS} days'",
-            {},
-        )
+        row = await _update(db, user, str(page.id), PUBLISH_SETS, {})
         return await _written(db, user, row, "publish", background)
 
 
@@ -632,11 +669,7 @@ async def archive_page(
         space = await _space_of(db, user, page)
         if await core.space_level(db, user, space) != "manage":
             raise core.forbidden("Archiving a page needs manage on its space.")
-        row = await _update(
-            db, user, str(page.id),
-            # The right side reads the row as it was, so the prior state is kept.
-            "state = 'archived', archived_at = now(), archived_from_state = state", {},
-        )
+        row = await _update(db, user, str(page.id), ARCHIVE_SETS, {})
         return await _written(db, user, row, "archive", background)
 
 
