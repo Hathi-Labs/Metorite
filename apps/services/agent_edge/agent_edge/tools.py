@@ -3522,9 +3522,10 @@ AGENT_DELETE_TITLE_MAX = 2_000
 DELETE_BODY_KEYS: tuple[str, ...] = ("expected_version", "confirm_title", "subtasks_to_delete")
 #: The two words of ``subtasks_to_delete`` (D-OP-10). A list of ids is the third form.
 SUBTASK_WORDS: tuple[str, ...] = ("none", "all")
-#: The most ids in that list, the cap of the gateway too.
+#: The most ids in that list, the cap of the gateway too. ``all`` has no cap.
 MAX_DELETE_IDS = 1_000
-#: The 422 of an id that is not a descendant, a copy of the gateway's code.
+#: The 422 of an id that is not a descendant the member can see, a copy of
+#: the gateway's code.
 SUBTASK_NOT_BELOW = "subtask_not_below"
 
 _DELETE_INPUT: dict[str, Any] = {
@@ -3544,9 +3545,11 @@ _DELETE_INPUT: dict[str, Any] = {
             "items": {"type": "string", "pattern": _UUID_PATTERN},
             "maxItems": MAX_DELETE_IDS,
             "description": "The person's answer: none keeps every subtask, all"
-                           " deletes every subtask at any depth, or a list of the"
-                           " ids of the subtasks to delete. Each subtask that is"
-                           " not deleted is kept."},
+                           " deletes every subtask at any depth that this"
+                           " connection can see, or a list of the ids of the"
+                           " subtasks to delete. Each subtask that is not deleted"
+                           " is kept. A subtask that this connection cannot see is"
+                           " always kept."},
     },
     "required": ["task_id", "expected_version", "confirm_title", "subtasks_to_delete"],
     "additionalProperties": False,
@@ -3554,7 +3557,7 @@ _DELETE_INPUT: dict[str, Any] = {
 
 _DELETE_OUTPUT: dict[str, Any] = _object({
     "deleted": {"type": "string"}, "subtasks_promoted": {"type": "integer"},
-    "subtasks_deleted": {"type": "integer"},
+    "subtasks_deleted": {"type": "integer"}, "subtasks_kept_hidden": {"type": "integer"},
 })
 
 
@@ -3594,7 +3597,8 @@ async def _delete_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     cascaded = body.get("cascaded") if isinstance(body.get("cascaded"), dict) else {}
     return {"deleted": deleted,
             "subtasks_promoted": _nonneg(cascaded.get("subtasks_promoted")),
-            "subtasks_deleted": _nonneg(cascaded.get("subtasks_deleted"))}
+            "subtasks_deleted": _nonneg(cascaded.get("subtasks_deleted")),
+            "subtasks_kept_hidden": _nonneg(cascaded.get("subtasks_kept_hidden"))}
 
 
 DELETE_TASK = Tool(
@@ -3613,10 +3617,13 @@ DELETE_TASK = Tool(
         " to delete and which to keep. Send exactly that answer as"
         " subtasks_to_delete: none, all, or the ids to delete. A kept subtask"
         " whose parent is deleted moves up to the nearest task that stays."
-        " When the task has no subtasks, send none. When the person only wants the task off the boards, archive it"
-        " instead, because a person can restore an archived task. Returns the"
-        " id of the deleted task, how many subtasks moved up and how many were"
-        " deleted." + _UNTRUSTED_NOTE
+        " A subtask that you cannot see is never deleted: it is kept and moves"
+        " up too. When the task has no subtasks, send none. When the person"
+        " only wants the task off the boards, archive it instead, because a"
+        " person can restore an archived task. Returns the id of the deleted"
+        " task, how many subtasks moved up, how many were deleted, and how"
+        " many hidden subtasks were kept. Tell the person that count when it"
+        " is not zero." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_DELETE_INPUT,

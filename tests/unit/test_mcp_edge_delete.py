@@ -223,7 +223,8 @@ class TestTheToolAtTheEdge:
         assert json.loads(post.body) == {"expected_version": V1, "confirm_title": "Old task",
                                          "subtasks_to_delete": "none"}
         assert "if-match" not in post.headers
-        assert body == {"deleted": TASK, "subtasks_promoted": 2, "subtasks_deleted": 0}
+        assert body == {"deleted": TASK, "subtasks_promoted": 2, "subtasks_deleted": 0,
+                    "subtasks_kept_hidden": 0}
 
     async def test_the_choice_is_required_and_takes_three_forms(self, switch_on):
         args = _args()
@@ -659,7 +660,8 @@ class TestTheDelete:
         kids = [_child(live, task, f"h3 kid {n}") for n in range(2)]
         grandchild = _child(live, kids[0], "h3 grandchild")
         body = _structured(await _delete(live, task))
-        assert body == {"deleted": task, "subtasks_promoted": 2, "subtasks_deleted": 0}
+        assert body == {"deleted": task, "subtasks_promoted": 2, "subtasks_deleted": 0,
+                    "subtasks_kept_hidden": 0}
         assert not _exists(live, task)
         for kid in kids:
             assert str(tw._row(live, kid).parent_task_id) == parent, kid
@@ -758,7 +760,8 @@ class TestTheDelete:
         gg = _child(live, g2, "h10 gg")
         before = {one: tw._row(live, one).updated_at for one in (g1, c2, gg)}
         body = _structured(await _delete(live, task, subtasks_to_delete=[c1, g2]))
-        assert body == {"deleted": task, "subtasks_promoted": 3, "subtasks_deleted": 2}
+        assert body == {"deleted": task, "subtasks_promoted": 3, "subtasks_deleted": 2,
+                    "subtasks_kept_hidden": 0}
         for gone in (task, c1, g2):
             assert not _exists(live, gone), gone
             assert _tombstones(live, gone) == 1, gone
@@ -782,7 +785,8 @@ class TestTheDelete:
             kid = _child(live, task, "h11 kid")
             grand = _child(live, kid, "h11 grand")
             body = _structured(await _delete(live, task, subtasks_to_delete=choice))
-            assert body == {"deleted": task, "subtasks_promoted": 1, "subtasks_deleted": 0}
+            assert body == {"deleted": task, "subtasks_promoted": 1, "subtasks_deleted": 0,
+                    "subtasks_kept_hidden": 0}
             assert _exists(live, kid) and tw._row(live, kid).parent_task_id is None
             assert str(tw._row(live, grand).parent_task_id) == kid
         # The member's plain DELETE, with no query: the subtasks move up.
@@ -844,7 +848,153 @@ class TestTheDelete:
         great = _child(live, grand, "h14 great")
         sibling = _child(live, parent, "h14 sibling")
         body = _structured(await _delete(live, task, subtasks_to_delete="all"))
-        assert body == {"deleted": task, "subtasks_promoted": 0, "subtasks_deleted": 4}
+        assert body == {"deleted": task, "subtasks_promoted": 0, "subtasks_deleted": 4,
+                    "subtasks_kept_hidden": 0}
         for gone in (task, *kids, grand, great):
             assert not _exists(live, gone) and _tombstones(live, gone) == 1, gone
         assert _exists(live, parent) and _exists(live, sibling)
+
+
+# ── Fix round 1: only what the caller can see (D-OP-10, the rule of the core) ─
+
+
+def _kid(world, parent: str, title: str, project: str, status: str) -> str:
+    """A subtask of *parent* in *project*, which may be one the caller cannot see."""
+    world.seeder.number += 1
+    return str(world.seeder.one(
+        "INSERT INTO pm_tasks (title, project_id, root_project_id, status_id,"
+        " created_by, organization_id, task_number, parent_task_id) VALUES (:t,"
+        " CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), :a, CAST(:o AS uuid),"
+        " :n, CAST(:parent AS uuid)) RETURNING id",
+        t=title, p=project, s=status, a=w.OWNER, o=world.org,
+        n=world.seeder.number, parent=parent))
+
+
+def _assign(world, task: str, email: str = MEMBER) -> None:
+    world.seeder.one("INSERT INTO pm_task_assignees (task_id, assignee, assigned_by)"
+                     " VALUES (CAST(:t AS uuid), :w, :a) RETURNING task_id",
+                     t=task, w=email, a=w.OWNER)
+
+
+def _assigned_tree(world, tag: str) -> SimpleNamespace:
+    """A task that the member sees only as its assignee, in ``private``.
+
+    Its parent and its two subtasks ``h1`` and ``h2`` are in ``private`` too,
+    with no grant and no assignment, so the member cannot see them. ``seen``
+    is a third subtask that the member sees as its assignee.
+    """
+    top = world.task(world.private, world.s.private_todo, f"{tag} top")
+    task = _kid(world, top, f"{tag} doomed", world.private, world.s.private_todo)
+    _assign(world, task)
+    hidden = [_kid(world, task, f"{tag} hidden {n}", world.private, world.s.private_todo)
+              for n in range(2)]
+    seen = _kid(world, task, f"{tag} seen", world.private, world.s.private_todo)
+    _assign(world, seen)
+    return SimpleNamespace(top=top, task=task, hidden=hidden, seen=seen)
+
+
+class TestOnlyWhatTheCallerSees:
+    """A delete removes only the descendants that the caller can see. A
+    hidden descendant is kept, and moves up to its nearest surviving
+    ancestor. The response counts the hidden ones and names none."""
+
+    pytestmark = _DB_GATE
+
+    async def test_all_keeps_a_descendant_hidden_behind_the_assignee_arm(self, live, events):
+        await _switch(live, True)
+        t = _assigned_tree(live, "fx a")
+        body = _structured(await _delete(live, t.task, subtasks_to_delete="all"))
+        assert body == {"deleted": t.task, "subtasks_promoted": 2, "subtasks_deleted": 1,
+                        "subtasks_kept_hidden": 2}
+        assert not _exists(live, t.task) and not _exists(live, t.seen)
+        for one in t.hidden:
+            assert _exists(live, one) and _tombstones(live, one) == 0, one
+            assert str(tw._row(live, one).parent_task_id) == t.top, one
+        deleted = [p for e, p in events if e == "pm.task.deleted"]
+        assert {"task_id": t.task, "via": tw.R8_VIA} in deleted
+        assert {"task_id": t.seen, "via": tw.R8_VIA} in deleted
+        assert not any(p["task_id"] in t.hidden for p in deleted)
+
+    async def test_all_keeps_a_descendant_outside_the_pins(self, live):
+        """The task is in the pinned project. Its subtask is in ``other``,
+        which the member sees and the connection does not pin."""
+        await _switch(live, True)
+        top = live.task(live.team, live.s.todo, "fx b top")
+        task = _child(live, top, "fx b doomed")
+        out = _kid(live, task, "fx b unpinned", live.other, live.s.other_todo)
+        pinned = _child(live, task, "fx b pinned kid")
+        row = tw._row(live, task)
+        r = await tw._send(live, "POST", f"/projects/tasks/{task}/agent-delete", body={
+            "expected_version": row.updated_at.isoformat(), "confirm_title": row.title,
+            "subtasks_to_delete": "all"}, signed="pinned")
+        assert r.status_code == 200, r.text
+        assert r.json()["cascaded"]["subtasks_deleted"] == 1
+        assert r.json()["cascaded"]["subtasks_kept_hidden"] == 1
+        assert not _exists(live, task) and not _exists(live, pinned)
+        assert _exists(live, out) and str(tw._row(live, out).parent_task_id) == top
+
+    async def test_a_hidden_id_in_the_list_gets_422_and_nothing_changes(self, live):
+        await _switch(live, True)
+        t = _assigned_tree(live, "fx c")
+        for ids in ([t.hidden[0]], [t.seen, t.hidden[1]]):
+            result = await _delete(live, t.task, subtasks_to_delete=ids)
+            assert _text(result) == tools.TEXT_SUBTASK_NOT_BELOW, ids
+        for one in (t.task, t.seen, *t.hidden):
+            assert _exists(live, one) and _tombstones(live, one) == 0, one
+        assert str(tw._row(live, t.task).parent_task_id) == t.top
+        for one in (t.seen, *t.hidden):
+            assert str(tw._row(live, one).parent_task_id) == t.task, one
+
+    async def test_the_plain_delete_with_a_hidden_id_gets_422(self, live):
+        t = _assigned_tree(live, "fx d")
+        r = await _person(live, MEMBER, "DELETE",
+                          f"/projects/tasks/{t.task}?delete_subtask_ids={t.hidden[0]}")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == tools.SUBTASK_NOT_BELOW
+        for one in (t.task, t.seen, *t.hidden):
+            assert _exists(live, one) and _tombstones(live, one) == 0, one
+
+    async def test_all_has_no_cap_of_its_own(self, live):
+        """``all`` is a set that the server finds, so the cap of a listed
+        set does not apply to it."""
+        await _switch(live, True)
+        task = live.task(live.team, live.s.todo, "fx cap doomed")
+        first = live.seeder.number + 1
+        many = tools.MAX_DELETE_IDS + 1
+        live.seeder.number += many
+        with live.admin.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": live.org})
+            c.execute(text(
+                "INSERT INTO pm_tasks (title, project_id, root_project_id, status_id,"
+                " created_by, organization_id, task_number, parent_task_id)"
+                " SELECT 'fx cap kid ' || n, CAST(:p AS uuid), CAST(:p AS uuid),"
+                " CAST(:s AS uuid), :a, CAST(:o AS uuid), n, CAST(:parent AS uuid)"
+                " FROM generate_series(:first, :last) AS n"),
+                {"p": live.team, "s": live.s.todo, "a": w.OWNER, "o": live.org,
+                 "parent": task, "first": first, "last": first + many - 1})
+        body = _structured(await _delete(live, task, subtasks_to_delete="all"))
+        assert body["subtasks_deleted"] == many
+        with live.admin.begin() as c:
+            left = c.execute(text("SELECT count(*) FROM pm_tasks"
+                                  " WHERE title LIKE 'fx cap kid %'")).scalar()
+        assert left == 0
+
+    async def test_the_plain_delete_emits_one_event_for_each_task(self, live, events):
+        task = live.task(live.team, live.s.todo, "fx ev doomed")
+        gone, kept = _child(live, task, "fx ev gone"), _child(live, task, "fx ev kept")
+        r = await _person(live, MEMBER, "DELETE",
+                          f"/projects/tasks/{task}?delete_subtask_ids={gone}")
+        assert r.status_code == 200, r.text
+        deleted = [p for e, p in events if e == "pm.task.deleted"]
+        assert {"task_id": task} in deleted and {"task_id": gone} in deleted
+        assert {"task_id": kept} not in deleted
+
+    async def test_the_agent_delete_emits_one_event_for_each_task_with_via(self, live, events):
+        await _switch(live, True)
+        task = live.task(live.team, live.s.todo, "fx eva doomed")
+        kid = _child(live, task, "fx eva kid")
+        grand = _child(live, kid, "fx eva grand")
+        _structured(await _delete(live, task, subtasks_to_delete="all"))
+        deleted = [p for e, p in events if e == "pm.task.deleted"]
+        for one in (task, kid, grand):
+            assert deleted.count({"task_id": one, "via": tw.R8_VIA}) == 1, one
