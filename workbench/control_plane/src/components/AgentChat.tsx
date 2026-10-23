@@ -44,6 +44,7 @@ import {
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
 import { noActionOf } from "@/components/email/EmailToolCards";
 import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
+import { withEmailSteps } from "@/lib/delegatedSteps";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
@@ -2100,7 +2101,11 @@ export default function AgentChat({
   // The newest email draft draws in full in the thread, and a draft that a
   // revision replaced folds to one line (`lib/pinnedDraft.ts`). No draft
   // pins above the composer (owner report, 2026-10-23).
-  const drafts = useMemo(() => draftsOf(messages, (e) => !noActionOf(e.result)), [messages]);
+  // A draft of a delegated email run counts too (§7.1.1 rule 5).
+  const drafts = useMemo(
+    () => draftsOf(messages.map((m) => ({ toolEvents: withEmailSteps(m.toolEvents) })), (e) => !noActionOf(e.result)),
+    [messages],
+  );
   const pinScope = useMemo(
     () => ({ pinnedId: null, superseded: draftPin(drafts, null).superseded }),
     [drafts],

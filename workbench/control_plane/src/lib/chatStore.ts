@@ -24,6 +24,9 @@ export interface SubAgentTool {
   name: string;
   status: ToolEventStatus;
   result?: string;
+  /** The step's arguments, so a delegated step's email card can draw
+   *  (`navigation_shell.md` §7.1.1 rule 5). Absent on rows saved before. */
+  args?: Record<string, unknown>;
 }
 
 export interface ToolEvent {

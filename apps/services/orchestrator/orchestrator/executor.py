@@ -1589,6 +1589,36 @@ async def _email_working_set_for(
         return {}, ""
 
 
+def _sub_call_events(
+    calls: list[dict[str, Any]], *, agent_name: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """The ``SUB_AGENT_TOOL_CALL_START`` and ``_RESULT`` events of a batch
+    sub-run's calls, in the shape ``wrap_sub_agent_events`` gives a streamed
+    sub-run: the arguments as JSON text, the result capped at ``RESULT_CAP``.
+    """
+    import json as _json
+
+    from orchestrator.event_translator import RESULT_CAP
+
+    events: list[dict[str, Any]] = []
+    for c in calls:
+        cid = str(c.get("id") or "") or f"{run_id}:{len(events)}"
+        args = c.get("args")
+        events.append({
+            "type": "SUB_AGENT_TOOL_CALL_START", "agentName": agent_name,
+            "runId": run_id, "toolCallId": cid,
+            "toolCallName": str(c.get("name") or "tool"),
+            "args": args if isinstance(args, str) else _json.dumps(args or {}, default=str),
+        })
+        events.append({
+            "type": "SUB_AGENT_TOOL_CALL_RESULT", "agentName": agent_name,
+            "runId": run_id, "toolCallId": cid,
+            "content": str(c.get("result") or "")[:RESULT_CAP],
+            "success": c.get("success") is not False,
+        })
+    return events
+
+
 def _note_sub_call(calls: list[dict[str, Any]], ev: dict[str, Any]) -> None:
     """Keep one streamed ``SUB_AGENT_TOOL_CALL_*`` event of a Copilot sub-run
     as a call, in the shape of :func:`_tool_calls_of`."""
@@ -2059,6 +2089,11 @@ async def _run_sub_agent_streaming(
                     organization_id=_resolve_sub_agent_org(),
                 )
                 _sub_calls = list(result.get("tool_calls") or [])
+                # §7.1.1 rule 5: a batch run streams no step, so its calls go
+                # to the parent now, with their arguments and capped results,
+                # and the one assistant draws their cards.
+                for _sev in _sub_call_events(_sub_calls, agent_name=agent_name, run_id=run_id):
+                    await _emit_sub_event(_sev)
                 text = result.get("result") or result.get("answer") or ""
                 if isinstance(text, dict):
                     text = text.get("content", str(text))
