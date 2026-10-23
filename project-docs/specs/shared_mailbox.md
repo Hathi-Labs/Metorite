@@ -6,7 +6,7 @@ first.** Verified against the code of `origin/main` at `f72fafb92` on 2026-10-23
 **Origin:** owner decision, 2026-10-23: "Spec a shared mailbox". The example is
 `sales@fracktal.in`, which several members of one organization read and answer.
 
-**Board row:** none yet. The PR that accepts this spec mints a WS row in `work_plan.md` §2.
+**Board row:** WS-65 in `work_plan.md` §2, minted 2026-10-23.
 
 **Single owner (contract point 6).** This file owns the shared mailbox. `email_app_master_plan.md`
 keeps the private mailbox, the multi-inbox design (§11) and the held chat (§21). That spec lists
@@ -43,8 +43,8 @@ A member with no grant on a shared mailbox sees no change anywhere.
 ## 1. Owner questions — answered 2026-10-23
 
 **The owner answered all nine on 2026-10-23, and each answer is the recommendation below.** The
-slices in §10 use these answers as written. They are decisions now (D-SM-Q1 to D-SM-Q9). Do not
-open them again.
+slices in §10 use these answers as written. They are decisions now (D-SM-Q1 to D-SM-Q9). On
+the same day the owner accepted D-SM-1 to D-SM-9 (§4.1). Do not open them again.
 
 | Question | Owner answer |
 |---|---|
@@ -494,7 +494,7 @@ Each ships dark behind `EMAIL_SHARED_MAILBOX` (default OFF). Run the database fi
 
 | Id | Gate | What | Done when | Verification |
 |---|---|---|---|---|
-| **SM-0** | 🔴 OWNER-GATE | The owner answers §1 and accepts D-SM-1 to D-SM-9 | Each question has an answer in this file, and a WS row exists in `work_plan.md` §2 | Read §1 |
+| **SM-0** | ✅ DONE 2026-10-23 | The owner answered §1 and accepted D-SM-1 to D-SM-9 | Each question has an answer in this file, and a WS row exists in `work_plan.md` §2 | Read §1 |
 | **SM-1** | 🟢 AGENT-SAFE | The expand migration of §8.2 step 1, and the permission seed | A fresh ladder and an upgrade both apply it. The four tables have FORCE RLS. A grant on a private row fails. `test_tenant_coverage.py` passes. | `uv run pytest tests/unit/test_email_shared_mailbox_schema_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py` |
 | **SM-2** | 🟢 AGENT-SAFE | The seam of §8.1. `mailbox_access.py`, the three helpers call it, each inline site moves or gets `# private-only:`. Flag OFF gives the private arm only. | R8 fences 1, 4, 5 and 7 pass. The seam fence passes. No route answers differently with the flag off. | `uv run pytest tests/unit/test_email_shared_mailbox_r8.py tests/unit/test_email_owner_predicate_seam.py` then `uv run python scripts/affected_tests.py --run` |
 | **SM-3** | 🟢 AGENT-SAFE | Make shared and grants. `POST /email/accounts/{id}/share`, `GET` and `PUT /email/accounts/{id}/grants`, D-SM-3 and D-SM-9, the refusal of Q-SM-7, the org cap of Q-SM-5 | R8 fences 2 and 3 pass. A non-holder of `email:shared:manage` gets 403. The last manager cannot leave. | `uv run pytest tests/unit/test_email_shared_grants_r8.py` |
