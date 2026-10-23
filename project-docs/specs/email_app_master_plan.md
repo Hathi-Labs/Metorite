@@ -21056,3 +21056,27 @@ A held chat read mail from outside senders (H-236). This wave adds no outward ac
 | A card before each write, and each choice | `tests/unit/test_email_agent_write_cards.py` |
 | The held set | `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_egress_card_bound_pin.py` |
 | The tool count | `tests/unit/test_email_tool_consolidation.py` |
+
+### 22.5 Gaps closed on 2026-10-23
+
+The owner asked the chat to Cc "Venna", and the lookup found nobody. The colleague was
+Veena. An audit then found four gaps. Each one is closed.
+
+1. **A near name finds the person.** `GET /email/contacts/suggest` runs a trigram
+   fallback when the substring search finds fewer than three people. It searches the
+   members and the People rows of the organization with `similarity()`, at a floor of 0.3.
+   Each such hit has `match` set to `closest`. `find_contact` then tells the model to show
+   the name and the address, and to ask the member. A missing `pg_trgm` logs and gives the
+   old result. Migration 170 creates the extension. Fence:
+   `tests/unit/test_email_contact_suggest_r8.py`, on a real database.
+2. **The draft id survives the turn.** `call_agent` keeps no chat history. Every result
+   that makes or changes a draft now carries the line "Draft: draft_id=... | subject:
+   ...". `draft_reply` puts it in its first line, because the card edits the rest. With no
+   id, the model calls `search_emails` with `folder` set to `drafts`. When more than one
+   draft fits, it asks the member. Fence:
+   `tests/unit/test_email_chat_assistant_tools.py`.
+3. **A new `body` keeps the quoted thread.** `edit_draft(body=...)` now refuses when the
+   draft holds a quoted thread. The answer names `compose_reply` with an instruction. The
+   card says that the draft holds no quoted thread when it does not.
+4. **No "Email app" option.** The too-long answer names `edit_draft` as the chat step.
+   Fence: `tests/unit/test_held_send_guidance.py`.
