@@ -21036,6 +21036,12 @@ and no new route. The agent tools call the routes that the Email app already use
 chat, the rules and the cleaner included. Wave 1 keeps all mail inside the member's own
 mailboxes.
 
+**The one assistant.** There is no separate email assistant (D99). The member talks to the
+one assistant in the shell, and it delegates email work to `email-assistant`.
+`navigation_shell.md` §7.1.1 owns the rules for that path. They cover the working set of
+email ids for each chat and the mailboxes on every surface. They also cover a mailbox named
+in words, the email cards in the dock and the mailbox mark.
+
 ### 22.1 What the chat can do now
 
 | Job | Tool | Route |

@@ -837,7 +837,11 @@ async def test_a_named_separate_mailbox_still_acts(gw: Gateway) -> None:
     gw.accounts = [*TWO, NDA]
     out = await agents.create_rule(BOX_C, name="Bank")
     assert gw.writes and all(BOX_C in f"{p} {b}" for _v, p, b in gw.writes)
-    assert out.endswith(f"in {C_TEXT}.")
+    # The answer names the mailbox, and its last line gives the resolved id
+    # (navigation_shell.md §7.1.1, review P3).
+    first, last = out.split("\n")
+    assert first.endswith(f"in {C_TEXT}.")
+    assert last == f"Mailbox: {C_TEXT} (account_id {BOX_C})"
 
 
 # ── email-chat-write-names-mailbox (EM-T8g-1 review round 1) ────────────────

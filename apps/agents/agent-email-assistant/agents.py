@@ -423,6 +423,18 @@ def _choices(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return pooled if len(pooled) >= 2 else accounts
 
 
+async def _mailbox_line(account_id: str) -> str:
+    """"Mailbox: label · address (account_id <id>)": the mailbox that a tool
+    RESOLVED, on one stable line (§7.1.1 rule 4, review P3).
+
+    The model may name a mailbox in words, so a tool's ``account_id``
+    argument can be "Personal". The chat cards and the working set read the
+    id from this line, at the place that ``email_chat_context
+    .MAILBOX_LINE_TOOLS`` names. The text never holds ``id=``, because the
+    cards read ``id=`` as the id of a mail or of a rule."""
+    return f"Mailbox: {await _named(account_id)} (account_id {account_id})"
+
+
 async def _named(account_id: str) -> str:
     """"Label · address" of the mailbox that a write acted in, for its answer.
 
@@ -471,7 +483,19 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     only shortens the list of the question.
     """
     if account_id:
-        return str(account_id), ""
+        named, hits = await _named_mailbox(str(account_id))
+        if named:
+            return named, ""
+        word = _one_line(account_id, 60)
+        then = (f"Ask the user, then call {tool} again with the account_id of "
+                "that mailbox.")
+        if hits:
+            return "", _mailbox_choices(
+                f"Which mailbox? \"{word}\" matches more than one, so nothing "
+                "changed yet.", hits, then)
+        return "", _mailbox_choices(
+            f"Which mailbox? No mailbox is called \"{word}\", so nothing "
+            "changed yet.", await _accounts(), then)
     try:
         accounts = await _accounts()
     except Exception:
@@ -491,6 +515,48 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
         "mailbox. If the user says all of them, call it once for each mailbox "
         "and name each one.",
     )
+
+
+#: What an id holds and a name does not: a digit, "-" or "_". A label such
+#: as "Personal" holds none, so an unknown label asks and never reaches the
+#: gateway as an id.
+_ID_SHAPE = re.compile(r"[0-9_\-]")
+
+
+def _match_mailbox(value: str, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mailboxes that *value* names (§7.1.1 rule 4), by the ONE matcher
+    that the email working set uses too (``acb_skills.email_chat_context``).
+    An older platform with no matcher matches an id only."""
+    try:
+        from acb_skills.email_chat_context import match_mailbox
+    except ImportError:
+        return [a for a in accounts if str(a.get("id")) == str(value or "").strip()]
+    return match_mailbox(value, accounts)
+
+
+async def _named_mailbox(value: str) -> tuple[str, list[dict[str, Any]]]:
+    """The mailbox that a named ``account_id`` means, as ``(id, matches)``.
+
+    The model may pass the member's own words for a mailbox ("Personal",
+    "my gmail", "vj@…") in place of an id (§7.1.1 rule 4). An id of the
+    member's list wins. A name that matches one mailbox gives its id. A name
+    that matches two or more gives ``("", matches)``, and an unknown name
+    gives ``("", [])``, and the caller asks. When the list cannot be read, or
+    the value has the shape of an id and matches no mailbox, the value goes
+    on as before, and the gateway still checks it (D-EM-20).
+    """
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return value, []
+    if not accounts:
+        return value, []
+    hit = _match_mailbox(value, accounts)
+    if len(hit) == 1:
+        return str(hit[0]["id"]), []
+    if not hit and _ID_SHAPE.search(value):
+        return value, []
+    return "", hit
 
 
 async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
@@ -1296,6 +1362,10 @@ async def read_thread(email_id: str = "", thread_id: str = "",
     # The chat card reads "Thread: N message(s), oldest first:" (threadTitle).
     out = [
         f"Thread: {total} message(s), oldest first:",
+        # The mailbox the thread is in, as its id: the card reads it here.
+        # No label, so the read costs no second request.
+        *([f"Mailbox: the mailbox of this thread (account_id {boxes[0]})"]
+          if boxes else []),
         frame.note(_THREAD_DATA_WHAT) + "\n" + frame.wrap("THREAD", "\n\n".join(inner)),
     ]
     if line := _thread_page_line(total, start, len(msgs)):
@@ -3351,7 +3421,8 @@ async def create_rule(
         if refusal:
             return refusal
     res = await _post("/email/rules", rule)
-    return f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
+    return (f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
+            f"\n{await _mailbox_line(account_id)}")
 
 
 @_annotate_risk(open_world=False)

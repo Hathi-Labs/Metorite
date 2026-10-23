@@ -178,7 +178,9 @@ function replay(events: Array<Record<string, unknown>>): ChatMessage {
 /** Every step row in the rendered turn, as `[status, text]`. */
 function rows(html: string): Array<[string, string]> {
   const out: Array<[string, string]> = [];
-  const re = /<div class="[^"]*" data-step-status="(\w+)" data-step-kind="\w+">([\s\S]*?)<\/button>/g;
+  // A step can hold a receipt: the email read of a hand-off draws in it
+  // (navigation_shell.md §7.1.1 rule 5), and the row then carries the mark.
+  const re = /<div class="[^"]*" data-step-status="(\w+)" data-step-kind="\w+"(?: data-step-has-evidence="")?>([\s\S]*?)<\/button>/g;
   for (let m = re.exec(html); m; m = re.exec(html)) {
     out.push([m[1], m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()]);
   }
@@ -207,6 +209,10 @@ describe("the rail renders the agent's steps from a recorded stream", () => {
 
   it("gives each step its status: done, failed, running", () => {
     expect(rows(html).map(([status]) => status)).toEqual(["done", "done", "failed", "running"]);
+  });
+
+  it("draws the hand-off's email read in that step (§7.1.1 rule 5)", () => {
+    expect(html).toMatch(/data-step-has-evidence="">[\s\S]{0,1500}?Asked[\s\S]{0,300}?Email assistant/);
   });
 
   it("names the step in flight in the trail's header", () => {
