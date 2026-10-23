@@ -38,8 +38,8 @@ The chat tools ``create_project`` and ``update_project`` call those routes.
 than a view. A re-parent of a project needs :func:`may_write_grant` on the
 moved project. A move of a task to another project needs
 :func:`may_delete_task` on the task where it is now. The two rules are the
-same rule, so :func:`may_move_task` is that function and the app reads
-``can_delete`` to hide Move too. A reorder under the same parent, and a
+same rule, so :func:`may_move_task` is that function, and a client that
+hides Move reads ``can_delete``. A reorder under the same parent, and a
 status move inside one project, need only a view. Doors:
 ``POST /nodes/{id}/move``, ``tasks.move_task_in`` (``POST /tasks/{id}/move``
 and the My Tasks organize) and ``POST /tasks/move`` with its preview. The
