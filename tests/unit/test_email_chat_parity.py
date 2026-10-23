@@ -640,7 +640,7 @@ async def test_delete_asks_and_deletes_the_profile(gw: Gateway) -> None:
     assert out.startswith("Cancelled") and gw.writes == []
     gw.answer = True
     await agents.voice_profile(BOX, action="delete")
-    [(method, path, _b, params)] = [c for c in gw.calls if c[0] == "DELETE"]
+    [(_m, path, _b, params)] = [c for c in gw.calls if c[0] == "DELETE"]
     assert (path, params) == ("/email/voice-profile", {"account_id": BOX})
 
 
@@ -730,3 +730,63 @@ async def test_disconnect_asks_alone_and_deletes(gw: Gateway) -> None:
 async def test_an_unknown_mailbox_changes_nothing(gw: Gateway) -> None:
     out = await agents.update_account("nope", name="x")
     assert out.startswith("Nothing changed.") and gw.cards == [] and gw.writes == []
+
+
+# ── 12. Reads: the contact card, the timeline, the overview; a label colour ──
+
+
+async def test_the_contact_card_is_a_framed_read(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/contacts/card")] = {
+        "email": "kim@contoso.test", "name": "Kim Lee", "category": "Conversation",
+        "status": "APPROVED",
+        "stats": {"received": 12, "sent": 4, "unread": 1, "threads": 5},
+        "details": {"title": "Buyer", "organization": "Contoso", "phones": ["+91 98450 00000"]},
+        "recent": [{"id": "e1", "account_id": BOX, "subject": "PO 77",
+                    "received_at": "2026-10-20T09:00:00"}]}
+    out = await agents.find_contact(email="kim@contoso.test", account_id=BOX)
+    [(_m, _p, _b, params)] = [c for c in gw.calls if c[1] == "/email/contacts/card"]
+    assert params == {"email": "kim@contoso.test", "limit": 5, "account_id": BOX}
+    assert "Kim Lee" in out and "12 received" in out and "Company: Contoso" in out
+    assert "PO 77" in out and "EMAIL" in out
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_the_timeline_says_why_an_email_moved(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/messages/e1/timeline")] = {
+        "subject": "Sale!", "events": [
+            {"kind": "received", "at": "2026-10-20T09:00:00", "from": "Shop"},
+            {"kind": "rule", "at": "2026-10-20T09:01:00", "rule_name": "Marketing",
+             "status": "APPLIED", "automated": True,
+             "actions": [{"type": "LABEL"}, {"type": "ARCHIVE"}],
+             "reason": "a promotion"}]}
+    out = await agents.read_email("e1", timeline=True)
+    assert "arrived from Shop" in out
+    assert "rule 'Marketing' applied: LABEL, ARCHIVE. Why: a promotion" in out
+    assert gw.writes == []
+
+
+async def test_the_overview_reads_the_fields_that_the_route_sends(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/analytics/overview")] = {
+        "flow": {"received": 300, "received_prev": 250, "sent": 40, "unread": 12,
+                 "auto_handled_rate": 0.5},
+        "responsiveness": {"reply_rate": 0.8, "median_hours": 3.5},
+        "backlog": {"needs_reply": {"threads": 6}, "awaiting": {"threads": 2}},
+        "noisy_senders": [{"email": "n@x.test", "name": "News", "messages": 40}]}
+    gw.answers[("GET", "/email/senders/categories")] = {"counts": {"Newsletter": 9}}
+    out = await agents.get_account_overview(BOX, days=500)
+    [(_m, _p, _b, params)] = [c for c in gw.calls if c[1] == "/email/analytics/overview"]
+    assert params["days"] == "365"
+    assert "300 received (250 the 365d before)" in out and "50% handled" in out
+    assert "6 need a reply" in out and "News (40)" in out and "Newsletter: 9" in out
+
+
+async def test_a_label_colour_asks_and_patches_the_label(gw: Gateway) -> None:
+    gw.answers[("POST", f"/email/accounts/{BOX}/folders")] = {"name": "Finance"}
+    out = await agents.create_label(BOX, "Finance", color="preset7")
+    [card] = gw.cards
+    assert "Its colour becomes preset7" in card["detail"]
+    assert gw.writes[-1] == ("PATCH", f"/email/accounts/{BOX}/labels",
+                             {"name": "Finance", "color": "preset7"})
+    assert out.endswith("with the colour preset7.")
+    out = await agents.create_label(BOX, "Finance", color="red")
+    assert out.startswith("Nothing changed.") and len(gw.cards) == 1

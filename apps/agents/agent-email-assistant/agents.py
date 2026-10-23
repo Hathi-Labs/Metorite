@@ -719,7 +719,9 @@ def _fmt_recipients(lst: Any) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def read_email(email_id: str, full: bool = False, offset: int = 0) -> str:
+async def read_email(
+    email_id: str, full: bool = False, offset: int = 0, timeline: bool = False,
+) -> str:
     """Fetch one email by id — sender, To/Cc, subject, attachments, and body.
 
     The normal read gives the NEW text of the body: the quoted earlier
@@ -730,7 +732,13 @@ async def read_email(email_id: str, full: bool = False, offset: int = 0) -> str:
     cut-off body (long emails are capped in local storage), or when you need
     the signature, the quoted text or the footer, to summarize, answer a
     detailed question, or draft an accurate reply. A cut body says so, and
-    ``offset`` (characters, with full=true) reads the next part."""
+    ``offset`` (characters, with full=true) reads the next part.
+
+    ``timeline=true`` gives instead what the automation did to this email:
+    when it arrived, and each rule that matched, acted, failed or skipped it.
+    Use it for "why was this archived?"."""
+    if timeline:
+        return await _email_timeline(email_id)
     if full:
         e = await _get(f"/email/messages/{email_id}/full-body")
         body = (e.get("body_text") or "").strip()
@@ -781,6 +789,34 @@ async def read_email(email_id: str, full: bool = False, offset: int = 0) -> str:
     if e.get("body_trimmed"):
         framed += _TRIMMED_NOTE
     return framed
+
+
+async def _email_timeline(email_id: str) -> str:
+    """``read_email(timeline=true)``: each automation event of one email,
+    oldest first. The subject and the sender name are text of the sender, so
+    the lines are framed as email text."""
+    data = await _get(f"/email/messages/{email_id}/timeline") or {}
+    events = [e for e in data.get("events") or [] if isinstance(e, dict)]
+    lines = [f"Subject: {_one_line(data.get('subject') or '(no subject)', 200)}"]
+    for e in events:
+        at = str(e.get("at") or "")[:16].replace("T", " ")
+        if e.get("kind") == "received":
+            lines.append(f"- {at} arrived from {_one_line(e.get('from') or '', 120)}")
+            continue
+        acts = ", ".join(str(a.get("type") if isinstance(a, dict) else a)
+                         for a in e.get("actions") or [])
+        line = (f"- {at} rule '{_one_line(e.get('rule_name') or '(none)', 80)}' "
+                f"{str(e.get('status') or e.get('kind') or '').lower()}"
+                + (f": {acts}" if acts else "")
+                + ("" if e.get("automated", True) else " (by hand)"))
+        if e.get("reason"):
+            line += f". Why: {_one_line(e['reason'], 200)}"
+        if e.get("action_errors"):
+            line += f". Errors: {_one_line(e['action_errors'], 200)}"
+        lines.append(line)
+    if len(events) <= 1:
+        lines.append("No rule acted on this email.")
+    return _frame_email("\n".join(lines))
 
 
 #: The characters of a body that :func:`read_email` shows, in a normal read
@@ -1274,23 +1310,38 @@ async def find_priority(account_id: str, kind: str = "needs_reply",
 
 
 @_annotate_risk(open_world=False)
-async def get_account_overview(account_id: str) -> str:
-    """High-level snapshot: totals, read-rate, top senders, sender categories."""
+async def get_account_overview(account_id: str, days: int = 30) -> str:
+    """High-level snapshot: totals, read-rate, top senders, sender categories.
+    ``days`` sets the window, 1 to 365 (default 30)."""
+    try:
+        window = max(1, min(int(days or 30), 365))
+    except (TypeError, ValueError):
+        window = 30
     overview = await _get(
-        "/email/analytics/overview", {"account_id": account_id, "days": "30"}
+        "/email/analytics/overview", {"account_id": account_id, "days": str(window)}
     )
     cats = await _get("/email/senders/categories", {"account_id": account_id})
-    t = overview.get("totals", {})
+    # Chat parity wave 1: the route answers ``flow``, ``responsiveness``,
+    # ``backlog`` and ``noisy_senders``. The tool read ``totals`` and
+    # ``top_senders``, which the route never sent, so it said 0 each time.
+    flow = overview.get("flow") or {}
+    resp = overview.get("responsiveness") or {}
+    backlog = overview.get("backlog") or {}
     lines = [
-        f"Account overview (30d): {t.get('total', 0)} messages, "
-        f"{t.get('unread', 0)} unread, "
-        f"{round(t.get('read_rate', 0) * 100)}% read.",
-        "Top senders: "
-        + ", ".join(
-            f"{s.get('name') or s.get('email')} ({s.get('count')})"
-            for s in overview.get("top_senders", [])[:5]
-        ),
+        f"Account overview ({window}d): {flow.get('received', 0)} received "
+        f"({flow.get('received_prev', 0)} the {window}d before), "
+        f"{flow.get('sent', 0)} sent, {flow.get('unread', 0)} unread, "
+        f"{round((flow.get('auto_handled_rate') or 0) * 100)}% handled by the rules.",
+        f"Replies: {round((resp.get('reply_rate') or 0) * 100)}% of threads answered, "
+        f"median {resp.get('median_hours')} hour(s).",
+        f"Waiting now: {(backlog.get('needs_reply') or {}).get('threads', 0)} need a reply, "
+        f"{(backlog.get('awaiting') or {}).get('threads', 0)} await one.",
     ]
+    noisy = [s for s in overview.get("noisy_senders") or [] if isinstance(s, dict)]
+    if noisy:
+        # The route gives 12 at most: the senders you never answered.
+        lines.append("Noisy senders you never answer: " + ", ".join(
+            f"{s.get('name') or s.get('email')} ({s.get('messages')})" for s in noisy))
     counts = cats.get("counts", {})
     if counts:
         lines.append(
@@ -2290,7 +2341,8 @@ async def _cleaner(account_id: str, mode: str, since_date: str | None) -> str:
         if pending:
             lines.append(f"{pending} learned pattern(s) wait for review. Approved, they "
                          f"reach about {int(data.get('pending_pattern_reach') or 0)} of them.")
-        top = [s for s in data.get("top_senders") or [] if isinstance(s, dict)][:10]
+        # The route gives the 25 senders with the most, and no more.
+        top = [s for s in data.get("top_senders") or [] if isinstance(s, dict)]
         if top:
             lines.append("The senders with the most:")
             lines += [f"- {_one_line(s.get('name') or s.get('email'), 80)} "
@@ -4052,8 +4104,8 @@ async def voice_profile(
             lines.append(f"Last error: {_one_line(p['last_error'], 200)}")
         guide = str(p.get("style_guide") or "").strip()
         if guide:
-            lines.append("Style guide:\n" + guide[:1500]
-                         + ("\n[Cut. The whole guide is longer.]" if len(guide) > 1500 else ""))
+            # The route keeps 4000 characters at most, so the whole guide shows.
+            lines.append("Style guide:\n" + guide)
         n = int(p.get("suggested_knowledge") or 0)
         if n:
             lines.append(f"{n} suggested knowledge entry(ies) wait for review "
@@ -4424,7 +4476,7 @@ async def rule_guidance(
             lines.append(f"- The provider's own inbox rules: {len(prov)}.")
             lines += [f"  - {_one_line(r.get('name') or r.get('id') or '?', 120)}"
                       + (" (made by Metorite)" if r.get("managed") else "")
-                      for r in prov[:30]]
+                      for r in prov]
         else:
             lines.append("- The provider's own inbox rules cannot be read for this mailbox.")
         return "\n".join(lines)
@@ -4584,20 +4636,32 @@ async def list_labels(account_id: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def create_label(account_id: str, name: str) -> str:
+async def create_label(account_id: str, name: str, color: str | None = None) -> str:
     """Create (or reuse) a label/folder on the account. It shows the user a
-    card first."""
+    card first.
+
+    ``color`` also sets the colour of the label at the provider, as a preset
+    token "preset0" to "preset24" (Gmail labels and Outlook categories). Pass
+    it with the name of a label that exists to change only its colour."""
+    if color is not None and not re.fullmatch(r"preset(2[0-4]|1[0-9]|[0-9])", str(color)):
+        return "Nothing changed. color is a preset token from preset0 to preset24."
     box = await _named(account_id)
     refusal = await _card_refusal(
-        f'Create the label "{_card_name(name)}" in {box}?',
+        f'Create the label "{_card_name(name)}" in {box}?' if color is None
+        else f'Create or colour the label "{_card_name(name)}" in {box}?',
         "It makes a label or a folder in the mailbox at the provider. A label "
-        f"with this name that exists is used again. Mailbox: {box}.",
+        f"with this name that exists is used again. Mailbox: {box}."
+        + (f" Its colour becomes {color}." if color else ""),
         "Cancelled — no label was created.",
     )
     if refusal:
         return refusal
     res = await _post(f"/email/accounts/{account_id}/folders", {"name": name})
-    return f"Label/folder ready: {res.get('name', name)}."
+    ready = res.get("name", name)
+    if color is None:
+        return f"Label/folder ready: {ready}."
+    await _patch(f"/email/accounts/{account_id}/labels", {"name": ready, "color": color})
+    return f"Label/folder ready: {ready}, with the colour {color}."
 
 
 def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
@@ -5906,7 +5970,8 @@ _CONTACT_SOURCES = {
 
 @_annotate_risk(open_world=False)
 async def find_contact(
-    name: str, account_id: str | None = None, domain: str | None = None,
+    name: str = "", account_id: str | None = None, domain: str | None = None,
+    email: str | None = None,
 ) -> str:
     """Find the email address of a person by name, or by part of a name or
     an address. Use it before send_email, and before you add a person to the
@@ -5922,7 +5987,13 @@ async def find_contact(
 
     When it finds more than one person, or the only hit is ``seen``, ask the
     member with ask_questions: one option for each person, with the name and
-    the full address. Never guess an address."""
+    the full address. Never guess an address.
+
+    ``email`` gives instead the contact card of that address: what the mail
+    knows about the person (their signature, how often you write, the
+    newest emails, and how the cleaner treats them)."""
+    if (email or "").strip():
+        return await _contact_card(email.strip(), account_id, name)
     q = " ".join(str(name or "").split())
     if not q:
         return "Give a name to look for."
@@ -5961,6 +6032,42 @@ async def find_contact(
     else:
         lead = "One person matches. Use this address"
     return f"{lead}\nMatches for {q!r}{at}:\n" + "\n".join(lines)
+
+
+async def _contact_card(email: str, account_id: str | None, name: str) -> str:
+    """``find_contact(email=...)``: ``GET /email/contacts/card``. The
+    signature, the subjects and the previews are text of the person, so the
+    card is framed as email text."""
+    params: dict[str, Any] = {"email": email, "limit": 5}
+    if account_id:
+        params["account_id"] = account_id
+    if (name or "").strip():
+        params["name"] = name.strip()
+    c = await _get("/email/contacts/card", params) or {}
+    stats = c.get("stats") or {}
+    det = c.get("details") or {}
+    lines = [f"Contact: {_one_line(c.get('name') or '', 120)} "
+             f"<{_one_line(c.get('email') or email, _TARGET_LIMIT)}>",
+             f"Category: {c.get('category') or 'none'}. Cleaner: {c.get('status') or 'UNHANDLED'}.",
+             f"Mail: {int(stats.get('received') or 0)} received, "
+             f"{int(stats.get('sent') or 0)} sent by you, {int(stats.get('unread') or 0)} "
+             f"unread, in {int(stats.get('threads') or 0)} thread(s). First "
+             f"{stats.get('first_seen') or '?'}, last {stats.get('last_seen') or '?'}."]
+    sig = [f"{label}: {_one_line(det.get(key), 200)}"
+           for key, label in (("title", "Title"), ("organization", "Company"))
+           if det.get(key)]
+    if det.get("phones"):
+        sig.append("Phone: " + ", ".join(_one_line(p, 40) for p in det["phones"]))
+    if det.get("links"):
+        sig.append("Links: " + ", ".join(_one_line(u, 200) for u in det["links"]))
+    if sig:
+        lines.append("From the signature: " + ". ".join(sig) + ".")
+    recent = [m for m in c.get("recent") or [] if isinstance(m, dict)]
+    if recent:
+        lines.append("Newest emails:")
+        lines += [f"- {_md_link(m.get('subject'), m.get('id'), m.get('account_id')) or _one_line(m.get('subject') or '(no subject)', 120)} "
+                  f"({str(m.get('received_at') or '')[:10]})" for m in recent]
+    return _frame_email("\n".join(lines))
 
 
 #: What a bulk act may do, and its verb on the card.

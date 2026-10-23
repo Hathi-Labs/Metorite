@@ -140,8 +140,6 @@ ALLOWED: dict[str, str] = {
         'A digest. Each section prints its count, and query_inbox pages the mail.',
     'apps/agents/agent-email-assistant/agents.py::_one::(items or [])[:5]':
         'A digest. Each section prints its count, and query_inbox pages the mail.',
-    "apps/agents/agent-email-assistant/agents.py::get_account_overview::overview.get('top_senders', [])[:5]":
-        "A 'top 5 senders' summary. list_senders pages every sender.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::evicted[:5]':
         "A plan receipt. It prints the count and '…', and my_tasks_list(view='next') lists the tasks.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::unplaced[:5]':
