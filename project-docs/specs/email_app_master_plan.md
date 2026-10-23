@@ -8777,14 +8777,7 @@ Status: built on branch `email-multi-inbox-chat`. The fence is `tests/unit/test_
 **Status.** Built on branch `email-multi-inbox-ui`. Frontend only. The owner asked that the chat
 and the UI can manage more than one inbox.
 
-- **Chat app scope.** `/chat` uses `chatScope()` from `lib/chatScope.ts`, the same rule as the
-  email pane. It starts on the scope that the pane remembers. With no memory it opens All inboxes
-  for two or more pooled mailboxes, else the one mailbox. The picker uses `chatMailboxOptions()`,
-  so it shows the display label, the mailbox dot and the "All inboxes" entry. A separate mailbox
-  is an option of its own and never sits inside All inboxes. Fence: `chat-app-shared-scope` in
-  `src/app/chat/chatMailboxScope.test.ts`.
-- **Reconnect mark.** The chat picker marks a mailbox whose sync failed or whose sign-in lapsed.
-  The account switcher already did. Fence: `email-chat-picker-attention`.
+- **Chat app.** The mailbox reaches the one assistant through the orchestrator work in a later branch. /chat keeps its email-assistant picker unchanged.
 - **Copy rules.** The Rules tab has "Copy rules from..." for two or more mailboxes. The dialog
   lists the rules that will copy and the rules that stay behind. It asks before it copies. Fence:
   `email-rules-tab-copy`.
