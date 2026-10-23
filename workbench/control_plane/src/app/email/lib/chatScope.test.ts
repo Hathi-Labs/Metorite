@@ -171,10 +171,10 @@ describe("email-chat-scope-persona", () => {
     expect(p).not.toContain("Outlook");
   });
 
-  it("leaves the chat app on one mailbox, with no change to it", () => {
+  it("gives the chat app the same scope as the pane (chat-app-shared-scope)", () => {
     const chatPage = codeOnly(read("../chat/page.tsx"));
     expect(chatPage).toContain("buildEmailAssistantPersona({");
-    expect(chatPage).not.toContain("allInboxes");
+    expect(chatPage).toContain("allInboxes: emailChatAllInboxes");
   });
 });
 
@@ -310,15 +310,11 @@ describe("email-chat-picker-dot", () => {
     expect(agent).toContain("mailboxes?: { id: string; label: string; accent?: string }[];");
   });
 
-  it("leaves /chat with no dot, so its picker looks the same", () => {
+  it("gives /chat the options with their dots, from the same function", () => {
     const chatPage = codeOnly(read("../chat/page.tsx"));
-    const start = chatPage.indexOf("const emailMailboxOptions = useMemo(");
-    const options = chatPage.slice(start, chatPage.indexOf("[emailAccounts],", start));
-    expect(start).toBeGreaterThan(-1);
-    expect(options).not.toMatch(/\baccent\b/);
+    expect(chatPage).toContain("chatMailboxOptions(emailAccounts)");
     // /chat sends no mailbox note. Its one note is the recovery note after a
     // refused chat moved to a new one (2026-10-05, lib/railSessions.ts).
-    // Exactly one `notice=`, and it is the recovery note.
     expect(chatPage.match(/\bnotice=/g) ?? []).toHaveLength(1);
     expect(chatPage).toMatch(/\bnotice=\{\s*recoveryNotice\b/);
     expect(chatPage).not.toMatch(/\bscopeNotice\b|rememberChatScope/);

@@ -712,7 +712,7 @@ const ACCOUNT_URL_PARAM = "account";
 /** Read the preferred account id: an explicit ?account= URL param wins (shared
  *  link), else the last selection from localStorage. Null on the server or when
  *  neither is set. */
-function readPreferredAccountId(): string | null {
+export function readPreferredAccountId(): string | null {
   if (typeof window === "undefined") return null;
   try {
     const fromUrl = new URLSearchParams(window.location.search).get(
