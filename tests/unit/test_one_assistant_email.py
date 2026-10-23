@@ -20,7 +20,8 @@ R7 fences named here:
   1. "what needs a reply" — the orchestrator's context lists both
      mailboxes, its task names none, and the read pools All inboxes (an empty account_id).
   2. "reply to Dr Sagar and cc Kiran" — ONE task. The reply card saves the
-     draft with the Cc, and the working set keeps the mail and the draft.
+     draft, and edit_draft adds Kiran in Cc, as the real agent does (the
+     card adds no Cc). The working set keeps the mail and the draft.
   3. "send it" — the email sub-run gets the draft_id of the working set as
      context, and sends that draft.
   4. "set a rule on my personal box" — the label resolves to Personal, the
@@ -79,6 +80,7 @@ class Gateway:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, Any]] = []
+        self.puts: list[Any] = []
 
     async def get(self, path: str, params: dict | None = None) -> Any:
         self.calls.append(("GET", path, params))
@@ -89,6 +91,15 @@ class Gateway:
                 "id": MAIL, "account_id": WORK, "subject": "Quote for the clinic",
                 "from_address": {"name": "Dr Sagar", "email": SAGAR}}]}
         if path.startswith("/email/rules"):
+            return []
+        if path == f"/email/messages/{DRAFT}":
+            return {"id": DRAFT, "account_id": WORK, "folder": "drafts",
+                    "subject": "Re: Quote for the clinic",
+                    "to_addresses": [{"name": "Dr Sagar", "email": SAGAR}],
+                    "cc_addresses": [] if not self.puts else [{"email": KIRAN}]}
+        if path == f"/email/messages/{DRAFT}/full-body":
+            return {"body_text": "Dear Dr Sagar,\n\nThank you. We accept.\n\nVJ"}
+        if path == "/email/drafts/scheduled":
             return []
         return {}
 
@@ -102,7 +113,7 @@ class Gateway:
                                    "reply_all": {"to": [SAGAR], "cc": []}},
                     "classes": {SAGAR: "known"}}
         if path == "/email/reply-card/act":
-            return {"action": "save", "draft_id": DRAFT, "to": [SAGAR], "cc": [KIRAN],
+            return {"action": "save", "draft_id": DRAFT, "to": [SAGAR], "cc": [],
                     "subject": "Re: Quote for the clinic",
                     "mailbox": "Work · vj@hathilabs.test"}
         if path == "/email/held-card":
@@ -120,17 +131,23 @@ class Gateway:
         self.calls.append(("PATCH", path, body))
         return {}
 
+    async def put(self, path: str, body: Any) -> Any:
+        self.calls.append(("PUT", path, body))
+        self.puts.append(body)
+        return {}
+
     def posts(self, path: str) -> list[Any]:
         return [b for m, p, b in self.calls if m == "POST" and p == path]
 
 
 def _reply_answer(value: dict[str, Any]) -> str:
-    """The member's Save on a reply card, with Kiran added in Cc, as the
-    browser posts it (``reply_card.parse_reply_answer``)."""
+    """The member's Save on a reply card, as the browser posts it
+    (``reply_card.parse_reply_answer``). The card adds no Cc: ``cc`` is the
+    list the member saw, and the gateway derives the recipients."""
     form = value["reply"]
     return "APPROVE " + json.dumps({"reply": {
         "action": "save", "reply_all": bool(form.get("reply_all")),
-        "body": form.get("body") or "Thanks", "to": [SAGAR], "cc": [KIRAN],
+        "body": form.get("body") or "Thanks", "to": [SAGAR], "cc": [],
         "message_id": form.get("message_id") or MAIL,
     }})
 
@@ -177,6 +194,7 @@ def chat(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mod, "_get", gw.get)
         monkeypatch.setattr(mod, "_post", gw.post)
         monkeypatch.setattr(mod, "_patch", gw.patch)
+        monkeypatch.setattr(mod, "_put", gw.put)
         yield harness, gw
 
 
@@ -207,7 +225,11 @@ def test_the_five_utterances_in_one_chat(chat) -> None:
         tool_turn("query_inbox", {"account_id": "", "unread_only": True}),
         text_turn(f"Dr Sagar asks for a reply: id={MAIL}."),
         tool_turn("compose_reply", {"email_id": MAIL, "account_id": WORK}),
-        text_turn("Saved in Drafts."),
+        # The real path after the card (compose_reply's docstring): the card
+        # adds no Cc, so the agent adds Kiran to the saved draft.
+        tool_turn("edit_draft", {"account_id": WORK, "draft_id": DRAFT, "cc": [KIRAN]},
+                  call_id="call_2"),
+        text_turn("Saved in Drafts with Kiran in Cc."),
         tool_turn("send_draft", {"account_id": WORK, "draft_id": DRAFT}),
         text_turn("Draft sent."),
         tool_turn("create_rule", {"account_id": "my personal box", "name": "Receipts",
@@ -233,11 +255,16 @@ def test_the_five_utterances_in_one_chat(chat) -> None:
     two = _turn(harness, "reply to Dr Sagar and cc Kiran", thread)
     tasks = _orch_tasks(two)
     assert len(tasks) == 1 and MAIL in tasks[0] and KIRAN in tasks[0], tasks
-    assert _sub_tools(two) == [("compose_reply", {"email_id": MAIL, "account_id": WORK})]
-    (card,) = two.cards
-    assert card["owner"] == thread and card["answered"] is True, card
+    assert _sub_tools(two) == [
+        ("compose_reply", {"email_id": MAIL, "account_id": WORK}),
+        ("edit_draft", {"account_id": WORK, "draft_id": DRAFT, "cc": [KIRAN]}),
+    ]
+    assert len(two.cards) == 2, two.cards  # the reply card, then the edit card
+    assert all(c["owner"] == thread and c["answered"] for c in two.cards), two.cards
     (act,) = gw.posts("/email/reply-card/act")
-    assert json.loads(act["answer"][len("APPROVE "):])["reply"]["cc"] == [KIRAN]
+    assert json.loads(act["answer"][len("APPROVE "):])["reply"]["cc"] == []
+    (put,) = gw.puts
+    assert put["draft_id"] == DRAFT and put["cc"] == [KIRAN] and put["account_id"] == WORK
     assert any(f"draft_id={DRAFT}" in r for r in _sub_results(two)), _sub_results(two)
 
     # 3. "send it": the sub-run gets the working set as context.

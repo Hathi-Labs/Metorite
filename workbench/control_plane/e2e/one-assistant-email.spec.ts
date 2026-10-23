@@ -28,7 +28,7 @@ const FRAMES: Frame[] = [
   },
   { type: "sub_agent_tool_end", agentName: "email-assistant", id: "s-draft", result: DRAFT_RESULT, success: true },
   { type: "sub_agent_delta", agentName: "email-assistant", delta: "Draft ready." },
-  { type: "custom", name: "email_mailbox_mark", value: { account_id: "acct-home", label: "Personal" } },
+  { type: "custom", name: "email_mailbox_mark", value: { account_id: "acct-work", label: "Work" } },
   {
     type: "tool_end", id: "t-ea", name: "email_assistant", success: true,
     args: { task: "Reply to Dr Sagar" }, result: "Draft ready.",
@@ -115,10 +115,11 @@ test.describe("email through the one assistant", () => {
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByText("Your reply is in Drafts.").first()).toBeVisible({ timeout: 20_000 });
 
-    // Rule 6: the mark, once, above the turn.
+    // Rule 6: the mark, once, above the turn. It names the mailbox of the
+    // work under it, so it agrees with the draft card's "from Work".
     const mark = page.locator("[data-mailbox-mark]");
     await expect(mark).toHaveCount(1);
-    await expect(mark).toContainText("Now working on Personal");
+    await expect(mark).toContainText("Now working on Work");
 
     // Rule 5: the delegated draft draws the editable draft card.
     await expect.poll(async () => {

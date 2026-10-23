@@ -427,6 +427,35 @@ def test_a_mark_only_when_the_mailbox_moves() -> None:
         "account_id": "acc-x", "label": "another mailbox"}
 
 
+def test_the_mark_names_the_mailbox_of_all_the_work_under_it() -> None:
+    """Review check: the mark draws above the turn, so it must name the
+    mailbox of every card under it. A turn in two mailboxes gets none."""
+    before = {"account_id": "acc-work"}
+    one = [_call("create_rule", {"account_id": "acc-home"}, "Created rule 'R'.")]
+    after = ecc.update_working_set(before, one, BOXES)
+    assert ecc.mailbox_mark(before, after, BOXES, ecc.worked_in(one, BOXES)) == {
+        "account_id": "acc-home", "label": "Personal"}
+    two = [
+        _call("draft_reply", {"email_id": "e-1"},
+              "Draft from Work · vj@hathilabs.test (mailbox acc-work) (saved to Drafts):"),
+        _call("create_rule", {"account_id": "acc-home"}, "Created rule 'R'."),
+    ]
+    after = ecc.update_working_set(before, two, BOXES)
+    assert ecc.worked_in(two, BOXES) == ["acc-work", "acc-home"]
+    assert ecc.mailbox_mark(before, after, BOXES, ecc.worked_in(two, BOXES)) is None
+
+
+def test_compose_reply_names_no_mailbox_by_its_argument() -> None:
+    """compose_reply replies from the mailbox of the email, whatever its
+    ``account_id`` says, so that argument moves no set and draws no mark."""
+    before = {"account_id": "acc-work", "draft_id": "d-1"}
+    call = _call("compose_reply", {"email_id": "e-2", "account_id": "acc-home"},
+                 "Saved in Drafts of Work.\nDraft: draft_id=d-2 | subject: Re")
+    after = ecc.update_working_set(before, [call], BOXES)
+    assert after == {"account_id": "acc-work", "draft_id": "d-2", "email_id": "e-2"}
+    assert ecc.worked_in([call], BOXES) == []
+
+
 def test_the_sub_run_sends_the_mark_to_the_parent(monkeypatch, tenant) -> None:
     """The REAL ``_run_sub_agent_streaming``: a rule in Personal after work in
     Work puts one CUSTOM ``email_mailbox_mark`` on the parent's queue."""

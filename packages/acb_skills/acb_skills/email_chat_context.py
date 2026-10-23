@@ -219,6 +219,47 @@ def _mailbox_line_id(tool: str, result: str) -> str:
     return _ok_id(hit.group(1)) if hit else ""
 
 
+#: The tools that take an ``account_id`` and act in another mailbox anyway:
+#: ``compose_reply`` replies from the mailbox that holds the email. Its
+#: argument names nothing that the run worked in.
+_ACCOUNT_IGNORED = frozenset({"compose_reply"})
+#: The first line of ``draft_reply``: "Draft from <label> (mailbox <id>) …".
+_DRAFT_HEAD_MAILBOX = re.compile(r"\(mailbox ([^)\s]+)\)")
+
+
+def _call_mailbox(
+    name: str, args: Mapping[str, Any], result: str,
+    mailboxes: list[Mapping[str, Any]] | None,
+) -> tuple[Any, str]:
+    """``(what the call named, the owned id)`` of the mailbox one call acted
+    in. The id that the tool printed wins over the words the model passed."""
+    named: Any = _mailbox_line_id(name, result)
+    if not named and name == "draft_reply":
+        first = next((ln for ln in result.splitlines() if ln.strip()), "")
+        hit = _DRAFT_HEAD_MAILBOX.search(first)
+        named = hit.group(1) if hit else ""
+    if not named and name not in _ACCOUNT_IGNORED:
+        named = args.get("account_id")
+    return named, _owned_account(named, mailboxes)
+
+
+def worked_in(
+    calls: list[Mapping[str, Any]], mailboxes: list[Mapping[str, Any]] | None = None,
+) -> list[str]:
+    """The owned mailboxes that the acting calls of a sub-run worked in, in
+    order, each once. The mailbox mark uses it (rule 6)."""
+    out: list[str] = []
+    for call in calls:
+        result = str(call.get("result") or "")
+        if call.get("success") is False or result.lstrip().startswith(_NO_ACT):
+            continue
+        _named, acct = _call_mailbox(str(call.get("name") or ""),
+                                     _args_of(call.get("args")), result, mailboxes)
+        if acct and acct not in out:
+            out.append(acct)
+    return out
+
+
 def update_working_set(
     ws: Mapping[str, Any] | None,
     calls: list[Mapping[str, Any]],
@@ -243,15 +284,16 @@ def update_working_set(
             continue
         name = str(call.get("name") or "")
         args = _args_of(call.get("args"))
-        # The id the tool resolved wins over the words the model passed.
-        named = _mailbox_line_id(name, result) or args.get("account_id")
-        acct = _owned_account(named, mailboxes)
+        named, acct = _call_mailbox(name, args, result, mailboxes)
         if named and not acct:
             # A mailbox that the member's list does not show, or no list:
             # the call's ids could be another mailbox's, so it changes nothing.
             continue
-        if acct and acct != out.get("account_id"):
+        if acct and out.get("account_id") and acct != out["account_id"]:
             out = {"account_id": acct}
+        elif acct:
+            # The first mailbox the set learns: the ids it holds are in it.
+            out["account_id"] = acct
         if name in _EMAIL_ID_TOOLS:
             eid = _ok_id(args.get("email_id"))
             if eid and eid != out.get("email_id"):
@@ -595,17 +637,23 @@ def mailbox_mark(
     before: Mapping[str, Any] | None,
     after: Mapping[str, Any] | None,
     mailboxes: list[Mapping[str, Any]],
+    worked: list[str] | None = None,
 ) -> dict[str, str] | None:
     """The value of a "Now working on <label>" mark, or None (§7.1.1 rule 6).
 
     A mark when the email work of the chat moved from one mailbox to another.
     The first mailbox of a chat needs none, and the same mailbox needs none.
-    The label comes from the member's own list. A mailbox that the list does
-    not name gets "another mailbox".
+    The mark draws above the turn, so it must name the mailbox of ALL the
+    work under it: *worked* (:func:`worked_in`) must name that one mailbox.
+    A turn that worked in two mailboxes gets no mark, and each card names
+    its own mailbox. The label comes from the member's own list. A mailbox
+    that the list does not name gets "another mailbox".
     """
     old = clean(before).get("account_id")
     new = clean(after).get("account_id")
     if not (old and new) or old == new:
+        return None
+    if worked is not None and worked != [new]:
         return None
     label = label_for(new, mailboxes)
     return {"account_id": new, "label": label[:80] if label else "another mailbox"}
@@ -662,5 +710,6 @@ __all__ = [
     "save_working_set",
     "subrun_preamble",
     "update_working_set",
+    "worked_in",
     "working_set_lines",
 ]

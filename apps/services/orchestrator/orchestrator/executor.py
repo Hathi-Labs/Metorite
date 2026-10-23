@@ -1660,7 +1660,8 @@ async def _record_email_working_set(
         after = ecc.update_working_set(before, calls, list(boxes))
         if after != before:
             await ecc.save_working_set(after, parent_ctx)
-        mark = ecc.mailbox_mark(before, after, boxes)
+        # The mark names the mailbox of ALL the work under it, or none.
+        mark = ecc.mailbox_mark(before, after, boxes, ecc.worked_in(calls, list(boxes)))
     except Exception as exc:
         _log.warning("executor.email_ws_unwritten", error=type(exc).__name__)
         return
