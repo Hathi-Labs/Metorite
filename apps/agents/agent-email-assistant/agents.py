@@ -5869,9 +5869,9 @@ async def edit_draft(
             # and the HTML of a reply draft. Refuse it then.
             if row.get("body_trimmed"):
                 return ("Nothing changed. This draft holds a quoted thread, and a "
-                        "rewrite would drop it. Rewrite the new text in the chat, and "
-                        "change the draft in the Email app, or use compose_reply for a "
-                        "new reply.")
+                        "rewrite here would drop it. Call compose_reply on the same "
+                        "email, with the change as its instruction. It writes the "
+                        "reply again and keeps the thread.")
             body = str(row.get("body_text") or "")
         body, why = await _rewritten(account_id, body, rewrite, subject, to)
         if why:
