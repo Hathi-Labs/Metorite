@@ -91,9 +91,11 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
   };
 
   return (
-    <div className="border-b border-border px-3 py-2" data-compact-chrome="">
+    <div className="@container border-b border-border px-3 py-2" data-compact-chrome="">
       <div className="flex items-center gap-2" data-tool-row="">
-        <div className={phone ? "min-w-0 flex-1" : "w-64"}>
+        {/* The search keeps a usable width in a narrow pane (768 px with
+            the rail open), so the field never folds to a bare icon. */}
+        <div className={phone ? "min-w-0 flex-1" : "min-w-[9rem] max-w-64 flex-1"}>
           <Input
             icon="Search"
             inputSize="sm"
@@ -148,7 +150,9 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
         />
         {loadedLabel ? (
           <span
-            className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+            // Below 22rem of pane (a phone is 24rem) the count yields first: it is a hint, and
+            // the end-of-list row repeats it.
+            className="hidden shrink-0 text-[11px] tabular-nums text-muted-foreground @[22rem]:inline"
             title="Tasks loaded of all tasks under these filters"
             data-loaded-of-total=""
           >

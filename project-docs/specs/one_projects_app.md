@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is built, dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME` (2026-10-23, branch `ws64-op1-compact-chrome-mt-61a07997`, not yet merged). The e2e fence and the visual review (done-when 1 and 5) wait for the verifier. OP-2 to OP-6 are not built.
+**WS-64**. OP-1 is built, dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME` (2026-10-23, branch `ws64-op1-chrome-mt-61a07997`, not yet merged). An independent verifier passed done-when 1 to 5. OP-2 to OP-7 are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -434,7 +434,7 @@ except OP-1. OP-1 is a layout change of a live app, and it ships behind
 
 ### OP-1 — the phone chrome · AGENT-SAFE
 
-**Status.** BUILT DARK, 2026-10-23. Done-when 2, 3 and 4 and the structure half of 1 pass in `compactChrome.test.ts`. Done-when 1 (`e2e/projects-compact-chrome.spec.ts`) and 5 (visual review) are not yet run.
+**Status.** BUILT DARK, 2026-10-23. Done-when 2, 3 and 4 and the structure half of 1 pass in `compactChrome.test.ts`. Done-when 1 passes: `e2e/projects-compact-chrome.spec.ts` gave 2 passed, and the first row sits at y = 164 with the flag on (y = 421 with it off). Done-when 5 passes: a visual review at 390, 768 and 1280 px in light mode, compact density and a changed accent found no P0 or P1. Follow-ups: a laned board on a phone has no status tabs, and the View sheet lists Overview and Timeline on a phone.
 
 **Scope.** §5.2 items 1 to 8 for the Projects company views, and the desktop
 changes of §5.3. No change to the tab bar (that is OP-4).
