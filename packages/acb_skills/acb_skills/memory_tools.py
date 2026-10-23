@@ -258,6 +258,18 @@ async def recall_timeline(entity_name: str, query: str) -> str:
         return f"(timeline search failed: {exc})"
 
 
+#: What ``save_memory`` answers when Mem0 is off (personalization.md §2.1).
+MEMORY_OFF = "(memory is off — nothing was saved)"
+
+
+def _mem0_on() -> bool:
+    """True when Mem0 is on. The same switch that ``MemoryClient._get_client``
+    reads, so the tool and the client cannot disagree."""
+    from acb_common import get_settings  # noqa: PLC0415
+
+    return bool(getattr(get_settings(), "mem0_enabled", False))
+
+
 async def save_memory(fact: str) -> str:
     """Explicitly save a single fact to episodic memory for the current user.
 
@@ -274,7 +286,10 @@ async def save_memory(fact: str) -> str:
               E.g. "Primary contact at ABC Corp is Rahul Kumar (rahul@abc.com)"
 
     Returns:
-        "Memory saved." on success, or an error description on failure.
+        "Memory saved." on success. MEMORY_OFF when Mem0 is off, because then
+        nothing is kept (personalization.md §2.1, WS-63 PZ-1). Otherwise an
+        error description. The tool never says "Memory saved." when Mem0 is
+        off. Fence: ``tests/unit/test_memory_tools_dark.py``.
 
     Examples:
         await save_memory("Vijay wants all financial figures in INR lakhs, not crores")
@@ -282,6 +297,12 @@ async def save_memory(fact: str) -> str:
     """
     try:
         from acb_memory import add_memories_background  # noqa: PLC0415
+
+        # Mem0 off: `MemoryClient.add` returns in silence and keeps nothing.
+        # So say that memory is off, and never "Memory saved." (§2.1).
+        if not _mem0_on():
+            _log.info("memory_tools.save_memory_skipped_mem0_off")
+            return MEMORY_OFF
 
         user_id = _get_memory_user_id()
         if not user_id:
