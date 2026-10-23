@@ -126,6 +126,32 @@ def _held(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agents, "_egress_held", lambda: True)
 
 
+@pytest.mark.parametrize(("tool", "kwargs"), [
+    ("copy_rules", {"from_account_id": BOX, "to_account_id": BOX2}),
+    ("rule_guidance", {"account_id": BOX, "action": "add", "guidance": "all is invoices"}),
+    ("run_rules", {"account_id": BOX, "scope": "message", "email_id": "m1",
+                   "dry_run": False}),
+    ("update_rule", {"account_id": BOX, "rule_id": "r2", "body_pattern": "invoice"}),
+])
+async def test_the_real_hold_reader_refuses_each_widening_path(
+    gw: Gateway, tool: str, kwargs: dict[str, Any],
+) -> None:
+    """The run context of a held chat, bound as the executor binds it, and
+    the ONE reader (``acb_skills.egress.no_egress_for_this_run``). No fake of
+    ``_egress_held``. A rule that forwards is on, so each path refuses with no
+    card and no write."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    gw.rules[BOX].append(dict(FORWARD_RULE))
+    bind_artifact_context(no_egress=True, agent_name="email-assistant", session_id="s-1")
+    try:
+        out = await getattr(agents, tool)(**kwargs)
+    finally:
+        bind_artifact_context(no_egress=False)
+    assert out.startswith("Nothing changed."), out
+    assert gw.cards == [] and gw.writes == []
+
+
 # ── 1. update_rule: the full edit ────────────────────────────────────────────
 
 
