@@ -30,6 +30,7 @@ pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
 import skill_projects
 import skill_projects.client as client
+from acb_skills import attachment_tools as _real_tools
 from skill_projects import guarded as G
 from skill_projects import views as V
 
@@ -41,8 +42,6 @@ from tests.unit._projects_agent_fakes import (
     fake_gateway,
     writes,
 )
-
-from acb_skills import attachment_tools as _real_tools
 
 #: The accessor itself, kept before the fixture below puts a stand-in in its place.
 REAL_ACCESSOR = _real_tools.read_attachment_bytes
@@ -213,7 +212,7 @@ async def test_a_nudge_that_reached_nobody_says_so(monkeypatch) -> None:
 
 # ── 2. export_tasks ─────────────────────────────────────────────────────────
 
-CSV = "#,Title,Status\r\n7,Fix the extruder,To do\r\n8,Order the nozzle,Done\r\n".encode()
+CSV = b"#,Title,Status\r\n7,Fix the extruder,To do\r\n8,Order the nozzle,Done\r\n"
 
 
 def _csv_gateway(monkeypatch, *, status: int = 200, body: Any = None) -> list[dict]:
@@ -439,7 +438,7 @@ def test_the_limits_the_tool_says_are_the_routes_limits() -> None:
 
     assert G.TASK_FILE_BUDGET == _TASK_ATTACHMENT_BUDGET
     assert G.TASK_FILE_BUDGET <= _MAX_BYTES
-    assert G.BLOCKED_FILE_TYPES == frozenset(_BLOCKED_EXT)
+    assert frozenset(_BLOCKED_EXT) == G.BLOCKED_FILE_TYPES
 
 
 # ── The accessor: only this thread's folder, any kind of file ───────────────

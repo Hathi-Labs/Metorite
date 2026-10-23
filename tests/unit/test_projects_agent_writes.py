@@ -406,9 +406,6 @@ def _op6c_answers(call: dict) -> Any:
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
-    answered_6c = _op6c_answers(call)
-    if answered_6c is not None:
-        return answered_6c
     if path == f"/projects/tasks/{UUID}":
         return TASK
     if path == f"/projects/tasks/{OTHER}":
@@ -416,8 +413,9 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers,
-                         _subtree_answers, _area_answers)
+    # `_op6c_answers` first: its task answers a `/my/tasks/` read that `_s2b_answers` also claims.
+    answered = _answered(call, _op6c_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+                         _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
