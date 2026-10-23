@@ -40,7 +40,7 @@
  * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import FencedText from "@/components/FencedText";
@@ -309,14 +309,9 @@ export default function ConfirmationCard({
   // this draft:"), so it draws above them. Any other note draws after them
   // (the screenshots of follow-up 5 of #766).
   const { leadIn, after: afterNotes } = splitNotes(body);
-  // The text box scrolls at `max-h-40`. A long email card hid its files and
-  // its note below that line with no sign, so a box that scrolls says so.
-  const textRef = useRef<HTMLParagraphElement>(null);
-  const [clipped, setClipped] = useState(false);
-  useEffect(() => {
-    const el = textRef.current;
-    setClipped(!!el && el.scrollHeight > el.clientHeight + 1);
-  }, [body.text]);
+  // The text shows whole, with no box that scrolls inside the card (owner
+  // report, 2026-10-23). The card sits in the thread, and the thread
+  // scrolls. A box inside it hid the end of an email on a phone.
   const many = position && position.total > 1;
   const hasBody =
     hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
@@ -476,17 +471,8 @@ export default function ConfirmationCard({
             </dl>
           )}
           {body.text && (
-            <p
-              ref={textRef}
-              className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground"
-            >
+            <p className="whitespace-pre-wrap break-words text-xs text-foreground" data-card-text="">
               {body.text}
-            </p>
-          )}
-          {body.text && clipped && (
-            <p className="flex items-center gap-1 text-[11px] text-muted-foreground" data-card-more="">
-              <Icon name="ChevronsDown" size={12} />
-              Scroll the text above to read all of it.
             </p>
           )}
           {[...afterNotes, ...body.trailing].map((note, i) => (

@@ -43,8 +43,9 @@ import {
   type ResendOutcome,
 } from "@/lib/cardAnswer";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
-import { noActionOf, PinnedDraftCard } from "@/components/email/EmailToolCards";
+import { noActionOf } from "@/components/email/EmailToolCards";
 import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
+import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
@@ -1688,7 +1689,9 @@ export default function AgentChat({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || loadingHistory) return;
-    if (submitText(input)) setInput("");
+    // `answerTyped` is defined below, where the question state is read. A
+    // submit runs after the render, so it is in scope.
+    if (answerTyped(input) || submitText(input)) setInput("");
     inputRef.current?.focus();
   };
 
@@ -1909,20 +1912,74 @@ export default function AgentChat({
     );
   };
   const hasConfirmations = confirmations.cards.length > 0;
-  // A reply card pins above the composer while it waits (owner report,
-  // 2026-10-22). The member revised a reply over chat, and each steer drew a
-  // new card in the thread ABOVE the messages, so it scrolled away. Pinned,
-  // the same card stays in view and each revision replaces it there. Its X
-  // puts it back in the thread. `lib/pinnedDraft.ts` holds the same rule for
-  // a `draft_reply` card.
-  const replyCard = confirmations.cards.find((c) => c.reply !== undefined);
-  const [unpinnedAsk, setUnpinnedAsk] = useState<string | null>(null);
-  const pinAsk = !!replyCard && replyCard.key !== unpinnedAsk;
+  // No card pins above the composer (owner report, 2026-10-23). A reply
+  // card, a draft and a question card each draw in the thread, at the foot
+  // of the live turn, and scroll with it. A pin above the box hid the chat
+  // on a phone, and an answered card stayed stuck there. `AskPin` brings a
+  // waiting card back into view, and `hitlAnchorId` keeps the newest card
+  // below the member's latest message.
 
   // A question card that the run took an answer for waits no more. It
   // stays in view with its answer until the run ends (owner, 2026-10-13).
   const elicitationWaits = !!elicitation && elicitation.answered === undefined && !elicitation.declined;
   const userInputWaits = !!userInput && userInput.answered === undefined && !userInput.declined;
+  // A card's answer, from its own Submit or from the composer.
+  const answerElicitation = (answers: ElicitationAnswers) => {
+    if (!elicitation) return;
+    if (elicitation.requestId) {
+      // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
+      const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
+      const card = elicitation;
+      const reqId = card.requestId!;
+      const summary = answerSummary(card.questions, answers);
+      setElicitation({ ...card, answered: summary });
+      noteCardAnswered(sessionId, reqId, summary);
+      postRespondInput(
+        { request_id: reqId, answer, was_freeform: wasFreeform },
+        () => setElicitation(card),
+        // A 4xx says no question waits on this id (a stale card).
+        // The answer goes out as a message, as the genUI path
+        // does, so it is never lost (2026-10-09). The message
+        // carries the answer, so the card leaves.
+        (outcome) => {
+          if (outcome === "ok") return;
+          setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
+          // A card redrawn from the log may be one the run already
+          // took an answer for: a refusal then is no lost answer,
+          // and a steer would send it twice (review of #1171, P1).
+          if (outcome === "drop" && !redrawnRef.current.all.has(reqId)) submitText(answer);
+        },
+      );
+    } else {
+      submitText(formattedAnswers(answers));
+      setElicitation(null);
+    }
+  };
+  const answerUserInput = (answers: ElicitationAnswers) => {
+    if (!userInput) return;
+    const { answer, wasFreeform } = userInputAnswer(answers);
+    const card = userInput;
+    setUserInput({ ...card, answered: answer });
+    noteCardAnswered(sessionId, card.requestId, answer);
+    postRespondInput(
+      { request_id: card.requestId, answer, was_freeform: wasFreeform },
+      () => setUserInput(card),
+      (outcome) => {
+        if (outcome === "ok") return;
+        setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
+        if (outcome === "drop" && answer && !redrawnRef.current.all.has(card.requestId)) submitText(answer);
+      },
+    );
+  };
+  // A message typed while one question waits answers it
+  // (`lib/typedAnswer.ts`, owner report 2026-10-23). Else it steers.
+  const typedTarget = typedAnswerTarget({ userInput, elicitation });
+  const answerTyped = (text: string): boolean => {
+    if (typedTarget === "userInput") answerUserInput(typedAnswers("userInput", text));
+    else if (typedTarget === "elicitation") answerElicitation(typedAnswers("elicitation", text, elicitation?.questions));
+    else return false;
+    return true;
+  };
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
@@ -1957,36 +2014,7 @@ export default function AgentChat({
               noteCardAnswered(sessionId, card.requestId!, "", true);
               postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
             } : undefined}
-            onSubmit={(answers: ElicitationAnswers) => {
-              if (elicitation.requestId) {
-                // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
-                const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
-                const card = elicitation;
-                const reqId = card.requestId!;
-                const summary = answerSummary(card.questions, answers);
-                setElicitation({ ...card, answered: summary });
-                noteCardAnswered(sessionId, reqId, summary);
-                postRespondInput(
-                  { request_id: reqId, answer, was_freeform: wasFreeform },
-                  () => setElicitation(card),
-                  // A 4xx says no question waits on this id (a stale card).
-                  // The answer goes out as a message, as the genUI path
-                  // does, so it is never lost (2026-10-09). The message
-                  // carries the answer, so the card leaves.
-                  (outcome) => {
-                    if (outcome === "ok") return;
-                    setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
-                    // A card redrawn from the log may be one the run already
-                    // took an answer for: a refusal then is no lost answer,
-                    // and a steer would send it twice (review of #1171, P1).
-                    if (outcome === "drop" && !redrawnRef.current.all.has(reqId)) submitText(answer);
-                  },
-                );
-              } else {
-                submitText(formattedAnswers(answers));
-                setElicitation(null);
-              }
-            }}
+            onSubmit={answerElicitation}
           />
         )}
 
@@ -2011,21 +2039,7 @@ export default function AgentChat({
               noteCardAnswered(sessionId, card.requestId, "", true);
               postRespondInput(declineBody(card.requestId), () => setUserInput(card));
             }}
-            onSubmit={(answers: ElicitationAnswers) => {
-              const { answer, wasFreeform } = userInputAnswer(answers);
-              const card = userInput;
-              setUserInput({ ...card, answered: answer });
-              noteCardAnswered(sessionId, card.requestId, answer);
-              postRespondInput(
-                { request_id: card.requestId, answer, was_freeform: wasFreeform },
-                () => setUserInput(card),
-                (outcome) => {
-                  if (outcome === "ok") return;
-                  setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
-                  if (outcome === "drop" && answer && !redrawnRef.current.all.has(card.requestId)) submitText(answer);
-                },
-              );
-            }}
+            onSubmit={answerUserInput}
           />
         )}
       </div>
@@ -2077,14 +2091,13 @@ export default function AgentChat({
   const onManualToggle = useCallback(() => {
     lastManualToggleRef.current = performance.now();
   }, []);
-  // The newest email draft pins above the composer, and each revision
-  // replaces it there (owner report, 2026-10-22, `lib/pinnedDraft.ts`).
+  // The newest email draft draws in full in the thread, and a draft that a
+  // revision replaced folds to one line (`lib/pinnedDraft.ts`). No draft
+  // pins above the composer (owner report, 2026-10-23).
   const drafts = useMemo(() => draftsOf(messages, (e) => !noActionOf(e.result)), [messages]);
-  const [closedDraft, setClosedDraft] = useState<string | null>(null);
-  const pin = useMemo(() => draftPin(drafts, closedDraft), [drafts, closedDraft]);
   const pinScope = useMemo(
-    () => ({ pinnedId: pinAsk ? null : (pin.pinned?.id ?? null), superseded: pin.superseded }),
-    [pin, pinAsk],
+    () => ({ pinnedId: null, superseded: draftPin(drafts, null).superseded }),
+    [drafts],
   );
 
   const rollupScope = useMemo<RollupScope>(
@@ -2098,12 +2111,12 @@ export default function AgentChat({
 
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
+  // The cards draw after the LAST message of the thread, so a steer the
+  // member sent while a card waits sits above it, never below it (owner
+  // report, 2026-10-22). Before any message, they draw at the list tail.
   const hitlAnchorId = (() => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") return messages[i].id;
-    }
-    return null;
+    return visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null;
   })();
 
   // ── The room layer ────────────────────────────────────────────────────
@@ -2325,7 +2338,7 @@ export default function AgentChat({
                     </div>
                   ))}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
-                {msg.id === hitlAnchorId && (pinAsk ? <PinnedAskLine /> : renderHitlCards())}
+                {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
             );
           })}
@@ -2333,7 +2346,7 @@ export default function AgentChat({
           {/* Fallback: a HITL prompt arrived before any assistant bubble exists
               (rare — e.g. a tool asks before any text streamed). Render at the
               list tail so the card is never lost. */}
-          {hitlAnchorId === null && (pinAsk ? <PinnedAskLine /> : renderHitlCards())}
+          {hitlAnchorId === null && renderHitlCards()}
 
           {/* No follow-up pills under a cut answer or during an update: the
               notice below is the next step, and it sits right under the answer. */}
@@ -2388,23 +2401,7 @@ export default function AgentChat({
           return null;
         })()}
         {/* The element that waits on the member, while it is out of view. */}
-        <AskPin ask={pinAsk ? null : waiting} threadRef={threadRef} />
-        {pinAsk && (
-          <div data-pinned-ask className="max-w-3xl mx-auto mb-2 max-h-80 overflow-y-auto rounded-lg">
-            <DismissableCard onDismiss={() => setUnpinnedAsk(replyCard!.key)}>
-              {renderHitlCards()}
-            </DismissableCard>
-          </div>
-        )}
-        {/* One pin at a time: a waiting reply card wins over a draft. */}
-        {pin.pinned && !pinAsk && (
-          <PinnedDraftCard
-            event={pin.pinned}
-            accountId={emailContext?.accountId}
-            emailId={emailContext?.emailId}
-            onClose={() => setClosedDraft(pin.pinned!.id)}
-          />
-        )}
+        <AskPin ask={waiting} threadRef={threadRef} />
         {/* Live working indicator — always visible at bottom of output while
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the
@@ -2424,10 +2421,11 @@ export default function AgentChat({
               </span>
             ) : null}
           </div>
-          {/* A send during a run adds to the reply. Said once, short. */}
+          {/* A send during a run adds to the reply, or answers the one
+              question that waits (`lib/typedAnswer.ts`). Said once, short. */}
           {steerShown && (
             <span data-steer-caption className="shrink-0 text-[10px] text-primary">
-              {STEER_CAPTION}
+              {typedTarget ? ANSWER_CAPTION : STEER_CAPTION}
             </span>
           )}
           {composerOverflow && (
@@ -2819,16 +2817,6 @@ export default function AgentChat({
         )}
       </>
     )}
-    </div>
-  );
-}
-
-/** The thread's one line for a reply card that waits above the composer. */
-function PinnedAskLine() {
-  return (
-    <div data-pinned-ask-line className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-      <Icon name="Pin" size={12} className="shrink-0" />
-      <span className="min-w-0 truncate">Reply card · above the message box</span>
     </div>
   );
 }

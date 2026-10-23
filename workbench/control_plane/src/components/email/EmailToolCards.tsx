@@ -754,32 +754,6 @@ function DraftLine({ pinned }: { pinned: boolean }) {
   );
 }
 
-/**
- * The newest draft, pinned above the composer (`lib/pinnedDraft.ts`). It is
- * the same editable card as in the thread, and its X closes the pin. The
- * box scrolls, so a long draft never pushes the composer off a phone.
- */
-export function PinnedDraftCard({
-  event,
-  accountId,
-  emailId,
-  onClose,
-}: {
-  event: ToolEvent;
-  accountId?: string | null;
-  emailId?: string | null;
-  onClose: () => void;
-}) {
-  return (
-    <div data-pinned-draft className="max-w-3xl mx-auto mb-2 max-h-72 overflow-y-auto rounded-lg">
-      <DismissableCard onDismiss={onClose}>
-        {/* Keyed by the tool call, so a revision starts from its own text. */}
-        <DraftResultCard key={event.id} event={event} accountId={accountId} emailId={emailId} />
-      </DismissableCard>
-    </div>
-  );
-}
-
 // ── Rule card ─────────────────────────────────────────────────────────────────
 
 const RULE_ID_RE = /id=([0-9a-fA-F-]{8,})/;

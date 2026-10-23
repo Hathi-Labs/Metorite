@@ -125,8 +125,8 @@ describe("the bar", () => {
   it("the composer mounts the bar", () => {
     const src = readFileSync(fileURLToPath(new URL("../components/AgentChat.tsx", import.meta.url)), "utf8");
     const form = src.slice(src.indexOf("<form onSubmit={handleSubmit}"));
-    // A reply card that pins above the composer needs no bar (owner, 2026-10-22).
-    expect(form).toContain("<AskPin ask={pinAsk ? null : waiting} threadRef={threadRef} />");
+    // No card pins above the composer, so the bar serves every card (owner, 2026-10-23).
+    expect(form).toContain("<AskPin ask={waiting} threadRef={threadRef} />");
     expect(src).toContain(`data-chat-ask={HITL_TARGET}`);
   });
 });
