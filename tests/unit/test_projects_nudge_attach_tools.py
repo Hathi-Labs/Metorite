@@ -487,7 +487,10 @@ def test_the_accessor_gives_the_bytes_of_a_kind_that_read_attachment_refuses(ws)
 def test_the_accessor_reads_no_other_thread_and_no_path(ws) -> None:
     _put(ws, SID_A, "salaries.docx", b"alice only")
     _put(ws, SID_B, "bob.txt", b"bob")
-    for name in ("salaries.docx", "../x/salaries.docx", "inputs/salaries.docx"):
+    from acb_skills.agent_paths import thread_slug
+
+    alices = f"inputs/{thread_slug(SID_A)}/salaries.docx"
+    for name in ("salaries.docx", "../x/salaries.docx", "inputs/salaries.docx", alices):
         got = _bytes_of(ws, SID_B, name)
         assert isinstance(got, str) and got.startswith("No file named salaries.docx"), got
         assert "alice" not in got
