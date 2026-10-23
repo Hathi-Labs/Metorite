@@ -608,6 +608,77 @@ async def list_accounts() -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(destructive=True, open_world=False)
+async def update_account(
+    account_id: str,
+    name: str | None = None,
+    color_slot: int | None = None,
+    in_all_inboxes: bool | None = None,
+    make_default: bool = False,
+    disconnect: bool = False,
+) -> str:
+    """Change a connected mailbox: its ``name`` ("" gives back the default
+    name), its colour ``color_slot`` (1 to 12), whether it is in All inboxes
+    (``in_all_inboxes=false`` keeps it separate), or ``make_default=true`` to
+    open the Email app on it.
+
+    ``disconnect=true`` removes the mailbox and all its synced mail from
+    Metorite, and nothing else may change in that call. The mail at the
+    provider stays. Each change shows the user a card first."""
+    where = await _mailbox_name(account_id)
+    if where is None:
+        return (f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts for the ids.")
+    if disconnect:
+        if name is not None or color_slot is not None or in_all_inboxes is not None \
+                or make_default:
+            return "Nothing changed. A disconnect changes nothing else. Ask for it alone."
+        refusal = await _card_refusal(
+            f"Disconnect {where}?",
+            "It removes the mailbox and all its synced mail, rules and settings from "
+            "Metorite. The mail at the provider stays. To use it again, connect it "
+            "again in the Email app.",
+            "Cancelled — the mailbox stays connected.",
+        )
+        if refusal:
+            return refusal
+        await _delete(f"/email/accounts/{account_id}")
+        return f"Disconnected {where}."
+    body: dict[str, Any] = {}
+    lines: list[str] = []
+    if name is not None:
+        body["label"] = name
+        lines.append(f'- Name: "{_card_name(name)}"' if name.strip()
+                     else "- Name: the default name")
+    if color_slot is not None:
+        if isinstance(color_slot, bool) or not isinstance(color_slot, int) \
+                or not 1 <= color_slot <= 12:
+            return "Nothing changed. color_slot is a whole number from 1 to 12."
+        body["color_slot"] = color_slot
+        lines.append(f"- Colour: slot {color_slot}")
+    if in_all_inboxes is not None:
+        body["in_all_inboxes"] = in_all_inboxes
+        lines.append("- In All inboxes" if in_all_inboxes
+                     else "- Kept separate: All inboxes leaves it out")
+    if make_default:
+        lines.append("- The default mailbox: the Email app opens on it")
+    if not lines:
+        return "Nothing changed. Name one change."
+    refusal = await _card_refusal(
+        f"Change the mailbox {where}?",
+        "Each change is in the list below. It changes nothing at the provider.",
+        "Cancelled — the mailbox was not changed.",
+        "\n".join(lines),
+    )
+    if refusal:
+        return refusal
+    if body:
+        await _patch(f"/email/accounts/{account_id}", body)
+    if make_default:
+        await _post(f"/email/accounts/{account_id}/default", {})
+    return f"Changed the mailbox {await _named(account_id)}:\n" + "\n".join(lines)
+
+
 async def search_emails(
     query: str, folder: str = "inbox", account_id: str | None = None
 ) -> str:
@@ -648,7 +719,9 @@ def _fmt_recipients(lst: Any) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def read_email(email_id: str, full: bool = False, offset: int = 0) -> str:
+async def read_email(
+    email_id: str, full: bool = False, offset: int = 0, timeline: bool = False,
+) -> str:
     """Fetch one email by id — sender, To/Cc, subject, attachments, and body.
 
     The normal read gives the NEW text of the body: the quoted earlier
@@ -659,7 +732,13 @@ async def read_email(email_id: str, full: bool = False, offset: int = 0) -> str:
     cut-off body (long emails are capped in local storage), or when you need
     the signature, the quoted text or the footer, to summarize, answer a
     detailed question, or draft an accurate reply. A cut body says so, and
-    ``offset`` (characters, with full=true) reads the next part."""
+    ``offset`` (characters, with full=true) reads the next part.
+
+    ``timeline=true`` gives instead what the automation did to this email:
+    when it arrived, and each rule that matched, acted, failed or skipped it.
+    Use it for "why was this archived?"."""
+    if timeline:
+        return await _email_timeline(email_id)
     if full:
         e = await _get(f"/email/messages/{email_id}/full-body")
         body = (e.get("body_text") or "").strip()
@@ -710,6 +789,34 @@ async def read_email(email_id: str, full: bool = False, offset: int = 0) -> str:
     if e.get("body_trimmed"):
         framed += _TRIMMED_NOTE
     return framed
+
+
+async def _email_timeline(email_id: str) -> str:
+    """``read_email(timeline=true)``: each automation event of one email,
+    oldest first. The subject and the sender name are text of the sender, so
+    the lines are framed as email text."""
+    data = await _get(f"/email/messages/{email_id}/timeline") or {}
+    events = [e for e in data.get("events") or [] if isinstance(e, dict)]
+    lines = [f"Subject: {_one_line(data.get('subject') or '(no subject)', 200)}"]
+    for e in events:
+        at = str(e.get("at") or "")[:16].replace("T", " ")
+        if e.get("kind") == "received":
+            lines.append(f"- {at} arrived from {_one_line(e.get('from') or '', 120)}")
+            continue
+        acts = ", ".join(str(a.get("type") if isinstance(a, dict) else a)
+                         for a in e.get("actions") or [])
+        line = (f"- {at} rule '{_one_line(e.get('rule_name') or '(none)', 80)}' "
+                f"{str(e.get('status') or e.get('kind') or '').lower()}"
+                + (f": {acts}" if acts else "")
+                + ("" if e.get("automated", True) else " (the member ran it)"))
+        if e.get("reason"):
+            line += f". Why: {_one_line(e['reason'], 200)}"
+        if e.get("action_errors"):
+            line += f". Errors: {_one_line(e['action_errors'], 200)}"
+        lines.append(line)
+    if len(events) <= 1:
+        lines.append("No rule acted on this email.")
+    return _frame_email("\n".join(lines))
 
 
 #: The characters of a body that :func:`read_email` shows, in a normal read
@@ -1203,23 +1310,41 @@ async def find_priority(account_id: str, kind: str = "needs_reply",
 
 
 @_annotate_risk(open_world=False)
-async def get_account_overview(account_id: str) -> str:
-    """High-level snapshot: totals, read-rate, top senders, sender categories."""
+async def get_account_overview(account_id: str, days: int = 30) -> str:
+    """High-level snapshot: totals, read-rate, top senders, sender categories.
+    ``days`` sets the window, 1 to 365 (default 30)."""
+    try:
+        window = max(1, min(int(days or 30), 365))
+    except (TypeError, ValueError):
+        window = 30
     overview = await _get(
-        "/email/analytics/overview", {"account_id": account_id, "days": "30"}
+        "/email/analytics/overview", {"account_id": account_id, "days": str(window)}
     )
     cats = await _get("/email/senders/categories", {"account_id": account_id})
-    t = overview.get("totals", {})
+    # Chat parity wave 1: the route answers ``flow``, ``responsiveness``,
+    # ``backlog`` and ``noisy_senders``. The tool read ``totals`` and
+    # ``top_senders``, which the route never sent, so it said 0 each time.
+    flow = overview.get("flow") or {}
+    resp = overview.get("responsiveness") or {}
+    backlog = overview.get("backlog") or {}
     lines = [
-        f"Account overview (30d): {t.get('total', 0)} messages, "
-        f"{t.get('unread', 0)} unread, "
-        f"{round(t.get('read_rate', 0) * 100)}% read.",
-        "Top senders: "
-        + ", ".join(
-            f"{s.get('name') or s.get('email')} ({s.get('count')})"
-            for s in overview.get("top_senders", [])[:5]
-        ),
+        f"Account overview ({window}d): {flow.get('received', 0)} received "
+        f"({flow.get('received_prev', 0)} the {window}d before), "
+        f"{flow.get('sent', 0)} sent, {flow.get('unread', 0)} unread, "
+        f"{round((flow.get('auto_handled_rate') or 0) * 100)}% handled by the rules.",
+        f"Replies: {round((resp.get('reply_rate') or 0) * 100)}% of threads answered, "
+        f"median {resp.get('median_hours')} hour(s).",
+        f"Waiting now: {(backlog.get('needs_reply') or {}).get('threads', 0)} need a reply, "
+        f"{(backlog.get('awaiting') or {}).get('threads', 0)} await one.",
     ]
+    noisy = [s for s in overview.get("noisy_senders") or [] if isinstance(s, dict)]
+    if noisy:
+        # The route gives 12 at most: the senders you never answered.
+        # Review fix round 1 (P3-6): a sender chooses the display name, so
+        # the list goes in the untrusted frame, as read_email's text does.
+        lines.append(_frame_email("Noisy senders you never answer: " + ", ".join(
+            f"{_one_line(s.get('name') or s.get('email'), 80)} ({s.get('messages')})"
+            for s in noisy)))
     counts = cats.get("counts", {})
     if counts:
         lines.append(
@@ -1636,6 +1761,7 @@ async def present_email_groups(groups_json: str) -> str:
 _INBOX_VERBS = {
     "archive": "Archive", "read": "Mark as read", "unread": "Mark as unread",
     "star": "Star", "unstar": "Unstar",
+    "flag": "Flag", "unflag": "Unflag",
 }
 #: The most messages that the card of a bulk act lists, one line each.
 _CARD_MESSAGE_LINES = 20
@@ -1704,6 +1830,10 @@ async def _inbox_card(
         title = f"Move {n} {noun} to Trash?"
         detail = f"They leave the inbox and go to the Trash folder. {where}"
         cancelled = "Cancelled — nothing was moved to Trash."
+    elif action == "spam":
+        title = f"Move {n} {noun}{in_box} to Spam?"
+        detail = f"They leave the folder they are in now and go to Junk. {where}"
+        cancelled = "Cancelled — nothing was moved to Spam."
     elif action == "move":
         title = f"Move {n} {noun}{in_box} to the folder '{_card_name(folder)}'?"
         detail = f"They leave the folder they are in now. {where}"
@@ -1737,12 +1867,21 @@ async def manage_inbox(
 
     Args:
         action: archive | trash | read | unread | star | unstar | move | label
+            | spam. ``spam`` (alias ``junk``) moves the messages to the
+            provider's Spam/Junk folder, the same move as the MARK_SPAM rule
+            action. It is NOT Trash: use ``trash`` only to delete.
+            | flag | unflag — the follow-up flag of Outlook (Gmail has none,
+            so use star there).
         message_ids: ids of the messages to act on
         folder: destination for ``action="move"`` (an existing folder/label —
             e.g. "Archive" or a custom folder; create it with create_label).
         add_labels / remove_labels: label NAMES to add/remove for
             ``action="label"`` (syncs to the provider).
     """
+    if action in ("spam", "junk"):
+        # One folder key for every provider: the gateway reads "junk" as
+        # Gmail SPAM and as Outlook Junk Email, like the MARK_SPAM rule action.
+        action, folder = "spam", "junk"
     if action == "move" and not folder:
         return "Nothing changed. Provide a `folder` to move messages to."
     if action == "label" and not add_labels and not remove_labels:
@@ -1754,7 +1893,7 @@ async def manage_inbox(
     refusal = await _inbox_card(action, message_ids, folder, add_labels, remove_labels)
     if refusal:
         return refusal
-    if action == "move":
+    if action in ("move", "spam"):
         results = await asyncio.gather(
             *(_patch(f"/email/messages/{mid}", {"folder": folder})
               for mid in message_ids),
@@ -1763,7 +1902,21 @@ async def manage_inbox(
         n = sum(1 for r in results if not isinstance(r, BaseException))
         failed = len(message_ids) - n
         note = f" ({failed} failed)" if failed else ""
+        if action == "spam":
+            return f"Moved {n} message(s) to Spam{note}."
         return f"Moved {n} message(s) to '{folder}'{note}."
+    if action in ("flag", "unflag"):
+        # Chat parity wave 1: the bulk route has no flag, so each message
+        # takes its own PATCH, as a move does.
+        results = await asyncio.gather(
+            *(_patch(f"/email/messages/{mid}", {"is_flagged": action == "flag"})
+              for mid in message_ids),
+            return_exceptions=True,
+        )
+        n = sum(1 for r in results if not isinstance(r, BaseException))
+        failed = len(message_ids) - n
+        note = f" ({failed} failed)" if failed else ""
+        return f"{'Flagged' if action == 'flag' else 'Unflagged'} {n} message(s){note}."
     if action == "label":
         patch: dict[str, Any] = {}
         if add_labels:
@@ -2095,16 +2248,32 @@ async def categorize_senders(account_id: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
-    """Categorize uncategorized inbox mail from patterns already learned.
+async def auto_categorize_inbox(
+    account_id: str, apply: bool = False, mode: str = "sweep",
+    since_date: str | None = None,
+) -> str:
+    """The email cleaner. By ``mode``:
 
-    Projects the user's learned patterns and their per-sender / per-domain label
-    history onto inbox mail the rules never reached. Runs no classifier of its
-    own, so anything it cannot justify is reported as needing a rules run.
+      • ``sweep`` (default) — categorize uncategorized inbox mail from
+        patterns already learned. Call with apply=False first to preview;
+        only apply=True writes labels, after a card with the count.
+      • ``status`` — the progress of the last sweep or backfill. A read.
+      • ``uncategorized`` — how much mail waits for the cleaner, and the
+        senders with the most of it. A read.
+      • ``backfill`` — download older mail from the provider, back to
+        ``since_date`` (YYYY-MM-DD; leave it out for as far as allowed), and
+        clean it with no AI call. A card asks first.
+      • ``restore_labels`` — read the labels again from the provider when
+        they went missing here. A card asks first.
 
-    Call with apply=False first to preview; only apply=True writes labels.
-    apply=True shows the user a card with the count first.
+    The sweep projects the user's learned patterns and their per-sender /
+    per-domain label history onto inbox mail the rules never reached. It runs
+    no classifier of its own, so anything it cannot justify is reported as
+    needing a rules run.
     """
+    m = (mode or "sweep").strip().lower()
+    if m != "sweep":
+        return await _cleaner(account_id, m, since_date)
     # The preview (``dry_run``) writes nothing. EM-G11c1: apply=True runs it
     # too, so the card can name the count, and then asks before it writes.
     data = await _post(
@@ -2154,6 +2323,77 @@ async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
            else "")
         + " Call again with apply=true to apply."
     )
+
+
+async def _cleaner(account_id: str, mode: str, since_date: str | None) -> str:
+    """The modes of ``auto_categorize_inbox`` other than the sweep."""
+    if mode == "status":
+        job = await _get("/email/cleanup/status", {"account_id": account_id}) or {}
+        where = await _named(account_id)
+        if job.get("status") in (None, "idle"):
+            return f"No cleaner run is going on in {where}."
+        bits = [f"{k}: {job[k]}" for k in ("status", "phase", "scanned", "applied",
+                                           "synced", "held_back", "error")
+                if job.get(k) not in (None, "")]
+        return f"The last cleaner run in {where}: " + ", ".join(bits) + "."
+    if mode == "uncategorized":
+        data = await _get("/email/cleanup/uncategorized", {"account_id": account_id}) or {}
+        lines = [f"{int(data.get('uncategorized') or 0)} email(s) in "
+                 f"{await _named(account_id)} wait for the cleaner."]
+        pending = int(data.get("pending_patterns") or 0)
+        if pending:
+            lines.append(f"{pending} learned pattern(s) wait for review. Approved, they "
+                         f"reach about {int(data.get('pending_pattern_reach') or 0)} of them.")
+        # The route gives the 25 senders with the most, and no more.
+        top = [s for s in data.get("top_senders") or [] if isinstance(s, dict)]
+        if top:
+            # Review fix round 1 (P3-6): a sender chooses the display name.
+            lines.append(_frame_email("The senders with the most:\n" + "\n".join(
+                f"- {_one_line(s.get('name') or s.get('email'), 80)} "
+                f"<{_one_line(s.get('email'), _TARGET_LIMIT)}>: {int(s.get('count') or 0)}"
+                for s in top)))
+        return "\n".join(lines)
+    if mode not in ("backfill", "restore_labels"):
+        return ("Nothing changed. mode must be one of: sweep | status | uncategorized | "
+                "backfill | restore_labels.")
+    box = await _named(account_id)
+    if mode == "restore_labels":
+        refusal = await _card_refusal(
+            f"Read the labels of {box} again from the provider?",
+            "It repairs the labels that went missing here, from the labels that the "
+            f"provider holds. It changes nothing at the provider. Mailbox: {box}.",
+            "Cancelled — no label was restored.",
+        )
+        if refusal:
+            return refusal
+        res = await _post("/email/cleanup/restore-labels", {"account_id": account_id}) or {}
+        if res.get("error"):
+            return f"The labels of {box} could not be read again: {_one_line(res['error'], 200)}"
+        counts = ", ".join(f"{k}: {v}" for k, v in res.items() if isinstance(v, int))
+        return f"Read the labels of {box} again. {counts or 'Nothing to repair.'}"
+    since = (since_date or "").strip()
+    if since:
+        try:
+            date.fromisoformat(since)
+        except ValueError:
+            return "Nothing changed. since_date must be a date as YYYY-MM-DD."
+    back = f"back to {since}" if since else "as far back as the mailbox allows (180 days)"
+    refusal = await _card_refusal(
+        f"Download older mail of {box} and clean it?",
+        f"It downloads the mail {back} from the provider, keeps it away from the AI, "
+        "and labels it from the patterns already learned. No AI call, and nothing is "
+        f"sent. Mailbox: {box}.",
+        "Cancelled — nothing was downloaded.",
+    )
+    if refusal:
+        return refusal
+    body: dict[str, Any] = {"account_id": account_id}
+    if since:
+        body["since_date"] = since
+    res = await _post("/email/cleanup/backfill", body) or {}
+    if not res.get("scheduled"):
+        return f"A cleaner run is going on in {box} already. Check it with mode=status."
+    return f"The download and clean of {box} started. Check it with mode=status."
 
 
 @_annotate_risk(open_world=False)
@@ -2538,7 +2778,13 @@ def _rule_acts(actions: Any) -> str:
         a_type = a.get("type")
         word = _RULE_ACT_WORDS.get(a_type) or f"does {_card_name(a_type)}"
         if a.get("label") and a_type in ("LABEL", "MOVE_FOLDER"):
-            word += f' "{_card_name(a.get("label"))}"'
+            if a.get("label_ai"):
+                word += f' with a label that the AI picks from "{_card_name(a.get("label"))}"'
+            else:
+                word += f' "{_card_name(a.get("label"))}"'
+        delay = a.get("delay_minutes")
+        if isinstance(delay, int) and delay > 0:
+            word += f" after {delay} minute(s)"
         words.append(word)
     return " and ".join(words) or "does nothing"
 
@@ -2607,18 +2853,21 @@ def _rule_card_fits(listing: str) -> bool:
 
 async def _inward_rule_card(
     title: str, detail: str, cancelled: str, rules: list[dict[str, Any]],
-    *, widens: bool = False,
+    *, widens: bool = False, changes: list[str] | None = None,
 ) -> str | None:
     """The card of a rule that sends nothing out, with each rule listed whole
     (:func:`_rule_lines`). None when the member approves. A list that the card
     cannot show whole asks no card, and saves nothing. *widens* says that the
     change widens a saved rule, and then a held run refuses a rule that it may
-    not save (:func:`_held_widening_refusal`)."""
+    not save (:func:`_held_widening_refusal`). *changes* names each action
+    that the change removes, adds or changes, above the list."""
     for rule in rules if widens else []:
         held = _held_widening_refusal(rule, widens)
         if held:
             return held
     listing = _rule_lines(rules)
+    if changes:
+        listing = "The changes to the actions:\n" + "\n".join(changes) + "\n\n" + listing
     if not _rule_card_fits(listing):
         return _RULE_CARD_TOO_LONG
     return await _card_refusal(title, detail, cancelled, listing)
@@ -2631,6 +2880,114 @@ def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
     of #1173, P2: in a held run it asks the card, because a mail can ask the
     model to pause the rule that warns the member (a NOTIFY_ME alert)."""
     return enabled is False and not widens and not _egress_held()
+
+
+#: Chat parity wave 1 (owner, 2026-10-23): the action types that the
+#: ``actions`` list of ``create_rule`` and ``update_rule`` may hold. Each one
+#: stays in the mailbox. A forward or a webhook keeps its own path
+#: (``forward_to`` on ``create_rule``), so the list adds no outward act.
+_LIST_ACTION_TYPES = _RULE_ENGINE_TYPES - _OUTWARD_RULE_TYPES
+#: The keys of one item of that list. An address, a URL, a subject, a body
+#: or a file is refused, so the list names no target and writes no text.
+_LIST_ACTION_KEYS = frozenset({"type", "label", "delay_minutes", "label_ai"})
+#: The longest delay of an action: 30 days, in minutes.
+_MAX_DELAY_MINUTES = 43200
+
+
+def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
+    """``(actions, "")`` for a valid ``actions`` list, else ``([], refusal)``.
+
+    Each item is ``{type, label?, delay_minutes?, label_ai?}``. The type is an
+    act that stays in the mailbox (:data:`_LIST_ACTION_TYPES`). Any other key
+    is refused, so this list never adds a recipient, a URL or a text."""
+    if not isinstance(raw, list) or not raw:
+        return [], "Not saved. `actions` must be a list with one action at least."
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return [], "Not saved. Each item of `actions` must be an object with a `type`."
+        extra = sorted(str(k) for k in item if k not in _LIST_ACTION_KEYS)
+        if extra:
+            return [], (
+                f"Not saved. An action in `actions` cannot hold {', '.join(extra)}. "
+                "Each item takes only type, label, delay_minutes and label_ai. A "
+                "forward goes through create_rule with forward_to.")
+        a_type = str(item.get("type") or "").strip().upper()
+        if a_type not in _LIST_ACTION_TYPES:
+            return [], (
+                f"Not saved. The action type '{_card_name(a_type)}' is not allowed in "
+                f"`actions`. Use one of: {', '.join(sorted(_LIST_ACTION_TYPES))}.")
+        action: dict[str, Any] = {"type": a_type}
+        label = item.get("label")
+        if label is not None and str(label).strip():
+            if len(str(label)) > 200:
+                return [], "Not saved. A label has 200 characters at most."
+            action["label"] = str(label).strip()
+        delay = item.get("delay_minutes")
+        if delay is not None:
+            try:
+                minutes = int(delay)
+            except (TypeError, ValueError):
+                return [], "Not saved. delay_minutes must be a whole number of minutes."
+            if not 0 <= minutes <= _MAX_DELAY_MINUTES:
+                return [], (f"Not saved. delay_minutes must be from 0 to "
+                            f"{_MAX_DELAY_MINUTES} (30 days).")
+            # 0 stays explicit, so a kept action loses its old delay
+            # (:func:`_carry_over`).
+            action["delay_minutes"] = minutes
+        if item.get("label_ai") is True:
+            # Review fix round 1 (P3-5): the engine reads label_ai only on a
+            # LABEL action (actions.py).
+            if a_type != "LABEL":
+                return [], "Not saved. label_ai works only on a LABEL action."
+            if "label" not in action:
+                return [], ("Not saved. label_ai needs a label: the prompt that the "
+                            "AI turns into a label for each email.")
+            action["label_ai"] = True
+        elif item.get("label_ai") is False:
+            action["label_ai"] = False
+        out.append(action)
+    return out, ""
+
+
+def _carry_over(
+    old: list[dict[str, Any]], new: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Review fix round 1 (P2-3): each item of a new ``actions`` list keeps
+    the fields of the saved action of the same type that it does not name:
+    the text of a draft, the level of a NOTIFY_ME, the id. The items match
+    by type, in order."""
+    used: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for item in new:
+        match = next((i for i, a in enumerate(old)
+                      if i not in used and a.get("type") == item.get("type")), None)
+        if match is None:
+            out.append(dict(item))
+            continue
+        used.add(match)
+        out.append({**old[match], **item})
+    return out
+
+
+def _action_changes(
+    old: list[dict[str, Any]], new: list[dict[str, Any]],
+) -> list[str]:
+    """One card line for each action that a change removes, adds or changes."""
+    used: set[int] = set()
+    lines: list[str] = []
+    for item in new:
+        match = next((i for i, a in enumerate(old)
+                      if i not in used and a.get("type") == item.get("type")), None)
+        if match is None:
+            lines.append(f"- Added: {_rule_acts([item])}")
+            continue
+        used.add(match)
+        if {k: v for k, v in old[match].items() if k != "id"} != \
+                {k: v for k, v in item.items() if k != "id"}:
+            lines.append(f"- Changed: {_rule_acts([old[match]])} → {_rule_acts([item])}")
+    lines += [f"- Removed: {_rule_acts([a])}" for i, a in enumerate(old) if i not in used]
+    return lines
 
 
 def _held_widening_refusal(rule: dict[str, Any], widens: bool) -> str | None:
@@ -2689,6 +3046,7 @@ async def create_rule(
     draft_content: str | None = None,
     second_action_type: str | None = None,
     second_action_label: str | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> str:
     """Create an automation rule (inbox-zero parity — full condition + action set).
 
@@ -2709,13 +3067,28 @@ async def create_rule(
         draft_subject / draft_content: subject + body for REPLY / DRAFT_EMAIL
             (omit draft_content to let the AI write the body).
         second_action_type / second_action_label: optional 2nd action (e.g.
-            LABEL + ARCHIVE). For 3+ actions, call update_rule afterwards.
+            LABEL + ARCHIVE).
+        actions: the WHOLE action list instead, for 3+ actions, a delay or
+            an AI label. Each item is {type, label?, delay_minutes?,
+            label_ai?}. delay_minutes waits before the action acts.
+            label_ai=true reads the label as a prompt, and the AI picks the
+            label for each email. FORWARD and CALL_WEBHOOK are not allowed
+            here. Do not combine it with action_type, forward_to or the draft
+            fields.
         automated: true = apply automatically; false = propose for approval.
 
     Mailbox: leave ``account_id`` out when the user named no mailbox. One
     mailbox then acts. With two or more, the tool asks which one and creates
     nothing (§11.3 rule 4).
     """
+    listed: list[dict[str, Any]] = []
+    if actions is not None:
+        if forward_to or draft_subject or draft_content or second_action_type:
+            return ("Not saved. Pass `actions` alone, or action_type with its "
+                    "fields. Do not pass both.")
+        listed, bad = _clean_actions(actions)
+        if bad:
+            return bad
     account_id, ask = await _one_mailbox(account_id, "create_rule")
     if ask:
         return ask
@@ -2734,9 +3107,12 @@ async def create_rule(
                 a["content_manual"] = True
         return a
 
-    actions = [_mk_action(action_type, label)]
-    if second_action_type:
-        actions.append(_mk_action(second_action_type, second_action_label))
+    if listed:
+        actions = listed
+    else:
+        actions = [_mk_action(action_type, label)]
+        if second_action_type:
+            actions.append(_mk_action(second_action_type, second_action_label))
     rule = {
         "account_id": account_id,
         "name": name,
@@ -2842,6 +3218,7 @@ async def run_rules(
     days: int = 7,
     limit: int = 20,
     include_read: bool = True,
+    email_id: str | None = None,
 ) -> str:
     """Run the automation rules over inbox mail, by ``scope``:
 
@@ -2851,6 +3228,13 @@ async def run_rules(
       • ``past`` — PAST mail from the last ``days`` days (inbox-zero "Process
         past emails"): applies matched rules + drafts. ``include_read=false``
         limits it to unread mail.
+      • ``estimate`` — how many emails a ``past`` run over ``days`` would
+        process. Changes nothing. Use it before ``past``.
+      • ``status`` — the progress of the last ``past`` run. Changes nothing.
+      • ``message`` — one email, by ``email_id``. ``dry_run=true`` shows
+        which rule matches; ``dry_run=false`` applies that rule now.
+      • ``retry_failed`` — apply again each rule run that the mail server
+        refused. It only labels and moves: it never drafts or sends.
 
     Either way results stream into the History tab.
 
@@ -2860,7 +3244,19 @@ async def run_rules(
     account_id, ask = await _one_mailbox(account_id, "run_rules")
     if ask:
         return ask
-    past = (scope or "new").strip().lower() == "past"
+    mode = (scope or "new").strip().lower()
+    if mode == "estimate":
+        return await _past_estimate(account_id, days, include_read)
+    if mode == "status":
+        return await _past_status(account_id)
+    if mode == "message":
+        return await _run_rules_on_one(account_id, email_id, dry_run)
+    if mode in ("retry_failed", "retry"):
+        return await _retry_failed_runs(account_id)
+    if mode not in ("new", "past"):
+        return ("Nothing changed. scope must be one of: new | past | estimate | "
+                "status | message | retry_failed.")
+    past = mode == "past"
     if past or not dry_run:
         # EM-G11c1: a run that applies the actions asks first. A preview
         # (scope "new" with dry_run=true) changes nothing and asks nothing.
@@ -2928,6 +3324,121 @@ async def run_rules(
     )
 
 
+async def _past_estimate(account_id: str, days: int, include_read: bool) -> str:
+    """``run_rules(scope="estimate")``: the count of a past run. A read."""
+    start = (date.today() - timedelta(days=max(1, days))).isoformat()
+    res = await _get("/email/rules/process-past/estimate", {
+        "account_id": account_id, "start_date": start,
+        "include_read": "true" if include_read else "false",
+    }) or {}
+    where = await _named(account_id)
+    line = (f"A past run over the last {max(1, days)} day(s) in {where} would process "
+            f"{int(res.get('will_process') or 0)} email(s): "
+            f"{int(res.get('in_range') or 0)} in the range, "
+            f"{int(res.get('already_processed') or 0)} already processed.")
+    if res.get("capped"):
+        line += f" The run stops at {int(res.get('limit') or 0)}, so it processes the oldest ones."
+    return line + " Each email costs one AI call. Nothing changed."
+
+
+async def _past_status(account_id: str) -> str:
+    """``run_rules(scope="status")``: the progress of the last past run."""
+    job = await _get("/email/rules/process-past/status", {"account_id": account_id}) or {}
+    where = await _named(account_id)
+    if job.get("status") in (None, "idle"):
+        return f"No past run is going on in {where}."
+    bits = [f"{k}: {job[k]}" for k in ("status", "phase", "processed", "total",
+                                       "applied", "error") if job.get(k) not in (None, "")]
+    return f"The last past run in {where}: " + ", ".join(bits) + "."
+
+
+async def _enabled_rules(account_id: str) -> list[dict[str, Any]] | None:
+    """The rules that are on, or None when the read fails."""
+    try:
+        return [r for r in (await _get(
+            "/email/rules", {"account_id": account_id})).get("rules", [])
+            if isinstance(r, dict) and r.get("enabled")]
+    except Exception:
+        return None
+
+
+async def _run_rules_on_one(account_id: str, email_id: str | None, dry_run: bool) -> str:
+    """``run_rules(scope="message")``: the rules on one email.
+
+    A preview changes nothing and asks nothing. An apply acts as a run of the
+    rules does: a held run refuses it while a rule that sends out is on, and
+    the card lists each rule that is on."""
+    if not (email_id or "").strip():
+        return "Nothing changed. Name the email in `email_id`."
+    if dry_run:
+        res = await _post("/email/rules/run-message", {
+            "account_id": account_id, "message_id": email_id, "is_test": True}) or {}
+        if not res.get("matched"):
+            return f"Preview: {res.get('reason') or 'No rule matched this email.'} Nothing changed."
+        rule = res.get("rule") or {}
+        return (f"Preview: the rule '{rule.get('name')}' matches ({res.get('reason', '')}). "
+                f"It would {_rule_acts(res.get('actions'))}. Nothing changed.")
+    rules = await _enabled_rules(account_id)
+    if (rules is None or any(_held_in_no_egress(r.get("actions")) for r in rules)) \
+            and _egress_held():
+        return _egress_held_answer(
+            "A run of the rules, while a rule that sends mail out is on,")
+    listing = _run_rules_listing(rules or [])
+    if listing is None:
+        return ("Nothing changed. Too many rules that send email out, or that write a "
+                "draft text, are on to show on one card. Ask the member which of them "
+                "to turn off with update_rule, then run the rules again.")
+    box = await _named(account_id)
+    try:
+        res = await _post("/email/messages/summaries", {"ids": [email_id]})
+        rows = [s for s in (res.get("summaries") or []) if isinstance(s, dict)]
+    except Exception:  # the card still names the mailbox
+        rows = []
+    what = (f'"{_card_text(rows[0].get("subject") or "(no subject)", 120)}" from '
+            f'{_card_text(rows[0].get("from") or "(unknown sender)", 80)}'
+            if rows else "this email")
+    refusal = await _card_refusal(
+        f"Apply the rules to {what} in {box}?",
+        "The rule that matches acts now: it labels, moves, drafts, and sends what "
+        f"the rule says to send. Each rule that is on is in the list below. Mailbox: {box}.",
+        "Cancelled — no rule ran.",
+        listing,
+    )
+    if refusal:
+        return refusal
+    res = await _post("/email/rules/run-message", {
+        "account_id": account_id, "message_id": email_id, "is_test": False}) or {}
+    if not res.get("matched"):
+        return f"No rule matched this email in {box}. {res.get('reason') or ''}".strip()
+    rule = res.get("rule") or {}
+    return f"Applied the rule '{rule.get('name')}' to the email in {box}."
+
+
+async def _retry_failed_runs(account_id: str) -> str:
+    """``run_rules(scope="retry_failed")``: the server's repair of each rule
+    run that the mail server refused. It replays only the label and the move
+    (``runner._RETRY_SKIPPED_ACTIONS``), so it sends nothing."""
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Retry the failed rule runs in {box}?",
+        "It applies again the label and the move of each rule run that the mail "
+        "server refused. It never drafts, sends, forwards or calls a webhook, and "
+        f"it skips mail in Trash or Spam. Mailbox: {box}.",
+        "Cancelled — no rule run was retried.",
+    )
+    if refusal:
+        return refusal
+    res = await _post("/email/rules/history/retry-failed",
+                      {"account_id": account_id, "limit": 200}) or {}
+    skipped = res.get("skipped_actions") or []
+    line = (f"Retried {int(res.get('considered') or 0)} failed rule run(s) in {box}: "
+            f"{int(res.get('repaired') or 0)} repaired, "
+            f"{int(res.get('still_failing') or 0)} still failing.")
+    if skipped:
+        line += f" Skipped actions that a repair never repeats: {', '.join(map(str, skipped))}."
+    return line
+
+
 @_annotate_risk(open_world=False)
 async def update_rule(
     account_id: str,
@@ -2938,24 +3449,64 @@ async def update_rule(
     add_action_type: str | None = None,
     add_action_label: str | None = None,
     enabled: bool | None = None,
+    name: str | None = None,
+    to_pattern: str | None = None,
+    body_pattern: str | None = None,
+    conditional_operator: str | None = None,
+    automated: bool | None = None,
+    run_on_threads: bool | None = None,
+    remove_action_types: list[str] | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Edit an existing rule's conditions/actions, or enable/disable it.
+    """Edit an existing rule: its name, its conditions, its actions, or turn
+    it on or off.
 
     Use this to FIX a rule that mis-classifies mail — e.g. tighten its
-    plain-English ``instructions``, add a literal ``from_pattern`` /
-    ``subject_pattern``, attach another action, or turn the rule on/off. Only
-    the fields you pass change; everything else on the rule is preserved.
+    plain-English ``instructions``, add a literal pattern, change or remove an
+    action, or turn the rule on/off. Only the fields you pass change;
+    everything else on the rule is preserved. Pass "" to clear a pattern.
 
     Args:
+        name: a new name for the rule.
         instructions: new plain-English condition the AI matches mail against.
-        from_pattern: literal sender substring to match (e.g. "@vendor.com").
-        subject_pattern: literal subject substring to match.
+        from_pattern / to_pattern / subject_pattern / body_pattern: literal
+            text to match in the sender, the recipients, the subject or the
+            body (e.g. "@vendor.com").
+        conditional_operator: "AND" (all conditions) or "OR" (any).
+        automated: true = act automatically; false = propose for approval.
+        run_on_threads: also act on replies in a thread, not only new mail.
         add_action_type: ARCHIVE | LABEL | MARK_READ | STAR | MARK_SPAM | TRASH |
                          MOVE_FOLDER | DRAFT_EMAIL | REPLY | FORWARD.
         add_action_label: label/folder for an added LABEL / MOVE_FOLDER action.
+        remove_action_types: remove each action of these types, e.g. ["ARCHIVE"].
+        actions: the WHOLE new action list, which replaces every action. Each
+            item is {type, label?, delay_minutes?, label_ai?}. Use it to change
+            a label, to add a delay, or to turn on an AI label (LABEL only).
+            FORWARD and CALL_WEBHOOK are not allowed here, and a rule that
+            forwards or calls a webhook refuses the list: change it with
+            remove_action_types and add_action_type. An item of a type that
+            the rule has keeps that action's other fields, such as a draft
+            text or a NOTIFY_ME level. Read the rule first with
+            get_rules_and_settings. The card names each removed or changed
+            action.
         enabled: set true/false to enable or disable the rule (reversible —
             prefer this over delete_rule when the user wants to pause a rule).
     """
+    replaced: list[dict[str, Any]] = []
+    if actions is not None:
+        if add_action_type or remove_action_types:
+            return ("Nothing changed. Pass `actions` alone, or add_action_type and "
+                    "remove_action_types. Do not pass both.")
+        replaced, bad = _clean_actions(actions)
+        if bad:
+            return bad.replace("Not saved.", "Nothing changed.", 1)
+    if name is not None and not name.strip():
+        return "Nothing changed. A rule needs a name. Give a new name, or leave `name` out."
+    operator = None
+    if conditional_operator is not None:
+        operator = str(conditional_operator).strip().upper()
+        if operator not in ("AND", "OR"):
+            return "Nothing changed. conditional_operator must be AND or OR."
     rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
     rule = next((r for r in rules if r.get("id") == rule_id), None)
     if not rule:
@@ -2965,19 +3516,55 @@ async def update_rule(
     # mail out, so each one asks too.
     was_outward = _has_outward_action(rule.get("actions"))
     first_read = _rule_fingerprint(rule)
+    old_actions = [dict(a) for a in rule.get("actions") or [] if isinstance(a, dict)]
+    if actions is not None and was_outward:
+        # Review fix round 1 (P2-3): the list cannot hold a forward or a
+        # webhook, so it would drop the one that the rule has.
+        return ("Nothing changed. This rule sends mail out, and `actions` cannot "
+                "hold that action. Use remove_action_types and add_action_type "
+                "instead.")
+    # Chat parity wave 1: each change that can make the rule act on more mail,
+    # or do more, widens it. A rename, a removal, a narrower operator, a
+    # proposal instead of an act, or a pause does not.
     widens = (
         instructions is not None or from_pattern is not None
-        or subject_pattern is not None or bool(add_action_type)
-        or enabled is True
+        or subject_pattern is not None or to_pattern is not None
+        or body_pattern is not None or bool(add_action_type)
+        or actions is not None or enabled is True or automated is True
+        or run_on_threads is True
+        or (operator == "OR"
+            and str(rule.get("conditional_operator") or "").upper() != "OR")
     )
+    if name is not None:
+        rule["name"] = name.strip()
     if instructions is not None:
         rule["instructions"] = instructions
-    if from_pattern is not None:
-        rule["from_pattern"] = from_pattern
-    if subject_pattern is not None:
-        rule["subject_pattern"] = subject_pattern
+    for field, value in (("from_pattern", from_pattern), ("to_pattern", to_pattern),
+                         ("subject_pattern", subject_pattern),
+                         ("body_pattern", body_pattern)):
+        if value is not None:
+            rule[field] = value or None
+    if operator is not None:
+        rule["conditional_operator"] = operator
+    if automated is not None:
+        rule["automated"] = automated
+    if run_on_threads is not None:
+        rule["run_on_threads"] = run_on_threads
     if enabled is not None:
         rule["enabled"] = enabled
+    if remove_action_types:
+        gone = {str(t).strip().upper() for t in remove_action_types}
+        kept = [a for a in rule.get("actions") or []
+                if not (isinstance(a, dict) and str(a.get("type")).upper() in gone)]
+        if len(kept) == len(rule.get("actions") or []):
+            return ("Nothing changed. The rule has no action of the type "
+                    f"{', '.join(sorted(gone))}. Read it with get_rules_and_settings.")
+        if not kept and not add_action_type:
+            return ("Nothing changed. A rule needs one action at least. To stop "
+                    "the rule, turn it off with enabled=false, or delete it.")
+        rule["actions"] = kept
+    if actions is not None:
+        rule["actions"] = _carry_over(old_actions, replaced)
     added_outward = False
     if add_action_type:
         action: dict[str, Any] = {"type": add_action_type}
@@ -2985,6 +3572,7 @@ async def update_rule(
             action["label"] = add_action_label
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
+    now_outward = _has_outward_action(rule.get("actions"))
     # EM-G11c1: each change asks a card, except a pause of the rule, which
     # turns a write off. One call shows one card. Security review of #1173,
     # P2: in a held run a pause asks the card too, because a mail can ask the
@@ -2992,7 +3580,9 @@ async def update_rule(
     pause_only = _pause_asks_no_card(enabled, widens)
     cancelled = f"Cancelled — the rule '{rule.get('name')}' was not changed."
     carded = False
-    if added_outward or (was_outward and widens):
+    # A change that removes the last outward action asks the inward card,
+    # because the outward card asks nothing for a rule that sends nothing.
+    if now_outward and (added_outward or (was_outward and widens)):
         refusal = await _outward_rule_refusal(
             "Change a rule that sends mail out of the mailbox?", [rule], cancelled,
         )
@@ -3006,6 +3596,7 @@ async def update_rule(
             f"{_rule_acts(rule.get('actions'))}"
             + (", and it is on." if rule.get("enabled") else ", and it is off."),
             cancelled, [rule], widens=widens,
+            changes=_action_changes(old_actions, list(rule.get("actions") or [])),
         )
         if refusal:
             return refusal
@@ -3023,10 +3614,13 @@ async def update_rule(
                 "user again."
             )
     await _patch(f"/email/rules/{rule_id}", rule)
-    if enabled is not None and instructions is None and from_pattern is None \
-            and subject_pattern is None and not add_action_type:
+    others = (name, instructions, from_pattern, to_pattern, subject_pattern,
+              body_pattern, conditional_operator, automated, run_on_threads,
+              remove_action_types, actions, add_action_type)
+    if enabled is not None and all(v is None or v == [] for v in others):
         return f"Rule '{rule.get('name')}' is now {'enabled' if enabled else 'disabled'}."
-    return f"Updated rule '{rule.get('name')}'."
+    return (f"Updated rule '{rule.get('name')}': it now "
+            f"{_rule_acts(rule.get('actions'))}.")
 
 
 @_annotate_risk(open_world=False)
@@ -3404,8 +3998,14 @@ async def list_knowledge(account_id: str) -> str:
     )).get("entries", [])
     if not entries:
         return "Knowledge base is empty."
+    # Chat parity wave 1: each entry names its knowledge_id and a suggestion
+    # says so, so delete_knowledge and voice_profile(approve_knowledge) can
+    # name it.
     return "Knowledge base:\n" + "\n".join(
-        f"• {e.get('title')}: {(e.get('content') or '')[:80]}" for e in entries
+        f"• {e.get('title')}: {(e.get('content') or '')[:80]} (knowledge_id {e.get('id')}"
+        + (", suggested, waits for approval" if e.get("status") == "suggested" else "")
+        + ")"
+        for e in entries
     )
 
 
@@ -3497,6 +4097,190 @@ async def generate_writing_style(account_id: str | None = None) -> str:
         f"Could not derive a writing style for {where} yet (no sent mail to "
         "analyze)."
     )
+
+
+_VOICE_SOURCES = ("sent", "drafts")
+_VOICE_GUIDE_MAX = 4000
+
+
+def _voice_range(
+    start_date: str | None, end_date: str | None, sources: list[str] | None,
+) -> tuple[dict[str, Any], str]:
+    """``(fields, "")`` of a voice-profile range, else ``({}, refusal)``."""
+    out: dict[str, Any] = {}
+    for key, value in (("start_date", start_date), ("end_date", end_date)):
+        v = (value or "").strip()
+        if v:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                return {}, f"Nothing changed. {key} must be a date as YYYY-MM-DD."
+            out[key] = v
+    src = [str(s).strip().lower() for s in (sources or ["sent"]) if str(s).strip()]
+    if not src or any(s not in _VOICE_SOURCES for s in src):
+        return {}, "Nothing changed. sources holds sent, drafts or both."
+    out["sources"] = src
+    return out, ""
+
+
+# (C) of the audit of 2026-10-19: the voice profile is a store that feeds
+# each later reply draft, as the knowledge base is, so ``open_world=True``
+# and a held run withholds the whole tool.
+@_annotate_risk(open_world=True)
+async def voice_profile(
+    account_id: str,
+    action: str = "view",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    sources: list[str] | None = None,
+    extract_knowledge: bool = True,
+    style_guide: str | None = None,
+    enabled: bool | None = None,
+    scenario: str = "",
+    knowledge_id: str | None = None,
+) -> str:
+    """The voice profile: how the member writes, learned from their own sent
+    mail, which the drafter follows. By ``action``:
+
+      • ``view`` (default) — the profile: its state, its style guide, and how
+        many suggested knowledge entries wait for review.
+      • ``preview`` — how many emails a build over the range would study.
+      • ``status`` — the progress of a build.
+      • ``build`` — learn the profile from ``sources`` ("sent", "drafts")
+        between ``start_date`` and ``end_date`` (YYYY-MM-DD). With
+        ``extract_knowledge`` it also suggests knowledge entries.
+      • ``save`` — set ``style_guide`` (the whole new text) and/or turn the
+        profile on or off with ``enabled``.
+      • ``delete`` — remove the profile and its unapproved suggestions.
+      • ``sample`` — write a short sample email in the voice, for
+        ``scenario``. It saves nothing.
+      • ``approve_knowledge`` — approve the suggested knowledge entry
+        ``knowledge_id`` (see list_knowledge), so the drafter uses it.
+
+    build, save, delete and approve_knowledge show the user a card first."""
+    act = (action or "view").strip().lower()
+    box = await _named(account_id)
+    if act == "view":
+        p = await _get("/email/voice-profile", {"account_id": account_id}) or {}
+        lines = [f"Voice profile of {box}: {p.get('status', 'EMPTY')}, "
+                 f"{'on' if p.get('enabled', True) else 'off'}, "
+                 f"from {int(p.get('analyzed_count') or 0)} email(s)"
+                 + (f", built {p.get('built_at')}" if p.get("built_at") else "") + "."]
+        if p.get("last_error"):
+            lines.append(f"Last error: {_one_line(p['last_error'], 200)}")
+        guide = str(p.get("style_guide") or "").strip()
+        if guide:
+            # The route keeps 4000 characters at most, so the whole guide shows.
+            lines.append("Style guide:\n" + guide)
+        n = int(p.get("suggested_knowledge") or 0)
+        if n:
+            lines.append(f"{n} suggested knowledge entry(ies) wait for review "
+                         "(list_knowledge shows them).")
+        return "\n".join(lines)
+    if act == "status":
+        job = await _get("/email/voice-profile/status", {"account_id": account_id}) or {}
+        if job.get("status") in (None, "idle"):
+            return f"No voice-profile build is going on in {box}."
+        bits = [f"{k}: {job[k]}" for k in ("status", "phase", "processed", "total", "error")
+                if job.get(k) not in (None, "")]
+        return f"The voice-profile build in {box}: " + ", ".join(bits) + "."
+    if act in ("preview", "build"):
+        fields, bad = _voice_range(start_date, end_date, sources)
+        if bad:
+            return bad
+        if act == "preview":
+            res = await _get("/email/voice-profile/preview", {
+                "account_id": account_id, "sources": ",".join(fields["sources"]),
+                **{k: fields[k] for k in ("start_date", "end_date") if k in fields}}) or {}
+            return (f"A build over that range in {box} would study "
+                    f"{int(res.get('will_analyze') or 0)} of {int(res.get('total') or 0)} "
+                    f"email(s) (sent {int(res.get('sent') or 0)}, drafts "
+                    f"{int(res.get('drafts') or 0)}). Nothing changed.")
+        span = " to ".join(fields[k] for k in ("start_date", "end_date") if k in fields)
+        refusal = await _card_refusal(
+            f"Learn the voice profile of {box}?",
+            f"It reads your own {' and '.join(fields['sources'])} email"
+            + (f" from {span}" if span else "") + " and replaces the profile. The "
+            "drafter follows it in each later reply."
+            + (" It also suggests knowledge entries, which wait for your approval."
+               if extract_knowledge else "") + f" Mailbox: {box}.",
+            "Cancelled — the voice profile was not changed.",
+        )
+        if refusal:
+            return refusal
+        await _post("/email/voice-profile/build", {
+            "account_id": account_id, **fields, "extract_knowledge": extract_knowledge})
+        return f"The voice-profile build of {box} started. Check it with action=status."
+    if act == "save":
+        if style_guide is None and enabled is None:
+            return "Nothing changed. Give style_guide, enabled, or both."
+        body: dict[str, Any] = {"account_id": account_id}
+        lines: list[str] = []
+        if style_guide is not None:
+            from acb_skills.reply_card import has_hidden_text
+
+            if has_hidden_text(style_guide):
+                return "Nothing changed. The style guide holds hidden characters."
+            if len(style_guide) > _VOICE_GUIDE_MAX:
+                return f"Nothing changed. A style guide has {_VOICE_GUIDE_MAX} characters at most."
+            body["style_guide"] = style_guide
+            lines.append(f"The style guide becomes: {_card_text(style_guide, _VOICE_GUIDE_MAX)}")
+        if enabled is not None:
+            body["enabled"] = enabled
+            lines.append(f"The profile is {'on' if enabled else 'off'}.")
+        # Review fix round 1 (P2-4): the card shows the whole guide, or the
+        # tool saves nothing.
+        if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
+            return ("Nothing changed. The style guide is too long to show on one card. "
+                    "Ask the member for a shorter guide.")
+        refusal = await _card_refusal(
+            f"Change the voice profile of {box}?",
+            f"The drafter follows the profile in each later reply. Mailbox: {box}.",
+            "Cancelled — the voice profile was not changed.",
+            "\n".join(lines),
+        )
+        if refusal:
+            return refusal
+        await _put("/email/voice-profile", body)
+        return f"Saved the voice profile of {box}."
+    if act == "delete":
+        refusal = await _card_refusal(
+            f"Delete the voice profile of {box}?",
+            "The drafter stops using it, and each knowledge suggestion that you did "
+            f"not approve goes too. Approved entries stay. Mailbox: {box}.",
+            "Cancelled — the voice profile was kept.",
+        )
+        if refusal:
+            return refusal
+        await _request("DELETE", "/email/voice-profile", params={"account_id": account_id})
+        return f"Deleted the voice profile of {box}."
+    if act == "sample":
+        res = await _post("/email/voice-profile/sample",
+                          {"account_id": account_id, "scenario": scenario or ""}) or {}
+        return (f"A sample in the voice of {box} (scenario: {res.get('scenario', '')}). "
+                f"Nothing was saved or sent.\n\n{res.get('sample', '')}")
+    if act == "approve_knowledge":
+        if not knowledge_id:
+            return "Nothing changed. Name the entry in knowledge_id. list_knowledge shows it."
+        entries = (await _get("/email/knowledge", {"account_id": account_id}) or {}).get(
+            "entries", [])
+        entry = next((e for e in entries if isinstance(e, dict)
+                      and str(e.get("id")) == str(knowledge_id)), None)
+        if entry is None:
+            return f"Nothing changed. {box} has no knowledge entry with the id {knowledge_id}."
+        refusal = await _card_refusal(
+            f'Approve the knowledge entry "{_card_name(entry.get("title"))}" in {box}?',
+            "The assistant then uses it when it drafts replies, also replies to people "
+            f"outside. Mailbox: {box}.",
+            "Cancelled — the knowledge entry was not approved.",
+            _card_text(entry.get("content") or "", 3000),
+        )
+        if refusal:
+            return refusal
+        await _post(f"/email/knowledge/{knowledge_id}/approve", {})
+        return f"Approved the knowledge entry '{entry.get('title')}' in {box}."
+    return ("Nothing changed. action must be one of: view | preview | status | build | "
+            "save | delete | sample | approve_knowledge.")
 
 
 #: The default rules of ``POST /email/rules/install-presets``, as the card
@@ -3655,6 +4439,175 @@ async def install_default_rules(
     )
 
 
+@_annotate_risk(open_world=False)
+async def copy_rules(from_account_id: str, to_account_id: str) -> str:
+    """Copy each rule that is ON from one mailbox of the member to another
+    ("use my Work rules in Home too"). A copy is made once. After it, the
+    two sets of rules change apart. The card lists each rule and each action.
+
+    The server leaves out a rule that cannot work in the target, for example
+    a rule that forwards to one of the member's own mailboxes, and the answer
+    names each one. Patterns, guidance, settings and knowledge stay behind."""
+    src, dst = str(from_account_id or ""), str(to_account_id or "")
+    if not src or not dst or src == dst:
+        return "Nothing changed. Name two different mailboxes. Call list_accounts for the ids."
+    # The route checks that each id is a mailbox of the member (404).
+    names = {src: await _named(src), dst: await _named(dst)}
+    rules = await _enabled_rules(src)
+    if rules is None:
+        return "Nothing changed. I could not read the rules of the mailbox to copy from."
+    if not rules:
+        return f"Nothing to copy: {names[src]} has no rule that is on."
+    first_read = [_rule_fingerprint(r) for r in rules]
+    title = f"Copy {len(rules)} rule(s) from {names[src]} to {names[dst]}?"
+    cancelled = "Cancelled — no rule was copied."
+    # The audit of 2026-10-19: a held run refuses a rule that sends out, as
+    # it refuses a new one. A copy that sends out shows each target.
+    refusal = await _outward_rule_refusal(title, rules, cancelled)
+    if refusal:
+        return refusal
+    if not any(_has_outward_action(r.get("actions")) for r in rules):
+        refusal = await _inward_rule_card(
+            title,
+            f"From: {names[src]}. To: {names[dst]}. Each rule acts on each new email "
+            "that matches in the target. The server leaves out a rule that cannot "
+            "work there, and the answer names it.",
+            cancelled, rules)
+        if refusal:
+            return refusal
+    # The card can wait. Copy nothing when the rules changed meanwhile, because
+    # the route copies the rules of now, not the rules of the card.
+    again = await _enabled_rules(src)
+    if again is None or [_rule_fingerprint(r) for r in again] != first_read:
+        return ("Nothing changed. The rules of the mailbox changed while the card waited. "
+                "Ask the member again.")
+    res = await _post("/email/rules/copy",
+                      {"from_account_id": src, "to_account_id": dst}) or {}
+    copied = [str(c) for c in res.get("copied") or []]
+    lines = [f"Copied {len(copied)} rule(s) to {names[dst]}"
+             + (f": {', '.join(copied)}." if copied else ".")]
+    for r in res.get("renamed") or []:
+        if isinstance(r, dict):
+            lines.append(f"- '{r.get('name')}' is called '{r.get('copied_as')}' there.")
+    for r in res.get("left_out") or []:
+        if isinstance(r, dict):
+            lines.append(f"- '{r.get('name')}' was left out ({r.get('reason')}).")
+    for r in res.get("will_create") or []:
+        if isinstance(r, dict):
+            lines.append(f"- The provider makes the {str(r.get('action', '')).lower()} "
+                         f"'{r.get('name')}' on first use.")
+    return "\n".join(lines)
+
+
+_GUIDANCE_MAX = 1000
+
+
+@_annotate_risk(open_world=False)
+async def rule_guidance(
+    account_id: str,
+    action: str = "list",
+    guidance: str = "",
+    rule_id: str | None = None,
+    guidance_id: str | None = None,
+) -> str:
+    """The guidance that teaches the rule classifier, and the other policies
+    that act on the mailbox, by ``action``:
+
+      • ``list`` (default) — each guidance line, with its id and its rule.
+      • ``add`` — save one line of ``guidance`` in plain words ("mail from my
+        accountant is never Marketing"). ``rule_id`` ties it to one rule;
+        leave it out for every rule. The classifier reads it for each email.
+      • ``delete`` — remove the line with ``guidance_id``.
+      • ``policies`` — what else acts on the mailbox: the cold-email blocker,
+        the sender dispositions, and the provider's own inbox rules. A read.
+
+    ``add`` and ``delete`` show the user a card first."""
+    act = (action or "list").strip().lower()
+    if act == "list":
+        data = await _get("/email/rules/guidance", {"account_id": account_id}) or {}
+        rows = [g for g in data.get("guidance") or [] if isinstance(g, dict)]
+        if not rows:
+            return f"No rule guidance in {await _named(account_id)}."
+        lines = [f"Rule guidance in {await _named(account_id)}:"]
+        for g in rows:
+            scope = f"rule '{g.get('rule_name')}'" if g.get("rule_name") else "every rule"
+            lines.append(f"- {_one_line(g.get('guidance'), 300)} ({scope}, "
+                         f"{str(g.get('source') or '').lower()}, guidance_id {g.get('id')})")
+        return "\n".join(lines)
+    if act == "policies":
+        data = await _get("/email/rules/policies", {"account_id": account_id}) or {}
+        disp = data.get("dispositions") or {}
+        lines = [f"Policies in {await _named(account_id)}:",
+                 f"- Cold-email blocker: {data.get('cold_email_blocker', 'OFF')}.",
+                 "- Senders: " + (", ".join(f"{int(n)} {str(k).lower()}"
+                                             for k, n in disp.items()) or "none set") + ".",
+                 f"- Provider filters that block a sender: {int(data.get('filters_active') or 0)}."]
+        if data.get("provider_rules_supported"):
+            prov = [r for r in data.get("provider_rules") or [] if isinstance(r, dict)]
+            lines.append(f"- The provider's own inbox rules: {len(prov)}.")
+            lines += [f"  - {_one_line(r.get('name') or r.get('id') or '?', 120)}"
+                      + (" (made by Metorite)" if r.get("managed") else "")
+                      for r in prov]
+        else:
+            lines.append("- The provider's own inbox rules cannot be read for this mailbox.")
+        return "\n".join(lines)
+    if act not in ("add", "delete"):
+        return "Nothing changed. action must be one of: list | add | delete | policies."
+    if act == "add":
+        text = " ".join(str(guidance or "").split())
+        if not text:
+            return "Nothing changed. Give the guidance in plain words in `guidance`."
+        if len(text) > _GUIDANCE_MAX:
+            return f"Nothing changed. Guidance has {_GUIDANCE_MAX} characters at most."
+    elif not guidance_id:
+        return "Nothing changed. Name the line in `guidance_id`. Call with action=list."
+    # A held run (H-236): guidance changes which mail each rule takes, so it
+    # can widen a rule that sends out. Refuse it while such a rule is on, as
+    # learn_rule_pattern refuses an "always match" pin.
+    if _egress_held():
+        rules = await _enabled_rules(account_id)
+        if rules is None or any(_held_in_no_egress(r.get("actions")) for r in rules):
+            return _egress_held_answer(
+                "Guidance that can change which mail a rule that sends mail out takes")
+    box = await _named(account_id)
+    if act == "add":
+        rule = await _rule_by_id(str(rule_id)) if rule_id else None
+        if rule_id and rule is None:
+            return f"Nothing changed. No rule of yours has the id {rule_id}."
+        scope = f'the rule "{_card_name(rule.get("name"))}"' if rule else "every rule"
+        refusal = await _card_refusal(
+            f"Teach the rule classifier in {box}?",
+            f"The classifier reads this guidance for {scope} on each new email. "
+            f"Mailbox: {box}.",
+            "Cancelled — no guidance was saved.",
+            _card_text(text, _CARD_CONTEXT_LIMIT),
+        )
+        if refusal:
+            return refusal
+        body: dict[str, Any] = {"account_id": account_id, "guidance": text}
+        if rule_id:
+            body["rule_id"] = rule_id
+        await _post("/email/rules/guidance", body)
+        return f"Saved the guidance in {box}, for {scope}."
+    data = await _get("/email/rules/guidance", {"account_id": account_id}) or {}
+    row = next((g for g in data.get("guidance") or []
+                if isinstance(g, dict) and str(g.get("id")) == str(guidance_id)), None)
+    if row is None:
+        return (f"Nothing changed. No guidance of {box} has the id {guidance_id}. "
+                "Call with action=list.")
+    refusal = await _card_refusal(
+        f"Delete this rule guidance in {box}?",
+        f"The classifier stops reading it. Mailbox: {box}.",
+        "Cancelled — the guidance was kept.",
+        _card_text(row.get("guidance") or "", _CARD_CONTEXT_LIMIT),
+    )
+    if refusal:
+        return refusal
+    await _request("DELETE", f"/email/rules/guidance/{guidance_id}",
+                   params={"account_id": account_id})
+    return f"Deleted the guidance in {box}."
+
+
 async def _patch_settings(body: dict[str, Any]) -> Any:
     return (await _request("PUT", "/email/assistant/settings", json=body)).json()
 
@@ -3754,20 +4707,32 @@ async def list_labels(account_id: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def create_label(account_id: str, name: str) -> str:
+async def create_label(account_id: str, name: str, color: str | None = None) -> str:
     """Create (or reuse) a label/folder on the account. It shows the user a
-    card first."""
+    card first.
+
+    ``color`` also sets the colour of the label at the provider, as a preset
+    token "preset0" to "preset24" (Gmail labels and Outlook categories). Pass
+    it with the name of a label that exists to change only its colour."""
+    if color is not None and not re.fullmatch(r"preset(2[0-4]|1[0-9]|[0-9])", str(color)):
+        return "Nothing changed. color is a preset token from preset0 to preset24."
     box = await _named(account_id)
     refusal = await _card_refusal(
-        f'Create the label "{_card_name(name)}" in {box}?',
+        f'Create the label "{_card_name(name)}" in {box}?' if color is None
+        else f'Create or colour the label "{_card_name(name)}" in {box}?',
         "It makes a label or a folder in the mailbox at the provider. A label "
-        f"with this name that exists is used again. Mailbox: {box}.",
+        f"with this name that exists is used again. Mailbox: {box}."
+        + (f" Its colour becomes {color}." if color else ""),
         "Cancelled — no label was created.",
     )
     if refusal:
         return refusal
     res = await _post(f"/email/accounts/{account_id}/folders", {"name": name})
-    return f"Label/folder ready: {res.get('name', name)}."
+    ready = res.get("name", name)
+    if color is None:
+        return f"Label/folder ready: {ready}."
+    await _patch(f"/email/accounts/{account_id}/labels", {"name": ready, "color": color})
+    return f"Label/folder ready: {ready}, with the colour {color}."
 
 
 def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
@@ -4856,12 +5821,13 @@ def _recipient_changes(
 @_annotate_risk(open_world=False, destructive=False)
 async def edit_draft(
     account_id: str,
-    draft_id: str,
+    draft_id: str = "",
     body: str | None = None,
     subject: str | None = None,
     to: list[str] | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    rewrite: str | None = None,
 ) -> str:
     """Change a draft that is in Drafts: its text, its subject or its
     recipients. Pass only what changes. Each part that you leave out stays
@@ -4869,11 +5835,47 @@ async def edit_draft(
     read_email, change what the member asked, and keep the rest word for
     word. ``to``, ``cc`` and ``bcc`` each replace that whole list.
 
-    Shows the member the changed draft on a card. Sends nothing: send it
-    after with send_draft, which shows its own card."""
+    Leave ``draft_id`` out to save a NEW email (not a reply) in Drafts, with
+    ``to``, ``subject`` and ``body``. For a reply, use compose_reply.
+
+    ``rewrite`` asks the drafter to write or improve the text first, in the
+    member's words ("make it shorter", "more formal"). It works on ``body``,
+    or on the text of the draft when you leave ``body`` out.
+
+    Shows the member the draft on a card. Sends nothing: send it after with
+    send_draft, which shows its own card."""
     refused, body, subject = _edit_text(body, subject)
     if refused:
         return refused
+    if not (draft_id or "").strip():
+        # Review fix round 1 (P2-1): a held chat writes no new mail. With the
+        # held card off, send_draft could then send a mail whose recipient and
+        # text the model chose, which §22 promises a held chat cannot do.
+        if _egress_held() and not _held_card_mode():
+            return ("Nothing changed. This chat read email from outside senders, so "
+                    "it cannot write a new email. Tell the member in one sentence.")
+        return await _new_draft(account_id, body, subject, to, cc, bcc, rewrite)
+    if rewrite:
+        if body is None:
+            # The new text only, as read_email gives it: the drafter must not
+            # rewrite the quoted thread.
+            try:
+                row = await _get(f"/email/messages/{draft_id}",
+                                 params={"trim": "true", "mark_read": "false"}) or {}
+            except GatewayError:
+                row = {}
+            # Review fix round 1 (P2-2): the save replaces the whole body, so
+            # a rewrite of the new text alone would drop the quoted thread
+            # and the HTML of a reply draft. Refuse it then.
+            if row.get("body_trimmed"):
+                return ("Nothing changed. This draft holds a quoted thread, and a "
+                        "rewrite here would drop it. Call compose_reply on the same "
+                        "email, with the change as its instruction. It writes the "
+                        "reply again and keeps the thread.")
+            body = str(row.get("body_text") or "")
+        body, why = await _rewritten(account_id, body, rewrite, subject, to)
+        if why:
+            return why
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Nothing changed. {sender}"
@@ -4912,6 +5914,8 @@ async def edit_draft(
     if keep_body:
         context += "\n\nThe text of the draft stays as it is."
     else:
+        if rewrite:
+            context += "\n\nThe text below replaces the whole text of the draft."
         context = _with_draft_text(context, text)
     # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
     # and the card says so first. The send would not go anyway: the schedule
@@ -4955,6 +5959,73 @@ def _edit_save_refusal(exc: Exception) -> str:
                 "read_email, and pass its whole text again in plain text in body.")
     return (f"Nothing changed. {exc}. Read the draft with read_email, and "
             "pass its whole text, with the change, in body.")
+
+
+async def _rewritten(
+    account_id: str, body: str | None, instruction: str, subject: str | None,
+    to: list[str] | None,
+) -> tuple[str, str]:
+    """``(text, "")``: the drafter's text for *instruction*, from
+    ``POST /email/compose-assist``. It writes nothing. Else ``("", refusal)``."""
+    res = await _post("/email/compose-assist", {
+        "account_id": account_id, "body": body or "", "instruction": instruction,
+        "mode": "new", "subject": subject or "",
+        "to": [str(a) for a in to or []] or None,
+    }) or {}
+    text = str(res.get("draft") or "").strip()
+    if not text:
+        return "", ("Nothing changed. The drafter wrote no text for that. Write the "
+                    "text yourself in body, or ask the member for more detail.")
+    from acb_skills.reply_card import visible_spacing
+
+    return visible_spacing(text), ""
+
+
+async def _new_draft(
+    account_id: str, body: str | None, subject: str | None, to: list[str] | None,
+    cc: list[str] | None, bcc: list[str] | None, rewrite: str | None,
+) -> str:
+    """``edit_draft`` with no ``draft_id``: a new email saved in Drafts,
+    behind the draft card. ``PUT /email/drafts`` with no ``draft_id`` and no
+    ``reply_to_message_id`` makes a standalone draft. Nothing is sent."""
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts and use the mailbox to write from.")
+    lists = {"to": [str(a).strip() for a in to or [] if str(a).strip()],
+             "cc": [str(a).strip() for a in cc or [] if str(a).strip()],
+             "bcc": [str(a).strip() for a in bcc or [] if str(a).strip()]}
+    if not lists["to"]:
+        return "Nothing changed. A new draft needs one To at least."
+    if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
+        return f"Nothing changed. An address is longer than {_TARGET_LIMIT} characters."
+    if rewrite:
+        body, why = await _rewritten(account_id, body, rewrite, subject, lists["to"])
+        if why:
+            return why
+    if body is None or not body.strip():
+        return "Nothing changed. Give the text in body, or ask the drafter with rewrite."
+    detail, context = _draft_card(sender, subject or "", lists)
+    if not context:
+        return "Nothing changed. The draft has too many recipients for one card."
+    refusal = await _card_refusal(
+        "Save this new email in Drafts?",
+        detail + " · Nothing is sent.",
+        "Cancelled. No draft was saved.",
+        _with_draft_text(context, body),
+    )
+    if refusal:
+        return refusal
+    try:
+        res = await _put("/email/drafts", {
+            "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
+            "bcc": lists["bcc"], "subject": subject or "", "body": body,
+            "from_chat": True,
+        }) or {}
+    except GatewayError as exc:
+        return _edit_save_refusal(exc)
+    return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
+            "Nothing was sent. Send it with send_draft when the member asks.")
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:
@@ -5076,7 +6147,8 @@ _CONTACT_SOURCES = {
 
 @_annotate_risk(open_world=False)
 async def find_contact(
-    name: str, account_id: str | None = None, domain: str | None = None,
+    name: str = "", account_id: str | None = None, domain: str | None = None,
+    email: str | None = None,
 ) -> str:
     """Find the email address of a person by name, or by part of a name or
     an address. Use it before send_email, and before you add a person to the
@@ -5092,7 +6164,13 @@ async def find_contact(
 
     When it finds more than one person, or the only hit is ``seen``, ask the
     member with ask_questions: one option for each person, with the name and
-    the full address. Never guess an address."""
+    the full address. Never guess an address.
+
+    ``email`` gives instead the contact card of that address: what the mail
+    knows about the person (their signature, how often you write, the
+    newest emails, and how the cleaner treats them)."""
+    if (email or "").strip():
+        return await _contact_card(email.strip(), account_id, name)
     q = " ".join(str(name or "").split())
     if not q:
         return "Give a name to look for."
@@ -5133,6 +6211,42 @@ async def find_contact(
     return f"{lead}\nMatches for {q!r}{at}:\n" + "\n".join(lines)
 
 
+async def _contact_card(email: str, account_id: str | None, name: str) -> str:
+    """``find_contact(email=...)``: ``GET /email/contacts/card``. The
+    signature, the subjects and the previews are text of the person, so the
+    card is framed as email text."""
+    params: dict[str, Any] = {"email": email, "limit": 5}
+    if account_id:
+        params["account_id"] = account_id
+    if (name or "").strip():
+        params["name"] = name.strip()
+    c = await _get("/email/contacts/card", params) or {}
+    stats = c.get("stats") or {}
+    det = c.get("details") or {}
+    lines = [f"Contact: {_one_line(c.get('name') or '', 120)} "
+             f"<{_one_line(c.get('email') or email, _TARGET_LIMIT)}>",
+             f"Category: {c.get('category') or 'none'}. Cleaner: {c.get('status') or 'UNHANDLED'}.",
+             f"Mail: {int(stats.get('received') or 0)} received, "
+             f"{int(stats.get('sent') or 0)} sent by you, {int(stats.get('unread') or 0)} "
+             f"unread, in {int(stats.get('threads') or 0)} thread(s). First "
+             f"{stats.get('first_seen') or '?'}, last {stats.get('last_seen') or '?'}."]
+    sig = [f"{label}: {_one_line(det.get(key), 200)}"
+           for key, label in (("title", "Title"), ("organization", "Company"))
+           if det.get(key)]
+    if det.get("phones"):
+        sig.append("Phone: " + ", ".join(_one_line(p, 40) for p in det["phones"]))
+    if det.get("links"):
+        sig.append("Links: " + ", ".join(_one_line(u, 200) for u in det["links"]))
+    if sig:
+        lines.append("From the signature: " + ". ".join(sig) + ".")
+    recent = [m for m in c.get("recent") or [] if isinstance(m, dict)]
+    if recent:
+        lines.append("Newest emails:")
+        lines += [f"- {_md_link(m.get('subject'), m.get('id'), m.get('account_id')) or _one_line(m.get('subject') or '(no subject)', 120)} "
+                  f"({str(m.get('received_at') or '')[:10]})" for m in recent]
+    return _frame_email("\n".join(lines))
+
+
 #: What a bulk act may do, and its verb on the card.
 _BULK_VERBS = {
     "archive": "Archive", "trash": "Move to Trash", "read": "Mark as read",
@@ -5148,6 +6262,7 @@ async def bulk_manage_inbox(
     older_than_days: int | None = None,
     only_read: bool = False,
     account_id: str | None = None,
+    sender_emails: list[str] | None = None,
 ) -> str:
     """Act on ALL mail that matches a filter, with no list of ids and no
     cap: "mark everything from news@acme.com as read", "archive the read
@@ -5157,6 +6272,8 @@ async def bulk_manage_inbox(
     Args:
         action: archive | trash | read | unread | star | unstar
         sender_email: only mail from this address.
+        sender_emails: several senders at once ("archive all mail from these
+            four senders"). One card lists each sender with its count.
         folder: only mail in this folder, for example "inbox".
         older_than_days: only mail older than this many days.
         only_read: only mail that is already read.
@@ -5166,6 +6283,14 @@ async def bulk_manage_inbox(
     count on a card. Nothing changes on a "no"."""
     if action not in _BULK_VERBS:
         return f"Nothing changed. action must be one of: {', '.join(_BULK_VERBS)}."
+    if sender_emails:
+        senders, bad = _sender_list(sender_email, sender_emails)
+        if bad:
+            return bad
+        if len(senders) > 1:
+            return await _bulk_by_senders(
+                action, senders, folder, older_than_days, only_read, account_id)
+        sender_email = senders[0]
     filters: dict[str, Any] = {}
     if (sender_email or "").strip():
         filters["sender_email"] = sender_email.strip()
@@ -5204,6 +6329,61 @@ async def bulk_manage_inbox(
         return refusal
     res = await _post("/email/messages/bulk", {"action": action, **filters})
     return f"{_BULK_VERBS[action]}: {int((res or {}).get('affected') or 0)} emails changed."
+
+
+async def _bulk_by_senders(
+    action: str, senders: list[str], folder: str | None,
+    older_than_days: int | None, only_read: bool, account_id: str | None,
+) -> str:
+    """``bulk_manage_inbox`` over several senders: a count for each sender,
+    ONE card that lists each sender and its count, then one act for each."""
+    common: dict[str, Any] = {}
+    if (folder or "").strip():
+        common["folder"] = folder.strip()
+    if older_than_days:
+        common["older_than_days"] = max(1, int(older_than_days))
+    if only_read:
+        common["only_read"] = True
+    if account_id:
+        common["account_id"] = account_id
+    counts: list[tuple[str, int]] = []
+    for addr in senders:
+        res = await _post("/email/messages/bulk", {
+            "action": action, "dry_run": True, "sender_email": addr, **common})
+        counts.append((addr, int((res or {}).get("matched") or 0)))
+    todo = [(a, n) for a, n in counts if n]
+    if not todo:
+        return "Nothing matches that filter that is not already in that state."
+    total = sum(n for _a, n in todo)
+    box = f" in {await _named(account_id)}" if account_id else " in your pooled mailboxes"
+    where = []
+    if "folder" in common:
+        where.append(f" in the folder '{_card_name(common['folder'])}'")
+    if "older_than_days" in common:
+        where.append(f" older than {common['older_than_days']} days")
+    if only_read:
+        where.append(", already read")
+    lines = ["Each sender, with its count:"] + [
+        f"- {_card_text(a, _TARGET_LIMIT)}: about {n}" for a, n in todo]
+    # Review fix round 1 (P2-4): a list that the card would cut acts on nothing.
+    if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
+        return ("Nothing changed. These senders are too many to show on one card. "
+                "Split the list, and call again for each part.")
+    refusal = await _card_refusal(
+        f"{_BULK_VERBS[action]} about {total} emails from {len(todo)} senders?",
+        f"Each email from a sender below{''.join(where)}{box}. The count can "
+        "change if new mail comes before the act runs.",
+        "Cancelled. Nothing changed.",
+        "\n".join(lines),
+    )
+    if refusal:
+        return refusal
+    done = 0
+    for addr, _n in todo:
+        res = await _post("/email/messages/bulk", {
+            "action": action, "sender_email": addr, **common})
+        done += int((res or {}).get("affected") or 0)
+    return f"{_BULK_VERBS[action]}: {done} emails changed, from {len(todo)} senders."
 
 
 # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────────
@@ -5576,14 +6756,45 @@ async def set_cold_sender(
     return f"{from_email} {verb}."
 
 
+#: The most senders that one call of a sender tool changes, so the card can
+#: list each one.
+_SENDER_BATCH_MAX = 50
+
+
+def _sender_list(email: str | None, emails: list[str] | None) -> tuple[list[str], str]:
+    """``(senders, "")``: *email* and each of *emails*, once each, in order.
+    Else ``([], refusal)``."""
+    seen: dict[str, str] = {}
+    for raw in [email or "", *(emails or [])]:
+        addr = str(raw or "").strip()
+        if addr and addr.lower() not in seen:
+            seen[addr.lower()] = addr
+    senders = list(seen.values())
+    if not senders:
+        return [], "Nothing changed. Name a sender in `email`, or several in `emails`."
+    if len(senders) > _SENDER_BATCH_MAX:
+        return [], (f"Nothing changed. One call changes {_SENDER_BATCH_MAX} senders "
+                    "at most. Split the list.")
+    return senders, ""
+
+
 @_annotate_risk(open_world=False)
-async def set_sender_status(account_id: str, email: str, status: str) -> str:
+async def set_sender_status(
+    account_id: str, email: str = "", status: str = "",
+    emails: list[str] | None = None,
+) -> str:
     """Set how a sender is treated, by ``status``:
 
       • ``cold``     — flag as a cold/unsolicited sender (the blocker handles it).
       • ``not_cold`` — clear the cold flag ("this sender is NOT cold").
       • ``keep``     — keep receiving their mail / approve them (undo a block or
         unsubscribe; also called 'approved').
+      • ``block``    — block the sender: the provider archives each new mail
+        from them, and their mail in the inbox is archived now. Nothing is
+        sent to the sender. Undo it with ``keep``.
+
+    Pass one sender in ``email``, or several in ``emails`` ("block these
+    five senders"). One card lists each sender.
 
     (To actually unsubscribe + archive a newsletter, use unsubscribe_sender.)
     It shows the user a card first."""
@@ -5602,19 +6813,56 @@ async def set_sender_status(account_id: str, email: str, status: str) -> str:
             "keep", "Keep the email of {who} in {box}?",
             "Marks the sender approved. This undoes a block or an unsubscribe "
             "of the sender.")
+    elif s in ("block", "blocked", "auto_archive", "auto_archived"):
+        act, title, detail = (
+            "block", "Block {who} in {box}?",
+            "The provider archives each new email from this sender, and the "
+            "email of the sender in the inbox is archived now. Nothing is sent "
+            "to the sender.")
     else:
-        return "status must be one of: cold | not_cold | keep."
+        return "status must be one of: cold | not_cold | keep | block."
+    senders, bad = _sender_list(email, emails)
+    if bad:
+        return bad
     # EM-G11c1: the status decides what the blocker does with later mail.
     box = await _named(account_id)
+    many = len(senders) > 1
+    who = f"{len(senders)} senders" if many else _card_text(senders[0], 120)
+    listing = ("Each sender:\n" + "\n".join(f"- {_card_text(x, _TARGET_LIMIT)}"
+                                            for x in senders) if many else "")
+    # Review fix round 1 (P2-4): ``request_confirmation`` cuts the context at
+    # 4000 characters with no mark, and the tool acts on each sender.
+    if len(listing) > _CARD_CONTEXT_LIMIT:
+        return ("Nothing changed. These senders are too many to show on one card. "
+                "Split the list, and call again for each part.")
     refusal = await _card_refusal(
-        title.format(who=_card_text(email, 120), box=box), detail,
-        "Cancelled — the sender was not changed.",
+        title.format(who=who, box=box),
+        detail.replace("this sender", "each sender").replace("the sender", "each sender")
+        if many else detail,
+        "Cancelled — the sender was not changed." if not many
+        else "Cancelled — no sender was changed.",
+        listing,
     )
     if refusal:
         return refusal
-    if act == "keep":
-        return await keep_newsletter(account_id, email)
-    return await set_cold_sender(account_id, email, is_cold=act == "cold")
+    lines: list[str] = []
+    for addr in senders:
+        try:
+            if act == "keep":
+                lines.append(await keep_newsletter(account_id, addr))
+            elif act == "block":
+                res = await _post("/email/newsletters", {
+                    "account_id": account_id, "email": addr, "status": "AUTO_ARCHIVED",
+                }) or {}
+                lines.append(f"Blocked {addr}: new mail is archived, and "
+                             f"{int(res.get('archived') or 0)} email(s) were archived now.")
+            else:
+                lines.append(await set_cold_sender(account_id, addr, is_cold=act == "cold"))
+        except GatewayError as exc:
+            if not many:
+                raise
+            lines.append(f"{addr}: not changed ({exc.detail or exc.status}).")
+    return "\n".join(lines)
 
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
@@ -6186,11 +7434,18 @@ async def test_rule_match(
     subject: str | None = None,
     from_email: str | None = None,
     body: str | None = None,
+    recent: bool = False,
+    limit: int = 8,
 ) -> str:
     """Preview which automation rule WOULD match an email, without applying
     anything. Pass an `email_id`, or a pasted sample (`subject` / `from_email` /
     `body`). Use to debug why mail is (or isn't) being labelled/handled as
-    expected before tweaking a rule with update_rule / learn_rule_pattern."""
+    expected before tweaking a rule with update_rule / learn_rule_pattern.
+
+    ``recent=true`` tests the rules on the newest inbox emails instead
+    (``limit``, 15 at most), one line for each email."""
+    if recent:
+        return await _test_rules_recent(account_id, limit)
     payload: dict[str, Any] = {"account_id": account_id}
     if email_id:
         payload["email_id"] = email_id
@@ -6214,6 +7469,32 @@ async def test_rule_match(
     )
 
 
+async def _test_rules_recent(account_id: str, limit: Any) -> str:
+    """``test_rule_match(recent=true)``: a dry run over the newest inbox mail.
+    ``POST /email/rules/test/recent`` applies nothing. A sender writes the
+    subject and the name, so each line is framed as email text."""
+    try:
+        n = max(1, min(int(limit or 8), 15))
+    except (TypeError, ValueError):
+        n = 8
+    res = await _post("/email/rules/test/recent", {"account_id": account_id, "limit": n})
+    rows = [r for r in (res or {}).get("results") or [] if isinstance(r, dict)]
+    if not rows:
+        return "No inbox email to test the rules on."
+    lines = []
+    for r in rows:
+        rule = (r.get("rule") or {}).get("name") if r.get("matched") else None
+        acts = ", ".join(str(a) for a in r.get("actions") or [])
+        lines.append(
+            f"- {_one_line(r.get('from') or '(unknown)', 80)}: "
+            f"{_md_link(r.get('subject'), r.get('email_id'), account_id) or _one_line(r.get('subject'), 120)}"
+            f" → {f'{rule} ({acts})' if rule else 'no rule'}")
+    matched = sum(1 for r in rows if r.get("matched"))
+    head = (f"Tested the rules on the {len(rows)} newest inbox emails: {matched} match a "
+            "rule. Nothing was applied.")
+    return head + "\n" + _frame_email("\n".join(lines))
+
+
 # ── Tool registry ────────────────────────────────────────────────────────────
 
 # Tools attached to the MAF agent. call_agent and remember are injected by the
@@ -6224,6 +7505,7 @@ async def test_rule_match(
 _TOOLS = [
     # Read / triage
     list_accounts,
+    update_account,
     query_inbox,
     query_insights,
     read_email,
@@ -6267,6 +7549,9 @@ _TOOLS = [
     test_rule_match,
     learn_rule_pattern,
     install_default_rules,
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    copy_rules,
+    rule_guidance,
     list_rule_history,
     resolve_execution,
     # Assistant config
@@ -6275,6 +7560,7 @@ _TOOLS = [
     save_knowledge,
     delete_knowledge,
     generate_writing_style,
+    voice_profile,
     list_patterns,
     forget_pattern,
     # Follow-ups / reply zero
@@ -6321,6 +7607,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "edit_draft", "snooze_email", "bulk_manage_inbox",
     # H-375: send later.
     "schedule_send", "cancel_scheduled_send",
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    "copy_rules", "rule_guidance", "voice_profile", "update_account",
 })
 
 #: The tools that save a reply draft in the member's OWN Drafts with no card,
@@ -6343,8 +7631,8 @@ GATEWAY_READ_POSTS: dict[str, str] = {
         "POST /email/messages/summaries reads the sender and the subject of "
         "each id. It writes no row and changes no read state."),
     "test_rule_match": (
-        "POST /email/rules/test is a dry run. It shows which rule would match "
-        "and applies nothing."),
+        "POST /email/rules/test and POST /email/rules/test/recent are dry "
+        "runs. They show which rule would match and apply nothing."),
     "categorize_senders": (
         "POST /email/senders/categorize rebuilds email_senders.category, a "
         "derived cache of sender categories, from the labels that the "

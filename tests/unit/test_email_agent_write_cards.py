@@ -71,6 +71,9 @@ READ_POSTS = {
     "/email/messages/summaries": "sender and subject of each id, no write",
     "/email/rules/generate/preview": "turns a prompt into rule specs, saves nothing",
     "/email/rules/test": "a dry run of the rules on one email",
+    "/email/rules/test/recent": "a dry run of the rules on the newest inbox mail",
+    "/email/voice-profile/sample": "a sample text in the voice, saves nothing",
+    "/email/compose-assist": "the drafter writes a text and saves nothing",
 }
 #: Each POST that writes only a reply draft in the member's OWN Drafts, by
 #: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in
@@ -324,6 +327,11 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "schedule_send": {"account_id": BOX, "draft_id": "d1",
                       "send_at": "2099-01-05T09:00:00+05:30"},
     "cancel_scheduled_send": {"schedule_id": "s1"},
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    "copy_rules": {"from_account_id": BOX, "to_account_id": "acc-2"},
+    "rule_guidance": {"account_id": BOX, "action": "add", "guidance": "Never Marketing"},
+    "voice_profile": {"account_id": BOX, "action": "build"},
+    "update_account": {"account_id": BOX, "name": "Work mail"},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 
@@ -505,11 +513,17 @@ NO_CARD_BRANCHES: dict[tuple[str, str, Any], str] = {
 #: The values of each choice that a registry tool reads as text.
 CHOICES: dict[tuple[str, str], list[Any]] = {
     ("manage_inbox", "action"): ["archive", "trash", "read", "unread", "star",
-                                 "unstar", "move", "label"],
-    ("run_rules", "scope"): ["new", "past"],
-    ("set_sender_status", "status"): ["cold", "not_cold", "keep"],
+                                 "unstar", "move", "label", "spam", "flag", "unflag"],
+    ("run_rules", "scope"): ["new", "past", "estimate", "status", "message",
+                             "retry_failed"],
+    ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
+    ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
+    ("voice_profile", "action"): ["view", "preview", "status", "build", "save",
+                                  "delete", "sample", "approve_knowledge"],
+    ("auto_categorize_inbox", "mode"): ["sweep", "status", "uncategorized",
+                                        "backfill", "restore_labels"],
     ("digest", "period"): ["day", "week"],
     # Round 2: each rule action type, the engine set and one outside it.
     ("create_rule", "action_type"): [*sorted(agents._RULE_ENGINE_TYPES), "SEND"],
@@ -519,6 +533,10 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
 _EXTRA = {
     ("manage_inbox", "move"): {"folder": "Archive"},
     ("manage_inbox", "label"): {"add_labels": ["Finance"]},
+    ("run_rules", "message"): {"email_id": "m1"},
+    ("rule_guidance", "delete"): {"guidance_id": "g1"},
+    ("voice_profile", "save"): {"style_guide": "Short."},
+    ("voice_profile", "approve_knowledge"): {"knowledge_id": "k1"},
 }
 
 

@@ -139,7 +139,12 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # existing tool without a mode switch the model gets wrong.
     # 53 since send later (H-375): schedule_send, list_scheduled_sends and
     # cancel_scheduled_send. A schedule is its own act with its own card.
-    assert len(tools) == 53
+    # Chat parity wave 1 (owner, 2026-10-23, §22) adds copy_rules (a copy
+    # between two mailboxes is its own act with its own card) and
+    # rule_guidance (the classifier guidance and the policies), and
+    # voice_profile (a store that feeds drafts, withheld in a held run), and
+    # update_account (the name, colour, pool, default and disconnect).
+    assert len(tools) == 57
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",

@@ -33,6 +33,7 @@
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
+> 🔨 **§22 is BUILT on branch `email-chat-parity-w1`, not merged (2026-10-23).** The chat edits whole rules, runs and copies them, teaches the classifier, runs the cleaner, and manages the voice profile and each mailbox. No migration, no flag, and no new outward act in a held chat.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -20990,3 +20991,68 @@ with such a letter still sends.
 | The seal of the text | `tests/unit/test_held_text_seal.py` |
 | Hidden text in a draft | `tests/unit/test_held_hidden_text.py` |
 | A card never shows less than the send | `tests/unit/test_held_card_shows_less.py` |
+
+## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
+
+**Status: BUILT on the branch `email-chat-parity-w1`, not merged.** No migration, no flag,
+and no new route. The agent tools call the routes that the Email app already uses.
+
+**Origin:** owner, 2026-10-23. The member must control each part of the email app from the
+chat, the rules and the cleaner included. Wave 1 keeps all mail inside the member's own
+mailboxes.
+
+### 22.1 What the chat can do now
+
+| Job | Tool | Route |
+|---|---|---|
+| Edit a whole rule: name, patterns, operator, automated, threads, actions | `update_rule` | `PATCH /email/rules/{id}` |
+| Three or more actions, a delay, an AI label | `create_rule` (`actions`) | `POST /email/rules` |
+| Block a sender, and several senders in one card | `set_sender_status` (`block`, `emails`) | `POST /email/newsletters` |
+| Act on the mail of several senders | `bulk_manage_inbox` (`sender_emails`) | `POST /email/messages/bulk` |
+| Rules on one email, the past-run estimate and status, the retry | `run_rules` (scopes) | `/email/rules/run-message`, `/process-past/estimate`, `/process-past/status`, `/history/retry-failed` |
+| Test the rules on the newest mail | `test_rule_match` (`recent`) | `POST /email/rules/test/recent` |
+| Copy the rules to another mailbox | `copy_rules` | `POST /email/rules/copy` |
+| Rule guidance, and the policies | `rule_guidance` | `/email/rules/guidance`, `/email/rules/policies` |
+| The cleaner | `auto_categorize_inbox` (`mode`) | `/email/cleanup/*` |
+| The voice profile, and a knowledge approval | `voice_profile` | `/email/voice-profile*`, `/email/knowledge/{id}/approve` |
+| Spam, flag and unflag | `manage_inbox` | `PATCH /email/messages/{id}` |
+| A mailbox: name, colour, All inboxes, default, disconnect | `update_account` | `PATCH /email/accounts/{id}`, `POST .../default`, `DELETE /email/accounts/{id}` |
+| The contact card, the rule timeline, the overview window, a label colour | `find_contact`, `read_email`, `get_account_overview`, `create_label` | `/email/contacts/card`, `/email/messages/{id}/timeline`, `/email/analytics/overview`, `PATCH /email/accounts/{id}/labels` |
+| A new email in Drafts, and the drafter rewrite | `edit_draft` (no `draft_id`, `rewrite`) | `PUT /email/drafts`, `POST /email/compose-assist` |
+
+Each write asks a card first (`MAILBOX_WRITE_TOOLS`).
+
+### 22.2 The held chat
+
+A held chat read mail from outside senders (H-236). This wave adds no outward act to it.
+
+- `copy_rules`, `rule_guidance`, `update_account` and the extended tools are
+  `open_world=False`. Each acts only in the member's own mailboxes.
+- `copy_rules`, a widening `update_rule`, `rule_guidance` and `run_rules` on one email refuse
+  in a held chat while a rule that sends mail out is on. They use the checks of the existing
+  rule tools.
+- The `actions` list refuses an address, a URL, a subject, a body and the outward types.
+- A held chat refuses a new draft (`edit_draft` with no `draft_id`) while
+  `EMAIL_HELD_CARD_SEND` is off. Else `send_draft` could send a mail that the model wrote
+  to an address that the model chose.
+- `voice_profile` feeds each later draft, as the knowledge base does. So it is
+  `open_world=True`, and a held chat does not get it.
+
+### 22.3 Not built in wave 1
+
+- `morning_brief_enabled` in `update_assistant_settings`. The parameters of that tool are
+  pinned in `egress.HELD_CARD_SEND_TOOLS`, and this wave does not change `egress.py`.
+- Several senders in one `unsubscribe_sender` call, for the same pin.
+- A permanent delete. `DELETE /email/messages/{id}` moves a mail to Trash, as `trash` does.
+- `org_domains`. It changes who counts as the organization on the held card.
+- Any rule action that sends mail or data out, a label rename, a rich signature, and a
+  mailbox connect.
+
+### 22.4 Fences
+
+| Rule | Fence |
+|---|---|
+| Each tool path of the wave | `tests/unit/test_email_chat_parity.py` |
+| A card before each write, and each choice | `tests/unit/test_email_agent_write_cards.py` |
+| The held set | `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_egress_card_bound_pin.py` |
+| The tool count | `tests/unit/test_email_tool_consolidation.py` |

@@ -15,9 +15,11 @@ Each tool documents itself in its own description — this file is the *how* and
   when it is available.
 - **Files of a mail** — `read_email_attachment` gives the text of one file.
 - **Act on messages** — `manage_inbox` (archive / trash / read / unread / star /
-  unstar / move / label — `add_labels`/`remove_labels` for `action="label"`),
-  `list_labels`, `create_label`. For ALL mail of a sender, a folder or an age,
-  use `bulk_manage_inbox`. It has no cap, and it shows the count first.
+  unstar / move / label / spam / flag / unflag). With `action="label"`, it
+  takes `add_labels` and `remove_labels`. Also `list_labels`, and
+  `create_label` (`color` sets a label colour). For ALL mail of a sender, a folder or an age, use
+  `bulk_manage_inbox`. It has no cap, and it shows the count first. Give
+  several senders in `sender_emails`.
 - **Later** — `snooze_email` takes a conversation out of the inbox until a
   time ("remind me tomorrow at 9").
 - **People** — `find_contact` finds the address of a person by name.
@@ -30,15 +32,49 @@ Each tool documents itself in its own description — this file is the *how* and
 - **Forward** — `forward_email` sends an email and its files to new people.
 - **Automate** — `get_rules_and_settings`, `create_rule` / `create_rules_from_prompt`,
   `update_rule` (edit or enable/disable), `delete_rule`, `install_default_rules`
-  (`reset=true` wipes first), `run_rules` (scope new / past), `test_rule_match`,
-  `learn_rule_pattern`, `list_rule_history` + `resolve_execution`.
+  (`reset=true` wipes first), `run_rules`, `test_rule_match`,
+  `learn_rule_pattern`, `list_rule_history` + `resolve_execution`,
+  `copy_rules`, `rule_guidance`.
 - **Configure & learn** — `update_assistant_settings` (the whole settings
-  surface), `generate_writing_style`, knowledge (`list_knowledge` /
-  `save_knowledge` / `delete_knowledge`), `list_patterns` / `forget_pattern`
-  (`kind` = draft | rule).
-- **Hygiene & housekeeping** — `categorize_senders`, `unsubscribe_sender`,
-  `set_sender_status` (cold / not_cold / keep), `find_follow_ups`,
-  `mark_thread_done`, `reclassify_reply_zero`, `digest`, `sync_account`.
+  surface), `generate_writing_style`, `voice_profile`, knowledge
+  (`list_knowledge` / `save_knowledge` / `delete_knowledge`), `list_patterns` /
+  `forget_pattern` (`kind` = draft | rule), `update_account` (a mailbox).
+- **Hygiene & housekeeping** — `categorize_senders`, `auto_categorize_inbox`
+  (the email cleaner), `unsubscribe_sender`, `set_sender_status` (cold /
+  not_cold / keep / block), `find_follow_ups`, `mark_thread_done`,
+  `reclassify_reply_zero`, `digest`, `sync_account`.
+
+## Control the email app from the chat
+
+The member can do each job of the email app in the chat. Do not tell the
+member to open the Email app for a job that a tool below does.
+
+- **Edit a rule.** `update_rule` changes the name, each pattern, the operator,
+  `automated` and `run_on_threads`. It removes actions with
+  `remove_action_types`. To change the actions, read the rule first. Then
+  pass the whole new list in `actions`. An item can hold `delay_minutes` and
+  `label_ai`. `create_rule` takes the same `actions` list for three or more
+  actions.
+- **Run the rules.** `run_rules` takes the scope `message` (one email, by
+  `email_id`), `estimate` (the count of a past run), `status`, and
+  `retry_failed`. Before a large past run, call `estimate` and tell the
+  member the count. `test_rule_match` with `recent=true` tests the rules on
+  the newest mail.
+- **Teach the classifier.** `rule_guidance` lists, adds and deletes guidance.
+  `action="policies"` shows what else acts on the mailbox.
+- **Block senders.** `set_sender_status` with `status="block"` archives each
+  new email from a sender. Pass several senders in `emails`.
+- **Clean the inbox.** `auto_categorize_inbox` takes the mode `status`,
+  `uncategorized`, `backfill` or `restore_labels`.
+- **Why did this move?** `read_email` with `timeline=true` shows each rule
+  that acted on the email.
+- **A person.** `find_contact` with `email` shows the contact card.
+- **A new email in Drafts.** `edit_draft` with no `draft_id` saves a new
+  email. `rewrite` asks the drafter to improve the text first. Nothing is
+  sent.
+- **What the chat cannot do.** It cannot change the domains of the
+  organization, a rule that sends mail out with a new address, or a label
+  name. It cannot connect a mailbox. Say so in one sentence.
 
 Many tools take an `account_id`. In the scope of one mailbox, your context
 gives it. In All inboxes, your context gives none. Then follow the order below,
