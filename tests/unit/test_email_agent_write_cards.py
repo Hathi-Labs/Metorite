@@ -71,6 +71,7 @@ READ_POSTS = {
     "/email/messages/summaries": "sender and subject of each id, no write",
     "/email/rules/generate/preview": "turns a prompt into rule specs, saves nothing",
     "/email/rules/test": "a dry run of the rules on one email",
+    "/email/rules/test/recent": "a dry run of the rules on the newest inbox mail",
 }
 #: Each POST that writes only a reply draft in the member's OWN Drafts, by
 #: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in
@@ -506,7 +507,8 @@ NO_CARD_BRANCHES: dict[tuple[str, str, Any], str] = {
 CHOICES: dict[tuple[str, str], list[Any]] = {
     ("manage_inbox", "action"): ["archive", "trash", "read", "unread", "star",
                                  "unstar", "move", "label"],
-    ("run_rules", "scope"): ["new", "past"],
+    ("run_rules", "scope"): ["new", "past", "estimate", "status", "message",
+                             "retry_failed"],
     ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
@@ -519,6 +521,7 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
 _EXTRA = {
     ("manage_inbox", "move"): {"folder": "Archive"},
     ("manage_inbox", "label"): {"add_labels": ["Finance"]},
+    ("run_rules", "message"): {"email_id": "m1"},
 }
 
 

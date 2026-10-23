@@ -2928,6 +2928,7 @@ async def run_rules(
     days: int = 7,
     limit: int = 20,
     include_read: bool = True,
+    email_id: str | None = None,
 ) -> str:
     """Run the automation rules over inbox mail, by ``scope``:
 
@@ -2937,6 +2938,13 @@ async def run_rules(
       • ``past`` — PAST mail from the last ``days`` days (inbox-zero "Process
         past emails"): applies matched rules + drafts. ``include_read=false``
         limits it to unread mail.
+      • ``estimate`` — how many emails a ``past`` run over ``days`` would
+        process. Changes nothing. Use it before ``past``.
+      • ``status`` — the progress of the last ``past`` run. Changes nothing.
+      • ``message`` — one email, by ``email_id``. ``dry_run=true`` shows
+        which rule matches; ``dry_run=false`` applies that rule now.
+      • ``retry_failed`` — apply again each rule run that the mail server
+        refused. It only labels and moves: it never drafts or sends.
 
     Either way results stream into the History tab.
 
@@ -2946,7 +2954,19 @@ async def run_rules(
     account_id, ask = await _one_mailbox(account_id, "run_rules")
     if ask:
         return ask
-    past = (scope or "new").strip().lower() == "past"
+    mode = (scope or "new").strip().lower()
+    if mode == "estimate":
+        return await _past_estimate(account_id, days, include_read)
+    if mode == "status":
+        return await _past_status(account_id)
+    if mode == "message":
+        return await _run_rules_on_one(account_id, email_id, dry_run)
+    if mode in ("retry_failed", "retry"):
+        return await _retry_failed_runs(account_id)
+    if mode not in ("new", "past"):
+        return ("Nothing changed. scope must be one of: new | past | estimate | "
+                "status | message | retry_failed.")
+    past = mode == "past"
     if past or not dry_run:
         # EM-G11c1: a run that applies the actions asks first. A preview
         # (scope "new" with dry_run=true) changes nothing and asks nothing.
@@ -3012,6 +3032,121 @@ async def run_rules(
         f"{mode} rules over up to {limit} recent message(s) in "
         f"{await _named(account_id)}; results appear in the History tab."
     )
+
+
+async def _past_estimate(account_id: str, days: int, include_read: bool) -> str:
+    """``run_rules(scope="estimate")``: the count of a past run. A read."""
+    start = (date.today() - timedelta(days=max(1, days))).isoformat()
+    res = await _get("/email/rules/process-past/estimate", {
+        "account_id": account_id, "start_date": start,
+        "include_read": "true" if include_read else "false",
+    }) or {}
+    where = await _named(account_id)
+    line = (f"A past run over the last {max(1, days)} day(s) in {where} would process "
+            f"{int(res.get('will_process') or 0)} email(s): "
+            f"{int(res.get('in_range') or 0)} in the range, "
+            f"{int(res.get('already_processed') or 0)} already processed.")
+    if res.get("capped"):
+        line += f" The run stops at {int(res.get('limit') or 0)}, so it processes the oldest ones."
+    return line + " Each email costs one AI call. Nothing changed."
+
+
+async def _past_status(account_id: str) -> str:
+    """``run_rules(scope="status")``: the progress of the last past run."""
+    job = await _get("/email/rules/process-past/status", {"account_id": account_id}) or {}
+    where = await _named(account_id)
+    if job.get("status") in (None, "idle"):
+        return f"No past run is going on in {where}."
+    bits = [f"{k}: {job[k]}" for k in ("status", "phase", "processed", "total",
+                                       "applied", "error") if job.get(k) not in (None, "")]
+    return f"The last past run in {where}: " + ", ".join(bits) + "."
+
+
+async def _enabled_rules(account_id: str) -> list[dict[str, Any]] | None:
+    """The rules that are on, or None when the read fails."""
+    try:
+        return [r for r in (await _get(
+            "/email/rules", {"account_id": account_id})).get("rules", [])
+            if isinstance(r, dict) and r.get("enabled")]
+    except Exception:
+        return None
+
+
+async def _run_rules_on_one(account_id: str, email_id: str | None, dry_run: bool) -> str:
+    """``run_rules(scope="message")``: the rules on one email.
+
+    A preview changes nothing and asks nothing. An apply acts as a run of the
+    rules does: a held run refuses it while a rule that sends out is on, and
+    the card lists each rule that is on."""
+    if not (email_id or "").strip():
+        return "Nothing changed. Name the email in `email_id`."
+    if dry_run:
+        res = await _post("/email/rules/run-message", {
+            "account_id": account_id, "message_id": email_id, "is_test": True}) or {}
+        if not res.get("matched"):
+            return f"Preview: {res.get('reason') or 'No rule matched this email.'} Nothing changed."
+        rule = res.get("rule") or {}
+        return (f"Preview: the rule '{rule.get('name')}' matches ({res.get('reason', '')}). "
+                f"It would {_rule_acts(res.get('actions'))}. Nothing changed.")
+    rules = await _enabled_rules(account_id)
+    if (rules is None or any(_held_in_no_egress(r.get("actions")) for r in rules)) \
+            and _egress_held():
+        return _egress_held_answer(
+            "A run of the rules, while a rule that sends mail out is on,")
+    listing = _run_rules_listing(rules or [])
+    if listing is None:
+        return ("Nothing changed. Too many rules that send email out, or that write a "
+                "draft text, are on to show on one card. Ask the member which of them "
+                "to turn off with update_rule, then run the rules again.")
+    box = await _named(account_id)
+    try:
+        res = await _post("/email/messages/summaries", {"ids": [email_id]})
+        rows = [s for s in (res.get("summaries") or []) if isinstance(s, dict)]
+    except Exception:  # the card still names the mailbox
+        rows = []
+    what = (f'"{_card_text(rows[0].get("subject") or "(no subject)", 120)}" from '
+            f'{_card_text(rows[0].get("from") or "(unknown sender)", 80)}'
+            if rows else "this email")
+    refusal = await _card_refusal(
+        f"Apply the rules to {what} in {box}?",
+        "The rule that matches acts now: it labels, moves, drafts, and sends what "
+        f"the rule says to send. Each rule that is on is in the list below. Mailbox: {box}.",
+        "Cancelled — no rule ran.",
+        listing,
+    )
+    if refusal:
+        return refusal
+    res = await _post("/email/rules/run-message", {
+        "account_id": account_id, "message_id": email_id, "is_test": False}) or {}
+    if not res.get("matched"):
+        return f"No rule matched this email in {box}. {res.get('reason') or ''}".strip()
+    rule = res.get("rule") or {}
+    return f"Applied the rule '{rule.get('name')}' to the email in {box}."
+
+
+async def _retry_failed_runs(account_id: str) -> str:
+    """``run_rules(scope="retry_failed")``: the server's repair of each rule
+    run that the mail server refused. It replays only the label and the move
+    (``runner._RETRY_SKIPPED_ACTIONS``), so it sends nothing."""
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Retry the failed rule runs in {box}?",
+        "It applies again the label and the move of each rule run that the mail "
+        "server refused. It never drafts, sends, forwards or calls a webhook, and "
+        f"it skips mail in Trash or Spam. Mailbox: {box}.",
+        "Cancelled — no rule run was retried.",
+    )
+    if refusal:
+        return refusal
+    res = await _post("/email/rules/history/retry-failed",
+                      {"account_id": account_id, "limit": 200}) or {}
+    skipped = res.get("skipped_actions") or []
+    line = (f"Retried {int(res.get('considered') or 0)} failed rule run(s) in {box}: "
+            f"{int(res.get('repaired') or 0)} repaired, "
+            f"{int(res.get('still_failing') or 0)} still failing.")
+    if skipped:
+        line += f" Skipped actions that a repair never repeats: {', '.join(map(str, skipped))}."
+    return line
 
 
 @_annotate_risk(open_world=False)
@@ -6467,11 +6602,18 @@ async def test_rule_match(
     subject: str | None = None,
     from_email: str | None = None,
     body: str | None = None,
+    recent: bool = False,
+    limit: int = 8,
 ) -> str:
     """Preview which automation rule WOULD match an email, without applying
     anything. Pass an `email_id`, or a pasted sample (`subject` / `from_email` /
     `body`). Use to debug why mail is (or isn't) being labelled/handled as
-    expected before tweaking a rule with update_rule / learn_rule_pattern."""
+    expected before tweaking a rule with update_rule / learn_rule_pattern.
+
+    ``recent=true`` tests the rules on the newest inbox emails instead
+    (``limit``, 15 at most), one line for each email."""
+    if recent:
+        return await _test_rules_recent(account_id, limit)
     payload: dict[str, Any] = {"account_id": account_id}
     if email_id:
         payload["email_id"] = email_id
@@ -6493,6 +6635,32 @@ async def test_rule_match(
         f"Matched rule '{rule.get('name')}' (id={rule.get('id')}): "
         f"{res.get('reason', '')} → {actions or '(no actions)'}"
     )
+
+
+async def _test_rules_recent(account_id: str, limit: Any) -> str:
+    """``test_rule_match(recent=true)``: a dry run over the newest inbox mail.
+    ``POST /email/rules/test/recent`` applies nothing. A sender writes the
+    subject and the name, so each line is framed as email text."""
+    try:
+        n = max(1, min(int(limit or 8), 15))
+    except (TypeError, ValueError):
+        n = 8
+    res = await _post("/email/rules/test/recent", {"account_id": account_id, "limit": n})
+    rows = [r for r in (res or {}).get("results") or [] if isinstance(r, dict)]
+    if not rows:
+        return "No inbox email to test the rules on."
+    lines = []
+    for r in rows:
+        rule = (r.get("rule") or {}).get("name") if r.get("matched") else None
+        acts = ", ".join(str(a) for a in r.get("actions") or [])
+        lines.append(
+            f"- {_one_line(r.get('from') or '(unknown)', 80)}: "
+            f"{_md_link(r.get('subject'), r.get('email_id'), account_id) or _one_line(r.get('subject'), 120)}"
+            f" → {f'{rule} ({acts})' if rule else 'no rule'}")
+    matched = sum(1 for r in rows if r.get("matched"))
+    head = (f"Tested the rules on the {len(rows)} newest inbox emails: {matched} match a "
+            "rule. Nothing was applied.")
+    return head + "\n" + _frame_email("\n".join(lines))
 
 
 # ── Tool registry ────────────────────────────────────────────────────────────
@@ -6624,8 +6792,8 @@ GATEWAY_READ_POSTS: dict[str, str] = {
         "POST /email/messages/summaries reads the sender and the subject of "
         "each id. It writes no row and changes no read state."),
     "test_rule_match": (
-        "POST /email/rules/test is a dry run. It shows which rule would match "
-        "and applies nothing."),
+        "POST /email/rules/test and POST /email/rules/test/recent are dry "
+        "runs. They show which rule would match and apply nothing."),
     "categorize_senders": (
         "POST /email/senders/categorize rebuilds email_senders.category, a "
         "derived cache of sender categories, from the labels that the "

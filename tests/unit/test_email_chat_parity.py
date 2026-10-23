@@ -319,9 +319,105 @@ async def test_bulk_over_several_senders_counts_each_and_asks_once(gw: Gateway) 
     assert out == "Archive: 8 emails changed, from 2 senders."
 
 
+async def test_bulk_over_several_senders_writes_nothing_on_a_no_first(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/messages/bulk")] = {"matched": 0}
+    out = await agents.bulk_manage_inbox("read", sender_emails=["a@x.test", "b@y.test"])
+    assert out.startswith("Nothing matches") and gw.cards == []
+
+
 async def test_bulk_over_several_senders_writes_nothing_on_a_no(gw: Gateway) -> None:
     gw.answers[("POST", "/email/messages/bulk")] = {"matched": 2}
     gw.answer = False
     await agents.bulk_manage_inbox("trash", sender_emails=["a@x.test", "b@y.test"])
     assert len(gw.cards) == 1
     assert all(b.get("dry_run") for _m, _p, b in gw.writes)
+
+
+# ── 4. Rule runs: one email, the estimate, the status, the retry, the test ───
+
+
+async def test_a_preview_on_one_email_asks_nothing(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/rules/run-message")] = {
+        "matched": True, "rule": {"id": "r1", "name": "Bank"}, "reason": "bank",
+        "actions": [{"type": "LABEL", "label": "Finance"}]}
+    out = await agents.run_rules(BOX, scope="message", email_id="m1")
+    assert gw.cards == []
+    [(_m, path, body)] = gw.writes
+    assert path == "/email/rules/run-message"
+    assert body == {"account_id": BOX, "message_id": "m1", "is_test": True}
+    assert "Bank" in out and 'labels "Finance"' in out and "Nothing changed" in out
+
+
+async def test_applying_the_rules_to_one_email_asks_first(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/messages/summaries")] = {
+        "summaries": [{"id": "m1", "from": "Kim", "subject": "Invoice 7"}]}
+    gw.answers[("POST", "/email/rules/run-message")] = {
+        "matched": True, "rule": {"id": "r1", "name": "Bank"}}
+    gw.answer = False
+    out = await agents.run_rules(BOX, scope="message", email_id="m1", dry_run=False)
+    [card] = gw.cards
+    assert card["title"] == f'Apply the rules to "Invoice 7" from Kim in {BOX_TEXT}?'
+    assert '- rule "Bank"' in card["context"]
+    assert [p for _m, p, _b in gw.writes] == ["/email/messages/summaries"]
+    assert out.startswith("Cancelled")
+    gw.answer = True
+    out = await agents.run_rules(BOX, scope="message", email_id="m1", dry_run=False)
+    assert gw.writes[-1] == ("POST", "/email/rules/run-message",
+                             {"account_id": BOX, "message_id": "m1", "is_test": False})
+    assert out == f"Applied the rule 'Bank' to the email in {BOX_TEXT}."
+
+
+async def test_a_held_run_applies_no_rule_on_one_email_while_one_forwards(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gw.rules[BOX].append(dict(FORWARD_RULE))
+    _held(monkeypatch)
+    out = await agents.run_rules(BOX, scope="message", email_id="m1", dry_run=False)
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_the_estimate_and_the_status_are_reads(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/rules/process-past/estimate")] = {
+        "in_range": 900, "eligible": 700, "already_processed": 200,
+        "will_process": 700, "capped": False, "limit": 1000}
+    gw.answers[("GET", "/email/rules/process-past/status")] = {
+        "status": "running", "phase": "classifying", "processed": 40, "total": 700}
+    out = await agents.run_rules(BOX, scope="estimate", days=30, include_read=False)
+    assert "would process 700 email(s)" in out
+    [(_m, _p, _b, params)] = [c for c in gw.calls if c[1].endswith("/estimate")]
+    assert params["include_read"] == "false" and params["start_date"]
+    out = await agents.run_rules(BOX, scope="status")
+    assert "processed: 40" in out and "total: 700" in out
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_retry_failed_asks_and_says_what_it_skips(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/rules/history/retry-failed")] = {
+        "considered": 5, "repaired": 4, "still_failing": 1,
+        "skipped_actions": ["DRAFT_EMAIL"]}
+    out = await agents.run_rules(BOX, scope="retry_failed")
+    [card] = gw.cards
+    assert "never drafts, sends, forwards" in card["detail"]
+    assert gw.writes == [("POST", "/email/rules/history/retry-failed",
+                          {"account_id": BOX, "limit": 200})]
+    assert "4 repaired, 1 still failing" in out and "DRAFT_EMAIL" in out
+
+
+async def test_an_unknown_scope_runs_nothing(gw: Gateway) -> None:
+    out = await agents.run_rules(BOX, scope="everything", dry_run=False)
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_rules_on_recent_mail_is_a_framed_dry_run(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/rules/test/recent")] = {"results": [
+        {"email_id": "e1", "subject": "Invoice", "from": "Kim", "matched": True,
+         "rule": {"id": "r1", "name": "Bank"}, "actions": ["LABEL"]},
+        {"email_id": "e2", "subject": "Hello", "from": "Lee", "matched": False}]}
+    out = await agents.test_rule_match(BOX, recent=True, limit=50)
+    assert gw.writes == [("POST", "/email/rules/test/recent",
+                          {"account_id": BOX, "limit": 15})]
+    assert "1 match a rule" in out and "Bank (LABEL)" in out and "no rule" in out
+    assert "EMAIL" in out  # the untrusted frame of a sender's text
+    assert gw.cards == []
