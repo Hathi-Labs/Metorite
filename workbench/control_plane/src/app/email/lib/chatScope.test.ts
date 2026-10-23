@@ -307,7 +307,7 @@ describe("email-chat-picker-dot", () => {
     // The mark of the option in force is the house token for "on".
     expect(picker).toContain('<span className="text-primary text-[10px] shrink-0">✓</span>');
     // The prop stays optional, so another caller draws the picker as before.
-    expect(agent).toContain("mailboxes?: { id: string; label: string; accent?: string; attention?: boolean }[];");
+    expect(agent).toContain("mailboxes?: { id: string; label: string; accent?: string }[];");
   });
 
   it("gives /chat the options with their dots, from the same function", () => {
