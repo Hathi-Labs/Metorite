@@ -527,7 +527,7 @@ export default function EmailToolCards({
     // The draft above the composer, and a draft a newer one replaced, draw
     // one line here, not a second editable copy (`lib/pinnedDraft.ts`).
     if (DRAFT_TOOLS.has(e.name) && (e.id === pin.pinnedId || pin.superseded.has(e.id))) {
-      items.push(<DraftLine key={e.id} pinned={e.id === pin.pinnedId} />);
+      items.push(<DraftLine key={e.id} />);
       continue;
     }
     items.push(
@@ -743,14 +743,12 @@ function DraftResultCard({
   );
 }
 
-/** One line in the thread for a draft that draws elsewhere or is old. */
-function DraftLine({ pinned }: { pinned: boolean }) {
+/** One line in the thread for a draft that a newer one replaced. */
+function DraftLine() {
   return (
     <div data-email-card="draft-line" className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-      <AppIcon name={pinned ? "Pin" : "PenLine"} size={12} className="shrink-0" />
-      <span className="min-w-0 truncate">
-        {pinned ? "Draft reply · above the message box" : "Earlier draft · a newer draft replaced it"}
-      </span>
+      <AppIcon name="PenLine" size={12} className="shrink-0" />
+      <span className="min-w-0 truncate">Earlier draft · a newer draft replaced it</span>
     </div>
   );
 }
