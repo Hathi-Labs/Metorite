@@ -553,6 +553,11 @@ def format_filed(answer: Any) -> str:
         lines.append(f"Space: {space}")
     if page:
         lines.append(f"Link: /knowledge/pages/{page}")
+    # KB-5b: the in-app path of the Review view, with the proposal selected.
+    # The id is a checked uuid, so the line holds no text the gateway chose.
+    proposal = _page_id(body.get("id")) or page
+    if proposal:
+        lines.append(f"Review: /knowledge/review?p={proposal}")
     return "\n".join(lines)
 
 

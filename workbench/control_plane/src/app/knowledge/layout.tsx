@@ -49,9 +49,10 @@ import {
 } from "./components/KnowledgeContext";
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
+import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
 import type { PageSummary, Space } from "./lib/types";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
+import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
   KNOWLEDGE_OFF_TITLE,
   LOAD_FAILED_BODY,
@@ -179,6 +180,8 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const pageId = pageIdOf(pathname);
   const atHomePath = pathname === KNOWLEDGE_HOME;
   const atSearch = pathname === KNOWLEDGE_SEARCH;
+  const atReview = pathname === KNOWLEDGE_REVIEW;
+  const reviewCount = usePendingCount();
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
@@ -255,6 +258,8 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     selectedPageId: pageId,
     atHome: atHomePath && !spaceParam,
     atSearch,
+    atReview,
+    reviewCount,
     onArchive: setArchiving,
   };
 

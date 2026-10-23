@@ -53,3 +53,11 @@ export function pageIdOf(pathname: string | null): string | null {
   const m = /^\/knowledge\/pages\/([^/?#]+)/.exec(pathname ?? "");
   return m ? decodeURIComponent(m[1]) : null;
 }
+
+/** The path of the Review view of the assistant's proposals (KB-5b). */
+export const KNOWLEDGE_REVIEW = `${KNOWLEDGE_HOME}/review`;
+
+/** The Review view, with one proposal selected: `/knowledge/review?p=<id>`. */
+export function reviewHref(proposalId?: string | null): string {
+  return proposalId ? `${KNOWLEDGE_REVIEW}?p=${encodeURIComponent(proposalId)}` : KNOWLEDGE_REVIEW;
+}
