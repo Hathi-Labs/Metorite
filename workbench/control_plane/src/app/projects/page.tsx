@@ -68,7 +68,8 @@ import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
-import { FilterBar } from "./components/FilterBar";
+import { FilterChrome } from "./components/CompactFilterBar";
+import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
@@ -3803,6 +3804,14 @@ function ProjectsWorkspace() {
    */
   const canvasKey = `${selected?.id ?? "none"}:${canvasLabel}`;
 
+  // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
+  // filter row, the old strip and the old banner, exactly as before.
+  const compactChrome = compactChromeEnabled();
+  const onAgentFocus = (next: AgentFocus | null) => {
+    setWaitingOnMe(next === "waiting");
+    setAgentFocus(next === "waiting" ? null : next);
+  };
+
   /** Everything between the chrome and the canvas, plus the canvas. */
   /**
    * The member's PLACE, which both chat mounts hand the rail — the node they
@@ -3919,7 +3928,16 @@ function ProjectsWorkspace() {
       {shownError ? renderState("error", shownError) : null}
 
       {selected && !overview ? (
-        <FilterBar
+        <FilterChrome
+          compact={compactChrome}
+          phone={isMobile}
+          modes={MODE_OPTIONS}
+          onMode={(next) => setChosenMode(next)}
+          resultCount={taskTotal}
+          loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
+          agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
+          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
           archivedCount={archivedCount}
@@ -3972,16 +3990,16 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && agentRunsOn ? (
+      {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
+          in the active-filter row of the tool bar above. */}
+      {selected && !overview && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
           focus={waitingOnMe ? "waiting" : agentFocus}
-          onFocus={(next) => {
-            setWaitingOnMe(next === "waiting");
-            setAgentFocus(next === "waiting" ? null : next);
-          }}
+          onFocus={onAgentFocus}
+          hideZero={compactChrome}
         />
       ) : null}
 
@@ -4087,7 +4105,9 @@ function ProjectsWorkspace() {
           over them would be a second way to say one thing (§5), and it would
           disagree, because the two endpoints cap differently. The overview
           counts in SQL and is never short. */}
-      {selected && (mode === "board" || mode === "list" || mode === "table") ? (
+      {selected &&
+      !compactChrome &&
+      (mode === "board" || mode === "list" || mode === "table") ? (
         <MoreTasksBar
           loaded={tasks.length}
           total={taskTotal}
@@ -4278,6 +4298,19 @@ function ProjectsWorkspace() {
             />
           )}
         </LayoutBoundary>
+        {/* OP-1: with the compact chrome the load-more row sits at the END of
+            the list, and the count "100 of 219" sits in the tool row. */}
+        {selected &&
+        compactChrome &&
+        (mode === "board" || mode === "list" || mode === "table") ? (
+          <MoreTasksBar
+            atEnd
+            loaded={tasks.length}
+            total={taskTotal}
+            busy={loadingMore}
+            onLoadMore={() => void loadMoreTasks()}
+          />
+        ) : null}
       </div>
     </>
   );
