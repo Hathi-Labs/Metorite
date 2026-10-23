@@ -339,12 +339,52 @@ recommendations for all the open questions". So D-OP-1 to D-OP-8 are
 
 ---
 
-## 8a. The board of the project "Projects/Tasks App"
+## 8a. The board of the project "Projects/Tasks App" (2026-10-23)
 
 The Metorite project "Projects/Tasks App" held 41 tasks on 2026-10-23. Each
-open task was checked against the code. The build record of WS-64 lists which
-task folds into which slice, which task closed as built, and which task left
-the board.
+open task was checked against the code and the git history.
+
+**New tasks for this spec.** #295 OP-1, #296 OP-2, #297 OP-3, #298 OP-4,
+#299 OP-5, and #300 EA-6h (`external_agent_access.md`).
+
+**Folded into a slice.**
+
+| Task | Slice | Why |
+|---|---|---|
+| #20 sideways scroll | OP-1 | The phone gets status tabs. The desktop keeps the scrollbar |
+| #151 compact My Task Inbox | OP-2 | The Inbox is built again in My work |
+| #175 waiting-on state | OP-2 | "Waiting for" becomes a My work view |
+| #132 full name on hover | OP-2 | OP-2 changes the same sidebar |
+| #8 phone Menu button | OP-4 | OP-4 rebuilds the phone tab bar |
+
+**Closed as built** (moved to Done, with the evidence).
+
+| Task | Evidence |
+|---|---|
+| #264 Archive view in the sidebar | `ProjectTree.tsx:558-580`, #1218 |
+| #263 Archived projects hidden by default | `splitArchived` puts them in a closed fold |
+| #262 Delete a project from the chat with approval | `skill_projects/guarded.py:287`, a guarded card |
+| #169 Auto-link a task named in text | `routes/projects/text_links.py` |
+| #165 Auto-link GitHub refs | `routes/projects/github_autolink.py`, #1142 |
+| #164 GitHub refs on a task | `pm_task_refs`, `routes/projects/refs.py` |
+| #154 Paste an image into a field | `useInlineUploads.ts` |
+| #126, #125 One title bar per app | `AppTopBar.tsx`, #473, #725, #826 |
+| #13 Add Task button | `QuickAdd.tsx`, `CardInput.tsx` |
+| #5 Notification engine | `NotificationBell.tsx`, `routes/projects/notifications.py` |
+| #153 Paused project's tasks | `project_management_app.md` D-PM-32: the state is derived |
+
+**Built, still open on the board.** The session's permission check refused
+the status change of #155 (paste artifacts onto a task, `useInlineUploads.ts`),
+#15 (edit the title in the panel, `TaskPanel.tsx:264`) and #43 (delegate to an
+agent, `DelegateDialog.tsx`, #1045). The owner moves them to Done.
+
+**Leaves the board.** #129 (rename to "My Task Inbox") names a surface that
+D73 and this spec retire. An archive request waits for the owner's approval
+on the task.
+
+**Stays open, not part of WS-64.** #168, #166, #128, #50, #49, #48, #47, #46,
+#45, #44, #19, #18, #14, #11 and #7. Each is a real gap or a bug that needs a
+browser check.
 
 ---
 
