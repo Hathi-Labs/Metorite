@@ -1038,9 +1038,9 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     # D-OP-10 (owner, 2026-10-23), built in WS-55 EA-6h. The chat's card gets
     # the choice in OP-7, and that slice moves this row to SENDS.
     ("DELETE", "/projects/tasks/{task_id}"): {
-        "subtasks": (
+        "delete_subtask_ids": (
             "D-OP-10. The chat's card gets the choice in OP-7. Until then the chat "
-            "sends no value, and the route keeps D-PM-38: the subtasks move up."
+            "sends no ids, and the route keeps D-PM-38: the subtasks move up."
         ),
     },
     ("GET", "/projects/tasks"): {

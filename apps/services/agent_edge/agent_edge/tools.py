@@ -209,6 +209,9 @@ TEXT_ARCHIVE_CONFLICT = (
 TEXT_DELETE_OFF = (
     "The member has not let agents delete tasks. The member can turn this on"
     " in Metorite, in Integrations, AI agents.")
+TEXT_SUBTASK_NOT_BELOW = (
+    "One of the ids in subtasks_to_delete is not a subtask of this task. Read"
+    " the task again with get_task, and ask the person again.")
 TEXT_DELETE_TITLE = (
     "The title is not the current title of the task. Read the task again with"
     " get_task, show its title to the person, and ask again.")
@@ -626,7 +629,11 @@ def _untrusted_list(value: Any) -> list[dict[str, str] | None]:
 # ── The input check (a small subset of JSON Schema) ─────────────────────────
 
 
-def _type_ok(value: Any, kind: str) -> bool:
+def _type_ok(value: Any, kind: str | list[str]) -> bool:
+    if isinstance(kind, list):
+        # EA-6h: one input that may take more than one type, such as the
+        # "none", "all" or list of ids of `subtasks_to_delete`.
+        return any(_type_ok(value, one) for one in kind)
     if kind == "string":
         return isinstance(value, str)
     if kind == "integer":
@@ -726,7 +733,7 @@ def _check_value(name: str, rule: Mapping[str, Any], value: Any) -> None:
         raise ToolError(f"The input {name!r} is not valid text.")
     # fullmatch, not search: a pattern that ends in `$` lets a trailing
     # newline through `re.search` (fix round 1).
-    if "pattern" in rule and not re.fullmatch(rule["pattern"], value):
+    if "pattern" in rule and isinstance(value, str) and not re.fullmatch(rule["pattern"], value):
         raise ToolError(f"The input {name!r} has the wrong form.")
     if isinstance(value, list):
         _check_items(name, rule, value)
@@ -3512,9 +3519,13 @@ AGENT_DELETE_TITLE = "agent_delete_title"
 AGENT_DELETE_TITLE_MAX = 2_000
 
 #: The body of the delete: these keys and no other (rule 18).
-DELETE_BODY_KEYS: tuple[str, ...] = ("expected_version", "confirm_title", "subtasks")
-#: The member's answer about the subtasks (D-OP-10), the values of the route.
-SUBTASK_CHOICES: tuple[str, ...] = ("promote", "delete")
+DELETE_BODY_KEYS: tuple[str, ...] = ("expected_version", "confirm_title", "subtasks_to_delete")
+#: The two words of ``subtasks_to_delete`` (D-OP-10). A list of ids is the third form.
+SUBTASK_WORDS: tuple[str, ...] = ("none", "all")
+#: The most ids in that list, the cap of the gateway too.
+MAX_DELETE_IDS = 1_000
+#: The 422 of an id that is not a descendant, a copy of the gateway's code.
+SUBTASK_NOT_BELOW = "subtask_not_below"
 
 _DELETE_INPUT: dict[str, Any] = {
     "type": "object",
@@ -3528,12 +3539,16 @@ _DELETE_INPUT: dict[str, Any] = {
             "type": "string", "minLength": 1, "maxLength": AGENT_DELETE_TITLE_MAX,
             "description": "The exact title that get_task returned for this task,"
                            " the text inside its untrusted_text."},
-        "subtasks": {
-            "type": "string", "enum": list(SUBTASK_CHOICES),
-            "description": "The person's answer: promote moves the subtasks up one"
-                           " level, delete deletes them with the task."},
+        "subtasks_to_delete": {
+            "type": ["string", "array"], "pattern": "^(none|all)$",
+            "items": {"type": "string", "pattern": _UUID_PATTERN},
+            "maxItems": MAX_DELETE_IDS,
+            "description": "The person's answer: none keeps every subtask, all"
+                           " deletes every subtask at any depth, or a list of the"
+                           " ids of the subtasks to delete. Each subtask that is"
+                           " not deleted is kept."},
     },
-    "required": ["task_id", "expected_version", "confirm_title", "subtasks"],
+    "required": ["task_id", "expected_version", "confirm_title", "subtasks_to_delete"],
     "additionalProperties": False,
 }
 
@@ -3543,7 +3558,14 @@ _DELETE_OUTPUT: dict[str, Any] = _object({
 })
 
 
-def _count(value: Any) -> int:
+def _subtasks_choice(value: Any) -> str | list[str]:
+    """``none``, ``all`` or the list of ids, each in lower case and once."""
+    if isinstance(value, str):
+        return value
+    return list(dict.fromkeys(str(v).lower() for v in value))
+
+
+def _nonneg(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
@@ -3558,8 +3580,11 @@ async def _delete_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     _, body = await _write(
         ctx, "POST", AGENT_DELETE_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
-        json_body={key: str(args[key]) for key in DELETE_BODY_KEYS},
+        json_body={"expected_version": str(args["expected_version"]),
+                   "confirm_title": str(args["confirm_title"]),
+                   "subtasks_to_delete": _subtasks_choice(args["subtasks_to_delete"])},
         details={(403, AGENT_DELETE_OFF): TEXT_DELETE_OFF,
+                 (422, SUBTASK_NOT_BELOW): TEXT_SUBTASK_NOT_BELOW,
                  (409, AGENT_DELETE_STALE): TEXT_STALE,
                  (409, AGENT_DELETE_TITLE): TEXT_DELETE_TITLE},
         texts={409: TEXT_STALE})
@@ -3568,8 +3593,8 @@ async def _delete_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(TEXT_BUSY)
     cascaded = body.get("cascaded") if isinstance(body.get("cascaded"), dict) else {}
     return {"deleted": deleted,
-            "subtasks_promoted": _count(cascaded.get("subtasks_promoted")),
-            "subtasks_deleted": _count(cascaded.get("subtasks_deleted"))}
+            "subtasks_promoted": _nonneg(cascaded.get("subtasks_promoted")),
+            "subtasks_deleted": _nonneg(cascaded.get("subtasks_deleted"))}
 
 
 DELETE_TASK = Tool(
@@ -3584,11 +3609,11 @@ DELETE_TASK = Tool(
         " task with get_task first. Send its version as expected_version, and"
         " its exact title as confirm_title. When the task changed after that"
         " read, or the title does not match, the tool deletes nothing. When"
-        " get_task shows subtasks, list them to the person and ask: promote"
-        " them to tasks, or delete them too? Send that answer as subtasks."
-        " promote moves them up one level. delete deletes them and their own"
-        " subtasks with the task. When the task has no subtasks, send promote."
-        " When the person only wants the task off the boards, archive it"
+        " get_task shows subtasks, list each one to the person, and ask which"
+        " to delete and which to keep. Send exactly that answer as"
+        " subtasks_to_delete: none, all, or the ids to delete. A kept subtask"
+        " whose parent is deleted moves up to the nearest task that stays."
+        " When the task has no subtasks, send none. When the person only wants the task off the boards, archive it"
         " instead, because a person can restore an archived task. Returns the"
         " id of the deleted task, how many subtasks moved up and how many were"
         " deleted." + _UNTRUSTED_NOTE
@@ -3598,7 +3623,7 @@ DELETE_TASK = Tool(
     output_schema=_DELETE_OUTPUT,
     route=AGENT_DELETE_ROUTE,
     params={"task_id": "task_id", "expected_version": "expected_version",
-            "confirm_title": "confirm_title", "subtasks": "subtasks"},
+            "confirm_title": "confirm_title", "subtasks_to_delete": "subtasks_to_delete"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_delete_task,
     method="POST",
@@ -3972,6 +3997,7 @@ __all__ = [
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
     "MAX_COMMENT_CHARS",
+    "MAX_DELETE_IDS",
     "MAX_STATUS_READS",
     "MAX_WAIT_SECONDS",
     "OPEN_RUN_STATUSES",
@@ -3990,8 +4016,9 @@ __all__ = [
     "SET_TASK_STATUS",
     "START_AGENT_RUN",
     "STATUS_KEYS",
-    "SUBTASK_CHOICES",
     "SUBTASK_KEYS",
+    "SUBTASK_NOT_BELOW",
+    "SUBTASK_WORDS",
     "TAG_KEYS",
     "TEXT_ARCHIVE_CONFLICT",
     "TEXT_BAD_CURSOR",
@@ -4025,6 +4052,7 @@ __all__ = [
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
     "TEXT_STALE",
+    "TEXT_SUBTASK_NOT_BELOW",
     "TEXT_TASK_NOT_FOUND",
     "TEXT_UPDATE_EMPTY",
     "TEXT_WRITES_OFF",
