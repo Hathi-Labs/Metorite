@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. Nothing is built.
+**WS-64**. OP-7 is built, not merged. Nothing else is built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -518,6 +518,14 @@ X. Each moves its route from class X to class B or C in `manifest.py`.
 4. The chat eval `evals/projects_ops/` gains one case for each new tool.
 
 ### OP-7 — choose which subtasks go, in the app and in the chat · AGENT-SAFE
+
+**Status: BUILT 2026-10-23 on branch `ws64-op7-subtask-pick-mt-b78601e2`, not yet merged.**
+The app dialog is `projects/components/DeleteTaskDialog.tsx`, and its tree rules
+are `projects/lib/deleteSubtasks.ts`. Both read `GET /projects/tasks/{id}/subtree`,
+a new read that shows the visible subtasks and counts the hidden ones. The chat
+card is `delete_task(subtasks_to_delete=)` in `skill_projects/guarded.py`. It uses
+the card with rows, with the task as the first row. Done-when 4 (the visual
+review at 390 and 1280 px) is **not done**: no dev server ran in this build.
 
 Owner, 2026-10-23, verbatim: "Sub tasks should also be deleted. The user
 should be shown that the task has what subtasks and if the subtasks should be

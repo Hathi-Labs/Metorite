@@ -447,6 +447,11 @@ _SAMPLE: dict[str, Any] = {
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    ("DELETE", "/projects/tasks/{task_id}", "delete_subtask_ids"): {
+        "task_id": tw.LIVE,
+        "subtasks_to_delete": "all",
+    },
     # WS-47 WAC-4b: a capture's block needs its start, as the Calendar reads
     # a block by its start.
     ("POST", "/projects/my/tasks", "scheduled_end"): {

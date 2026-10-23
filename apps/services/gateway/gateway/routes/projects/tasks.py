@@ -1261,6 +1261,39 @@ async def delete_task_in(
     return out
 
 
+@router.get("/tasks/{task_id}/subtree")
+async def task_subtree(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The subtasks that the delete dialog and the chat card offer (D-OP-10).
+
+    Every descendant the caller can see, at any depth, top down, archived
+    ones included. ``hidden`` counts the ones the caller cannot see, with no
+    title, because a delete keeps them (``delete_task_in``). One read through
+    ``cascade.load_subtree``, so it shows the set that ``delete_all`` takes.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, task_id)
+        rows = await load_subtree(db, vis, task_id)
+    shown = [r for r in rows if r.visible]
+    return {
+        "task_id": task_id,
+        "subtasks": [
+            {
+                "id": str(r.id),
+                "parent_task_id": str(r.parent_task_id) if r.parent_task_id else None,
+                "title": r.title,
+                "status_name": r.status_name,
+                "status_category": r.status_category,
+                "archived": getattr(r, "archived_at", None) is not None,
+            }
+            for r in shown
+        ],
+        "hidden": len(rows) - len(shown),
+    }
+
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),

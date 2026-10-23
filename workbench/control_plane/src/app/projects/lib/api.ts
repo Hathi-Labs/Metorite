@@ -1160,6 +1160,16 @@ export interface TaskTypeRow {
   is_epic?: boolean | null;
 }
 
+/** One row of `GET /projects/tasks/{id}/subtree` (D-OP-10). */
+export interface SubtreeRow {
+  id: string;
+  parent_task_id: string | null;
+  title: string;
+  status_name: string | null;
+  status_category: string | null;
+  archived: boolean;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -2112,21 +2122,37 @@ export const projectsApi = {
   /**
    * Delete a task for good, and say what went with it.
    *
-   * ⚠️ Subtasks are PROMOTED, not destroyed. D-PM-38 moves them up ONE level,
-   * to this task's own parent, so `subtasks_promoted` is not a cascade count
-   * but its opposite. Reporting it
-   * as deleted would reassure in the wrong direction.
+   * ⚠️ Subtasks are PROMOTED unless the member marks them (D-OP-10). With no
+   * `deleteSubtaskIds`, D-PM-38 holds: each subtask moves up ONE level, to
+   * this task's own parent, so `subtasks_promoted` is not a cascade count but
+   * its opposite. Each id of `deleteSubtaskIds` goes with the task. The route
+   * takes it as a repeated query value, because a DELETE here has no body.
+   * `subtasks_kept_hidden` counts the subtasks the caller cannot see. A
+   * delete never removes them.
    */
-  deleteTask: (taskId: string) =>
-    call<{
+  deleteTask: (taskId: string, opts?: { deleteSubtaskIds?: string[] }) => {
+    const ids = opts?.deleteSubtaskIds ?? [];
+    const query = ids.length
+      ? `?${ids.map((id) => `delete_subtask_ids=${encodeURIComponent(id)}`).join("&")}`
+      : "";
+    return call<{
       deleted: string;
       cascaded: {
         activities: number;
         assignees: number;
         links: number;
         subtasks_promoted: number;
+        subtasks_deleted?: number;
+        subtasks_kept_hidden?: number;
       };
-    }>(`tasks/${taskId}`, { method: "DELETE" }),
+    }>(`tasks/${taskId}${query}`, { method: "DELETE" });
+  },
+
+  /** D-OP-10 — the subtasks a delete offers: every one the caller can see. */
+  taskSubtree: (taskId: string) =>
+    call<{ task_id: string; subtasks: SubtreeRow[]; hidden: number }>(
+      `tasks/${taskId}/subtree`,
+    ),
 
   setAssignees: (taskId: string, assignees: string[]) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {

@@ -77,6 +77,20 @@ REF_ROW: dict[str, Any] = {
 }
 VIEW_ID = "df8fad5b-d9cb-469f-a165-70867728950e"
 LIVE = "ef8fad5b-d9cb-469f-a165-70867728950e"
+SUB_A = "3f8fad5b-d9cb-469f-a165-70867728950e"
+SUB_A1 = "4f8fad5b-d9cb-469f-a165-70867728950e"
+SUB_B = "5f8fad5b-d9cb-469f-a165-70867728950e"
+
+
+def _sub(rid: str, parent: str, title: str, archived: bool = False) -> dict[str, Any]:
+    return {
+        "id": rid,
+        "parent_task_id": parent,
+        "title": title,
+        "status_name": "To do",
+        "status_category": "todo",
+        "archived": archived,
+    }
 SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
@@ -302,6 +316,23 @@ def _refs_answers(call: dict) -> Any:
     return None
 
 
+def _subtree_answers(call: dict) -> Any:
+    """OP-7: the route's real shape (tasks.py `task_subtree`). The visible
+    descendants top down, archived ones too, and a hidden count."""
+    if call["method"] != "GET" or not call["path"].endswith("/subtree"):
+        return None
+    root = call["path"].split("/")[-2]
+    return {
+        "task_id": root,
+        "subtasks": [
+            _sub(SUB_A, root, "Write the notes"),
+            _sub(SUB_B, root, "Book the demo", archived=True),
+            _sub(SUB_A1, SUB_A, "Proofread the notes"),
+        ],
+        "hidden": 1,
+    }
+
+
 def _answered(call: dict, *tables: Any) -> Any:
     for table in tables:
         answered = table(call)
@@ -320,7 +351,8 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
+    answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers,
+                         _subtree_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
