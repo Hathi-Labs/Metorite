@@ -70,9 +70,27 @@ _EMAIL_ID_TOOLS = frozenset({
 })
 #: The tools whose ``draft_id`` argument names the draft that the run worked on.
 _DRAFT_ID_TOOLS = frozenset({"edit_draft", "send_draft", "schedule_send"})
-#: The stable last line of each result that makes or changes a draft
-#: (``agent-email-assistant`` ``_draft_line``).
+#: THE list of the tools whose result prints a draft line
+#: (``agent-email-assistant`` ``_draft_line``), and the line that carries it.
+#: ``draft_reply`` puts it in its FIRST line, because the draft text follows.
+#: The others end with it. No other tool's result is read for a draft id: a
+#: read carries a stranger's text, and that text can hold "Draft: draft_id=".
+#: ``test_email_working_set.py`` reads ``agents.py`` and fails when a tool
+#: that calls ``_draft_line`` is missing here.
+DRAFT_LINE_TOOLS: Mapping[str, str] = {
+    "draft_reply": "first", "compose_reply": "last", "edit_draft": "last",
+}
+#: The draft line (``_draft_line``). The FIRST match of the chosen line counts,
+#: because the id comes before the subject, and a sender writes the subject.
 _DRAFT_LINE = re.compile(r"Draft: draft_id=(\S+) \|")
+#: THE list of the tools whose result names the mailbox that the tool
+#: RESOLVED (``agent-email-assistant`` ``_mailbox_line``), and the line of it.
+#: The chat cards read the same line (``EmailToolCards.tsx``
+#: ``resolvedMailboxId``). Only these lines count, because a read carries a
+#: stranger's text, and that text can hold "Mailbox:".
+MAILBOX_LINE_TOOLS: Mapping[str, str] = {"create_rule": "last", "read_thread": "second"}
+#: The mailbox line: "Mailbox: <label · address> (account_id <id>)".
+_MAILBOX_LINE = re.compile(r"^Mailbox: .* \(account_id ([^)\s]+)\)$")
 #: The answer of ``send_draft`` when the draft went (``_held_sent_text``).
 _DRAFT_SENT = re.compile(r"^\s*Draft sent\b")
 #: The first words of a result that did not act. Its arguments name nothing
@@ -178,6 +196,29 @@ def _owned_account(value: Any, mailboxes: list[Mapping[str, Any]] | None) -> str
     return _ok_id(hit[0].get("id")) if len(hit) == 1 else ""
 
 
+def _draft_line_id(tool: str, result: str) -> str:
+    """The draft id that *tool* printed in its own draft line, or ``""``.
+
+    Only a tool of :data:`DRAFT_LINE_TOOLS`, and only its one line."""
+    where = DRAFT_LINE_TOOLS.get(tool)
+    lines = [ln for ln in result.splitlines() if ln.strip()]
+    if not where or not lines:
+        return ""
+    hit = _DRAFT_LINE.search(lines[0] if where == "first" else lines[-1])
+    return _ok_id(hit.group(1)) if hit else ""
+
+
+def _mailbox_line_id(tool: str, result: str) -> str:
+    """The id of the mailbox that *tool* says it acted in, or ``""``."""
+    where = MAILBOX_LINE_TOOLS.get(tool)
+    lines = [ln.strip() for ln in result.splitlines() if ln.strip()]
+    index = {"last": -1, "second": 1}.get(where or "")
+    if index is None or len(lines) < (2 if index == 1 else 1):
+        return ""
+    hit = _MAILBOX_LINE.match(lines[index])
+    return _ok_id(hit.group(1)) if hit else ""
+
+
 def update_working_set(
     ws: Mapping[str, Any] | None,
     calls: list[Mapping[str, Any]],
@@ -189,7 +230,9 @@ def update_working_set(
     itself (never from the model's text). A failed call, or a result that
     says it did not act, changes nothing. A call in another mailbox starts a
     new set, so a draft of Work is never "it" in Personal. *mailboxes* is the
-    member's list: when given, a mailbox outside it never enters the set.
+    member's list. With a list, a mailbox outside it never enters the set.
+    The executor always passes a list, empty when the read failed, so then
+    a call that names a mailbox changes nothing.
     """
     out = clean(ws)
     for call in calls:
@@ -200,7 +243,13 @@ def update_working_set(
             continue
         name = str(call.get("name") or "")
         args = _args_of(call.get("args"))
-        acct = _owned_account(args.get("account_id"), mailboxes)
+        # The id the tool resolved wins over the words the model passed.
+        named = _mailbox_line_id(name, result) or args.get("account_id")
+        acct = _owned_account(named, mailboxes)
+        if named and not acct:
+            # A mailbox that the member's list does not show, or no list:
+            # the call's ids could be another mailbox's, so it changes nothing.
+            continue
         if acct and acct != out.get("account_id"):
             out = {"account_id": acct}
         if name in _EMAIL_ID_TOOLS:
@@ -215,11 +264,9 @@ def update_working_set(
             did = _ok_id(args.get("draft_id"))
             if did:
                 out["draft_id"] = did
-        drafts = _DRAFT_LINE.findall(result)
-        if drafts:
-            did = _ok_id(drafts[-1])
-            if did:
-                out["draft_id"] = did
+        did = _draft_line_id(name, result)
+        if did:
+            out["draft_id"] = did
         if name == "send_draft" and _DRAFT_SENT.match(result):
             out.pop("draft_id", None)
     return out
@@ -592,6 +639,7 @@ def orchestrator_block(ws: Mapping[str, Any], mailboxes: list[Mapping[str, Any]]
 
 
 __all__ = [
+    "DRAFT_LINE_TOOLS",
     "EMAIL_AGENT",
     "FIELDS",
     "MAILBOX_MARK_EVENT",

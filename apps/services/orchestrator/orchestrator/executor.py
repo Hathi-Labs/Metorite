@@ -1654,9 +1654,10 @@ async def _record_email_working_set(
 
         org, member = _current_run_org(), _email_ctx_member()
         boxes = ecc.cached_mailboxes(str(org or ""), member) if org and member else []
-        # The member's list, when the turn read one: a mailbox outside it
-        # never enters the set, and a label becomes its id (rule 4).
-        after = ecc.update_working_set(before, calls, boxes or None)
+        # The member's list: a mailbox outside it never enters the set, and a
+        # label becomes its id (rule 4). Always a list: when the read failed
+        # it is empty, and a call that names a mailbox keeps the old set.
+        after = ecc.update_working_set(before, calls, list(boxes))
         if after != before:
             await ecc.save_working_set(after, parent_ctx)
         mark = ecc.mailbox_mark(before, after, boxes)
