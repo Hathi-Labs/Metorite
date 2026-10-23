@@ -48,6 +48,7 @@ import {
   type ConnectProviderId,
   type ProviderAvailability,
 } from "../lib/connect";
+import { ImapConnectForm } from "./ImapConnectForm";
 import { ImportRangeStep } from "./ImportRangeStep";
 import { WorkspaceAdminHelp } from "./WorkspaceAdminHelp";
 
@@ -57,7 +58,10 @@ export function ConnectChoices({
   onConnect,
   initialProvider = null,
   availability,
+  onDone,
 }: {
+  /** Called once an IMAP mailbox is connected, so a dialog can close. */
+  onDone?: () => void;
   /** Starts the sign-in. `importMonths` is the range the member chose. */
   onConnect: (provider: ConnectProviderId, importMonths: number) => void;
   /** Opens the range step of this provider at once. A live provider only. */
@@ -81,6 +85,7 @@ export function ConnectChoices({
       onConnect={onConnect}
       initialProvider={initialProvider}
       choices={connectChoices(availability)}
+      onDone={onDone}
     />
   );
 }
@@ -89,11 +94,16 @@ function ChoiceList({
   onConnect,
   initialProvider,
   choices,
+  onDone,
 }: {
   onConnect: (provider: ConnectProviderId, importMonths: number) => void;
   initialProvider: ConnectProviderId | null;
   choices: readonly ConnectProvider[];
+  onDone?: () => void;
 }) {
+  // The IMAP/SMTP form is a step of its own. It needs no capability read,
+  // because the route is open to any signed-in member (multi-inbox UI, item 4).
+  const [imapOpen, setImapOpen] = useState(false);
   // This component mounts only on the client, after the account read and
   // the capability read settle, so the storage read in the initializer
   // cannot differ from a server render. A provider that the read does not
@@ -114,6 +124,10 @@ function ChoiceList({
       ?.focus();
     backFrom.current = null;
   }, [step]);
+
+  if (imapOpen) {
+    return <ImapConnectForm onBack={() => setImapOpen(false)} onDone={onDone} />;
+  }
 
   if (step) {
     return (
@@ -172,6 +186,25 @@ function ChoiceList({
           {p.id === "gmail" && p.available && <WorkspaceAdminLine />}
         </li>
       ))}
+      <li>
+        <Button
+          variant="secondary"
+          size="none"
+          layout="flex w-full items-center text-left"
+          data-provider="imap"
+          onClick={() => setImapOpen(true)}
+          className="gap-3 bg-card px-3 py-2.5 hover:bg-primary/5"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <Icon name="Server" size={18} />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="text-sm font-medium text-foreground">Other mailbox (IMAP / SMTP)</span>
+            <span className="text-xs text-muted-foreground">Any provider, with a server and a password</span>
+          </span>
+          <Icon name="ArrowRight" size={14} className="shrink-0 text-muted-foreground" />
+        </Button>
+      </li>
     </ul>
   );
 }
