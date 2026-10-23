@@ -1,7 +1,7 @@
 # Shared mailbox — one company address that several members work from
 
-**Status: PROPOSED (2026-10-23). Nothing is built. The owner must answer §1 before any slice
-dispatches.** Verified against the code of `origin/main` at `f72fafb92` on 2026-10-23.
+**Status: ACTIVE (2026-10-23). The owner answered §1 on 2026-10-23. SM-1 and SM-2 dispatch
+first.** Verified against the code of `origin/main` at `f72fafb92` on 2026-10-23.
 
 **Origin:** owner decision, 2026-10-23: "Spec a shared mailbox". The example is
 `sales@fracktal.in`, which several members of one organization read and answer.
@@ -40,10 +40,25 @@ A member with no grant on a shared mailbox sees no change anywhere.
 
 ---
 
-## 1. Open owner questions
+## 1. Owner questions — answered 2026-10-23
 
-Each question has a recommendation. The slices in §10 assume the recommendation. An answer that
-differs changes the slices that the question names.
+**The owner answered all nine on 2026-10-23, and each answer is the recommendation below.** The
+slices in §10 use these answers as written. They are decisions now (D-SM-Q1 to D-SM-Q9). Do not
+open them again.
+
+| Question | Owner answer |
+|---|---|
+| Q-SM-1 | (a): a manager signs in as `sales@` itself. (b) is the later slice SM-11. |
+| Q-SM-2 | Only a holder of the new permission `email:shared:manage`. |
+| Q-SM-3 | One shared read state. |
+| Q-SM-4 | Each member with `send` sees each draft. Only its author or a `manage` member edits or sends it. |
+| Q-SM-5 | A shared mailbox counts against no member's 5. The organization holds at most 10 shared mailboxes. |
+| Q-SM-6 | The mailbox signature, then the sign-off line of the member who sends. |
+| Q-SM-7 | After a shared copy exists, the gateway refuses a new private connect of that address in that organization. |
+| Q-SM-8 | No charge. |
+| Q-SM-9 | Nobody by default. An unclaimed mail shows as "Unassigned" until a member claims it. |
+
+The text of each question stays below, as the record of the choice.
 
 1. **Q-SM-1 — How does the organization connect `sales@`?**
    (a) A manager signs in AS `sales@` itself, with its own password. The token belongs to the
