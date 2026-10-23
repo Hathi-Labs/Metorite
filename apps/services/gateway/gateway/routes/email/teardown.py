@@ -71,6 +71,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import _decrypt_credentials, _instantiate_provider, _log
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -136,13 +137,15 @@ GRANT_SHARED_SQL = (
 FILTER_IDS_SQL = """SELECT n.auto_archive_filter_id AS fid
    FROM email_newsletters n
    JOIN email_accounts a ON a.id = n.account_id
-   WHERE n.account_id = :id AND a.user_id = :uid
+   WHERE n.account_id = :id AND {owner}
      AND n.auto_archive_filter_id IS NOT NULL
    ORDER BY n.created_at, n.id"""
 
 #: The mailboxes of one member. ``_PURGE_DELETES`` deletes ``email_accounts``
 #: with THIS clause, and the purge rows of ``memory_purge.py`` use it too. So
 #: the plans, the purge rows and the delete name one set of rows.
+# private-only: a member purge reaches the rows of the member. SM-8 adds
+# ``shared_since IS NULL`` here (shared_mailbox.md §4.2 step 2).
 MEMBER_MAILBOXES_WHERE = "lower(user_id) = :email"
 
 #: The plan of one mailbox, in the ownership block of the disconnect. The
@@ -150,7 +153,7 @@ MEMBER_MAILBOXES_WHERE = "lower(user_id) = :email"
 MAILBOX_PLAN_SQL = """SELECT organization_id, provider, credentials_encrypted,
                              user_id, email_address, webhook_subscription_id
                         FROM email_accounts
-                       WHERE id = :id AND user_id = :uid"""
+                       WHERE id = :id AND {owner}"""
 
 #: The plans of each mailbox of one member. ``FOR UPDATE`` holds each row
 #: until the commit, so a sync cannot rotate the credentials or add a child
@@ -342,7 +345,8 @@ async def read_teardown_plans(
 
 async def _mailbox_plan(db: Any, scope: MailboxScope) -> list[TeardownPlan]:
     row = (await db.execute(
-        text(MAILBOX_PLAN_SQL), {"id": scope.account_id, "uid": scope.owner},
+        text(MAILBOX_PLAN_SQL.format(owner=mailbox_predicate(uid="uid", level="manage"))),
+        {"id": scope.account_id, "uid": scope.owner},
     )).fetchone()
     if row is None:
         return []
@@ -391,7 +395,8 @@ async def read_filter_ids(db: Any, account_id: str, owner: str) -> list[str]:
     Each id appears once, in the order of its row.
     """
     rows = (await db.execute(
-        text(FILTER_IDS_SQL), {"id": account_id, "uid": owner})).fetchall()
+        text(FILTER_IDS_SQL.format(owner=mailbox_predicate("a", uid="uid", level="manage"))),
+        {"id": account_id, "uid": owner})).fetchall()
     return _unique_ids([row.fid for row in rows])
 
 

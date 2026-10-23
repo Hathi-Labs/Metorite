@@ -14,6 +14,7 @@ from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
@@ -269,7 +270,7 @@ async def count_damaged_conversation_threads(
         params["aid"] = account_id
     if user_email:
         where.append(
-            "d.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)"
+            "d.account_id IN (" + mailbox_ids_sql(uid="uid", level="read") + ")"
         )
         params["uid"] = user_email
     filt = (" WHERE " + " AND ".join(where)) if where else ""

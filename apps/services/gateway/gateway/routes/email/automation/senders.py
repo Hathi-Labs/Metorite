@@ -21,6 +21,7 @@ from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
     _host_is_public,
     _is_safe_external_url,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
@@ -148,6 +149,8 @@ async def list_senders(
         # meant different things on different rows.
         in_folder_sql = "COUNT(*) FILTER (WHERE LOWER(folder) = 'inbox')"
         rows = (await db.execute(text(
+            # private-only: "never list the user" reads "self", the member's
+            # private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT LOWER(from_address->>'email') AS email,
                        MAX(from_address->>'name') AS name,
                        COUNT(*) AS count,
@@ -177,6 +180,8 @@ async def list_senders(
         # hides the tail is worse than useless — the user believes they've dealt
         # with everything.
         total_row = (await db.execute(text(
+            # private-only: "never list the user" reads "self", the member's
+            # private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT COUNT(DISTINCT LOWER(from_address->>'email')) AS c
                 FROM email_messages em
                 WHERE {scope}{folder_sql}
@@ -222,6 +227,8 @@ async def list_senders(
         # trims, so an exact-case comparison here silently dropped every label
         # whose rule name differed by case or stray whitespace — the sender then
         # rendered as uncategorized despite its mail being labelled.
+        # private-only: "never list the user" reads "self", the member's
+        # private mailboxes only (D-SM-5, WS-65 SM-2).
         not_self = (" AND LOWER(em.from_address->>'email') NOT IN ("
                     "SELECT LOWER(email_address) FROM email_accounts "
                     "WHERE user_id = :uid)")
@@ -632,7 +639,7 @@ async def list_newsletters(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
-        scope = "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+        scope = "account_id IN (" + mailbox_ids_sql(uid="uid", level="read")
         if account_id:
             scope += " AND id = :aid"
             params["aid"] = account_id

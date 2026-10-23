@@ -133,9 +133,12 @@ class TestThePairSet:
             + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
 
     def test_the_self_text_did_not_change(self):
+        """WS-65 SM-2 (D-SM-5): a shared mailbox is never "self". With no
+        shared row the set is the set of before."""
         assert identity.SELF_MAILBOX_IDS_SQL == (
             "SELECT o.id FROM email_accounts a "
-            "JOIN email_accounts o ON o.user_id = a.user_id "
+            "JOIN email_accounts o ON (o.id = a.id OR (o.user_id = a.user_id "
+            "AND o.shared_since IS NULL AND a.shared_since IS NULL)) "
             "AND o.organization_id IS NOT DISTINCT FROM a.organization_id "
             "WHERE a.id = :aid")
 

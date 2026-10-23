@@ -1177,6 +1177,8 @@ async def member_mailbox_count(db: Any, member: str) -> int:
     row counts. The caller holds the ``tenant_session``.
     """
     return int((await db.execute(
+        # private-only: the cap of Q-MB-1 counts the member's own rows. SM-3
+        # leaves a shared row out of the count (Q-SM-5, WS-65).
         text("SELECT count(*) FROM email_accounts WHERE lower(user_id) = :m"),
         {"m": (member or "").strip().lower()},
     )).scalar() or 0)

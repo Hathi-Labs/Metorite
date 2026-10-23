@@ -172,6 +172,8 @@ def valid_slot(slot: object) -> bool:
 #: binds ``:member`` (the address of the member, any case) and ``:org``.
 #: ``tests/unit/test_email_mailbox_identity.py`` checks that the two agree on
 #: a real database (R8).
+# private-only: the colour slot of a new mailbox reads the other rows of the
+# member who connects it, the connector of a shared row too (WS-65 SM-2).
 NEXT_SLOT_SQL = """(
     SELECT s.slot
       FROM generate_series(1, 12) AS s(slot)

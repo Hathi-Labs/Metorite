@@ -25,6 +25,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job, llm_slot
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, status
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
@@ -741,7 +742,8 @@ async def approve_knowledge(
                       updated_at = now()
                FROM email_accounts ea
                WHERE ek.id = :id AND ek.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

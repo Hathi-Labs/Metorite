@@ -30,6 +30,7 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import _bound_org, _tenant_session
 from sqlalchemy import text
 
@@ -68,7 +69,7 @@ AMBIGUOUS_ADDRESS_DETAIL = (
 #: bypasses RLS.
 ADDRESS_LOOKUP_SQL = (
     "SELECT id FROM email_accounts "
-    "WHERE user_id = :uid AND LOWER(email_address) = LOWER(:addr) "
+    "WHERE {owner} AND LOWER(email_address) = LOWER(:addr) "
     "AND organization_id = {bound_org} "
     "ORDER BY id LIMIT 2"
 )
@@ -77,7 +78,9 @@ ADDRESS_LOOKUP_SQL = (
 async def _rows_for_address(db: Any, address: str, owner: str) -> list[Any]:
     """The ids of the mailboxes of *owner* in the bound tenant with *address*."""
     return list((await db.execute(
-        text(ADDRESS_LOOKUP_SQL.format(bound_org=_bound_org())),
+        text(ADDRESS_LOOKUP_SQL.format(
+            bound_org=_bound_org(),
+            owner=mailbox_predicate(uid="uid", level="read"))),
         {"uid": owner, "addr": address},
     )).fetchall())
 

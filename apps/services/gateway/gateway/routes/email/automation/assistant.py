@@ -14,6 +14,7 @@ _KB_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -613,7 +614,8 @@ async def update_knowledge(
         owner = (await db.execute(text(
             """SELECT ek.id FROM email_knowledge ek
                JOIN email_accounts ea ON ek.account_id = ea.id
-               WHERE ek.id = :id AND ea.user_id = :uid"""
+               WHERE ek.id = :id AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})).fetchone()
         if not owner:
             raise HTTPException(status_code=404, detail="Not found")
@@ -635,7 +637,8 @@ async def delete_knowledge(
         res = await db.execute(text(
             """DELETE FROM email_knowledge ek USING email_accounts ea
                WHERE ek.id = :id AND ek.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": kid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")
@@ -782,7 +785,8 @@ async def delete_learned_pattern(
         res = await db.execute(text(
             """DELETE FROM email_learned_patterns lp USING email_accounts ea
                WHERE lp.id = :id AND lp.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": pid, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

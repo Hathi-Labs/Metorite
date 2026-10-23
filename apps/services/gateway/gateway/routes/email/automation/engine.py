@@ -13,6 +13,7 @@ from typing import Any
 from acb_skills.untrusted import UntrustedFrame
 from fastapi import HTTPException
 from gateway import decide_features
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.automation.identity import (
     own_addresses,
     resolve_org_domains,
@@ -1671,7 +1672,7 @@ async def _email_payload_from_id(
                   em.from_address, em.to_addresses, em.cc_addresses, em.thread_id,
                   em.received_at, ea.email_address
            FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id
-           WHERE em.id = :mid AND ea.user_id = :uid{in_mailbox}"""
+           WHERE em.id = :mid AND {mailbox_predicate("ea", uid="uid", level="manage")}{in_mailbox}"""
     ), params)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Message not found")
