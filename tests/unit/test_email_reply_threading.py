@@ -176,17 +176,19 @@ async def test_imap_send_sets_reply_headers_from_thread_id() -> None:
         captured["in_reply_to"] = msg["In-Reply-To"]
         captured["references"] = msg["References"]
 
-    import smtplib
+    from unittest.mock import patch
+
+    from email_ingestion.providers import imap as imap_mod
     server = MagicMock()
     server.send_message = _fake_send
-    orig = smtplib.SMTP
-    smtplib.SMTP = MagicMock(return_value=server)  # type: ignore[assignment]
-    try:
+    # The send resolves the SMTP host once and connects to the checked
+    # address (the SSRF pin), so the test fakes the lookup and both classes.
+    with patch.object(imap_mod, "pinned_public_address", return_value="93.184.216.34"), \
+            patch.object(imap_mod, "_PinnedSMTP", MagicMock(return_value=server)), \
+            patch.object(imap_mod, "_PinnedSMTP_SSL", MagicMock(return_value=server)):
         await p.send_message(
             to=["a@b.com"], subject="Re: hi", body_text="hello",
             thread_id="<msg-id@example.com>")
-    finally:
-        smtplib.SMTP = orig  # type: ignore[assignment]
 
     assert captured["in_reply_to"] == "<msg-id@example.com>"
     assert captured["references"] == "<msg-id@example.com>"
