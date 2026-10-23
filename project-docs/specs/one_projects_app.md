@@ -639,8 +639,8 @@ findings:
   named task. `PATCH /tasks/{id}` refuses `project_id` (422). The chat tools
   `move_project` and `move_task` call these routes. The MCP edge has no move
   tool. The rule of a task move is the rule of a delete, so a client that
-  hides Move reads `can_delete`. The app does not hide Move yet. The server
-  refuses the move, and the app shows the 403.
+  hides Move reads `can_delete`. The app does not hide Move yet, so the
+  server refuses the move with the 403.
 - **The recurrence successor.** It keeps the creator of the series. The
   member who completed the task is in the activity row only.
 
