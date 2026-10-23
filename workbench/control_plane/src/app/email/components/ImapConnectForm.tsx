@@ -137,6 +137,7 @@ export function ImapConnectForm({
       </div>
       <Row label="SMTP security" htmlFor="smtp-security">
         <SelectButton
+          id="smtp-security"
           label="SMTP security"
           value={form.smtpSecurity}
           options={[

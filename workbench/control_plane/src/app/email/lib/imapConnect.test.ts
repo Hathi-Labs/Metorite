@@ -93,4 +93,15 @@ describe("email-imap-connect", () => {
     expect(form).toContain('from "@/components/ui/Input"');
     expect(form).toContain('from "@/components/ui/Button"');
   });
+
+  it("binds every label to a control, and keeps the password after a failed connect", () => {
+    const form = read("components/ImapConnectForm.tsx");
+    const labels = [...form.matchAll(/htmlFor="([^"]+)"/g)].map((m) => m[1]);
+    expect(labels).toContain("smtp-security");
+    for (const id of labels) expect(form, `no control has id ${id}`).toContain(`id="${id}"`);
+    // The secrets clear only once the account is saved, after the await.
+    const cleared = form.indexOf('imapPassword: ""');
+    expect(cleared).toBeGreaterThan(form.indexOf("await createEmailAccount("));
+    expect(form.slice(form.indexOf("} catch (err)"))).not.toContain('imapPassword: ""');
+  });
 });
