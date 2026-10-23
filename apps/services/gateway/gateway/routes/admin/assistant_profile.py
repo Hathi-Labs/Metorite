@@ -67,7 +67,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Body, Depends, HTTPException, Response
-from gateway.routes.admin._common import _tenant_session
+from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
