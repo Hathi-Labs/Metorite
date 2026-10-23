@@ -288,6 +288,39 @@ export function copyReport(result: RuleCopyResult, source: string): CopyReport {
   return { summary, lines };
 }
 
+/** What a copy from one mailbox will do, shown BEFORE the member agrees. */
+export interface CopyPreview {
+  /** The names of the rules that will copy, in the order of the source. */
+  willCopy: string[];
+  /** The rules that stay behind, each with the reason in plain words. */
+  leftOut: { name: string; why: string }[];
+  /** The question that the dialog asks, or the plain "nothing to copy" line. */
+  question: string;
+}
+
+/**
+ * The preview of the Rules tab copy (multi-inbox UI, item 2). The gateway
+ * leaves out a rule that is off (`LEFT_OUT_WORDS.disabled`), so the preview
+ * lists the same rules. It reads only the source rules and writes nothing. A
+ * rule that the target refuses later (a folder it does not have, a second
+ * reply rule) shows in the report after the copy.
+ */
+export function copyRulesPreview(
+  rules: ReadonlyArray<Pick<AutomationRule, "name" | "enabled">>,
+  source: string,
+): CopyPreview {
+  const willCopy = rules.filter((r) => r.enabled).map((r) => r.name);
+  const leftOut = rules
+    .filter((r) => !r.enabled)
+    .map((r) => ({ name: r.name, why: LEFT_OUT_WORDS.disabled(source) }));
+  const n = willCopy.length;
+  const question =
+    n === 0
+      ? `${source} has no rules to copy.`
+      : `Copy ${n} ${n === 1 ? "rule" : "rules"} from ${source} into this mailbox?`;
+  return { willCopy, leftOut, question };
+}
+
 /**
  * The guard of the copy. A second copy into the same mailbox adds each rule
  * again as "(copy)", so:
