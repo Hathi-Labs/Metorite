@@ -178,6 +178,34 @@ def _po14(ds: Dataset) -> list[Step]:
     ]
 
 
+def _po15(ds: Dataset) -> list[Step]:
+    return [
+        tool("find_tasks", query="#4"),
+        tool("nudge_task", task_id=ds.task(ds_mod.DELEGATED).id),
+        ("text", "I nudged «Priya Menon» about #4. She sees it in her Metorite bell. "
+                 "I sent no email."),
+    ]
+
+
+def _po16(ds: Dataset) -> list[Step]:
+    launch = ds.project("Launch")
+    count = len([t for t in ds_mod.overdue(ds) if t.project == "Launch"])
+    return [
+        tool("projects_tree"),
+        tool("export_tasks", project_id=launch.id, overdue=True),
+        ("text", f"I exported the {count} overdue tasks of Launch to a CSV file. "
+                 "The file card in this chat shows it."),
+    ]
+
+
+def _po17(ds: Dataset) -> list[Step]:
+    return [
+        tool("find_tasks", query="#6"),
+        tool("attach_to_task", task_id=ds.task(6).id, file_name=ds_mod.UPLOAD_NAME),
+        ("text", f"I attached «{ds_mod.UPLOAD_NAME}» to #6."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -192,6 +220,9 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-12": _po12,
     "PO-13": _po13,
     "PO-14": _po14,
+    "PO-15": _po15,
+    "PO-16": _po16,
+    "PO-17": _po17,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

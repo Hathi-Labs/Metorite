@@ -1,14 +1,15 @@
 # The Projects operations eval (WS-46 P3)
 
-This folder holds the eval of WS-46 P3. It runs fourteen Projects operations
-tasks, PO-1 to PO-14, against projects-assistant, and checks each result. The
+This folder holds the eval of WS-46 P3. It runs seventeen Projects operations
+tasks, PO-1 to PO-17, against projects-assistant, and checks each result. The
 owning spec is `project-docs/specs/projects_agent_parity.md`, §11 and slice P3
 of §12. D91 is the decision.
 
 **Status.** Built on 2026-10-06. On the same day P6 added PO-8, P7 added
 PO-9 and P13 added PO-10, and on 2026-10-08 H-273 added PO-11. On 2026-10-23
-WS-64 OP-6a added PO-12 to PO-14, one for each area tool. The scripted
-run passes thirteen tasks in thirteen, uncovered and covered. PO-3 is `xfail` until P8 and P9 ship. Nobody has run
+WS-64 OP-6a added PO-12 to PO-14, one for each area tool. On the same day
+OP-6c added PO-15 to PO-17: a nudge, an export and an attached file. The scripted
+run passes sixteen tasks in sixteen, uncovered and covered. PO-3 is `xfail` until P8 and P9 ship. Nobody has run
 the model sweep yet.
 
 ## What it reuses, and what it adds
@@ -47,13 +48,13 @@ both, so a guessed day in PO-2 is the member's own.
 | File | What it holds |
 |---|---|
 | `run.py` | The runner. It extends the coding `Harness` with this stub and the cover |
-| `tasks.py` | The fourteen tasks, their full prompts and the answer to each card |
+| `tasks.py` | The seventeen tasks, their full prompts and the answer to each card |
 | `checkers.py` | One checker for each task, and the rules that bind every task |
 | `dataset.py` | The synthetic dataset, and the expected values that come from it |
 | `stub_api.py` | The stub of the Projects API, with write routes and a record of each request |
 | `scripted.py` | One known-good tool sequence for each task, for `--scripted` |
 
-## The fourteen tasks
+## The seventeen tasks
 
 Each checker reads the requests that the stub saw, the cards and the tool
 results. The answer of the model is one input, and never the only one.
@@ -74,6 +75,9 @@ results. The answer of the model is one input, and never the only one.
 | PO-12 | Make an area called Garden | One approved card. One `POST /projects/my/areas` with the name Garden. No other write. The answer names Garden |
 | PO-13 | Rename my Home area to House | One approved card that names «Home» and «House». One `PATCH` on the Home area with the name House, and nothing else. No other write. The answer names both names |
 | PO-14 | Delete my Finance area | Finance holds two done tasks and no open task, so the route archives it. One approved card that leads with `impact:` and says that an area with tasks is archived. One `DELETE` on the Finance area. The answer says archived and does not say deleted |
+| PO-15 | I wait on Priya for #4. Nudge her | One approved card that names «Priya Menon» and #4. One `POST …/nudge` on #4, and no other write. The answer names Priya and claims no email |
+| PO-16 | Export the overdue Launch tasks to a CSV file | No card. One `GET …/export/tasks.csv` for Launch with the overdue filter. The tool saves the CSV as a chat document and says how many tasks it holds. No write to Projects. The answer says the count and a CSV file |
+| PO-17 | Attach launch-brief.pdf, which I uploaded, to #6 | The run stages the file in the upload folder of the thread. One approved card that names the file, its size and #6. One multipart `POST …/attachments` on #6 with the real name and size, and no other write. The answer names the file |
 
 Four rules bind every task. The run must end, and the cover must be as the
 sweep asked. Every request must act as the acting member. The fourth rule is
