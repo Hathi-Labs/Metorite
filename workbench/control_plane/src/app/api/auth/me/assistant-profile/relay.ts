@@ -21,10 +21,12 @@ const PATH = "/auth/me/assistant-profile";
 export async function relay(
   req: NextRequest,
   method: "GET" | "PUT" | "POST" | "PATCH" | "DELETE",
-  suffix = "",
+  suffix: string | null = "",
 ): Promise<Response> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
+  // An id that `idSuffix` refused. Answer as the gateway does for an absent id.
+  if (suffix === null) return NextResponse.json({ detail: "Not found" }, { status: 404 });
   const hasBody = method === "PUT" || method === "POST" || method === "PATCH";
   let body: string | undefined;
   if (hasBody) {
@@ -52,11 +54,19 @@ export async function relay(
   }
 }
 
-/** The id segment, encoded for the gateway path. */
+/**
+ * The ids the gateway makes: a letter and hex (`f…`, `a…`). Anything else is
+ * refused before it reaches a URL. `encodeURIComponent("..")` is `..`, and
+ * `fetch` then folds `/facts/..` into the profile root, so a fact DELETE
+ * would become "forget everything" (PZ-7 verify, P2).
+ */
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The id segment for the gateway path, or `null` for an id of the wrong shape. */
 export async function idSuffix(
   kind: "facts" | "aliases",
   params: Promise<{ id: string }>,
-): Promise<string> {
+): Promise<string | null> {
   const { id } = await params;
-  return `/${kind}/${encodeURIComponent(id)}`;
+  return ID.test(id) ? `/${kind}/${id}` : null;
 }

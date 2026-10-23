@@ -83,11 +83,23 @@ describe("/api/auth/me/assistant-profile", () => {
     expect(asked[1].init?.method).toBe("POST");
   });
 
-  it("PATCH and DELETE on an id encode the id in the path", async () => {
+  it.each(["..", ".", "a b/1", "%2E%2E", "f1/../x", ""])(
+    "an id of the wrong shape (%j) is a 404 and reaches no gateway",
+    async (bad) => {
+      stub(() => new Response(null, { status: 204 }));
+      const f = await import("./facts/[id]/route");
+      const a = await import("./aliases/[id]/route");
+      expect((await f.DELETE(req("/facts/x", "DELETE"), ctx(bad))).status).toBe(404);
+      expect((await a.PATCH(req("/aliases/x", "PATCH", { alias: "R" }), ctx(bad))).status).toBe(404);
+      expect(asked).toEqual([]);
+    },
+  );
+
+  it("PATCH and DELETE on an id put the id in the path", async () => {
     stub(() => new Response("{}", { status: 200 }));
     const f = await import("./facts/[id]/route");
-    await f.PATCH(req("/facts/a b", "PATCH", { text: "y" }), ctx("a b/1"));
-    expect(asked[0].url).toBe(`${GW}/facts/a%20b%2F1`);
+    await f.PATCH(req("/facts/f1a2", "PATCH", { text: "y" }), ctx("f1a2"));
+    expect(asked[0].url).toBe(`${GW}/facts/f1a2`);
     expect(asked[0].init?.method).toBe("PATCH");
     expect(JSON.parse(String(asked[0].init?.body))).toEqual({ text: "y" });
     stub(() => new Response(null, { status: 204 }));
