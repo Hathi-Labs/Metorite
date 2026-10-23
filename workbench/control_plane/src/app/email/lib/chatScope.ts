@@ -62,6 +62,19 @@ export interface ChatMailboxOption {
   id: string;
   label: string;
   accent?: string;
+  /** True when the mailbox needs a reconnect: its sync failed, or its
+   *  sign-in lapsed. The picker marks it, as the switcher does. */
+  attention?: boolean;
+}
+
+/** The mailbox shape that the picker reads for the reconnect mark. */
+interface AttentionFlags {
+  syncStatus?: string;
+  needsReconnect?: boolean;
+}
+
+function needsAttention(a: AttentionFlags): boolean {
+  return a.syncStatus === "error" || a.needsReconnect === true;
 }
 
 /**
@@ -73,13 +86,17 @@ export interface ChatMailboxOption {
  * chips show only for two or more mailboxes (§11.0).
  */
 export function chatMailboxOptions(
-  accounts: ReadonlyArray<PersonaAccount & { id: string; colorSlot?: number | null }>,
+  accounts: ReadonlyArray<PersonaAccount & AttentionFlags & { id: string; colorSlot?: number | null }>,
 ): ChatMailboxOption[] {
-  if (accounts.length < 2) return accounts.map((a) => ({ id: a.id, label: chatMailboxName(a) }));
+  const flag = (a: AttentionFlags) => (needsAttention(a) ? { attention: true } : {});
+  if (accounts.length < 2) {
+    return accounts.map((a) => ({ id: a.id, label: chatMailboxName(a), ...flag(a) }));
+  }
   const boxes = accounts.map((a) => ({
     id: a.id,
     label: chatMailboxName(a),
     accent: mailboxAccent(a).dot,
+    ...flag(a),
   }));
   return hasAllInboxes(accounts) ? [{ id: ALL_INBOXES, label: "All inboxes" }, ...boxes] : boxes;
 }
