@@ -585,3 +585,73 @@ async def test_restore_labels_asks_then_reports_the_counts(gw: Gateway) -> None:
     assert len(gw.cards) == 1
     assert gw.writes == [("POST", "/email/cleanup/restore-labels", {"account_id": BOX})]
     assert "updated: 7" in out
+
+
+# ── 8. The voice profile, and the approval of a knowledge suggestion ─────────
+
+
+async def test_the_voice_profile_reads_ask_nothing(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/voice-profile")] = {
+        "status": "READY", "enabled": True, "analyzed_count": 120,
+        "style_guide": "Short, warm, no emoji.", "suggested_knowledge": 3}
+    gw.answers[("GET", "/email/voice-profile/preview")] = {
+        "sent": 400, "drafts": 20, "total": 420, "will_analyze": 150}
+    gw.answers[("GET", "/email/voice-profile/status")] = {"status": "idle"}
+    out = await agents.voice_profile(BOX)
+    assert "READY" in out and "Short, warm" in out and "3 suggested" in out
+    out = await agents.voice_profile(BOX, action="preview", start_date="2026-01-01",
+                                     sources=["sent", "drafts"])
+    assert "study 150 of 420" in out
+    [(_m, _p, _b, params)] = [c for c in gw.calls if c[1].endswith("/preview")]
+    assert params == {"account_id": BOX, "sources": "sent,drafts",
+                      "start_date": "2026-01-01"}
+    assert "No voice-profile build" in await agents.voice_profile(BOX, action="status")
+    gw.answers[("POST", "/email/voice-profile/sample")] = {
+        "sample": "Hi Kim,", "scenario": "pricing"}
+    out = await agents.voice_profile(BOX, action="sample", scenario="pricing")
+    assert "Hi Kim," in out and "Nothing was saved or sent" in out
+    assert gw.cards == []
+
+
+async def test_a_build_asks_then_starts(gw: Gateway) -> None:
+    await agents.voice_profile(BOX, action="build", start_date="2026-01-01",
+                               end_date="2026-06-30", extract_knowledge=False)
+    [card] = gw.cards
+    assert "from 2026-01-01 to 2026-06-30" in card["detail"]
+    assert gw.writes == [("POST", "/email/voice-profile/build", {
+        "account_id": BOX, "start_date": "2026-01-01", "end_date": "2026-06-30",
+        "sources": ["sent"], "extract_knowledge": False})]
+
+
+async def test_save_shows_the_new_guide_and_refuses_hidden_text(gw: Gateway) -> None:
+    out = await agents.voice_profile(BOX, action="save", style_guide="Short‮ text")
+    assert out.startswith("Nothing changed.") and gw.cards == []
+    await agents.voice_profile(BOX, action="save", style_guide="Short.", enabled=False)
+    [card] = gw.cards
+    assert "The style guide becomes: Short." in card["context"]
+    assert "The profile is off." in card["context"]
+    assert gw.writes == [("PUT", "/email/voice-profile",
+                          {"account_id": BOX, "style_guide": "Short.", "enabled": False})]
+
+
+async def test_delete_asks_and_deletes_the_profile(gw: Gateway) -> None:
+    gw.answer = False
+    out = await agents.voice_profile(BOX, action="delete")
+    assert out.startswith("Cancelled") and gw.writes == []
+    gw.answer = True
+    await agents.voice_profile(BOX, action="delete")
+    [(method, path, _b, params)] = [c for c in gw.calls if c[0] == "DELETE"]
+    assert (path, params) == ("/email/voice-profile", {"account_id": BOX})
+
+
+async def test_approving_a_suggestion_shows_its_text(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/knowledge")] = {"entries": [
+        {"id": "k9", "title": "Lead time", "content": "Six weeks", "status": "suggested"}]}
+    out = await agents.voice_profile(BOX, action="approve_knowledge", knowledge_id="k9")
+    [card] = gw.cards
+    assert card["title"] == f'Approve the knowledge entry "Lead time" in {BOX_TEXT}?'
+    assert card["context"] == "Six weeks"
+    assert gw.writes == [("POST", "/email/knowledge/k9/approve", {})]
+    assert out.startswith("Approved")
+    listed = await agents.list_knowledge(BOX)
+    assert "knowledge_id k9, suggested, waits for approval" in listed

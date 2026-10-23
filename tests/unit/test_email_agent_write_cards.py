@@ -72,6 +72,7 @@ READ_POSTS = {
     "/email/rules/generate/preview": "turns a prompt into rule specs, saves nothing",
     "/email/rules/test": "a dry run of the rules on one email",
     "/email/rules/test/recent": "a dry run of the rules on the newest inbox mail",
+    "/email/voice-profile/sample": "a sample text in the voice, saves nothing",
 }
 #: Each POST that writes only a reply draft in the member's OWN Drafts, by
 #: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in
@@ -328,6 +329,7 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     # Chat parity wave 1 (owner, 2026-10-23, §22).
     "copy_rules": {"from_account_id": BOX, "to_account_id": "acc-2"},
     "rule_guidance": {"account_id": BOX, "action": "add", "guidance": "Never Marketing"},
+    "voice_profile": {"account_id": BOX, "action": "build"},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 
@@ -516,6 +518,8 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
     ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
+    ("voice_profile", "action"): ["view", "preview", "status", "build", "save",
+                                  "delete", "sample", "approve_knowledge"],
     ("auto_categorize_inbox", "mode"): ["sweep", "status", "uncategorized",
                                         "backfill", "restore_labels"],
     ("digest", "period"): ["day", "week"],
@@ -529,6 +533,8 @@ _EXTRA = {
     ("manage_inbox", "label"): {"add_labels": ["Finance"]},
     ("run_rules", "message"): {"email_id": "m1"},
     ("rule_guidance", "delete"): {"guidance_id": "g1"},
+    ("voice_profile", "save"): {"style_guide": "Short."},
+    ("voice_profile", "approve_knowledge"): {"knowledge_id": "k1"},
 }
 
 

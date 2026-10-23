@@ -3781,8 +3781,14 @@ async def list_knowledge(account_id: str) -> str:
     )).get("entries", [])
     if not entries:
         return "Knowledge base is empty."
+    # Chat parity wave 1: each entry names its knowledge_id and a suggestion
+    # says so, so delete_knowledge and voice_profile(approve_knowledge) can
+    # name it.
     return "Knowledge base:\n" + "\n".join(
-        f"• {e.get('title')}: {(e.get('content') or '')[:80]}" for e in entries
+        f"• {e.get('title')}: {(e.get('content') or '')[:80]} (knowledge_id {e.get('id')}"
+        + (", suggested, waits for approval" if e.get("status") == "suggested" else "")
+        + ")"
+        for e in entries
     )
 
 
@@ -3874,6 +3880,185 @@ async def generate_writing_style(account_id: str | None = None) -> str:
         f"Could not derive a writing style for {where} yet (no sent mail to "
         "analyze)."
     )
+
+
+_VOICE_SOURCES = ("sent", "drafts")
+_VOICE_GUIDE_MAX = 4000
+
+
+def _voice_range(
+    start_date: str | None, end_date: str | None, sources: list[str] | None,
+) -> tuple[dict[str, Any], str]:
+    """``(fields, "")`` of a voice-profile range, else ``({}, refusal)``."""
+    out: dict[str, Any] = {}
+    for key, value in (("start_date", start_date), ("end_date", end_date)):
+        v = (value or "").strip()
+        if v:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                return {}, f"Nothing changed. {key} must be a date as YYYY-MM-DD."
+            out[key] = v
+    src = [str(s).strip().lower() for s in (sources or ["sent"]) if str(s).strip()]
+    if not src or any(s not in _VOICE_SOURCES for s in src):
+        return {}, "Nothing changed. sources holds sent, drafts or both."
+    out["sources"] = src
+    return out, ""
+
+
+# (C) of the audit of 2026-10-19: the voice profile is a store that feeds
+# each later reply draft, as the knowledge base is, so ``open_world=True``
+# and a held run withholds the whole tool.
+@_annotate_risk(open_world=True)
+async def voice_profile(
+    account_id: str,
+    action: str = "view",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    sources: list[str] | None = None,
+    extract_knowledge: bool = True,
+    style_guide: str | None = None,
+    enabled: bool | None = None,
+    scenario: str = "",
+    knowledge_id: str | None = None,
+) -> str:
+    """The voice profile: how the member writes, learned from their own sent
+    mail, which the drafter follows. By ``action``:
+
+      • ``view`` (default) — the profile: its state, its style guide, and how
+        many suggested knowledge entries wait for review.
+      • ``preview`` — how many emails a build over the range would study.
+      • ``status`` — the progress of a build.
+      • ``build`` — learn the profile from ``sources`` ("sent", "drafts")
+        between ``start_date`` and ``end_date`` (YYYY-MM-DD). With
+        ``extract_knowledge`` it also suggests knowledge entries.
+      • ``save`` — set ``style_guide`` (the whole new text) and/or turn the
+        profile on or off with ``enabled``.
+      • ``delete`` — remove the profile and its unapproved suggestions.
+      • ``sample`` — write a short sample email in the voice, for
+        ``scenario``. It saves nothing.
+      • ``approve_knowledge`` — approve the suggested knowledge entry
+        ``knowledge_id`` (see list_knowledge), so the drafter uses it.
+
+    build, save, delete and approve_knowledge show the user a card first."""
+    act = (action or "view").strip().lower()
+    box = await _named(account_id)
+    if act == "view":
+        p = await _get("/email/voice-profile", {"account_id": account_id}) or {}
+        lines = [f"Voice profile of {box}: {p.get('status', 'EMPTY')}, "
+                 f"{'on' if p.get('enabled', True) else 'off'}, "
+                 f"from {int(p.get('analyzed_count') or 0)} email(s)"
+                 + (f", built {p.get('built_at')}" if p.get("built_at") else "") + "."]
+        if p.get("last_error"):
+            lines.append(f"Last error: {_one_line(p['last_error'], 200)}")
+        guide = str(p.get("style_guide") or "").strip()
+        if guide:
+            lines.append("Style guide:\n" + guide[:1500]
+                         + ("\n[Cut. The whole guide is longer.]" if len(guide) > 1500 else ""))
+        n = int(p.get("suggested_knowledge") or 0)
+        if n:
+            lines.append(f"{n} suggested knowledge entry(ies) wait for review "
+                         "(list_knowledge shows them).")
+        return "\n".join(lines)
+    if act == "status":
+        job = await _get("/email/voice-profile/status", {"account_id": account_id}) or {}
+        if job.get("status") in (None, "idle"):
+            return f"No voice-profile build is going on in {box}."
+        bits = [f"{k}: {job[k]}" for k in ("status", "phase", "processed", "total", "error")
+                if job.get(k) not in (None, "")]
+        return f"The voice-profile build in {box}: " + ", ".join(bits) + "."
+    if act in ("preview", "build"):
+        fields, bad = _voice_range(start_date, end_date, sources)
+        if bad:
+            return bad
+        if act == "preview":
+            res = await _get("/email/voice-profile/preview", {
+                "account_id": account_id, "sources": ",".join(fields["sources"]),
+                **{k: fields[k] for k in ("start_date", "end_date") if k in fields}}) or {}
+            return (f"A build over that range in {box} would study "
+                    f"{int(res.get('will_analyze') or 0)} of {int(res.get('total') or 0)} "
+                    f"email(s) (sent {int(res.get('sent') or 0)}, drafts "
+                    f"{int(res.get('drafts') or 0)}). Nothing changed.")
+        span = " to ".join(fields[k] for k in ("start_date", "end_date") if k in fields)
+        refusal = await _card_refusal(
+            f"Learn the voice profile of {box}?",
+            f"It reads your own {' and '.join(fields['sources'])} email"
+            + (f" from {span}" if span else "") + " and replaces the profile. The "
+            "drafter follows it in each later reply."
+            + (" It also suggests knowledge entries, which wait for your approval."
+               if extract_knowledge else "") + f" Mailbox: {box}.",
+            "Cancelled — the voice profile was not changed.",
+        )
+        if refusal:
+            return refusal
+        await _post("/email/voice-profile/build", {
+            "account_id": account_id, **fields, "extract_knowledge": extract_knowledge})
+        return f"The voice-profile build of {box} started. Check it with action=status."
+    if act == "save":
+        if style_guide is None and enabled is None:
+            return "Nothing changed. Give style_guide, enabled, or both."
+        body: dict[str, Any] = {"account_id": account_id}
+        lines: list[str] = []
+        if style_guide is not None:
+            from acb_skills.reply_card import has_hidden_text
+
+            if has_hidden_text(style_guide):
+                return "Nothing changed. The style guide holds hidden characters."
+            if len(style_guide) > _VOICE_GUIDE_MAX:
+                return f"Nothing changed. A style guide has {_VOICE_GUIDE_MAX} characters at most."
+            body["style_guide"] = style_guide
+            lines.append(f"The style guide becomes: {_card_text(style_guide, _VOICE_GUIDE_MAX)}")
+        if enabled is not None:
+            body["enabled"] = enabled
+            lines.append(f"The profile is {'on' if enabled else 'off'}.")
+        refusal = await _card_refusal(
+            f"Change the voice profile of {box}?",
+            f"The drafter follows the profile in each later reply. Mailbox: {box}.",
+            "Cancelled — the voice profile was not changed.",
+            "\n".join(lines),
+        )
+        if refusal:
+            return refusal
+        await _put("/email/voice-profile", body)
+        return f"Saved the voice profile of {box}."
+    if act == "delete":
+        refusal = await _card_refusal(
+            f"Delete the voice profile of {box}?",
+            "The drafter stops using it, and each knowledge suggestion that you did "
+            f"not approve goes too. Approved entries stay. Mailbox: {box}.",
+            "Cancelled — the voice profile was kept.",
+        )
+        if refusal:
+            return refusal
+        await _request("DELETE", "/email/voice-profile", params={"account_id": account_id})
+        return f"Deleted the voice profile of {box}."
+    if act == "sample":
+        res = await _post("/email/voice-profile/sample",
+                          {"account_id": account_id, "scenario": scenario or ""}) or {}
+        return (f"A sample in the voice of {box} (scenario: {res.get('scenario', '')}). "
+                f"Nothing was saved or sent.\n\n{res.get('sample', '')}")
+    if act == "approve_knowledge":
+        if not knowledge_id:
+            return "Nothing changed. Name the entry in knowledge_id. list_knowledge shows it."
+        entries = (await _get("/email/knowledge", {"account_id": account_id}) or {}).get(
+            "entries", [])
+        entry = next((e for e in entries if isinstance(e, dict)
+                      and str(e.get("id")) == str(knowledge_id)), None)
+        if entry is None:
+            return f"Nothing changed. {box} has no knowledge entry with the id {knowledge_id}."
+        refusal = await _card_refusal(
+            f'Approve the knowledge entry "{_card_name(entry.get("title"))}" in {box}?',
+            "The assistant then uses it when it drafts replies, also replies to people "
+            f"outside. Mailbox: {box}.",
+            "Cancelled — the knowledge entry was not approved.",
+            _card_text(entry.get("content") or "", 3000),
+        )
+        if refusal:
+            return refusal
+        await _post(f"/email/knowledge/{knowledge_id}/approve", {})
+        return f"Approved the knowledge entry '{entry.get('title')}' in {box}."
+    return ("Nothing changed. action must be one of: view | preview | status | build | "
+            "save | delete | sample | approve_knowledge.")
 
 
 #: The default rules of ``POST /email/rules/install-presets``, as the card
@@ -6981,6 +7166,7 @@ _TOOLS = [
     save_knowledge,
     delete_knowledge,
     generate_writing_style,
+    voice_profile,
     list_patterns,
     forget_pattern,
     # Follow-ups / reply zero
@@ -7028,7 +7214,7 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     # H-375: send later.
     "schedule_send", "cancel_scheduled_send",
     # Chat parity wave 1 (owner, 2026-10-23, §22).
-    "copy_rules", "rule_guidance",
+    "copy_rules", "rule_guidance", "voice_profile",
 })
 
 #: The tools that save a reply draft in the member's OWN Drafts with no card,

@@ -67,6 +67,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "update_assistant_settings",
         # (C) the knowledge base, which feeds each later reply
         "save_knowledge",
+        # (C) chat parity wave 1 (§22): the voice profile feeds each later
+        # reply draft too
+        "voice_profile",
     }),
     "crm-assistant": frozenset({
         # (B) D-CRM-9: an agent write queues for the live Zoho tenant

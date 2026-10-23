@@ -95,6 +95,7 @@
     "save_knowledge",
     "delete_knowledge",
     "generate_writing_style",
+    "voice_profile",
     "list_patterns",
     "forget_pattern",
     "find_follow_ups",

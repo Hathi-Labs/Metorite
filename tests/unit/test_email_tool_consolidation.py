@@ -141,8 +141,9 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # cancel_scheduled_send. A schedule is its own act with its own card.
     # Chat parity wave 1 (owner, 2026-10-23, §22) adds copy_rules (a copy
     # between two mailboxes is its own act with its own card) and
-    # rule_guidance (the classifier guidance and the policies).
-    assert len(tools) == 55
+    # rule_guidance (the classifier guidance and the policies), and
+    # voice_profile (a store that feeds drafts, withheld in a held run).
+    assert len(tools) == 56
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",
