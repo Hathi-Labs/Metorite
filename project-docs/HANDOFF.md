@@ -6420,7 +6420,7 @@ line — never reclaim a number by deleting the other entry.
   - `morning_brief_enabled` in `update_assistant_settings`
   - `org_domains`, which changes who counts as "org" in the held-card classes
 - **Do this:** use a session in manual mode, because auto mode blocks an edit of the egress guard. Each outward rule act needs its own card that names each address and URL. A held chat must refuse it. Run a diff-reviewer on Opus before the merge.
-- **Authority:** owner request, 2026-10-23: "I should basically be able to control all aspects of the email application via the chat."
+- **Authority:** owner request, 2026-10-23. The owner asked to control every part of the Email app from the chat.
 - **Added:** 2026-10-23 · chat cards session
 
 # DONE — deleted, not archived
