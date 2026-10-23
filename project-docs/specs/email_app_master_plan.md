@@ -8760,6 +8760,18 @@ In `workbench/control_plane`, also run `npx tsc --noEmit` and `npx vitest run sr
 Then `POST /email/rules/copy` can keep a rule with a FORWARD to an own address, and D-EM-29 can
 change.
 
+##### The chat across several mailboxes (owner, 2026-10-23) — built
+
+Status: built on branch `email-multi-inbox-chat`. The fence is `tests/unit/test_email_chat_binding.py`.
+
+1. `query_inbox` takes no `account_id` in All inboxes. It reads the pooled mailboxes, and each line carries `[label · address]`.
+2. `find_priority` (needs reply, important) and `list_senders` with `view="cold"` walk each pooled mailbox, five at most. Their routes take one mailbox. Each section starts with `Mailbox: label · address`. The reads stay apart (D-EM-18).
+3. The sender routes add up the counts of the pooled mailboxes. A row names no mailbox, so the answer lists the mailboxes that the counts cover.
+4. `list_scheduled_sends` names the mailbox of each draft. `get_account_overview` and the digest preview keep one required mailbox and name it.
+5. `list_accounts` prints the sync state of each mailbox. A mailbox that needs reconnecting says that the member signs in again from the Email app, because OAuth needs a browser.
+6. New mail from a named mailbox adds "You usually write to X from Y" to the send card and the answer, when `sent-from` names another mailbox. The parameters of `send_email` do not change.
+7. `apply_settings_to_mailboxes` applies one settings change to several mailboxes behind one card. It is a separate tool because `egress.HELD_CARD_SEND_TOOLS` pins the parameters of `update_assistant_settings`. It refuses in a held run, and it takes no free text.
+
 ### 11.8 Open owner question
 
 - **Q-MB-1. How many mailboxes can one member connect?** Each mailbox adds a sync loop, Jev calls

@@ -332,6 +332,7 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "rule_guidance": {"account_id": BOX, "action": "add", "guidance": "Never Marketing"},
     "voice_profile": {"account_id": BOX, "action": "build"},
     "update_account": {"account_id": BOX, "name": "Work mail"},
+    "apply_settings_to_mailboxes": {"account_ids": [BOX], "auto_run": True},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 
