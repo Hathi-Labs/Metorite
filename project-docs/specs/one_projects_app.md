@@ -356,7 +356,7 @@ authority: the route still checks the member's own access.
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
-| **D-OP-10** | A delete shows the task's subtasks by name and asks: promote them to tasks, or delete them too. Promote is the selected default. Delete removes the whole subtree in one transaction, with one tombstone for each row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 |
+| **D-OP-10** | A delete shows the task's subtasks as a tree and lets the member mark each one: keep or delete. Every subtask is kept by default. A kept subtask under a deleted one moves up to its nearest kept ancestor. One transaction, with one tombstone for each deleted row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 (§9 OP-7) |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -517,30 +517,76 @@ X. Each moves its route from class X to class B or C in `manifest.py`.
    grant in the app. Fence: an R8 test with two members.
 4. The chat eval `evals/projects_ops/` gains one case for each new tool.
 
-### OP-7 — the subtask choice in the app and in the chat · AGENT-SAFE
+### OP-7 — choose which subtasks go, in the app and in the chat · AGENT-SAFE
 
 Owner, 2026-10-23, verbatim: "Sub tasks should also be deleted. The user
 should be shown that the task has what subtasks and if the subtasks should be
-promoted to tasks or be deleted as well."
+promoted to tasks or be deleted as well." Then: "What if you only want to
+delete some of subtasks? [...] select which subtasks to keep, and which
+subtasks to delete."
 
-**Scope.** D-OP-10. EA-6h builds the core: `delete_task_in(..., subtasks=)`,
-the query parameter on `DELETE /projects/tasks/{id}`, and the MCP field. OP-7
-builds the two other doors.
+**Scope.** D-OP-10. EA-6h builds the core:
+`delete_task_in(..., delete_ids=)`, the field on `DELETE /projects/tasks/{id}`,
+and `subtasks_to_delete` on the MCP tool. OP-7 builds the app and the chat.
 
-1. **The app.** The delete dialog of a task lists its subtasks by title, with
-   their count at each level. It offers two choices: "Keep them as tasks"
-   (selected) and "Delete them too". The button names the total, for example
-   "Delete 4 tasks".
-2. **The chat.** `delete_task` in `skill_projects/guarded.py` gains
-   `subtasks`. The card lists the subtasks and shows the two choices. The
-   impact line names the count that each choice deletes.
+**The rule of the core.**
+
+- Only the subtasks that the member marks are deleted. Deleting a subtask does
+  not delete its own subtasks unless the member marks them too.
+- A kept subtask moves up to its nearest kept ancestor. With no kept ancestor,
+  it moves to the parent of the deleted task. A task at the top has no parent,
+  so its kept subtasks become top-level tasks.
+- An id that is not a subtask of this task gets 422, and nothing changes.
+
+**The app dialog.**
+
+```
+┌ Delete "Launch the beta" ─────────────────────────┐
+│ This task has 5 subtasks. Mark the ones to delete. │
+│ The others stay, and move up one level.             │
+│                                                     │
+│ [Keep all]  [Delete all]                            │
+│                                                     │
+│ ☐ Write the release notes                           │
+│ ☑ Set up the beta list              ▸ 2 subtasks    │
+│    ☑ Import the waitlist                            │
+│    ☐ Write the invite email       → moves up        │
+│ ☐ Book the demo call                                │
+│                                                     │
+│ Deletes 3 tasks · keeps 3                           │
+│                    [Cancel]  [Delete 3 tasks]       │
+└─────────────────────────────────────────────────────┘
+```
+
+1. The dialog shows the subtasks as an indented tree, with each title and its
+   status. Every box is clear at first, so the default is the old behaviour.
+2. A tick on a parent ticks its subtasks too, and the member can clear any of
+   them again. Clearing a parent clears nothing below it.
+3. A kept row under a ticked parent shows "→ moves up", so the member sees
+   where it goes.
+4. "Keep all" and "Delete all" set every box at once.
+5. The summary line and the button name the counts. The task itself is always
+   in the count.
+6. On a phone the dialog is a bottom sheet (`Modal placement="sheet"`), and a
+   whole row is the tap target.
+7. A task with no subtasks shows the plain confirm and no tree.
+
+**The chat card.** `delete_task` in `skill_projects/guarded.py` gains
+`subtasks_to_delete`: "none", "all", or a list of ids. The card shows the same
+tree with check boxes, through the multi-select of the chat cards
+(`allow_multiple`). The model can pre-tick the subtasks that the member named,
+and the member confirms or changes the ticks on the card. The impact line
+names the counts.
 
 **Done when.**
-1. With "Delete them too", the task and every descendant are gone, and with
-   "Keep them as tasks" the old behaviour holds. Fence: vitest on the dialog,
+1. A mixed choice deletes only the marked subtasks, and a kept grandchild
+   moves up to its nearest kept ancestor. Fence: vitest on the dialog state,
    and `test_projects_agent_writes.py` for the card.
-2. The card and the dialog name each subtask. A task with no subtasks shows
-   no choice. Fence: vitest.
+2. A tick on a parent ticks its subtree, and a clear on a child keeps the
+   parent ticked. Fence: vitest.
+3. The counts in the summary, on the button and on the card match what the
+   route reports after the delete. Fence: vitest and the R8 tests of EA-6h.
+4. The visual-review skill passes on the dialog at 390 and 1280 px.
 
 ### OP-5 — one filter component, and the old shell retires · AGENT-SAFE
 
