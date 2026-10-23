@@ -6272,6 +6272,18 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive, 2026-10-19. `specs/engineering_practice.md` §7a
 - **Added:** 2026-10-23 · Knowledge session
 
+### H-393 · Fix the four P2s of the KB-9a review, and decide the question-text risk · [AGENT] · OWNER note
+- **Check:** `grep -nE "normali|ask_count|first_asked_at|reopen" apps/services/gateway/gateway/routes/knowledge/gaps.py` shows each fix, and `knowledge_base.md` §8.4 names the question-text rule. If both hold, delete this entry.
+- **Why:** the adversarial review of KB-9a (PR #1241) approved the slice with four P2 findings.
+- **Do this:**
+  1. The normaliser turns Indic vowel signs into spaces, so different Hindi or Tamil questions merge into one gap. Keep Unicode marks (category M) inside a word.
+  2. After 20 askers, a repeat ask by an unstored member still adds 1 to `ask_count`. Count a repeat once, or stop counting at the cap.
+  3. The 30-day window follows `last_asked_at`, so a chain of asks keeps it open. Measure it from `first_asked_at`, or store the asks per day.
+  4. A dismissed or answered gap never reopens. Add an undo for Dismiss, and reopen a gap whose answer page is deleted.
+- **OWNER note:** `sample_query` keeps the raw question, which can hold a name or a salary. Every Knowledge manager can read it. Decide whether to filter it, and record the rule in §8.4.
+- **Authority:** `specs/knowledge_base.md` §8.4
+- **Added:** 2026-10-23 · Knowledge session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
