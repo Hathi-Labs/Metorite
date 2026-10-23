@@ -263,3 +263,65 @@ async def test_create_rule_refuses_the_list_beside_a_forward(gw: Gateway) -> Non
                                    actions=[{"type": "ARCHIVE"}])
     assert out.startswith("Not saved.")
     assert gw.cards == [] and gw.writes == []
+
+
+# ── 3. Block a sender, and several senders in one call ───────────────────────
+
+
+async def test_block_is_a_status_of_set_sender_status(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/newsletters")] = {"ok": True, "archived": 4}
+    out = await agents.set_sender_status(BOX, "news@list.test", "block")
+    [card] = gw.cards
+    assert card["title"] == f"Block news@list.test in {BOX_TEXT}?"
+    assert "Nothing is sent to the sender" in card["detail"]
+    assert gw.writes == [("POST", "/email/newsletters", {
+        "account_id": BOX, "email": "news@list.test", "status": "AUTO_ARCHIVED"})]
+    assert "4 email(s) were archived" in out
+
+
+async def test_several_senders_ask_one_card_that_lists_each(gw: Gateway) -> None:
+    gw.answer = False
+    out = await agents.set_sender_status(
+        BOX, status="block", emails=["a@x.test", "b@y.test", "A@x.test"])
+    [card] = gw.cards
+    assert card["title"] == f"Block 2 senders in {BOX_TEXT}?"
+    assert card["context"].splitlines() == ["Each sender:", "- a@x.test", "- b@y.test"]
+    assert gw.writes == [] and out.startswith("Cancelled")
+    gw.answer = True
+    await agents.set_sender_status(BOX, status="cold", emails=["a@x.test", "b@y.test"])
+    assert [b["from_email"] for _m, p, b in gw.writes if p == "/email/cold-senders"] == [
+        "a@x.test", "b@y.test"]
+
+
+async def test_a_sender_status_with_no_sender_changes_nothing(gw: Gateway) -> None:
+    out = await agents.set_sender_status(BOX, status="block")
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_bulk_over_several_senders_counts_each_and_asks_once(gw: Gateway) -> None:
+    counts = {"a@x.test": 3, "b@y.test": 0, "c@z.test": 5}
+
+    def bulk(body: Any, _params: Any) -> Any:
+        if body.get("dry_run"):
+            return {"matched": counts[body["sender_email"]]}
+        return {"affected": counts[body["sender_email"]]}
+
+    gw.answers[("POST", "/email/messages/bulk")] = bulk
+    out = await agents.bulk_manage_inbox(
+        "archive", sender_emails=["a@x.test", "b@y.test", "c@z.test"])
+    [card] = gw.cards
+    assert card["title"] == "Archive about 8 emails from 2 senders?"
+    assert card["context"].splitlines() == [
+        "Each sender, with its count:", "- a@x.test: about 3", "- c@z.test: about 5"]
+    acts = [b for _m, _p, b in gw.writes if not b.get("dry_run")]
+    assert [b["sender_email"] for b in acts] == ["a@x.test", "c@z.test"]
+    assert out == "Archive: 8 emails changed, from 2 senders."
+
+
+async def test_bulk_over_several_senders_writes_nothing_on_a_no(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/messages/bulk")] = {"matched": 2}
+    gw.answer = False
+    await agents.bulk_manage_inbox("trash", sender_emails=["a@x.test", "b@y.test"])
+    assert len(gw.cards) == 1
+    assert all(b.get("dry_run") for _m, _p, b in gw.writes)

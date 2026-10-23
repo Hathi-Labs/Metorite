@@ -507,7 +507,7 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("manage_inbox", "action"): ["archive", "trash", "read", "unread", "star",
                                  "unstar", "move", "label"],
     ("run_rules", "scope"): ["new", "past"],
-    ("set_sender_status", "status"): ["cold", "not_cold", "keep"],
+    ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
     ("digest", "period"): ["day", "week"],

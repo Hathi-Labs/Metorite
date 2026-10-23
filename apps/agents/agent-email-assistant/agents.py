@@ -5305,6 +5305,7 @@ async def bulk_manage_inbox(
     older_than_days: int | None = None,
     only_read: bool = False,
     account_id: str | None = None,
+    sender_emails: list[str] | None = None,
 ) -> str:
     """Act on ALL mail that matches a filter, with no list of ids and no
     cap: "mark everything from news@acme.com as read", "archive the read
@@ -5314,6 +5315,8 @@ async def bulk_manage_inbox(
     Args:
         action: archive | trash | read | unread | star | unstar
         sender_email: only mail from this address.
+        sender_emails: several senders at once ("archive all mail from these
+            four senders"). One card lists each sender with its count.
         folder: only mail in this folder, for example "inbox".
         older_than_days: only mail older than this many days.
         only_read: only mail that is already read.
@@ -5323,6 +5326,14 @@ async def bulk_manage_inbox(
     count on a card. Nothing changes on a "no"."""
     if action not in _BULK_VERBS:
         return f"Nothing changed. action must be one of: {', '.join(_BULK_VERBS)}."
+    if sender_emails:
+        senders, bad = _sender_list(sender_email, sender_emails)
+        if bad:
+            return bad
+        if len(senders) > 1:
+            return await _bulk_by_senders(
+                action, senders, folder, older_than_days, only_read, account_id)
+        sender_email = senders[0]
     filters: dict[str, Any] = {}
     if (sender_email or "").strip():
         filters["sender_email"] = sender_email.strip()
@@ -5361,6 +5372,57 @@ async def bulk_manage_inbox(
         return refusal
     res = await _post("/email/messages/bulk", {"action": action, **filters})
     return f"{_BULK_VERBS[action]}: {int((res or {}).get('affected') or 0)} emails changed."
+
+
+async def _bulk_by_senders(
+    action: str, senders: list[str], folder: str | None,
+    older_than_days: int | None, only_read: bool, account_id: str | None,
+) -> str:
+    """``bulk_manage_inbox`` over several senders: a count for each sender,
+    ONE card that lists each sender and its count, then one act for each."""
+    common: dict[str, Any] = {}
+    if (folder or "").strip():
+        common["folder"] = folder.strip()
+    if older_than_days:
+        common["older_than_days"] = max(1, int(older_than_days))
+    if only_read:
+        common["only_read"] = True
+    if account_id:
+        common["account_id"] = account_id
+    counts: list[tuple[str, int]] = []
+    for addr in senders:
+        res = await _post("/email/messages/bulk", {
+            "action": action, "dry_run": True, "sender_email": addr, **common})
+        counts.append((addr, int((res or {}).get("matched") or 0)))
+    todo = [(a, n) for a, n in counts if n]
+    if not todo:
+        return "Nothing matches that filter that is not already in that state."
+    total = sum(n for _a, n in todo)
+    box = f" in {await _named(account_id)}" if account_id else " in your pooled mailboxes"
+    where = []
+    if "folder" in common:
+        where.append(f" in the folder '{_card_name(common['folder'])}'")
+    if "older_than_days" in common:
+        where.append(f" older than {common['older_than_days']} days")
+    if only_read:
+        where.append(", already read")
+    lines = ["Each sender, with its count:"] + [
+        f"- {_card_text(a, _TARGET_LIMIT)}: about {n}" for a, n in todo]
+    refusal = await _card_refusal(
+        f"{_BULK_VERBS[action]} about {total} emails from {len(todo)} senders?",
+        f"Each email from a sender below{''.join(where)}{box}. The count can "
+        "change if new mail comes before the act runs.",
+        "Cancelled. Nothing changed.",
+        "\n".join(lines),
+    )
+    if refusal:
+        return refusal
+    done = 0
+    for addr, _n in todo:
+        res = await _post("/email/messages/bulk", {
+            "action": action, "sender_email": addr, **common})
+        done += int((res or {}).get("affected") or 0)
+    return f"{_BULK_VERBS[action]}: {done} emails changed, from {len(todo)} senders."
 
 
 # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────────
@@ -5733,14 +5795,45 @@ async def set_cold_sender(
     return f"{from_email} {verb}."
 
 
+#: The most senders that one call of a sender tool changes, so the card can
+#: list each one.
+_SENDER_BATCH_MAX = 50
+
+
+def _sender_list(email: str | None, emails: list[str] | None) -> tuple[list[str], str]:
+    """``(senders, "")``: *email* and each of *emails*, once each, in order.
+    Else ``([], refusal)``."""
+    seen: dict[str, str] = {}
+    for raw in [email or "", *(emails or [])]:
+        addr = str(raw or "").strip()
+        if addr and addr.lower() not in seen:
+            seen[addr.lower()] = addr
+    senders = list(seen.values())
+    if not senders:
+        return [], "Nothing changed. Name a sender in `email`, or several in `emails`."
+    if len(senders) > _SENDER_BATCH_MAX:
+        return [], (f"Nothing changed. One call changes {_SENDER_BATCH_MAX} senders "
+                    "at most. Split the list.")
+    return senders, ""
+
+
 @_annotate_risk(open_world=False)
-async def set_sender_status(account_id: str, email: str, status: str) -> str:
+async def set_sender_status(
+    account_id: str, email: str = "", status: str = "",
+    emails: list[str] | None = None,
+) -> str:
     """Set how a sender is treated, by ``status``:
 
       • ``cold``     — flag as a cold/unsolicited sender (the blocker handles it).
       • ``not_cold`` — clear the cold flag ("this sender is NOT cold").
       • ``keep``     — keep receiving their mail / approve them (undo a block or
         unsubscribe; also called 'approved').
+      • ``block``    — block the sender: the provider archives each new mail
+        from them, and their mail in the inbox is archived now. Nothing is
+        sent to the sender. Undo it with ``keep``.
+
+    Pass one sender in ``email``, or several in ``emails`` ("block these
+    five senders"). One card lists each sender.
 
     (To actually unsubscribe + archive a newsletter, use unsubscribe_sender.)
     It shows the user a card first."""
@@ -5759,19 +5852,50 @@ async def set_sender_status(account_id: str, email: str, status: str) -> str:
             "keep", "Keep the email of {who} in {box}?",
             "Marks the sender approved. This undoes a block or an unsubscribe "
             "of the sender.")
+    elif s in ("block", "blocked", "auto_archive", "auto_archived"):
+        act, title, detail = (
+            "block", "Block {who} in {box}?",
+            "The provider archives each new email from this sender, and the "
+            "email of the sender in the inbox is archived now. Nothing is sent "
+            "to the sender.")
     else:
-        return "status must be one of: cold | not_cold | keep."
+        return "status must be one of: cold | not_cold | keep | block."
+    senders, bad = _sender_list(email, emails)
+    if bad:
+        return bad
     # EM-G11c1: the status decides what the blocker does with later mail.
     box = await _named(account_id)
+    many = len(senders) > 1
+    who = f"{len(senders)} senders" if many else _card_text(senders[0], 120)
     refusal = await _card_refusal(
-        title.format(who=_card_text(email, 120), box=box), detail,
-        "Cancelled — the sender was not changed.",
+        title.format(who=who, box=box),
+        detail.replace("this sender", "each sender").replace("the sender", "each sender")
+        if many else detail,
+        "Cancelled — the sender was not changed." if not many
+        else "Cancelled — no sender was changed.",
+        "Each sender:\n" + "\n".join(f"- {_card_text(x, _TARGET_LIMIT)}" for x in senders)
+        if many else "",
     )
     if refusal:
         return refusal
-    if act == "keep":
-        return await keep_newsletter(account_id, email)
-    return await set_cold_sender(account_id, email, is_cold=act == "cold")
+    lines: list[str] = []
+    for addr in senders:
+        try:
+            if act == "keep":
+                lines.append(await keep_newsletter(account_id, addr))
+            elif act == "block":
+                res = await _post("/email/newsletters", {
+                    "account_id": account_id, "email": addr, "status": "AUTO_ARCHIVED",
+                }) or {}
+                lines.append(f"Blocked {addr}: new mail is archived, and "
+                             f"{int(res.get('archived') or 0)} email(s) were archived now.")
+            else:
+                lines.append(await set_cold_sender(account_id, addr, is_cold=act == "cold"))
+        except GatewayError as exc:
+            if not many:
+                raise
+            lines.append(f"{addr}: not changed ({exc.detail or exc.status}).")
+    return "\n".join(lines)
 
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
