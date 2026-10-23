@@ -304,7 +304,8 @@ async def test_a_held_run_saves_a_reply_draft(gw, held) -> None:
     assert "saved to Drafts" in out, out
     assert gw.cards == []
     assert gw.posts == [("/email/draft-reply",
-                         {"account_id": BOX, "message_id": "m-1", "create_draft": True})]
+                         {"account_id": BOX, "message_id": "m-1", "create_draft": True,
+                          "auto_reply_all": True})]
 
 
 async def test_a_held_run_saves_a_label_rule(gw, held) -> None:

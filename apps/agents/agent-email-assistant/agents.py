@@ -2083,7 +2083,10 @@ def _draft_line(draft_id: Any, subject: Any) -> str:
     did = str(draft_id or "").strip()
     if not did:
         return ""
-    subj = " ".join(str(subject or "").split())[:120] or "(no subject)"
+    import textwrap
+
+    subj = textwrap.shorten(" ".join(str(subject or "").split()), 120,
+                            placeholder="...") or "(no subject)"
     return f"Draft: draft_id={did} | subject: {subj}"
 
 

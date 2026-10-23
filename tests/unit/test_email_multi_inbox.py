@@ -480,7 +480,7 @@ async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:
     out = await agents.draft_reply("m1", "box-b")
     # A chat draft saves to Drafts (owner, 2026-10-22), in the mailbox of the mail.
     assert chat.posts == [("/email/draft-reply", {
-        "account_id": "box-a", "message_id": "m1", "create_draft": True})]
+        "account_id": "box-a", "message_id": "m1", "create_draft": True, "auto_reply_all": True})]
     # The first line names the mailbox, and the chat card reads its id.
     assert out.split("\n", 1)[0] == (
         "Draft from Fracktal · dana@fracktal.in (mailbox box-a):")
