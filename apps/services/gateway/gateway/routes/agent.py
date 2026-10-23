@@ -3175,6 +3175,10 @@ async def run_agent_stream_endpoint(
         # The web chat draws each card (`AgentChat`, `useAgentChat` and
         # `confirmationQueue.ts` read the CUSTOM card events of this stream).
         shows_cards=True,
+        # WS-63 PZ-2 (personalization.md §5.1): the member's own profile
+        # block goes only into a solo run. The same room bit that
+        # memory_preread reads, from the server's room, never the body.
+        solo_room=not _room_is_shared,
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
