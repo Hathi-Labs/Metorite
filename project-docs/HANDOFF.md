@@ -6138,6 +6138,98 @@ line — never reclaim a number by deleting the other entry.
   `email_send_later`
 - **Added:** 2026-10-21 · email chat collaboration session
 
+### H-380 · The Projects chat cannot attach a file to a task (WS-46 P10, G21) · [AGENT]
+- **Check:** `grep -n "attachments\", \"\", \"X\"" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit means the upload route is still class X, so the gap is open.
+- **Why:** the owner wants the chat to do all that the Projects screens do
+  (2026-10-22). The manifest reason "The chat has no file input" has been
+  false since H-229.
+- **Do this:** build slice P10 of `projects_agent_parity.md` §12. Add a class B
+  tool that sends a file of this thread to `POST /projects/tasks/{id}/attachments`.
+  Add a multipart request to `client.py`. Move the route from X to B, and
+  remove `attachmentsApi.upload` from `UI_PLANNED`.
+- **Authority:** `projects_agent_parity.md` §3.3 G21, §12 P10
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-381 · A chat plan cannot make subprojects or repeat rules (WS-46 P8, G19, G20) · [AGENT]
+- **Check:** `uv run python -m evals.projects_ops.run --scripted`. PO-3 reads
+  `xfail` while P8 and P9 are open.
+- **Why:** `propose_plan` writes one node, and `capture_intake` and
+  `create_personal_task` take no repeat rule.
+- **Do this:** build slice P8 of `projects_agent_parity.md` §12.
+- **Authority:** `projects_agent_parity.md` §3.3 G19 and G20, §12 P8
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-382 · The Projects chat does not make tasks from email or CRM context (WS-46 P9, G10, G11) · [AGENT]
+- **Check:** `grep -n "G10\|G11" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit in `FIELD_PLANNED` means `source` and `source_ref` are not sent.
+- **Why:** a task made from an email does not record where it came from.
+- **Do this:** build slice P9 of `projects_agent_parity.md` §12, then PO-3.
+- **Authority:** `projects_agent_parity.md` §3.3, §10, §12 P9
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-383 · The Projects chat has no agent-run tools (WS-55 EA-12e, G23) · [AGENT]
+- **Check:** `grep -n "EA-12e" apps/skills/skill-projects/skill_projects/manifest.py`.
+  A hit in `PLANNED` means the four tools are not built.
+- **Why:** an outside agent can start, report and finish a run on a task over
+  MCP. The in-product chat cannot.
+- **Do this:** build `agent_runs`, `start_agent_run`, `post_agent_activity` and
+  `finish_agent_run` as chat tools. Clear their `PLANNED` and `FIELD_PLANNED`
+  rows. `approve_task_archive` stays out: only the member answers it.
+- **Authority:** `external_agent_access.md` §12.1 · `projects_agent_parity.md` §3.3 G23
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-384 · Run the Projects eval with the live model, and add tasks for delete and show_view · [OWNER]
+- **Check:** `ls evals/projects_ops/results/`. No run made with `--tier` means
+  the sweep has never run. `grep -n "show_view\|delete_task" evals/projects_ops/tasks.py`
+  shows whether the new tasks exist.
+- **Why:** the scripted run proves the tools. Only the model sweep proves that
+  the model picks them. The spec makes the sweep on the production Router
+  owner-gated, because it costs money.
+- **Do this (agent):** add eval tasks for "delete this task" (one card, one
+  `DELETE`), "remove it" (asks archive or delete) and "show overdue by owner"
+  (one `show_view`, no write). **Do this (owner):** choose the tier, then run
+  `uv run python -m evals.projects_ops.run --tier <chosen> --repeat 3`.
+- **Authority:** `evals/projects_ops/README.md` · `projects_agent_parity.md` §11
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-385 · Decide which excluded Projects acts move into the chat · [OWNER]
+- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sum(r.cls=='X' for r in m.MANIFEST))"`
+  from `apps/skills/skill-projects`. It printed 38 on 2026-10-22.
+- **Why:** the owner wants the chat to do all that the screens do. Some acts
+  are left out of the chat by a past decision. Each one needs the owner's
+  answer before an agent builds it.
+- **Do this (owner):** answer yes or no for each. Grant writes (D-PM-40).
+  Report recipients and schedule (§9.12.8). The nudge (Q3). The CSV export.
+  The file import. The day planner (Calendar's). Your own areas in My Tasks:
+  create, rename, delete. Bulk delete.
+- **Authority:** `skill_projects/manifest.py` class X rows · `projects_agent_parity.md` §3.3
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-386 · Try the three Projects chat changes of 2026-10-22 in a browser · [OWNER]
+- **Check:** the owner confirms each item below on `app.metorite.com`. An agent
+  cannot sign in with Google or Microsoft.
+- **Why:** #1218, #1223 and #1234 shipped with green tests, but nobody looked
+  at them on a real page.
+- **Do this (owner):** (1) archive a project. It leaves the tree and shows
+  under Archived at the foot of the rail. (2) Ask the chat to delete a task. An
+  approval card shows, and Approve deletes it. (3) Ask "show overdue tasks
+  grouped by owner on the board". The page switches.
+- **Authority:** PRs #1218, #1223 and #1234
+- **Added:** 2026-10-23 · Projects chat parity session
+
+### H-387 · Check that the Projects tools run from the assistant outside /projects · [AGENT]
+- **Check:** nobody has measured it. Delete this entry when the answer is
+  recorded in `projects_agent_parity.md`.
+- **Why:** the one assistant sits in the top bar of every app (D99). A member
+  on `/tasks` or `/calendar` may not reach the Projects tools, and
+  `show_view` only acts on an open Projects page.
+- **Do this:** find which agent the top-bar assistant runs on each page, and
+  whether it holds the `skill_projects` tools. Record the answer, and open a
+  slice for any gap.
+- **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
+- **Added:** 2026-10-23 · Projects chat parity session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
