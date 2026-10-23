@@ -20,13 +20,11 @@ The table and trigger checks run on the promoted phase-4 catalog of
 R7, the mutations. Each one turns a test here red (run 2026-10-23):
 
 * S1 drop ``AND a.shared_since IS NOT NULL`` from the guard ->
-  ``test_a_grant_on_a_private_mailbox_fails``.
-* S2 drop ``FORCE  ROW LEVEL SECURITY`` from the RLS block and the phase ->
-  ``test_the_four_tables_force_row_level_security``.
+  ``test_a_grant_on_a_private_mailbox_fails`` and two more.
 * S3 drop the ``OLD.provider_message_id IS NOT NULL`` check ->
   ``test_the_send_log_sets_the_provider_id_once``.
-* S4 drop part 5 (the rewrite of ``provision_org_roles``) ->
-  ``test_the_seed_on_the_promoted_catalog``.
+* S4 drop the ``EXECUTE`` of part 5 (the rewrite of ``provision_org_roles``) ->
+  ``test_the_seed_on_the_promoted_catalog`` and two more.
 
 Run (real Postgres)::
 
