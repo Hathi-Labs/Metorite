@@ -21,10 +21,7 @@ import {
   buildEmailAssistantPersona,
   type PersonaAccountSettings,
 } from "@/app/email/lib/emailAssistantPersona";
-import { getAssistantSettings, listEmailAccounts } from "@/app/email/lib/api";
-import { chatMailboxOptions, chatScope, chatSettingsRead, type ChatScopePick } from "@/app/email/lib/chatScope";
-import { readPreferredAccountId } from "@/app/email/lib/emailStore";
-import type { EmailAccount } from "@/app/email/lib/types";
+import { getAssistantSettings } from "@/app/email/lib/api";
 import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
 import { AppTopBar } from "@/components/AppTopBar";
@@ -646,38 +643,34 @@ function ChatPageInner() {
   // that the email app provides (the open-email context is inherently
   // email-app-only).  Fetch the user's accounts when the active session is the
   // email-assistant and build the SHARED persona the email app also uses.
-  const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
-  // The scope that the email pane last held. /chat reads it, never writes it.
-  const [emailPageScope, setEmailPageScope] = useState<string | null>(null);
+  const [emailAccounts, setEmailAccounts] = useState<
+    Array<{ id: string; label?: string | null; email_address?: string | null }>
+  >([]);
   const activeAgentName = sessions.find((s) => s.id === activeSessionId)?.agentName;
   useEffect(() => {
     if (activeAgentName !== "email-assistant") return;
     let cancelled = false;
-    listEmailAccounts()
-      .then((d) => {
-        if (cancelled) return;
-        setEmailAccounts(d);
-        setEmailPageScope(readPreferredAccountId());
-      })
+    fetch("/api/email/accounts")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d) => { if (!cancelled && Array.isArray(d)) setEmailAccounts(d); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [activeAgentName]);
-  // The scope of the email chat is the scope of the email pane, by the same
-  // rule (chatScope): the remembered scope, else All inboxes for two or more
-  // pooled mailboxes, else the one mailbox. The composer's picker holds a
-  // pick for this chat only. A separate mailbox is its own option and never
-  // sits inside All inboxes.
-  const [emailScopePick, setEmailScopePick] = useState<ChatScopePick | null>(null);
-  const {
-    allInboxes: emailChatAllInboxes,
-    accountId: emailChatAccountId,
-    pickerId: emailPickerId,
-  } = chatScope(emailAccounts, emailPageScope, emailScopePick);
-  const pickEmailScope = useCallback(
-    (scope: string) => setEmailScopePick({ against: emailPageScope, scope }),
-    [emailPageScope],
+  // Which mailbox the email assistant is working on. The chat app has no inbox
+  // sidebar, so this used to resolve only when the user had exactly ONE account
+  // — with several, the assistant ran unconfigured and had to ask. The
+  // composer's mailbox picker supplies the choice instead; we default to the
+  // first account so a multi-account user still starts somewhere concrete.
+  const [emailMailboxId, setEmailMailboxId] = useState<string | null>(null);
+  const emailChatAccountId = emailMailboxId ?? emailAccounts[0]?.id ?? null;
+  const emailMailboxOptions = useMemo(
+    () =>
+      emailAccounts.map((a) => ({
+        id: a.id,
+        label: a.email_address || a.label || a.id,
+      })),
+    [emailAccounts],
   );
-  const emailMailboxOptions = useMemo(() => chatMailboxOptions(emailAccounts), [emailAccounts]);
   // No setting picks the email chat's tier (D-EM-61). A covered
   // email-assistant runs on the platform's tier, so the chat passes no model
   // (WS-45 S4, D90). Every other case runs on EMAIL_CHAT_TIER, which our code
@@ -688,15 +681,9 @@ function ChatPageInner() {
   const [emailAcctSettings, setEmailAcctSettings] =
     useState<PersonaAccountSettings | null>(null);
   useEffect(() => {
-    if (activeAgentName !== "email-assistant") return;
-    // All inboxes reads no settings: each mailbox has its own (D-EM-24).
-    const read = chatSettingsRead(
-      { allInboxes: emailChatAllInboxes, accountId: emailChatAccountId },
-      getAssistantSettings,
-    );
-    if (!read) { setEmailAcctSettings(null); return; }
+    if (activeAgentName !== "email-assistant" || !emailChatAccountId) return;
     let cancelled = false;
-    read
+    getAssistantSettings(emailChatAccountId)
       .then((s) => {
         if (cancelled) return;
         setEmailAcctSettings({
@@ -708,7 +695,7 @@ function ChatPageInner() {
       })
       .catch(() => { /* no standing orders on lookup failure */ });
     return () => { cancelled = true; };
-  }, [activeAgentName, emailChatAccountId, emailChatAllInboxes]);
+  }, [activeAgentName, emailChatAccountId]);
   // Declared after the settings it reads (the persona carries the active
   // account's standing configuration, not just the account list).
   const emailAssistantPersona = useMemo(
@@ -717,11 +704,10 @@ function ChatPageInner() {
         ? buildEmailAssistantPersona({
             accounts: emailAccounts,
             selectedAccountId: emailChatAccountId,
-            allInboxes: emailChatAllInboxes,
-            settings: emailChatAllInboxes ? null : emailAcctSettings,
+            settings: emailAcctSettings,
           })
         : undefined,
-    [activeAgentName, emailAccounts, emailChatAccountId, emailChatAllInboxes, emailAcctSettings],
+    [activeAgentName, emailAccounts, emailChatAccountId, emailAcctSettings],
   );
   const [showPicker, setShowPicker] = useState(false);
   // Desktop: collapsible side panel.  Mobile: drawer-based (never a sidebar).
@@ -1299,8 +1285,8 @@ function ChatPageInner() {
                     ? emailMailboxOptions
                     : undefined
                 }
-                activeMailboxId={emailPickerId}
-                onMailboxChange={pickEmailScope}
+                activeMailboxId={emailChatAccountId}
+                onMailboxChange={setEmailMailboxId}
                 // Email-assistant locks to EMAIL_CHAT_TIER (parity with the
                 // email app, D-EM-61); all other agents keep the generic
                 // picker. WS-45 S4: a covered email-assistant gets neither prop.
