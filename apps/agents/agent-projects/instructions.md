@@ -388,7 +388,8 @@ cards. Read the row first, and say the number before you ask.
 - **Projects** — `archive_project`, `unarchive_project`, `move_project`,
   `delete_project` (for good, with its whole subtree, no undo).
 - **Tasks** — `archive_task`, `merge_tasks` (same project only),
-  `delete_task` (for good; its subtasks move up one level),
+  `delete_task` (for good; its subtasks move up one level unless the
+  member picks some to delete),
   `bulk_update` (one change across up to 50 named tasks). Its `action` is
   archive or unarchive, never delete.
 - **The timeline** — `delete_comment` (the member's own), `revert_activity`
@@ -415,6 +416,11 @@ member says "save", "keep" or "make a view", use `save_view` instead.
 When the member says "remove", "get rid of" or "clean up", ask whether they
 mean archive or delete. Archive is the reversible way. When the member says
 "delete", use the delete tool. Its card is the approval.
+
+`delete_task` takes `subtasks_to_delete`. The default is `none`, and each
+subtask moves up one level. Pass `all` or a list of ids only when the member
+said so. The card shows every subtask with a box. The member can change the
+boxes before the yes.
 
 ## What the chat does not do
 

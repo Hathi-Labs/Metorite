@@ -55,6 +55,7 @@ from skill_projects.writes import (
     CANCELLED,
     CARD_CONTEXT_LIMIT,
     CARD_NOTE,
+    FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
     _clears,
@@ -325,25 +326,137 @@ async def delete_project(project_id: str) -> str:
     )
 
 
+#: The most rows one card holds (``acb_skills.ask_tools.MAX_CARD_ROWS``). The
+#: task is the first row, so a task with more subtasks than this draws no
+#: tick boxes, and the choice is "none" or "all".
+DELETE_CARD_ROWS = 100
+
+
+#: The most ids one delete sends in its query. Same number as the route's
+#: ``MAX_QUERY_DELETE_IDS``. More than this and "all" sends a flag instead.
+DELETE_QUERY_IDS = 200
+
+
+def _subtree_order(subs: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
+    """The visible subtasks depth first, each parent before its children.
+    A row whose parent the member cannot see counts as a child of the task."""
+    ids = {str(r["id"]) for r in subs}
+    kids: dict[str, list[dict[str, Any]]] = {}
+    for r in subs:
+        p = str(r.get("parent_task_id") or "")
+        kids.setdefault(p if p in ids and p != str(r["id"]) else root, []).append(r)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(pid: str) -> None:
+        for r in kids.get(pid, []):
+            rid = str(r["id"])
+            if rid not in seen:
+                seen.add(rid)
+                out.append(r)
+                walk(rid)
+
+    walk(root)
+    out.extend(r for r in subs if str(r["id"]) not in seen)
+    return out
+
+
+def _subtree_depths(subs: list[dict[str, Any]], root: str) -> dict[str, int]:
+    """Each visible subtask's depth below the task. A row whose parent the
+    member cannot see counts as a child of the task, as the app draws it."""
+    ids = {str(r["id"]) for r in subs}
+    parent = {str(r["id"]): str(r.get("parent_task_id") or "") for r in subs}
+    depth: dict[str, int] = {}
+    for rid in parent:
+        d, cur, seen = 1, parent[rid], {rid}
+        while cur in ids and cur != root and cur not in seen:
+            seen.add(cur)
+            d += 1
+            cur = parent[cur]
+        depth[rid] = d
+    return depth
+
+
+def _subtasks_choice(value: str, offered: set[str]) -> frozenset[str] | str:
+    """``subtasks_to_delete`` as ids: "none", "all", or a list of ids.
+
+    A wrong word or an id that is not a visible subtask is a refusal text
+    and no card. The route checks the ids again (422 ``subtask_not_below``).
+    """
+    raw = str(value or "none").strip()
+    word = raw.lower()
+    if word in ("", "none"):
+        return frozenset()
+    if word == "all":
+        return frozenset(offered)
+    ids = frozenset(uuid_of(part, "subtasks_to_delete") for part in _split(raw.replace("\n", ",")))
+    if ids - offered:
+        return (
+            "subtasks_to_delete names an id that is not a subtask of this task that you "
+            "can see. Read task_detail for the subtasks, or pass none or all. "
+            "Nothing was changed."
+        )
+    return ids
+
+
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
-async def delete_task(task_id: str) -> str:
+async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
     """Delete one task for good, with its comments, attachments and links.
-    ONE task per call. There is no undo. Its subtasks are not deleted: they
-    move up one level, to this task's own parent. The card carries the title,
-    the lane and what happens to the subtasks. When the member only wants it
-    out of the way, archive_task is the reversible act."""
+    ONE task per call. There is no undo. subtasks_to_delete is none (the
+    default: every subtask moves up one level, to this task's own parent),
+    all (every subtask the member can see is deleted too), or a comma list
+    of subtask ids to delete. The others move up. The card shows the subtask
+    tree with a box for each. Your choice is ticked, and the member may change
+    the ticks before the yes. Subtasks the member cannot see are never deleted.
+    When the member only wants it out of the way, archive_task is the
+    reversible act."""
     if _many(task_id):
         return f"delete_task {ONE_ACT}"
     tid, task = await _task(task_id)
-    count = await _subtask_counts(tid)
+    tree = (await get(f"/projects/tasks/{tid}/subtree")) or {}
+    subs: list[dict[str, Any]] = [r for r in tree.get("subtasks") or [] if r.get("id")]
+    hidden = int(tree.get("hidden") or 0)
+    offered = {str(r["id"]) for r in subs}
+    chosen = _subtasks_choice(subtasks_to_delete, offered)
+    if isinstance(chosen, str):
+        return chosen
     lane = await _status_name(task)
-    tail = (
-        f"{_subtasks_phrase(count.total, 'move up', count.capped)} up one level, not deleted"
-        if count.total
-        else "no subtasks"
-    )
+    total = len(subs)
+    ticks = len(subs) + 1 <= DELETE_CARD_ROWS
+    if total and not ticks and chosen not in (frozenset(), frozenset(offered)):
+        return (
+            f"This task has {total} subtasks, too many for tick boxes on one card. "
+            "Pass subtasks_to_delete as none or all. Nothing was changed."
+        )
+    if total:
+        tail = (
+            f"{len(chosen)} of {_plural(total, 'subtask')} marked to delete, "
+            f"{total - len(chosen)} would move up one level"
+        )
+        if hidden:
+            tail += f" · {_plural(hidden, 'subtask')} hidden from you, kept and moved up"
+    else:
+        tail = "no subtasks" if not hidden else (
+            f"{_plural(hidden, 'subtask')} hidden from you, kept and moved up"
+        )
     impact = f"1 task deleted for good from lane {lane} · {tail}"
-    if not await _confirm(
+    rows = None
+    if total and ticks:
+        depth = _subtree_depths(subs, tid)
+        rows = [{"id": tid, "label": f"Delete this task {_ref(task)}", "hint": f"lane {lane}",
+                 "checked": True}]
+        for r in _subtree_order(subs, tid):
+            rid = str(r["id"])
+            state = str(r.get("status_name") or "")
+            if r.get("archived"):
+                state += " · archived" if state else "archived"
+            rows.append({
+                "id": rid,
+                "label": "— " * (depth[rid] - 1) + data(r.get("title")),
+                "hint": state,
+                "checked": rid in chosen,
+            })
+    answer = await _confirm(
         title="Delete this task for good?",
         detail=f"{_ref(task)} · {impact}",
         context=_guard_card(
@@ -351,16 +464,47 @@ async def delete_task(task_id: str) -> str:
             {
                 "task": _ref(task),
                 "status": lane,
+                "subtasks": (
+                    "a ticked box deletes that subtask. A subtask left unticked stays and "
+                    "moves up to its nearest kept parent. Untick the first box to cancel"
+                    if rows
+                    else (
+                        "all of them are deleted too" if total and chosen
+                        else "none is deleted; each moves up one level"
+                    )
+                ),
                 "undo": "none; deleting is permanent. Archiving is the reversible way",
             },
         ),
-    ):
+        rows=rows,
+    )
+    if rows is not None:
+        # The task is the first row, so a yes always ticks it. A card where
+        # the member cleared it is no yes to the delete.
+        if not isinstance(answer, frozenset) or tid not in answer:
+            return CANCELLED
+        if not answer <= {r["id"] for r in rows}:
+            return FORGED_BATCH_ROWS
+        chosen = frozenset(answer - {tid})
+    elif not answer:
         return CANCELLED
-    result = (await delete(f"/projects/tasks/{tid}")) or {}
-    moved = int((result.get("cascaded") or {}).get("subtasks_promoted") or 0)
+    if len(chosen) > DELETE_QUERY_IDS:
+        # Only "all" gets here: a card with tick boxes holds under 100 rows,
+        # and a wider tree refuses any list above. A flag has no id list to
+        # overrun the URL.
+        params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
+    else:
+        params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
+    result = (await delete(f"/projects/tasks/{tid}", params)) or {}
+    gone = result.get("cascaded") or {}
+    deleted = int(gone.get("subtasks_deleted") or 0)
+    moved = int(gone.get("subtasks_promoted") or 0)
+    unseen = int(gone.get("subtasks_kept_hidden") or 0)
     return (
         f"Deleted {_ref(task)}."
+        + (f" {_plural(deleted, 'subtask')} deleted too." if deleted else "")
         + (f" {_plural(moved, 'subtask')} moved up one level." if moved else "")
+        + (f" Kept, because hidden from you: {_plural(unseen, 'subtask')}." if unseen else "")
         + f"\n  task_id: {tid}"
     )
 

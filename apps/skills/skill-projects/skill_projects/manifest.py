@@ -161,6 +161,8 @@ MANIFEST: tuple[Route, ...] = (
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
+    # D-OP-10 (OP-7): the subtasks a delete card offers, hidden ones counted.
+    Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C"),
     Route("POST", "/projects/tasks", "create_task", "B"),
     Route("PATCH", "/projects/tasks/{task_id}", "update_task", "B"),
     Route("POST", "/projects/tasks/{task_id}/move", "move_task", "B"),
@@ -547,6 +549,8 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "bulk_update": frozenset({"my_work"}),
     # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
     "task_detail": frozenset({"recurrence"}),
+    # D-OP-10 (OP-7): the card lists the subtasks it offers before it asks.
+    "delete_task": frozenset({"task_detail"}),
     "add_subtasks": frozenset({"create_task"}),
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
@@ -693,6 +697,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "type_id": "update_task.type",
         "custom_fields": "update_task.fields",
         "include_subtasks": "update_task.include_subtasks",
+    },
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    ("DELETE", "/projects/tasks/{task_id}"): {
+        "delete_subtask_ids": "delete_task.subtasks_to_delete",
+        "delete_all_subtasks": "delete_task.subtasks_to_delete",
     },
     ("POST", "/projects/tasks/{task_id}/move"): {
         "parent_task_id": "move_task.parent_task_id",
@@ -1035,14 +1044,6 @@ _TASK_PREFIX_REASON = (
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
-    # D-OP-10 (owner, 2026-10-23), built in WS-55 EA-6h. The chat's card gets
-    # the choice in OP-7, and that slice moves this row to SENDS.
-    ("DELETE", "/projects/tasks/{task_id}"): {
-        "delete_subtask_ids": (
-            "D-OP-10. The chat's card gets the choice in OP-7. Until then the chat "
-            "sends no ids, and the route keeps D-PM-38: the subtasks move up."
-        ),
-    },
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
@@ -1290,6 +1291,7 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.task": "task_detail",
     "projectsApi.timeline": "task_detail",
     "projectsApi.relations": "task_detail",
+    "projectsApi.taskSubtree": "delete_task",
     "projectsApi.createTask": "create_task",
     "projectsApi.patchTask": "update_task",
     "projectsApi.archiveTask": "archive_task",

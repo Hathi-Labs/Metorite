@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is built, dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME` (2026-10-23, branch `ws64-op1-chrome-mt-61a07997`, not yet merged). An independent verifier passed done-when 1 to 5. OP-2 to OP-7 are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is built, not merged. Fix round 1 is done, and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-2 to OP-6 are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -520,6 +520,26 @@ X. Each moves its route from class X to class B or C in `manifest.py`.
 4. The chat eval `evals/projects_ops/` gains one case for each new tool.
 
 ### OP-7 — choose which subtasks go, in the app and in the chat · AGENT-SAFE
+
+**Status: BUILT 2026-10-23 on branch `ws64-op7-subtask-pick-mt-b78601e2`, not yet merged.**
+The app dialog is `projects/components/DeleteTaskDialog.tsx`, and its tree rules
+are `projects/lib/deleteSubtasks.ts`. Both read `GET /projects/tasks/{id}/subtree`,
+a new read that shows the visible subtasks and counts the hidden ones. The chat
+card is `delete_task(subtasks_to_delete=)` in `skill_projects/guarded.py`. It uses
+the card with rows, with the task as the first row. Done-when 4 (the visual
+review at 390 and 1280 px) is **met**: it passed on 2026-10-23, at 390 and
+1280 px, in light mode, at compact density and under a changed accent.
+
+**Fix round 1 (2026-10-23).** (1) The chat card draws the tree depth first, so
+a grandchild sits under its own parent. (2) A long list of ids overran the URL.
+`DELETE /projects/tasks/{id}` now takes `?delete_all_subtasks=true`, the core's
+own `delete_all`. The dialog and the chat send it for "all". A list holds at
+most 200 ids, with the message "Pick up to 200 subtasks, or choose Delete all."
+(3) The app always opens the dialog, so a task with only archived or hidden
+subtasks shows the plain words. (4) The summary counts only what the member can
+see, and says "N you cannot see stay". (5) The tag "moves up" wraps under the
+title on a phone. (6) R8 cases for the subtree read are in
+`tests/unit/test_mcp_edge_delete.py`, class `TestTheSubtreeRead`.
 
 Owner, 2026-10-23, verbatim: "Sub tasks should also be deleted. The user
 should be shown that the task has what subtasks and if the subtasks should be

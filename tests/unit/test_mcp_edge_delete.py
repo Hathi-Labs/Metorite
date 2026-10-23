@@ -1004,3 +1004,63 @@ class TestOnlyWhatTheCallerSees:
         deleted = [p for e, p in events if e == "pm.task.deleted"]
         for one in (task, kid, grand):
             assert deleted.count({"task_id": one, "via": tw.R8_VIA}) == 1, one
+
+
+class TestTheSubtreeRead:
+    """``GET /projects/tasks/{id}/subtree`` (D-OP-10, OP-7 fix round 1). The
+    delete dialog and the chat card read it. It counts what the caller cannot
+    see and names none of it, it returns archived and nested rows with their
+    parent, and it is 404 across organizations."""
+
+    pytestmark = _DB_GATE
+
+    async def test_hidden_descendants_are_counted_and_never_named(self, live):
+        t = _assigned_tree(live, "fx st a")
+        r = await _person(live, MEMBER, "GET", f"/projects/tasks/{t.task}/subtree")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["hidden"] == 2
+        assert [row["id"] for row in body["subtasks"]] == [t.seen]
+        for one in t.hidden:
+            assert one not in r.text
+        assert "fx st a hidden" not in r.text
+
+    async def test_nested_and_archived_rows_come_back_with_their_parent(self, live):
+        task = live.task(live.team, live.s.todo, "fx st b doomed")
+        kid = _child(live, task, "fx st b kid")
+        grand = _child(live, kid, "fx st b grand")
+        with live.admin.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET archived_at = now()"
+                           " WHERE id = CAST(:t AS uuid)"), {"t": grand})
+        r = await _person(live, MEMBER, "GET", f"/projects/tasks/{task}/subtree")
+        assert r.status_code == 200, r.text
+        rows = {row["id"]: row for row in r.json()["subtasks"]}
+        assert set(rows) == {kid, grand}
+        assert rows[kid]["parent_task_id"] == task and rows[kid]["archived"] is False
+        assert rows[grand]["parent_task_id"] == kid and rows[grand]["archived"] is True
+        assert r.json()["hidden"] == 0
+
+    async def test_another_organization_gets_404(self, live):
+        r = await _person(live, MEMBER, "GET",
+                          f"/projects/tasks/{live.org_b.task}/subtree")
+        assert r.status_code == 404, r.text
+
+    async def test_delete_all_subtasks_flag_takes_the_visible_ones_and_keeps_the_hidden(
+            self, live):
+        t = _assigned_tree(live, "fx st c")
+        r = await _person(live, MEMBER, "DELETE",
+                          f"/projects/tasks/{t.task}?delete_all_subtasks=true")
+        assert r.status_code == 200, r.text
+        assert r.json()["cascaded"]["subtasks_deleted"] == 1
+        assert r.json()["cascaded"]["subtasks_kept_hidden"] == 2
+        assert not _exists(live, t.task) and not _exists(live, t.seen)
+        for one in t.hidden:
+            assert _exists(live, one)
+
+    async def test_a_list_of_more_than_200_ids_is_refused_with_a_plain_message(self, live):
+        task = live.task(live.team, live.s.todo, "fx st d doomed")
+        ids = "&".join(f"delete_subtask_ids={uuid.uuid4()}" for _ in range(201))
+        r = await _person(live, MEMBER, "DELETE", f"/projects/tasks/{task}?{ids}")
+        assert r.status_code == 422, r.text
+        assert "Pick up to 200 subtasks, or choose Delete all." in r.json()["detail"]
+        assert _exists(live, task)
