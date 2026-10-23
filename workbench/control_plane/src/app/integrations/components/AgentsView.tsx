@@ -9,6 +9,8 @@
  * 1. **Connect an AI agent.** The MCP address with a copy button, one tab per
  *    client of §17.1, and what an agent can and cannot do.
  * 2. **My connected agents.** The member's own live connections, with Revoke.
+ *    Above the list, the member's own switch "Let my AI agents delete tasks"
+ *    (EA-6h, EA3-51), default off. The gateway checks it on each delete.
  * 3. **All agent connections.** Every live connection of the org, with the
  *    member's email and Revoke. Only with `integrations:manage`
  *    (`canManageOrg`), and the gateway checks it again.
@@ -28,29 +30,35 @@ import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
 import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
-import { invalidate } from "@/lib/dataCache";
+import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
+  AGENT_ACCESS_KEY,
   AGENT_CAN,
   AGENT_CANNOT,
   AGENT_CLIENTS,
   AGENTS_KEY_PREFIX,
+  DELETE_SWITCH_COPY,
   MCP_URL,
   MY_AGENTS_KEY,
   ORG_AGENTS_KEY,
   agentClaim,
   agentHost,
   dayText,
+  deleteSwitchHint,
   listMine,
   listOrg,
   personalText,
   pinsText,
+  readAgentAccess,
   revoke,
   revokeCopy,
+  saveAgentAccess,
   scopeWords,
   shownRows,
   type AgentConnection,
@@ -188,6 +196,77 @@ function ConnectCard() {
           </ul>
         </div>
       </div>
+    </section>
+  );
+}
+
+// ── 2a. The delete switch (EA-6h) ──────────────────────────────────────────
+
+function DeleteSwitchCard() {
+  const toast = useToast();
+  const access = useCachedResource(AGENT_ACCESS_KEY, readAgentAccess);
+  const [busy, setBusy] = useState(false);
+
+  // `null` is the 404 of the agent flag: no card at all.
+  if (access.data === null) return null;
+  const on = access.data?.delete_enabled === true;
+
+  async function change(next: boolean): Promise<void> {
+    setBusy(true);
+    try {
+      const stored = await saveAgentAccess(next);
+      put(AGENT_ACCESS_KEY, stored);
+      toast.show({
+        key: "agents:delete-switch",
+        variant: "success",
+        title: stored.delete_enabled ? "Agents can delete tasks" : "Agents cannot delete tasks",
+      });
+    } catch (err) {
+      toast.show({
+        key: "agents:delete-switch",
+        variant: "error",
+        title: "The setting was not saved",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="agents-delete-switch-title"
+      data-testid="agents-delete-switch"
+      className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 sm:p-5"
+    >
+      {access.loading && access.data === undefined ? (
+        <SkeletonRows count={1} />
+      ) : access.data === undefined ? (
+        <p className="text-xs text-muted-foreground">
+          This setting did not load. {access.error ?? ""}
+        </p>
+      ) : (
+        <label className="flex cursor-pointer items-start gap-3">
+          <Checkbox
+            checked={on}
+            disabled={busy}
+            onChange={(e) => void change(e.target.checked)}
+            className="mt-0.5"
+            aria-describedby="agents-delete-switch-body"
+          />
+          <span className="min-w-0">
+            <span id="agents-delete-switch-title" className="block text-sm font-semibold text-foreground">
+              {DELETE_SWITCH_COPY.title}
+            </span>
+            <span id="agents-delete-switch-body" className="mt-0.5 block text-xs text-muted-foreground">
+              {DELETE_SWITCH_COPY.body}
+            </span>
+            <span data-testid="agents-delete-switch-state" className="mt-1.5 block text-xs text-foreground">
+              {deleteSwitchHint(on)}
+            </span>
+          </span>
+        </label>
+      )}
     </section>
   );
 }
@@ -350,6 +429,8 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
   return (
     <div data-testid="agents-view" className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
       {off ? null : <ConnectCard />}
+
+      {off ? null : <DeleteSwitchCard />}
 
       <AgentList
         title="My connected agents"
