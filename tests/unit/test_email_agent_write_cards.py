@@ -516,6 +516,8 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
     ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
+    ("auto_categorize_inbox", "mode"): ["sweep", "status", "uncategorized",
+                                        "backfill", "restore_labels"],
     ("digest", "period"): ["day", "week"],
     # Round 2: each rule action type, the engine set and one outside it.
     ("create_rule", "action_type"): [*sorted(agents._RULE_ENGINE_TYPES), "SEND"],

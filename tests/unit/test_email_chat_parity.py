@@ -545,3 +545,43 @@ async def test_a_held_run_keeps_guidance_when_no_rule_sends_out(
     _held(monkeypatch)
     await agents.rule_guidance(BOX, action="add", guidance="Receipts are not FYI")
     assert len(gw.cards) == 1 and len(gw.writes) == 1
+
+
+# ── 7. The email cleaner ─────────────────────────────────────────────────────
+
+
+async def test_the_cleaner_status_and_backlog_are_reads(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/cleanup/status")] = {
+        "status": "running", "phase": "downloading", "synced": 120}
+    gw.answers[("GET", "/email/cleanup/uncategorized")] = {
+        "uncategorized": 42, "pending_patterns": 2, "pending_pattern_reach": 9,
+        "top_senders": [{"email": "news@list.test", "name": "News", "count": 30}]}
+    out = await agents.auto_categorize_inbox(BOX, mode="status")
+    assert "phase: downloading" in out and "synced: 120" in out
+    out = await agents.auto_categorize_inbox(BOX, mode="uncategorized")
+    assert out.startswith("42 email(s)") and "reach about 9" in out
+    assert "News <news@list.test>: 30" in out
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_backfill_asks_then_starts_with_the_date(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/cleanup/backfill")] = {"scheduled": True}
+    out = await agents.auto_categorize_inbox(BOX, mode="backfill", since_date="2026-01-01")
+    [card] = gw.cards
+    assert "back to 2026-01-01" in card["detail"] and "No AI call" in card["detail"]
+    assert gw.writes == [("POST", "/email/cleanup/backfill",
+                          {"account_id": BOX, "since_date": "2026-01-01"})]
+    assert "started" in out
+
+
+async def test_backfill_refuses_a_bad_date_before_the_card(gw: Gateway) -> None:
+    out = await agents.auto_categorize_inbox(BOX, mode="backfill", since_date="last year")
+    assert out.startswith("Nothing changed.") and gw.cards == [] and gw.writes == []
+
+
+async def test_restore_labels_asks_then_reports_the_counts(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/cleanup/restore-labels")] = {"updated": 7, "scanned": 300}
+    out = await agents.auto_categorize_inbox(BOX, mode="restore_labels")
+    assert len(gw.cards) == 1
+    assert gw.writes == [("POST", "/email/cleanup/restore-labels", {"account_id": BOX})]
+    assert "updated: 7" in out

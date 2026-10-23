@@ -2095,16 +2095,32 @@ async def categorize_senders(account_id: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
-    """Categorize uncategorized inbox mail from patterns already learned.
+async def auto_categorize_inbox(
+    account_id: str, apply: bool = False, mode: str = "sweep",
+    since_date: str | None = None,
+) -> str:
+    """The email cleaner. By ``mode``:
 
-    Projects the user's learned patterns and their per-sender / per-domain label
-    history onto inbox mail the rules never reached. Runs no classifier of its
-    own, so anything it cannot justify is reported as needing a rules run.
+      • ``sweep`` (default) — categorize uncategorized inbox mail from
+        patterns already learned. Call with apply=False first to preview;
+        only apply=True writes labels, after a card with the count.
+      • ``status`` — the progress of the last sweep or backfill. A read.
+      • ``uncategorized`` — how much mail waits for the cleaner, and the
+        senders with the most of it. A read.
+      • ``backfill`` — download older mail from the provider, back to
+        ``since_date`` (YYYY-MM-DD; leave it out for as far as allowed), and
+        clean it with no AI call. A card asks first.
+      • ``restore_labels`` — read the labels again from the provider when
+        they went missing here. A card asks first.
 
-    Call with apply=False first to preview; only apply=True writes labels.
-    apply=True shows the user a card with the count first.
+    The sweep projects the user's learned patterns and their per-sender /
+    per-domain label history onto inbox mail the rules never reached. It runs
+    no classifier of its own, so anything it cannot justify is reported as
+    needing a rules run.
     """
+    m = (mode or "sweep").strip().lower()
+    if m != "sweep":
+        return await _cleaner(account_id, m, since_date)
     # The preview (``dry_run``) writes nothing. EM-G11c1: apply=True runs it
     # too, so the card can name the count, and then asks before it writes.
     data = await _post(
@@ -2154,6 +2170,75 @@ async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
            else "")
         + " Call again with apply=true to apply."
     )
+
+
+async def _cleaner(account_id: str, mode: str, since_date: str | None) -> str:
+    """The modes of ``auto_categorize_inbox`` other than the sweep."""
+    if mode == "status":
+        job = await _get("/email/cleanup/status", {"account_id": account_id}) or {}
+        where = await _named(account_id)
+        if job.get("status") in (None, "idle"):
+            return f"No cleaner run is going on in {where}."
+        bits = [f"{k}: {job[k]}" for k in ("status", "phase", "scanned", "applied",
+                                           "synced", "held_back", "error")
+                if job.get(k) not in (None, "")]
+        return f"The last cleaner run in {where}: " + ", ".join(bits) + "."
+    if mode == "uncategorized":
+        data = await _get("/email/cleanup/uncategorized", {"account_id": account_id}) or {}
+        lines = [f"{int(data.get('uncategorized') or 0)} email(s) in "
+                 f"{await _named(account_id)} wait for the cleaner."]
+        pending = int(data.get("pending_patterns") or 0)
+        if pending:
+            lines.append(f"{pending} learned pattern(s) wait for review. Approved, they "
+                         f"reach about {int(data.get('pending_pattern_reach') or 0)} of them.")
+        top = [s for s in data.get("top_senders") or [] if isinstance(s, dict)][:10]
+        if top:
+            lines.append("The senders with the most:")
+            lines += [f"- {_one_line(s.get('name') or s.get('email'), 80)} "
+                      f"<{_one_line(s.get('email'), _TARGET_LIMIT)}>: {int(s.get('count') or 0)}"
+                      for s in top]
+        return "\n".join(lines)
+    if mode not in ("backfill", "restore_labels"):
+        return ("Nothing changed. mode must be one of: sweep | status | uncategorized | "
+                "backfill | restore_labels.")
+    box = await _named(account_id)
+    if mode == "restore_labels":
+        refusal = await _card_refusal(
+            f"Read the labels of {box} again from the provider?",
+            "It repairs the labels that went missing here, from the labels that the "
+            f"provider holds. It changes nothing at the provider. Mailbox: {box}.",
+            "Cancelled — no label was restored.",
+        )
+        if refusal:
+            return refusal
+        res = await _post("/email/cleanup/restore-labels", {"account_id": account_id}) or {}
+        if res.get("error"):
+            return f"The labels of {box} could not be read again: {_one_line(res['error'], 200)}"
+        counts = ", ".join(f"{k}: {v}" for k, v in res.items() if isinstance(v, int))
+        return f"Read the labels of {box} again. {counts or 'Nothing to repair.'}"
+    since = (since_date or "").strip()
+    if since:
+        try:
+            date.fromisoformat(since)
+        except ValueError:
+            return "Nothing changed. since_date must be a date as YYYY-MM-DD."
+    back = f"back to {since}" if since else "as far back as the mailbox allows (180 days)"
+    refusal = await _card_refusal(
+        f"Download older mail of {box} and clean it?",
+        f"It downloads the mail {back} from the provider, keeps it away from the AI, "
+        "and labels it from the patterns already learned. No AI call, and nothing is "
+        f"sent. Mailbox: {box}.",
+        "Cancelled — nothing was downloaded.",
+    )
+    if refusal:
+        return refusal
+    body: dict[str, Any] = {"account_id": account_id}
+    if since:
+        body["since_date"] = since
+    res = await _post("/email/cleanup/backfill", body) or {}
+    if not res.get("scheduled"):
+        return f"A cleaner run is going on in {box} already. Check it with mode=status."
+    return f"The download and clean of {box} started. Check it with mode=status."
 
 
 @_annotate_risk(open_world=False)
