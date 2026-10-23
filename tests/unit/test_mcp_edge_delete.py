@@ -272,6 +272,18 @@ class TestTheToolAtTheEdge:
                 switch_routes.AgentAccessPut(delete_enabled=True), user=user)
         assert refused.value.status_code == 403
 
+    def test_the_core_keeps_promote_as_its_default(self):
+        """D-OP-10. Every caller that names no choice keeps D-PM-38, such as
+        the purge of My Tasks (``personal.py``)."""
+        import inspect
+
+        from gateway.routes.projects import tasks as gateway_tasks
+
+        core = inspect.signature(gateway_tasks.delete_task_in).parameters["subtasks"]
+        assert core.default == "promote"
+        route = inspect.signature(gateway_tasks.delete_task).parameters["subtasks"]
+        assert route.default.default == "promote"
+
     async def test_the_delete_route_refuses_a_member(self, monkeypatch):
         """A member deletes with the plain DELETE. This route is the agent's."""
         from fastapi import HTTPException
