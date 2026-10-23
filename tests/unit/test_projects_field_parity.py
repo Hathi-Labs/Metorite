@@ -292,6 +292,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "bulk_update": {"task_ids": f"{UUID},{OTHER}", "status": "done"},
     "calendar": {"start": "2026-09-22", "end": "2026-09-29"},
     "capture_intake": {"title": "Vendor called"},
+    # WS-64 OP-6c: the file is in the fake upload (tw.UPLOAD).
+    "attach_to_task": {"task_id": UUID, "file_name": "brief.pdf"},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
     "complete": {"task_id": UUID},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
@@ -309,6 +311,7 @@ _BASE: dict[str, dict[str, Any]] = {
     "defer": {"task_id": UUID, "until": "2026-10-06"},
     "delete_status": {"project_id": UUID, "status": "to do", "move_to": "done"},
     "edit_comment": {"task_id": UUID, "comment_id": tw.LINK, "body": "Waiting on finance."},
+    "export_tasks": {},
     "find_conflicts": {},
     "find_tasks": {"query": "extruder"},
     "fit_for_task": {"title": "Weld the frame"},
@@ -435,6 +438,9 @@ _SAMPLE: dict[str, Any] = {
     "block_start": "2026-10-07 14:00",
     "block_end": "2026-10-07 15:00",
     "flexible": "yes",
+    # WS-64 OP-6c
+    "file_name": "brief.pdf",
+    "shown_fields": "status,tags",
     "hard_date": "yes",
     "actual_start": "2026-10-07 14:05",
     "actual_end": "2026-10-07 14:50",
@@ -634,10 +640,17 @@ def _carries(call: dict, name: str, where: str) -> bool:
         return name in (call["params"] or {})
     if where == "header":
         return name.lower() in {h.lower() for h in (call["headers"] or {})}
+    if where == "body" and call.get("files") and name in call["files"]:
+        return True
     body = call["json"]
     if name == "payload":
         return isinstance(body, dict) and bool(body)
     return isinstance(body, dict) and name in body
+
+
+@pytest.fixture(autouse=True)
+def _a_chat_upload(monkeypatch) -> None:
+    tw.stub_chat_upload(monkeypatch)
 
 
 @pytest.fixture

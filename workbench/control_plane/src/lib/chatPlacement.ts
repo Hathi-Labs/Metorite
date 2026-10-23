@@ -75,6 +75,7 @@ const EVIDENCE: readonly string[] = [
   "projects_tree",
   "project_summary",
   "list_tasks",
+  "export_tasks",
   "find_tasks",
   "task_detail",
   "task_dataset",
@@ -225,6 +226,8 @@ const WRITE: readonly string[] = [
   "delete_attachment",
   "rename_area",
   "delete_area",
+  "nudge_task",
+  "attach_to_task",
   // ── Tasks ──────────────────────────────────────────────────────────────
   "my_tasks_capture",
   "my_tasks_capture_many",

@@ -118,18 +118,6 @@ _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no vi
 _PLANNER_REASON = (
     "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4)."
 )
-#: A nudge tells a COLLEAGUE you are waiting on them. That is contacting a
-#: third party on the member's behalf, which CLAUDE.md §3a rule 3 holds for the
-#: owner. §9.12.9 also makes the act deliberately explicit — "a follow-up that
-#: always pings somebody is a tool people stop using" — and a chat tool is the
-#: shortest road to one that does. An assistant that chases people for you is a
-#: different product decision from one that reads and edits your own work, so
-#: this waits for an answer instead of assuming one. The member presses Nudge
-#: on the Waiting-For row.
-_NUDGE_REASON = (
-    "A nudge contacts a colleague. §9.12.9 makes it an explicit human act, and "
-    "whether the chat may chase somebody is an owner question."
-)
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
     "A file import is an admin's upload and review through the import wizard "
@@ -302,7 +290,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("DELETE", "/projects/my/areas/{area_id}", "delete_area", "C"),
     Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B"),
     Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B"),
-    Route("POST", "/projects/tasks/{task_id}/nudge", "", "X", _NUDGE_REASON),
+    # WS-64 OP-6c (D-OP-9, 2026-10-23): a card names the person and the task, and
+    # the route writes one in-app notification. It sends no mail.
+    Route("POST", "/projects/tasks/{task_id}/nudge", "nudge_task", "C"),
     # ── planning.py ──────────────────────────────────────────────────────
     Route("POST", "/projects/my/calendar/plan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
@@ -319,13 +309,8 @@ MANIFEST: tuple[Route, ...] = (
         "The chat's own pills read it to link a #n in an answer "
         "(lib/taskRefs.ts). The model finds a task with find_tasks.",
     ),
-    Route(
-        "GET",
-        "/projects/export/tasks.csv",
-        "",
-        "X",
-        "A file download. The app's export button owns it.",
-    ),
+    # WS-64 OP-6c: the CSV comes back as a document of the chat. A read, so no card.
+    Route("GET", "/projects/export/tasks.csv", "export_tasks", "A"),
     Route(
         "GET",
         "/projects/delta/tasks",
@@ -405,13 +390,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("DELETE", "/projects/reports/{report_id}/recipients/{email}", "", "X", _DELIVERY_REASON),
     Route("PATCH", "/projects/reports/{report_id}/schedule", "", "X", _DELIVERY_REASON),
     # ── attachments.py ───────────────────────────────────────────────────
-    Route(
-        "POST",
-        "/projects/tasks/{task_id}/attachments",
-        "",
-        "X",
-        "A file upload. The chat has no file input, so the browser owns it.",
-    ),
+    # WS-64 OP-6c (G21): the bytes come from a file the member uploaded to THIS chat.
+    Route("POST", "/projects/tasks/{task_id}/attachments", "attach_to_task", "C"),
     Route("GET", "/projects/tasks/{task_id}/attachments", "task_detail", "A"),
     Route(
         "GET",
@@ -863,6 +843,23 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     },
     # WS-46 P7 (G17)
     ("GET", "/projects/my/areas"): {"include_archived": "my_areas.include_archived"},
+    # WS-64 OP-6c: the export takes the filters of list_tasks, and the columns.
+    ("GET", "/projects/export/tasks.csv"): {
+        "project_id": "export_tasks.project_id",
+        "include_subtree": "export_tasks.include_subtree",
+        "q": "export_tasks.query",
+        "include_archived": "export_tasks.include_archived",
+        "status_category": "export_tasks.status_category",
+        "assignees": "export_tasks.assignee",
+        "unassigned": "export_tasks.unassigned",
+        "overdue": "export_tasks.overdue",
+        "due_before": "export_tasks.due_before",
+        "tags": "export_tasks.tags",
+        "watching": "export_tasks.watching",
+        "shown_fields": "export_tasks.shown_fields",
+    },
+    # WS-64 OP-6c: the file is the one part of the multipart body.
+    ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
     # WS-64 OP-6a
     ("POST", "/projects/my/areas"): {"name": "create_area.name"},
     ("PATCH", "/projects/my/areas/{area_id}"): {"name": "rename_area.new_name"},
@@ -1039,6 +1036,21 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "view_id": "The hand-arranged order of a saved view, which only the board reads.",
         "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
     },
+    # WS-64 OP-6c: the export takes the same subset as list_tasks.
+    ("GET", "/projects/export/tasks.csv"): {
+        "parent_task_id": "Subtasks are read through task_detail, which lists them.",
+        "status_id": (
+            "One lane by id. export_tasks filters by status_category, as list_tasks does."
+        ),
+        "assignee": "The older single form. export_tasks sends assignees.",
+        "sort": "The order of the app's list. The file holds the rows in the route's own order.",
+        "direction": "The order of the app's list. The file holds the rows in the route's own order.",
+        "archived_only": "The archive view. include_archived exports archived rows with the rest.",
+        "importance_gte": _READ_FILTER_REASON,
+        "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
+        "include_triage": "The Triage lane is intake, and the chat reads it through intake_queue.",
+        "top_level": "The board's subtask toggle. A subtask row in the file names its number.",
+    },
     ("POST", "/projects/tasks/{task_id}/claim"): {
         "If-Match": (
             "The edit guard of an outside agent (D-PM-20, WS-55 EA-6b). The chat "
@@ -1137,7 +1149,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "leveraged": "Retired by D78. The route refuses it by name. update_task sets it.",
         "kept_mine": "The member's dismissal of the app's delegate hint. The chat shows no hint.",
         "sort_key": _ORDER_REASON,
-        "last_nudged_at": "The nudge route writes it, and the nudge stays out of the chat (Q3).",
+        "last_nudged_at": "The nudge route writes it, and nudge_task calls that route.",
     },
     ("GET", "/projects/my/calendar"): {
         "include_done": "Done work is read through my_work include_done.",
@@ -1315,6 +1327,8 @@ UI_ACTIONS: dict[str, str] = {
     # ── attachmentsApi ───────────────────────────────────────────────────
     "attachmentsApi.list": "task_detail",
     "attachmentsApi.detach": "delete_attachment",
+    # WS-64 OP-6c (G21): the chat attaches a file the member gave it in this thread.
+    "attachmentsApi.upload": "attach_to_task",
     # ── refsApi (WS-57 TR-2): a task's URL references ────────────────────
     "refsApi.list": "task_detail",
     "refsApi.add": "add_task_ref",
@@ -1350,6 +1364,8 @@ UI_ACTIONS: dict[str, str] = {
     "intakeApi.decline": "triage_intake",
     "intakeApi.duplicate": "triage_intake",
     "intakeApi.snooze": "triage_intake",
+    # ── export (WS-64 OP-6c) ─────────────────────────────────────────────
+    "export.exportPath": "export_tasks",
 }
 
 #: A UI client method the chat does not mirror, and why. The fence allows an
@@ -1370,10 +1386,6 @@ UI_EXEMPT: dict[str, str] = {
         "The count shown before an admin deletes or merges a shared entry. "
         "The chat neither deletes nor merges shared entries."
     ),
-    "export.exportPath": (
-        "The CSV download of the board's filter. A file download is the app's "
-        "export button, and a chat answer carries text."
-    ),
     "importApi.upload": _IMPORT_REASON,
     "importApi.get": _IMPORT_REASON,
     "importApi.saveMapping": _IMPORT_REASON,
@@ -1386,10 +1398,7 @@ UI_EXEMPT: dict[str, str] = {
 #: in the gap table of ``projects_agent_parity.md`` §3.3. The fence reads the
 #: spec, and fails when the slice of that gap is marked built. The slice that
 #: closes the gap moves its rows to ``UI_ACTIONS``, so this table only shrinks.
-UI_PLANNED: dict[str, str] = {
-    # G21 (P10): the chat attaches a file the member gave it in this thread.
-    "attachmentsApi.upload": "G21",
-}
+UI_PLANNED: dict[str, str] = {}
 
 
 def witnesses(value: str | tuple[str, ...]) -> tuple[str, ...]:

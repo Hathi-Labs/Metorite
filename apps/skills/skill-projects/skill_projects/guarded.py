@@ -31,6 +31,8 @@ question 2).
 from __future__ import annotations
 
 import json
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 from skill_projects import client as _client
@@ -41,6 +43,7 @@ from skill_projects.client import (
     get,
     patch,
     post,
+    post_file,
     uuid_of,
 )
 from skill_projects.inbox import _area_key, _clean_area_name, _my_area
@@ -1717,6 +1720,148 @@ async def delete_area(area: str) -> str:
     return f"Removed the area {data(row.get('name'))}.\n  area_id: {aid}"
 
 
+# ── Nudge and attach (WS-64 OP-6c, D-OP-9) ───────────────────────────────────
+
+#: What one task may hold in files, and the types the upload refuses. The
+#: route owns both (``attachments.py`` ``_TASK_ATTACHMENT_BUDGET``,
+#: ``tasks/attachments.py`` ``_BLOCKED_EXT``). The tool says them BEFORE the
+#: card, so a member never approves an upload that the route will refuse.
+#: ``test_projects_nudge_attach_tools.py`` pins each value to the route's.
+TASK_FILE_BUDGET = 10 * 1024 * 1024
+BLOCKED_FILE_TYPES = frozenset({".exe", ".dll", ".so", ".bat", ".cmd", ".sh", ".ps1", ".msi"})
+
+
+def _mb(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _nudge_refusal(task: dict[str, Any], mine: dict[str, Any]) -> str:
+    """The route's refusal for a task that nobody can be chased on, in the
+    route's own words, said before the card. ``""`` when the nudge may go."""
+    if task.get("completed_at"):
+        return "This task is done. There is nobody to chase."
+    person = mine.get("waiting_on") if isinstance(mine.get("waiting_on"), dict) else {}
+    email = str(person.get("email") or "").strip()
+    if not email:
+        return (
+            "You are not waiting on anybody for this task. set_my_overlay with "
+            "waiting_on starts a chase."
+        )
+    if email.lower().startswith("agent:"):
+        return (
+            "An agent has no inbox to nudge. Agents are handed work by "
+            "dispatch, not by a notification."
+        )
+    return ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def nudge_task(task_id: str) -> str:
+    """Nudge the person the member is waiting on for a task. It sends ONE
+    notification to their bell inside Metorite. It sends no email and no
+    message, and it never repeats: one call is one nudge. The card names the
+    person and the task. The route refuses a task that is done or that the
+    member is not waiting on, and the refusal comes back in its words."""
+    if _many(task_id):
+        return f"nudge_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    try:
+        mine = (await get(f"/projects/my/tasks/{tid}")) or {}
+    except GatewayRefusal as exc:
+        # A task that is not in the member's own lists holds no chase of theirs.
+        if exc.status != 404:
+            raise
+        mine = {}
+    refusal = _nudge_refusal(task, mine)
+    if refusal:
+        return f"{refusal}\n  full_id: {tid}"
+    person = mine["waiting_on"]
+    who = data(person.get("name") or person.get("email"))
+    impact = (
+        f"1 notification to {who} in their Metorite bell, about {_ref(task)} · "
+        "no email, no message outside Metorite · one nudge, and it does not repeat"
+    )
+    rest: dict[str, Any] = {
+        "person": who,
+        "task": _ref(task),
+        "sent as": "a notification in their bell only",
+    }
+    if mine.get("last_nudged_at"):
+        rest["last nudged"] = _day(mine.get("last_nudged_at"))
+    if not await _confirm(
+        title="Nudge this person?",
+        detail=f"{who} about {_ref(task)}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    result = (await post(f"/projects/tasks/{tid}/nudge")) or {}
+    if not result.get("notified"):
+        skipped = ", ".join(data(x) for x in result.get("skipped") or []) or who
+        return (
+            f"Nobody was told. {skipped} cannot open this task, so the nudge reached no one."
+            f"\n  full_id: {tid}"
+        )
+    return (
+        f"Nudged {who} about {_ref(task)}. They see it in their Metorite bell. "
+        f"I sent no email.\n  full_id: {tid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def attach_to_task(task_id: str, file_name: str) -> str:
+    """Attach a file that the member uploaded to THIS chat onto a task. Pass
+    the file name that the upload message shows. The card names the file, its
+    size and the task, because everyone who can open the task can open the
+    file. One task holds 10 MB of files in all. A file over that, or of a
+    blocked type such as .exe, is refused before the card."""
+    if _many(task_id):
+        return f"attach_to_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    from acb_skills import attachment_tools
+
+    got = await attachment_tools.read_attachment_bytes(file_name)
+    if isinstance(got, str):
+        return got
+    name, content = got
+    size = len(content)
+    if not size:
+        return f"{data(name)} is empty, so there is nothing to attach."
+    if Path(name).suffix.lower() in BLOCKED_FILE_TYPES:
+        return f"File type not allowed: {data(name)}. Ask the member for another file."
+    if size > TASK_FILE_BUDGET:
+        return (
+            f"{data(name)} is {_mb(size)} and one task may hold {_mb(TASK_FILE_BUDGET)} "
+            "in total. Attach a smaller file."
+        )
+    held = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
+    used = sum(int(f.get("size") or 0) for f in held)
+    if used + size > TASK_FILE_BUDGET:
+        return (
+            f"{_ref(task)} would hold {_mb(used + size)} with {data(name)}, and the limit is "
+            f"{_mb(TASK_FILE_BUDGET)}. It holds {_mb(used)} now. Detach a file first."
+        )
+    impact = (
+        f"1 file of {_mb(size)} attached to {_ref(task)} · everyone who can open "
+        "the task can open the file"
+    )
+    if not await _confirm(
+        title="Attach this file?",
+        detail=f"{data(name)} ({_mb(size)}) to {_ref(task)}",
+        context=_guard_card(
+            impact,
+            {"file": data(name), "size": _mb(size), "task": _ref(task),
+             "visible to": "everyone who can open the task"},
+        ),
+    ):
+        return CANCELLED
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    row = (await post_file(f"/projects/tasks/{tid}/attachments", "file", name, content, mime)) or {}
+    return (
+        f"Attached {data(row.get('name') or name)} to {_ref(task)}."
+        f"\n  full_id: {tid}\n  attachment_id: {row.get('attachment_id')}"
+    )
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
@@ -1737,4 +1882,6 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "delete_attachment",
     "rename_area",
     "delete_area",
+    "nudge_task",
+    "attach_to_task",
 ]
