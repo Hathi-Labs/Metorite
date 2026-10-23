@@ -98,6 +98,9 @@ EXPECTED_OPEN_WORLD = frozenset({
     "update_assistant_settings", "save_knowledge",
     # Chat parity wave 1 (§22): the voice profile feeds each later draft.
     "voice_profile",
+    # Multi-mailbox review, P0 (2026-10-23): auto-run and the digest of
+    # several mailboxes change what later leaves each one.
+    "apply_settings_to_mailboxes",
     # H-375: a send of a draft later is a send.
     "schedule_send",
     # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
