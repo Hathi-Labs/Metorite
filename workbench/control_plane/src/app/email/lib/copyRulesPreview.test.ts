@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { copyRulesPreview, rulesStepCopyChoices } from "./mailboxSettings";
+import { copyRulesPreview, rulesStepCopyChoices, type CopyTarget } from "./mailboxSettings";
 
 const read = (rel: string) =>
   readFileSync(join(__dirname, "..", rel), "utf-8").replace(/\r\n/g, "\n");
@@ -50,5 +50,104 @@ describe("email-rules-tab-copy", () => {
     expect(dialog).toContain("ruleCopier(");
     expect(dialog).toContain("copyReport(");
     expect(dialog).toContain("copyRulesPreview(");
+  });
+});
+
+// The preview mirrors `_left_out_reason` of `rule_copy.py`, reason by reason.
+describe("email-rules-tab-copy preview mirrors the route", () => {
+  const target = (over: Partial<CopyTarget> = {}): CopyTarget => ({
+    rules: [],
+    ownAddresses: ["me@work.test", "me@home.test"],
+    provider: "microsoft",
+    ...over,
+  });
+  const rule = (name: string, actions: { type: string; label?: string; to_address?: string }[] = [], extra = {}) => ({
+    name,
+    enabled: true,
+    system_type: null,
+    actions,
+    ...extra,
+  });
+  const run = (rules: ReturnType<typeof rule>[], t: CopyTarget) =>
+    copyRulesPreview(rules as never, "Work", t);
+
+  it("leaves out a forward to an own address, any case, in Cc too", () => {
+    const p = run(
+      [
+        rule("Fwd", [{ type: "FORWARD", to_address: "Me@Home.test" }]),
+        rule("Out", [{ type: "FORWARD", to_address: "x@other.test" }]),
+      ],
+      target(),
+    );
+    expect(p.willCopy).toEqual(["Out"]);
+    expect(p.leftOut[0].name).toBe("Fwd");
+    expect(p.leftOut[0].why).toContain("loop");
+  });
+
+  it("leaves out a rule with a folder or label when the target is IMAP", () => {
+    const p = run(
+      [rule("Move", [{ type: "MOVE_FOLDER", label: "Bills" }]), rule("Tag", [{ type: "LABEL", label: "x" }]), rule("Plain", [{ type: "ARCHIVE" }])],
+      target({ provider: "imap" }),
+    );
+    expect(p.willCopy).toEqual(["Plain"]);
+    expect(p.leftOut.map((r) => r.name)).toEqual(["Move", "Tag"]);
+  });
+
+  it("leaves out a move to Sent or Drafts for every provider", () => {
+    const p = run([rule("ToSent", [{ type: "MOVE_FOLDER", label: "Sent Items" }]), rule("ToDraft", [{ type: "MOVE_FOLDER", label: "draft" }])], target());
+    expect(p.willCopy).toEqual([]);
+    expect(p.leftOut).toHaveLength(2);
+  });
+
+  it("leaves out a Gmail move to a system label, and keeps a user label and Trash", () => {
+    const gmail = target({ provider: "gmail" });
+    const p = run(
+      [
+        rule("Star", [{ type: "MOVE_FOLDER", label: "Starred" }]),
+        rule("Cat", [{ type: "MOVE_FOLDER", label: "category_promotions" }]),
+        rule("User", [{ type: "MOVE_FOLDER", label: "Bills" }]),
+        rule("Bin", [{ type: "MOVE_FOLDER", label: "Trash" }]),
+        rule("Empty", [{ type: "MOVE_FOLDER", label: "  " }]),
+      ],
+      gmail,
+    );
+    expect(p.willCopy).toEqual(["User", "Bin", "Empty"]);
+    expect(p.leftOut.map((r) => r.name)).toEqual(["Star", "Cat"]);
+    // Outlook keeps "Starred" as a user folder name.
+    expect(run([rule("Star", [{ type: "MOVE_FOLDER", label: "Starred" }])], target()).willCopy).toEqual(["Star"]);
+  });
+
+  it("leaves out a reply rule when the target has one, and keeps its name", () => {
+    const t = target({ rules: [{ name: "Reply", system_type: "REPLY" }] });
+    const p = run([rule("Needs Reply"), rule("Other")], t);
+    expect(p.willCopy).toEqual(["Other"]);
+    expect(p.leftOut[0].name).toBe("Needs Reply");
+    expect(p.leftOut[0].why).toContain("reply rule");
+  });
+
+  it("copies only the first reply rule of the source", () => {
+    const p = run([rule("Needs Reply"), rule("X", [], { system_type: "TO_REPLY" })], target());
+    expect(p.willCopy).toEqual(["Needs Reply"]);
+    expect(p.leftOut.map((r) => r.name)).toEqual(["X"]);
+  });
+
+  it("leaves out a rule that this mailbox holds already, or holds as a copy, and blocks the copy", () => {
+    const t = target({ rules: [{ name: "receipts", system_type: null }, { name: "Alerts (copy 2)", system_type: null }] });
+    const p = run([rule("Receipts"), rule("Alerts"), rule("New")], t);
+    expect(p.willCopy).toEqual(["New"]);
+    expect(p.leftOut.map((r) => r.name)).toEqual(["Receipts", "Alerts"]);
+    expect(p.leftOut[0].why).toContain("already");
+    expect(p.blocked).toBe(true);
+    expect(run([rule("New")], t).blocked).toBe(false);
+  });
+
+  it("counts only what the route copies in the question", () => {
+    const t = target({ provider: "imap" });
+    const p = run([rule("A"), rule("B", [{ type: "LABEL", label: "x" }]), rule("C", [], { enabled: false })], t);
+    expect(p.question).toBe("Copy 1 rule from Work into this mailbox?");
+  });
+
+  it("works with no target context, as before", () => {
+    expect(copyRulesPreview([{ name: "A", enabled: true }], "Work").willCopy).toEqual(["A"]);
   });
 });
