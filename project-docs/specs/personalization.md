@@ -4,6 +4,10 @@
 the routes of §4.3 in `routes/admin/assistant_profile.py`, and the fix of
 §2.1). No flag yet, and nothing reads the profile until PZ-2.
 
+**PZ-7 BUILT 2026-10-23**, dark: the route `/settings/assistant`, behind
+`NEXT_PUBLIC_ASSISTANT_PROFILE` (off). A link row on Appearance is the way in.
+The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -350,6 +354,7 @@ conversation (WS-47). That org's profile applies.
    member asks, or says yes. It never extracts a fact from a chat in silence.
 2. **The member sees everything.** Settings → Assistant shows every key and
    every fact, with its source and date. Each fact has Edit and Delete.
+   An alias carries only `{id, alias, email}`, so it shows no source or date.
 3. **One switch.** "Let the assistant remember what I tell it." Off stops
    every write. The assistant still reads the profile. The member can delete
    it.
@@ -398,7 +403,7 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order. My Day shows the profile name | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value | AGENT-SAFE · MEDIUM |
-| **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density | AGENT-SAFE · LOW |
+| **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all, the switch, and the purge when access ends | A real-database test for each. A removed member leaves no profile | AGENT-SAFE · **HIGH** (a member write) |
 | **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text | AGENT-SAFE · LOW |
@@ -424,7 +429,8 @@ uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_memory_tools_da
 uv run pytest tests/unit/test_executor_profile_block.py tests/unit/test_profile_tools.py -q
 uv run pytest tests/unit/test_resolve_person_r8.py -q
 # PZ-7
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/settings
+cd workbench/control_plane && npx tsc --noEmit
+cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/assistantProfileFlag.test.ts src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
 # PZ-10
 uv run python -m evals.personalization --offline
 ```
