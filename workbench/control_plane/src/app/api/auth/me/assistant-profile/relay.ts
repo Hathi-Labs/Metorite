@@ -1,0 +1,62 @@
+/**
+ * The one relay for `/api/auth/me/assistant-profile/**` (WS-63 PZ-7).
+ *
+ * Each route file names its verb and its gateway path. This helper does the
+ * rest: it resolves the session identity, forwards the body as text, and
+ * passes the gateway's status through. A 204 stays a 204. A 422 or a 404 keeps
+ * its JSON body. A gateway that cannot be reached answers 502 and never an
+ * empty profile.
+ *
+ * The identity is the session's. The body names no member and no tenant
+ * (R5, R11), and the gateway forbids an extra field.
+ */
+import { NextResponse, type NextRequest } from "next/server";
+import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+
+/** A profile is at most 6,000 characters. The cap stops a body the gateway would refuse. */
+const MAX_BODY = 16_384;
+
+const PATH = "/auth/me/assistant-profile";
+
+export async function relay(
+  req: NextRequest,
+  method: "GET" | "PUT" | "POST" | "PATCH" | "DELETE",
+  suffix = "",
+): Promise<Response> {
+  const me = await requireIdentity();
+  if (me instanceof NextResponse) return me;
+  const hasBody = method === "PUT" || method === "POST" || method === "PATCH";
+  let body: string | undefined;
+  if (hasBody) {
+    body = await req.text();
+    if (body.length > MAX_BODY) {
+      return NextResponse.json({ detail: "body_too_large" }, { status: 413 });
+    }
+  }
+  try {
+    const res = await gatewayFetch(`${GATEWAY_URL}${PATH}${suffix}`, {
+      method,
+      headers: await gatewayHeaders(hasBody ? { "Content-Type": "application/json" } : {}),
+      body: hasBody ? body || "null" : undefined,
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (res.status === 204) return new Response(null, { status: 204 });
+    const text = await res.text();
+    return new Response(text, {
+      status: res.status,
+      headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
+    });
+  } catch {
+    return NextResponse.json({ detail: "assistant_profile_unavailable" }, { status: 502 });
+  }
+}
+
+/** The id segment, encoded for the gateway path. */
+export async function idSuffix(
+  kind: "facts" | "aliases",
+  params: Promise<{ id: string }>,
+): Promise<string> {
+  const { id } = await params;
+  return `/${kind}/${encodeURIComponent(id)}`;
+}

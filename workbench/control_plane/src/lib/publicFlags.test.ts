@@ -116,6 +116,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_MY_DAY_FEED",
       // WS-62 CF-1: the chat-first surface, first the peek strip on a phone.
       "NEXT_PUBLIC_CHAT_FIRST",
+      // WS-63 PZ-7: the Assistant pane in Settings.
+      "NEXT_PUBLIC_ASSISTANT_PROFILE",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)
