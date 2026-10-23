@@ -6350,6 +6350,66 @@ line — never reclaim a number by deleting the other entry.
 - **Do this (owner):** use the assistant on a phone for a real reply with a
   Cc. Report each step that leaves the chat.
 - **Added:** 2026-10-23 · email chat session
+### H-397 · Turn on AI proposals in Knowledge once the Review view is live · [OWNER]
+- **Check:** `ssh metorite 'sudo grep -c "^KNOWLEDGE_PROPOSALS=true" /opt/acb/app/.env'` prints 1, and so does the staging `.env`. If both print 1, delete this entry.
+- **Why:** KB-5a (#1236) and KB-5b (the Review view) let the assistant file a page or an edit as a proposal, and a person accepts it. The tools and `POST /knowledge/proposals` stay dark behind `KNOWLEDGE_PROPOSALS`, default off.
+- **Do this:** when KB-5b is merged, turn the flag on in staging first, with `sudo acb-staging-flag` or the staging `.env`. Test a proposal in the chat. Then accept it in Knowledge → Review. Production waits for the owner's word.
+- **Authority:** owner, 2026-10-22. `specs/knowledge_base.md` §8.1 (F1, F2), §13
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-398 · Turn on knowledge gaps and the kb_gap My Day card · [OWNER]
+- **Check:** `KNOWLEDGE_GAPS` names the org and `MY_DAY_PROVIDERS` holds `knowledge` in the production `.env`. If both hold, delete this entry.
+- **Why:** KB-9a (branch `kb-gaps`, migration 293) writes a `kb_gaps` row when the assistant's company search finds no Knowledge page. A question that two members ask within 30 days shows a "Write a page" card to a Knowledge manager. It is dark by default.
+- **Do this:** after KB-9a merges, set both on staging and check the Gaps view in Knowledge. Production waits for the owner's word.
+- **Authority:** `specs/knowledge_base.md` §8.4 door 3, §9, §13
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-399 · Build the next Knowledge AI slices of §22 · [AGENT]
+- **Check:** `grep -nE "KB-5c|KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Why:** §22 of `knowledge_base.md` is the AI roadmap of 2026-10-22. It ranks the slices by value and names the tier of each.
+- **Do this, in order:**
+  1. KB-5c: the 14-day expiry of pending proposals (no model).
+  2. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
+  3. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
+  4. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
+  5. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
+  6. KB-4b citation chips, then KB-10 `kb:read` on MCP.
+  Each paid pass has its own flag, default off, which the owner turns on.
+- **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-400 · Finish the Notion and Confluence parity of wave 2 · [AGENT]
+- **Check:** the wave 2 table of `knowledge_base.md` §21.7 marks KB-2j, KB-2o and KB-2c BUILT. If all three are BUILT, delete this entry.
+- **Why:** KB-2h, KB-2k, KB-3d and KB-2m are built. Three rows remain.
+- **Do this:** KB-2j (math, mermaid, image resize and captions, allowlisted embeds), then KB-2o (labels). KB-2c (files) waits for Artifacts AM-5 and H-322. The `kb_links` row for a person mention (KB-2k1) waits for a reader that needs it.
+- **Authority:** `specs/knowledge_base.md` §21.7
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-401 · Run the hardening pass of the Knowledge build · [AGENT]
+- **Check:** `grep -c "^| K-" project-docs/hardening_backlog.md` prints 0. If it prints 0, delete this entry.
+- **Why:** many WS-61 slices landed in build mode with the verifier only (engineering_practice.md §7a). The backlog holds K-1 to K-8.
+- **Do this:** open one `harden` PR. Run `diff-reviewer` on the whole wave 2 diff. Add the fences that K-4 to K-8 name. Run the visual review. Then close each K row.
+- **Authority:** owner directive, 2026-10-19. `specs/engineering_practice.md` §7a
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-402 · Fix the four P2s of the KB-9a review, and decide the question-text risk · [AGENT] · OWNER note
+- **Check:** `grep -nE "normali|ask_count|first_asked_at|reopen" apps/services/gateway/gateway/routes/knowledge/gaps.py` shows each fix, and `knowledge_base.md` §8.4 names the question-text rule. If both hold, delete this entry.
+- **Why:** the adversarial review of KB-9a (PR #1241) approved the slice with four P2 findings.
+- **Do this:**
+  1. The normaliser turns Indic vowel signs into spaces, so different Hindi or Tamil questions merge into one gap. Keep Unicode marks (category M) inside a word.
+  2. After 20 askers, a repeat ask by an unstored member still adds 1 to `ask_count`. Count a repeat once, or stop counting at the cap.
+  3. The 30-day window follows `last_asked_at`, so a chain of asks keeps it open. Measure it from `first_asked_at`, or store the asks per day.
+  4. A dismissed or answered gap never reopens. Add an undo for Dismiss, and reopen a gap whose answer page is deleted.
+- **OWNER note:** `sample_query` keeps the raw question, which can hold a name or a salary. Every Knowledge manager can read it. Decide whether to filter it, and record the rule in §8.4.
+- **Authority:** `specs/knowledge_base.md` §8.4
+- **Added:** 2026-10-23 · Knowledge session
+
+### H-403 · Check that the last two Knowledge PRs of 2026-10-23 merged and reached staging · [AGENT]
+- **Check:** `gh pr view 1241 --json state` reads MERGED, and `curl -s https://api.dev.metorite.com/version` shows a SHA at or after its merge. If both hold, delete this entry.
+- **Why:** the session closed while PR #1241 (KB-9a, migration 293) waited on CI with auto-merge on. PR #1240 (KB-5b) had merged.
+- **Do this:** if #1241 is still open, read its failed checks, fix forward, and merge it. Re-check that migration 293 is free on main first (R1). Then confirm staging serves it and the staging log shows `293_kb_gaps.sql ... ok`.
+- **Authority:** `specs/knowledge_base.md` §17 KB-9a
+- **Added:** 2026-10-23 · Knowledge session
 
 # DONE — deleted, not archived
 
