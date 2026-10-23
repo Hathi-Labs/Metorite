@@ -87,6 +87,7 @@
     "learn_rule_pattern",
     "install_default_rules",
     "copy_rules",
+    "rule_guidance",
     "list_rule_history",
     "resolve_execution",
     "update_assistant_settings",

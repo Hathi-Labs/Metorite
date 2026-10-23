@@ -327,6 +327,7 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "cancel_scheduled_send": {"schedule_id": "s1"},
     # Chat parity wave 1 (owner, 2026-10-23, §22).
     "copy_rules": {"from_account_id": BOX, "to_account_id": "acc-2"},
+    "rule_guidance": {"account_id": BOX, "action": "add", "guidance": "Never Marketing"},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 
@@ -514,6 +515,7 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
+    ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
     ("digest", "period"): ["day", "week"],
     # Round 2: each rule action type, the engine set and one outside it.
     ("create_rule", "action_type"): [*sorted(agents._RULE_ENGINE_TYPES), "SEND"],
@@ -524,6 +526,7 @@ _EXTRA = {
     ("manage_inbox", "move"): {"folder": "Archive"},
     ("manage_inbox", "label"): {"add_labels": ["Finance"]},
     ("run_rules", "message"): {"email_id": "m1"},
+    ("rule_guidance", "delete"): {"guidance_id": "g1"},
 }
 
 

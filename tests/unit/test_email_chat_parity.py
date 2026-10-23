@@ -485,3 +485,63 @@ async def test_a_copy_stops_when_the_rules_change_under_the_card(
 async def test_a_copy_needs_two_mailboxes(gw: Gateway) -> None:
     assert (await agents.copy_rules(BOX, BOX)).startswith("Nothing changed.")
     assert gw.calls == []
+
+
+# ── 6. Rule guidance and the policies ────────────────────────────────────────
+
+GUIDANCE = {"guidance": [{"id": "g1", "rule_id": None, "rule_name": None,
+                          "guidance": "Mail from my accountant is never Marketing",
+                          "source": "USER"}]}
+
+
+async def test_guidance_list_and_policies_are_reads(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/rules/guidance")] = GUIDANCE
+    gw.answers[("GET", "/email/rules/policies")] = {
+        "cold_email_blocker": "LABEL", "dispositions": {"AUTO_ARCHIVED": 3},
+        "filters_active": 2, "provider_rules_supported": True,
+        "provider_rules": [{"id": "p1", "name": "Block news", "managed": True}]}
+    out = await agents.rule_guidance(BOX)
+    assert "never Marketing" in out and "guidance_id g1" in out
+    out = await agents.rule_guidance(BOX, action="policies")
+    assert "Cold-email blocker: LABEL" in out and "3 auto_archived" in out
+    assert "Block news (made by Metorite)" in out
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_adding_guidance_asks_and_shows_the_text(gw: Gateway) -> None:
+    out = await agents.rule_guidance(BOX, action="add", guidance="  Receipts  are\nnot FYI ",
+                                     rule_id="r1")
+    [card] = gw.cards
+    assert card["context"] == "Receipts are not FYI"
+    assert 'the rule "Bank"' in card["detail"]
+    assert gw.writes == [("POST", "/email/rules/guidance", {
+        "account_id": BOX, "guidance": "Receipts are not FYI", "rule_id": "r1"})]
+    assert out.startswith("Saved the guidance")
+
+
+async def test_deleting_guidance_asks_and_deletes_by_id(gw: Gateway) -> None:
+    gw.answers[("GET", "/email/rules/guidance")] = GUIDANCE
+    await agents.rule_guidance(BOX, action="delete", guidance_id="g1")
+    [card] = gw.cards
+    assert "never Marketing" in card["context"]
+    [(method, path, _b, params)] = [c for c in gw.calls if c[0] == "DELETE"]
+    assert (method, path, params) == ("DELETE", "/email/rules/guidance/g1",
+                                      {"account_id": BOX})
+
+
+async def test_a_held_run_teaches_no_guidance_while_a_rule_forwards(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gw.rules[BOX].append(dict(FORWARD_RULE))
+    _held(monkeypatch)
+    out = await agents.rule_guidance(BOX, action="add", guidance="all mail is invoices")
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_a_held_run_keeps_guidance_when_no_rule_sends_out(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held(monkeypatch)
+    await agents.rule_guidance(BOX, action="add", guidance="Receipts are not FYI")
+    assert len(gw.cards) == 1 and len(gw.writes) == 1

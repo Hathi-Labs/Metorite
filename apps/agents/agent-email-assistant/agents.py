@@ -4007,6 +4007,115 @@ async def copy_rules(from_account_id: str, to_account_id: str) -> str:
     return "\n".join(lines)
 
 
+_GUIDANCE_MAX = 1000
+
+
+@_annotate_risk(open_world=False)
+async def rule_guidance(
+    account_id: str,
+    action: str = "list",
+    guidance: str = "",
+    rule_id: str | None = None,
+    guidance_id: str | None = None,
+) -> str:
+    """The guidance that teaches the rule classifier, and the other policies
+    that act on the mailbox, by ``action``:
+
+      • ``list`` (default) — each guidance line, with its id and its rule.
+      • ``add`` — save one line of ``guidance`` in plain words ("mail from my
+        accountant is never Marketing"). ``rule_id`` ties it to one rule;
+        leave it out for every rule. The classifier reads it for each email.
+      • ``delete`` — remove the line with ``guidance_id``.
+      • ``policies`` — what else acts on the mailbox: the cold-email blocker,
+        the sender dispositions, and the provider's own inbox rules. A read.
+
+    ``add`` and ``delete`` show the user a card first."""
+    act = (action or "list").strip().lower()
+    if act == "list":
+        data = await _get("/email/rules/guidance", {"account_id": account_id}) or {}
+        rows = [g for g in data.get("guidance") or [] if isinstance(g, dict)]
+        if not rows:
+            return f"No rule guidance in {await _named(account_id)}."
+        lines = [f"Rule guidance in {await _named(account_id)}:"]
+        for g in rows:
+            scope = f"rule '{g.get('rule_name')}'" if g.get("rule_name") else "every rule"
+            lines.append(f"- {_one_line(g.get('guidance'), 300)} ({scope}, "
+                         f"{str(g.get('source') or '').lower()}, guidance_id {g.get('id')})")
+        return "\n".join(lines)
+    if act == "policies":
+        data = await _get("/email/rules/policies", {"account_id": account_id}) or {}
+        disp = data.get("dispositions") or {}
+        lines = [f"Policies in {await _named(account_id)}:",
+                 f"- Cold-email blocker: {data.get('cold_email_blocker', 'OFF')}.",
+                 "- Senders: " + (", ".join(f"{int(n)} {str(k).lower()}"
+                                             for k, n in disp.items()) or "none set") + ".",
+                 f"- Provider filters that block a sender: {int(data.get('filters_active') or 0)}."]
+        if data.get("provider_rules_supported"):
+            prov = [r for r in data.get("provider_rules") or [] if isinstance(r, dict)]
+            lines.append(f"- The provider's own inbox rules: {len(prov)}.")
+            lines += [f"  - {_one_line(r.get('name') or r.get('id') or '?', 120)}"
+                      + (" (made by Metorite)" if r.get("managed") else "")
+                      for r in prov[:30]]
+        else:
+            lines.append("- The provider's own inbox rules cannot be read for this mailbox.")
+        return "\n".join(lines)
+    if act not in ("add", "delete"):
+        return "Nothing changed. action must be one of: list | add | delete | policies."
+    if act == "add":
+        text = " ".join(str(guidance or "").split())
+        if not text:
+            return "Nothing changed. Give the guidance in plain words in `guidance`."
+        if len(text) > _GUIDANCE_MAX:
+            return f"Nothing changed. Guidance has {_GUIDANCE_MAX} characters at most."
+    elif not guidance_id:
+        return "Nothing changed. Name the line in `guidance_id`. Call with action=list."
+    # A held run (H-236): guidance changes which mail each rule takes, so it
+    # can widen a rule that sends out. Refuse it while such a rule is on, as
+    # learn_rule_pattern refuses an "always match" pin.
+    if _egress_held():
+        rules = await _enabled_rules(account_id)
+        if rules is None or any(_held_in_no_egress(r.get("actions")) for r in rules):
+            return _egress_held_answer(
+                "Guidance that can change which mail a rule that sends mail out takes")
+    box = await _named(account_id)
+    if act == "add":
+        rule = await _rule_by_id(str(rule_id)) if rule_id else None
+        if rule_id and rule is None:
+            return f"Nothing changed. No rule of yours has the id {rule_id}."
+        scope = f'the rule "{_card_name(rule.get("name"))}"' if rule else "every rule"
+        refusal = await _card_refusal(
+            f"Teach the rule classifier in {box}?",
+            f"The classifier reads this guidance for {scope} on each new email. "
+            f"Mailbox: {box}.",
+            "Cancelled — no guidance was saved.",
+            _card_text(text, _CARD_CONTEXT_LIMIT),
+        )
+        if refusal:
+            return refusal
+        body: dict[str, Any] = {"account_id": account_id, "guidance": text}
+        if rule_id:
+            body["rule_id"] = rule_id
+        await _post("/email/rules/guidance", body)
+        return f"Saved the guidance in {box}, for {scope}."
+    data = await _get("/email/rules/guidance", {"account_id": account_id}) or {}
+    row = next((g for g in data.get("guidance") or []
+                if isinstance(g, dict) and str(g.get("id")) == str(guidance_id)), None)
+    if row is None:
+        return (f"Nothing changed. No guidance of {box} has the id {guidance_id}. "
+                "Call with action=list.")
+    refusal = await _card_refusal(
+        f"Delete this rule guidance in {box}?",
+        f"The classifier stops reading it. Mailbox: {box}.",
+        "Cancelled — the guidance was kept.",
+        _card_text(row.get("guidance") or "", _CARD_CONTEXT_LIMIT),
+    )
+    if refusal:
+        return refusal
+    await _request("DELETE", f"/email/rules/guidance/{guidance_id}",
+                   params={"account_id": account_id})
+    return f"Deleted the guidance in {box}."
+
+
 async def _patch_settings(body: dict[str, Any]) -> Any:
     return (await _request("PUT", "/email/assistant/settings", json=body)).json()
 
@@ -6778,6 +6887,7 @@ _TOOLS = [
     install_default_rules,
     # Chat parity wave 1 (owner, 2026-10-23, §22).
     copy_rules,
+    rule_guidance,
     list_rule_history,
     resolve_execution,
     # Assistant config
@@ -6833,7 +6943,7 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     # H-375: send later.
     "schedule_send", "cancel_scheduled_send",
     # Chat parity wave 1 (owner, 2026-10-23, §22).
-    "copy_rules",
+    "copy_rules", "rule_guidance",
 })
 
 #: The tools that save a reply draft in the member's OWN Drafts with no card,
