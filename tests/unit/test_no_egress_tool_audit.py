@@ -70,6 +70,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # (C) chat parity wave 1 (§22): the voice profile feeds each later
         # reply draft too
         "voice_profile",
+        # (B) settings of several mailboxes at once: auto-run and the digest
+        # change what later leaves the mailbox (multi-mailbox review, P0)
+        "apply_settings_to_mailboxes",
     }),
     "crm-assistant": frozenset({
         # (B) D-CRM-9: an agent write queues for the live Zoho tenant

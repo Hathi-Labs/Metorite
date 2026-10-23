@@ -1062,3 +1062,20 @@ async def test_list_accounts_says_how_many_of_the_limit_are_used(gw: Gateway) ->
     assert "2 of 5 mailboxes" in out and "refused until" in out
     gw.accounts = TWO  # an old gateway sends no limit: no line, no guess
     assert " of " not in (await agents.list_accounts()).split("\n")[1]
+
+
+async def test_apply_settings_to_mailboxes_refuses_in_any_held_run(monkeypatch) -> None:
+    """Review of the multi-mailbox branch, P0: a held run with the held-card
+    switch OFF kept the tool, and it could turn on settings that later send
+    mail out. It refuses on the hold itself now, and a held run withholds it
+    (test_no_egress_tool_audit.py)."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
+    out = await agents.apply_settings_to_mailboxes(all_mailboxes=True, auto_run=True)
+    assert out.startswith("Nothing changed.")
+
+
+def test_apply_settings_to_mailboxes_takes_no_digest_email_send() -> None:
+    import inspect
+    assert "digest_send_to_email" not in inspect.signature(agents.apply_settings_to_mailboxes).parameters
+    assert "digest_send_to_email" not in agents._MULTI_SETTING_KEYS

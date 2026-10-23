@@ -4135,14 +4135,17 @@ async def update_assistant_settings(
 _MULTI_SETTING_KEYS = (
     "auto_run", "cold_email_blocker", "draft_replies", "draft_confidence",
     "follow_up_awaiting_days", "follow_up_needs_reply_days",
-    "follow_up_auto_draft", "digest_frequency", "digest_send_to_email",
+    "follow_up_auto_draft", "digest_frequency",
     "multi_rule_execution", "sensitive_data_protection",
 )
 #: The most mailboxes that one call changes.
 _MULTI_MAILBOX_MAX = 10
 
 
-@_annotate_risk(destructive=True, open_world=False)
+# open_world: a held run withholds it, as it withholds update_assistant_settings
+# (review of the multi-mailbox branch, P0). Auto-run and the digest settings
+# change what later leaves the mailbox.
+@_annotate_risk(destructive=True, open_world=True)
 async def apply_settings_to_mailboxes(
     account_ids: list[str] | None = None,
     all_mailboxes: bool = False,
@@ -4154,7 +4157,6 @@ async def apply_settings_to_mailboxes(
     follow_up_needs_reply_days: int | None = None,
     follow_up_auto_draft: bool | None = None,
     digest_frequency: str | None = None,
-    digest_send_to_email: bool | None = None,
     multi_rule_execution: bool | None = None,
     sensitive_data_protection: bool | None = None,
 ) -> str:
@@ -4167,7 +4169,9 @@ async def apply_settings_to_mailboxes(
     writing style, personal instructions) is one mailbox's own, so change it
     with update_assistant_settings for that mailbox. Every other setting of
     each mailbox stays as it is."""
-    if _held_card_mode():
+    if _egress_held():
+        # A second lock behind the withhold: a held run never changes the
+        # settings of several mailboxes at once.
         return ("Nothing changed. In this chat a settings change goes through "
                 "update_assistant_settings, one mailbox at a time.")
     wanted = {k: v for k, v in {
@@ -4177,7 +4181,6 @@ async def apply_settings_to_mailboxes(
         "follow_up_needs_reply_days": follow_up_needs_reply_days,
         "follow_up_auto_draft": follow_up_auto_draft,
         "digest_frequency": digest_frequency,
-        "digest_send_to_email": digest_send_to_email,
         "multi_rule_execution": multi_rule_execution,
         "sensitive_data_protection": sensitive_data_protection,
     }.items() if v is not None}
