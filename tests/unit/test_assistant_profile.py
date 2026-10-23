@@ -287,6 +287,15 @@ class TestTheText:
         assert res.status_code == 422, res.text
         assert fake.sql == []
 
+    @pytest.mark.parametrize("key", ["address", "style"])
+    def test_a_lone_surrogate_in_a_key_is_a_422_not_a_500(self, fake: _FakeDB, key: str) -> None:
+        # PZ-1 review, P2: the 422 message named the member's key, and a
+        # lone surrogate could not be encoded, so the answer was a 500.
+        raw = b'{"key": "%s", "value": {"\\ud800": 1}}' % key.encode()
+        res = _client().put(_URL, content=raw, headers={"Content-Type": "application/json"})
+        assert res.status_code == 422, res.text
+        assert fake.sql == []
+
     def test_a_nul_is_refused(self, fake: _FakeDB) -> None:
         res = _client().post(f"{_URL}/facts", json={"text": "a \x00 here", "kind": "about"})
         assert res.status_code == 422

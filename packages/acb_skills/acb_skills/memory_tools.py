@@ -439,7 +439,8 @@ async def save_agent_memory(fact: str) -> str:
         fact: A single, self-contained fact.
 
     Returns:
-        "Agent memory saved." or an error description.
+        "Agent memory saved." on success, MEMORY_OFF when Mem0 is off, or an
+        error description.
 
     Examples:
         await save_agent_memory("PO approvals over 5L require the founder's sign-off")
@@ -451,6 +452,10 @@ async def save_agent_memory(fact: str) -> str:
         agent = _get_memory_agent_name()
         if not agent:
             return "(cannot save — no agent context)"
+        # The same rule as save_memory (personalization.md §2.1).
+        if not _mem0_on():
+            _log.info("memory_tools.save_agent_memory_skipped_mem0_off")
+            return MEMORY_OFF
         messages = [
             {"role": "user", "content": f"Remember this for your work: {fact}"},
             {"role": "assistant", "content": f"Saved to agent memory: {fact}"},
@@ -512,7 +517,8 @@ async def save_org_memory(fact: str) -> str:
         fact: A single, self-contained organisation-level fact.
 
     Returns:
-        "Organisation memory saved." or an error description.
+        "Organisation memory saved." on success, MEMORY_OFF when Mem0 is off,
+        or an error description.
 
     Examples:
         await save_org_memory("Our fiscal year runs April-March")
@@ -532,6 +538,10 @@ async def save_org_memory(fact: str) -> str:
         from acb_memory import add_scoped_memories, scope_key  # noqa: PLC0415
 
         agent = _get_memory_agent_name() or "org"
+        # The same rule as save_memory (personalization.md §2.1).
+        if not _mem0_on():
+            _log.info("memory_tools.save_org_memory_skipped_mem0_off")
+            return MEMORY_OFF
         messages = [
             {"role": "user", "content": f"Remember this company-wide fact: {fact}"},
             {"role": "assistant", "content": f"Saved to organisation memory: {fact}"},

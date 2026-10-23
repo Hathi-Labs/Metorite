@@ -100,3 +100,41 @@ def test_the_tool_reads_the_same_switch_as_the_client() -> None:
 
     assert '"mem0_enabled"' in inspect.getsource(MemoryClient._get_client)
     assert '"mem0_enabled"' in inspect.getsource(memory_tools._mem0_on)
+
+
+# ── The scoped writers (PZ-1 review, P2) ────────────────────────────────────
+
+
+@pytest.fixture
+def scoped(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    seen: list[str] = []
+
+    async def _add(scope: str, messages: Any, agent_id: str = "") -> None:
+        seen.append(scope)
+
+    monkeypatch.setattr(acb_memory, "add_scoped_memories", _add)
+    monkeypatch.setattr(memory_tools, "_get_memory_agent_name", lambda: "orchestrator")
+    monkeypatch.setattr(memory_tools, "_may", lambda _cap: True)
+    return seen
+
+
+@pytest.mark.parametrize("tool", ["save_agent_memory", "save_org_memory"])
+def test_a_scoped_writer_with_mem0_off_never_says_saved(
+    monkeypatch: pytest.MonkeyPatch, scoped: list[str], tool: str,
+) -> None:
+    _mem0(monkeypatch, False)
+    answer = asyncio.run(getattr(memory_tools, tool)("Our fiscal year runs April-March"))
+    assert answer == memory_tools.MEMORY_OFF
+    assert scoped == []
+
+
+@pytest.mark.parametrize("tool, said", [
+    ("save_agent_memory", "Agent memory saved."),
+    ("save_org_memory", "Organisation memory saved."),
+])
+def test_a_scoped_writer_with_mem0_on_saves(
+    monkeypatch: pytest.MonkeyPatch, scoped: list[str], tool: str, said: str,
+) -> None:
+    _mem0(monkeypatch, True)
+    assert asyncio.run(getattr(memory_tools, tool)("x")) == said
+    assert len(scoped) == 1

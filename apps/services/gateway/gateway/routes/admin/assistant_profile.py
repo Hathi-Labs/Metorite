@@ -149,9 +149,12 @@ def _email(value: Any) -> str:
 def _object(value: Any, keys: tuple[str, ...], what: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{what} is an object")
-    unknown = sorted(str(k) for k in value if k not in keys)
+    unknown = [k for k in value if k not in keys]
     if unknown:
-        raise ValueError(f"{what} has an unknown key: {', '.join(unknown)[:200]}")
+        # The message names the known keys, never the member's. A key with a
+        # lone surrogate cannot be encoded, and it made this a 500 (PZ-1
+        # review, P2).
+        raise ValueError(f"{what} has an unknown key. Known keys: {', '.join(keys)}")
     return value
 
 
