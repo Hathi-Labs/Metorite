@@ -238,6 +238,32 @@ clone cache.
    tool, and so is an MCP tool, an MCP-born tool and a `STORE_WRITES` member
    (the four memory writes and `save_note`). An agent's own tool carries its
    annotation on the function (`__tool_risk__`).
+   A held run also keeps the card-bound sends of `CARD_BOUND_SEND_TOOLS`:
+   `compose_reply` (EM-CR), `send_draft` and `schedule_send` (H-374, owner,
+   2026-10-22).
+   `is_card_bound_send` needs the name on the list, the `card_bound`
+   annotation and the exact pinned parameters. Each card shows each
+   recipient. Fence: tests/unit/test_email_chat_reply.py. The hold texts
+   offer no new conversation and no paste by hand. Fence:
+   tests/unit/test_held_send_guidance.py.
+   §21 (`email_app_master_plan.md`): while `EMAIL_HELD_CARD_SEND` is on, a
+   held mail run reads `EGRESS_HOLD_NOTE_MAIL_CARDS` and
+   `EGRESS_HELD_MAIL_ANSWER_CARDS`, and the sends of
+   `HELD_CARD_SEND_TOOLS` join a held run, each with its exact pin. With the
+   switch off, none joins, and the held set is the set of H-374. A test
+   asserts it (tests/unit/test_egress_card_bound_pin.py).
+5g-1. held_card.py -- what the gateway, the email assistant and the client
+   agree on for a held send card (§21). `held_card_send_enabled` is the ONE
+   reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. It holds the four
+   classes (`org`, `sent`, `thread`, `new`), the default ticks and the marks.
+   It also holds the lookalike flag of a domain (`lookalike_of`), the row
+   label, and the files rule (`parse_file_ref` takes `attachment:<id>` only).
+   `HELD_SETTING_DECISIONS` holds the decision for each parameter of
+   `update_assistant_settings` in a held chat: a closed key, the mailbox, or
+   refused. The
+   client mirrors the marks in `sendCard.ts`, and a test holds the two in
+   step. Fences: tests/unit/test_held_send_classes.py and
+   tests/unit/test_held_send_card_record.py.
    TRUST IS BY IDENTITY (H-236 follow-up). `_platform_owned` reads
    `_PLATFORM_CALLABLES`, a weak map from each platform callable to the tool
    names that it may carry. A tool OBJECT takes a registry entry, or a
@@ -295,6 +321,11 @@ clone cache.
    choose a narrower act that writes less. `draft_reply` of the email
    assistant returns an unsaved draft when no card can show (WS-17
    EM-G11c1). It never approves a write.
+   A held send card (§21) passes `request_id`, the card id that the
+   gateway minted, and `with_answer=True`. The answer is then a
+   `RowsAnswer` that holds the exact text, the ticked ids and the card's
+   thread. A row may carry `kind`, `class` and `warning`. A row with none
+   of them is as before.
    `refuse_cards()` is the scope of a run with no card channel (WS-47
    WAC-3, the WhatsApp bot). Inside it `request_confirmation` denies at
    once, `ask_questions` returns a fixed line, and nothing is pushed. WAC-4 is the one exception. In a WhatsApp run with writes on,

@@ -225,6 +225,11 @@ _CANONICAL_FOLDERS: dict[str, str] = {
 }
 
 
+#: The folder keys that no move may reach (§21 fix round 1, P1-a). A
+#: provider files mail in Sent and Drafts itself, on a send and on a save.
+MOVE_REFUSED_FOLDERS: frozenset[str] = frozenset({"sent", "drafts"})
+
+
 def canonical_folder(name: str | None) -> str:
     """Normalize a provider folder name/ID to a canonical lowercase key.
 
@@ -712,8 +717,13 @@ class BaseEmailProvider(ABC):
         user label as ``archive`` (O-GM-1). Call it through
         :func:`local_folder_after_move`, because some test fakes do not
         subclass this class.
+
+        §21 fix round 1 (P1-a): a move INTO Sent or Drafts is refused for
+        every provider. Mail cannot be moved into Sent, and a row that a move
+        files there would read as mail the member sent.
         """
-        return canonical_folder(name)
+        key = canonical_folder(name)
+        return None if key in MOVE_REFUSED_FOLDERS else key
 
     # Canonical bulk actions, shared by every provider so callers name them once.
     BULK_ACTIONS = ("archive", "trash", "read", "unread", "star", "unstar")
@@ -1075,6 +1085,10 @@ def local_folder_after_move(provider: Any, name: str) -> str | None:
     ``None`` means that the provider refuses the move, so the caller writes
     nothing.
     """
+    key = canonical_folder(name)
+    if key in MOVE_REFUSED_FOLDERS:
+        # §21 fix round 1 (P1-a): for every provider, before any override.
+        return None
     if isinstance(provider, BaseEmailProvider):
         return provider.folder_after_move(name)
-    return canonical_folder(name)
+    return key

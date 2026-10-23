@@ -22,10 +22,12 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import {
   bodyCanGo,
+  classOfAddress,
   discardReplyDraft,
   lineCount,
   MAX_REPLY_BODY,
@@ -39,6 +41,7 @@ import {
   type ReplyApproval,
   type ReplyForm,
 } from "@/lib/replyCard";
+import { rowMark } from "@/lib/sendCard";
 
 interface ReplyCardFormProps {
   /** The form, or null when the card could not read it. */
@@ -52,11 +55,35 @@ interface ReplyCardFormProps {
   disabled?: boolean;
 }
 
-function AddressRow({ label, list }: { label: string; list: string[] }) {
+function AddressRow({ label, list, form }: { label: string; list: string[]; form: ReplyForm }) {
+  // A held reply card (§21) marks each person that the server classed as
+  // new or as the person of the thread. Any other card draws the list as before.
+  const marked = !!form.classes;
   return (
     <div className="flex gap-3 text-xs" data-reply-recipients={label.toLowerCase()}>
       <dt className="w-10 shrink-0 pt-px text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 flex-1 break-words text-foreground">{list.join(", ")}</dd>
+      {marked ? (
+        <dd className="min-w-0 flex-1 space-y-0.5 break-words text-foreground">
+          {list.map((a) => {
+            const cls = classOfAddress(form, a);
+            const mark = rowMark(cls);
+            return (
+              <span key={a} className="flex flex-wrap items-center gap-1.5">
+                <span className="min-w-0 break-words">{a}</span>
+                {mark && (
+                  <span data-reply-mark={cls}>
+                    <Badge tone={cls === "new" ? "warning" : "neutral"} size="xs">
+                      {mark}
+                    </Badge>
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </dd>
+      ) : (
+        <dd className="min-w-0 flex-1 break-words text-foreground">{list.join(", ")}</dd>
+      )}
     </div>
   );
 }
@@ -156,8 +183,8 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
       </div>
 
       <dl className="space-y-1" aria-label="Recipients">
-        <AddressRow label="To" list={shown.to} />
-        {shown.cc.length > 0 && <AddressRow label="Cc" list={shown.cc} />}
+        <AddressRow label="To" list={shown.to} form={form} />
+        {shown.cc.length > 0 && <AddressRow label="Cc" list={shown.cc} form={form} />}
       </dl>
 
       {form.note && <p className="text-[11px] text-muted-foreground">{form.note}</p>}

@@ -396,6 +396,8 @@ def chat(monkeypatch):
             # EM-T13b-1: ``send_draft`` reads the draft before its card.
             return {"account_id": "box-b", "folder": "drafts", "subject": "Hi",
                     "to_addresses": [{"email": "kim@contoso.test"}]}
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b): the card's seal
+            return {"text_digest": "a" * 64, "subject": "Hi", "body_text": "Hello"}
         return {}
 
     async def fake_post(path, body):
@@ -470,7 +472,8 @@ async def test_the_draft_send_card_names_its_mailbox(chat) -> None:
     assert card["detail"].startswith("From Personal · dana@outlook.com")
     assert chat.posts == [("/email/drafts/send", {
         "account_id": "box-b", "draft_id": "d1",
-        "expect": {"to": ["kim@contoso.test"], "cc": [], "bcc": []}})]
+        "expect": {"to": ["kim@contoso.test"], "cc": [], "bcc": [],
+                   "text_digest": "a" * 64}})]
 
 
 async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:

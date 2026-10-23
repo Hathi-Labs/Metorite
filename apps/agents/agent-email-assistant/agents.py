@@ -59,13 +59,14 @@ from acb_skills.untrusted import UntrustedFrame
 #   rule that forwards, calls a webhook or drafts to an address that it names
 #   opens an outbound path. So in a ``no_egress`` run each rule tool refuses
 #   that part at call time (:func:`_egress_held`), and does the rest.
-# * (B) ``True``: a send, a forward, a send of a draft, an unsubscribe (a mail
-#   or a request to a URL from the mail), and the settings (a signature, the
-#   text about the member, auto-run).
+# * (B) ``True``: a send, a forward, an unsubscribe (a mail or a request to
+#   a URL from the mail), and the settings (a signature, the text about the
+#   member, auto-run).
 # * (C) ``True``: the knowledge base, a store that feeds each later reply.
-# * (D) ``True`` and ``card_bound_reply``: ``compose_reply`` (EM-CR, §18). It
-#   sends, and a held run keeps it only because of its card and its pinned
-#   parameters (``acb_skills.egress.CARD_BOUND_REPLY_TOOLS``).
+# * (D) ``True`` and ``card_bound``: ``compose_reply`` (EM-CR, §18),
+#   ``send_draft`` and ``schedule_send`` (H-374, owner decisions of
+#   2026-10-22). Each sends, and a held run keeps it only because of its
+#   card and its pinned parameters (``acb_skills.egress.CARD_BOUND_SEND_TOOLS``).
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -89,6 +90,20 @@ def _egress_held() -> bool:
     except ImportError:
         return True
     return no_egress_for_this_run()
+
+
+def _held_card_mode() -> bool:
+    """True when this run sends through the held card (§21).
+
+    That is a held run (:func:`_egress_held`) while ``EMAIL_HELD_CARD_SEND``
+    is on. The one reader of the switch is ``acb_skills.held_card``. With the
+    switch off, each tool acts exactly as it did before §21, and an older
+    platform with no reader reads as off."""
+    try:
+        from acb_skills.held_card import held_card_send_enabled
+    except ImportError:
+        return False
+    return held_card_send_enabled() and _egress_held()
 
 
 def _egress_held_answer(act: str) -> str:
@@ -1785,8 +1800,8 @@ async def draft_reply(
 
     A second chat draft of the same email updates the first one. A draft
     that the member wrote or edited is never written over: the new text
-    then goes beside it, and the answer says so. The member can finish and
-    send the draft in the Email app (owner, 2026-10-22). Set
+    then goes beside it, and the answer says so. The member can finish the
+    draft in the chat, with edit_draft and send_draft (owner, 2026-10-22). Set
     save=false only to show a text in the chat and leave Drafts unchanged.
 
     ``instruction`` carries what the member wants the reply to say, in the
@@ -1852,7 +1867,7 @@ async def draft_reply(
 # 4. With no card (WhatsApp, a batch or scheduled run) it drafts, saves and
 #    sends nothing.
 #
-# ``acb_skills.egress.CARD_BOUND_REPLY_TOOLS`` pins its parameters. A new
+# ``acb_skills.egress.CARD_BOUND_SEND_TOOLS`` pins its parameters. A new
 # parameter makes it an egress tool again. Fence:
 # ``tests/unit/test_email_chat_reply.py``.
 
@@ -1918,6 +1933,36 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
 #: The longest card title that ``request_confirmation`` keeps whole.
 _REPLY_TITLE_MAX = 120
 
+#: The notice of a held reply card whose Reply all adds a new address (§21,
+#: open question 1, the safer choice).
+_REPLY_ALL_NEW_NOTICE = (
+    "Reply all adds an address that you do not know, so the card opens on "
+    "Reply. Each new address is marked. Press Reply all to add them.")
+
+
+def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
+    """Put the server's classes on a reply form of a held run (§21).
+
+    A person that Reply all adds, and that the member does not know, starts
+    out: the card opens on Reply, and the member must press Reply all. An
+    address with no class reads as new, so a fault fails closed."""
+    classes = {str(k).strip().lower(): str(v)
+               for k, v in (prep.get("classes") or {}).items() if k}
+    rec = form["recipients"]
+    shown = {a.strip().lower() for key in ("to", "cc")
+             for a in (rec.get("reply") or {}).get(key) or []}
+    added = [a for key in ("to", "cc") for a in (rec.get("reply_all") or {}).get(key) or []
+             if a.strip().lower() not in shown]
+    every = {a.strip().lower() for choice in ("reply", "reply_all") for key in ("to", "cc")
+             for a in (rec.get(choice) or {}).get(key) or []}
+    form["classes"] = {a: classes.get(a, "new") for a in every}
+    if form["reply_all"] and any(classes.get(a.strip().lower(), "new") == "new" for a in added):
+        form["reply_all"] = False
+        if len(form["notices"]) < 4:
+            form["notices"].append(_REPLY_ALL_NEW_NOTICE)
+        else:
+            form["note"] = f"{_REPLY_ALL_NEW_NOTICE} {form['note']}".strip()
+
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
     """The card title: who the reply goes TO, as the server derived it.
@@ -1933,7 +1978,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
     return f"Reply to {len(to)} recipients?" if len(to) != 1 else "Reply to 1 recipient?"
 
 
-@_annotate_risk(destructive=True, open_world=True, card_bound_reply=True)
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
     email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
     instruction: str = "",
@@ -1946,16 +1991,15 @@ async def compose_reply(
 
     The text of each card also goes to the member's Drafts. A new card for
     the same email updates the chat's own draft, and never a draft that the
-    member wrote or edited. So the member can finish and send the reply in
-    the Email app instead. The member's Discard trashes the card's draft,
-    unless the member edited it there.
+    member wrote or edited. So the member can also finish the reply later,
+    in the chat with edit_draft and send_draft. The
+    member's Discard trashes the card's draft, unless the member edited it
+    there.
 
     Set ``reply_all=true`` when the member asked to answer everyone on the
     email. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
-    choose no recipient: the server derives the recipients. You cannot add
-    a CC or a BCC. When the member asks for one, say so, and tell them to
-    save to Drafts and add it there.
+    choose no recipient: the server derives the recipients.
 
     ``draft`` is the reply text that you and the member already agreed in
     the chat, or that the request to you contains. Pass it WORD FOR WORD,
@@ -1989,9 +2033,11 @@ async def compose_reply(
         steer["reply_all"] = True
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, reply_all)
+    if _held_card_mode():
+        _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     answer = await ask_tools.request_confirmation(
-        title=_reply_title(form, reply_all),
+        title=_reply_title(form, form["reply_all"]),
         detail=_card_text(
             f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
         reply=form,
@@ -2844,8 +2890,8 @@ async def run_rules(
         if listing is None:
             return (
                 "Nothing changed. Too many rules that send email out, or that "
-                "write a draft text, are on to show on one card. Run them from "
-                "the rules screen of the Email app."
+                "write a draft text, are on to show on one card. Ask the member "
+                "which of them to turn off with update_rule, then run the rules again."
             )
         refusal = await _card_refusal(
             f"Apply the rules to {what} in {box}?",
@@ -3146,7 +3192,10 @@ def _settings_needing_card(
     return out
 
 
-@_annotate_risk(open_world=True)
+# §21.6: ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND is off. With
+# the switch on, a held run keeps this tool, and it changes only the closed
+# keys behind a card (:func:`_held_settings`).
+@_annotate_risk(open_world=True, card_bound=True)
 async def update_assistant_settings(
     account_id: str | None = None,
     about: str | None = None,
@@ -3201,6 +3250,21 @@ async def update_assistant_settings(
     the user named no mailbox. One mailbox then acts. With two or more, the
     tool asks which one and changes nothing (§11.3 rule 4).
     """
+    if _held_card_mode():
+        return await _held_settings(account_id, {
+            "about": about, "signature": signature, "auto_run": auto_run,
+            "cold_email_blocker": cold_email_blocker,
+            "personal_instructions": personal_instructions, "writing_style": writing_style,
+            "draft_replies": draft_replies, "draft_confidence": draft_confidence,
+            "follow_up_awaiting_days": follow_up_awaiting_days,
+            "follow_up_needs_reply_days": follow_up_needs_reply_days,
+            "follow_up_auto_draft": follow_up_auto_draft, "digest_frequency": digest_frequency,
+            "digest_categories": digest_categories, "digest_day_of_week": digest_day_of_week,
+            "digest_time_of_day": digest_time_of_day,
+            "digest_send_to_email": digest_send_to_email,
+            "multi_rule_execution": multi_rule_execution,
+            "sensitive_data_protection": sensitive_data_protection,
+        })
     account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
     if ask:
         return ask
@@ -3262,6 +3326,73 @@ async def update_assistant_settings(
     setif("sensitive_data_protection", sensitive_data_protection)
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
+
+
+def _setting_shown(value: Any) -> str:
+    """One value of a setting, as the held card shows it."""
+    if value is None or value == "":
+        return "(not set)"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return _card_text(value, 60)
+
+
+async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
+    """``update_assistant_settings`` in a held run (§21.6).
+
+    Only the closed keys of ``held_card.HELD_SETTING_DECISIONS`` change, and
+    only in a mailbox of the member. A free-text key, ``digest_send_to_email``
+    and ``digest_categories`` are refused before any card. The card ALWAYS
+    shows, also for a change that asks no card outside a held run, and it
+    names each key, its old value and its new value."""
+    from acb_skills.held_card import (
+        HELD_SETTING_DECISIONS,
+        SETTING_CLOSED,
+        SETTING_REFUSED,
+        closed_setting_value,
+    )
+
+    given = {k: v for k, v in wanted.items() if v is not None}
+    refused = sorted(k for k in given if HELD_SETTING_DECISIONS.get(k) != SETTING_CLOSED)
+    if refused:
+        held = [k for k in refused if HELD_SETTING_DECISIONS.get(k) == SETTING_REFUSED]
+        return ("Nothing changed. This chat read email from outside senders, so it cannot "
+                f"change {', '.join(held or refused)}: free text or a send that a later run "
+                "acts on. Tell the member in one sentence, and change the other settings "
+                "without it.")
+    if not given:
+        return "Nothing changed. Name one setting to change."
+    try:
+        values = {k: closed_setting_value(k, v) for k, v in given.items()}
+    except ValueError as exc:
+        return f"Nothing changed. {exc}."
+    account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
+    if ask:
+        return ask
+    own = {str(a.get("id")) for a in await _accounts()}
+    if str(account_id) not in own:
+        return ("Nothing changed. That mailbox is not a mailbox of the member, so this chat "
+                "cannot change its settings.")
+    cur = await _get("/email/assistant/settings", {"account_id": account_id}) or {}
+    box = await _named(account_id)
+    lines = [f"- {k}: {_setting_shown(cur.get(k))} → {_setting_shown(v)}"
+             for k, v in values.items()]
+    refusal = await _card_refusal(
+        f"Change {len(values)} setting(s) of {box}?",
+        f"Mailbox: {box}. Each change is in the list below, with its old and new value.",
+        "Cancelled — the settings were not changed.",
+        "\n".join(lines),
+    )
+    if refusal:
+        return refusal
+    # The card can wait: read again, so the write keeps each other change.
+    body: dict[str, Any] = dict(
+        await _get("/email/assistant/settings", {"account_id": account_id}) or {})
+    body["account_id"] = account_id
+    body.update(values)
+    await _patch_settings(body)
+    return f"Assistant settings updated for {box}: " + "; ".join(
+        f"{k} is {_setting_shown(v)}" for k, v in values.items()) + "."
 
 
 @_annotate_risk(open_world=False)
@@ -3872,7 +4003,10 @@ async def _refuse_reply_mailbox(email_id: str, own: str, named: str) -> str:
     )
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# §21 (the New row): ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND
+# is off. With the switch on, a held run keeps this tool for a NEW mail only,
+# through the held card (:func:`_held_new_mail`).
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def send_email(
     account_id: str | None = None,
     *,
@@ -3885,8 +4019,9 @@ async def send_email(
     attachments: list[str] | None = None,
     reply_all: bool = False,
 ) -> str:
-    """Send an email immediately — a new message OR a reply. Outward-facing —
-    ALWAYS confirm the recipients and body with the user before calling this.
+    """Send an email immediately — a new message OR a reply. Outward-facing.
+    The tool shows the member its own card with the recipients and the body,
+    and sends only after Send. So do not ask in text first.
 
     To REPLY to an email, pass ``reply_to_email_id`` (the original's local id);
     the recipient and 'Re:' subject are derived from it automatically (and it's
@@ -3925,6 +4060,10 @@ async def send_email(
             a file in your own workspace can be attached. Use list_artifacts
             to see what's available; write_artifact to create one first.
     """
+    if _held_card_mode():
+        return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
+                                    bcc=bcc, reply_to_email_id=reply_to_email_id,
+                                    attachments=attachments, reply_all=reply_all)
     to = list(to or [])
     cc = list(cc or [])
     reply_notices: list[str] = []
@@ -4010,6 +4149,42 @@ async def send_email(
     return f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
 
 
+#: The answer of a reply through ``send_email`` in a held run (§21.3, the New row).
+_HELD_REPLY_REFUSED = (
+    "Not sent. In this chat a reply goes through compose_reply, which derives "
+    "the recipients from the email. Call compose_reply with the email_id.")
+
+
+async def _held_new_mail(
+    account_id: str | None, *, body: str, to: list[str] | None, subject: str | None,
+    cc: list[str] | None, bcc: list[str] | None, reply_to_email_id: str | None,
+    attachments: list[str] | None, reply_all: bool,
+) -> str:
+    """``send_email`` in a held run (§21.3, the New row): a new mail only,
+    through the held card. The gateway classes each person, and a new
+    address starts unticked. A file must be ``attachment:<id>`` of the
+    member's own mailbox. The gateway refuses any other file."""
+    if reply_to_email_id or reply_all:
+        return _HELD_REPLY_REFUSED
+    to = [str(a) for a in (to or []) if str(a).strip()]
+    if not to:
+        return "Not sent. No recipient — pass `to`."
+    if not account_id:
+        account_id, ask = await _new_mail_mailbox(to[0])
+        if ask:
+            return ask
+    res = await _held_card({
+        "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
+        "bcc": list(bcc or []), "subject": subject or "", "note": body,
+        "files": [str(a) for a in (attachments or []) if str(a).strip()],
+    }, "Not sent", "Send cancelled — the email was not sent.")
+    if isinstance(res, str):
+        return res
+    files = int(res.get("files") or 0)
+    note = f" with {files} file(s)" if files else ""
+    return _held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
+
+
 def _size_text(size: Any) -> str:
     """A file size for a card: "29 KB", "2.0 MB", or "" when unknown."""
     try:
@@ -4091,7 +4266,32 @@ def _card_file_name(value: Any, limit: int = _CARD_FILE_NAME_LIMIT) -> str:
     return f"{name[:head]}…{name[-_CARD_FILE_NAME_TAIL:]}"
 
 
-@_annotate_risk(destructive=True, open_world=True)
+async def _held_forward(
+    mid: str, *, to: list[str], cc: list[str] | None, bcc: list[str] | None,
+    note: str | None, files: list[str] | None, include_attachments: bool,
+    account_id: str | None,
+) -> str:
+    """``forward_email`` in a held run (§21.3, the Forward row): the held card
+    classes each person, and the mail's own files are rows."""
+    res = await _held_card({
+        "kind": "forward", "message_id": mid, "account_id": str(account_id or ""),
+        "to": [str(t) for t in to], "cc": [str(a) for a in (cc or [])],
+        "bcc": [str(a) for a in (bcc or [])], "note": note or "",
+        "files": [str(f) for f in (files or [])],
+        "include_attachments": bool(include_attachments),
+    }, "Not forwarded", "Forward cancelled. The email was not forwarded.")
+    if isinstance(res, str):
+        return res
+    n = int(res.get("files") or 0)
+    return (_held_sent_text(res, "Forwarded") + f" It carried {n} file(s)"
+            f" (id={res.get('id', '')}).")
+
+
+# §21 (the Forward row): ``card_bound`` keeps nothing while
+# EMAIL_HELD_CARD_SEND is off. With the switch on, a held run keeps this
+# tool, through the held card: each person is classed, and the mail's own
+# files are rows.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def forward_email(
     email_id: str,
     to: list[str],
@@ -4130,6 +4330,10 @@ async def forward_email(
     to = [t for t in (to or []) if str(t).strip()]
     if not to:
         return "Not forwarded. No recipient. Pass `to`."
+    if _held_card_mode():
+        return await _held_forward(mid, to=to, cc=cc, bcc=bcc, note=note, files=files,
+                                   include_attachments=include_attachments,
+                                   account_id=account_id)
     orig = await _get(f"/email/messages/{mid}", {"mark_read": "false"}) or {}
     own = str(orig.get("account_id") or "")
     if own and account_id and own != str(account_id):
@@ -4284,22 +4488,31 @@ def _draft_card(
     noun = "recipient" if total == 1 else "recipients"
     counts = ", ".join(f"{len(lists[key])} {head}" for key, head, _ in _DRAFT_FIELDS)
     detail = (
-        f"From {sender} · Sends to {total} {noun}: {counts}. Each address is "
-        f"in the list below. · Subject: {_card_text(subject or '(none)', 120)}"
+        f"From {sender} · Sends to {total} {noun}: {counts}. Each address and "
+        "the whole subject are in the list below."
     )
-    lines = ["Each recipient of this draft:"]
+    # §21 fix round 3: the whole subject, never cut. A chat send refuses a
+    # subject over ``drafting.SUBJECT_MAX``, so it always fits here.
+    shown = _card_text(subject, len(str(subject or ""))) if subject else "(none)"
+    lines = [f"Subject: {shown}", "", "Each recipient of this draft:"]
     lines += [f"- {head}: {_draft_address_line(addr)}"
               for key, head, _ in _DRAFT_FIELDS for addr in lists[key]]
     context = "\n".join(lines)
     return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
 
 
-def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
+def _with_draft_text(
+    context: str, body: Any, preview: Any = None, *, whole: bool = False,
+) -> str:
     """The card context with the text of the draft under the recipients.
 
     The member approves a send, so the card shows what the mail says, not
     only where it goes. A long text is cut, and the card says so. The
-    recipients come first and are never cut."""
+    recipients come first and are never cut.
+
+    ``whole`` (a send card, §21 fix round 3) gives "" in place of a cut:
+    the text does not fit, or only its preview is stored. The tool then
+    shows no card, because a card must never show less than the send."""
     from acb_skills.ask_tools import clip_words  # noqa: PLC0415
     from acb_skills.reply_card import clean_reply_body  # noqa: PLC0415
 
@@ -4307,29 +4520,229 @@ def _with_draft_text(context: str, body: Any, preview: Any = None) -> str:
     text = clean_reply_body(str(body or "")).strip()
     if not text:
         start = clean_reply_body(str(preview or "")).strip()
+        if start and whole:
+            return ""
         if start:
             # Only the preview is stored. Say so, or the card looks whole.
             return (context + "\n\nThe start of the draft:\n" + clip_words(start, 1000)
-                    + "\n[… only the start is shown. Open the draft in the Email "
-                    "app to read it all.]")
+                    + "\n[… only the start is shown. Ask me in the chat to read "
+                    "the whole draft.]")
         return context + "\n\nThe draft has no text."
     head = context + "\n\nThe text of the draft:\n"
     room = _CARD_CONTEXT_LIMIT - len(head)
     if len(text) <= room:
         return head + text
-    tail = "\n[… the rest is cut here. Open the draft in the Email app to read it all.]"
+    if whole:
+        return ""
+    tail = "\n[… the rest is cut here. Ask me in the chat to read the rest.]"
     return head + clip_words(text, max(0, room - len(tail))).rstrip() + tail
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# ── The held card (email_app_master_plan.md §21) ─────────────────────────────
+#
+# In a held run with ``EMAIL_HELD_CARD_SEND`` on, a send goes through ONE card
+# that the gateway builds and records (``POST /email/held-card``). The gateway
+# classifies each person, and a new address starts unticked. The tool shows
+# the gateway's rows as they are, with the gateway's card id, and posts the
+# member's exact answer to ``POST /email/held-card/act``. The gateway sends
+# only the ticked rows that it recorded. The tool names no recipient, no
+# class and no file of its own.
+
+#: The answer when the member wrote in the chat while a held card was open.
+_HELD_CARD_REVISED = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent. Read the member's words below. If they change "
+    "this mail, change it, and show a new card. If they ask about something "
+    "else, answer that first.")
+
+
+async def _held_card(
+    body: dict[str, Any], lead: str, cancelled: str,
+) -> dict[str, Any] | str:
+    """Show the gateway's held card for *body*, and act on the answer.
+
+    Returns the act's answer, or the text of the tool when nothing was sent:
+    a run with no card channel (a WhatsApp, batch or scheduled run sends
+    nothing, open question 9), a refusal of the gateway, a "no" on the card,
+    or a card that the member's words closed."""
+    try:
+        from acb_skills import ask_tools
+    except ImportError:  # an older platform with no card
+        return _NO_CARD_CHANNEL
+    if not ask_tools.reply_card_channel_open():
+        return _NO_CARD_CHANNEL
+    try:
+        prep = await _post("/email/held-card", body) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return _held_refusal(exc, lead)
+        raise
+    answer = await ask_tools.request_confirmation(
+        title=str(prep.get("title") or "Send this mail?"),
+        detail=str(prep.get("detail") or ""),
+        context=str(prep.get("context") or ""),
+        rows=list(prep.get("rows") or []),
+        request_id=str(prep.get("card_id") or ""),
+        with_answer=True,
+        close_on_steer=True,
+    )
+    if _revised(answer):
+        return _HELD_CARD_REVISED
+    if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
+        return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
+    member = _current_user_email().strip().lower()
+    if answer.responder and member and answer.responder.strip().lower() != member:
+        return (f"{lead}. Another member answered this card, and only the member "
+                "who asked can send it.")
+    try:
+        return await _post("/email/held-card/act", {
+            "card_id": answer.request_id,
+            "card_thread_id": answer.thread_id,
+            "answer": answer.answer,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return _held_refusal(exc, lead)
+        raise
+
+
+def _held_refusal(exc: Exception, lead: str) -> str:
+    """The answer of a refused held card, in the gateway's safe words and
+    never with the route. A detail that already says "Not sent: ..." stands
+    as it is."""
+    detail = str(getattr(exc, "detail", "") or "").strip()
+    if detail.lower().startswith("not sent"):
+        return detail
+    return f"{lead}. {detail or 'The server refused it, and nothing was sent.'}"
+
+
+def _held_sent_text(res: dict[str, Any], lead: str) -> str:
+    """What the tool says after a held card acted: each recipient that got
+    it, and the count of rows that the member left out."""
+    parts = [f"To {_addr_text(res.get('to'))}"]
+    if res.get("cc"):
+        parts.append(f"Cc {_addr_text(res.get('cc'))}")
+    if res.get("bcc"):
+        parts.append(f"Bcc {_addr_text(res.get('bcc'))}")
+    left = int(res.get("left_out") or 0)
+    tail = (f" The member left {left} row(s) unticked, and those did not go."
+            if left else "")
+    return f"{lead}: {'; '.join(parts)}.{tail}"
+
+
+#: The longest subject of a draft from the chat (``drafting.SUBJECT_MAX``).
+_SUBJECT_MAX = 200
+
+#: The answer for a draft whose text does not fit on a send card (§21 fix
+#: round 3). The Email app is one choice here, never the only way.
+_DRAFT_TOO_LONG_ANSWER = (
+    "This draft is too long to show on the card. I can shorten it with edit_draft, "
+    "or you can send it from the Email app.")
+#: The answers for a draft that a card cannot show whole, by the gateway's
+#: words (``drafting.check_draft_send``).
+_SUBJECT_TOO_LONG_ANSWER = (
+    "The subject of this draft is too long to show on the card. I can shorten it "
+    "with edit_draft and show it again.")
+_SPACING_ANSWER = (
+    "This draft holds spaces that the card cannot show, such as a space at the end "
+    "of a line. I can clean it with edit_draft and show it again.")
+
+#: The answer for a draft with hidden characters (§21 fix round 2).
+_HIDDEN_DRAFT_ANSWER = (
+    "This draft holds hidden characters, so I cannot send it. I can clean it with "
+    "edit_draft and show it again.")
+
+
+async def _draft_seal(account_id: str, draft_id: str, lead: str) -> dict[str, Any] | str:
+    """The seal of a draft's text, for its send card (§21 fix round 1, P1-b).
+
+    ``GET /email/drafts/seal`` answers the subject and the text that the
+    card shows, and ``text_digest``, which goes in ``expect``. The send then
+    sends nothing when the text changed after the card. Any refusal is the
+    tool's answer, and nothing is sent."""
+    try:
+        seal = await _get("/email/drafts/seal", {"account_id": account_id,
+                                                 "draft_id": draft_id}) or {}
+    except GatewayError as exc:
+        if exc.status == 422:
+            # §21 fix rounds 2 and 3: a draft that a card cannot show whole.
+            said = str(getattr(exc, "detail", "") or exc)
+            if "subject" in said:
+                return f"{lead}. {_SUBJECT_TOO_LONG_ANSWER}"
+            if "spaces" in said:
+                return f"{lead}. {_SPACING_ANSWER}"
+            return f"{lead}. {_HIDDEN_DRAFT_ANSWER}"
+        if exc.status in (404, 405, 409, 502):
+            return (f"{lead}. The text of the draft could not be read to check it, so "
+                    "nothing was sent. Try again in a moment.")
+        raise
+    if not isinstance(seal, dict) or not seal.get("text_digest"):
+        return f"{lead}. The text of the draft could not be checked, so nothing was sent."
+    return seal
+
+
+async def _sealed_card(
+    sender: str, account_id: str, draft_id: str, lists: dict[str, list[str]],
+    draft: dict[str, Any], lead: str, too_many: str,
+) -> tuple[str, str, dict[str, Any]] | str:
+    """``(detail, context, seal)`` of a draft send card, with the text that
+    the seal covers (§21 fix round 1, P1-b), or the tool's answer."""
+    seal = await _draft_seal(account_id, draft_id, lead)
+    if isinstance(seal, str):
+        return seal
+    detail, context = _draft_card(sender, seal.get("subject"), lists)
+    if not context:
+        return too_many
+    context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"),
+                               whole=True)
+    if context:
+        # §21 fix round 4: the files go with the draft, so the card names
+        # them, in the form of the held card (``held_card._draft_card``).
+        context += _draft_files_block(draft.get("attachments"))
+    if not context or len(context) > _CARD_CONTEXT_LIMIT:
+        return f"{lead}. {_DRAFT_TOO_LONG_ANSWER}"
+    return detail, context, seal
+
+
+def _draft_files_block(files: Any) -> str:
+    """The files of a draft for its send card, or "" for none: each name in
+    quotes with its size, as ``held_card._draft_card`` lists them. Each file
+    is named, none is cut: a card that does not fit shows no card (§21)."""
+    items = [f for f in (files or []) if isinstance(f, dict)]
+    if not items:
+        return ""
+    lines = ["", "", "The files of the draft go with it:"]
+    lines += [f"- {_card_file_line(_card_file_name(f.get('filename') or 'file', 1000), _size_text(f.get('size_bytes')))}"
+              for f in items]
+    return "\n".join(lines)
+
+
+# H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
+# this send, as it keeps ``compose_reply``. The tool takes no recipient: the
+# draft row holds them, the card lists each one, and a list that does not
+# fit on the card sends nothing. The gateway checks the row and the provider
+# draft against the card (``expect``, 409).
+# ``acb_skills.egress.CARD_BOUND_SEND_TOOLS`` pins the two parameters. A new
+# parameter makes it an egress tool again. Fence: ``tests/unit/test_email_chat_reply.py``.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def send_draft(account_id: str, draft_id: str) -> str:
     """Send an existing draft natively (Drafts → Sent, no duplicate). Shows a
     confirmation card before sending.
 
     The card names each To, Cc and Bcc address of the draft, and shows its
     text. The send fails, and sends nothing, when the recipients changed
-    after the card."""
+    after the card. It works in every chat, also in one that read mail from
+    outside senders."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
+    # §21: in a held run with EMAIL_HELD_CARD_SEND on, the gateway builds and
+    # records the card, and a person the member does not know starts unticked.
+    # The docstring stays as it was, so the tool text is the same with the
+    # switch off.
+    if _held_card_mode():
+        res = await _held_card(
+            {"kind": "draft", "account_id": account_id, "draft_id": draft_id},
+            "Not sent", "Send cancelled — the draft was not sent.")
+        return res if isinstance(res, str) else _held_sent_text(res, "Draft sent")
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
@@ -4353,20 +4766,22 @@ async def send_draft(account_id: str, draft_id: str) -> str:
         return f"Not sent. The message {draft_id} is not a draft."
     lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
     if not any(lists.values()):
-        return "Not sent. The draft has no recipient. Add one in the Email app."
+        return ("Not sent. The draft has no recipient. Ask the member for an "
+                "address, and add it with edit_draft.")
     if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
         # The card never cuts an address (review round 1, P3).
         return (
             f"Not sent. The draft has an address longer than {_TARGET_LIMIT} "
-            "characters, so the card cannot show it. Fix it in the Email app."
+            "characters, so the card cannot show it. Ask the member for the "
+            "right address, and fix it with edit_draft."
         )
-    detail, context = _draft_card(sender, draft.get("subject"), lists)
-    if not context:
-        return (
-            "Not sent. The draft has too many recipients to show on one card. "
-            "Send it from the Email app."
-        )
-    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
+    card = await _sealed_card(sender, account_id, draft_id, lists, draft, "Not sent", (
+        "Not sent. The draft has too many recipients to show on one card. "
+        "Ask the member which recipients to keep, and take the rest out "
+        "with edit_draft."))
+    if isinstance(card, str):
+        return card
+    detail, context, seal = card
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
@@ -4376,7 +4791,8 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     try:
         await _post(
             "/email/drafts/send",
-            {"account_id": account_id, "draft_id": draft_id, "expect": lists},
+            {"account_id": account_id, "draft_id": draft_id,
+             "expect": {**lists, "text_digest": seal["text_digest"]}},
         )
     except GatewayError as exc:
         if exc.status != 409:
@@ -4455,6 +4871,9 @@ async def edit_draft(
 
     Shows the member the changed draft on a card. Sends nothing: send it
     after with send_draft, which shows its own card."""
+    refused, body, subject = _edit_text(body, subject)
+    if refused:
+        return refused
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Nothing changed. {sender}"
@@ -4494,6 +4913,11 @@ async def edit_draft(
         context += "\n\nThe text of the draft stays as it is."
     else:
         context = _with_draft_text(context, text)
+    # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
+    # and the card says so first. The send would not go anyway: the schedule
+    # holds the seal of the old text.
+    pending = await _pending_schedules(draft_id)
+    context = _cancel_line(pending) + context
     refusal = await _card_refusal(
         "Save these changes to the draft?",
         detail + " · Nothing is sent.",
@@ -4508,17 +4932,85 @@ async def edit_draft(
             "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
             "subject": new_subject, "body": text,
             "keep_html": keep_body, "keep_body": keep_body,
+            "from_chat": True,
         }) or {}
     except GatewayError as exc:
-        if exc.status not in (409, 422):
-            raise
-        return (f"Nothing changed. {exc}. Read the draft with read_email, and "
-                "pass its whole text, with the change, in body.")
+        return _edit_save_refusal(exc)
     lost = (" Its formatting and its images could not be kept, so it now "
             "holds the text only.") if res.get("html") == "lost" else ""
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
-    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}"
+    cancelled = await _cancel_schedules(pending)
+    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+
+
+def _edit_save_refusal(exc: Exception) -> str:
+    """The answer of ``edit_draft`` when the gateway refused the save: a 409
+    or a 422. Any other failure raises."""
+    if getattr(exc, "status", None) not in (409, 422):
+        raise exc
+    if "hidden characters" in str(getattr(exc, "detail", "") or exc):
+        # §21 fix round 2.
+        return ("Nothing changed. The draft holds hidden characters. Read it with "
+                "read_email, and pass its whole text again in plain text in body.")
+    return (f"Nothing changed. {exc}. Read the draft with read_email, and "
+            "pass its whole text, with the change, in body.")
+
+
+def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:
+    """``(refusal, body, subject)`` of an ``edit_draft`` call.
+
+    §21 fix round 2: no hidden character goes into a draft from the chat.
+    NBSP and trailing spaces are normalised, and the gateway checks again.
+    Fix round 3: a send card shows the whole subject, so it has
+    ``_SUBJECT_MAX`` characters at most."""
+    from acb_skills.reply_card import has_hidden_text, visible_spacing
+
+    if any(has_hidden_text(t) for t in (body, subject) if t is not None):
+        return ("Nothing changed. The new text holds hidden characters. Write it "
+                "again in plain text."), body, subject
+    if subject is not None and len(" ".join(subject.split())) > _SUBJECT_MAX:
+        return (f"Nothing changed. A subject has {_SUBJECT_MAX} characters at most, "
+                "so a card can show it whole. Write a shorter subject."), body, subject
+    return ("", visible_spacing(body) if body is not None else None,
+            " ".join(visible_spacing(subject).split()) if subject is not None else None)
+
+
+async def _pending_schedules(draft_id: str) -> list[dict[str, Any]]:
+    """The queued sends of *draft_id* (§21 fix round 1, P1-b). None when send
+    later is off (404)."""
+    try:
+        rows = await _get("/email/drafts/scheduled") or []
+    except GatewayError as exc:
+        if exc.status in (404, 405):
+            return []
+        raise
+    return [r for r in rows if isinstance(r, dict) and str(r.get("draft_id")) == str(draft_id)
+            and r.get("status") == "queued"]
+
+
+def _cancel_line(pending: list[dict[str, Any]]) -> str:
+    """The first line of an edit card of a scheduled draft, or ""."""
+    if not pending:
+        return ""
+    when = ", ".join(str(r.get("send_at") or "") for r in pending)
+    return f"This cancels the send scheduled for {when}.\n\n"
+
+
+async def _cancel_schedules(pending: list[dict[str, Any]]) -> str:
+    """Cancel each queued send of an edited draft, and say what happened."""
+    if not pending:
+        return ""
+    failed = 0
+    for r in pending:
+        try:
+            await _post(f"/email/drafts/scheduled/{r.get('id')}/cancel", {})
+        except GatewayError:
+            failed += 1
+    if failed:
+        return (f" {failed} scheduled send(s) could not be cancelled. They will not go, "
+                "because the text changed. Cancel them with cancel_scheduled_send.")
+    return " The send that was scheduled for it is cancelled."
 
 
 def _snooze_time(until: str) -> tuple[Any, str]:
@@ -4717,7 +5209,13 @@ async def bulk_manage_inbox(
 # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────────
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# H-374 (owner decision "Schedule a send", 2026-10-22). A held run keeps this
+# send, as it keeps ``send_draft``. The tool takes no recipient, the card
+# lists each one, and the gateway stores them as ``expect``. When the send
+# fires, the job sends through the one draft-send path with that ``expect``,
+# so a changed draft answers 409 and nothing goes (``send_later.py``).
+# ``acb_skills.egress.CARD_BOUND_SEND_TOOLS`` pins the three parameters.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     """Send a draft later, at ``send_at``: "send it tomorrow at 9". The draft
     must be in Drafts. To reply later, first save the reply with
@@ -4728,6 +5226,20 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     Shows the member a card with the time, each recipient and the text. At
     the time, the server sends the draft only if its recipients are still
     the ones on the card. Cancel with ``cancel_scheduled_send``."""
+    if _held_card_mode():
+        when, why = _snooze_time(send_at)
+        if when is None:
+            return f"Not scheduled. {why}"
+        res = await _held_card(
+            {"kind": "schedule", "account_id": account_id, "draft_id": draft_id,
+             "send_at": when.isoformat()},
+            "Not scheduled",
+            "Cancelled — nothing was scheduled. The draft stays in Drafts.")
+        if isinstance(res, str):
+            return res
+        stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
+        return (_held_sent_text(res, f"Scheduled for {stamp}")
+                + f" (schedule_id {res.get('schedule_id', '')}). It stays in Drafts until then.")
     draft, sender = await _draft_row(account_id, draft_id)
     if draft is None:
         return f"Not scheduled. {sender}"
@@ -4739,11 +5251,12 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
         return "Not scheduled. The draft has no recipient. Add one first."
     if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
         return f"Not scheduled. An address is longer than {_TARGET_LIMIT} characters."
-    detail, context = _draft_card(sender, draft.get("subject"), lists)
-    if not context:
-        return "Not scheduled. The draft has too many recipients for one card."
+    card = await _sealed_card(sender, account_id, draft_id, lists, draft, "Not scheduled",
+                              "Not scheduled. The draft has too many recipients for one card.")
+    if isinstance(card, str):
+        return card
+    detail, context, seal = card
     stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
-    context = _with_draft_text(context, draft.get("body_text"), draft.get("snippet"))
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     approved = await request_confirmation(
         title=f"Send this draft at {stamp}?",
@@ -4758,7 +5271,8 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     try:
         res = await _post("/email/drafts/schedule", {
             "account_id": account_id, "draft_id": draft_id,
-            "send_at": when.isoformat(), "expect": lists,
+            "send_at": when.isoformat(),
+            "expect": {**lists, "text_digest": seal["text_digest"]},
         }) or {}
     except GatewayError as exc:
         if exc.status == 404 and "not on" in str(exc).lower():
@@ -4846,7 +5360,8 @@ async def delete_knowledge(account_id: str, knowledge_id: str) -> str:
 # shows its host or its address, and posts that exact link.
 _UNSUBSCRIBE_NOT_READY = (
     "Nothing changed. Unsubscribe from the chat is not ready on this server "
-    "yet, so nothing was sent. The user can unsubscribe in the Email app."
+    "yet, so nothing was sent. Offer to mark the sender cold with "
+    "set_sender_status, or to archive the sender's mail with bulk_manage_inbox."
 )
 # The text of a mailto unsubscribe (review round 1, P2). A real unsubscribe
 # mail needs no long text and no link. So a subject or a body over this many
@@ -4928,7 +5443,13 @@ def _unsubscribe_card(
     return "", "", "the server named no known unsubscribe target"
 
 
-@_annotate_risk(destructive=True, open_world=True)
+# §21 (the Unsubscribe row): ``card_bound`` keeps nothing while
+# EMAIL_HELD_CARD_SEND is off, because the name is on no pin then
+# (``acb_skills.egress.HELD_CARD_SEND_TOOLS``). With the switch on, a held
+# run keeps this tool, and it goes through the held card: the gateway reads
+# the link from the stored header and acts only when its host and its hash
+# still match the card.
+@_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def unsubscribe_sender(
     account_id: str,
     email: str,
@@ -4945,6 +5466,21 @@ async def unsubscribe_sender(
     The tool uses the link that the mailbox stored for the sender, and the
     card names its host or its address. You cannot pass a link."""
     shown = _card_text(email, 200)
+    if _held_card_mode():
+        res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
+                                "email": email},
+                               "Nothing changed", f"Cancelled — still subscribed to {shown}.")
+        if isinstance(res, str):
+            return res
+        archived = int(res.get("archived") or 0)
+        if res.get("action") == "block":
+            return (f"Blocked {shown}: future mail is archived, and {archived} existing "
+                    "message(s) were archived. No request left Metorite.")
+        if res.get("unsubscribed"):
+            return (f"Unsubscribed from {shown} through host {res.get('host')}; archived "
+                    f"{archived} existing message(s).")
+        return (f"The one-click request to {res.get('host')} failed, so {shown} is blocked "
+                f"instead. Future mail is archived, and {archived} message(s) were archived.")
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
@@ -4958,7 +5494,7 @@ async def unsubscribe_sender(
     if refusal:
         return (
             f"Nothing changed. For {shown}, {refusal}, so nothing was sent. "
-            "The user can block the sender in the Email app."
+            "Offer to mark the sender cold with set_sender_status instead."
         )
     # Outward-facing: it fires a real one-click request or SENDS an unsubscribe
     # email, and archives existing mail. Confirm, fail-closed.
@@ -5796,7 +6332,8 @@ OWN_DRAFT_SAVES: dict[str, str] = {
     "draft_reply": (
         "POST /email/draft-reply saves the reply as the one draft of the "
         "conversation in the member's own Drafts. It sends nothing, and the "
-        "member finishes and sends it in the Email app (owner, 2026-10-22)."),
+        "member sends it with send_draft, which shows its card, or in the "
+        "Email app (owner, 2026-10-22)."),
 }
 
 #: The registered tools that call a gateway POST and still ask no card, with

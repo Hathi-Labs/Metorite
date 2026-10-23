@@ -368,7 +368,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
       first, so a move that keeps it leaves the message in Trash (review
       round 1).
     - `folder_after_move(name)` gives the folder key that a move leaves. The
-      base gives `canonical_folder(name)`. Gmail gives `archive` for a user
+      base gives `canonical_folder(name)`, and `None` for Sent and Drafts
+      (`MOVE_REFUSED_FOLDERS`). No provider moves a mail into either, and
+      `local_folder_after_move` refuses both before any override
+      (`email_app_master_plan.md` §21.10, fix round 1). Fence:
+      `tests/unit/test_move_into_sent_refused.py`. Gmail gives `archive` for a user
       label, and `None` for a move that it refuses. Read it only through
       `local_folder_after_move`, because some test fakes do not subclass the
       base.

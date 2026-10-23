@@ -188,6 +188,8 @@ class Gateway:
             return {"kind": "one-click", "link": "https://list.test/u"}
         if path == "/email/digest":
             return {"sections": []}
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b)
+            return {"text_digest": "a" * 64, "subject": "Hi", "body_text": "Hi"}
         if path.startswith("/email/messages/"):
             return {"account_id": BOX, "folder": "drafts", "subject": "Hi",
                     "from_address": {"email": "kim@contoso.test"},

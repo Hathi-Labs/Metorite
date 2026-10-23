@@ -954,6 +954,18 @@ class Settings(BaseSettings):
     # tests/unit/test_email_send_later.py.
     email_send_later: bool = False
 
+    # ── Held chat: you confirm new people (email_app_master_plan.md §21) ─────
+    #
+    # False is the default, so the feature ships dark. Then a held chat holds
+    # exactly the tools of H-374, and each `/email/held-card` route answers
+    # 404. True lets a held chat send, schedule, forward and unsubscribe, and
+    # change closed settings, each through one recorded card that classifies
+    # each person. The flag moves mail to real people, so the owner flips it
+    # (CLAUDE.md §3a rule 3). The one reader is `held_card_send_enabled()` in
+    # packages/acb_skills/acb_skills/held_card.py. Fence:
+    # tests/unit/test_egress_card_bound_pin.py.
+    email_held_card_send: bool = False
+
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
     # git pull on each event (no full re-clone per run).

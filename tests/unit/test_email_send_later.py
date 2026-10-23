@@ -123,6 +123,9 @@ def gw(monkeypatch) -> SimpleNamespace:
                     "to_addresses": [{"email": "ravi@contoso.test"}],
                     "cc_addresses": [], "bcc_addresses": [],
                     "body_text": "Hi Ravi,\n\nThe quote."}
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b)
+            return {"text_digest": "a" * 64, "subject": "Quote",
+                    "body_text": "Hi Ravi,\n\nThe quote."}
         return {}
 
     async def post(path, body):
@@ -148,7 +151,8 @@ async def test_the_tool_shows_the_time_and_posts_what_it_showed(gw) -> None:
     assert card["close_on_steer"] is True
     [(path, body)] = gw.posts
     assert path == "/email/drafts/schedule"
-    assert body["expect"] == {"to": ["ravi@contoso.test"], "cc": [], "bcc": []}
+    assert body["expect"] == {"to": ["ravi@contoso.test"], "cc": [], "bcc": [],
+                              "text_digest": "a" * 64}  # §21 fix round 1 (P1-b)
     assert body["send_at"] == "2099-01-05T09:00:00+05:30"
     assert "schedule_id s1" in out
 
@@ -454,3 +458,56 @@ async def test_a_directory_outage_requeues_and_never_fails(monkeypatch) -> None:
     monkeypatch.setattr(sl, "_finish", finish)
     assert await sl.run_tick() == {}
     assert requeued == ["s1"] and finished == []
+
+
+# ── H-374: a held chat may schedule, so the fire-time check is the boundary ──
+
+
+def test_a_schedule_must_carry_what_the_card_showed() -> None:
+    """``expect`` is required, and no other field is taken. So a schedule
+    always holds the recipients of the card (owner, 2026-10-22)."""
+    from pydantic import ValidationError
+
+    base = {"account_id": BOX, "draft_id": BOX, "send_at": "2099-01-05T09:00:00+05:30"}
+    with pytest.raises(ValidationError):
+        sl.ScheduleRequest(**base)
+    with pytest.raises(ValidationError):
+        sl.ScheduleRequest(**base, expect={"to": ["a@b.test"]}, to=["x@evil.test"])
+    assert sl.ScheduleRequest(**base, expect={"to": ["a@b.test"]}).expect.to == ["a@b.test"]
+
+
+@pytest.mark.parametrize("stored", [
+    {"to": ["ravi@contoso.test"], "cc": [], "bcc": ["records@contoso.test"]},
+    json.dumps({"to": ["ravi@contoso.test"], "cc": [], "bcc": ["records@contoso.test"]}),
+])
+async def test_the_fire_sends_with_the_cards_lists_and_a_change_sends_nothing(
+    monkeypatch, stored: Any,
+) -> None:
+    """When the send fires, the job passes the stored lists of the card to
+    the one draft-send path as ``expect``. A 409 there (the draft's
+    recipients changed) fails the row with a reason, and nothing goes."""
+    member = UserContext(email="dana@fracktal.test", role=UserRole.EMPLOYEE)
+    seen: list[Any] = []
+
+    async def who(owner, org):
+        return member
+
+    async def send(req, background, user):
+        seen.append(req)
+
+    monkeypatch.setattr(sl, "_member", who)
+    monkeypatch.setattr(sl, "send_draft_endpoint", send)
+    row = SimpleNamespace(account_id=BOX, draft_id="d1", owner_email=member.email,
+                          expect=stored)
+    why, background = await sl._send_one("org-1", row)
+    assert why is None and background is not None
+    [req] = seen
+    assert req.expect is not None
+    assert req.expect.bcc == ["records@contoso.test"] and req.expect.to == ["ravi@contoso.test"]
+
+    async def changed(req, background, user):
+        raise HTTPException(status_code=409, detail="changed")
+
+    monkeypatch.setattr(sl, "send_draft_endpoint", changed)
+    why, background = await sl._send_one("org-1", row)
+    assert background is None and "recipients of the draft changed" in why

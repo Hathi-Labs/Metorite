@@ -30,6 +30,7 @@
  */
 
 import { replyFromEvent, type ReplyForm } from "@/lib/replyCard";
+import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
 /** The event a closed card arrives as. The server owns the name
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
@@ -45,6 +46,12 @@ export interface ConfirmationRow {
   label: string;
   hint?: string;
   checked: boolean;
+  /** A held send card (§21, `sendCard.ts`): what the row is. */
+  kind?: SendRowKind;
+  /** A held send card: how the SERVER classed the person on the row. */
+  cls?: PersonClass;
+  /** A held send card: the server's warning (a lookalike domain). */
+  warning?: string;
 }
 
 export interface PendingConfirmation {
@@ -94,11 +101,17 @@ export function rowsFromEvent(value: unknown): ConfirmationRow[] | undefined {
     const id = typeof r.id === "string" ? r.id : "";
     if (!id || seen.has(id)) return undefined;
     seen.add(id);
+    const kind = kindOf(r.kind);
+    const cls = classOf(r.class);
     rows.push({
       id,
       label: String(r.label ?? id),
       hint: r.hint ? String(r.hint) : undefined,
       checked: r.checked !== false,
+      // A row with none of the three keys of a held send card is as before.
+      ...(kind !== undefined ? { kind } : {}),
+      ...(cls !== undefined ? { cls } : {}),
+      ...(typeof r.warning === "string" && r.warning ? { warning: r.warning } : {}),
     });
   }
   return rows;
@@ -191,9 +204,12 @@ export function rowsSummary(summary: string, rows?: readonly ConfirmationRow[]):
   return rowSummary(summary, rows.filter((r) => r.checked).length, rows.length);
 }
 
-/** Approve may send: a card with no rows, or a card with a row ticked. */
+/**
+ * Approve may send: a card with no rows, or a card with a row ticked. A held
+ * send card (§21) needs a ticked To row (`sendCard.ts`).
+ */
 export function canApprove(rows?: readonly ConfirmationRow[]): boolean {
-  return rows === undefined || rows.some((r) => r.checked);
+  return sendCanGo(rows);
 }
 
 /**
@@ -221,6 +237,8 @@ export function approvalFor(
   if (card.rows === undefined) return "APPROVE";
   const wanted = new Set(ticked ?? []);
   const ids = card.rows.filter((r) => wanted.has(r.id)).map((r) => r.id);
+  // A held send card (§21) sends nothing with no ticked To row.
+  if (!sendCanGo(card.rows.map((r) => ({ ...r, checked: wanted.has(r.id) })))) return null;
   return ids.length > 0 ? approveRows(ids) : null;
 }
 
