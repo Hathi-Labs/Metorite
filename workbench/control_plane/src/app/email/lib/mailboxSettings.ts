@@ -217,6 +217,8 @@ export const LEFT_OUT_WORDS: Readonly<Record<string, (source: string) => string>
   // EM-S10 fix round 1: an IMAP mailbox makes no folder and adds no label.
   not_supported_by_target: () =>
     "It moves mail to a folder or adds a label, and Metorite cannot do that in this mailbox.",
+  // P1-b: the dialog read the target and sent the name in `skip_names`.
+  already_in_target: () => "This mailbox has a rule with this name already, or a copy of it.",
 };
 
 /** The words for a reason that this UI does not know. */
@@ -297,11 +299,10 @@ export interface CopyPreview {
   /** The question that the dialog asks, or the plain "nothing to copy" line. */
   question: string;
   /**
-   * True when the route would copy a rule that this mailbox holds already.
-   * The route renames it as "X (copy)", and the preview cannot leave it out.
-   * So the dialog does not offer the copy.
+   * The names of the source rules that this mailbox holds already. The dialog
+   * sends them as `skip_names`, and the route leaves them out.
    */
-  blocked: boolean;
+  alreadyHere: string[];
 }
 
 /** What the preview reads of the TARGET mailbox. */
@@ -313,9 +314,6 @@ export interface CopyTarget {
   /** The provider of the target: "gmail", "microsoft" or "imap". */
   provider: string;
 }
-
-/** The words for a rule that the target holds already (client side only). */
-export const ALREADY_HERE_WORDS = "This mailbox has a rule with this name already, or a copy of it.";
 
 // The port of `_left_out_reason` of `rule_copy.py`. Each helper names its twin.
 const REPLY_SYSTEM_TYPES = ["REPLY", "TO_REPLY"]; // rules._REPLY_SYSTEM_TYPES
@@ -397,8 +395,8 @@ function holdsNameOrCopy(held: ReadonlySet<string>, name: string): boolean {
  * keeps its name. It reads only the rules and writes nothing.
  *
  * With `target`, the preview also leaves out a rule that the target holds
- * already, by name or as "(copy)". The route would copy that rule again as
- * "X (copy)", so `blocked` is true and the dialog does not offer the copy.
+ * already, by name or as "(copy)". `alreadyHere` lists those names, and the
+ * dialog sends them as `skip_names`, so the route leaves them out too.
  */
 export function copyRulesPreview(
   rules: ReadonlyArray<PreviewRule>,
@@ -412,7 +410,7 @@ export function copyRulesPreview(
   const hasFolders = !target || provider !== "imap";
   const willCopy: string[] = [];
   const leftOut: { name: string; why: string }[] = [];
-  let blocked = false;
+  const alreadyHere: string[] = [];
   for (const r of rules) {
     let why: string | null = null;
     if (!r.enabled) why = LEFT_OUT_WORDS.disabled(source);
@@ -422,9 +420,8 @@ export function copyRulesPreview(
       else if (refusesAMove(r, provider)) why = LEFT_OUT_WORDS.folder_not_in_target(source);
       else if (replyHeld && isReplyRule(r)) why = LEFT_OUT_WORDS.reply_rule_exists(source);
       else if (holdsNameOrCopy(held, r.name)) {
-        why = ALREADY_HERE_WORDS;
-        // The route skips a reply rule with a taken name, and copies any other.
-        if (!isReplyRule(r)) blocked = true;
+        why = LEFT_OUT_WORDS.already_in_target(source);
+        alreadyHere.push(r.name);
       }
     }
     if (why !== null) {
@@ -439,7 +436,7 @@ export function copyRulesPreview(
     n === 0
       ? `${source} has no rules to copy.`
       : `Copy ${n} ${n === 1 ? "rule" : "rules"} from ${source} into this mailbox?`;
-  return { willCopy, leftOut, question, blocked };
+  return { willCopy, leftOut, question, alreadyHere };
 }
 
 /**

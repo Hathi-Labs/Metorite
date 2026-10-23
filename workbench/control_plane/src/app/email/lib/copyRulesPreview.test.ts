@@ -131,14 +131,23 @@ describe("email-rules-tab-copy preview mirrors the route", () => {
     expect(p.leftOut.map((r) => r.name)).toEqual(["X"]);
   });
 
-  it("leaves out a rule that this mailbox holds already, or holds as a copy, and blocks the copy", () => {
+  it("leaves out a rule the target holds, by name or as a copy, and lists its name to skip", () => {
     const t = target({ rules: [{ name: "receipts", system_type: null }, { name: "Alerts (copy 2)", system_type: null }] });
     const p = run([rule("Receipts"), rule("Alerts"), rule("New")], t);
     expect(p.willCopy).toEqual(["New"]);
     expect(p.leftOut.map((r) => r.name)).toEqual(["Receipts", "Alerts"]);
     expect(p.leftOut[0].why).toContain("already");
-    expect(p.blocked).toBe(true);
-    expect(run([rule("New")], t).blocked).toBe(false);
+    // The dialog sends these names, and the route copies the rest.
+    expect(p.alreadyHere).toEqual(["Receipts", "Alerts"]);
+    expect(run([rule("New")], t).alreadyHere).toEqual([]);
+    expect("blocked" in p).toBe(false);
+  });
+
+  it("still offers the rest when every preset name is shared", () => {
+    const t = target({ rules: [{ name: "Newsletters", system_type: null }] });
+    const p = run([rule("Newsletters"), rule("Vendors")], t);
+    expect(p.willCopy).toEqual(["Vendors"]);
+    expect(p.question).toBe("Copy 1 rule from Work into this mailbox?");
   });
 
   it("counts only what the route copies in the question", () => {
@@ -149,5 +158,16 @@ describe("email-rules-tab-copy preview mirrors the route", () => {
 
   it("works with no target context, as before", () => {
     expect(copyRulesPreview([{ name: "A", enabled: true }], "Work").willCopy).toEqual(["A"]);
+  });
+});
+
+describe("email-rules-tab-copy sends the held names", () => {
+  it("copyRules posts skip_names, capped, only when there are some", async () => {
+    const api = readFileSync(join(__dirname, "api.ts"), "utf-8").replace(/\r\n/g, "\n");
+    expect(api).toContain("skip_names: skipNames.slice(0, 200)");
+    const dialog = read("components/automation/ai-settings/CopyRulesDialog.tsx");
+    expect(dialog).toContain("copyRules(from, to, skipRef.current)");
+    expect(dialog).toContain("skipRef.current = preview?.alreadyHere");
+    expect(dialog).not.toContain("blocked");
   });
 });

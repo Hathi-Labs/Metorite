@@ -73,6 +73,11 @@ that the owner check proved. An AI label (``label_ai``) is a prompt and not a
 name, so the list leaves it out. A MOVE_FOLDER to a system folder (Inbox,
 Archive) is never in the list, because each mailbox holds one.
 
+``skip_names`` (optional) names source rules that the target holds already.
+The route leaves each out as ``already_in_target``, after the reasons above,
+and copies the rest. The member's dialog sends the names that it read from the
+target, so a second copy of the same source makes no "X (copy)".
+
 A new column of ``email_rules`` or ``email_actions`` must join a tuple below.
 ``tests/unit/test_email_rule_copy.py`` reads ``information_schema`` and fails
 when a column is in no tuple.
@@ -101,7 +106,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 #: The columns of ``email_rules`` that a copy takes from its source rule.
@@ -137,6 +142,12 @@ LEFT_OUT_FORWARD_LOOP = "forward_to_own_address"
 LEFT_OUT_REPLY_EXISTS = "reply_rule_exists"
 LEFT_OUT_FOLDER_NOT_IN_TARGET = "folder_not_in_target"
 LEFT_OUT_NOT_SUPPORTED_BY_TARGET = "not_supported_by_target"
+LEFT_OUT_ALREADY_IN_TARGET = "already_in_target"
+
+#: The most names, and the longest name, that a request may send in
+#: ``skip_names``. A rule name is at most 200 characters.
+MAX_SKIP_NAMES = 200
+MAX_SKIP_NAME_LENGTH = 200
 
 #: The provider kinds that make no folder, move no mail and write no label
 #: (rule 6). ``providers/imap.py`` has none of those writes.
@@ -183,6 +194,18 @@ class RuleCopyRequest(BaseModel):
     """The two mailboxes. Each must be a mailbox of the member."""
     from_account_id: UUID
     to_account_id: UUID
+    #: Names of source rules that the member wants left out because the target
+    #: holds them already. The route leaves each one out with the reason
+    #: ``already_in_target``, after its own reasons. A name that the source
+    #: does not have does nothing. Compared without case or edge space.
+    skip_names: list[str] = Field(default_factory=list, max_length=MAX_SKIP_NAMES)
+
+    @field_validator("skip_names")
+    @classmethod
+    def _names_are_short(cls, names: list[str]) -> list[str]:
+        if any(len(n) > MAX_SKIP_NAME_LENGTH for n in names):
+            raise ValueError("A name in skip_names is too long.")
+        return names
 
 
 class RuleCopyRename(BaseModel):
@@ -352,6 +375,7 @@ def _left_out_reason(
     rule: dict[str, Any], own: set[str], reply_held: bool,
     refuses: Callable[[str], bool] = lambda _name: False,
     *, target_has_folders: bool = True,
+    skip: frozenset[str] = frozenset(),
 ) -> str | None:
     """Why the copy leaves out this source rule, or ``None`` to copy it."""
     if not rule["enabled"]:
@@ -364,6 +388,8 @@ def _left_out_reason(
         return LEFT_OUT_FOLDER_NOT_IN_TARGET
     if reply_held and _is_reply_rule(rule):
         return LEFT_OUT_REPLY_EXISTS
+    if (rule["name"] or "").strip().lower() in skip:
+        return LEFT_OUT_ALREADY_IN_TARGET
     return None
 
 
@@ -437,9 +463,10 @@ async def copy_rules(
         provider = await _target_provider(db, dst, owner)
         refuses = move_refuser(provider)
         has_folders = provider not in _PROVIDERS_WITHOUT_FOLDERS
+        skip = frozenset(n.strip().lower() for n in req.skip_names)
         for rule in source_rules:
             reason = _left_out_reason(rule, own, reply_held, refuses,
-                                      target_has_folders=has_folders)
+                                      target_has_folders=has_folders, skip=skip)
             if reason is not None:
                 left_out.append(RuleCopyLeftOut(name=rule["name"], reason=reason))
                 continue

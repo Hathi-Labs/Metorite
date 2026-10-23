@@ -6,7 +6,7 @@
 // §11.0 rule 5). It uses the guard of the onboarding step, so a double click
 // starts one copy and a pair copies once. Fence: `copyRulesPreview.test.ts`.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -47,7 +47,11 @@ export function CopyRulesDialog({
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<CopyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copier] = useState(() => ruleCopier(copyRules));
+  // The names the target holds. The copy sends them as `skip_names`.
+  const skipRef = useRef<string[]>([]);
+  const [copier] = useState(() =>
+    ruleCopier((from, to) => copyRules(from, to, skipRef.current)),
+  );
 
   const source = choices.find((c) => c.id === sourceId);
 
@@ -94,6 +98,7 @@ export function CopyRulesDialog({
           provider: targetAccount?.provider ?? "",
         })
       : null;
+  skipRef.current = preview?.alreadyHere ?? [];
   const done = copier.copied(sourceId, targetId);
 
   const pick = (id: string) => {
@@ -165,12 +170,6 @@ export function CopyRulesDialog({
                     ))}
                   </div>
                 )}
-                {preview.blocked && (
-                  <p role="alert" className="text-xs text-destructive">
-                    Metorite cannot copy part of the list. This mailbox holds some of these rules
-                    already. Delete those rules here, then copy again.
-                  </p>
-                )}
                 <p className="text-xs text-muted-foreground">
                   A reply rule keeps its name, and a mailbox keeps one reply rule. A copy of a pair
                   runs once in this window.
@@ -197,7 +196,7 @@ export function CopyRulesDialog({
             {report ? "Close" : "Cancel"}
           </Button>
           {choices.length > 0 && (
-            <Button onClick={run} disabled={busy || done || !preview || preview.blocked || preview.willCopy.length === 0}>
+            <Button onClick={run} disabled={busy || done || !preview || preview.willCopy.length === 0}>
               {busy ? "Copying…" : COPY_STEP.copyFrom(source?.label ?? "")}
             </Button>
           )}
