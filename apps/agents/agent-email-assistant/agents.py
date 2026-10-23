@@ -1990,6 +1990,9 @@ async def draft_reply(
     sender = await _mailbox_name(account_id) or str(account_id)
     # The files go in the first line too, because the card edits the rest.
     # The member then knows which file the draft used, and which it did not.
+    ref = _draft_line(res.get("draft_id"), res.get("subject"))
+    if ref:
+        note += f" ({ref})"
     read = [str(n) for n in res.get("files_read") or [] if n]
     if read:
         note += f" (used the files: {', '.join(read)})"
@@ -2061,6 +2064,17 @@ def _revised(answer: Any) -> bool:
 
 def _addr_text(addrs: Any) -> str:
     return ", ".join(str(a) for a in (addrs or []) if a)
+
+
+def _draft_line(draft_id: Any, subject: Any) -> str:
+    """The stable last line of every result that makes or changes a draft
+    (§22 gap 2). ``call_agent`` keeps no chat history, so the next turn finds
+    the draft by this id and subject. Empty when the id is unknown."""
+    did = str(draft_id or "").strip()
+    if not did:
+        return ""
+    subj = " ".join(str(subject or "").split())[:120] or "(no subject)"
+    return f"Draft: draft_id={did} | subject: {subj}"
 
 
 def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
@@ -2200,7 +2214,8 @@ async def compose_reply(
         # with edit_draft (owner, 2026-10-22).
         did = form["draft_id"]
         ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
-        return _CARD_REVISED + ref + kept
+        line = _draft_line(did, form["subject"])
+        return _CARD_REVISED + ref + kept + (f"\n{line}" if line else "")
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
@@ -2224,7 +2239,9 @@ async def compose_reply(
     did = str(res.get("draft_id") or "")
     # The id lets the agent schedule the draft (``schedule_send``, H-375).
     ref = f" (draft_id {did})" if did else ""
-    return f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
+    line = _draft_line(did, res.get("subject") or form["subject"])
+    return (f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
+            + (f"\n{line}" if line else ""))
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -5965,7 +5982,9 @@ async def edit_draft(
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
     cancelled = await _cancel_schedules(pending)
-    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+    line = _draft_line(draft_id, new_subject)
+    return (f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+            + (f"\n{line}" if line else ""))
 
 
 def _edit_save_refusal(exc: Exception) -> str:
@@ -6044,8 +6063,10 @@ async def _new_draft(
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
+    line = _draft_line(res.get("id"), subject)
     return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
-            "Nothing was sent. Send it with send_draft when the member asks.")
+            "Nothing was sent. Send it with send_draft when the member asks."
+            + (f"\n{line}" if line else ""))
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:

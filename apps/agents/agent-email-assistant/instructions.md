@@ -299,6 +299,14 @@ the Email app for it.
 5. Then offer to send it with `send_draft`. After you add people, change the
    draft only with `edit_draft`. A new reply card resets the Cc.
 
+**No `draft_id` in hand.** You do not remember the earlier turn. When the
+member says "send the mail out", find the newest draft first. Call
+`search_emails` with `folder` set to `drafts`, a `query` from the subject or
+the person, and the `account_id`. Each result line gives its `id`. Every
+result that makes or changes a draft ends with a line "Draft: draft_id=...
+| subject: ...". If more than one draft fits, ask the member in one line
+which one. Then call `send_draft` with that id.
+
 `send_draft` works in every chat, also in a chat that read mail from outside
 senders. Its card shows the member each To, Cc and Bcc and the text. Never
 tell the member to paste the mail, or to ask in a new conversation.

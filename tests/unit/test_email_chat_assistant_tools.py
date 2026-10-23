@@ -546,3 +546,35 @@ async def test_edit_draft_body_refuses_to_drop_a_quoted_thread(gw: _Gw) -> None:
 async def test_edit_draft_body_card_says_no_thread_is_dropped(gw: _Gw) -> None:
     await agents.edit_draft(BOX, "d1", body="Hi Ravi, new text")
     assert "holds no quoted thread" in gw.cards[-1]["context"]
+
+
+def test_draft_line_names_the_id_and_the_subject() -> None:
+    """§22 gap 2: call_agent keeps no chat history, so each result that makes
+    a draft ends with a stable line for the next turn."""
+    assert agents._draft_line("d9", "Re:  Quote") == "Draft: draft_id=d9 | subject: Re: Quote"
+    assert agents._draft_line("", "x") == ""
+
+
+async def test_edit_draft_result_ends_with_the_draft_line(gw: _Gw) -> None:
+    out = await agents.edit_draft(BOX, "d1", cc=["kim@contoso.test", "veena@fracktal.in"])
+    assert out.endswith("Draft: draft_id=d1 | subject: Re: Quote")
+
+
+async def test_new_draft_result_ends_with_the_draft_line(gw: _Gw, monkeypatch) -> None:
+    async def put(path, body):
+        return {"id": "n7"}
+
+    monkeypatch.setattr(agents, "_put", put)
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    out = await agents.edit_draft(BOX, "", to=["a@x.test"], subject="Hello", body="Hi")
+    assert out.endswith("Draft: draft_id=n7 | subject: Hello")
+
+
+def test_the_drafts_lookup_exists_with_the_parameter_the_text_names() -> None:
+    """The instructions say: search_emails with folder="drafts". Pin both."""
+    import inspect
+    from pathlib import Path
+
+    assert "folder" in inspect.signature(agents.search_emails).parameters
+    text = Path(agents.__file__).with_name("instructions.md").read_text(encoding="utf-8")
+    assert "`search_emails` with `folder` set to `drafts`" in text

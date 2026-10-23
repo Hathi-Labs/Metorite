@@ -2393,6 +2393,8 @@ async def draft_reply_smart(
 
         created = False
         kept_draft = False
+        # §22 gap 2: the chat finds the draft again by its id and subject.
+        saved_id, saved_subject = "", ""
         if req.create_draft:
             reply_to = await _reply_to_list(
                 req.message_id, user.email or "anonymous", email["from"])
@@ -2424,6 +2426,8 @@ async def draft_reply_smart(
                             subject=re_subject, body=draft,
                         )
                         created, kept_draft = True, wrote.kept_draft
+                        saved_id = str(wrote.local_id or "")
+                        saved_subject = re_subject or ""
                 # The wrapper's exit commit lands the mirrored local draft.
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
@@ -2438,6 +2442,7 @@ async def draft_reply_smart(
                 db, req.account_id, email["thread_id"], draft, commit=False)
 
         return {"draft": draft, "created": created, "kept_draft": kept_draft,
+                "draft_id": saved_id, "subject": saved_subject,
                 "files_read": files.read_names(), "notices": files.notices()}
 
 
