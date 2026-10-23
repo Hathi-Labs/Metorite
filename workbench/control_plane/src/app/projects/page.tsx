@@ -4221,6 +4221,7 @@ function ProjectsWorkspace() {
           ) : mode === "board" ? (
             <TaskBoard
           personLabels={personLabels}
+              phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}
               subtasks={subtaskMode}
@@ -4297,20 +4298,20 @@ function ProjectsWorkspace() {
               onSelect={(task) => void openWithStatuses(task)}
             />
           )}
-        </LayoutBoundary>
-        {/* OP-1: with the compact chrome the load-more row sits at the END of
+          {/* OP-1: with the compact chrome the load-more row sits at the END of
             the list, and the count "100 of 219" sits in the tool row. */}
-        {selected &&
-        compactChrome &&
-        (mode === "board" || mode === "list" || mode === "table") ? (
-          <MoreTasksBar
-            atEnd
-            loaded={tasks.length}
-            total={taskTotal}
-            busy={loadingMore}
-            onLoadMore={() => void loadMoreTasks()}
-          />
-        ) : null}
+          {selected &&
+          compactChrome &&
+          (mode === "board" || mode === "list" || mode === "table") ? (
+            <MoreTasksBar
+              atEnd
+              loaded={tasks.length}
+              total={taskTotal}
+              busy={loadingMore}
+              onLoadMore={() => void loadMoreTasks()}
+            />
+          ) : null}
+        </LayoutBoundary>
       </div>
     </>
   );

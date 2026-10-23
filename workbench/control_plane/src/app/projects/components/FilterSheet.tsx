@@ -194,7 +194,7 @@ export function FilterSheetBody({
                       })
                     }
                     className={`rounded-md px-1.5 py-0.5 text-[11px] ${
-                      on ? "bg-accent text-accent-foreground" : chipClass(tag.color)
+                      on ? "bg-primary/10 text-primary" : chipClass(tag.color)
                     }`}
                   >
                     {tag.name}

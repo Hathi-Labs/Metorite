@@ -178,3 +178,25 @@ export function swipeDirection(dx: number, dy: number): 1 | -1 | null {
   if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return null;
   return dx < 0 ? 1 : -1;
 }
+
+/** The one quick action that stays on a touch card: the tick that completes it. */
+export const COMPLETE_ACTION_ID = "task.markDone";
+
+/**
+ * What a touch card draws of the quick actions (§5.2 item 8). The row of done,
+ * subtask and edit is hidden. The complete tick stays. The rest is reached by
+ * the "⋯" button or a long press, which open the full menu.
+ */
+export function touchQuickActions<T extends { id: string }>(items: readonly T[]): T[] {
+  return items.filter((item) => item.id === COMPLETE_ACTION_ID);
+}
+
+/** How long a finger rests on a card before the long press opens its menu. */
+export const LONG_PRESS_MS = 500;
+/** How far a finger may drift and still count as resting. */
+export const LONG_PRESS_SLOP_PX = 10;
+
+/** Has the finger drifted too far for this to be a long press? */
+export function pressMoved(dx: number, dy: number): boolean {
+  return Math.hypot(dx, dy) > LONG_PRESS_SLOP_PX;
+}
