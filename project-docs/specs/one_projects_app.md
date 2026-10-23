@@ -356,6 +356,7 @@ authority: the route still checks the member's own access.
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
+| **D-OP-10** | A delete shows the task's subtasks by name and asks: promote them to tasks, or delete them too. Promote is the selected default. Delete removes the whole subtree in one transaction, with one tombstone for each row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -515,6 +516,31 @@ X. Each moves its route from class X to class B or C in `manifest.py`.
 3. A grant write from the chat succeeds only where the member could write the
    grant in the app. Fence: an R8 test with two members.
 4. The chat eval `evals/projects_ops/` gains one case for each new tool.
+
+### OP-7 — the subtask choice in the app and in the chat · AGENT-SAFE
+
+Owner, 2026-10-23, verbatim: "Sub tasks should also be deleted. The user
+should be shown that the task has what subtasks and if the subtasks should be
+promoted to tasks or be deleted as well."
+
+**Scope.** D-OP-10. EA-6h builds the core: `delete_task_in(..., subtasks=)`,
+the query parameter on `DELETE /projects/tasks/{id}`, and the MCP field. OP-7
+builds the two other doors.
+
+1. **The app.** The delete dialog of a task lists its subtasks by title, with
+   their count at each level. It offers two choices: "Keep them as tasks"
+   (selected) and "Delete them too". The button names the total, for example
+   "Delete 4 tasks".
+2. **The chat.** `delete_task` in `skill_projects/guarded.py` gains
+   `subtasks`. The card lists the subtasks and shows the two choices. The
+   impact line names the count that each choice deletes.
+
+**Done when.**
+1. With "Delete them too", the task and every descendant are gone, and with
+   "Keep them as tasks" the old behaviour holds. Fence: vitest on the dialog,
+   and `test_projects_agent_writes.py` for the card.
+2. The card and the dialog name each subtask. A task with no subtasks shows
+   no choice. Fence: vitest.
 
 ### OP-5 — one filter component, and the old shell retires · AGENT-SAFE
 
