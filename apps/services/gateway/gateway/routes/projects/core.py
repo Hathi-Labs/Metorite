@@ -3011,9 +3011,9 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Only ``claim_task`` calls it. The claim has passed its
-    visibility load, so the lock reads by id only. 404 when a delete crossed
-    that load."""
+    the lock read it. ``claim_task`` and ``agent_delete_task`` (WS-55 EA-6h)
+    call it. Each has passed its visibility load, so the lock reads by id
+    only. 404 when a delete crossed that load."""
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")

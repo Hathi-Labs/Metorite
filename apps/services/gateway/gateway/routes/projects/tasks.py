@@ -10,6 +10,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``tasks.py`` row).
     POST   /projects/tasks/{id}/move
     PUT    /projects/tasks/{id}/assignees        → replaces the set
     POST   /projects/tasks/{id}/claim            → add the caller, and start it
+    POST   /projects/tasks/{id}/agent-delete     → an MCP agent deletes (EA-6h)
     POST   /projects/tasks/{id}/links
     DELETE /projects/tasks/{id}/links/{link_id}
 
@@ -20,10 +21,13 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
 from acb_auth import UserContext, get_current_user
+from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE
+from acb_common import get_logger
 from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.cascade import (
     archive_subtree,
@@ -69,6 +73,7 @@ from gateway.routes.projects.core import (
     node_kind,
     now,
     parent_lane_status,
+    parse_precondition,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -119,8 +124,10 @@ from gateway.routes.projects.relations import (
 from gateway.routes.projects.tags import apply_task_tags
 from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+
+_log = get_logger("gateway.projects.tasks")
 
 #: Fields whose change earns a timeline entry. `status_id` is absent on purpose:
 #: a status move is a TRANSITION and gets its own richer activity, so listing it
@@ -1153,6 +1160,98 @@ async def delete_task(
         result = await delete_task_in(db, doomed)
 
     await emit("pm.task.deleted", {"task_id": task_id})
+    return result
+
+
+# ── The delete of an agent, with the member's yes (WS-55 EA-6h, EA3-51) ─────
+
+#: The coded refusals of ``agent-delete``. The MCP edge maps each one to a
+#: fixed text, and never shows the detail itself.
+#: 403: the member's switch "Let my AI agents delete tasks" is off.
+AGENT_DELETE_OFF = "agent_delete_off"
+#: 409: the task changed after the agent read it.
+AGENT_DELETE_STALE = "agent_delete_stale"
+#: 409: ``confirm_title`` is not the exact current title.
+AGENT_DELETE_TITLE = "agent_delete_title"
+
+#: The longest ``confirm_title``. The edge takes the same cap.
+AGENT_DELETE_TITLE_MAX = 2_000
+
+
+class AgentDeleteIn(BaseModel):
+    """``POST /projects/tasks/{id}/agent-delete`` (EA-6h). The agent sends
+    the version and the title that it read, so it must read the task and
+    name it (EA3-51 layer 3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: str = Field(min_length=1, max_length=64)
+    confirm_title: str = Field(min_length=1, max_length=AGENT_DELETE_TITLE_MAX)
+
+
+def _agent_delete_via(user: UserContext) -> str:
+    """The ``mcp:<slug>`` stamp of the signed agent caller, or 403.
+
+    A member deletes with ``DELETE /projects/tasks/{id}``. This route is the
+    agent's only, and it needs ``projects:write`` (branch 0 checks it too).
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an agent uses this route. A member deletes a task in Metorite.",
+        )
+    via = str(getattr(agent, "actor_via", "") or "")
+    if not (via.startswith("mcp:") and ACTOR_VIA_PATTERN.fullmatch(via)):
+        raise HTTPException(status_code=403, detail="This agent connection has no client stamp.")
+    if PROJECTS_WRITE not in tuple(getattr(agent, "scopes", ()) or ()):
+        raise HTTPException(status_code=403, detail="This connection may not write.")
+    return via
+
+
+@router.post("/tasks/{task_id}/agent-delete")
+async def agent_delete_task(
+    task_id: str, payload: AgentDeleteIn,
+    user: UserContext = Depends(get_current_user),
+) -> DeleteResponse:
+    """An MCP agent deletes one task, after the member said yes (EA3-51).
+
+    The four layers of EA3-51. (1) The member's switch, read here in the
+    transaction of the delete: off answers 403 ``agent_delete_off``. (2) The
+    tool's ``destructiveHint`` and its text, at the edge. (3) The task row,
+    locked: a version other than ``updated_at`` or a title other than the
+    exact current title answers 409, and nothing changes. (4) The delete goes
+    through :func:`delete_task_in`, the one core: the subtasks move up one
+    level (D-PM-38), and the trigger of migration 168 writes the tombstone.
+
+    A task outside the member's visibility, or the connection's pins, is 404.
+    ``pm.task.deleted`` carries the client stamp as ``via``.
+    """
+    via = _agent_delete_via(user)
+    try:
+        task_id = str(uuid.UUID(task_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    expected = parse_precondition(payload.expected_version)
+    from gateway.routes.admin.agent_access_switch import delete_enabled
+
+    async with _tenant_session() as db:
+        if not await delete_enabled(db, getattr(user, "email", None) or ""):
+            raise HTTPException(status_code=403, detail=AGENT_DELETE_OFF)
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, task_id)
+        # The lock holds the row until the delete commits, so a member's edit
+        # cannot land between the two checks and the delete.
+        doomed = await lock_task(db, task_id)
+        if doomed.updated_at != expected:
+            raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
+        if doomed.title != payload.confirm_title:
+            raise HTTPException(status_code=409, detail=AGENT_DELETE_TITLE)
+        result = await delete_task_in(db, doomed)
+
+    _log.info("projects.task.agent_deleted", task_id=task_id, via=via,
+              connection_id=str(getattr(user.agent, "connection_id", "")))
+    await emit("pm.task.deleted", {"task_id": task_id, "via": via})
     return result
 
 
