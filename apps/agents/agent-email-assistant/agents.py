@@ -3947,6 +3947,66 @@ async def install_default_rules(
     )
 
 
+@_annotate_risk(open_world=False)
+async def copy_rules(from_account_id: str, to_account_id: str) -> str:
+    """Copy each rule that is ON from one mailbox of the member to another
+    ("use my Work rules in Home too"). A copy is made once. After it, the
+    two sets of rules change apart. The card lists each rule and each action.
+
+    The server leaves out a rule that cannot work in the target, for example
+    a rule that forwards to one of the member's own mailboxes, and the answer
+    names each one. Patterns, guidance, settings and knowledge stay behind."""
+    src, dst = str(from_account_id or ""), str(to_account_id or "")
+    if not src or not dst or src == dst:
+        return "Nothing changed. Name two different mailboxes. Call list_accounts for the ids."
+    # The route checks that each id is a mailbox of the member (404).
+    names = {src: await _named(src), dst: await _named(dst)}
+    rules = await _enabled_rules(src)
+    if rules is None:
+        return "Nothing changed. I could not read the rules of the mailbox to copy from."
+    if not rules:
+        return f"Nothing to copy: {names[src]} has no rule that is on."
+    first_read = [_rule_fingerprint(r) for r in rules]
+    title = f"Copy {len(rules)} rule(s) from {names[src]} to {names[dst]}?"
+    cancelled = "Cancelled — no rule was copied."
+    # The audit of 2026-10-19: a held run refuses a rule that sends out, as
+    # it refuses a new one. A copy that sends out shows each target.
+    refusal = await _outward_rule_refusal(title, rules, cancelled)
+    if refusal:
+        return refusal
+    if not any(_has_outward_action(r.get("actions")) for r in rules):
+        refusal = await _inward_rule_card(
+            title,
+            f"From: {names[src]}. To: {names[dst]}. Each rule acts on each new email "
+            "that matches in the target. The server leaves out a rule that cannot "
+            "work there, and the answer names it.",
+            cancelled, rules)
+        if refusal:
+            return refusal
+    # The card can wait. Copy nothing when the rules changed meanwhile, because
+    # the route copies the rules of now, not the rules of the card.
+    again = await _enabled_rules(src)
+    if again is None or [_rule_fingerprint(r) for r in again] != first_read:
+        return ("Nothing changed. The rules of the mailbox changed while the card waited. "
+                "Ask the member again.")
+    res = await _post("/email/rules/copy",
+                      {"from_account_id": src, "to_account_id": dst}) or {}
+    copied = [str(c) for c in res.get("copied") or []]
+    lines = [f"Copied {len(copied)} rule(s) to {names[dst]}"
+             + (f": {', '.join(copied)}." if copied else ".")]
+    for r in res.get("renamed") or []:
+        if isinstance(r, dict):
+            lines.append(f"- '{r.get('name')}' is called '{r.get('copied_as')}' there.")
+    for r in res.get("left_out") or []:
+        if isinstance(r, dict):
+            lines.append(f"- '{r.get('name')}' was left out ({r.get('reason')}).")
+    for r in res.get("will_create") or []:
+        if isinstance(r, dict):
+            lines.append(f"- The provider makes the {str(r.get('action', '')).lower()} "
+                         f"'{r.get('name')}' on first use.")
+    return "\n".join(lines)
+
+
 async def _patch_settings(body: dict[str, Any]) -> Any:
     return (await _request("PUT", "/email/assistant/settings", json=body)).json()
 
@@ -6716,6 +6776,8 @@ _TOOLS = [
     test_rule_match,
     learn_rule_pattern,
     install_default_rules,
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    copy_rules,
     list_rule_history,
     resolve_execution,
     # Assistant config
@@ -6770,6 +6832,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "edit_draft", "snooze_email", "bulk_manage_inbox",
     # H-375: send later.
     "schedule_send", "cancel_scheduled_send",
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    "copy_rules",
 })
 
 #: The tools that save a reply draft in the member's OWN Drafts with no card,

@@ -325,6 +325,8 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "schedule_send": {"account_id": BOX, "draft_id": "d1",
                       "send_at": "2099-01-05T09:00:00+05:30"},
     "cancel_scheduled_send": {"schedule_id": "s1"},
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    "copy_rules": {"from_account_id": BOX, "to_account_id": "acc-2"},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 

@@ -421,3 +421,67 @@ async def test_rules_on_recent_mail_is_a_framed_dry_run(gw: Gateway) -> None:
     assert "1 match a rule" in out and "Bank (LABEL)" in out and "no rule" in out
     assert "EMAIL" in out  # the untrusted frame of a sender's text
     assert gw.cards == []
+
+
+# ── 5. Copy the rules of one mailbox to another ──────────────────────────────
+
+
+async def test_copy_rules_lists_each_rule_then_copies(gw: Gateway) -> None:
+    gw.answers[("POST", "/email/rules/copy")] = {
+        "copied": ["Bank (copy)"], "renamed": [{"name": "Bank", "copied_as": "Bank (copy)"}],
+        "left_out": [{"name": "Loop", "reason": "forward_loop"}],
+        "will_create": [{"rule": "Bank (copy)", "action": "LABEL", "name": "Finance"}]}
+    out = await agents.copy_rules(BOX, BOX2)
+    [card] = gw.cards
+    assert card["title"] == f"Copy 1 rule(s) from {BOX_TEXT} to Home · jane@home.test?"
+    assert '- rule "Bank": labels "Finance" and archives (when: bank mail)' in card["context"]
+    assert gw.writes == [("POST", "/email/rules/copy",
+                          {"from_account_id": BOX, "to_account_id": BOX2})]
+    assert "'Bank' is called 'Bank (copy)'" in out
+    assert "'Loop' was left out (forward_loop)" in out
+    assert "label 'Finance' on first use" in out
+
+
+async def test_a_copy_of_a_forward_rule_shows_its_target(gw: Gateway) -> None:
+    gw.rules[BOX].append(dict(FORWARD_RULE))
+    gw.answer = False
+    out = await agents.copy_rules(BOX, BOX2)
+    [card] = gw.cards
+    assert "out@evil.test" in card["detail"] + card["context"]
+    assert gw.writes == [] and out.startswith("Cancelled")
+
+
+async def test_a_held_run_copies_no_forward_rule(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gw.rules[BOX].append(dict(FORWARD_RULE))
+    _held(monkeypatch)
+    out = await agents.copy_rules(BOX, BOX2)
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_a_held_run_copies_an_inward_rule_behind_a_card(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held(monkeypatch)
+    await agents.copy_rules(BOX, BOX2)
+    assert len(gw.cards) == 1 and len(gw.writes) == 1
+
+
+async def test_a_copy_stops_when_the_rules_change_under_the_card(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def card(**kw: Any) -> Any:
+        gw.cards.append(kw)
+        gw.rules[BOX][0]["name"] = "Changed"
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    out = await agents.copy_rules(BOX, BOX2)
+    assert out.startswith("Nothing changed.") and gw.writes == []
+
+
+async def test_a_copy_needs_two_mailboxes(gw: Gateway) -> None:
+    assert (await agents.copy_rules(BOX, BOX)).startswith("Nothing changed.")
+    assert gw.calls == []
