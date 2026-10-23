@@ -321,7 +321,7 @@ authority: the route still checks the member's own access.
 | Export | `GET /projects/export/tasks.csv` | One tool. The file comes back as a chat document (S8) |
 | Attachments | `POST /projects/tasks/{id}/attachments` | One tool that attaches a file the member uploaded to the chat (H-229) |
 | Report delivery | recipients and schedule | Tools behind a card. The send switch `PROJECT_REPORT_EMAIL_ENABLED` stays the owner's (§3a rule 3) |
-| Agent runs | the eight `PLANNED` tools | The member can approve or decline an agent's archive or delete from the chat. **NO-GO (OP-6e)** until the owner reverses EA3-40 |
+| Agent runs | the eight `PLANNED` tools | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
 | Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
 | Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
@@ -363,6 +363,9 @@ owe, each with its slice.
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
 | **D-OP-10** | A delete shows the task's subtasks as a tree and lets the member mark each one: keep or delete. Every subtask is kept by default. A kept subtask under a deleted one moves up to its nearest kept ancestor. A delete never removes a subtask that the caller cannot see: it stays, and it moves up too (§9 OP-7, "The rule of the core"). One transaction, with one tombstone for each deleted row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 (§9 OP-7) |
+| **D-OP-11** | A project's access grants are written by its lead and by a member who may manage Projects settings (`can_manage_settings`), and by nobody else. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, in chat ("Lead + admins") |
+| **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
+| **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -553,16 +556,13 @@ Fences: the three tools in `test_projects_agent_writes.py`, then
 tool shows one card. So `create_area` shows a short card with the name. A tool
 with no card is a new class, and the owner must decide on it.
 
-#### OP-6b — grants · HIGH · BLOCKED
+#### OP-6b — grants from the chat · HIGH · after OP-8
 
 Two tools for `POST/DELETE /projects/nodes/{id}/grants…`, each behind a class
-C card. **This reverses D-PM-40.** BLOCKED on an owner answer: who may write a
-grant? Today `tree.py` `create_grant` and `delete_grant` check only that the
-member can see the project.
-
-A card is not authority, so the chat would give
-every viewer a way to widen access. The route needs a rule before the tool.
-Done-when 3 above is this slice's fence.
+C card. **This reverses D-PM-40.** OP-8 first puts D-OP-11 on the two routes,
+so the chat can write a grant only where the member may write it in the app.
+Invert the D-PM-40 sentence in `agent-projects/instructions.md` and its pin in
+`test_projects_agent_grants.py`.
 
 #### OP-6c — nudge, export, attach · MEDIUM
 
@@ -582,11 +582,45 @@ They never touch `PROJECT_REPORT_EMAIL_ENABLED`, which stays the owner's
 (§3a rule 3). A recipient is a person outside the chat, so the card names the
 address.
 
-#### OP-6e — agent-run approval · NO-GO
+#### OP-6e — agent runs in the chat · MEDIUM
 
-The eight `PLANNED` agent-run tools stay unbuilt. EA3-40 says only the run's
-member answers, in the card, and never a chat tool. The owner must reverse
-EA3-40 first. The parity tools go to EA-12e.
+D-OP-13. The chat lists the waiting agent requests of the member, and each
+row links to its task card. No chat tool answers a request, and
+`approve_task_archive` stays out of the chat. The other parity tools of
+`PLANNED` go to EA-12e.
+
+### OP-8 — who may delete and who may write a grant · HIGH · AGENT-SAFE
+
+**Scope.** D-OP-11 and D-OP-12 on the server. One helper in
+`routes/projects/`, for example `may_delete(db, user, row)` and
+`may_write_grant(db, user, project)`. Every door calls it:
+
+- `DELETE /projects/tasks/{id}`, `POST /projects/tasks/{id}/agent-delete` and
+  the chat's `delete_task`.
+- `DELETE /projects/nodes/{id}` and the chat's `delete_project`. A project
+  delete also takes the tasks of other members inside it. The card and the
+  dialog name that count.
+- `POST/DELETE /projects/nodes/{id}/grants…` (`tree.py` `create_grant`,
+  `delete_grant`).
+- The bulk delete of the board.
+
+A refusal is 403 with a sentence that names who may do it, for example "Only
+the person who created this task, the project lead or a Projects admin can
+delete it." The app hides or disables Delete where the member may not use it.
+The MCP tool and the chat card say the same sentence.
+
+**Done when.** Each is an R8 test with three members, red first under a named
+mutation:
+
+1. The creator of a task deletes it. A member who only sees it gets 403, and
+   nothing changes.
+2. The lead of the project deletes a task that another member made.
+3. A member with `can_manage_settings` deletes any task and any project.
+4. The creator of a sub-project deletes it, with its tasks.
+5. A grant write by the lead and by an admin succeeds. A grant write by a
+   member who only sees the project gets 403.
+6. The agent route, the chat tool and the app route give the same answer for
+   the same member.
 
 ### OP-7 — choose which subtasks go, in the app and in the chat · AGENT-SAFE
 
