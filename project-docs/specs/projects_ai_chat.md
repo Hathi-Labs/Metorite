@@ -622,6 +622,13 @@ stopped matching the wire"). A class C card starts with the counts.
 
 ### 5.4 D-PM-35 — the chat cannot hard-delete until WS-40 answers who may
 
+⚠️ **SUPERSEDED.** The owner lifted this on 2026-10-22: `delete_project` and
+`delete_task` are class C, one act per card (#1223, in production). On
+2026-10-23 the owner extended the rule: every act of the Projects app is
+reachable from the chat, behind a card where it destroys or reaches a person.
+`one_projects_app.md` §5a (D-OP-9) holds that rule and slice OP-6. The text
+below is the record of 2026-09-29.
+
 **Decision (owner, 2026-09-29).** `delete_project` and `delete_task` are
 class X. The chat's remove verb is archive. The agent proposed this rule, and
 the owner accepted it on 2026-09-29 (§12, question 1).
@@ -754,7 +761,7 @@ Review the default again after H-42 prices the rate card.
 - **D-PM-39** — only the server creates an agent row or a system row. A
   LiteLLM reply and a compaction summary stay in the browser until a later
   slice gives them a server writer. §20.5.
-- **D-PM-40** — the chat does not write grants. The two grant writes in
+- **D-PM-40** — ⚠️ SUPERSEDED 2026-10-23 by D-OP-9 (`one_projects_app.md` §5a): grants move to class C behind a card in OP-6. Record: the chat does not write grants. The two grant writes in
   `manifest.py` stay class X. The chat may propose a grant in words, and a
   person applies it in the app. §12, question 2.
 
