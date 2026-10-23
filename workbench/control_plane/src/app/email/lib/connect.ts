@@ -592,6 +592,7 @@ export type CallbackKind =
   | "scope_missing"
   | "workspace_admin_blocked"
   | "provider_unavailable"
+  | "mailbox_limit"
   | "unknown";
 
 /**
@@ -704,6 +705,19 @@ export function callbackView(params: {
       kind: "provider_unavailable",
       title: "Gmail is not available yet",
       body: "Gmail is not available for your account yet.",
+    };
+  }
+  // Q-MB-1 (owner, 2026-10-23): the gateway holds the one copy of the
+  // limit (`core.MAX_MAILBOXES_PER_MEMBER`), so this text names no number.
+  // The authorize route and the callback both send this code. A second try
+  // changes nothing, so the view offers no retry.
+  if (error === "mailbox_limit") {
+    return {
+      kind: "mailbox_limit",
+      title: "You have the most mailboxes",
+      body:
+        "You have connected the most mailboxes that one member can have. " +
+        "Disconnect one from its mailbox menu, then connect this one.",
     };
   }
   if (error === "duplicate") {
