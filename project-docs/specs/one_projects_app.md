@@ -399,14 +399,21 @@ except OP-1. OP-1 is a layout change of a live app, and it ships behind
 **Scope.** §5.2 items 1 to 8 for the Projects company views, and the desktop
 changes of §5.3. No change to the tab bar (that is OP-4).
 
+**Flag.** `app/projects/lib/compactChrome.ts` reads the literal
+`process.env.NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`, in the idiom of
+`importFlow.ts:22-28`. Add the flag to `publicFlags.test.ts`.
+
 **Files.** `app/projects/components/FilterBar.tsx` (split into the tool row,
 `FilterSheet` and `ViewSheet`), `AgentWorkStrip.tsx`, `MoreTasksBar.tsx`,
 `TaskBoard.tsx` (status tabs on a phone), `TaskCardActions.tsx`.
 
 **Done when.**
 1. At 390 × 844 with the flag on, the top of the first task row is at
-   y ≤ 281 (one third), with no filter on. Fence: a Playwright test in the
-   visual rig.
+   y ≤ 281 (one third), with no filter on. Fence: a new
+   `e2e/projects-compact-chrome.spec.ts` that sets the viewport to
+   390 × 844. The flag is inlined at build time, so the e2e server starts with
+   `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME=1`. A vitest test also asserts the
+   structure: one tool row, and the other controls in the sheets.
 2. With two filters on, both show as chips with ✕, and the Filters button
    reads "Filters 2". Fence: a vitest test of the tool row.
 3. A count of zero never shows in the agent strip. Fence: vitest.
@@ -469,6 +476,10 @@ folder, and the e2e of OP-2 still passes.
 ---
 
 ## 10. Verification
+
+For OP-1, in `workbench/control_plane`: `npx tsc --noEmit`,
+`npx vitest run src/app/projects src/components/ui`, and
+`npx playwright test e2e/projects-compact-chrome.spec.ts` with the flag set.
 
 ```
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/projects src/app/tasks src/lib/nav.test.ts
