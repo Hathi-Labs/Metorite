@@ -265,7 +265,7 @@ MEMORY_OFF = "(memory is off — nothing was saved)"
 def _mem0_on() -> bool:
     """True when Mem0 is on. The same switch that ``MemoryClient._get_client``
     reads, so the tool and the client cannot disagree."""
-    from acb_common import get_settings  # noqa: PLC0415
+    from acb_common import get_settings
 
     return bool(getattr(get_settings(), "mem0_enabled", False))
 
