@@ -28,6 +28,11 @@ NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
 The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
+**BUILT 2026-10-23 on the branch `one-assistant-email`, not merged: email
+through the one assistant** (§7.1.1). A working set of email ids for each
+chat, the mailboxes on every surface, email cards in the dock and a mailbox
+mark. No flag and no migration.
+
 **NS-6 slice 6b BUILT 2026-10-13, ON in production since 2026-10-13 (owner): the chat bar and the one
 assistant** (D99, §7.1). On 2026-10-14 the owner moved the one field into the
 shell bar, and the bar at the foot of the page is gone (D102, amended). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
@@ -1249,6 +1254,83 @@ on to the sub-run.
 - **A Copilot SDK specialist** (`task-manager`, `app-builder`). Its native
   `ask_user` parks through `_make_user_input_handler(<parent thread>)`, and
   no test runs that path through `orchestrator`.
+
+### 7.1.1 Email through the one assistant (built 2026-10-23, branch `one-assistant-email`)
+
+**Status: BUILT on the branch `one-assistant-email`, not merged.** No flag,
+no migration and no new route. Owner directive of 2026-10-23, under D99.
+`email_app_master_plan.md` §22 points here.
+
+There is no separate email assistant. Each member talks to the one assistant,
+and email work runs in `email-assistant` by delegation. A delegated run gets
+one task string and no history. So "send it" on the next turn found no draft,
+and the member had to repeat the mailbox. These rules close that gap.
+
+**The rules.**
+
+1. **A working set for each chat.** The executor keeps the ids that the
+   chat's email sub-run worked on last. They are the mailbox, the email, the
+   thread and the draft. Only the sub-run's own tool calls write it, never the
+   model's text. It holds ids only, with no subject and no mail text. The
+   executor drops an id that is not a plain token. Module:
+   `acb_skills/email_chat_context.py`.
+2. **The set goes into each later email sub-run.** It goes in as
+   `system_context`, not as the member's words. The orchestrator gets it in
+   its per-turn context too. The executor decides the held state of a sub-run
+   first, and the set does not change it. No code in `egress.py`, `held_card.py` or
+   `reply_card.py` changed.
+3. **The mailboxes are known on every surface.** The orchestrator's per-turn
+   context lists the member's mailboxes. Each line gives the label, the
+   address, the id, the default, All inboxes and "needs reconnecting". The
+   executor reads `GET /email/accounts` once per turn, as the verified member.
+   A shared room gets no list. When the member names no mailbox, a read uses
+   All inboxes and a write asks "which mailbox".
+4. **A mailbox named in words resolves.** `_one_mailbox` takes "Personal",
+   "my gmail" or "vj@…". An id wins first. Then an exact label, address or
+   provider wins, and then a unique prefix. Two matches, or an unknown label,
+   ask. One function does this, `email_chat_context.match_mailbox`, and the
+   working set uses it too.
+5. **Email cards draw in the one assistant.** A batch MAF sub-run now sends
+   each tool call to the parent with its arguments and a capped result. The
+   orchestrator's specialist tool (`email_assistant`) counts as a hand-off,
+   live and in the saved turn. The card takes its account from the step's own
+   `account_id`. A read draws in the hand-off step, and a draft or a rule
+   result draws in the thread. A newer draft folds an older one (§24.10).
+   The delegated confirmation and reply cards stay as they were.
+6. **A mailbox mark.** When the email work moves to another mailbox, the
+   turn carries "Now working on <label>". The turn saves it, so a reload draws
+   it. There is no picker, because the member sets nothing (D99).
+7. **The orchestrator's prompt.** It copies the working-set ids into each
+   task, with the draft_id for "send it". It sends a reply, a Cc and a send
+   that the member asked together as ONE task. It never sends the member to
+   the Email app, except to reconnect a mailbox.
+
+**Storage (R5).** The key is `cc:<org>:email-ws:<session>:<member hash>`,
+through the tenant Redis wrapper. The tenant and the session come from the
+run binding, never from input. The set lives 30 days after its last write. A
+batch session keeps it in the process only.
+
+**Fences (R7).**
+
+| Rule | Test |
+|---|---|
+| 1, 2 and 6 | `tests/unit/test_email_working_set.py` |
+| 3 and 4 | `tests/unit/test_email_mailbox_by_name.py` |
+| 5, server half | `tests/unit/test_one_assistant_email_cards.py` |
+| 5, browser half | `workbench/control_plane/src/lib/delegatedSteps.test.ts`, `toolSteps.test.ts` |
+| 6, browser half | `workbench/control_plane/src/lib/mailboxMark.test.ts` |
+| 7 | `tests/unit/test_orchestrator_email_prompt.py` |
+| All, end to end | `tests/unit/test_one_assistant_email.py` |
+
+`test_one_assistant_email.py` drives the real `orchestrator` run and the real
+email-assistant factory. Only the model wire and the email gateway are fakes,
+and the held state is real. It runs five turns in one chat off `/email`, with
+two mailboxes. It also proves that a delegated reply card and a confirmation
+card reach the parent's stream.
+
+⚠️ **Not proven:** the browser. Nobody has clicked a delegated draft card in
+the dock. `list_accounts` does not say "needs reconnecting" until PR #1252
+merges, so the orchestrator's mailbox list carries that fact for now.
 
 ### 7.2 One bell
 
