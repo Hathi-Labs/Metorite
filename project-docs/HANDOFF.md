@@ -6411,6 +6411,18 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §17 KB-9a
 - **Added:** 2026-10-23 · Knowledge session
 
+### H-404 · Build wave 2 of email control from the chat: the acts that send mail out · [AGENT] · security
+- **Check:** `grep -n "to_address\|CALL_WEBHOOK" apps/agents/agent-email-assistant/agents.py | grep -c "_clean_actions"` prints more than 0, and §22 of `email_app_master_plan.md` names wave 2 BUILT. If both hold, delete this entry.
+- **Why:** #1245 built wave 1. Five gaps stay, and each one changes the egress pin in `acb_skills/egress.py`:
+  - a rule that forwards, replies to an address, or calls a webhook
+  - cc and bcc on a rule action
+  - unsubscribe from several senders in one call
+  - `morning_brief_enabled` in `update_assistant_settings`
+  - `org_domains`, which changes who counts as "org" in the held-card classes
+- **Do this:** use a session in manual mode, because auto mode blocks an edit of the egress guard. Each outward rule act needs its own card that names each address and URL. A held chat must refuse it. Run a diff-reviewer on Opus before the merge.
+- **Authority:** owner request, 2026-10-23: "I should basically be able to control all aspects of the email application via the chat."
+- **Added:** 2026-10-23 · chat cards session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
