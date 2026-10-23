@@ -22,6 +22,7 @@
  * `full_id: <uuid>` (lists) or `(id: <uuid>)` (schedules) for exactly this.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
 import { useState } from "react";
@@ -311,11 +312,11 @@ function TaskListCard({ event: e }: { event: ToolEvent }) {
       icon={e.name === SCHEDULE_TOOL ? <AppIcon name="CalendarClock" size={12} /> : <AppIcon name="ListChecks" size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="space-y-0.5">
         {rows.map((r) => (
           <TaskRowView key={r.id} row={r} />
         ))}
-      </div>
+      </ShowMore>
     </ToolCardShell>
   );
 }
@@ -359,9 +360,9 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
       // A day plan is a RESULT: it folds, and it never closes, because it
       // is the record of the answer (spec `projects_ai_chat.md` §29 rule 2).
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-[11px] whitespace-pre-wrap break-words text-foreground/90">
         {body || "(no blocks)"}
-      </div>
+      </ShowMore>
       {wasProposal && (
         <div className="mt-2 flex items-center gap-2">
           {state === "applied" ? (
@@ -408,9 +409,9 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       icon={<AppIcon name={iconName} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-[11px] whitespace-pre-wrap break-words text-foreground/90">
         {text || "(no result)"}
-      </div>
+      </ShowMore>
       {itemId && (
         <button
           onClick={() => openTask(itemId)}

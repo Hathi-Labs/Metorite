@@ -22,6 +22,7 @@
  * `- #<n> «title» · <facts>` and the NEXT line is `  full_id: <uuid>`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
@@ -515,7 +516,7 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
   const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
   return (
     <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px]">
-      <div className="-mx-1 max-h-72 overflow-y-auto overflow-x-hidden px-1 scrollbar-thin">
+      <ShowMore className="-mx-1 px-1">
         {isList && rows.length > 0 ? (
           <>
             <div className="mb-1 text-[11px] font-medium text-foreground">
@@ -530,7 +531,7 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
         ) : (
           <Readout result={result} legend={LEGEND} />
         )}
-      </div>
+      </ShowMore>
       {link && !opens && (
         <div className="mt-2">
           <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
@@ -634,7 +635,7 @@ function InfoCard({
     >
       {/* A read draws as UI (`Readout`): no id, no `[key]`, a status as its
           chip. A failure stays one plain message. */}
-      <div className="max-h-80 overflow-y-auto scrollbar-thin">
+      <ShowMore>
         {failed ? (
           <div className="text-[11px] whitespace-pre-wrap text-destructive">
             <FencedText text={shown || "(no result)"} pills={false} />
@@ -642,7 +643,7 @@ function InfoCard({
         ) : (
           <Readout result={e.result || ""} legend={LEGEND} />
         )}
-      </div>
+      </ShowMore>
       {link && !opens && (
         <div className="mt-2">
           <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
@@ -1030,14 +1031,14 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
             </div>
           )}
           {rows.length > 0 && (
-            <div className={`mt-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin ${LIST_ROWS_BOX}`}>
+            <ShowMore className={`mt-1 ${LIST_ROWS_BOX}`}>
               {tasks.map((r, i) => (
                 <TaskRowView key={`${r.id}-${i}`} row={r} />
               ))}
               {words.map((r) => (
                 <VocabRowView key={r.id} row={r} />
               ))}
-            </div>
+            </ShowMore>
           )}
           <ReceiptNotes notes={notes} />
       </RollupBody>

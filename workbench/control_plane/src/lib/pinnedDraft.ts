@@ -1,18 +1,16 @@
 /**
- * pinnedDraft — the one email draft that sits above the composer.
+ * pinnedDraft — which email draft in a chat is the live one.
  *
  * Owner report, 2026-10-22. The member revised a reply over chat, and each
- * revision drew a new draft card at the foot of the thread. The cards
- * scrolled away under the chat, and the old drafts stayed open beside the
- * new one. Now:
+ * revision drew a new draft card. The old drafts stayed open beside the new
+ * one. Owner report, 2026-10-23: a draft pinned above the composer covered
+ * the chat on a phone. Now:
  *
- * - The NEWEST draft of the session pins above the composer. Each revision
- *   replaces it in place, so the member always edits one card.
- * - In the thread, the pinned draft draws as one line that names the pin,
- *   and an older draft draws as one line that says a newer one replaced it.
- * - The member closes the pin with its X. The pin comes back only for a new
- *   draft (a new tool call id). Closed, the newest draft draws in full in
- *   the thread again.
+ * - The NEWEST draft of the session draws in full in the thread, and it
+ *   scrolls with the thread. Nothing pins above the composer.
+ * - An older draft draws as one line that says a newer one replaced it.
+ * - `draftPin` still names a `pinned` draft for a caller that wants one.
+ *   The chat passes `pinnedId: null` in its scope.
  *
  * Pure, so the node-env vitest holds it. Fence: `src/lib/pinnedDraft.test.ts`.
  */

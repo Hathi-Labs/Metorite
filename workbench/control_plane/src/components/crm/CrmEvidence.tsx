@@ -14,6 +14,7 @@
  * draws no write.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Readout from "@/components/Readout";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { placementOf } from "@/lib/chatPlacement";
@@ -30,9 +31,9 @@ export function crmEvidence(e: ToolEvent): React.ReactNode | null {
   if (!CRM_CARD_SET.has(name) || placementOf(name) !== "evidence") return null;
   return (
     <div data-crm-evidence="" className="min-w-0 rounded-md border border-border/60 bg-card/60 px-2.5 py-2">
-      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore>
         <Readout result={e.result || ""} />
-      </div>
+      </ShowMore>
     </div>
   );
 }

@@ -5731,16 +5731,11 @@ Every element of an assistant turn is one of four kinds.
    it. Answering the element removes the bar. The bar reuses the "1 of N"
    confirmation queue and adds no state of its own.
 
-   **Exception: a reply card and a draft pin above the composer** (owner
-   report, 2026-10-22). The member revises a reply over chat, and each
-   revision closes the card and draws a new one. In the flow, the card sat
-   above the member's messages and scrolled away. So a waiting reply card
-   (a confirmation with a `reply` form) draws above the composer, and the
-   thread shows one line in its place. The newest `draft_reply` or
-   `draft_email` card pins the same way, and an older draft draws as one
-   line. The X of the pin puts the card back in the thread, until a new
-   card comes. Code: `AgentChat.tsx` (`pinAsk`) and `src/lib/pinnedDraft.ts`.
-   Fences: `src/lib/pinnedDraft.test.ts` and `src/lib/askPin.test.ts`.
+   ~~**Exception: a reply card and a draft pin above the composer** (owner
+   report, 2026-10-22).~~ **Withdrawn by the owner, 2026-10-23.** On a
+   phone the pinned card covered the chat, and a declined question stayed
+   stuck above the box. No card pins now. §24.10 holds the rules that
+   replace the exception.
 2. **EVIDENCE** — the result of a READ. Examples are `projects_tree`,
    `vocabulary`, `list_tasks`, `find_tasks`, `task_detail`, `task_dataset`,
    `project_summary`, `my_work`, and the email and Tasks reads. It draws
@@ -6080,6 +6075,89 @@ and not a stop.
 Fences: `tests/unit/test_question_decline.py`, `declineAnswer.test.ts`,
 `notNow.test.ts`, `elicitationCard.test.ts`, `askAnswers.test.ts` and
 `e2e/genui-option-picker.spec.ts`.
+
+### 24.10 Where a card sits on the screen (owner report, 2026-10-23)
+
+**The answer: a card never pins above the message box.** Every card draws in
+the thread and scrolls with it. Only a one-line status may sit outside the
+thread.
+
+**The report.** The owner wrote an email reply over chat on a phone. Three
+things went wrong:
+
+- The approval card pinned above the box. It took most of the screen, and
+  the chat behind it did not scroll.
+- The owner declined a question. The "Not answered" card stayed stuck above
+  the box for the rest of the run.
+- The owner typed the answer to a question. It went as a steer, so the run
+  waited on the question for minutes.
+
+**The test for a pin.** An element may sit outside the thread only when all
+three of these are true:
+
+1. It is one line on a phone.
+2. It tells the state of the run, or it points to an element in the thread.
+3. It goes away by itself when its state ends.
+
+The ask bar (`AskPin`), the run status row and the caption under the box
+pass. A card fails the first test, so it goes in the thread.
+
+**The rules.**
+
+- **C1 — The box area holds the member's own input.** The form under the
+  thread holds the box, its controls, the status row, the ask bar and one
+  notice. It draws no card. The Todos panel opens folded on a phone, and its
+  one line names the step that runs now.
+- **C2 — A card that waits draws at the foot of the live turn.** It draws
+  after the last message of the thread, so a steer that the member sent
+  sits above it. When it is out of view, the ask bar names it, and a press
+  scrolls to it. This is the only pin.
+- **C3 — A card holds no scroll box.** The thread is the one thing that
+  scrolls. A long body uses `components/ui/ShowMore.tsx`. It shows the
+  first part with a fade, and "Show all" opens the rest in place. Two boxes
+  may scroll: the working trail, which follows its own tail, and the raw
+  text of an error. A wide table may scroll sideways.
+- **C4 — One live copy.** A revision replaces the card. The newest draft
+  draws in full, and an older draft draws as one line that says a newer
+  draft replaced it (`lib/pinnedDraft.ts`).
+- **C5 — An answered card folds.** An answered or declined card folds to
+  one line in its place (`cardRollup.ts`). It leaves when the run ends.
+- **C6 — A typed message answers the one waiting question.** This applies
+  when one question waits, the run parks on it, and it takes typed text.
+  The caption under the box says "Answers the question above". Otherwise a
+  typed message steers the run. A message typed while an approval waits
+  steers it, so the member can ask for a change in words
+  (`lib/typedAnswer.ts`).
+- **C7 — A card that sends shows all that it sends.** Each recipient and the
+  whole text are in the thread, with no box that hides the end. This
+  carries the §21 rule of the email plan ("a send card never shows less
+  than it sends") to the screen.
+- **C8 — The thread follows its foot only when the member is there.** A
+  reader near the foot stays at the foot when a card grows
+  (`stickToBottom.ts`). A reader who scrolled up keeps the place, and the
+  ask bar tells them that a card waits.
+
+**How to check a new card.** Open it at 390 × 844 with the keyboard up.
+The member must see the card and at least two lines of the thread above it.
+The member must reach every control of the card with no inner scroll.
+
+**What this change built.**
+
+| Part | Where |
+|---|---|
+| No pin above the box. The cards draw after the last message. | `AgentChat.tsx` (`hitlAnchorId`, the form) |
+| The newest draft draws in full in the thread. `PinnedDraftCard` is deleted. | `AgentChat.tsx`, `EmailToolCards.tsx` |
+| The approval card shows its whole text. | `ConfirmationCard.tsx` |
+| A typed answer to the one waiting question. | `lib/typedAnswer.ts`, `AgentChat.tsx` |
+| "Show all" in place of 12 scroll boxes in the email, Projects, Tasks and CRM cards. | `components/ui/ShowMore.tsx` |
+| The Todos panel opens folded on a phone. | `TodoPanel.tsx` |
+
+**Fences (R7).** `src/lib/chatCardScroll.test.ts` holds C1 and C3. It fails
+on a scroll box in a file that draws a card, and on a card in the form.
+`src/lib/typedAnswer.test.ts` holds C6. `src/lib/pinnedDraft.test.ts` holds
+C2 and C4. C5, C7 and C8 keep their fences in §24.6 and §24.9.
+
+The check at 390 × 844 is advisory, so review holds it.
 
 ## 25. The fixed prefix of each request (2026-10-09)
 

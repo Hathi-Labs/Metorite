@@ -48,9 +48,10 @@ describe("draftPin", () => {
 describe("the chat wiring", () => {
   const src = (p: string) => readFileSync(join(__dirname, "..", p), "utf-8");
 
-  it("AgentChat pins the draft above the composer and scopes the thread", () => {
+  it("AgentChat pins no draft above the composer, and scopes the thread (owner, 2026-10-23)", () => {
     const chat = src("components/AgentChat.tsx");
-    expect(chat).toContain("<PinnedDraftCard");
+    expect(chat).not.toContain("<PinnedDraftCard");
+    expect(chat).toContain("pinnedId: null, superseded: draftPin(drafts, null).superseded");
     expect(chat).toContain("<DraftPinContext.Provider value={pinScope}>");
   });
 
@@ -66,12 +67,18 @@ describe("the chat wiring", () => {
   });
 });
 
-describe("the reply card pin", () => {
+describe("no card pins above the composer (owner report, 2026-10-23)", () => {
   const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
+  const form = chat.slice(chat.indexOf("<form onSubmit={handleSubmit}"));
 
-  it("a waiting reply card draws above the composer, and one line in the thread", () => {
-    expect(chat).toContain("const replyCard = confirmations.cards.find((c) => c.reply !== undefined);");
-    expect(chat).toContain("{msg.id === hitlAnchorId && (pinAsk ? <PinnedAskLine /> : renderHitlCards())}");
-    expect(chat).toMatch(/\{pinAsk && \(\s*<div data-pinned-ask/);
+  it("the waiting cards draw in the thread, after its last message", () => {
+    expect(chat).toContain("{msg.id === hitlAnchorId && renderHitlCards()}");
+    expect(chat).toContain("visibleMessages[visibleMessages.length - 1].id");
+    expect(chat).not.toContain("data-pinned-ask");
+  });
+
+  it("the composer form draws no card", () => {
+    expect(form).not.toContain("renderHitlCards()");
+    expect(form).not.toMatch(/Draft(Result)?Card|ConfirmationCard|ElicitationCard/);
   });
 });

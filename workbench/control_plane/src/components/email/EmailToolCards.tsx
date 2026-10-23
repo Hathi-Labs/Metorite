@@ -35,6 +35,7 @@
  * and `e2e/email-chat-cards.spec.ts`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { Textarea } from "@/components/ui/Input";
@@ -371,9 +372,9 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
   // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
-      <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-xs whitespace-pre-wrap break-words text-foreground/90">
         {threadText(event.result)}
-      </div>
+      </ShowMore>
     );
   }
   if (msgs.length === 0) {
@@ -526,7 +527,7 @@ export default function EmailToolCards({
     // The draft above the composer, and a draft a newer one replaced, draw
     // one line here, not a second editable copy (`lib/pinnedDraft.ts`).
     if (DRAFT_TOOLS.has(e.name) && (e.id === pin.pinnedId || pin.superseded.has(e.id))) {
-      items.push(<DraftLine key={e.id} pinned={e.id === pin.pinnedId} />);
+      items.push(<DraftLine key={e.id} />);
       continue;
     }
     items.push(
@@ -742,40 +743,12 @@ function DraftResultCard({
   );
 }
 
-/** One line in the thread for a draft that draws elsewhere or is old. */
-function DraftLine({ pinned }: { pinned: boolean }) {
+/** One line in the thread for a draft that a newer one replaced. */
+function DraftLine() {
   return (
     <div data-email-card="draft-line" className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-      <AppIcon name={pinned ? "Pin" : "PenLine"} size={12} className="shrink-0" />
-      <span className="min-w-0 truncate">
-        {pinned ? "Draft reply · above the message box" : "Earlier draft · a newer draft replaced it"}
-      </span>
-    </div>
-  );
-}
-
-/**
- * The newest draft, pinned above the composer (`lib/pinnedDraft.ts`). It is
- * the same editable card as in the thread, and its X closes the pin. The
- * box scrolls, so a long draft never pushes the composer off a phone.
- */
-export function PinnedDraftCard({
-  event,
-  accountId,
-  emailId,
-  onClose,
-}: {
-  event: ToolEvent;
-  accountId?: string | null;
-  emailId?: string | null;
-  onClose: () => void;
-}) {
-  return (
-    <div data-pinned-draft className="max-w-3xl mx-auto mb-2 max-h-72 overflow-y-auto rounded-lg">
-      <DismissableCard onDismiss={onClose}>
-        {/* Keyed by the tool call, so a revision starts from its own text. */}
-        <DraftResultCard key={event.id} event={event} accountId={accountId} emailId={emailId} />
-      </DismissableCard>
+      <AppIcon name="PenLine" size={12} className="shrink-0" />
+      <span className="min-w-0 truncate">Earlier draft · a newer draft replaced it</span>
     </div>
   );
 }
@@ -1629,9 +1602,9 @@ function EmailRow({
                   From: {body.from}
                 </div>
               )}
-              <div className="max-h-72 overflow-y-auto overflow-x-hidden rounded">
+              <ShowMore className="rounded">
                 <MessageContent html={body.body_html} text={body.body_text} messageId={row.id} />
-              </div>
+              </ShowMore>
             </>
           ) : null}
         </div>
@@ -2013,7 +1986,7 @@ function RulesOverviewCard({
       icon={<AppIcon name="Sparkles" size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="space-y-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin pr-0.5">
+      <ShowMore className="space-y-1">
         {rules.map((r) => (
           <div
             key={r.id}
@@ -2084,7 +2057,7 @@ function RulesOverviewCard({
             )}
           </div>
         ))}
-      </div>
+      </ShowMore>
       {parsed.settings && (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
           {parsed.settings}
@@ -2159,9 +2132,9 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       {/* The read as UI through the one `Readout`: no id, a labelled fact
           for each `key: value`, a chip for a category (follow-up of #716
           and #735). It drew the result as it is before. */}
-      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore>
         <Readout result={text} />
-      </div>
+      </ShowMore>
     </ToolCardShell>
   );
 }
@@ -2189,11 +2162,11 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       <CardHead tone={tone.icon} />
       <RollupBody>
           {/* Compact, and through `Readout`, so an id never shows. The
-              box holds about three lines, and a longer result scrolls. */}
+              body shows about three lines, and "Show all" opens the rest. */}
           {detail && (
-            <div className="mt-0.5 max-h-16 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            <ShowMore cap={64} className="mt-0.5">
               <Readout result={detail} />
-            </div>
+            </ShowMore>
           )}
       </RollupBody>
     </div>
