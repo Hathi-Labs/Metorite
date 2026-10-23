@@ -36,6 +36,9 @@ from tests.unit.test_no_egress_tool_audit import (  # noqa: F401 - a fixture
 H374_WITHHELD = frozenset({
     "send_email", "forward_email", "unsubscribe_sender",
     "update_assistant_settings", "save_knowledge",
+    # Chat parity wave 1 (§22): the voice profile feeds each later draft, as
+    # the knowledge base does. No card form joins it to a held run.
+    "voice_profile",
 })
 
 #: §21.5: what a held run does not get with the switch on. A new slice that

@@ -109,6 +109,11 @@ EMAIL_KEPT = frozenset({
     "read_email", "query_inbox", "list_labels", "mark_thread_done", "delete_rule",
     # H-374: the card-bound sends. Each card shows each recipient.
     "compose_reply", "send_draft", "schedule_send", "edit_draft",
+    # Chat parity wave 1 (§22). Each acts in the member's own mailboxes
+    # behind a card. copy_rules and rule_guidance refuse at call time what
+    # can widen a rule that sends out (test_email_chat_parity.py).
+    "copy_rules", "rule_guidance", "update_account", "set_sender_status",
+    "bulk_manage_inbox", "auto_categorize_inbox",
 })
 
 

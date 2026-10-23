@@ -96,6 +96,8 @@ EXPECTED_OPEN_WORLD = frozenset({
     # run (test_no_egress_tool_audit.py).
     "send_email", "forward_email", "send_draft", "unsubscribe_sender",
     "update_assistant_settings", "save_knowledge",
+    # Chat parity wave 1 (§22): the voice profile feeds each later draft.
+    "voice_profile",
     # H-375: a send of a draft later is a send.
     "schedule_send",
     # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
