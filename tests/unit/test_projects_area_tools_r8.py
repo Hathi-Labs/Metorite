@@ -311,9 +311,9 @@ async def test_r8_an_empty_area_with_a_child_that_holds_a_task_is_archived(
     with world.promoted.admin_engine.begin() as c:
         c.execute(
             text(
-                "INSERT INTO pm_projects (id, name, parent_project_id, personal_owner, "
+                "INSERT INTO pm_projects (id, name, parent_project_id, personal_owner, created_by, "
                 "organization_id, owns_statuses) SELECT gen_random_uuid(), 'Inner', "
-                "CAST(:a AS uuid), personal_owner, organization_id, false "
+                "CAST(:a AS uuid), personal_owner, personal_owner, organization_id, false "
                 "FROM pm_projects WHERE id = CAST(:a AS uuid)"
             ),
             {"a": outer},
