@@ -3,7 +3,11 @@ automation layer via a deferred import)."""
 
 from __future__ import annotations
 
+import smtplib
+import ssl
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -15,6 +19,27 @@ from gateway.routes.email.core import (
 from pydantic import BaseModel
 from sqlalchemy import text
 
+#: The words of a send that the member's own mail server (IMAP/SMTP) did not
+#: take. The provider's own text names the host and the reason, never the
+#: password, so it shows as it is (review of the IMAP connect branch, P3).
+MAIL_SERVER_REFUSED_PREFIX = "The mail server did not send this mail. "
+
+
+@contextmanager
+def _mail_server_refused(provider: object) -> Iterator[None]:
+    """Answer 502 with words when an IMAP mailbox's SMTP send fails.
+
+    Before this, a refused address, a bad certificate or the 60 s deadline
+    reached the member as a bare 500. Only the IMAP provider is mapped: the
+    Gmail and Microsoft errors keep their own paths."""
+    try:
+        yield
+    except (OSError, ssl.SSLError, smtplib.SMTPException) as exc:
+        if type(provider).__name__ != "IMAPProvider":
+            raise
+        reason = str(exc).strip() or type(exc).__name__
+        raise HTTPException(
+            status_code=502, detail=MAIL_SERVER_REFUSED_PREFIX + reason[:300]) from None
 
 class SendAttachment(BaseModel):
     filename: str
@@ -177,7 +202,7 @@ async def send_email(
             from gateway.routes.email.automation.drafting import (
                 _mail_too_large,
             )
-            with _mail_too_large():
+            with _mail_too_large(), _mail_server_refused(sess.provider):
                 msg_id = await sess.provider.send_message(
                     to=req.to,
                     subject=req.subject,

@@ -1488,6 +1488,7 @@ export default function EmailPage() {
               setShowAddModal(false);
               handleConnect(provider, undefined, importMonths);
             }}
+            onDone={() => setShowAddModal(false)}
             availability={connectProviders}
           />
         </div>

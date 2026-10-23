@@ -139,6 +139,32 @@ class TestTheLeftOutReason:
         assert reason(self._rule(), own, False) is None
         assert reason(self._rule(name="Vendors"), own, True) is None
 
+    def test_a_name_to_skip_is_left_out_last(self):
+        """P1-b: a rule the target holds is left out as already_in_target, after
+        the route's own reasons, and without case or edge space."""
+        reason = rule_copy._left_out_reason
+        skip = frozenset({"needs reply", "vendors"})
+        assert reason(self._rule(name="Vendors "), set(), False, skip=skip) == (
+            rule_copy.LEFT_OUT_ALREADY_IN_TARGET)
+        assert reason(self._rule(name="Other"), set(), False, skip=skip) is None
+        # The route's own reasons come first.
+        assert reason(self._rule(enabled=False), set(), False, skip=skip) == (
+            rule_copy.LEFT_OUT_DISABLED)
+        assert reason(self._rule(), set(), True, skip=skip) == (
+            rule_copy.LEFT_OUT_REPLY_EXISTS)
+
+    def test_skip_names_is_capped_and_optional(self):
+        a, b = uuid.uuid4(), uuid.uuid4()
+        assert rule_copy.RuleCopyRequest(from_account_id=a, to_account_id=b).skip_names == []
+        with pytest.raises(ValueError):
+            rule_copy.RuleCopyRequest(
+                from_account_id=a, to_account_id=b,
+                skip_names=["x"] * (rule_copy.MAX_SKIP_NAMES + 1))
+        with pytest.raises(ValueError):
+            rule_copy.RuleCopyRequest(
+                from_account_id=a, to_account_id=b,
+                skip_names=["x" * (rule_copy.MAX_SKIP_NAME_LENGTH + 1)])
+
     def test_a_target_with_no_folders(self):
         """EM-S10 fix round 1: IMAP makes no folder and writes no label."""
         reason = rule_copy._left_out_reason
@@ -387,14 +413,16 @@ class _Member:
         return _account(self.p.admin_engine, org=org or self.p.org_b,
                         owner=self.email, address=address, provider=provider)
 
-    async def copy(self, src: str, dst: str, org: str | None = None):
+    async def copy(self, src: str, dst: str, org: str | None = None,
+                   skip_names: list[str] | None = None):
         app_dsn = self.p.app_url.render_as_string(hide_password=False)
         token = bind_tenant(org or self.p.org_b)
         try:
             async with tenant_engine_scope(app_dsn):
                 return await rule_copy.copy_rules(
                     rule_copy.RuleCopyRequest(
-                        from_account_id=uuid.UUID(src), to_account_id=uuid.UUID(dst)),
+                        from_account_id=uuid.UUID(src), to_account_id=uuid.UUID(dst),
+                        skip_names=skip_names or []),
                     user=self.user)
         finally:
             release_tenant(token)
@@ -569,6 +597,22 @@ class TestANameThatTheTargetHolds:
         assert first.renamed == []
         assert [(r.name, r.copied_as) for r in third.renamed] == [("X", "X (copy 2)")]
         assert set(_rules_of(p.admin_engine, dst)) == {"X", "X (copy)", "X (copy 2)"}
+
+    async def test_skip_names_copy_the_rest_and_name_the_skipped(
+        self, member, promoted,  # noqa: F811
+    ):
+        """P1-b: the target holds X. The copy skips X, copies Y, and makes no
+        "X (copy)". The answer lists X as already_in_target."""
+        p = promoted
+        src, dst = member.box(), member.box()
+        _rule(p.admin_engine, org=p.org_b, account=src, name="X")
+        _rule(p.admin_engine, org=p.org_b, account=src, name="Y")
+        _rule(p.admin_engine, org=p.org_b, account=dst, name="X")
+        out = await member.copy(src, dst, skip_names=["x "])
+        assert out.copied == ["Y"]
+        assert [(r.name, r.reason) for r in out.left_out] == [
+            ("X", rule_copy.LEFT_OUT_ALREADY_IN_TARGET)]
+        assert set(_rules_of(p.admin_engine, dst)) == {"X", "Y"}
 
     async def test_a_name_that_another_writer_took_moves_to_the_next(
         self, member, promoted,  # noqa: F811

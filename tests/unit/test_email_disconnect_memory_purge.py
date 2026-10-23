@@ -100,6 +100,10 @@ MAILBOX = f"{OWNER}#acct:{ACC}"
 # ── the fake Mem0 ────────────────────────────────────────────────────────────
 
 
+async def _login_ok() -> None:
+    """The login test of a new IMAP mailbox, faked: the host is not real."""
+
+
 class _FakeMem0:
     """Stands in for mem0ai ``Memory``. ``get_all`` matches ``user_id``
     exactly and returns at most ``top_k`` rows. ``delete`` removes one row.
@@ -669,6 +673,7 @@ class TestOnARealDatabase:
             return None
 
         monkeypatch.setattr(sched, "refresh_account_sync", _no_sync)
+        monkeypatch.setattr(accounts, "_verify_imap_login", lambda *_a, **_k: _login_ok())
         monkeypatch.setattr(key_store_mod, "get_key_store", lambda: SimpleNamespace(
             encrypt=lambda raw: "blob-" + json.loads(raw)["imap_host"]))
         user = UserContext(email=owner, role=UserRole.EMPLOYEE,

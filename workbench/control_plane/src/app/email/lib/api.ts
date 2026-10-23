@@ -1644,10 +1644,19 @@ export async function installPresetRules(
  * each rule again as "(copy)", so the caller guards it (`ruleCopier` in
  * `lib/mailboxSettings.ts`).
  */
-export async function copyRules(fromAccountId: string, toAccountId: string): Promise<RuleCopyResult> {
+export async function copyRules(
+  fromAccountId: string,
+  toAccountId: string,
+  skipNames: ReadonlyArray<string> = [],
+): Promise<RuleCopyResult> {
   const raw = await gatewayFetch<Record<string, unknown>>("/email/rules/copy", {
     method: "POST",
-    body: JSON.stringify({ from_account_id: fromAccountId, to_account_id: toAccountId }),
+    body: JSON.stringify({
+      from_account_id: fromAccountId,
+      to_account_id: toAccountId,
+      // Rules the target holds already. The route leaves them out.
+      ...(skipNames.length > 0 ? { skip_names: skipNames.slice(0, 200) } : {}),
+    }),
   });
   return mapRuleCopyResult(raw ?? {});
 }
