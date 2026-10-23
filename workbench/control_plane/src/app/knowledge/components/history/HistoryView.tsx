@@ -32,7 +32,7 @@ import KnowledgeEditor from "../editor/KnowledgeEditor";
 
 /** The schema of the editor, made once, to parse the older side of a compare. */
 let schemaOnce: Schema | null = null;
-function knowledgeSchema(): Schema {
+export function knowledgeSchema(): Schema {
   schemaOnce ??= getSchema(knowledgeExtensions());
   return schemaOnce;
 }

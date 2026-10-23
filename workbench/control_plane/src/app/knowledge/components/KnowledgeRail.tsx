@@ -4,9 +4,10 @@
  * The Knowledge rail (WS-61 KB-2a, KB-3b and KB-2e, `knowledge_base.md`
  * §11.1 and §21.5).
  *
- * Two entries today, Search (KB-3b) and Spaces (KB-2a). Files, Sources and
- * Review join them with KB-2c, KB-7a and KB-5, and each is ABSENT until
- * then, never a stub. Search sits first, above the tree, so it stays in one
+ * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a).
+ * Review shows only while a proposal of the assistant waits (with the
+ * count) or while the member is on it. Files and Sources join them with
+ * KB-2c and KB-7a, and each is ABSENT until then, never a stub. Search sits first, above the tree, so it stays in one
  * place while a space opens. Under Spaces, each space the member can open is
  * a row, and the open space shows its page tree. Every row is a `RailRow`
  * (AGENTS.md rule 12), as the Projects tree and the CRM rail draw theirs.
@@ -47,7 +48,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
 import { spaceIcon } from "../lib/labels";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
+import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
 import { applyMove, dropZoneAt, planDrop, targetFor, type PageDropTarget } from "../lib/treeDrop";
 import type { PageSummary, Space } from "../lib/types";
@@ -77,6 +78,10 @@ export interface KnowledgeRailProps {
   atHome: boolean;
   /** True on `/knowledge/search`. */
   atSearch: boolean;
+  /** True on `/knowledge/review` (KB-5b). */
+  atReview?: boolean;
+  /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
+  reviewCount?: number;
   /** Go to an address. On a phone it also closes the drawer. */
   onNavigate: (href: string) => void;
   /** Open the New page form under a row. Absent: the rows offer no `+`. */
@@ -96,6 +101,8 @@ export default function KnowledgeRail({
   selectedPageId,
   atHome,
   atSearch,
+  atReview = false,
+  reviewCount = 0,
   onNavigate,
   onNewSubPage,
   onArchive,
@@ -112,6 +119,19 @@ export default function KnowledgeRail({
         buttonProps={{ "aria-current": atSearch ? "page" : undefined }}
         onSelect={() => onNavigate(KNOWLEDGE_SEARCH)}
       />
+      {/* KB-5b: Review shows while a proposal waits, and while it is open. */}
+      {reviewCount > 0 || atReview ? (
+        <RailRow
+          label="Review"
+          tier="group"
+          selected={atReview}
+          icon={<Icon name="ClipboardCheck" className={ICON} />}
+          meta={reviewCount > 0 ? reviewCount : undefined}
+          metaTone="attention"
+          buttonProps={{ "aria-current": atReview ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_REVIEW)}
+        />
+      ) : null}
       <RailRow
         label="Spaces"
         tier="group"
