@@ -145,12 +145,15 @@ def _require_web(user: UserContext) -> None:
         raise core.forbidden(WEB_ONLY)
 
 
-def edit_dict(row: Any, *, page_title: str | None = None) -> dict[str, Any]:
-    """The answer for one edit proposal."""
+def edit_dict(
+    row: Any, *, page_title: str | None = None, space_id: str | None = None,
+) -> dict[str, Any]:
+    """The answer for one edit proposal. The list adds the page's space (KB-5b)."""
     return {
         "id": str(row.id),
         "kind": "edit",
         "page_id": str(row.page_id),
+        "space_id": space_id,
         "page_title": page_title,
         "base_version": row.base_version,
         "title": row.title,
@@ -192,6 +195,7 @@ def page_proposal_dict(row: Any) -> dict[str, Any]:
         "id": str(row.id),
         "kind": "page",
         "page_id": str(row.id),
+        "space_id": str(row.space_id),
         "page_title": row.title,
         "base_version": None,
         "title": row.title,
@@ -369,7 +373,7 @@ async def _edit_rows(db: Any, user: UserContext, status: str) -> list[dict[str, 
         writable.update({sid: sid in found for sid in unknown})
         for r in rows:
             if r.proposer_email == me or writable.get(str(r.space_id)):
-                kept.append(edit_dict(r, page_title=r.page_title))
+                kept.append(edit_dict(r, page_title=r.page_title, space_id=str(r.space_id)))
                 if len(kept) == MAX_LIST:
                     break
         if len(rows) < _EDIT_BATCH:

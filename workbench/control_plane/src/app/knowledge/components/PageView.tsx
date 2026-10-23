@@ -92,6 +92,7 @@ import PageByline from "./PageByline";
 import PageMenu from "./PageMenu";
 import LinkedFrom from "./LinkedFrom";
 import PageSidePanel from "./PageSidePanel";
+import { AgentDraftBadge, PendingEditNotice } from "./ProposalMarks";
 import { usePageHeadings } from "./usePageHeadings";
 import VersionList from "./VersionList";
 
@@ -515,6 +516,7 @@ export default function PageView({ pageId }: { pageId: string }) {
               <ArchivedBanner page={page} />
             </div>
           ) : null}
+          {editing ? null : <PendingEditNotice pageId={page.id} state={page.state} />}
 
           {/* One header for the read view and the edit (WS-61, 2026-10-22):
               the icon, the title and the byline stay where they are when the
@@ -534,6 +536,7 @@ export default function PageView({ pageId }: { pageId: string }) {
               <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
                 {stateLabel(page.state)}
               </Badge>
+              <AgentDraftBadge page={page} />
               {page.can_write ? null : <Badge icon="Eye">Read only</Badge>}
               <PageByline versions={page.versions} />
             </div>
