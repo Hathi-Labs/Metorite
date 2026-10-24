@@ -48,7 +48,6 @@ from typing import Any
 from fastapi import HTTPException
 from gateway.routes.projects.core import (
     ACTOR_VIA,
-    TRANSIENT_SQLSTATES,  # noqa: F401  (re-exported for callers of this module)
     _log,
     _tenant_session,
     insert_assignees,
