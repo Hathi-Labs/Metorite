@@ -720,6 +720,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # rows whose subject is the address: an `org` or a `group:` grant needs
     # no change, and the shared mailbox itself stays (MEMBER_MAILBOXES_WHERE).
     _PersonRows("mailbox_grants", "email_mailbox_grants", "lower(subject) = :email"),
+    # Their own choices for each shared mailbox (sign-off line and the
+    # like). The rows are the leaver's alone, and the mailbox stays.
+    _PersonRows("mailbox_member_prefs", "email_mailbox_member_prefs", "lower(member_email) = :email"),
     # Credentials.
     # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
     # rows and this delete name one set of mailboxes.

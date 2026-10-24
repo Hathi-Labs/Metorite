@@ -131,6 +131,7 @@ const PURGE_LABELS: Record<string, string> = {
   scheduled_sends: "scheduled send",
   // WS-65: the member's own grants on a shared mailbox. The mailbox stays.
   mailbox_grants: "shared mailbox grant",
+  mailbox_member_prefs: "shared mailbox setting",
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
