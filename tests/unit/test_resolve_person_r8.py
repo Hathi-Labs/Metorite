@@ -154,6 +154,7 @@ async def test_one_match_acts_and_two_of_one_name_give_a_list(db) -> None:
     single = await _resolve(db, db.org_a, me, f"arjun {tag}")
     two = await _resolve(db, db.org_a, me, f"Priya {tag}")
     assert single == {"source": "people", "total": 1, "directory": True,
+                      "truncated": False,
                       "matches": [{"name": f"Arjun {tag}", "email": one}]}
     assert two["source"] == "people" and two["total"] == 2
     assert sorted(m["email"] for m in two["matches"]) == sorted([p1, p2])
@@ -172,7 +173,8 @@ async def test_org_b_s_person_and_member_never_come_back(db) -> None:
     none = await _resolve(db, db.org_a, me, name)
     by_mail = await _resolve(db, db.org_a, me, b_person)
     by_login = await _resolve(db, db.org_a, me, b_login)
-    assert none == {"source": None, "matches": [], "total": 0, "directory": True}
+    assert none == {"source": None, "matches": [], "total": 0, "directory": True,
+                    "truncated": False}
     assert by_mail["matches"] == [] and by_login["matches"] == []
     # And org A's own person of that name is the one match in org A.
     a_person = _person(db, db.org_a, name)
@@ -230,7 +232,7 @@ async def test_an_alias_of_a_person_who_left_falls_through(db) -> None:
     assert [m["email"] for m in out["matches"]] == [other]
 
 
-async def test_preferred_name_then_name_then_local_part_then_member(db) -> None:
+async def test_each_name_counts_and_two_candidates_ask(db) -> None:
     tag = _tag()
     pref = _person(db, db.org_a, f"Venkata Jagan {tag}", preferred=f"VJ {tag}")
     _person(db, db.org_a, f"VJ {tag}")
@@ -242,8 +244,10 @@ async def test_preferred_name_then_name_then_local_part_then_member(db) -> None:
     accent = await _resolve(db, db.org_a, me, f"José {tag}")
     by_local = await _resolve(db, db.org_a, me, local.split("@")[0].upper())
     by_member = await _resolve(db, db.org_a, me, f"TARA {tag}")
-    # The preferred name wins, and the person whose NAME is "VJ" is not listed.
-    assert [m["email"] for m in by_pref["matches"]] == [pref]
+    # Repair round 1: a preferred name "VJ" and a name "VJ" are two people,
+    # so both come back and the assistant asks. No rule hides a person.
+    assert pref in [m["email"] for m in by_pref["matches"]]
+    assert by_pref["total"] == 2
     assert [m["email"] for m in accent["matches"]] == [jose]
     assert [m["email"] for m in by_local["matches"]] == [local]
     assert (by_member["source"], [m["email"] for m in by_member["matches"]]) == (
@@ -261,7 +265,8 @@ async def test_a_member_without_feature_people_gets_the_aliases_only(db) -> None
     db.made.append(email)
     plain = _member(email, people=False)
     none = await _resolve(db, db.org_a, plain, f"Nina {tag}")
-    assert none == {"source": None, "matches": [], "total": 0, "directory": False}
+    assert none == {"source": None, "matches": [], "total": 0, "directory": False,
+                    "truncated": False}
     # The alias check needs no feature, and the alias tier answers.
     await _alias(db, db.org_a, plain, f"Nina {tag}", person)
     mine = await _resolve(db, db.org_a, plain, f"nina {tag}")
