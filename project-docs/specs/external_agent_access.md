@@ -1480,28 +1480,30 @@ The result holds `task` (the shape of `get_task`), `ancestors` (root first, each
 **EA-15b. `my_work`.** A read (class A, `projects:read`). Its one input is `limit` (1 to 25, default 10). The edge applies it, so `limit` is a named edge input under rule 4 of §9.5. The edge calls, in this order:
 
 1. `GET /auth/me`, for the member's email. The edge token holds no email (`agent_tokens.TokenLookup`), and the task list's `assignee` filter takes one email.
-2. The agent-runs list twice, each filtered by `client_via` = the caller's stamp. Once with `needs_agent=true`, for the runs that wait. Once with no state filter, from which the edge keeps the open runs (`created`, `in_progress`, `awaiting`, `stopping`), for the tasks this client holds.
+2. The agent-runs list twice, each filtered by `client_via` = the caller's stamp. Once with `needs_agent=true`, for the runs that wait. Once with `status=stale`, the derived state, for the runs of this client whose session went quiet. Each read follows `next_cursor`, at most three pages of 100 (fix round 1).
 3. The task list with `assignee` = the email and `status_category=backlog,todo,in_progress`. `triage`, `done` and `cancelled` are left out, because the claim refuses them.
-4. The relations route of the first ten task rows, for the blocker test.
+4. No call for the blocker test. Each row of the task list carries `blocked_by_count` (`filters.attach_relation_counts`). It counts every open blocker, also one that the member cannot see (fix round 1).
 5. To fill a row, two more bounded reads. The task route for each run whose task is not in the member's list, at most `limit` reads. The statuses of each project in the result, at most ten, for the status names, as `list_tasks` does. A run whose task cannot be read keeps its row, with null task fields.
 
 It returns rows in this order:
 
 1. **Runs that wait for this client.** A run with the state `queued`, `answered` or `stopping`, of the caller's member and the caller's `client_via`. A waiting run of another client is not listed. This is the first half of MCP-G4: a session no longer takes over the runs of another client.
-2. **Tasks this client holds.** The task of each open run of this client, whether or not the member is an assignee. A task that is already in the first group is not listed twice.
-3. **Tasks to start.** Tasks assigned to the member, with no live holder. The edge drops a task that an open `blocks` link still waits on. It checks the first ten only. The rest keep the list order of the task route.
+2. **Tasks this client may take back.** The task of each run of this client whose derived state is `stale`. The member need not be an assignee. A `stale` run is `in_progress` with no activity for five minutes, so its session most likely ended. A task that is already in the first group is not listed twice.
+   - **A live run of this client is not listed (fix round 1).** Two sessions of one client share the stamp. A claim of session B finds the live run of session A as its own, and gives no 409. So both sessions would work the task.
+   - **An `awaiting` run is not listed.** It waits on a person. When the member answers, the first group lists it as `run_answered`.
+3. **Tasks to start.** Tasks assigned to the member, with no live holder. The edge drops each task whose `blocked_by_count` is above zero, across all rows. The rest keep the list order of the task route.
 
 Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version`, `reason` (`run_queued`, `run_answered`, `run_stopping`, `held_by_you` or `assigned`), `run_id` when a run is the reason, and `held_by`. `version` is there because `claim_task` needs it as `expected_version`, so step 2 of the protocol works from the row alone.
 
 **When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
 
-**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this client does not hold. An agent takes new work only by assignment or by an explicit claim. Two sessions of ONE client still share the stamp, so `my_work` cannot tell them apart. SW-7 of the swarm plan (a session key) closes that.
+**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this client does not hold. An agent takes new work only by assignment or by an explicit claim. Two sessions of ONE client still share the stamp, so `my_work` cannot tell them apart. SW-7 of the swarm plan (a session key) closes that. Until then, one residual stays: a `run_answered` row can reach a second session while the first session waits on `get_agent_run`.
 
 **EA-15c. The protocol.** The server instructions (`mcp.py`) and the prompt `work_on_task` (`prompts.py`) give one order of steps:
 
 1. At the start of a session, call `my_work`. It replaces "call `list_agent_runs` with `needs_agent`, and continue each run".
-2. Take the top row. For a waiting run, read it with `get_agent_run`. For a task, call `claim_task`.
-3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row.
+2. Take the top row. For `run_stopping`, call `finish_agent_run` at once, with no activity before it. For another waiting run, read it with `get_agent_run`. For a task, call `claim_task`.
+3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. Two sessions of one client share one stamp, and the claim does not tell them apart (SW-7). So the agent takes only a row that `my_work` lists.
 4. Call `get_task_context`, then `start_agent_run` when the claim opened no run.
 5. Post a thought at least once a minute.
 6. End with exactly one disposition: the task moves to review or done, or a question waits on a named member (`ask_on_task`), or `release_task` gives it back. A comment is evidence, never a disposition.

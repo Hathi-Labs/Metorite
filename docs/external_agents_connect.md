@@ -38,8 +38,9 @@ When the connection can change tasks, Claude Code shows the command `/mcp__metor
 Each agent session follows the same six steps. The server instructions and the command `/mcp__metorite__work_on_task` both give them.
 
 1. At the start of a session, the agent calls `my_work`.
-2. The agent takes the top row. For a run that waits, it reads the run with `get_agent_run`. For a task, it calls `claim_task`.
+2. The agent takes the top row. When you asked it to stop, it ends that run at once. For another run that waits, it reads the run with `get_agent_run`. For a task, it calls `claim_task`.
 3. A refusal with `409 task_held` means that another session holds the task. The agent does not try that task again. It takes the next row.
+   Two sessions of one client share one client name, and Metorite cannot tell them apart. So the agent takes only a row that `my_work` gives.
 4. The agent calls `get_task_context`. Then it calls `start_agent_run` when the claim opened no run.
 5. The agent posts a progress line at least once a minute.
 6. The agent ends with exactly one result. The task moves to review or done. Or a question waits for a named member. Or the agent gives the task back with `release_task`. A comment is a record of the work, and it is never a result.
@@ -47,7 +48,7 @@ Each agent session follows the same six steps. The server instructions and the c
 `my_work` gives the rows in this order:
 
 1. The runs that wait for this client. You queued work for it, you answered its question, or you asked it to stop.
-2. The tasks that this client holds through an open run.
+2. The tasks of a run of this client whose session went quiet for five minutes. The agent can take that work back. A run that another session of this client works on now does not show.
 3. The tasks assigned to you that no AI session holds and that no open task blocks.
 
 It never gives a task that is not assigned to you and that this client does not hold. A waiting run of another client does not show. Two sessions of one client share the client name, so `my_work` cannot tell them apart.

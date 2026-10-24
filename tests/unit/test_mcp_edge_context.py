@@ -34,14 +34,19 @@ Run::
 * Y1. ``E`` ``_my_runs``: no ``client_via`` in the query. ``test_y1_the_calls_come_in_the_order_of_section_12_4``.
 * Y2. ``E`` ``_my_work``: the held runs before the waiting runs. ``test_y2_the_rows_come_in_the_order_of_the_three_groups``.
 * Y3. ``E`` ``_my_runs``: no check of the stamp on the edge. ``test_y3_a_waiting_run_of_another_client_is_not_listed``.
-* Y4. ``E`` ``_open_blocker``: always ``False``. ``test_y4_a_task_with_an_open_blocker_is_not_listed``.
-* Y5. ``E``: ``MAX_BLOCKER_READS = 12``. ``test_y5_the_blocker_check_reads_the_first_ten_rows_only``.
+* Y4. ``E`` ``_blocked``: always ``False``. ``test_y4_a_task_with_an_open_blocker_is_not_listed``.
+* Y5. ``E`` ``_my_work``: test ``_blocked`` on the first ten rows only. ``test_y5_a_blocked_row_after_the_tenth_is_not_listed``.
 * Y6. ``E`` ``_live_holder``: always ``False``. ``test_y6_a_task_that_another_session_holds_is_not_listed``.
 * Y7. ``E`` ``_my_work``: no check of ``runs_enabled``. ``test_y7_with_the_runs_flag_off_only_assigned_rows_and_no_runs_call``.
 * Y8. ``E``: ``MY_WORK_LIMIT_MAX = 26``. ``test_y8_the_limit_is_1_to_25_default_10_on_the_edge``.
 * Y9. ``E`` ``_my_work``: keep a run of any status in the held group. ``test_y9_a_finished_run_holds_no_task``.
 * Y10. ``E`` ``_my_work``: drop ``via is not None``. ``test_y10_a_stamp_that_is_not_valid_makes_no_runs_call``.
 * Y11. ``E`` ``_work_row``: the title as a plain string. ``test_y11_each_row_has_the_keys_and_untrusted_text``.
+
+Fix round 1:
+
+* Y12 (P1). ``E`` ``_my_work``: the old held group, every open run of the runs list with no state filter. ``test_y12_a_live_run_of_this_client_is_not_listed_and_a_stale_one_is``.
+* Y13 (P3b). ``E`` ``_my_runs``: read one page and stop. ``test_y13_the_runs_lists_follow_next_cursor_up_to_the_cap``.
 """
 from __future__ import annotations
 
@@ -117,8 +122,7 @@ class _Board(_Gateway):
         self.nodes: dict[str, dict[str, Any]] = {
             PROJECT: {"id": PROJECT, "name": "Rocket", "description": "Build it."}}
         self.timeline: list[dict[str, Any]] = []
-        self.runs_waiting: list[dict[str, Any]] = []
-        self.runs_every: list[dict[str, Any]] = []
+        self.runs: list[dict[str, Any]] = []
         self.assigned: list[dict[str, Any]] = []
         self.task_runs: list[dict[str, Any]] = []
 
@@ -129,8 +133,7 @@ class _Board(_Gateway):
         if r.path == "/auth/me":
             return 200, {"email": ME, "organization": {}}
         if r.path == "/projects/agent-runs":
-            rows = self.runs_waiting if r.pairs.get("needs_agent") == "true" else self.runs_every
-            return 200, {"rows": rows, "next_cursor": None}
+            return 200, self._runs_page(r.pairs)
         if r.path == "/projects/tasks":
             return 200, {"rows": self.assigned, "total": len(self.assigned)}
         if parts[:2] == ["projects", "tasks"] and len(parts) == 3:
@@ -153,6 +156,22 @@ class _Board(_Gateway):
             rows = self.project_statuses.get(parts[2])
             return (200, {"rows": rows}) if rows is not None else (404, {"detail": "x"})
         return 404, {"detail": "Not Found"}
+
+    def _runs_page(self, pairs: dict[str, str]) -> dict[str, Any]:
+        """The filters and the offset cursor of ``list_my_agent_runs``. It
+        does NOT filter by ``client_via``, so the edge's own check is tested."""
+        rows = list(self.runs)
+        if pairs.get("needs_agent") == "true":
+            rows = [r for r in rows if r["state"] in ("queued", "answered", "stopping")]
+        status = pairs.get("status")
+        if status == "stale":  # the derived state, as the route reads it
+            rows = [r for r in rows if r["state"] == "stale"]
+        elif status is not None:
+            rows = [r for r in rows if r["status"] == status]
+        offset, size = int(pairs.get("cursor") or 0), int(pairs.get("limit") or 50)
+        page = rows[offset:offset + size]
+        more = offset + size < len(rows)
+        return {"rows": page, "next_cursor": str(offset + size) if more else None}
 
     def paths(self) -> list[str]:
         return [r.path for r in self.requests]
@@ -369,10 +388,12 @@ class TestMyWork:
         assert paths[0] == "/auth/me"
         assert paths[1:3] == ["/projects/agent-runs", "/projects/agent-runs"]
         assert paths[3] == "/projects/tasks"
-        assert paths[4] == f"/projects/tasks/{_uuid(7001)}/relations"
+        # P2: the list row carries blocked_by_count, so no relations read.
+        assert not [p for p in paths if p.endswith("/relations")]
         runs = [r.pairs for r in board.requests if r.path == "/projects/agent-runs"]
         assert all(p["client_via"] == VIA for p in runs), runs
-        assert sorted(p.get("needs_agent", "-") for p in runs) == ["-", "true"]
+        assert sorted((p.get("needs_agent", "-"), p.get("status", "-")) for p in runs) == [
+            ("-", "stale"), ("true", "-")]
         listed = next(r.pairs for r in board.requests if r.path == "/projects/tasks")
         assert listed["assignee"] == ME
         assert listed["status_category"] == "backlog,todo,in_progress"
@@ -382,10 +403,10 @@ class TestMyWork:
         _assign(board, free, held, queued)  # assigned too, so each must show once
         for task_id in (answered, stopping):
             board.tasks[task_id] = _task_row(task_id)
-        board.runs_waiting = [_run(_uuid(5101), queued, state="queued", status="created"),
-                              _run(_uuid(5102), answered, state="answered"),
-                              _run(_uuid(5103), stopping, state="stopping", status="stopping")]
-        board.runs_every = [*board.runs_waiting, _run(_uuid(5104), held)]
+        board.runs = [_run(_uuid(5101), queued, state="queued", status="created"),
+                      _run(_uuid(5102), answered, state="answered"),
+                      _run(_uuid(5103), stopping, state="stopping", status="stopping"),
+                      _run(_uuid(5104), held, state="stale")]
         rows = await _work()
         assert [(r["task_id"], r["reason"], r["run_id"]) for r in rows] == [
             (queued, "run_queued", _uuid(5101)),
@@ -400,30 +421,63 @@ class TestMyWork:
         board.tasks[theirs] = _task_row(theirs)
         # The fake ignores the filter of the route, so the edge's own check is
         # what keeps the run out (MCP-G4, first half).
-        board.runs_waiting = [_run(_uuid(5201), theirs, state="queued", status="created",
-                                   via="mcp:other.example:bot")]
-        board.runs_every = list(board.runs_waiting)
+        board.runs = [_run(_uuid(5201), theirs, state="queued", status="created",
+                           via="mcp:other.example:bot"),
+                      _run(_uuid(5202), theirs, state="stale", via="mcp:other.example:bot")]
         assert await _work() == []
 
     async def test_y4_a_task_with_an_open_blocker_is_not_listed(self, board):
-        blocked, cleared, free = _uuid(7301), _uuid(7302), _uuid(7303)
-        _assign(board, blocked, cleared, free)
-        board.relations[blocked] = {"links": [_blocks(_uuid(4301), "incoming", "todo")]}
-        board.relations[cleared] = {"links": [_blocks(_uuid(4302), "incoming", "done"),
-                                              _blocks(_uuid(4303), "outgoing", "todo")]}
+        """P2. The list row carries ``blocked_by_count``, which counts every
+        open blocker, also one that the member cannot see."""
+        blocked, cleared, unknown = _uuid(7301), _uuid(7302), _uuid(7303)
+        _assign(board, blocked, cleared, unknown)
+        board.tasks[blocked]["blocked_by_count"] = 2
+        board.tasks[cleared]["blocked_by_count"] = 0
         rows = await _work()
-        assert [r["task_id"] for r in rows] == [cleared, free]
+        assert [r["task_id"] for r in rows] == [cleared, unknown]
+        assert not [p for p in board.paths() if p.endswith("/relations")]
 
-    async def test_y5_the_blocker_check_reads_the_first_ten_rows_only(self, board):
-        ids = [_uuid(7400 + n) for n in range(12)]
+    async def test_y5_a_blocked_row_after_the_tenth_is_not_listed(self, board):
+        """P2. The blocker test covers every row, not the first ten."""
+        ids = [_uuid(7400 + n) for n in range(14)]
         _assign(board, *ids)
-        for task_id in ids:
-            board.relations[task_id] = {"links": [_blocks(_uuid(4400), "incoming", "todo")]}
+        for task_id in ids[10:]:
+            board.tasks[task_id]["blocked_by_count"] = 1
+        board.tasks[ids[0]]["blocked_by_count"] = 1
         rows = await _work(limit=25)
-        relations = [p for p in board.paths() if p.endswith("/relations")]
-        assert len(relations) == tools.MAX_BLOCKER_READS == 10
-        # The first ten are blocked and dropped. The rest keep the list order.
-        assert [r["task_id"] for r in rows] == ids[10:]
+        assert [r["task_id"] for r in rows] == ids[1:10]
+
+    async def test_y12_a_live_run_of_this_client_is_not_listed_and_a_stale_one_is(
+            self, board):
+        """P1. Two sessions of one client share the stamp, so a claim gives a
+        sibling's live run back with no 409. ``my_work`` lists a run of this
+        client only when it went quiet (derived state ``stale``), and never
+        an ``awaiting`` run, which waits on a person."""
+        live, quiet, awaiting = _uuid(7451), _uuid(7452), _uuid(7453)
+        for task_id in (live, quiet, awaiting):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [_run(_uuid(5451), live, state="working"),
+                      _run(_uuid(5452), quiet, state="stale"),
+                      _run(_uuid(5453), awaiting, state="awaiting", status="awaiting")]
+        rows = await _work()
+        assert [(r["task_id"], r["reason"], r["run_id"]) for r in rows] == [
+            (quiet, "held_by_you", _uuid(5452))]
+        assert tools.HELD_STATE == "stale"
+
+    async def test_y13_the_runs_lists_follow_next_cursor_up_to_the_cap(
+            self, board, monkeypatch):
+        """P3b. The held group is not read from the newest page only."""
+        monkeypatch.setattr(tools, "MY_WORK_RUNS_PAGE", 1)
+        ids = [_uuid(7480 + n) for n in range(4)]
+        for n, task_id in enumerate(ids):
+            board.tasks[task_id] = _task_row(task_id)
+            board.runs.append(_run(_uuid(5480 + n), task_id, state="stale"))
+        rows = await _work()
+        assert [r["task_id"] for r in rows] == ids[:tools.MY_WORK_RUNS_PAGES]
+        stale_reads = [r for r in board.requests if r.path == "/projects/agent-runs"
+                       and r.pairs.get("status") == "stale"]
+        assert len(stale_reads) == tools.MY_WORK_RUNS_PAGES == 3
+        assert [r.pairs.get("cursor") for r in stale_reads] == [None, "1", "2"]
 
     async def test_y6_a_task_that_another_session_holds_is_not_listed(self, board):
         live, stale, free = _uuid(7501), _uuid(7502), _uuid(7503)
@@ -441,7 +495,7 @@ class TestMyWork:
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
         free = _uuid(7601)
         _assign(board, free)
-        board.runs_waiting = [_run(_uuid(5601), _uuid(7602), state="queued", status="created")]
+        board.runs = [_run(_uuid(5601), _uuid(7602), state="queued", status="created")]
         rows = await _work()
         assert [(r["task_id"], r["reason"]) for r in rows] == [(free, "assigned")]
         assert "/projects/agent-runs" not in board.paths()
@@ -465,8 +519,8 @@ class TestMyWork:
     async def test_y9_a_finished_run_holds_no_task(self, board):
         done = _uuid(7801)
         board.tasks[done] = _task_row(done)
-        board.runs_every = [_run(_uuid(5801), done, status=s, state=s)
-                            for s in ("completed", "stopped", "released", "abandoned")]
+        board.runs = [_run(_uuid(5801), done, status=s, state=s)
+                      for s in ("completed", "stopped", "released", "abandoned")]
         assert await _work() == []
 
     async def test_y10_a_stamp_that_is_not_valid_makes_no_runs_call(self, board, edge):  # noqa: F811
@@ -480,7 +534,7 @@ class TestMyWork:
         held, free = _uuid(8001), _uuid(8002)
         board.tasks[held] = _task_row(held, title=SENTINEL + " held", status=S_REVIEW)
         _assign(board, free, title=SENTINEL + " free")
-        board.runs_every = [_run(_uuid(5901), held)]
+        board.runs = [_run(_uuid(5901), held, state="stale")]
         rows = await _work()
         assert all(tuple(r) == tools.MY_WORK_ROW_KEYS for r in rows)
         # The held task is not in the member's list, so the edge read it.
@@ -493,7 +547,7 @@ class TestMyWork:
 
     async def test_a_run_row_whose_task_cannot_be_read_keeps_its_run(self, board):
         gone = _uuid(8101)
-        board.runs_waiting = [_run(_uuid(6101), gone, state="answered")]
+        board.runs = [_run(_uuid(6101), gone, state="answered")]
         rows = await _work()
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
@@ -521,7 +575,8 @@ def _replace_origin(lookup: Any, origin: str) -> Any:
 #: The query parameters that EA-15 sends, by route.
 SENT: dict[tuple[str, str], set[str]] = {
     ("GET", "/projects/tasks"): {"assignee", "status_category", "page", "page_size"},
-    ("GET", "/projects/agent-runs"): {"client_via", "needs_agent", "limit"},
+    ("GET", "/projects/agent-runs"): {"client_via", "needs_agent", "limit", "status",
+                                       "cursor"},
     ("GET", "/projects/tasks/{task_id}/timeline"): {"kind", "page", "page_size"},
     ("GET", "/projects/tasks/{task_id}/refs"): {"refresh"},
 }

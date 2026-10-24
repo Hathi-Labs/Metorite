@@ -180,7 +180,10 @@ def _queued_text() -> str:
         "When claim_task says that another session holds the task (a 409"
         " task_held), do not try that task again. Take the next row, and do"
         " step 2 again. When claim_task refuses for another reason, tell me"
-        " why, and take the next row.",
+        " why, and take the next row. Two sessions of one client share one"
+        " stamp, and Metorite does not tell them apart. So a claim does not"
+        " refuse a task that another session of your own client holds. Take"
+        " only a row that my_work lists.",
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]
@@ -218,8 +221,10 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     steps = [
         first + " When the task is done, cancelled, archived or in triage, stop,"
         " and tell me why. When get_task shows held_by and held_by.stale is"
-        " false, another AI session holds the task. Stop, and tell me. Do not"
-        " work on a held task.",
+        " false, another AI session holds the task. That is true also when"
+        " held_by names your own client, because a claim does not refuse a"
+        " session of the same client. Stop, and tell me. Do not work on a held"
+        " task.",
         "Call claim_task with that version as expected_version. When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",

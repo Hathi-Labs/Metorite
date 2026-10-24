@@ -639,6 +639,25 @@ class TestTheProtocol:
                                           "get_task_context", "add_comment",
                                           "exactly one disposition"))
 
+    async def test_step_2_finishes_a_stopping_run_before_any_claim(self, armed):
+        """Fix round 1 (P3a). Mutation M34: drop the run_stopping sentence
+        from step 2 of ``_PROTOCOL_RUNS_ON``, and this test fails."""
+        text = await _instructions()
+        _in_order(text, ("2. Take the top row", "For run_stopping, call finish_agent_run"
+                         " at once, with no activity before it", "claim_task", "3. A 409"))
+
+    async def test_the_409_rule_says_that_one_client_is_not_told_apart(self, armed):
+        """Fix round 1 (P1). Two sessions of one client share one stamp, so
+        the agent takes only a row that my_work lists. Mutation M35: drop the
+        sentence from step 3 of ``_PROTOCOL_RUNS_ON``, and this test fails."""
+        text = await _instructions()
+        _in_order(text, ("3. A 409 task_held", "share one stamp",
+                         "Take only a row that my_work lists", "4. Call get_task_context"))
+        assert "Never work on a held task" in text
+        assert "reason held_by_you" in text
+        queued = await _prompt_text()
+        _in_order(queued, ("409", "share one", "Take only a row that my_work lists"))
+
     async def test_a_read_only_connection_gets_no_protocol(self, armed):
         """The protocol claims, so it shows on the test of the routine."""
         text = await _instructions(READ_ONLY)

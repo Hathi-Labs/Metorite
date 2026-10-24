@@ -57,10 +57,11 @@ five. ``create_task`` makes three: the statuses, the POST and the re-read. It
 makes one more for a parent and one more for a ``type_id``. ``update_task``
 makes three: the PATCH, the re-read and the statuses. ``claim_task`` makes
 three: the POST, the re-read and the statuses. ``get_task_context`` makes
-at most :data:`CONTEXT_CALL_CEILING` (EA-15a). ``my_work`` makes four, then
-at most :data:`MAX_BLOCKER_READS` relations reads, one task read for each
-run row whose task is not in the member's list (at most ``limit``), and at
-most :data:`MAX_STATUS_READS` status reads (EA-15b). The other tools make one
+at most :data:`CONTEXT_CALL_CEILING` (EA-15a). ``my_work`` makes the
+``/auth/me`` read, at most :data:`MY_WORK_RUNS_PAGES` pages of each of its
+two runs lists, and the task list. Then it makes one task read for each run
+row whose task is not in the member's list (at most ``limit``), and at most
+:data:`MAX_STATUS_READS` status reads (EA-15b). The other tools make one
 or two. The long poll of ``get_agent_run`` is the one exception (EA-12b,
 §12.1): its request has ``wait_seconds`` plus
 :data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has ``wait_seconds`` plus
@@ -2615,8 +2616,6 @@ GET_TASK_CONTEXT = Tool(
 
 MY_WORK_LIMIT_MAX = 25
 MY_WORK_LIMIT_DEFAULT = 10
-#: ``my_work`` reads the relations of at most this many task rows (§12.4).
-MAX_BLOCKER_READS = 10
 #: The status categories of the tasks that ``my_work`` offers. The claim
 #: refuses ``triage``, ``done`` and ``cancelled`` (§12.4).
 MY_WORK_CATEGORIES = "backlog,todo,in_progress"
@@ -2624,6 +2623,15 @@ MY_WORK_CATEGORIES = "backlog,todo,in_progress"
 MY_WORK_TASK_PAGE = 50
 #: The page of each runs list that ``my_work`` reads (the route's own cap).
 MY_WORK_RUNS_PAGE = 100
+#: ``my_work`` reads at most this many pages of each runs list. It follows
+#: ``next_cursor``, so it does not rely on the newest page only (fix round 1).
+MY_WORK_RUNS_PAGES = 3
+#: The derived state of a run that this client may take back (fix round 1,
+#: P1). ``stale`` is an ``in_progress`` run with no activity for five minutes
+#: (``filters.AGENT_RUN_STALE_AFTER_S``), so its session most likely ended. A
+#: live run of a sibling session of the same client is NOT listed, because two
+#: sessions of one client share the stamp and a claim cannot tell them apart.
+HELD_STATE = "stale"
 #: The ``state`` of a run that waits for this client, and its ``reason``.
 WAITING_REASONS: Mapping[str, str] = {
     "queued": "run_queued", "answered": "run_answered", "stopping": "run_stopping",
@@ -2661,21 +2669,37 @@ _MY_WORK_OUTPUT: dict[str, Any] = _object({
 })
 
 
-async def _my_runs(ctx: Context, via: str, *, needs_agent: bool) -> list[dict[str, Any]]:
-    """The runs of this member and this client, newest first. A 404 means
-    that the gateway has the runs flag off, and it gives no runs."""
-    query = [("client_via", via), ("limit", str(MY_WORK_RUNS_PAGE))]
+async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
+                   state: str | None = None) -> list[dict[str, Any]]:
+    """The runs of this member and this client, newest first, at most
+    :data:`MY_WORK_RUNS_PAGES` pages. A 404 means that the gateway has the
+    runs flag off, and it gives no runs.
+
+    *state* goes out as ``status``. The route reads ``stale`` as the derived
+    state, and any other value as the stored status."""
+    base = [("client_via", via), ("limit", str(MY_WORK_RUNS_PAGE))]
     if needs_agent:
-        query.append(("needs_agent", "true"))
-    try:
-        body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
-    except ToolError as exc:
-        if exc.text == TEXT_TASK_NOT_FOUND:
-            return []
-        raise
+        base.append(("needs_agent", "true"))
+    if state is not None:
+        base.append(("status", state))
+    found: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(MY_WORK_RUNS_PAGES):
+        query = [*base, ("cursor", cursor)] if cursor is not None else base
+        try:
+            body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
+        except ToolError as exc:
+            if exc.text == TEXT_TASK_NOT_FOUND:
+                return found
+            raise
+        found += _rows_of(body)
+        following = body.get("next_cursor")
+        if not (isinstance(following, str) and _RUNS_CURSOR_RE.fullmatch(following)):
+            break
+        cursor = following
     # The gateway filters by the stamp. The edge checks it again, so a run
     # of another client never reaches the list.
-    return [r for r in _rows_of(body) if r.get("client_via") == via]
+    return [r for r in found if r.get("client_via") == via]
 
 
 def _live_holder(value: Any) -> bool:
@@ -2683,34 +2707,14 @@ def _live_holder(value: Any) -> bool:
     return isinstance(value, dict) and value.get("stale") is not True
 
 
-def _open_blocker(links: Any) -> bool:
-    """True when an incoming ``blocks`` link of a task still waits: its
-    other end is not in a closing category (``relations.blocked_by_open``)."""
-    return any(link["category"] not in CLOSING_CATEGORIES
-               for link in _blocks_links(links, "incoming"))
-
-
-async def _unblocked(ctx: Context, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*rows* without each of the first :data:`MAX_BLOCKER_READS` that an
-    open ``blocks`` link waits on. The rest keep their order unchecked. A
-    row whose relations the member cannot read is dropped too."""
-    gate = asyncio.Semaphore(STATUS_READ_CONCURRENCY)
-
-    async def blocked(row: dict[str, Any]) -> bool:
-        async with gate:
-            try:
-                body = await _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND,
-                                  path_params={"task_id": str(row.get("id"))})
-            except ToolError as exc:
-                if exc.text == TEXT_BUSY:
-                    raise
-                return True
-        return _open_blocker(body.get("links") if isinstance(body, dict) else None)
-
-    checked = rows[:MAX_BLOCKER_READS]
-    verdicts = await _together(*(blocked(r) for r in checked)) if checked else []
-    kept = [r for r, wait in zip(checked, verdicts, strict=True) if not wait]
-    return kept + rows[MAX_BLOCKER_READS:]
+def _blocked(row: Mapping[str, Any]) -> bool:
+    """True when an open ``blocks`` link waits on the task (fix round 1,
+    P2). The task list carries ``blocked_by_count`` on each row
+    (``filters.attach_relation_counts``). It counts every open blocker, also
+    one that the member cannot see, so a hidden blocker still holds the task
+    back. A row with no count reads as not blocked."""
+    count = row.get("blocked_by_count")
+    return isinstance(count, int) and not isinstance(count, bool) and count > 0
 
 
 async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -2764,11 +2768,12 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """The next work of this client, in one call (§12.4).
 
     The calls, in order: ``GET /auth/me`` for the member's email (the token
-    holds none), the runs list twice with this client's stamp (only while
-    the runs flag is on), the task list of the member, and the relations of
-    the first :data:`MAX_BLOCKER_READS` task rows. Then the task route for a
-    run row whose task is not in that list, and the statuses of the projects
-    of the rows, as ``list_tasks`` reads them.
+    holds none), and the runs list twice with this client's stamp (only
+    while the runs flag is on): once with ``needs_agent``, and once with
+    ``status=stale``. Then the task list of the member. Its rows carry
+    ``blocked_by_count``, so the blocker test needs no call. Then the task
+    route for a run row whose task is not in that list, and the statuses of
+    the projects of the rows, as ``list_tasks`` reads them.
     """
     limit = int(args.get("limit", MY_WORK_LIMIT_DEFAULT))
     me = await _get(ctx, ME_ROUTE, TEXT_BUSY)
@@ -2780,10 +2785,14 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     holding: list[dict[str, Any]] = []
     via = _via(actor_via(ctx.caller.lookup))
     if agent_oauth.runs_enabled() and via is not None:
-        needs, every = await _together(
-            _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, needs_agent=False))
+        needs, idle = await _together(
+            _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, state=HELD_STATE))
         waiting = [r for r in needs if r.get("state") in WAITING_REASONS]
-        holding = [r for r in every if r.get("status") in OPEN_RUN_STATUSES]
+        # P1: only a run whose session went quiet. A live run of a sibling
+        # session of this client is not this session's work, and an
+        # `awaiting` run waits on a person.
+        holding = [r for r in idle if r.get("state") == HELD_STATE
+                   and r.get("status") in OPEN_RUN_STATUSES]
 
     body = await _get(ctx, LIST_TASKS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=[
         ("assignee", email), ("status_category", MY_WORK_CATEGORIES),
@@ -2800,16 +2809,14 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         seen.add(task_id)
         listed.append((task_id, reason, _id(run.get("id"))))
 
-    if len(listed) < limit:
-        free: list[dict[str, Any]] = []
-        for row in assigned:
-            task_id = _id(row.get("id"))
-            if task_id is None or task_id in seen or _live_holder(row.get("held_by")):
-                continue
-            seen.add(task_id)
-            free.append(row)
-        for row in await _unblocked(ctx, free):
-            listed.append((str(row["id"]), REASON_ASSIGNED, None))
+    for row in assigned:
+        task_id = _id(row.get("id"))
+        if (task_id is None or task_id in seen or _live_holder(row.get("held_by"))
+                or _blocked(row)):
+            continue
+        seen.add(task_id)
+        listed.append((task_id, REASON_ASSIGNED, None))
+    # P3c: every read below runs on the rows that are shown, after the cut.
     listed = listed[:limit]
 
     rows = {str(r.get("id")): r for r in assigned}
@@ -2829,14 +2836,16 @@ MY_WORK = Tool(
         " session. The rows come in this order. First, the agent runs that wait"
         " for this client: reason run_queued (a member queued work for you),"
         " run_answered (a member answered your question) or run_stopping (a"
-        " member asked you to stop). Second, the tasks that this client holds"
-        " through an open run (held_by_you). Third, the tasks assigned to this"
-        " member that no AI session holds and that no open task blocks"
-        " (assigned). Take the top row. For a waiting run, read it with"
-        " get_agent_run and its run_id. For a task, call claim_task with the"
-        " task_id and the version. The list never holds a task that is not"
-        " assigned to this member and that this client does not hold."
-        + _UNTRUSTED_NOTE
+        " member asked you to stop). Second, the tasks of a run of this client"
+        " whose session went quiet for five minutes, which you may take back"
+        " (held_by_you). Third, the tasks assigned to this member that no AI"
+        " session holds and that no open task blocks (assigned). Take the top"
+        " row. For a waiting run, read it with get_agent_run and its run_id."
+        " For a task, with projects:write, claim the task with claim_task, the"
+        " task_id and the version. Take only a row that this list gives: two"
+        " sessions of one client share one name, and a claim cannot tell them"
+        " apart. The list never holds a task that is not assigned to this"
+        " member and that this client does not hold." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_MY_WORK_INPUT,
@@ -2845,8 +2854,7 @@ MY_WORK = Tool(
     params={},
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_my_work,
-    routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, RELATIONS_ROUTE, TASK_ROUTE,
-            STATUSES_ROUTE),
+    routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, TASK_ROUTE, STATUSES_ROUTE),
     edge_inputs=frozenset({"limit"}),
 )
 
@@ -4656,6 +4664,7 @@ __all__ = [
     "GET_TASK_CONTEXT",
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
+    "HELD_STATE",
     "LINK_KEYS",
     "LIST_AGENT_RUNS",
     "LIST_PROJECTS",
@@ -4664,7 +4673,6 @@ __all__ = [
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
     "MAX_ANCESTORS",
-    "MAX_BLOCKER_READS",
     "MAX_COMMENT_CHARS",
     "MAX_DELETE_IDS",
     "MAX_STATUS_READS",
@@ -4675,6 +4683,7 @@ __all__ = [
     "MY_WORK_LIMIT_MAX",
     "MY_WORK_REASONS",
     "MY_WORK_ROW_KEYS",
+    "MY_WORK_RUNS_PAGES",
     "OPEN_RUN_STATUSES",
     "POST_AGENT_ACTIVITY",
     "PROJECT_KEYS",
