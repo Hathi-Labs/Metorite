@@ -5908,22 +5908,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
 - **Added:** 2026-10-20 · PR #1184 review, P3
 
-### H-409 · Harden EA-14a: a reopen race, a task that closes, and two small gaps · [AGENT]
-- **Check:** `grep -n "IntegrityError" apps/services/gateway/gateway/routes/projects/agent_runs.py`.
-  When the reopen UPDATE in `_move_run` catches the index error and answers
-  409 `task_held`, and a test drives two concurrent prompts, do the first item.
-- **Why.** The review of PR #1192 found no blocker. It left four items.
+### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
+- **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
+  near `unheld_clause`. When the clause, `_HOLDER_SQL` and `_RUN_SELECT` all
+  carry the org predicate, item 3 is done. Read items 1 and 2 against the code.
+- **Why.** The review of PR #1192 found no blocker. It left four items. The
+  merge commit fixed a fifth, the reopen race (two prompts at once gave a
+  500), with `test_x13b`.
 - **Do this:**
-  1. Two members prompt two completed runs of one task at the same time. The
-     second UPDATE breaks `pm_agent_runs_one_open_per_task` and gives a 500.
-     Catch it, re-run the gate, and answer 409 `task_held`. Add the test.
-  2. A task that goes to done, cancelled or archived keeps its open run until
+  1. A task that goes to done, cancelled or archived keeps its open run until
      the lease ends. End the run on that status change, or let a closed task
-     not hold.
-  3. The Release button uses `access.is_admin`. The server uses
+     not hold. Metorite task SW-10 (#341) covers the same ground.
+  2. The Release button uses `access.is_admin`. The server uses
      `admin:members:read`. Make them the same rule, and ask whether a read
      permission should release another member's run.
-  4. Add `organization_id` to `_HOLDER_SQL`, `_RUN_SELECT` and
+  3. Add `organization_id` to `_HOLDER_SQL`, `_RUN_SELECT` and
      `unheld_clause` (R5). Add a cross-org test for `held_by`. Decide whether
      a released or abandoned run counts as "agent worked" in `agent_worked.py`.
 - **Authority:** `specs/external_agent_access.md` §12.3
