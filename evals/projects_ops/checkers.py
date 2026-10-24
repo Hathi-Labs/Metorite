@@ -209,9 +209,7 @@ def answer_cards(session: Session) -> list[ToolCall]:
     for call in session.tool_calls:
         if not _drew(call):
             continue
-        if call.name in ANSWER_VIEWS:
-            out.append(call)
-        elif call.name == GENUI_TOOL and (spec := _ui_spec(call)) is not None and not is_ask_card(spec):
+        if call.name in ANSWER_VIEWS or (call.name == GENUI_TOOL and (spec := _ui_spec(call)) is not None and not is_ask_card(spec)):
             out.append(call)
     return out
 
