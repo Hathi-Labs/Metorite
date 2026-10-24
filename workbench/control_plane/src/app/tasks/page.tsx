@@ -44,6 +44,8 @@ import { SearchPalette } from "../projects/components/SearchPalette";
 import { NotificationBell } from "../projects/components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { isOpenShortcut } from "../projects/lib/search";
+import { myWorkEnabled } from "../projects/lib/myWork";
+import { tasksRedirectTarget } from "../projects/lib/tasksRedirect";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -80,6 +82,16 @@ export default function TasksPage() {
   const openFocus = useTaskStore((s) => s.openFocus);
   const router = useRouter();
   const { access, loading: accessLoading } = useAccess();
+  // WS-64 OP-4 — with My work live, `/tasks` is a redirect into Projects.
+  // Client side, behind the flag, from the address the member arrived on. With
+  // the flag off the effect does nothing and the page renders as it always did.
+  useEffect(() => {
+    const to = tasksRedirectTarget(
+      { search: window.location.search, hash: window.location.hash },
+      myWorkEnabled(),
+    );
+    if (to) router.replace(to);
+  }, [router]);
   // The lists rail folds itself below `lg`, so the pane beside it keeps a
   // usable width on a tablet. The toggle still opens it, and the member's
   // choice holds until the width changes band (`lib/railFold.ts`).

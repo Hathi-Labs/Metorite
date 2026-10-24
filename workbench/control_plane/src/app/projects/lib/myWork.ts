@@ -15,17 +15,9 @@ import { viewCounts } from "@/app/tasks/lib/taskStore";
 import type { MyTask, ViewKey } from "@/app/tasks/lib/types";
 import { VIEW_TITLES } from "@/app/tasks/lib/viewTitles";
 
-/**
- * The flag. ⚠️ Only the LITERAL `process.env.NEXT_PUBLIC_PROJECTS_MY_WORK`
- * is inlined into the browser bundle, so the default reads it literally and a
- * test passes an explicit `env` instead. `publicFlags.test.ts` fences it.
- */
-export function myWorkEnabled(env?: Record<string, string | undefined>): boolean {
-  const raw = env
-    ? env.NEXT_PUBLIC_PROJECTS_MY_WORK
-    : process.env.NEXT_PUBLIC_PROJECTS_MY_WORK;
-  return ["1", "true", "on", "yes"].includes(String(raw ?? "").trim().toLowerCase());
-}
+// The flag lives in a leaf file (WS-64 OP-4), so `lib/centers.ts` and
+// `lib/runActivity.ts` can read it without importing the task store.
+export { myWorkEnabled } from "./myWorkFlag";
 
 /** The `?app=` keys of the six views. */
 export type MyWorkId =

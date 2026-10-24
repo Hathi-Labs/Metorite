@@ -69,6 +69,7 @@ import {
 } from "./lib/mailbox";
 import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 
 /** D99: the chat bar's one assistant replaces this app's chat scene. */
 const ONE_ASSISTANT = shellChatOn();
@@ -1417,7 +1418,7 @@ export default function EmailPage() {
                 {due ? ` · due ${due}` : ""}
               </span>
             )}
-            <a href="/tasks" className="text-primary font-medium hover:opacity-80">
+            <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
               Open My Tasks
             </a>
             <button

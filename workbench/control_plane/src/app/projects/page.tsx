@@ -71,6 +71,7 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
+import { CAPTURE_DO } from "./lib/tasksRedirect";
 import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
 import {
   MIXED_MOVE_HINT,
@@ -1290,6 +1291,20 @@ function ProjectsWorkspace() {
       const tab = (event as CustomEvent<string>).detail;
       if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
       else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
+      else if (tab === "projects-mywork") {
+        // WS-64 OP-4 — the phone's "My work" tab opens Today.
+        setSheet(null);
+        setApp("my-today");
+      } else if (tab === "projects-capture") {
+        // WS-64 OP-4 — Capture must work with no My work view open. The quick
+        // capture lives in the task store and `MyWorkHost` mounts it, so open
+        // the Inbox when no My work view shows, then set the store's flag. The
+        // flag survives until the host mounts. The smallest change: no
+        // second capture host.
+        setSheet(null);
+        setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+        useTaskStore.getState().openQuickCapture("single");
+      }
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
@@ -2800,6 +2815,13 @@ function ProjectsWorkspace() {
     }
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
+    // WS-64 OP-4 — `/tasks?do=capture` arrives as `?app=my-inbox&do=capture`.
+    // Open the capture once and take `do` out of the address. Any other `do`
+    // belongs to the shell job and stays.
+    if (MY_WORK_LIVE && live === "my-inbox" && rest.get("do") === CAPTURE_DO) {
+      useTaskStore.getState().openQuickCapture("single");
+      rest.delete("do");
+    }
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps

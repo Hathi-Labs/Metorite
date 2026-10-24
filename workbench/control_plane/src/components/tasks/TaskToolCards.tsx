@@ -34,6 +34,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -214,6 +215,13 @@ function parseScheduleRows(result: string): TaskRow[] {
 function useOpenTask() {
   const router = useRouter();
   return (id: string) => {
+    // WS-64 OP-4 — with My work live the task opens in Projects (`?task=`),
+    // whose panel reads the id, so the focus modal is not raised as well.
+    const to = tasksLink(`/tasks?task=${encodeURIComponent(id)}`);
+    if (to.startsWith("/projects")) {
+      router.push(to);
+      return;
+    }
     try {
       useTaskStore.getState().openFocus(id);
     } catch {
