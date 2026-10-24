@@ -53,6 +53,12 @@ KNOWN_CLASSES = frozenset({"org", "sent"})
 _DOMAIN = re.compile(r"(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 
 READ_SQL = "SELECT always_copy FROM email_assistant_settings WHERE account_id = CAST(:aid AS uuid)"
+#: The read of the PUT. It locks the row, so two writers check the version
+#: one after the other (review P2).
+READ_FOR_UPDATE_SQL = READ_SQL + " FOR UPDATE"
+#: The answer when the list changed after the caller read it (review P2).
+VERSION_CHANGED = ("Nothing changed. The always-copy rules changed after you read them. "
+                   "Read them again, and make the change on the new list.")
 #: The one writer. A mailbox with no settings row gets one with the defaults.
 WRITE_SQL = (
     "INSERT INTO email_assistant_settings (account_id, always_copy, updated_at) "
@@ -77,6 +83,10 @@ class AlwaysCopyPut(BaseModel):
 
     account_id: str
     rules: list[AlwaysCopyRule] = Field(default_factory=list, max_length=MAX_RULES)
+    #: The ``version`` of the list that the caller read (review P2). The PUT
+    #: answers 409 and changes nothing when the stored list has another one,
+    #: so a client that read a partial list, or none, cannot write over it.
+    expected: str = Field(max_length=64)
 
 
 def clean_match(raw: str) -> str:
@@ -135,6 +145,15 @@ def _stored(value: Any) -> list[dict[str, Any]]:
             cc = [str(a).strip().lower() for a in r.get("cc") or [] if str(a or "").strip()]
             out.append({"match": r["match"].strip().lower(), "cc": cc})
     return out
+
+
+def version_of(rules: Sequence[dict[str, Any]]) -> str:
+    """The version of a stored list: a short digest of its canonical JSON.
+    The empty list has a version too, so a first rule needs one."""
+    import hashlib
+
+    blob = json.dumps(list(rules), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 async def read_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
@@ -208,7 +227,8 @@ async def get_always_copy(
     """The always-copy rules of one mailbox of the caller. A read."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, account_id, user.email or "anonymous")
-        return {"account_id": account_id, "rules": await read_rules(db, account_id)}
+        rules = await read_rules(db, account_id)
+        return {"account_id": account_id, "rules": rules, "version": version_of(rules)}
 
 
 @router.get("/assistant/always-copy/match")
@@ -255,6 +275,10 @@ async def put_always_copy(
             raise HTTPException(status_code=422, detail=(
                 f"Nothing changed. {mine[0]} is your own address, and a rule never "
                 "copies you."))
+        row = (await db.execute(text(READ_FOR_UPDATE_SQL), {"aid": req.account_id})).fetchone()
+        current = _stored(getattr(row, "always_copy", None) if row is not None else None)
+        if version_of(current) != req.expected:
+            raise HTTPException(status_code=409, detail=VERSION_CHANGED)
         classes = await classify_addresses(db, owner, people)
         stranger = [a for a in people if classes.get(a) not in KNOWN_CLASSES]
         if stranger:
@@ -263,4 +287,4 @@ async def put_always_copy(
                 "to them. A rule copies only a colleague or a person you wrote to before."))
         await db.execute(text(WRITE_SQL), {"aid": req.account_id, "rules": json.dumps(rules)})
     _log.info("email.always_copy_saved", rules=len(rules), people=len(people))
-    return {"account_id": req.account_id, "rules": rules}
+    return {"account_id": req.account_id, "rules": rules, "version": version_of(rules)}

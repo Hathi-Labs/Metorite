@@ -2128,24 +2128,41 @@ export interface AlwaysCopyRule {
   cc: string[];
 }
 
-export async function getAlwaysCopy(accountId: string): Promise<AlwaysCopyRule[]> {
-  const res = await gatewayFetch<{ rules?: AlwaysCopyRule[] }>(
-    `/email/assistant/always-copy?account_id=${encodeURIComponent(accountId)}`
+/** The rules of a mailbox and their version. The PUT sends the version
+ *  back, and the server refuses it when the list changed in between. */
+export interface AlwaysCopyList {
+  rules: AlwaysCopyRule[];
+  version: string;
+}
+
+function alwaysCopyList(res: { rules?: unknown; version?: unknown } | undefined): AlwaysCopyList {
+  if (!res || !Array.isArray(res.rules) || typeof res.version !== "string") {
+    throw new Error("The always-copy rules could not be read.");
+  }
+  return { rules: res.rules as AlwaysCopyRule[], version: res.version };
+}
+
+export async function getAlwaysCopy(accountId: string): Promise<AlwaysCopyList> {
+  return alwaysCopyList(
+    await gatewayFetch<{ rules?: unknown; version?: unknown }>(
+      `/email/assistant/always-copy?account_id=${encodeURIComponent(accountId)}`
+    )
   );
-  return Array.isArray(res?.rules) ? res.rules : [];
 }
 
 /** Save the WHOLE list. The server takes only a colleague or a person you
  *  wrote to before, and its refusal names the person. */
 export async function saveAlwaysCopy(
   accountId: string,
-  rules: AlwaysCopyRule[]
-): Promise<AlwaysCopyRule[]> {
-  const res = await gatewayFetch<{ rules?: AlwaysCopyRule[] }>("/email/assistant/always-copy", {
-    method: "PUT",
-    body: JSON.stringify({ account_id: accountId, rules }),
-  });
-  return Array.isArray(res?.rules) ? res.rules : [];
+  rules: AlwaysCopyRule[],
+  expected: string
+): Promise<AlwaysCopyList> {
+  return alwaysCopyList(
+    await gatewayFetch<{ rules?: unknown; version?: unknown }>("/email/assistant/always-copy", {
+      method: "PUT",
+      body: JSON.stringify({ account_id: accountId, rules, expected }),
+    })
+  );
 }
 
 export async function generateWritingStyle(

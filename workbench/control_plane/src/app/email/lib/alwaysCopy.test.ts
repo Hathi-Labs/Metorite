@@ -21,9 +21,14 @@ describe("the always-copy rules", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       calls.push(url);
-      return new Response(JSON.stringify({ rules: [{ match: "jain.ac.in", cc: ["kiran@acme.test"] }] }));
+      return new Response(
+        JSON.stringify({ rules: [{ match: "jain.ac.in", cc: ["kiran@acme.test"] }], version: "v1" }),
+      );
     });
-    expect(await getAlwaysCopy("acc 1")).toEqual([{ match: "jain.ac.in", cc: ["kiran@acme.test"] }]);
+    expect(await getAlwaysCopy("acc 1")).toEqual({
+      rules: [{ match: "jain.ac.in", cc: ["kiran@acme.test"] }],
+      version: "v1",
+    });
     expect(calls).toEqual(["/api/email/assistant/always-copy?account_id=acc%201"]);
   });
 
@@ -33,10 +38,17 @@ describe("the always-copy rules", () => {
       sent.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ detail: "Nothing changed. spy@evil.test is not a colleague." }), { status: 422 });
     });
-    await expect(saveAlwaysCopy("acc-1", [{ match: "jain.ac.in", cc: ["spy@evil.test"] }])).rejects.toThrow(
-      "spy@evil.test is not a colleague",
-    );
-    expect(sent).toEqual([{ account_id: "acc-1", rules: [{ match: "jain.ac.in", cc: ["spy@evil.test"] }] }]);
+    await expect(
+      saveAlwaysCopy("acc-1", [{ match: "jain.ac.in", cc: ["spy@evil.test"] }], "v1"),
+    ).rejects.toThrow("spy@evil.test is not a colleague");
+    expect(sent).toEqual([
+      { account_id: "acc-1", rules: [{ match: "jain.ac.in", cc: ["spy@evil.test"] }], expected: "v1" },
+    ]);
+  });
+
+  it("a read with no version is a failed read, never an empty list (review P2)", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ rules: [] })));
+    await expect(getAlwaysCopy("acc-1")).rejects.toThrow("could not be read");
   });
 
   it("the card sits in the settings, before the domains card", () => {
@@ -45,5 +57,9 @@ describe("the always-copy rules", () => {
     expect(card).toBeGreaterThan(0);
     expect(card).toBeLessThan(src.indexOf("<OrgDomainsCard\n"));
     expect(src).toContain('title="Always copy"');
+    // Review P2: a failed read keeps the list null, and no write can start.
+    expect(src).not.toContain("setRules([])");
+    expect(src).toContain("if (!list) return false;");
+    expect(src).toContain("list.version");
   });
 });

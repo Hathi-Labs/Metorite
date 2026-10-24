@@ -10,7 +10,7 @@ import Icon from "@/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import {
   approveKnowledge, createKnowledge, deleteKnowledge, deleteLearnedPattern,
-  getAlwaysCopy, saveAlwaysCopy, type AlwaysCopyRule,
+  getAlwaysCopy, saveAlwaysCopy, type AlwaysCopyList, type AlwaysCopyRule,
   deleteRulePattern,
   generateWritingStyle, getAssistantSettings, getVoiceProfile, listColdSenders,
   listKnowledge,
@@ -133,7 +133,11 @@ function OrgDomainsCard({
  *  and new-mail card. Nothing sends on its own. The server takes only a
  *  colleague or a person you wrote to before, and says who it refused. */
 function AlwaysCopyCard({ accountId }: { accountId: string }) {
-  const [rules, setRules] = useState<AlwaysCopyRule[] | null>(null);
+  // Review P2: `list` stays null until a read succeeds. A failed read shows
+  // its error and offers no write, so a partial list never replaces the
+  // stored one. Each write sends the version it read.
+  const [list, setList] = useState<AlwaysCopyList | null>(null);
+  const rules: AlwaysCopyRule[] | null = list ? list.rules : null;
   const [match, setMatch] = useState("");
   const [people, setPeople] = useState("");
   const [busy, setBusy] = useState(false);
@@ -141,20 +145,22 @@ function AlwaysCopyCard({ accountId }: { accountId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    setRules(null);
+    setList(null);
+    setError(null);
     getAlwaysCopy(accountId)
-      .then((r) => !cancelled && setRules(r))
-      .catch((e) => !cancelled && (setRules([]), setError((e as Error).message || "Could not load the rules.")));
+      .then((r) => !cancelled && setList(r))
+      .catch((e) => !cancelled && setError((e as Error).message || "Could not load the rules. Reload to try again."));
     return () => {
       cancelled = true;
     };
   }, [accountId]);
 
   const save = async (next: AlwaysCopyRule[]) => {
+    if (!list) return false;
     setBusy(true);
     setError(null);
     try {
-      setRules(await saveAlwaysCopy(accountId, next));
+      setList(await saveAlwaysCopy(accountId, next, list.version));
       return true;
     } catch (e) {
       setError((e as Error).message || "Could not save the rules. Try again.");
@@ -181,7 +187,9 @@ function AlwaysCopyCard({ accountId }: { accountId: string }) {
       description="Name a domain or an address, and the colleagues to copy. They go, ticked, on each reply and new-mail card for that mail, and you can untick them. Nothing sends on its own. Only a colleague or a person you wrote to before can be on a rule."
     >
       <div className="space-y-1.5" data-always-copy="">
-        {rules === null && <span className="text-[11px] text-muted-foreground">Loading the rules…</span>}
+        {rules === null && !error && (
+          <span className="text-[11px] text-muted-foreground">Loading the rules…</span>
+        )}
         {rules !== null && rules.length === 0 && (
           <span className="text-[11px] text-muted-foreground italic">
             No rule yet. Add one below, or ask the assistant to always copy someone.

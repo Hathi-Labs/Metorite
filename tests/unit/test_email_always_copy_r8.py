@@ -62,9 +62,10 @@ async def test_the_always_copy_rules_on_a_real_database(
     stranger = f"spy-{w.tag}@evil-{w.tag}.test"
     user = types.SimpleNamespace(email=w.owner, organization_id=w.p.org_b)
 
-    def rule(*cc: str) -> ac.AlwaysCopyPut:
+    def rule(*cc: str, expected: str | None = None) -> ac.AlwaysCopyPut:
         return ac.AlwaysCopyPut(account_id=w.account,
-                                rules=[ac.AlwaysCopyRule(match=jain, cc=list(cc))])
+                                rules=[ac.AlwaysCopyRule(match=jain, cc=list(cc))],
+                                expected=expected or ac.version_of([]))
 
     try:
         w.seed()
@@ -78,7 +79,12 @@ async def test_the_always_copy_rules_on_a_real_database(
             rule(w.kiran, w.kiran_client), user))
         assert out["rules"] == [{"match": jain, "cc": [w.kiran, w.kiran_client]}]
         # The update path: the row exists now.
-        await _as(w, w.p.org_b, lambda: ac.put_always_copy(rule(w.kiran), user))
+        # A stale version answers 409 under the row lock (review P2).
+        with pytest.raises(HTTPException) as err:
+            await _as(w, w.p.org_b, lambda: ac.put_always_copy(rule(w.kiran), user))
+        assert err.value.status_code == 409
+        await _as(w, w.p.org_b, lambda: ac.put_always_copy(
+            rule(w.kiran, expected=ac.version_of(out["rules"])), user))
         with w.p.admin_engine.begin() as c:
             row = c.execute(text(
                 "SELECT always_copy, organization_id::text AS org FROM email_assistant_settings "

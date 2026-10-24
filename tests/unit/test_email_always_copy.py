@@ -84,7 +84,7 @@ class _SettingsDb(_Db):
 
     async def execute(self, sql: Any, params: dict[str, Any] | None = None) -> Any:
         q = str(sql)
-        if q == ac.READ_SQL:
+        if q in (ac.READ_SQL, ac.READ_FOR_UPDATE_SQL):
             row = types.SimpleNamespace(always_copy=list(self.rules))
             return types.SimpleNamespace(fetchone=lambda: row)
         if q == ac.WRITE_SQL:
@@ -118,15 +118,41 @@ def routes(monkeypatch) -> _SettingsDb:
 
 async def test_the_put_saves_a_colleague(routes: _SettingsDb) -> None:
     out = await ac.put_always_copy(ac.AlwaysCopyPut(
-        account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[KIRAN])]), USER)
+        account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[KIRAN])],
+        expected=ac.version_of(routes.rules)), USER)
     assert out["rules"] == [{"match": JAIN, "cc": [KIRAN]}]
+    assert out["version"] == ac.version_of(out["rules"])
     assert len(routes.written) == 1
+
+
+async def test_the_put_refuses_a_list_that_changed_after_the_read(routes: _SettingsDb) -> None:
+    """Review P2: a client that read an old list, or none, cannot write over
+    the stored one. Mutation: drop the version check and the write goes."""
+    stale = ac.version_of([])
+    with pytest.raises(HTTPException) as err:
+        await ac.put_always_copy(ac.AlwaysCopyPut(
+            account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[KIRAN])],
+            expected=stale), USER)
+    assert err.value.status_code == 409 and routes.written == []
+
+
+def test_the_put_needs_the_version() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ac.AlwaysCopyPut(account_id=BOX, rules=[])
+
+
+async def test_the_get_names_the_version(routes: _SettingsDb) -> None:
+    out = await ac.get_always_copy(account_id=BOX, user=USER)
+    assert out["version"] == ac.version_of(routes.rules)
 
 
 async def test_the_put_refuses_a_stranger(routes: _SettingsDb) -> None:
     with pytest.raises(HTTPException) as err:
         await ac.put_always_copy(ac.AlwaysCopyPut(
-            account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[KIRAN, STRANGER])]), USER)
+            account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[KIRAN, STRANGER])],
+            expected=ac.version_of(routes.rules)), USER)
     assert err.value.status_code == 422 and STRANGER in err.value.detail
     assert routes.written == []
 
@@ -134,7 +160,8 @@ async def test_the_put_refuses_a_stranger(routes: _SettingsDb) -> None:
 async def test_the_put_refuses_the_members_own_address(routes: _SettingsDb) -> None:
     with pytest.raises(HTTPException) as err:
         await ac.put_always_copy(ac.AlwaysCopyPut(
-            account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[MEMBER])]), USER)
+            account_id=BOX, rules=[ac.AlwaysCopyRule(match=JAIN, cc=[MEMBER])],
+            expected=ac.version_of(routes.rules)), USER)
     assert err.value.status_code == 422 and routes.written == []
 
 
@@ -239,7 +266,7 @@ async def test_the_tool_asks_a_card_then_puts_the_whole_list(monkeypatch) -> Non
         if path == "/email/accounts":
             return [{"id": BOX, "email_address": MEMBER, "display_label": "Work"}]
         if path == "/email/assistant/always-copy":
-            return {"rules": []}
+            return {"rules": [], "version": "v-empty"}
         return {}
 
     async def put(path: str, body: Any) -> Any:
@@ -258,7 +285,8 @@ async def test_the_tool_asks_a_card_then_puts_the_whole_list(monkeypatch) -> Non
         BOX, always_copy=[{"match": "@JAINUNIVERSITY.ac.in", "cc": [KIRAN]}])
     assert len(cards) == 1 and "Always copy" in cards[0]["context"]
     assert puts == [("/email/assistant/always-copy",
-                     {"account_id": BOX, "rules": [{"match": JAIN, "cc": [KIRAN]}]})]
+                     {"account_id": BOX, "rules": [{"match": JAIN, "cc": [KIRAN]}],
+                      "expected": "v-empty"})]
     assert out.startswith("Always-copy rules updated")
 
 

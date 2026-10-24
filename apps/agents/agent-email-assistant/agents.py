@@ -4649,10 +4649,13 @@ async def update_assistant_settings(
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
+    copy_version = ""
     if always_copy is not None:
-        # §21.16: the rules live apart from the settings body.
-        cur = {**(cur or {}), "always_copy": (await _get(
-            "/email/assistant/always-copy", {"account_id": account_id}) or {}).get("rules") or []}
+        # §21.16: the rules live apart from the settings body. The PUT takes
+        # the version that this read saw, so a change in between sends 409.
+        got = await _get("/email/assistant/always-copy", {"account_id": account_id}) or {}
+        copy_version = str(got.get("version") or "")
+        cur = {**(cur or {}), "always_copy": got.get("rules") or []}
     # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
     # A change that turns one off, or any other setting, asks nothing.
     turned_on = _settings_needing_card(cur, {
@@ -4715,9 +4718,10 @@ async def update_assistant_settings(
     if always_copy is not None:
         try:
             await _put("/email/assistant/always-copy",
-                       {"account_id": account_id, "rules": always_copy})
+                       {"account_id": account_id, "rules": always_copy,
+                        "expected": copy_version})
         except GatewayError as exc:
-            if exc.status in (404, 422):
+            if exc.status in (404, 409, 422):
                 return str(getattr(exc, "detail", "") or exc)
             raise
         if not _other_settings(locals()):
