@@ -5520,6 +5520,23 @@ Board: **WS-63**. Owning spec: **`specs/personalization.md`** §8 and §12.8. Th
 
 ---
 
+### D111 — Personalization, the research decisions: a private chat, a second yes, an org switch, app scopes and review dates (2026-10-24)
+
+Owner decision, 2026-10-24, in chat, by answer to two questions: "Accept all defaults" for D-PZ-15 to D-PZ-19, and "Yes/No buttons" for the second yes on WhatsApp. Board: **WS-63**. Owning spec: **`specs/personalization.md`** §13.4.
+
+1. **A member may turn the profile off for one chat** (D-PZ-15, PZ-21). On WhatsApp, the word "private" does it for one message.
+2. **A sensitive fact needs a second yes** (D-PZ-16): health, religion, caste, politics, sexuality or finance. Opinions are never saved.
+3. **An admin may turn the profile off for the whole organization, and never read it** (D-PZ-17, PZ-24).
+4. **A fact may apply to one app only.** All apps is the default (D-PZ-18, PZ-23).
+5. **A fact gets a review date only when the member or the fact gives one.** Nothing expires by itself (D-PZ-19, PZ-22).
+6. **On WhatsApp, the second yes is a pair of Yes and No buttons** (D-PZ-20, PZ-6b), as the confirm-before-send acts are.
+
+**Why.** A web survey of eight assistants on 2026-10-24 (§13.1). Each major assistant has a way to answer without memory, an admin switch and a readable memory. A WWW '26 audit found 28% of saved memories held sensitive data, so a sensitive fact asks twice.
+
+**Fences:** named per slice in `specs/personalization.md` §10 and §13.3.
+
+---
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |

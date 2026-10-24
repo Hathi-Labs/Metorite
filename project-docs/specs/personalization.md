@@ -690,9 +690,9 @@ reads it before PZ-12 merges.
 
 ---
 
-## 13. Lessons from other assistants, and what we add (PROPOSED, 2026-10-24)
+## 13. Lessons from other assistants, and what we add (ACCEPTED, 2026-10-24)
 
-**Status: PROPOSED, 2026-10-24. Nothing is built.** Owner directive of
+**Status: ACCEPTED, 2026-10-24 (D111). Nothing is built.** Owner directive of
 2026-10-24: research how other assistants build personalization, find what we
 lack, and extend the plan. A web survey on 2026-10-24 is the source. Where the
 survey could not open a vendor page, this section makes no claim from it.
@@ -772,15 +772,20 @@ proposals and never silent writes, one profile for each organization.
 10. **PZ-10 tests agreement.** The eval adds prompts where a stored
     preference must not make the assistant agree with a wrong claim.
 
-### 13.4 Decisions proposed
+### 13.4 Decisions
 
-| # | Question | Default |
+The owner accepted each default on 2026-10-24, recorded as **D111**. The
+owner also chose Yes and No buttons for the second yes on WhatsApp
+(D-PZ-20).
+
+| # | Question | Decision |
 |---|---|---|
 | **D-PZ-15** | May a member turn off the profile for one chat? | Yes (PZ-21) |
 | **D-PZ-16** | Does a sensitive fact need a second yes? | Yes, for health, religion, caste, politics, sexuality and finance |
 | **D-PZ-17** | May an admin turn the profile off for the whole organization? | Yes, off only. No admin read (PZ-24) |
 | **D-PZ-18** | May a fact apply to one app only? | Yes, all apps by default (PZ-23) |
 | **D-PZ-19** | Does a fact get a review date? | Only when the member or the fact gives one. No automatic expiry (PZ-22) |
+| **D-PZ-20** | How does WhatsApp ask the second yes for a sensitive fact? | Yes and No buttons, as the confirm-before-send acts do (PZ-6b, `whatsapp_acts.ALLOWED_ACTS`) |
 
 ### 13.5 What we do not copy
 
