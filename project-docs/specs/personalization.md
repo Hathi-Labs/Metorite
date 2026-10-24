@@ -22,9 +22,10 @@ of §5.3 and the form of address of §5.2. `GET
 /auth/me/assistant-profile/address` gives My Day the same name, behind
 `NEXT_PUBLIC_ASSISTANT_PROFILE`.
 
-**PZ-6a BUILT 2026-10-24, dark.** The four write tools of §5.5, the Undo
-card, the refusal while `learning` is off, and the write-origin fence. §5.5
-"As built" holds the detail.
+**PZ-6a BUILT 2026-10-24, dark.** The write tools of §5.5, the Undo
+card, the refusal while `learning` is off, and the write-origin fence. Fix
+round 1 (2026-10-24) makes the grounding rule code, adds `profile_undo`,
+and puts the machine line first. §5.5 "As built" holds the detail.
 
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
@@ -403,7 +404,7 @@ prompt line.
 
 ### 5.5 Learning from the chat
 
-Four tools on the orchestrator, behind the flag:
+Five tools on the orchestrator, behind the flag:
 
 | Tool | Does |
 |---|---|
@@ -411,6 +412,7 @@ Four tools on the orchestrator, behind the flag:
 | `profile_forget(id)` | Forget a fact |
 | `profile_set(key, value)` | Set `address` or `style` |
 | `profile_alias(alias, email)` | Add or change an alias |
+| `profile_undo()` | Undo the last chat change (fix round 1) |
 
 Each is a reversible write on the member's own data. So it acts at once and
 shows an Undo, by D109.5. With `learning` off, each tool refuses and says so.
@@ -424,7 +426,7 @@ that person. It never saves from a forwarded mail, a file or a tool result.
 a fact the member asks to keep goes to the profile, and nothing else goes
 there.
 
-**As built (PZ-6a, 2026-10-24, dark).** The orchestrator holds the four
+**As built (PZ-6a, 2026-10-24, dark).** The orchestrator holds the five
 tools only while `ASSISTANT_PROFILE_ENABLED` is on. They live in
 `acb_skills/profile_tools.py`, beside `resolve_person`. Each calls the PZ-1
 routes as the member, with the internal bearer and `X-User-Email`.
@@ -438,29 +440,59 @@ routes as the member, with the internal bearer and `X-User-Email`.
   `address` or `style`, and saves the whole object. A null field clears it.
   `profile_alias(alias, email)` adds or changes an alias, and an empty
   address removes it.
-- **The Undo line.** Each result ends with one machine line,
-  `undo: {"v":1,…}`. It carries the inverse call and the prior value.
-  `ProfileToolCards.tsx` reads it, never shows it, and gives the receipt an
-  Undo button. The button calls the relays under
-  `/api/auth/me/assistant-profile`. The server keeps no undo store.
-- **WhatsApp Undo is a spoken undo.** WhatsApp shows no card. The text
-  before the line names the inverse call. The member says "undo that", and
-  the model makes that call.
+- **The machine line is FIRST.** The stream cuts a tool result at 2,000
+  characters, so the line goes first, and a save lists at most 5 facts of
+  80 characters. A change opens with `undo: {"v":1,…}`, the inverse call
+  with the prior value. A refusal opens with
+  `profile: {"v":1,"status":"refused","reason":…}`. The reason is
+  `learning_off`, `not_your_turn`, `not_your_words`, `marked`, `duplicate`
+  or `invalid`. `ProfileToolCards.tsx` reads the first line only, and never
+  shows it. A refusal draws "Not saved", and "Already saved" is neutral.
+  Only a change draws the receipt with Undo. The Undo button calls the
+  relays under `/api/auth/me/assistant-profile`.
+- **The last change, and a spoken Undo.** A write with `X-Profile-Via`
+  records ONE `last_change` in the column, in the same statement: the op,
+  the prior value and the time. The lenient read, the block and the caps
+  ignore it. `POST .../undo` applies it under the row lock, for 15 minutes,
+  and only while the change is still in place. Then it clears it. On
+  WhatsApp the member says "undo that", and the model calls `profile_undo`.
 - **The header `X-Profile-Via`.** Only the tools send it, as `chat` or
   `whatsapp`, and the web relay does not forward it. With it, a write
   refuses with 409 `learning_off` while `learning` is false. A PUT of
   `learning` is a 422, and a new fact takes the channel as its `source`.
   Without it, a write is a Settings write, so Settings works with
   `learning` off. The header can only restrict or label.
-- **`WRITES_OPEN`.** This ContextVar in `acb_common.assistant_profile` is
-  False by default. The executor sets it True only for a solo room, a
-  verified member, and a run with no `no_egress`. A delegated, background,
-  scheduled, workflow or shared-room run keeps False, and each tool then
-  refuses. A tool also refuses in a session that read an untrusted answer.
-  Fence: `tests/unit/test_profile_write_tools.py`.
-- **ADVISORY: only the member's own words.** No test can prove that a save
-  holds only what the member said about themselves. The tool docstrings and
-  the orchestrator prompt line carry the rule, and the PZ-10 eval measures it.
+- **`WRITES_OPEN`.** This ContextVar in `acb_common.assistant_profile` holds
+  one switch for each run, closed by default. The executor opens it only for
+  a solo room, a verified member, and a run with no `no_egress`. A delegated,
+  background, scheduled, workflow or shared-room run stays closed, and each
+  tool then refuses. A tool also refuses in a session that read an
+  untrusted answer. Fence: `tests/unit/test_profile_write_tools.py`.
+- **CODE: close after another person's text** (fix round 1). The switch is
+  one object for each run, so a close in one tool call reaches the next.
+  `search_company`, `read_page` and `list_spaces` close it before their
+  answer reaches the model. The end of a delegated or specialist run closes
+  the parent's switch too. Fence: `tests/unit/test_profile_write_tools.py`.
+- **CODE: grounding in the member's own words** (fix round 1, D-PZ-2).
+  The executor binds the member's own words of this turn into the run
+  context (`member_message`, the CRM-Q29 seam). That is the chat message,
+  or the WhatsApp inbound text. Each address, URL and run of three digits
+  in a value must be in those words whole. Half the content words at least
+  must be in them too. A choice field is exempt. Else the tool refuses with
+  `not_your_words` and writes nothing. Fence: the same file.
+- **WhatsApp.** `bot_run` binds the channel for every WhatsApp run, so a
+  write labels `whatsapp`. With the org's WhatsApp writes off, the run holds
+  no write tool, as its scope rule says. `resolve_person` stays.
+- **Forget-all is a Settings act.** A chat `DELETE` of the whole profile is
+  a 422. A member with no settings row has `learning` true by default. The
+  chat upsert writes only while `learning` is not false, so a row that
+  Settings makes in between never takes a chat write.
+- **ADVISORY: the rest of "only the member's own words".** No test can
+  prove that a save holds only what the member said about themselves. The
+  tool docstrings and the orchestrator prompt line carry the rule, and the
+  PZ-10 eval measures it.
+- **Left as is.** `profile_set` reads, merges and writes in two calls. A
+  Settings edit of the same key in between can be lost.
 
 ---
 
