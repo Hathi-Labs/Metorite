@@ -6407,6 +6407,13 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §6.5 (KB-4a) · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 session
 
+### H-407 · Mem0 memory reads a member's private facts into an org-visible room of one · [AGENT] · security
+- **Check:** `grep -n "shared=_room_is_shared\|_clearance.write if _room_is_shared" apps/services/gateway/gateway/routes/agent.py` prints nothing, because the memory pre-read and the extraction use `not room_is_solo(room)` from `gateway/rooms.py`. If it holds, delete this entry.
+- **Why:** `_room_is_shared` is `room.is_shared`, which counts participants only. A room of one with visibility `org` or `people` is readable by other members, but it reads the owner's private Mem0 facts and writes its turns to the owner's store. Mem0 is off in production, so nothing leaks today. Found by the WS-63 PZ-2 review on 2026-10-24. PZ-2 fixed the same rule for the profile block with `room_is_solo`.
+- **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
+- **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
+- **Added:** 2026-10-24 · WS-63 PZ-2 repair round
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
