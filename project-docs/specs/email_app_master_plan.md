@@ -33,6 +33,7 @@
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
+> 🔨 **§21.13 (H-391) is BUILT on branch `email-whatsapp-confirm`, not merged (2026-10-24).** Archive, label, move, reply, send a draft, schedule, forward and new mail work from WhatsApp. The member approves each one with a reply code. Migration 298, dark behind `WHATSAPP_ASSISTANT_WRITES`.
 > 🔨 **§22 is BUILT on branch `email-chat-parity-w1`, not merged (2026-10-23).** The chat edits whole rules, runs and copies them, teaches the classifier, runs the cleaner, and manages the voice profile and each mailbox. No migration, no flag, and no new outward act in a held chat.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -21175,6 +21176,62 @@ card resets the Cc" left the revise text, because the new card keeps the Cc.
 `tests/unit/test_email_chat_reply.py`, `tests/unit/test_held_send_classes.py`,
 `workbench/control_plane/src/lib/replyCard.test.ts` and
 `workbench/control_plane/e2e/email-chat-reply.spec.ts`.
+
+### 21.13 Email writes from WhatsApp (2026-10-24, H-391)
+
+**Status: BUILT on the branch `email-whatsapp-confirm`, not merged.**
+Migration 298 adds one nullable column. The build adds no switch. It is dark
+behind `WHATSAPP_ASSISTANT_WRITES`, which the owner turns on per org.
+
+**Origin.** Each email write over WhatsApp answered "ask in the app"
+(`_NO_CARD_CHANNEL`). The owner rule of 2026-10-10 says that a channel changes
+delivery, never function. `whatsapp_assistant_channel.md` §18 owns the design.
+This section records what it means for the email tools.
+
+**What the member gets.** Archive, label, move, reply, send a draft,
+schedule, forward and new mail work from WhatsApp. The card of the tool parks.
+The member then gets ONE text with the whole card and a short code. "YES
+7K3Q" approves it, "YES 7K3Q WITHOUT 2" leaves out line 2, and "NO" cancels.
+
+**The rules of §21 hold on WhatsApp.**
+
+1. **The card shows all that the send sends.** The text has each person
+   with a number, the class mark and the look-alike warning. It also has the
+   subject and the whole text. A long text goes over parts and is never cut.
+2. **A new address starts excluded.** It gets nothing unless the member
+   names its number with WITH ("YES 7K3Q WITH 3").
+3. **The server records the card.** A held card and a reply card record the
+   answer with `reply_card.record_reply_answer`, as the web's respond-input
+   does. The act route then sends exactly the recorded rows that the answer
+   ticks, minus the dropped ones. No second store exists.
+4. **Only the member approves.** Only the member's own phone can approve,
+   and Meta's signed webhook names that phone, not the message text. The
+   code works once, for 15 minutes.
+
+**What the email tools changed.**
+
+- `_card_refusal` and each send tool answer `_unapproved_line()`. A card
+  that parked answers `whatsapp_acts.EMAIL_PARKED_TEXT`, never "ask in the
+  app". `_NO_CARD_CHANNEL` stays only for a run with no reply path: a batch
+  run, a scheduled run and a WhatsApp run with writes off.
+- `compose_reply` pins its text and its Reply or Reply all choice before its
+  card. So the approval run sends the same text, and the server writes no
+  new one.
+- `ask_tools.reply_card_channel_open` is true in a WhatsApp run with writes
+  on, because that run has a reply path.
+
+**Not built.** A plain send card (a chat that read no outside mail) has no
+tick boxes, so WITH and WITHOUT do not apply to it. The member approves it as
+shown, or replies NO and asks for the change. Every other email write keeps
+its card on the web.
+
+**The fence change.** `test_email_chat_reply.py::test_no_card_on_whatsapp`
+expected no card in a WhatsApp run with writes on. It now names writes off,
+the one WhatsApp run with no reply path. `tests/unit/test_wac_email_confirm.py`
+fences the run with writes on.
+
+**Fences.** `tests/unit/test_wac_email_confirm.py` and
+`tests/unit/test_wac_email_confirm_r8.py` (R8).
 
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 
