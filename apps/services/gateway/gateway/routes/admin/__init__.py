@@ -18,6 +18,12 @@ from gateway.routes.admin import agent_access_switch as _agent_access_switch  # 
 # `assistant_profile` attaches `/auth/me/assistant-profile` to `me_router`
 # (WS-63 PZ-1).
 from gateway.routes.admin import assistant_profile as _assistant_profile  # noqa: F401
+
+# `assistant_profile_people` attaches `/auth/me/assistant-profile/resolve-person`
+# to `me_router` (WS-63 PZ-5).
+from gateway.routes.admin import (  # noqa: F401
+    assistant_profile_people as _assistant_profile_people,
+)
 from gateway.routes.admin import groups as _groups  # noqa: F401
 from gateway.routes.admin import members as _members  # noqa: F401
 from gateway.routes.admin import organization as _organization  # noqa: F401
