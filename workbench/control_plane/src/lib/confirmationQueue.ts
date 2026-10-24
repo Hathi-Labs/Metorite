@@ -127,7 +127,9 @@ export function rowSummary(title: string, ticked: number, total: number): string
   if (ticked === total) return title;
   const count = new RegExp(`\\b${total}\\b`);
   if (count.test(title)) return title.replace(count, `${ticked} of ${total}`);
-  return `${title} (${ticked} of ${total})`;
+  // "· 1 of 4 ticked", and not "(1 of 4)": beside a stack's "1 of 2" pager,
+  // a bare count read as a second card counter (owner report, 2026-10-24).
+  return `${title} · ${ticked} of ${total} ticked`;
 }
 
 /**

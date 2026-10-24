@@ -437,7 +437,7 @@ describe("a card with rows", () => {
     expect(card()).not.toContain("«");
     expect(rowSummary("Create 4 tasks in «Ops»?", 4, 4)).toBe("Create 4 tasks in «Ops»?");
     expect(rowSummary("Create 4 tasks in «Ops»?", 1, 4)).toBe("Create 1 of 4 tasks in «Ops»?");
-    expect(rowSummary("Pick the rows", 1, 4)).toBe("Pick the rows (1 of 4)");
+    expect(rowSummary("Pick the rows", 1, 4)).toBe("Pick the rows · 1 of 4 ticked");
   });
 
   // Mutation caught: Approve live with nothing ticked.

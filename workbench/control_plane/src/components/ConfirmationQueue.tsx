@@ -203,7 +203,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       </div>
       <div
         className="relative"
-        style={{ paddingBottom: depth * 6, touchAction: "pan-y" }}
+        style={{ paddingBottom: depth * 9, touchAction: "pan-y" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
@@ -216,12 +216,12 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
             key={i}
             aria-hidden
             data-approval-stack-edge=""
-            className="absolute rounded-lg border border-border bg-card"
-            style={{ left: (i + 1) * 8, right: (i + 1) * 8, top: (i + 1) * 6, bottom: 0, opacity: 0.7 - i * 0.25 }}
+            className="absolute rounded-lg border border-primary/30 bg-card shadow-sm"
+            style={{ left: (i + 1) * 10, right: (i + 1) * 10, top: (i + 1) * 9, bottom: (depth - 1 - i) * 9, opacity: 1 - i * 0.3 }}
           />
         ))}
         <div
-          className={`relative ${nudge ? "approval-stack-nudge" : ""}`}
+          className={`relative rounded-lg bg-background ${nudge ? "approval-stack-nudge" : ""}`}
           data-nudge={nudge ? "" : undefined}
           style={dragX ? { transform: `translateX(${Math.round(dragX * 0.6)}px)` } : undefined}
         >
