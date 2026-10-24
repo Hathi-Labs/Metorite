@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from http.server import ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from evals.coding_engine import stub_api as coding_stub
 from evals.projects_ops.dataset import (
@@ -49,6 +49,8 @@ from evals.projects_ops.dataset import (
     CLOSED,
     DELEGATED,
     LED_PROJECTS,
+    REPORT_BOARD,
+    REPORT_WEEKLY,
     Dataset,
     Project,
     ident,
@@ -134,9 +136,23 @@ class OpsStub:
     nudges: list[dict[str, Any]] = field(default_factory=list)
     #: WS-64 OP-6b: the grants of each project, by project id.
     grants: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: WS-64 OP-6d: the saved reports, and who each one goes to. The stub has no
+    #: mail route at all, so a request for one answers 404 and `mail` stays empty.
+    reports: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recipients: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
+        me, priya_member = self.dataset.members[0], self.dataset.members[1]
+        for name, author in ((REPORT_WEEKLY, me), (REPORT_BOARD, priya_member)):
+            rid = ident("report", name)
+            self.reports[rid] = {
+                "id": rid, "name": name, "project_id": None, "scope": "portfolio",
+                "config": {}, "schedule": None, "enabled": False,
+                "created_by": author.email, "created_at": "2026-10-01T09:00:00+00:00",
+            }
+        self.recipients = {ident("report", REPORT_WEEKLY): [self._recipient(me.email, me.email)],
+                           ident("report", REPORT_BOARD): []}
         launch = self.dataset.project("Launch").id
         priya = self.dataset.members[1].email
         self.grants = {launch: [{
@@ -212,6 +228,17 @@ class OpsStub:
             # The grant id is the named group. The project id is in the path too.
             ("DELETE", rf"/projects/nodes/[0-9a-fA-F-]{{36}}/grants/{_ID}",
              lambda i, _q, _b: self.remove_grant(i)),
+            ("GET", "/projects/reports", lambda _i, _q, _b: self.list_reports()),
+            ("GET", f"/projects/reports/{_ID}", lambda i, _q, _b: self.report(i)),
+            ("GET", f"/projects/reports/{_ID}/recipients",
+             lambda i, _q, _b: self.list_recipients(i)),
+            ("POST", f"/projects/reports/{_ID}/recipients",
+             lambda i, _q, b: self.add_recipient(i, b)),
+            # The id group holds `<report id>/recipients/<email>`, split in the handler.
+            ("DELETE", r"/projects/reports/(?P<id>[0-9a-fA-F-]{36}/recipients/[^/]+)",
+             lambda i, _q, _b: self.remove_recipient(i)),
+            ("PATCH", f"/projects/reports/{_ID}/schedule",
+             lambda i, _q, b: self.set_schedule(i, b)),
             ("GET", f"/projects/nodes/{_ID}/statuses", lambda i, _q, _b: self.statuses(i)),
             ("GET", f"/projects/nodes/{_ID}/types", lambda i, _q, _b: self.types(i)),
             ("GET", f"/projects/nodes/{_ID}/fields", lambda i, _q, _b: self.fields(i)),
@@ -328,6 +355,72 @@ class OpsStub:
                 held.remove(row)
                 return {"deleted": row["id"], "subject": row["subject"]}
         raise StubError(404, "Grant not found")
+
+    # ── who gets a report, and when (WS-64 OP-6d) ───────────────────────────
+
+    @staticmethod
+    def _recipient(email: str, by: str) -> dict[str, Any]:
+        return {"recipient": email, "added_by": by, "added_at": "2026-10-01T09:00:00+00:00"}
+
+    def _acting(self) -> str:
+        return self.dataset.members[0].email
+
+    def _report(self, report_id: str) -> dict[str, Any]:
+        row = self.reports.get(report_id.lower())
+        if row is None:
+            raise StubError(404, "Report not found")
+        return row
+
+    def _report_for_change(self, report_id: str) -> dict[str, Any]:
+        """The route's rule: the author or an admin. The member is no admin."""
+        from gateway.routes.projects.reports import CHANGE_REFUSED
+
+        row = self._report(report_id)
+        if row["created_by"] != self._acting():
+            raise StubError(403, CHANGE_REFUSED)
+        return row
+
+    def report(self, report_id: str) -> dict[str, Any]:
+        row = copy.deepcopy(self._report(report_id))
+        may = row["created_by"] == self._acting()
+        return {**row, "mine": may, "can_edit": may, "can_delete": may}
+
+    def list_reports(self) -> dict[str, Any]:
+        return {"reports": [self.report(rid) for rid in self.reports]}
+
+    def list_recipients(self, report_id: str) -> dict[str, Any]:
+        self._report(report_id)
+        rows = sorted(self.recipients[report_id.lower()], key=lambda r: r["recipient"])
+        return {"report_id": report_id, "recipients": copy.deepcopy(rows)}
+
+    def add_recipient(self, report_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        email = str(body.get("recipient") or "").strip().lower()
+        if not email or "@" not in email:
+            raise StubError(422, "A recipient must be an email address.")
+        self._report_for_change(report_id)
+        if email not in {m.email for m in self.dataset.members}:
+            raise StubError(422, f"{email} is not an address this directory knows.")
+        held = self.recipients[report_id.lower()]
+        if all(r["recipient"] != email for r in held):
+            held.append(self._recipient(email, self._acting()))
+        return {"report_id": report_id, "recipient": email}
+
+    def remove_recipient(self, tail: str) -> Any:
+        report_id, _, email = tail.partition("/recipients/")
+        self._report_for_change(report_id)
+        held = self.recipients[report_id.lower()]
+        held[:] = [r for r in held if r["recipient"] != unquote(email).strip().lower()]
+        return {}
+
+    def set_schedule(self, report_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise StubError(422, "enabled must be true or false.")
+        row = self._report_for_change(report_id)
+        if enabled and not self.recipients[report_id.lower()]:
+            raise StubError(422, "Add at least one recipient before you turn this on.")
+        row["enabled"], row["schedule"] = enabled, ("weekly" if enabled else None)
+        return {**copy.deepcopy(row), "delivery_armed_on_this_deployment": False}
 
     def statuses(self, node_id: str) -> dict[str, Any]:
         project = self._project_of(node_id)

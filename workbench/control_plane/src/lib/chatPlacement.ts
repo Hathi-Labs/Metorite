@@ -103,6 +103,7 @@ const EVIDENCE: readonly string[] = [
   "analytics_finished",
   "analytics_outlook",
   "report_list",
+  "report_recipients",
   "report_render",
   "open_in_app",
   "show_view",
@@ -230,6 +231,9 @@ const WRITE: readonly string[] = [
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "add_report_recipient",
+  "remove_report_recipient",
+  "set_report_schedule",
   // ── Tasks ──────────────────────────────────────────────────────────────
   "my_tasks_capture",
   "my_tasks_capture_many",

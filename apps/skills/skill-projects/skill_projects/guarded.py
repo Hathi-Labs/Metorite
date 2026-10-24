@@ -36,6 +36,7 @@ import json
 import mimetypes
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from skill_projects import client as _client
 from skill_projects.client import (
@@ -56,7 +57,15 @@ from skill_projects.priority import (
     priority_fields,
     takes_priority,
 )
-from skill_projects.reads import _day, _task_line
+from skill_projects.reads import (
+    DELIVERY_MAY_BE_OFF,
+    DELIVERY_OFF,
+    DELIVERY_ON,
+    SCHEDULE_WORDS,
+    _day,
+    _names_of,
+    _task_line,
+)
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
@@ -66,6 +75,7 @@ from skill_projects.writes import (
     FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
+    REPORT_CHANGE_REFUSED,
     _clears,
     _confirm,
     _field_of,
@@ -77,6 +87,7 @@ from skill_projects.writes import (
     _overlay_values,
     _ref,
     _resolve_assignee,
+    _resolve_assignee_name,
     _same_chase,
     _split,
     _subtask_counts,
@@ -2150,6 +2161,214 @@ async def revoke_access(project_id: str, grant: str) -> str:
     )
 
 
+# ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
+
+
+async def _report_for_change(report_id: str, tool: str) -> tuple[str, dict[str, Any], str]:
+    """``(id, report, "")`` when the member may change the report, else
+    ``("", {}, refusal)``. The server decides: ``can_edit`` is its answer
+    (``reports._report_dict``, one rule with the 403 of the three routes).
+    Only an explicit ``False`` stops the tool. A report without the flag lets
+    the tool go on, and the route decides."""
+    if _many(report_id):
+        return "", {}, f"{tool} {ONE_ACT}"
+    rid = uuid_of(report_id, "report_id")
+    report = (await get(f"/projects/reports/{rid}")) or {}
+    if report.get("can_edit") is False:
+        return "", {}, f"{REPORT_CHANGE_REFUSED}\n  report_id: {rid}"
+    return rid, report, ""
+
+
+def _path_address(value: str) -> str:
+    """A recipient address as ONE path segment of the delete route. A slash, a
+    dot-dot or a query mark cannot ride in it."""
+    raw = str(value or "").strip().lower()
+    if "@" not in raw or any(c in raw for c in "/\\?#% \t\n"):
+        raise GatewayRefusal("A recipient must be an email address.")
+    return quote(raw, safe="@")
+
+
+async def _recipient_rows(report_id: str) -> list[str]:
+    rid = uuid_of(report_id, "report_id")
+    payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
+    return [str(r.get("recipient") or "").lower() for r in payload.get("recipients") or []]
+
+
+async def _recipient_address(value: str) -> str:
+    """An address as typed, or the one person a name means. A report goes to a
+    person, so an ``agent:`` value gets the route's own sentence."""
+    address = await _resolve_assignee_name(value)
+    if address.startswith("agent:"):
+        raise GatewayRefusal("A report goes to a person, never to an agent.")
+    return address
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def add_report_recipient(report_id: str, recipient: str) -> str:
+    """Add ONE person to the list that receives a saved report by email.
+    recipient is a member's email address, or a name that matches one person.
+    The card names the address, the name, the report and its schedule. Only
+    the author of the report or an admin may change the list, and only a
+    person the directory knows can be added. A refusal comes back in the
+    words of the server. Delivery may be switched off, and the card says so."""
+    if _many(recipient):
+        return f"add_report_recipient {ONE_ACT.replace('id', 'recipient')}"
+    rid, report, refused = await _report_for_change(report_id, "add_report_recipient")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    email = await _recipient_address(recipient)
+    held = await _recipient_rows(rid)
+    if email in held:
+        return (
+            f"{data(email)} already receives {data(report.get('name'))}. Nothing changed."
+            f"\n  report_id: {rid}"
+        )
+    name = (await _names_of([email])).get(email)
+    who = f"{data(name)} ({data(email)})" if name else f"{data(email)} (not in the directory)"
+    when = (
+        SCHEDULE_WORDS.get(str(report.get("schedule")), "on its schedule")
+        if report.get("enabled")
+        else "not scheduled"
+    )
+    impact = (
+        f"1 person joins the list of {data(report.get('name'))}, which has {len(held)} now. "
+        f"Each report is rendered with their own access · {DELIVERY_MAY_BE_OFF}"
+    )
+    if not await _confirm(
+        title="Add this person to a report?",
+        detail=f"{data(report.get('name'))} · add {who}",
+        context=_guard_card(
+            impact,
+            {"report": data(report.get("name")), "recipient": who,
+             "schedule": when, "people on the list now": len(held)},
+        ),
+    ):
+        return CANCELLED
+    await post(f"/projects/reports/{rid}/recipients", {"recipient": email})
+    return (
+        f"{who} is now on the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
+        f"\n  report_id: {rid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def remove_report_recipient(report_id: str, recipient: str) -> str:
+    """Take ONE person off the list that receives a saved report. recipient
+    is the address from report_recipients, or the name of one person on the
+    list. The card names the person and the report. The server decides if
+    the member may change the list, and a refusal comes back in its words."""
+    if _many(recipient):
+        return f"remove_report_recipient {ONE_ACT.replace('id', 'recipient')}"
+    rid, report, refused = await _report_for_change(report_id, "remove_report_recipient")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    held = await _recipient_rows(rid)
+    wanted = str(recipient or "").strip().lower()
+    email = wanted if wanted in held else ""
+    if not email:
+        names = await _names_of(held)
+        hits = [e for e in held if names.get(e, "").lower() == wanted]
+        email = hits[0] if len(hits) == 1 else ""
+    if not email:
+        return (
+            f"{data(recipient)} is not on the list of {data(report.get('name'))}. "
+            f"report_recipients shows who is.\n  report_id: {rid}"
+        )
+    name = (await _names_of([email])).get(email)
+    who = f"{data(name)} ({data(email)})" if name else data(email)
+    impact = (
+        f"1 person leaves the list of {data(report.get('name'))}, which has {len(held)} now. "
+        "They no longer receive the report. Their access to the data does not change"
+    )
+    if report.get("enabled") and len(held) == 1:
+        impact += (
+            ". This is the LAST person on the list, and the schedule is on, "
+            "so the report would go to nobody"
+        )
+    if not await _confirm(
+        title="Take this person off a report?",
+        detail=f"{data(report.get('name'))} · remove {who}",
+        context=_guard_card(
+            impact,
+            {"report": data(report.get("name")), "recipient": who,
+             "people on the list now": len(held)},
+        ),
+    ):
+        return CANCELLED
+    tail = _path_address(email)
+    await delete(f"/projects/reports/{rid}/recipients/{tail}")
+    return (
+        f"{who} is off the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
+        f"\n  report_id: {rid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def set_report_schedule(report_id: str, enabled: bool) -> str:
+    """Turn the weekly schedule of a saved report on (enabled=true) or off
+    (enabled=false). The card names the report, the schedule in plain words
+    and the people on the list. A report with nobody on the list cannot be
+    turned on. Delivery may be switched off for the deployment, which is the
+    owner's choice and not a tool's. The receipt says what the server
+    answered. The server decides if the member may change the schedule."""
+    rid, report, refused = await _report_for_change(report_id, "set_report_schedule")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    if not isinstance(enabled, bool):
+        return "enabled must be true or false."
+    held = await _recipient_rows(rid)
+    if enabled and not held:
+        return (
+            "Add at least one recipient before you turn this on. A schedule with no "
+            f"audience reads as armed and delivers nothing.\n  report_id: {rid}"
+        )
+    if bool(report.get("enabled")) == enabled:
+        state = "on" if enabled else "off"
+        return (
+            f"The schedule of {data(report.get('name'))} is already {state}. "
+            f"Nothing changed.\n  report_id: {rid}"
+        )
+    names = await _names_of(held)
+    shown: list[str] = []
+    for e in held:
+        if len(shown) == 10:
+            break
+        shown.append(f"{data(names[e])} ({data(e)})" if e in names else data(e))
+    people = ", ".join(shown) + (f" and {len(held) - 10} more" if len(held) > 10 else "")
+    if enabled:
+        impact = (
+            f"the schedule goes on: {data(report.get('name'))} goes by email to {_plural(len(held), 'person')} "
+            f"every week · {DELIVERY_MAY_BE_OFF}"
+        )
+        rest = {"report": data(report.get("name")), "schedule": "every week",
+                "sent to": people or "nobody"}
+    else:
+        impact = (
+            f"the schedule goes off: {data(report.get('name'))} stops going to its "
+            f"{_plural(len(held), 'person')}. The list stays"
+        )
+        rest = {"report": data(report.get("name")), "schedule": "off",
+                "stops going to": people or "nobody"}
+    if not await _confirm(
+        title="Turn this report's schedule on?" if enabled else "Turn this report's schedule off?",
+        detail=f"{data(report.get('name'))} · {'every week' if enabled else 'off'}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    row = (await patch(f"/projects/reports/{rid}/schedule", {"enabled": enabled})) or {}
+    if not enabled:
+        return f"The schedule of {data(report.get('name'))} is off.\n  report_id: {rid}"
+    armed = row.get("delivery_armed_on_this_deployment")
+    tail = DELIVERY_ON if armed is True else DELIVERY_OFF if armed is False else DELIVERY_MAY_BE_OFF
+    return (
+        f"The schedule of {data(report.get('name'))} is on, every week, for "
+        f"{_plural(len(held), 'person')}. {tail}\n  report_id: {rid}"
+    )
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
@@ -2174,4 +2393,7 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "attach_to_task",
     "grant_access",
     "revoke_access",
+    "add_report_recipient",
+    "remove_report_recipient",
+    "set_report_schedule",
 ]

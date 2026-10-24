@@ -424,6 +424,8 @@ cards. Read the row first, and say the number before you ask.
 - **The member's areas** — `rename_area`, `delete_area`.
 - **A colleague, or a shared task** — `nudge_task`, `attach_to_task`.
 - **Who can see a project** — `grant_access`, `revoke_access`.
+- **Who gets a report, and when** — `add_report_recipient`, `remove_report_recipient`,
+  `set_report_schedule`.
 
 ## Taking the member there
 
@@ -475,6 +477,28 @@ which one they mean.
 
 The grants of a personal space do not change. When the server refuses a
 grant there, tell the member to move the work to a team project first.
+
+## Who gets a report, and when
+
+The chat changes who receives a saved report (D-OP-9). It also turns the
+weekly schedule on or off. `report_recipients` reads the list and the schedule.
+`add_report_recipient` and `remove_report_recipient` take one person each.
+`set_report_schedule` takes `enabled` true or false. Each write shows one
+card, and a recipient is a person outside the chat, so the card names the
+address and the name.
+
+Read `report_recipients` first, and say who is on the list before you change it.
+
+The card is a brake on a mistake. It is not authority. Only the author of the
+report or an admin may change the list or the schedule, and the server
+decides. When the tool gives a refusal, tell the member the gateway's words,
+and do not try again. A person must already sign in to Metorite to be added.
+A report with nobody on the list cannot be turned on.
+
+Delivery is the owner's switch. A tool does not read it and does not set it.
+Delivery may be switched off. Say that plainly after every change here, and
+never say that a report was emailed. When the receipt says that reports are
+not emailed yet, tell the member that, and that the owner decides when.
 
 ## Rules
 
