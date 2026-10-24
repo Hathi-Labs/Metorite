@@ -157,15 +157,18 @@ def _prep() -> dict:
     }
 
 
-def test_a_held_reply_all_that_adds_a_new_address_opens_on_reply() -> None:
-    """Open question 1, the safer choice: a person that only Reply all adds,
-    and that the member does not know, starts out. Mutation: keep
-    ``reply_all`` → red."""
+def test_a_held_reply_all_stays_and_a_new_address_starts_unticked() -> None:
+    """Open question 1 took "the card opens on Reply". The tick boxes
+    (owner, 2026-10-24) replace that: the card opens on Reply all (§22.6),
+    and a person that the member does not know starts UNTICKED. Mutation:
+    leave the new address ticked → red."""
     agents = F.load_email_agent("ea_held_reply")
     form = agents._reply_form(_prep(), True)
     agents._held_reply_form(form, _prep())
-    assert form["reply_all"] is False
-    assert agents._REPLY_ALL_NEW_NOTICE in form["notices"]
+    assert form["reply_all"] is True
+    assert form["ticked"]["reply_all"] == {"to": [F.KNOWN], "cc": [F.COLLEAGUE]}
+    assert form["ticked"]["reply"] == {"to": [F.KNOWN], "cc": []}
+    assert agents._REPLY_NEW_UNTICKED_NOTICE in form["notices"]
     assert form["classes"][F.STRANGER] == "new"
     assert form["classes"][F.KNOWN] == "thread"
 
@@ -187,7 +190,9 @@ def test_an_address_with_no_class_reads_new_on_the_reply_card() -> None:
     form = agents._reply_form(prep, True)
     agents._held_reply_form(form, prep)
     assert set(form["classes"].values()) == {"new"}
-    assert form["reply_all"] is False
+    # Each person starts unticked, so nothing goes until the member ticks.
+    assert form["ticked"]["reply_all"] == {"to": [], "cc": []}
+    assert form["ticked"]["reply"] == {"to": [], "cc": []}
 
 
 def test_the_reply_form_keeps_the_classes_and_a_plain_form_is_as_before() -> None:

@@ -28,6 +28,10 @@ import {
   replyHint,
   replySummary,
   lineCount,
+  sendsCount,
+  startTicks,
+  tickedFor,
+  toggleTick,
 } from "@/lib/replyCard";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -182,5 +186,67 @@ describe("one card renderer", () => {
     expect(form).not.toMatch(/<(button|textarea|input)\b/);
     // The two lists come from the server. No address is split, parsed or added here.
     expect(read("lib/replyCard.ts")).not.toMatch(/\.concat\(|\.push\([^)]*to\b|parseaddr/);
+  });
+});
+
+describe("the tick boxes (owner, 2026-10-24)", () => {
+  const form = replyFromEvent(EVENT.reply)!;
+
+  it("starts each person ticked when the server names no start", () => {
+    const t = startTicks(form);
+    expect(t.reply).toEqual(["kim@contoso.test"]);
+    expect(t.reply_all).toEqual(["kim@contoso.test", "lee@contoso.test", "ops@contoso.test"]);
+    expect(sendsCount(form, true, t)).toBe("Sends to 3 of 3");
+  });
+
+  it("starts as the server chose, and a new address starts unticked", () => {
+    const held = replyFromEvent({
+      ...EVENT.reply,
+      reply_all: true,
+      classes: { "kim@contoso.test": "thread", "lee@contoso.test": "new", "ops@contoso.test": "org" },
+      ticked: {
+        reply: { to: ["kim@contoso.test"], cc: [] },
+        reply_all: { to: ["kim@contoso.test"], cc: ["ops@contoso.test"] },
+      },
+    })!;
+    const t = startTicks(held);
+    expect(tickedFor(held, true, t)).toEqual({ to: ["kim@contoso.test"], cc: ["ops@contoso.test"] });
+    expect(sendsCount(held, true, t)).toBe("Sends to 2 of 3");
+    expect(replySummary(held, true, t)).toBe("Reply to kim@contoso.test");
+  });
+
+  it("a start that names a person off the list is a form the card cannot read", () => {
+    const bad = { ...EVENT.reply, ticked: { reply: { to: ["spy@evil.test"], cc: [] }, reply_all: { to: [], cc: [] } } };
+    expect(replyFromEvent(bad)).toBeNull();
+  });
+
+  it("the answer names exactly the ticked people, in the server's order", () => {
+    let t = startTicks(form);
+    t = toggleTick(t, true, "kim@contoso.test");
+    t = toggleTick(t, true, "kim@contoso.test");
+    t = toggleTick(t, true, "LEE@contoso.test");
+    const a = replyAnswer(form, { action: "send", replyAll: true, body: "Hi", ticks: t })!;
+    const reply = JSON.parse(a.slice("APPROVE ".length)).reply;
+    expect(reply.to).toEqual(["kim@contoso.test"]);
+    expect(reply.cc).toEqual(["ops@contoso.test"]);
+  });
+
+  it("a tick of one choice does not change the other", () => {
+    const t = toggleTick(startTicks(form), true, "kim@contoso.test");
+    expect(t.reply).toEqual(["kim@contoso.test"]);
+  });
+
+  it("no ticked To sends nothing", () => {
+    const t = toggleTick(startTicks(form), false, "kim@contoso.test");
+    expect(replyAnswer(form, { action: "send", replyAll: false, body: "Hi", ticks: t })).toBeNull();
+    expect(replySummary(form, false, t)).toMatch(/cannot go/);
+  });
+
+  it("the form draws a shared Checkbox for each person, and counts them", () => {
+    const src = read("components/ReplyCardForm.tsx");
+    expect(src).toContain('from "@/components/ui/Checkbox"');
+    expect(src).toContain("data-reply-tick");
+    expect(src).toContain("data-reply-count");
+    expect(src).toContain("sendsCount(form, replyAll, ticks)");
   });
 });

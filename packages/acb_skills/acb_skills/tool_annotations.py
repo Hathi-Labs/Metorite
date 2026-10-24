@@ -161,6 +161,10 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-63 PZ-5: a name to one colleague (`profile_tools.py`). It reads
+    # `GET /auth/me/assistant-profile/resolve-person` as the member, and
+    # nothing leaves the platform.
+    "resolve_person":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-61 KB-4a: the two Knowledge reads (`knowledge_tools.py`). Each reads
     # a `/knowledge` route as the member, and nothing leaves the platform.
     "read_page":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -231,6 +235,10 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # every risk block stays byte-identical.
     "propose_page",
     "propose_edit",
+    # WS-63 PZ-5: the colleague lookup only reads, and only the orchestrator
+    # holds it, behind ASSISTANT_PROFILE_ENABLED. So every risk block stays
+    # byte-identical.
+    "resolve_person",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They

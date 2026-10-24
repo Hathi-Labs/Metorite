@@ -319,6 +319,33 @@ async def list_attachments(
     return ListResponse(rows=items, total=len(items))
 
 
+async def visible_task_attachment(db: Any, user: UserContext, attachment_id: str) -> Any:
+    """``(name, mime, path, size_bytes)`` of a file attached to a task that
+    *user* can see, or None. THE one read of that rule: the serve route below
+    and an email chat attachment (``email/transport/metorite_files.py``)
+    both use it, so the rule has one home."""
+    vis = await resolve_visibility(db, user)
+    params: dict[str, Any] = {"aid": attachment_id}
+    clauses = ["ta.attachment_id = CAST(:aid AS uuid)"]
+    # ⚠️ Unconditional since WS-29b. The `if not vis.unrestricted` that
+    # guarded this was correct while the unrestricted clause was the literal
+    # `TRUE` — skipping a predicate that filters nothing costs nothing. It
+    # is now the TENANT, so skipping it served every organization's files to
+    # any `data:org:read` holder.
+    clauses.append(vis.project_clause("t.root_project_id"))
+    params.update(vis.params)
+    return (await db.execute(
+        text(
+            "SELECT a.name, a.mime, a.path, a.size_bytes "
+            "  FROM pm_task_attachments ta "
+            "  JOIN pm_tasks t ON t.id = ta.task_id "
+            "  JOIN attachments a ON a.id = ta.attachment_id "
+            " WHERE " + " AND ".join(clauses) + " LIMIT 1"
+        ),
+        params,
+    )).fetchone()
+
+
 @router.get("/attachments/{attachment_id}/{filename}")
 async def serve_attachment(
     attachment_id: str,
@@ -335,26 +362,7 @@ async def serve_attachment(
     (R5). A 403 here would confirm the file exists.
     """
     async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        params: dict[str, Any] = {"aid": attachment_id}
-        clauses = ["ta.attachment_id = CAST(:aid AS uuid)"]
-        # ⚠️ Unconditional since WS-29b. The `if not vis.unrestricted` that
-        # guarded this was correct while the unrestricted clause was the literal
-        # `TRUE` — skipping a predicate that filters nothing costs nothing. It
-        # is now the TENANT, so skipping it served every organization's files to
-        # any `data:org:read` holder.
-        clauses.append(vis.project_clause("t.root_project_id"))
-        params.update(vis.params)
-        row = (await db.execute(
-            text(
-                "SELECT a.name, a.mime, a.path "
-                "  FROM pm_task_attachments ta "
-                "  JOIN pm_tasks t ON t.id = ta.task_id "
-                "  JOIN attachments a ON a.id = ta.attachment_id "
-                " WHERE " + " AND ".join(clauses) + " LIMIT 1"
-            ),
-            params,
-        )).fetchone()
+        row = await visible_task_attachment(db, user, attachment_id)
     if row is None or not Path(row.path).is_file():
         raise HTTPException(status_code=404, detail="Attachment not found")
     mime = (row.mime or "application/octet-stream").split(";")[0].strip().lower()

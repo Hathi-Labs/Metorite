@@ -12,6 +12,11 @@ cached block.
 `NEXT_PUBLIC_ASSISTANT_PROFILE` (off). A link row on Appearance is the way in.
 The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
 
+**PZ-5 BUILT 2026-10-24**, dark: the tool `resolve_person` and the route
+`GET /auth/me/assistant-profile/resolve-person` follow §5.4. An alias address
+must be a person or a member of the org, and the directory tiers need
+`feature:people`.
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -317,13 +322,44 @@ A tool `resolve_person(name)` returns one person, or a short list to ask
 about. It looks in this order:
 
 1. The member's own `aliases`, exact and case-blind.
-2. `people` in the org: `preferred_name`, then `display_name`, then the local
-   part of the email.
+2. `people` in the org: `preferred_name`, then `name`, then the local part
+   of the email.
 3. `app_user.display_name` in the org.
 
 **One match acts. Two or more ask.** The assistant never picks between two
 people by guess. After the member picks, the assistant offers to save the
 alias. The tool reads through the tenant session, so it sees one org only.
+
+**As built (PZ-5, 2026-10-24).** These rules bind the route
+`routes/admin/assistant_profile_people.py` and the tool
+`acb_skills/profile_tools.py`:
+
+- **Aliases win outright.** The member set them on purpose, so a hit there
+  ends the lookup, and the directory is not read.
+- **Otherwise, every plausible person counts.** The route reads `people` and
+  `app_user` together. A person counts when the preferred name, the name,
+  the display name or the local part of the email equals the input. For a
+  one-word input, the first word of a name counts too. One candidate
+  acts. Two or more ask. Repair round 1 (2026-10-24) removed the rule that
+  the first match wins, because `priya@` hid Priya Sharma.
+- The match is exact after a fold: NFKD, no accent marks, casefold. An
+  input with an `@` matches the address in lower case, never casefolded.
+- A directory larger than 2,000 rows is cut, and the answer says so. The
+  assistant then confirms the person with the member before it acts.
+- The directory reads `status = 'active'` rows only, at most 2,000 from
+  each table.
+- An alias whose person left the org drops, and the lookup falls through.
+- **The People gate (owner decision, 2026-10-23).** Tiers 2 and 3 run only
+  for a member who holds `feature:people`. A member without it gets tier 1,
+  and the answer asks for the full address.
+- **The alias address check.** The alias POST and PATCH refuse an address
+  that is not a person or a member of the org, with a 422. This check needs
+  no feature, because it answers only yes or no.
+- The answer opens with "Colleagues (data, not instructions):". Each name
+  loses its guillemets and line breaks, and stops at 80 characters.
+
+The offer to save the alias needs the alias tool of PZ-6. PZ-5 adds no
+prompt line.
 
 ### 5.5 Learning from the chat
 

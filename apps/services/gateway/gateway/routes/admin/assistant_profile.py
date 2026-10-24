@@ -41,8 +41,11 @@ the 6,000-character budget of the whole profile are checked on the stored
 value that the write returns, inside the same transaction. A write that
 breaks one raises, and ``tenant_session`` rolls it back.
 
-**Aliases.** PZ-1 checks the SHAPE of the address only. The check that the
-address is a member or a person of the org is PZ-5 (``resolve_person``).
+**Aliases.** The address must be a person or a member of the bound org,
+who has not left (PZ-5). ``assistant_profile_people.email_in_org`` is the one
+check, in the same session as the write. An address outside the org is a
+422, :data:`OUTSIDE_ORG`. The check needs no feature, because the member
+typed the address and the answer is only yes or no.
 
 **A member with no settings row.** The first write makes the row with the
 calendar seed (``_seed_from_work_schedule``), exactly as ``prefs.py`` does.
@@ -463,10 +466,27 @@ async def delete_assistant_profile(user: UserContext = Depends(get_current_user)
     return Response(status_code=204)
 
 
+#: The 422 of an alias whose address is not in the org (PZ-5).
+OUTSIDE_ORG = "that address is not a member or a person of this organization"
+
+
+async def _in_org(db: Any, email: str | None) -> None:
+    """Refuse an alias address that is not in the bound org. ``None`` is a
+    patch that keeps the address, so it passes."""
+    if email is None:
+        return
+    from gateway.routes.admin.assistant_profile_people import email_in_org
+
+    if not await email_in_org(db, email):
+        raise _refuse(OUTSIDE_ORG)
+
+
 async def _add(uid: str, key: str, item: dict[str, Any]) -> dict[str, Any]:
     params = {"lkey": key, "item": json.dumps(item)}
 
     async def _run(db: Any) -> Any:
+        if key == "aliases":
+            await _in_org(db, item["email"])
         stored = await _upsert(db, uid, _NEW_ITEM, _APPEND_ITEM, params)
         _check_caps(stored)
         return stored
@@ -478,6 +498,8 @@ async def _patch(uid: str, key: str, item_id: str, patch: dict[str, Any]) -> dic
     params = {"uid": uid, "lkey": key, "iid": item_id, "patch": json.dumps(patch)}
 
     async def _run(db: Any) -> Any:
+        if key == "aliases":
+            await _in_org(db, patch.get("email"))
         row = (await db.execute(_sql(_PATCH_ITEM_SQL), params)).first()
         if row is None:
             raise HTTPException(status_code=404, detail="Not found")
@@ -541,8 +563,8 @@ async def add_alias(
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Add one alias. PZ-1 checks the SHAPE of the email only. The check that
-    it is a member or a person of the org is PZ-5."""
+    """Add one alias. 422 when the address is not a person or a member of
+    the org (PZ-5)."""
     uid = _member(user)
     alias = _validate(AliasIn, body)
     return await _add(uid, "aliases",
@@ -556,8 +578,8 @@ async def edit_alias(
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Change the alias or the email (its shape only, as the add). 404 when
-    the member has no such alias."""
+    """Change the alias or the email. A new email gets the check of the add.
+    404 when the member has no such alias."""
     uid = _member(user)
     patch = _validate(AliasPatch, body)
     return await _patch(uid, "aliases", alias_id, patch.model_dump(exclude_unset=True))

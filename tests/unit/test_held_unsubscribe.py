@@ -198,3 +198,93 @@ async def test_the_tool_posts_no_link(agent) -> None:
     assert posts[0] == ("/email/held-card",
                         {"kind": "unsubscribe", "account_id": F.BOX, "email": SENDER})
     assert "link" not in str(posts)
+
+
+# ── H-404 (b): several senders behind ONE held card ──────────────────────────
+
+SENDER_2 = "promo@shop.example"
+LINK_2 = "https://click.shop.example/unsub/9"
+
+
+@pytest.fixture()
+def many(monkeypatch, world):
+    """Two senders, each with its own stored link."""
+    links = {SENDER: LINK, SENDER_2: LINK_2}
+    world["links"] = links
+
+    async def stored(account_id: str, owner: str, sender: str) -> tuple[str, str]:
+        assert (account_id, owner) == (F.BOX, F.MEMBER)
+        return senders._unsubscribe_kind(links[sender]), links[sender]
+
+    monkeypatch.setattr(hc, "_stored_target", stored)
+    return world
+
+
+async def _many_card() -> dict[str, Any]:
+    return await hc.held_card(hc.HeldCardRequest(
+        kind="unsubscribe", account_id=F.BOX, emails=[SENDER, SENDER_2]), F.user())
+
+
+async def test_one_held_card_lists_each_sender_and_each_host(many) -> None:
+    """Mutation: show one host for the whole card → red."""
+    card = await _many_card()
+    assert card["title"] == "Unsubscribe from 2 senders?"
+    labels = [r["label"] for r in card["rows"]]
+    assert len(labels) == 2
+    assert SENDER in labels[0] and "unsub.list.example" in labels[0]
+    assert SENDER_2 in labels[1] and "click.shop.example" in labels[1]
+    assert f"{SENDER}: host unsub.list.example" in card["context"]
+    assert f"{SENDER_2}: host click.shop.example" in card["context"]
+
+
+async def test_each_ticked_sender_acts_with_its_own_stored_link(many) -> None:
+    card = await _many_card()
+    out = await _act(card, "unsub-0", "unsub-1")
+    assert sorted(r.unsubscribe_link for r in many["posts"]) == sorted([LINK, LINK_2])
+    assert [r["sender"] for r in out["results"]] == [SENDER, SENDER_2]
+
+
+async def test_an_unticked_sender_is_left_alone(many) -> None:
+    card = await _many_card()
+    out = await _act(card, "unsub-1")
+    assert [r.email for r in many["posts"]] == [SENDER_2]
+    assert out["left_out"] == 1
+
+
+async def test_one_changed_link_sends_nothing_for_any_sender(many) -> None:
+    """Each link is checked before any request goes. Mutation: check each
+    link inside the loop of the acts → red (the first sender goes)."""
+    card = await _many_card()
+    many["links"][SENDER_2] = "https://evil.example/u"
+    with pytest.raises(HTTPException) as e:
+        await _act(card, "unsub-0", "unsub-1")
+    assert e.value.status_code == 409
+    assert many["posts"] == [] and many["blocks"] == []
+
+
+async def test_one_mailto_sender_refuses_the_whole_card(many) -> None:
+    many["links"][SENDER_2] = "mailto:unsub@shop.example"
+    with pytest.raises(HTTPException) as e:
+        await _many_card()
+    assert e.value.status_code == 422 and SENDER_2 in e.value.detail
+
+
+def test_a_card_takes_one_sender_field_and_a_bounded_list() -> None:
+    with pytest.raises(ValidationError):
+        hc.HeldCardRequest(kind="unsubscribe", account_id=F.BOX, email=SENDER,
+                           emails=[SENDER_2])
+    with pytest.raises(ValidationError):
+        hc.HeldCardRequest(kind="unsubscribe", account_id=F.BOX)
+    with pytest.raises(ValidationError):
+        hc.HeldCardRequest(kind="forward", message_id=F.MAIL, to=[F.KNOWN], emails=[SENDER])
+    with pytest.raises(ValidationError):
+        hc.HeldCardRequest(kind="unsubscribe", account_id=F.BOX,
+                           emails=[f"s{i}@list.example" for i in range(hc.MAX_SENDERS + 1)])
+
+
+async def test_the_tool_posts_each_sender_and_no_link(agent) -> None:
+    mod, posts = agent
+    await mod.unsubscribe_sender(F.BOX, emails=[SENDER, SENDER_2])
+    assert posts[0] == ("/email/held-card", {"kind": "unsubscribe", "account_id": F.BOX,
+                                             "emails": [SENDER, SENDER_2]})
+    assert "link" not in str(posts[0])
