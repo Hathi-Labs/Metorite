@@ -651,3 +651,107 @@ reads it before PZ-12 merges.
 | **D-PZ-12** | May WhatsApp messages and chat turns feed the voice? | Yes, the member's own words only, and derived features only |
 | **D-PZ-13** | How often may the coach ask? | One question a day, a 14-day wait after a dismiss |
 | **D-PZ-14** | May the coach ask on WhatsApp? | Not until the owner turns it on, through Reach |
+
+---
+
+## 13. Lessons from other assistants, and what we add (PROPOSED, 2026-10-24)
+
+**Status: PROPOSED, 2026-10-24. Nothing is built.** Owner directive of
+2026-10-24: research how other assistants build personalization, find what we
+lack, and extend the plan. A web survey on 2026-10-24 is the source. Where the
+survey could not open a vendor page, this section makes no claim from it.
+
+### 13.1 What the others do
+
+| Product | What matters for us | Source |
+|---|---|---|
+| **ChatGPT** | Saved memories and chat-history reference are two switches. A temporary chat neither reads nor writes memory. A 2026 model writes memory from history with no request, rewrites a dated fact after its date, and shows a summary page the user edits. Personality presets sit beside custom instructions. Enterprise admins turn memory on or off for each role | help.openai.com memory FAQ and characteristics pages · gigazine.net, 2026-06-05 |
+| **Claude** | One memory summary the user reads and edits. Each project has its own memory. Incognito chats are left out. Admins can turn memory off for the organization. A writing sample becomes a named style that the user edits | claude.com/blog/memory · support.anthropic.com styles article |
+| **Gemini** | Past chats and connected Google apps feed the answer. The user can ask whether a past chat was used | 9to5google.com, 2025-08-13 and 2026-02-26 |
+| **Microsoft 365 Copilot** | It saves only what the user asks, and shows "Memory updated". The user views, edits and deletes the memory in settings. Tenant admins control chat-history personalization | support.microsoft.com, updated 2026-02 · thurrott.com |
+| **Meta AI** | Memory in private chats only, never in group chats | maginative.com, 2025-01 |
+| **Superhuman** | The draft matches the tone of earlier mail to the same recipient. Settings hold greeting, sign-off, tone and length | help.superhuman.com · blog.superhuman.com |
+| **Grammarly** | A voice profile builds from the user's writing. Critics raised the risk that it imitates a person who has left | techcrunch.com, 2023-10-25 |
+| **Instinct** | A personal agent over iMessage. Outside analysis suggests Markdown memory files, keyword search and a background job that reorganizes them | runtimewire.com, 2026-09-20 (inference, not confirmed by the vendor) |
+
+**The research signal.** A WWW '26 audit read 2,050 ChatGPT memories. Of
+them, 96% were saved with no request from the user. Also, 28% held data that
+GDPR treats as sensitive. A second study reports that memory can make a model
+agree with the user more. Both support D-PZ-2: no learning in silence.
+
+### 13.2 Where we stand
+
+| Capability | Others | Us |
+|---|---|---|
+| Learning only on the member's words | Copilot | **Yes** (D-PZ-2) |
+| A "saved, Undo" notice on each write | Copilot, ChatGPT | **Yes** (PZ-6) |
+| No profile in a shared room | Meta AI | **Yes** (PZ-2) |
+| A voice from writing samples, editable | Claude styles | Planned (PZ-12) |
+| A tone for each recipient | Superhuman | Planned (PZ-13) |
+| A setup interview, one question at a time | None found | Planned (PZ-17), and nobody else has it |
+| "What do you know about me", read as one text | Claude, ChatGPT | **No** → PZ-20 |
+| "Did you use my profile here?" | Gemini | **No** → PZ-20 |
+| A chat with no profile at all | ChatGPT, Claude | **No** → PZ-21 |
+| A date after which a fact is checked | ChatGPT | **No** → PZ-22 |
+| A conflict between two facts is resolved | ChatGPT, Claude | **No** → PZ-6 scope |
+| Export of the profile | Claude (not confirmed) | **No** → PZ-9 scope |
+| A fact that applies only in one app | Claude projects | **No** → PZ-23 |
+| An org-wide switch for the admin | ChatGPT, Claude, Copilot | **No** → PZ-24 |
+| A guard on sensitive data | Meta AI, Anthropic | **No** → PZ-6 scope |
+
+### 13.3 What we add
+
+Each addition keeps the rules of §7: explicit first, private, a bounded block,
+proposals and never silent writes, one profile for each organization.
+
+1. **PZ-20: "What do you know about me" and "used your profile".** The chat
+   answers from the block only. A small mark under an answer shows that the
+   profile was in the turn, and it links to Settings → Assistant. The pane
+   gains a "Read as text" view: the block exactly as the model sees it.
+2. **PZ-21: a chat without the profile.** A switch on a chat sends no profile
+   block and allows no profile write in that chat. On WhatsApp, the word
+   "private" at the start of a message does the same for that message.
+3. **PZ-22: a review date for a fact.** A fact can carry `review_after`. When
+   the date passes, the coach asks "Is this still true?" as a proposal. The
+   app never deletes the fact by itself.
+4. **PZ-23: a scope for a fact.** A fact applies to every app, or to one app,
+   for example Email or Projects. The executor knows the app of each turn
+   (D99 point 5), so it injects only the facts that match.
+5. **PZ-24: an organization switch.** One key in `org_settings` turns the
+   assistant profile off for the whole organization. An admin can turn it
+   off, but cannot read a member's profile (D-PZ-3 stands).
+6. **PZ-6 grows by two rules.** (a) A new fact that conflicts with a stored
+   fact becomes a proposal: "Replace X with Y?", with Undo. (b) A sensitive
+   fact needs a second yes before the assistant saves it: health, religion,
+   caste, politics, sexuality or finance. Opinions are never saved as
+   facts, because a stored opinion can make the assistant agree too easily.
+7. **PZ-9 grows by export.** Settings → Assistant gives a download of the
+   whole profile, as JSON and as readable text.
+8. **PZ-12 shows the voice as readable rules.** The member reads, edits and
+   deletes each rule of their writing voice, as Claude shows a style. The
+   voice of a member who leaves is deleted with their profile, and the
+   organization never reuses it.
+9. **PZ-5 keeps "one match acts" for a draft only.** A send, a delete or a
+   share still asks once on a card (D109 point 5), even for one match.
+10. **PZ-10 tests agreement.** The eval adds prompts where a stored
+    preference must not make the assistant agree with a wrong claim.
+
+### 13.4 Decisions proposed
+
+| # | Question | Default |
+|---|---|---|
+| **D-PZ-15** | May a member turn off the profile for one chat? | Yes (PZ-21) |
+| **D-PZ-16** | Does a sensitive fact need a second yes? | Yes, for health, religion, caste, politics, sexuality and finance |
+| **D-PZ-17** | May an admin turn the profile off for the whole organization? | Yes, off only. No admin read (PZ-24) |
+| **D-PZ-18** | May a fact apply to one app only? | Yes, all apps by default (PZ-23) |
+| **D-PZ-19** | Does a fact get a review date? | Only when the member or the fact gives one. No automatic expiry (PZ-22) |
+
+### 13.5 What we do not copy
+
+- **Learning from every chat in silence.** ChatGPT's 2026 default saves most
+  memories with no request. The audit above shows the cost. D-PZ-2 stands.
+- **Reading connected apps into the profile in silence.** Gemini and Copilot
+  do this. Our phase 2 reads sent mail only after consent, and keeps
+  derived features only (§12).
+- **Mem0 for this.** It stays off until WS-7 fixes its tenancy (H-307,
+  H-336, H-337, H-407).
