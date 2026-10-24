@@ -139,6 +139,15 @@ export interface ProjectMenuHandlers {
    * not appear at all.
    */
   onDelete?: (project: ProjectRow, level: NodeLevel) => void;
+  /**
+   * WS-64 OP-10 (D-OP-16). Open the confirmation that turns this FOLDER
+   * into a project. It opens a dialog and does not convert.
+   *
+   * Offered only on a folder whose row says `can_convert: true`, because
+   * the server decides who may. Optional, so a tree that cannot write
+   * omits it.
+   */
+  onConvert?: (project: ProjectRow) => void;
 }
 
 /**
@@ -259,6 +268,22 @@ export function projectMenuItems(
       });
     }
     groups.push(edit);
+  }
+
+  // WS-64 OP-10 — beside Rename and Move, because it too changes what the
+  // node IS. Only on a folder, and only where the server says yes: an
+  // explicit `true`, unlike Delete, since a row without the flag came from a
+  // read that did not ask the rule.
+  if (handlers.onConvert && level === "folder" && project.can_convert === true) {
+    const onConvert = handlers.onConvert;
+    const convert: ProjectMenuItem = {
+      kind: "item",
+      label: "Convert to project",
+      icon: "FolderKanban",
+      onSelect: () => onConvert(project),
+    };
+    if (groups.length > 0) groups[groups.length - 1].push(convert);
+    else groups.push([convert]);
   }
 
   // Create, from the same grammar the row's `+` button reads. A flat labelled

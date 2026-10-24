@@ -210,6 +210,7 @@ const WRITE: readonly string[] = [
   "archive_project",
   "unarchive_project",
   "move_project",
+  "convert_folder_to_project",
   "archive_task",
   "delete_project",
   "delete_task",

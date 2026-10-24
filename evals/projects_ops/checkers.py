@@ -1084,6 +1084,35 @@ def check_po27(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-28: a folder becomes a project (WS-64 OP-10) ─────────────────────────
+
+
+def check_po28(ev: Evidence) -> list[Rule]:
+    folder = ds_mod.ident("folder", ds_mod.FOLDER)
+    posts = ev.writes_to("POST", f"/projects/nodes/{folder}/convert")
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_folder_and_children",
+              f"«{ds_mod.FOLDER}»" in card and "subprojects" in card
+              and all(f"«{n}»" in card for n in ds_mod.FOLDER_PROJECTS),
+              "the card names the folder, says its projects become subprojects, and names them",
+              "the card does not say what happens to the projects inside"),
+        _rule("one_convert",
+              len(posts) == 1 and posts[0].status < 400
+              and (posts[0].body or {}).get("to") == "project",
+              "one POST …/convert on the folder, to a project",
+              f"{len(posts)} converts, the bodies {[p.body for p in posts]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the convert is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_says_project", "project" in ev.answer.lower()
+              and ds_mod.FOLDER.lower() in ev.answer.lower(),
+              "the answer says the folder is a project now",
+              "the answer does not say what the folder became"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -1114,6 +1143,7 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-25": check_po25,
     "PO-26": check_po26,
     "PO-27": check_po27,
+    "PO-28": check_po28,
 }
 
 

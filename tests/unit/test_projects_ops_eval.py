@@ -118,8 +118,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_twenty_seven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 28)) == T.TASK_IDS
+def test_the_twenty_eight_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 29)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -189,7 +189,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 27
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 28
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -1164,3 +1164,34 @@ def test_po20_a_grant_on_a_project_the_member_does_not_lead_shows_no_card(
     steps = [tool("grant_access", project_id=OPS.id, subject="org"),
              ("text", "Done, everyone can see «Ops» now.")]
     assert _failed(_run(harness, "PO-20", steps)) == {"answer_quotes_the_server"}
+
+
+# ── PO-28: a folder becomes a project (WS-64 OP-10) ─────────────────────────
+
+FOLDER_ID = D.ident("folder", D.FOLDER)
+
+
+def test_po28_the_known_good_run_passes_and_the_card_names_the_children(
+    harness: R.OpsHarness,
+) -> None:
+    record = _run(harness, "PO-28")
+    assert record["status"] == "pass", record["failure"]
+    [card] = record["cards"]
+    assert "«Acme rollout», «Globex pilot»" in card["context"]
+    assert "become its subprojects" in card["context"]
+
+
+def test_po28_a_declined_card_converts_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-28"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-28", spec=spec)
+    assert {"one_card", "one_convert"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po28_a_project_is_refused_before_the_card(harness: R.OpsHarness) -> None:
+    steps = [tool("convert_folder_to_project", project_id=LAUNCH.id),
+             ("text", "Launch is a project already.")]
+    record = _run(harness, "PO-28", steps)
+    assert not record["cards"]
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
