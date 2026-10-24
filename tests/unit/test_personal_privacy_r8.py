@@ -21,7 +21,18 @@ organization holds:
 * READER — ``data:org:read``, with a personal tree of its own, so the
   unrestricted arm's "my own" half is tested too;
 * PADMIN — ``projects:settings:write`` and no ``data:org:read``;
+* MEMBER — a plain member with no grant of their own;
 * a team project with an ``org`` grant.
+
+**The grant arm** (fix round 1, D-OP-15). OWNER's root carries a STRAY
+``org`` grant, and OWNER's Area a stray email grant to PADMIN. Both are the
+shape that a grant written before OP-6b leaves. Neither shows the tree to
+anybody but OWNER. MEMBER and PADMIN read through ``_VISIBLE_PROJECTS_SQL``,
+so they test the grant arm.
+
+**The scope column** (fix round 1). The bell and the attachment read scope
+on ``t.project_id``, so a task in the team node under OWNER's root stays
+visible to the org reader and a task in OWNER's own node does not.
 
 The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 
@@ -34,6 +45,7 @@ import asyncio
 import dataclasses
 import os
 import re
+import tempfile
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -78,6 +90,7 @@ DOMAIN = "op9privacy.test"
 OWNER = f"owner@{DOMAIN}"
 READER = f"reader@{DOMAIN}"
 PADMIN = f"padmin@{DOMAIN}"
+MEMBER = f"member@{DOMAIN}"
 #: A word in every task title, so one search reaches every task.
 WORD = "wombat"
 
@@ -232,6 +245,7 @@ def world():
     a.member(OWNER, ["feature:projects"])
     a.member(READER, ["feature:projects", "data:org:read"])
     a.member(PADMIN, ["feature:projects", "projects:settings:write"])
+    a.member(MEMBER, ["feature:projects"])
 
     w = SimpleNamespace(admin=eng, org=org, p={}, t={}, n={})
     p = w.p
@@ -258,6 +272,17 @@ def world():
     task("owner_area", p["owner_area"], p["owner_root"], by=OWNER)
     task("team_under", p["team_under"], p["owner_root"], by=OWNER)
 
+    # Fix round 1: STRAY grants on OWNER's tree, the shape written before
+    # OP-6b. A stray `org` grant on the root, and a stray email grant to
+    # PADMIN on the Area. D-OP-15: neither shows the tree to anybody else.
+    for project, subject in ((p["owner_root"], "org"),
+                             (p["owner_area"], PADMIN)):
+        a.one(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by,"
+            " organization_id) VALUES (CAST(:p AS uuid), :s, 'seed',"
+            " CAST(:o AS uuid)) RETURNING id",
+            p=project, s=subject, o=org)
+
     # READER's own personal tree: the unrestricted arm's "my own" half.
     p["reader_root"] = a.project("Reader root", personal_owner=READER,
                                  grant_to=READER)
@@ -279,6 +304,32 @@ def world():
     w.owner_personal = {w.t[k] for k in OWNER_PERSONAL}
     w.team = {w.t[k] for k in TEAM}
     w.reader_personal = {w.t["reader_private"], w.t["reader_note"]}
+
+    # Fix round 1: one unread notification and one attached file for READER
+    # and MEMBER on each of `team_under` and `owner_private`.
+    files = tempfile.mkdtemp(prefix="op9priv-")
+    w.files = {}
+    for key in ("team_under", "owner_private"):
+        for who in (READER, MEMBER):
+            a.one(
+                "INSERT INTO pm_notifications (recipient, kind, task_id, actor,"
+                " organization_id) VALUES (:r, 'mention', CAST(:t AS uuid),"
+                " :a, CAST(:o AS uuid)) RETURNING id",
+                r=who, t=w.t[key], a=OWNER, o=org)
+        path = os.path.join(files, f"{key}.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(key)
+        aid = str(a.one(
+            "INSERT INTO attachments (user_id, name, mime, size_bytes, path,"
+            " organization_id) VALUES (:u, :n, 'text/plain', 1, :path,"
+            " CAST(:o AS uuid)) RETURNING id",
+            u=OWNER, n=f"{key}.txt", path=path, o=org))
+        a.one(
+            "INSERT INTO pm_task_attachments (task_id, attachment_id, added_by,"
+            " organization_id) VALUES (CAST(:t AS uuid), CAST(:a AS uuid), :b,"
+            " CAST(:o AS uuid)) RETURNING task_id",
+            t=w.t[key], a=aid, b=OWNER, o=org)
+        w.files[key] = aid
     yield w
 
     eng.dispose()
@@ -542,19 +593,26 @@ class TestTheOwnerReadsTheirOwn:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+#: Everybody but OWNER. PADMIN and MEMBER read through the grant arm, past
+#: the stray grants on OWNER's tree (fix round 1).
+OTHERS = [READER, PADMIN, MEMBER]
+OTHER_IDS = ["org_reader", "padmin", "member"]
+
+
 class TestNobodyElseReadsIt:
-    @pytest.mark.parametrize("who", [READER, PADMIN], ids=["org_reader", "padmin"])
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
     @pytest.mark.parametrize("read", sorted(ALL_READS))
     async def test_no_personal_task_of_the_owner_reads(self, armed, read, who):
         rows = await ALL_READS[read](armed, who)
         assert not (rows & armed.owner_personal), (read, who)
 
-    @pytest.mark.parametrize("who", [OWNER, PADMIN], ids=["owner", "padmin"])
+    @pytest.mark.parametrize("who", [OWNER, PADMIN, MEMBER],
+                             ids=["owner", "padmin", "member"])
     async def test_the_readers_personal_task_is_the_readers_only(self, armed, who):
         for read in ALL_READS.values():
             assert not (await read(armed, who) & armed.reader_personal)
 
-    @pytest.mark.parametrize("who", [READER, PADMIN], ids=["org_reader", "padmin"])
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
     @pytest.mark.parametrize("key", OWNER_PERSONAL)
     async def test_the_task_read_is_the_one_404(self, armed, who, key):
         r = await _call(armed, who, "GET", f"/projects/tasks/{armed.t[key]}")
@@ -564,7 +622,7 @@ class TestNobodyElseReadsIt:
         assert r.status_code == 404, (who, key, r.text)
         assert r.json() == missing.json(), "one not-found text"
 
-    @pytest.mark.parametrize("who", [READER, PADMIN], ids=["org_reader", "padmin"])
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
     async def test_no_personal_project_lists_or_reads(self, armed, who):
         p = armed.p
         personal = {p["owner_root"], p["owner_area"]}
@@ -578,7 +636,7 @@ class TestNobodyElseReadsIt:
                             f"/projects/tasks?project_id={project}")
             assert r.status_code == 404, (who, r.text)
 
-    @pytest.mark.parametrize("who", [READER, PADMIN], ids=["org_reader", "padmin"])
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
     async def test_the_report_preview_names_no_personal_task(self, armed, who):
         assert not (await _report_preview(armed, who) & armed.owner_personal)
 
@@ -589,15 +647,14 @@ class TestNobodyElseReadsIt:
 
 
 class TestTeamWorkReadsAsBefore:
-    @pytest.mark.parametrize("who", [READER, PADMIN, OWNER],
-                             ids=["org_reader", "padmin", "owner"])
+    @pytest.mark.parametrize("who", [*OTHERS, OWNER], ids=[*OTHER_IDS, "owner"])
     @pytest.mark.parametrize("read", sorted(ALL_READS))
     async def test_team_tasks_read(self, armed, read, who):
         """The team node under a personal root is team work (297's stop rule)."""
         rows = await ALL_READS[read](armed, who)
         assert armed.team <= rows, (read, who, armed.team - rows)
 
-    @pytest.mark.parametrize("who", [READER, PADMIN], ids=["org_reader", "padmin"])
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
     async def test_team_projects_read(self, armed, who):
         for project in (armed.p["team"], armed.p["team_under"]):
             await _ok(armed, who, f"/projects/nodes/{project}")
@@ -641,6 +698,62 @@ class TestCountsLeaveOutPersonalTasks:
         assert body["total_tasks"] == 4, body
         owner = (await _ok(armed, OWNER, "/projects/analytics/load")).json()
         assert owner["total_tasks"] == 5, owner
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1 — the grant arm and the scope column
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAStrayGrantShowsTheOwnerOnly:
+    """D-OP-15 on the grant arm. Mutation G1: delete the ``personal_owner``
+    line from the seed of ``_VISIBLE_PROJECTS_SQL``. The stray ``org`` grant
+    then seeds OWNER's root, and MEMBER reads every personal task."""
+
+    async def test_the_owner_still_reads_the_whole_tree(self, armed):
+        rows = await _list(armed, OWNER)
+        assert armed.owner_personal | armed.team <= rows
+
+    @pytest.mark.parametrize("who", [PADMIN, MEMBER], ids=["padmin", "member"])
+    async def test_the_stray_grant_seeds_nothing(self, armed, who):
+        rows = await _seam_tasks(armed, who)
+        assert not (rows & armed.owner_personal), who
+        assert armed.team <= rows, "the team node under the root keeps its own grant"
+
+
+class TestTheScopeColumnIsTheTasksOwnNode:
+    """The bell and the file read scope on ``t.project_id``. Mutation C1:
+    put ``t.root_project_id`` back in ``list_notifications``. The org reader
+    then loses ``team_under`` (its root is OWNER's) from the list and the
+    badge. Mutation C2: the same in ``visible_task_attachment``."""
+
+    @pytest.mark.parametrize("who", [READER, MEMBER], ids=["org_reader", "member"])
+    async def test_the_bell_lists_the_team_node_task_only(self, armed, who):
+        body = (await _ok(armed, who, "/projects/notifications")).json()
+        tasks = {row["task_id"] for row in body["rows"]}
+        assert tasks == {armed.t["team_under"]}, (who, body)
+        assert body["unread"]["total"] == 1, body
+        assert body["unread"]["mentions"] == 1, body
+
+    @pytest.mark.parametrize("who", [READER, MEMBER], ids=["org_reader", "member"])
+    async def test_the_file_of_the_team_node_task_serves(self, armed, who):
+        aid = armed.files["team_under"]
+        r = await _call(armed, who, "GET", f"/projects/attachments/{aid}/f.txt")
+        assert r.status_code == 200, (who, r.text)
+        assert r.text == "team_under"
+
+    @pytest.mark.parametrize("who", [READER, MEMBER, PADMIN],
+                             ids=["org_reader", "member", "padmin"])
+    async def test_the_file_of_a_personal_task_is_the_one_404(self, armed, who):
+        aid = armed.files["owner_private"]
+        r = await _call(armed, who, "GET", f"/projects/attachments/{aid}/f.txt")
+        assert r.status_code == 404, (who, r.text)
+
+    async def test_the_owner_reads_both_files(self, armed):
+        for key in ("team_under", "owner_private"):
+            r = await _call(armed, OWNER, "GET",
+                            f"/projects/attachments/{armed.files[key]}/f.txt")
+            assert r.status_code == 200, (key, r.text)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
