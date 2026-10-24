@@ -65,10 +65,12 @@ class _Orchestrator:
     def __init__(self) -> None:
         async def search_company(query: str) -> str: ...
         async def remember(query: str) -> str: ...
+        # WS-63 PZ-5: an own tool of the orchestrator, behind its flag.
+        async def resolve_person(name: str) -> str: ...
 
         self.name = "orchestrator"
         self.default_options: dict[str, Any] = {
-            "tools": [search_company, remember], "instructions": "Persona."}
+            "tools": [search_company, remember, resolve_person], "instructions": "Persona."}
 
 
 def _names(agent: _Orchestrator) -> set[str]:
@@ -148,7 +150,7 @@ async def test_a_whatsapp_run_of_a_crm_member_holds_the_crm_reads_and_org_facts(
     wa, _ = await _assemble("whatsapp")
     assert {"crm_aggregate", "crm_list_modules", "crm_list_module_records",
             "crm_get_module_record", "org_facts", "crm_answer_question",
-            "search_company"} <= wa
+            "search_company", "resolve_person"} <= wa
     # Every CRM tool that the orchestrator's scope names, none withheld.
     scoped = {n for n in _orchestrator_scope() if n.startswith("crm_") or n == "org_facts"}
     assert scoped <= wa, sorted(scoped - wa)
