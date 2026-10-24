@@ -434,6 +434,10 @@ class _Acts:
         self.row["state"] = to
         return True
 
+    async def wrong_code(self, act_id: str) -> int:
+        self.row["wrong"] = self.row.get("wrong", 0) + 1
+        return self.row["wrong"]
+
     async def claim(self, act_id: str) -> bool:
         if self.row["state"] != "pending":
             return False
@@ -447,6 +451,7 @@ def table(monkeypatch) -> _Acts:
     monkeypatch.setattr(acts, "_live_act", t.live)
     monkeypatch.setattr(acts, "_close", t.close)
     monkeypatch.setattr(acts, "_claim", t.claim)
+    monkeypatch.setattr(acts, "_wrong_code", t.wrong_code)
 
     async def link(_wa: str, _email: str) -> str:
         return "link-1"
@@ -640,3 +645,13 @@ async def test_the_honest_call_gets_the_yes(gw) -> None:
     _out, act = await _park(agents.manage_inbox, {"action": "trash", "message_ids": shown})
     _out, yes, _run = await _approve(act)
     assert yes.used and gw.sent == [{"action": "trash", "message_ids": shown}]
+
+
+async def test_five_wrong_codes_close_the_act(table) -> None:
+    for _ in range(acts.MAX_WRONG_CODES - 1):
+        assert await acts.settle(_req(), "YES ABCD") == acts.REPLY_WRONG_CODE
+    assert table.row["state"] == "pending"
+    assert await acts.settle(_req(), "YES ABCD") == acts.REPLY_TOO_MANY_WRONG
+    assert table.row["state"] == "void" and table.closed[-1][2] == "wrong_codes"
+    # The right code no longer approves anything.
+    assert await acts.settle(_req(), "YES 7K3Q") == acts.REPLY_NO_ACT

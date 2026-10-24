@@ -151,6 +151,10 @@ async def test_the_code_record_holds_on_the_real_table(granted) -> None:  # noqa
         wrong = "ZZZZ" if code != "ZZZZ" else "YYYY"
         assert await _bound(p.org_a, lambda: acts.settle(req, f"YES {wrong}")) \
             == acts.REPLY_WRONG_CODE
+        with p.admin_engine.connect() as c:
+            assert c.execute(text(
+                f"SELECT wrong_codes FROM {_TABLE} WHERE id = CAST(:i AS uuid)"),
+                {"i": act_id}).scalar_one() == 1
         out = await _bound(p.org_a, lambda: acts.settle(req, f"YES {code} WITH 2"))
         assert isinstance(out, acts.Approved) and out.kind == "email"
         assert out.include == frozenset({2})
