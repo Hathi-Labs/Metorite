@@ -49,22 +49,19 @@ from fastapi import HTTPException
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
+from gateway.routes.projects.core import assert_folder_converts
 from sqlalchemy import text
 
-from gateway.routes.projects.core import assert_folder_converts
 from tests.unit import test_projects_write_authority as wa
-from tests.unit.test_projects_write_authority import (  # noqa: F401 — fixtures
-    ADMIN,
-    CREATOR,
-    LEAD,
-    VIEWER,
-    live,
-    live_app,
-    redis_fake,
-    world,
-)
+from tests.unit.test_projects_write_authority import ADMIN, CREATOR, LEAD, VIEWER
 
 _DB_GATE = wa._DB_GATE
+
+#: The fixtures of the OP-8 world, on a catalog of this module's own.
+world = wa.world
+redis_fake = wa.redis_fake
+live_app = wa.live_app
+live = wa.live
 
 
 # ═══════════════════════════════════════════════════════════════════════════
