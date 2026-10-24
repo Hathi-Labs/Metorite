@@ -4060,7 +4060,77 @@ def _settings_needing_card(
         out.append(("the email digest",
                     f"Digest: an email to the account address, "
                     f"{_card_name(freq_new).lower()}."))
+    # H-404: the brief is a line of the digest, and the digest is mail to the
+    # account address. It asks when it goes from off to on, as a switch does.
+    if wanted.get("morning_brief_enabled") is True and cur.get("morning_brief_enabled") is not True:
+        out.append(("the morning brief",
+                    "Morning brief: one line by the AI about what needs you today. "
+                    "It goes in the digest, which is an email to the account "
+                    "address, and on the dashboard. It costs a model call each day."))
+    # H-404: the extra domains decide whose mail counts as the organization.
+    # Each change asks, a removal too, and the card lists the old and the new set.
+    domains = wanted.get("org_domains")
+    if domains is not None:
+        old = _clean_domains(cur.get("org_domains") or [])
+        if sorted(domains) != sorted(old):
+            out.append(("the organization domains",
+                        "Organization domains: mail from these domains counts as "
+                        "your organization. Now: " + (", ".join(old) or "(none)")
+                        + ". After: " + (", ".join(domains) or "(none)") + "."))
     return out
+
+
+#: H-404: the most extra organization domains that one call sets.
+_ORG_DOMAINS_MAX = 50
+#: A domain as the settings take it: ASCII labels, and a top level of letters.
+_ORG_DOMAIN = re.compile(r"(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
+
+
+def _public_mail_domains() -> frozenset[str]:
+    """THE list of the domains that nobody can own (``acb_auth.access``)."""
+    try:
+        from acb_auth.access import _PUBLIC_MAIL_DOMAINS
+    except ImportError:  # an older platform: the common ones
+        return frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
+                          "live.com", "yahoo.com", "icloud.com", "aol.com"})
+    return _PUBLIC_MAIL_DOMAINS
+
+
+def _clean_domains(values: Any) -> list[str]:
+    """Each domain in lower case, with no ``@`` in front, in order, once."""
+    out: list[str] = []
+    for v in values or []:
+        d = str(v or "").strip().lower().lstrip("@")
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def _org_domains_problem(value: Any) -> tuple[list[str], str]:
+    """``(domains, "")`` for a valid ``org_domains`` list, else ``([], why)``.
+
+    H-404. Each item is a real domain: ASCII, a dot, a top level of letters.
+    No wildcard, no address, no IP, and no public webmail domain, because
+    then each stranger on that service would count as the organization."""
+    if not isinstance(value, list):
+        return [], "Nothing changed. org_domains is a list of domains, such as [\"brand.com\"]."
+    if len(value) > _ORG_DOMAINS_MAX:
+        return [], f"Nothing changed. Name at most {_ORG_DOMAINS_MAX} domains."
+    domains = _clean_domains(value)
+    public = _public_mail_domains()
+    for d in domains:
+        shown = _card_text(d, 80)
+        if "*" in d:
+            return [], (f"Nothing changed. {shown} holds a wildcard. Name each domain "
+                        "in full, such as brand.com.")
+        if d in public:
+            return [], (f"Nothing changed. {shown} is a public webmail domain, so each "
+                        "stranger on it would count as your organization. Name your "
+                        "own domain.")
+        if not _ORG_DOMAIN.fullmatch(d) or _is_ip(d):
+            return [], (f"Nothing changed. {shown} is not a domain. Name a domain such "
+                        "as brand.com, in plain ASCII.")
+    return domains, ""
 
 
 # §21.6: ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND is off. With
@@ -4087,6 +4157,8 @@ async def update_assistant_settings(
     digest_send_to_email: bool | None = None,
     multi_rule_execution: bool | None = None,
     sensitive_data_protection: bool | None = None,
+    morning_brief_enabled: bool | None = None,
+    org_domains: list[str] | None = None,
 ) -> str:
     """Update assistant settings. Only the fields you pass change; every other
     setting is preserved.
@@ -4114,6 +4186,12 @@ async def update_assistant_settings(
         digest_send_to_email: email the digest to the account address.
         multi_rule_execution: allow more than one rule per email.
         sensitive_data_protection: skip auto-drafting on sensitive-looking mail.
+        morning_brief_enabled: one AI line about what needs the member today,
+            in the digest mail to the account address and on the dashboard.
+        org_domains: the WHOLE list of extra domains whose mail counts as the
+            organization, e.g. ["brand.com"]. The mailbox's own domain always
+            counts. No wildcard and no public webmail domain. Read the list
+            with get_rules_and_settings first, and pass it whole.
 
     No model or tier is a setting. The platform picks it (D-EM-7, D-EM-61).
 
@@ -4135,7 +4213,13 @@ async def update_assistant_settings(
             "digest_send_to_email": digest_send_to_email,
             "multi_rule_execution": multi_rule_execution,
             "sensitive_data_protection": sensitive_data_protection,
+            "morning_brief_enabled": morning_brief_enabled,
+            "org_domains": org_domains,
         })
+    if org_domains is not None:
+        org_domains, bad = _org_domains_problem(org_domains)
+        if bad:
+            return bad
     account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
     if ask:
         return ask
@@ -4155,6 +4239,8 @@ async def update_assistant_settings(
         "digest_send_to_email": digest_send_to_email,
         "follow_up_awaiting_days": follow_up_awaiting_days,
         "follow_up_needs_reply_days": follow_up_needs_reply_days,
+        "morning_brief_enabled": morning_brief_enabled,
+        "org_domains": org_domains,
     })
     if turned_on:
         box = await _named(account_id)
@@ -4195,6 +4281,8 @@ async def update_assistant_settings(
     setif("digest_send_to_email", digest_send_to_email)
     setif("multi_rule_execution", multi_rule_execution)
     setif("sensitive_data_protection", sensitive_data_protection)
+    setif("morning_brief_enabled", morning_brief_enabled)
+    setif("org_domains", org_domains)
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
 
@@ -4342,8 +4430,8 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
     if refused:
         held = [k for k in refused if HELD_SETTING_DECISIONS.get(k) == SETTING_REFUSED]
         return ("Nothing changed. This chat read email from outside senders, so it cannot "
-                f"change {', '.join(held or refused)}: free text or a send that a later run "
-                "acts on. Tell the member in one sentence, and change the other settings "
+                f"change {', '.join(held or refused)}: free text, the organization domains, "
+                "or a send that a later run acts on. Tell the member in one sentence, and change the other settings "
                 "without it.")
     if not given:
         return "Nothing changed. Name one setting to change."

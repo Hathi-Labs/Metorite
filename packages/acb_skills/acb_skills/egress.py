@@ -981,6 +981,11 @@ HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
         "digest_frequency", "digest_categories", "digest_day_of_week",
         "digest_time_of_day", "digest_send_to_email", "multi_rule_execution",
         "sensitive_data_protection",
+        # H-404 (owner, 2026-10-24). Two new keys. Each has a row in
+        # ``held_card.HELD_SETTING_DECISIONS``: ``morning_brief_enabled`` is
+        # a closed key (mail to the member's own address only), and
+        # ``org_domains`` is refused in a held run (it decides who is "org").
+        "morning_brief_enabled", "org_domains",
     }),
 }
 

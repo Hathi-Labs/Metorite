@@ -364,6 +364,15 @@ HELD_SETTING_DECISIONS: dict[str, str] = {
     "digest_send_to_email": SETTING_REFUSED,
     "multi_rule_execution": SETTING_CLOSED,
     "sensitive_data_protection": SETTING_CLOSED,
+    # H-404 (owner, 2026-10-24). The brief is one mail a day to the member's
+    # OWN account address, which the server picks. The model names no
+    # address, so the act is an on or off switch, and the held card shows it.
+    # With the switch off a held run does not hold this tool at all.
+    "morning_brief_enabled": SETTING_CLOSED,
+    # H-404: the extra domains decide who counts as the organization, in
+    # the reading of each later mail. An injection that adds its own domain
+    # makes its mail read as internal. So a held chat never changes it.
+    "org_domains": SETTING_REFUSED,
 }
 
 #: The values that each closed key with a fixed set takes.
@@ -379,7 +388,8 @@ _CLOSED_RANGES: dict[str, tuple[int, int]] = {
     "digest_day_of_week": (0, 6),
 }
 _CLOSED_BOOLS = frozenset({"auto_run", "draft_replies", "follow_up_auto_draft",
-                           "multi_rule_execution", "sensitive_data_protection"})
+                           "multi_rule_execution", "sensitive_data_protection",
+                           "morning_brief_enabled"})
 
 
 def closed_setting_value(key: str, value: Any) -> Any:
