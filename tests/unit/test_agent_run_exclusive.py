@@ -705,6 +705,31 @@ class TestOneAiForEachTask:
         [row] = _rows(w.p, "SELECT status FROM pm_agent_runs WHERE id = CAST(:i AS uuid)", i=first)
         assert row.status == "completed"
 
+    async def test_x13b_two_prompts_at_once_reopen_one_run(self, w):
+        """H-409 item 1. Two members prompt their two completed runs of one
+        task at the same time. Both pass ``_clear_for_reopen``, and the second
+        reopen UPDATE breaks the unique index. Mutation: drop the savepoint and
+        the ``IntegrityError`` catch in ``_move_run``, and the loser is a 500."""
+        bob_person = _person(BOB, w.org)
+        for _ in range(5):
+            task = _fresh(w)
+            async with _session(w.p) as call:
+                mine = (await _claim(call, w.alice, task)).json()["agent_run_id"]
+                assert (await call(w.alice, "POST", f"/projects/agent-runs/{mine}/finish", {})).status_code == 200
+                theirs = (await _claim(call, w.bob, task)).json()["agent_run_id"]
+                assert (await call(w.bob, "POST", f"/projects/agent-runs/{theirs}/finish", {})).status_code == 200
+                answers = await asyncio.gather(
+                    call(w.alice_person, "POST", f"/projects/agent-runs/{mine}/activities",
+                         {"type": "prompt", "body": "One more thing", "idempotency_key": _key()}),
+                    call(bob_person, "POST", f"/projects/agent-runs/{theirs}/activities",
+                         {"type": "prompt", "body": "And this", "idempotency_key": _key()}),
+                )
+            codes = sorted(a.status_code for a in answers)
+            assert codes == [201, 409], [a.text for a in answers]
+            [loser] = [a for a in answers if a.status_code == 409]
+            assert _detail(loser)["error"] == "task_held"
+            assert len(_open_runs(w, task)) == 1
+
     # ── The race ────────────────────────────────────────────────────────
 
     async def test_x14_two_claims_at_once_give_one_run(self, w):

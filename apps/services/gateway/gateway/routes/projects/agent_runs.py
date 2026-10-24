@@ -75,6 +75,8 @@ import json
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -107,6 +109,7 @@ from gateway.routes.projects.notifications import excerpt_of, notify, task_audie
 from gateway.routes.projects.tasks import archive_task_in
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 _log = get_logger("gateway.projects.agent_runs")
 
@@ -992,10 +995,38 @@ async def _move_run(
     if new_status == "failed":
         sets.append("error_metadata = CAST(:err AS jsonb)")
         params["err"] = _jsonb({"activity_id": error_activity, "body": error_body})
-    await db.execute(
-        text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)"),
-        params,
-    )
+    update = text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)")
+    if not (run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES):
+        await db.execute(update, params)
+        return
+    # H-409 item 1. Two members prompt two completed runs of one task at once.
+    # Both pass `_clear_for_reopen`, and the second UPDATE breaks
+    # `pm_agent_runs_one_open_per_task`. Inside a savepoint that error is a
+    # 409 `task_held` that names the run that won, not a 500 that aborts the
+    # whole transaction.
+    try:
+        async with _savepoint(db):
+            await db.execute(update, params)
+    except IntegrityError:
+        holder = (await db.execute(
+            text(_HOLDER_SQL), {"tid": str(run.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+        )).fetchone()
+        if holder is None:
+            raise HTTPException(status_code=409, detail="Try the call again.") from None
+        raise _task_held(holder) from None
+
+
+@asynccontextmanager
+async def _savepoint(db: Any) -> AsyncIterator[None]:
+    """A ``SAVEPOINT`` around one statement, so its error leaves the
+    transaction usable. The test fakes have no nested transactions, so there
+    it is a pass-through (the idiom of ``crm.core``)."""
+    begin_nested = getattr(db, "begin_nested", None)
+    if begin_nested is None:  # pragma: no cover — only the fakes lack it
+        yield
+        return
+    async with begin_nested():
+        yield
 
 
 # ── The routes ──────────────────────────────────────────────────────────────
