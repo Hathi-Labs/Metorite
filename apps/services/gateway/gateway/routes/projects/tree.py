@@ -31,6 +31,7 @@ from gateway.routes.projects.authority import (
     assert_may_delete_project,
     assert_may_move_project,
     assert_may_name_lead,
+    assert_may_revoke_grant,
     assert_may_write_grant,
     attach_can_delete,
     attach_can_write_grants,
@@ -1401,9 +1402,19 @@ async def delete_grant(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
-        # WS-64 OP-8 (D-OP-11). The rule of `create_grant`, so the owner's
-        # grant on a personal tree cannot be revoked here (OP-6b fix round 1).
-        await assert_may_write_grant(db, user, node)
+        # WS-64 OP-8 (D-OP-11) and OP-6b. The owner's own grant on a
+        # personal tree never goes; a stray grant there may be removed,
+        # because a revoke only makes the tree more private.
+        found = (await db.execute(
+            text(
+                "SELECT subject FROM pm_project_grants "
+                "WHERE id = CAST(:gid AS uuid) AND project_id = CAST(:pid AS uuid)"
+            ),
+            {"gid": grant_id, "pid": project_id},
+        )).fetchone()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Grant not found")
+        await assert_may_revoke_grant(db, user, node, found.subject)
         row = (await db.execute(
             text(
                 "DELETE FROM pm_project_grants "

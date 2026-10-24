@@ -140,6 +140,11 @@ _PERSONAL_TREE_SQL = (
     ") SELECT 1 FROM up WHERE personal_owner IS NOT NULL LIMIT 1"
 )
 
+#: The owner of the personal tree that holds the project, nearest first.
+_PERSONAL_OWNER_SQL = _PERSONAL_TREE_SQL.replace(
+    "SELECT 1 FROM up", "SELECT personal_owner FROM up"
+)
+
 
 def _me(user: Any) -> str:
     """The caller's email in lower case, or ``""`` when the context has none."""
@@ -238,6 +243,38 @@ async def grant_write_refusal(db: Any, user: Any, project: Any) -> str:
     if not await may_write_grant(db, user, project):
         return GRANT_WRITE_REFUSED
     return ""
+
+
+async def personal_tree_owner(db: Any, project: Any) -> str:
+    """The lower-case owner of the personal tree that holds *project*, or ``""``."""
+    own = str(_field(project, "personal_owner") or "").strip()
+    if own:
+        return own.lower()
+    pid = _field(project, "id")
+    if not pid:
+        return ""
+    found = (await db.execute(text(_PERSONAL_OWNER_SQL), {"pid": str(pid)})).first()
+    return str(found[0]).strip().lower() if found else ""
+
+
+async def assert_may_revoke_grant(db: Any, user: Any, project: Any, subject: str) -> None:
+    """403 or return, for a revoke of the grant to *subject* on *project*.
+
+    Outside a personal tree this is :func:`assert_may_write_grant`. Inside one,
+    a revoke can only make the tree MORE private, so it is not refused like a
+    grant (OP-6b review round 2): the owner's own grant never goes, and any
+    other grant (a stray one written before OP-6b) may be removed by the
+    owner, a lead or a Projects admin.
+    """
+    owner = await personal_tree_owner(db, project)
+    if not owner:
+        await assert_may_write_grant(db, user, project)
+        return
+    if str(subject or "").strip().lower() == owner:
+        raise HTTPException(status_code=403, detail=PERSONAL_GRANT_REFUSED)
+    if _me(user) == owner or await may_write_grant(db, user, project):
+        return
+    raise HTTPException(status_code=403, detail=GRANT_WRITE_REFUSED)
 
 
 #: D-OP-14. The rule of a task move IS the rule of a task delete, so the

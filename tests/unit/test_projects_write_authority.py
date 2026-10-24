@@ -125,7 +125,7 @@ def test_every_door_calls_the_one_module() -> None:
         tasks.agent_delete_task: "assert_may_delete_task(db, user, doomed)",
         tree.delete_node: "assert_may_delete_project(db, user, node)",
         tree.create_grant: "assert_may_write_grant(db, user, node)",
-        tree.delete_grant: "assert_may_write_grant(db, user, node)",
+        tree.delete_grant: "assert_may_revoke_grant(db, user, node, found.subject)",
         bulk.bulk_edit: "may_delete_task(db, user, task, led=led)",
         tasks.get_task: 'attach_can_delete(db, user, [result], kind="task")',
         tasks.list_tasks: 'attach_can_delete(db, user, page_rows, kind="task")',

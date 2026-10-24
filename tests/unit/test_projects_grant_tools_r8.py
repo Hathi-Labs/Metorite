@@ -298,6 +298,47 @@ async def test_r8_nobody_changes_the_grants_of_a_personal_space(live, monkeypatc
     assert not await _sees(live, OUTSIDER, root)
 
 
+async def test_r8_a_stray_grant_on_a_personal_space_can_be_removed(live) -> None:
+    """Review round 2. A grant on a personal tree that was written before OP-6b
+    (``org`` here) must not be stuck: a revoke only makes the tree more
+    private. The owner and a Projects admin remove it. A member who is
+    neither gets 403. The owner's own grant still never goes.
+
+    Mutation N1: ``delete_grant`` calls ``assert_may_write_grant`` again in
+    place of ``assert_may_revoke_grant``. The admin's revoke gets 403 and
+    this test fails.
+    """
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED, PERSONAL_GRANT_REFUSED
+
+    admin = _org_admin(live)
+    root = await _personal_root(live, VIEWER)
+
+    def stray() -> str:
+        return str(live.seeder.one(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by, organization_id)"
+            " VALUES (CAST(:p AS uuid), 'org', 'seed', CAST(:o AS uuid)) RETURNING id",
+            p=root, o=live.org))
+
+    gid = stray()
+    r = await _as(live, OUTSIDER, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
+    assert r.status_code in (403, 404), r.text
+    if r.status_code == 403:
+        assert r.json()["detail"] == GRANT_WRITE_REFUSED, r.text
+    assert "org" in _grants(live, root)
+    r = await _as(live, admin, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
+    assert r.status_code == 200, r.text
+    assert "org" not in _grants(live, root)
+
+    gid = stray()
+    r = await _as(live, VIEWER, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
+    assert r.status_code == 200, r.text
+    assert "org" not in _grants(live, root)
+
+    [owner_grant] = [g for g, s in _grant_rows(live, root) if s == VIEWER]
+    r = await _as(live, VIEWER, "DELETE", f"/projects/nodes/{root}/grants/{owner_grant}")
+    assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+
+
 async def test_r8_a_team_node_under_a_personal_root_is_personal_too(live) -> None:
     """A node without ``personal_owner`` that sits under a personal root is
     still in the private tree. The walk up finds it."""
