@@ -125,7 +125,7 @@ def file_digest(name: str, content: bytes) -> str:
 
 
 async def _artifact(user: UserContext, spec: str, *, held: bool) -> tuple[str, bytes, str]:
-    from acb_skills.held_card import HELD_WORKSPACE_AGENT, HELD_WORKSPACE_REFUSED
+    from acb_skills.held_card import HELD_WORKSPACE_REFUSED
     from gateway.routes.email.transport.send import (
         ArtifactAttachment,
         load_artifact_attachments,
