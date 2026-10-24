@@ -138,24 +138,22 @@ def _answer(card, text="REJECT"):
                                 thread_id=executor._pending_user_input.owner_of(rid))
 
 
-def test_a_plain_steer_closes_only_the_newest_card():
-    """Mutation: close each card on a new mark -> the older card closes too."""
+def test_a_steer_that_names_no_card_closes_every_waiting_card():
+    """Review P3-b: a steer that names no card closes each waiting card, the
+    safe default, so no older card stays answerable with old text. Mutation:
+    close the newest card only -> the older card stays open -> red."""
     _clean()
 
     async def run():
-        one, two, c1, _c2 = await _two_cards("Send this draft to Kiran?",
-                                             "Send this draft to Veena?")
+        one, two, _c1, _c2 = await _two_cards("Send this draft to Kiran?",
+                                              "Send this draft to Veena?")
         steer.buffer_guidance(THREAD, "jane", "make it shorter")
         newest = await asyncio.wait_for(two, timeout=3)
-        await asyncio.sleep(1.2)
-        still_open = not one.done()
-        _answer(c1, "APPROVE")
-        older = await asyncio.wait_for(one, timeout=2)
-        return newest, still_open, older
+        older = await asyncio.wait_for(one, timeout=3)
+        return newest, older
 
-    newest, still_open, older = asyncio.run(run())
-    assert newest is at.REVISED
-    assert still_open is True and older is True
+    newest, older = asyncio.run(run())
+    assert newest is at.REVISED and older is at.REVISED
     _clean()
 
 
@@ -182,7 +180,7 @@ def test_the_target_rule_without_a_loop():
     at._STEER_CARDS["t-rule"] = {"a": (1, "Reply to sagar@jain.test?"),
                                  "b": (2, "Send this draft to kiran@fracktal.in?")}
     try:
-        assert at._steer_target("t-rule", ["shorter please"]) == {"b"}
+        assert at._steer_target("t-rule", ["shorter please"]) == {"a", "b"}
         assert at._steer_target("t-rule", ["the sagar reply needs a date"]) == {"a"}
     finally:
         at._STEER_CARDS.pop("t-rule", None)

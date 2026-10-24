@@ -1091,8 +1091,8 @@ def _steer_target(thread_id: str, texts: list[str]) -> set[str]:
     """The cards that a steer is about (item 5, owner 2026-10-24).
 
     A card whose title holds a word of the steer that no other open card
-    holds is named. With no card named, only the NEWEST open card is the
-    target, and each other card stays open as it was."""
+    holds is named, and only the named cards close. With no card named, each
+    open card is the target (review P3-b)."""
     cards = _STEER_CARDS.get(thread_id) or {}
     if not cards:
         return set()
@@ -1106,7 +1106,9 @@ def _steer_target(thread_id: str, texts: list[str]) -> set[str]:
             named.add(rid)
     if named:
         return named
-    return {max(cards.items(), key=lambda kv: kv[1][0])[0]}
+    # Review P3-b: a steer that names no card closes EVERY waiting card, the
+    # safe default, so no older card stays answerable with its old text.
+    return set(cards)
 
 
 def _steer_register(thread_id: str, rid: str, title: str) -> None:
