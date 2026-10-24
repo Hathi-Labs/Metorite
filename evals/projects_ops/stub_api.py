@@ -48,6 +48,7 @@ from evals.projects_ops.dataset import (
     AREAS,
     CLOSED,
     DELEGATED,
+    LED_PROJECTS,
     Dataset,
     Project,
     ident,
@@ -131,9 +132,17 @@ class OpsStub:
     attachments: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     #: WS-64 OP-6c: each nudge sent.
     nudges: list[dict[str, Any]] = field(default_factory=list)
+    #: WS-64 OP-6b: the grants of each project, by project id.
+    grants: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
+        launch = self.dataset.project("Launch").id
+        priya = self.dataset.members[1].email
+        self.grants = {launch: [{
+            "id": ident("grant", launch, priya), "project_id": launch, "subject": priya,
+            "created_by": self.dataset.members[0].email,
+        }]}
         self.areas = [
             {"id": a.id, "name": a.name, "archived": False, "open_tasks": a.open_tasks,
              "held": a.held}
@@ -198,6 +207,11 @@ class OpsStub:
             ("GET", f"/projects/tasks/{_ID}/timeline",
              lambda i, _q, _b: self._exists(i, {"rows": [], "total": 0})),
             ("GET", f"/projects/nodes/{_ID}", lambda i, _q, _b: self.node(i)),
+            ("GET", f"/projects/nodes/{_ID}/grants", lambda i, _q, _b: self.list_grants(i)),
+            ("POST", f"/projects/nodes/{_ID}/grants", lambda i, _q, b: self.add_grant(i, b)),
+            # The grant id is the named group. The project id is in the path too.
+            ("DELETE", rf"/projects/nodes/[0-9a-fA-F-]{{36}}/grants/{_ID}",
+             lambda i, _q, _b: self.remove_grant(i)),
             ("GET", f"/projects/nodes/{_ID}/statuses", lambda i, _q, _b: self.statuses(i)),
             ("GET", f"/projects/nodes/{_ID}/types", lambda i, _q, _b: self.types(i)),
             ("GET", f"/projects/nodes/{_ID}/fields", lambda i, _q, _b: self.fields(i)),
@@ -253,12 +267,67 @@ class OpsStub:
     def node(self, node_id: str) -> dict[str, Any]:
         for p in self.dataset.projects:
             if p.id == node_id:
-                return {"id": p.id, "name": p.name, "kind": "project",
-                        "parent_id": self.dataset.space_id, "status": "active"}
+                row = {"id": p.id, "name": p.name, "kind": "project",
+                       "parent_id": self.dataset.space_id, "status": "active"}
+                return {**row, **self._grant_flags(p)}
         for n in self.nodes:
             if n["id"] == node_id:
                 return dict(n)
         raise StubError(404, NOT_VISIBLE)
+
+    # ── who can see a project (WS-64 OP-6b) ─────────────────────────────────
+
+    @staticmethod
+    def _grant_refused() -> str:
+        """The 403 words of the two grant routes, from the server's own module."""
+        from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+        return GRANT_WRITE_REFUSED
+
+    def _grant_flags(self, project: Project) -> dict[str, Any]:
+        """``can_write_grants`` as ``GET /projects/nodes/{id}`` draws it (D-OP-11)."""
+        if project.name in LED_PROJECTS:
+            return {"can_write_grants": True}
+        return {"can_write_grants": False, "grant_refusal": self._grant_refused()}
+
+    def _may_write_grant(self, node_id: str) -> Project:
+        project = next((p for p in self.dataset.projects if p.id == node_id), None)
+        if project is None:
+            raise StubError(404, NOT_VISIBLE)
+        if project.name not in LED_PROJECTS:
+            raise StubError(403, self._grant_refused())
+        return project
+
+    def list_grants(self, node_id: str) -> dict[str, Any]:
+        self._project_of(node_id)
+        rows = sorted(copy.deepcopy(self.grants.get(node_id, [])), key=lambda g: g["subject"])
+        return {"rows": rows, "total": len(rows)}
+
+    def add_grant(self, node_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The route's order: the grammar (422), the project (404), the rule (403)."""
+        from acb_auth.permissions import normalize_grant_subject
+
+        try:
+            subject = normalize_grant_subject(str(body.get("subject") or ""))
+        except ValueError as exc:
+            raise StubError(422, str(exc)) from None
+        project = self._may_write_grant(node_id)
+        held = self.grants.setdefault(project.id, [])
+        row = next((g for g in held if g["subject"] == subject), None)
+        if row is None:
+            row = {"id": ident("grant", project.id, subject), "project_id": project.id,
+                   "subject": subject, "created_by": self.dataset.members[0].email}
+            held.append(row)
+        return copy.deepcopy(row)
+
+    def remove_grant(self, grant_id: str) -> dict[str, Any]:
+        for project_id, held in self.grants.items():
+            row = next((g for g in held if g["id"] == grant_id.lower()), None)
+            if row is not None:
+                self._may_write_grant(project_id)
+                held.remove(row)
+                return {"deleted": row["id"], "subject": row["subject"]}
+        raise StubError(404, "Grant not found")
 
     def statuses(self, node_id: str) -> dict[str, Any]:
         project = self._project_of(node_id)

@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is BUILT 2026-10-23, in review: `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-2 to OP-5, OP-6b, OP-6d and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). OP-2 to OP-5, OP-6d and OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -304,7 +304,7 @@ Owner, 2026-10-23, verbatim:
 project behind one card (`skill_projects/guarded.py:287` and :329, #1223,
 in production since 2026-10-22). `skill_projects/manifest.py` maps 167
 Projects routes. The chat reached 128 of them. 39 were class X (an earlier
-count said 38). OP-6a gave the three area routes a tool, and OP-6c gave three more, so 33 are class X now.
+count said 38). OP-6a gave the three area routes a tool, OP-6c gave three more, and OP-6b gave the two grant routes a tool, so 31 are class X now.
 
 **The rule.** Every act that a member can do in the Projects app, the chat
 can do too. A class C card guards each act that destroys data, writes access
@@ -316,7 +316,7 @@ authority: the route still checks the member's own access.
 | Group | Routes | OP-6 does |
 |---|---|---|
 | Areas, now Personal folders | `POST/PATCH/DELETE /projects/my/areas…` | Three tools: `create_area`, `rename_area`, `delete_area`. **BUILT in OP-6a.** Rename and delete take a card |
-| Grants | `POST/DELETE /projects/nodes/{id}/grants…` | Two tools, each behind a card. **This reverses D-PM-40** (owner, 2026-10-23) |
+| Grants | `POST/DELETE /projects/nodes/{id}/grants…` | Two tools, each behind a card. **This reverses D-PM-40** (owner, 2026-10-23). **BUILT in OP-6b** as `grant_access` and `revoke_access` |
 | Nudge | `POST /projects/tasks/{id}/nudge` | One tool behind a card, because it reaches a colleague. **BUILT in OP-6c** as `nudge_task` |
 | Export | `GET /projects/export/tasks.csv` | One tool. The file comes back as a chat document (S8). **BUILT in OP-6c** as `export_tasks` |
 | Attachments | `POST /projects/tasks/{id}/attachments` | One tool that attaches a file the member uploaded to the chat (H-229). **BUILT in OP-6c** as `attach_to_task` |
@@ -327,8 +327,7 @@ authority: the route still checks the member's own access.
 | Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
 
 `tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 27
-routes that stay class X, and it names the 6 routes that OP-6b and OP-6d still
-owe, each with its slice.
+routes that stay class X, and it names the 4 routes that OP-6d still owes.
 
 ---
 
@@ -559,11 +558,59 @@ with no card is a new class, and the owner must decide on it.
 
 #### OP-6b — grants from the chat · HIGH · after OP-8
 
+**Status: BUILT 2026-10-24 on branch `ws64-op6b-chat-grants-mt-e22721d2`, with fix round 1. Not yet merged.**
+
 Two tools for `POST/DELETE /projects/nodes/{id}/grants…`, each behind a class
 C card. **This reverses D-PM-40.** OP-8 first puts D-OP-11 on the two routes,
 so the chat can write a grant only where the member may write it in the app.
 Invert the D-PM-40 sentence in `agent-projects/instructions.md` and its pin in
 `test_projects_agent_grants.py`.
+
+**As built (2026-10-24).**
+- `grant_access(project_id, subject)` and `revoke_access(project_id, grant)`
+  are class C in `guarded.py`. One subject or one grant goes on each card.
+  `revoke_access` takes a `grant_id` or the subject of the grant.
+  `project_access` now lists each grant with its `grant_id` and in plain words.
+- The subject goes through `acb_auth.permissions.normalize_grant_subject`, the
+  one grammar of D12, which the route also calls. The grammar is `org`,
+  `group:<slug>` or one email address. The tool refuses a subject outside it
+  before any request.
+- `GET /projects/nodes/{id}` carries `can_write_grants`, and `grant_refusal`
+  where it is false. Both come from `authority.attach_can_write_grants`, which
+  calls `may_write_grant`. The tool refuses before the card where the flag is
+  false, and quotes the 403 sentence. The route still decides.
+- The card names the project path and the subject in plain words, such as
+  "everyone in the organization". It gives no count of people, because no
+  cheap read counts them. It says that access widens or narrows.
+- Fences: `test_projects_grant_tools.py` (hermetic),
+  `test_projects_grant_tools_r8.py` (R8: lead, admin, viewer, creator who is not
+  a lead, and a member outside the grant), `test_projects_chat_x_pin.py` and
+  eval cases PO-18 to PO-20.
+
+**Fix round 1 (2026-10-24, adversarial review).**
+- **A personal tree.** No grant on a node of a personal tree changes by a
+  grant route, for anyone. That includes the owner and a Projects admin
+  (D-OP-2, §8 Q4). `authority.grant_write_refusal` is the one answer for both
+  routes and for `can_write_grants`. It walks up the tree, so a node under a
+  personal root without `personal_owner` is personal too. The 403 says
+  "Access to a personal space cannot be changed. Move the work to a team
+  project to share it." The bootstraps of the tree (`personal._grant_owner`
+  and `item_lens`) write the owner's grant directly, and they still work.
+- **The last grant.** `GET /projects/nodes/{id}/grants` marks each grant
+  `yours` and gives `you_see_all`. On a top project, the revoke card first
+  warns "This is the last grant". It warns "You will lose sight of this
+  project" when the member has no other way in. A sub-project stays in sight of each member
+  who sees its parent. The instructions tell the model to grant the new
+  audience before it revokes the old one.
+- **A group that does not exist.** `POST /projects/nodes/{id}/grants` answers
+  422 for a `group:<slug>` that the organization does not have, and the
+  sentence lists the groups. The same list comes in `groups` on
+  `GET /projects/nodes/{id}/grants`, so the chat refuses before its card.
+  Both read `core.org_groups`, one statement. A revoke of a grant to a
+  deleted group still works, so a stale grant can go.
+- Fences: four new R8 cases in `test_projects_grant_tools_r8.py` and three
+  hermetic cases in `test_projects_grant_tools.py`, each red under a named
+  mutation (R6 to R9, G4 to G6).
 
 #### OP-6c — nudge, export, attach · MEDIUM · BUILT 2026-10-23
 

@@ -833,6 +833,78 @@ def check_po17(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-18 to PO-20: who can see a project (WS-64 OP-6b) ────────────────────
+
+
+def _grants_path(ev: Evidence, project: str) -> str:
+    return f"/projects/nodes/{ev.dataset.project(project).id}/grants"
+
+
+def check_po18(ev: Evidence) -> list[Rule]:
+    posts = ev.writes_to("POST", _grants_path(ev, "Launch"))
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_project_and_who",
+              "«Launch»" in card and "everyone in the organization" in card,
+              "the card names Launch and everyone in the organization",
+              "the card does not name the project and who will see it"),
+        _rule("one_org_grant",
+              len(posts) == 1 and posts[0].status < 400
+              and (posts[0].body or {}).get("subject") == "org",
+              "one POST …/grants on Launch with the subject org",
+              f"{len(posts)} grant writes on Launch, the bodies {[p.body for p in posts]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the grant is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_says_the_organization", "organization" in ev.answer.lower(),
+              "the answer says the whole organization sees Launch now",
+              "the answer does not say who sees Launch now"),
+    ]
+
+
+def check_po19(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch").id
+    priya = ds_mod.PRIYA.email
+    path = f"/projects/nodes/{launch}/grants/{ds_mod.ident('grant', launch, priya)}"
+    deletes = ev.writes_to("DELETE", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_project_and_who", "«Launch»" in card and f"«{priya}»" in card,
+              "the card names Launch and Priya's address",
+              "the card does not name the project and whose access goes"),
+        _rule("one_revoke_of_priya", len(deletes) == 1 and deletes[0].status < 400,
+              "one DELETE of Priya's grant on Launch", f"{len(deletes)} deletes of that grant"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the revoke is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_priya", "priya" in ev.answer.lower(),
+              "the answer names Priya", "the answer does not name Priya"),
+    ]
+
+
+def check_po20(ev: Evidence) -> list[Rule]:
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+    grants = [c for c in ev.calls if c.name == "grant_access"]
+    result = grants[0].result if grants else ""
+    return [
+        _rule("no_card", not ev.cards, "the chat refused before any card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change a grant",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_quotes_the_server",
+              result.startswith("Refused:") and GRANT_WRITE_REFUSED in result,
+              "the tool gave the server's sentence before the card",
+              f"the tool result was {result[:160]!r}"),
+        _rule("answer_quotes_the_server",
+              GRANT_WRITE_REFUSED.lower().rstrip(".") in ev.answer.lower(),
+              "the answer gives the server's sentence",
+              "the answer does not give the server's sentence"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -853,6 +925,9 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-15": check_po15,
     "PO-16": check_po16,
     "PO-17": check_po17,
+    "PO-18": check_po18,
+    "PO-19": check_po19,
+    "PO-20": check_po20,
 }
 
 

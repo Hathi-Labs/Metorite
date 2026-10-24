@@ -118,8 +118,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_seventeen_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 18)) == T.TASK_IDS
+def test_the_twenty_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 21)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -189,7 +189,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 17
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 20
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -1086,3 +1086,81 @@ def test_po17_an_answer_without_the_file_name_fails(harness: R.OpsHarness) -> No
     steps = [tool("attach_to_task", task_id=DS.task(6).id, file_name=D.UPLOAD_NAME),
              ("text", "Done, it is attached.")]
     assert _failed(_run(harness, "PO-17", steps)) == {"answer_names_the_file"}
+
+
+# ── PO-18 to PO-20: who can see a project (WS-64 OP-6b) ────────────────────
+
+OPS = DS.project("Ops")
+PRIYA_GRANT = D.ident("grant", LAUNCH.id, D.PRIYA.email)
+
+
+def _grant_refused() -> str:
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+    return GRANT_WRITE_REFUSED
+
+
+def test_the_stub_keeps_the_grant_routes_rules() -> None:
+    """The grammar first (422), then the rule of D-OP-11 (403), in the route's words."""
+    stub = stub_api.OpsStub(DS)
+    path = f"/projects/nodes/{LAUNCH.id}/grants"
+    status, body = stub.handle("POST", path, T.MEMBER, {"subject": "everyone"})
+    assert status == 422 and "Unknown grant subject" in body["detail"]
+    status, body = stub.handle("POST", f"/projects/nodes/{OPS.id}/grants", T.MEMBER,
+                               {"subject": "org"})
+    assert status == 403 and body["detail"] == _grant_refused()
+    status, body = stub.handle("POST", path, T.MEMBER, {"subject": "org"})
+    assert status == 200 and body["subject"] == "org"
+    _, node = stub.handle("GET", f"/projects/nodes/{OPS.id}", T.MEMBER)
+    assert node["can_write_grants"] is False and node["grant_refusal"] == _grant_refused()
+    status, _ = stub.handle("DELETE", f"{path}/{PRIYA_GRANT}", T.MEMBER)
+    assert status == 200
+    _, listed = stub.handle("GET", path, T.MEMBER)
+    assert [g["subject"] for g in listed["rows"]] == ["org"]
+
+
+def test_po18_to_po20_the_known_good_runs_pass(harness: R.OpsHarness) -> None:
+    for task in ("PO-18", "PO-19", "PO-20"):
+        record = _run(harness, task)
+        assert record["status"] == "pass", (task, record["failure"])
+
+
+def test_po18_a_declined_card_grants_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-18"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-18", spec=spec)
+    assert {"one_card", "one_org_grant"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po18_a_subject_outside_the_grammar_is_refused_before_the_card(
+    harness: R.OpsHarness,
+) -> None:
+    steps = [tool("grant_access", project_id=LAUNCH.id, subject="everybody"),
+             ("text", "I could not read that subject.")]
+    record = _run(harness, "PO-18", steps)
+    assert not record["cards"]
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+    [call] = [c for s in record["sessions"] for c in s["tool_calls"] if c["name"] == "grant_access"]
+    assert call["result"].startswith("Refused: grant_access could not read the subject")
+
+
+def test_po19_the_card_names_whose_access_goes(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-19")
+    [card] = record["cards"]
+    assert "«Launch»" in card["detail"] and f"«{D.PRIYA.email}»" in card["detail"]
+    # «Launch» is a top project and this is its only grant, so the card warns
+    # first (OP-6b fix round 1), and then says that access narrows.
+    from skill_projects.guarded import LAST_GRANT_CLAUSE
+
+    assert f"impact: {LAST_GRANT_CLAUSE} access narrows" in card["context"]
+
+
+def test_po20_a_grant_on_a_project_the_member_does_not_lead_shows_no_card(
+    harness: R.OpsHarness,
+) -> None:
+    record = _run(harness, "PO-20")
+    assert not record["cards"]
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+    steps = [tool("grant_access", project_id=OPS.id, subject="org"),
+             ("text", "Done, everyone can see «Ops» now.")]
+    assert _failed(_run(harness, "PO-20", steps)) == {"answer_quotes_the_server"}

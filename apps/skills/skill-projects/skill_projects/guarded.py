@@ -23,9 +23,11 @@ holds each one:
    size is a signature bought under a misdescription.
 
 Hard delete of a project or a task IS here since 2026-10-22 (owner, over
-D-PM-35): ``delete_project`` and ``delete_task``, one act per card. What is
-deliberately NOT here: a bulk ``delete`` action, and a grant write (spec §12,
-question 2).
+D-PM-35): ``delete_project`` and ``delete_task``, one act per card. A grant
+write IS here since WS-64 OP-6b (D-OP-9, which reverses D-PM-40):
+``grant_access`` and ``revoke_access``, one grant per card. The route decides
+who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
+``delete`` action.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ from skill_projects.client import (
     post_file,
     uuid_of,
 )
-from skill_projects.inbox import _area_key, _clean_area_name, _my_area
+from skill_projects.inbox import _area_key, _clean_area_name, _my_area, subject_words
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -1893,6 +1895,261 @@ async def attach_to_task(task_id: str, file_name: str) -> str:
     )
 
 
+# ── Who can see a project (WS-64 OP-6b, D-OP-9, D-OP-11) ────────────────────
+
+
+def grant_refusal(node: dict[str, Any]) -> str:
+    """The server's "no" before a grant card, or ``""`` to go on.
+
+    *node* is ``GET /projects/nodes/{id}``. Its ``can_write_grants`` and
+    ``grant_refusal`` come from ``authority.attach_can_write_grants``, the rule
+    and the 403 words of the two grant routes (D-OP-11). So the tool quotes the
+    server and never decides who may act. Only an explicit ``False`` stops the
+    tool. A row without the flag lets the tool go on, and the route decides.
+    """
+    if node.get("can_write_grants") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not change who can see "
+        f"the project {data(node.get('name'))}. Nothing was done."
+    ]
+    said = str(node.get("grant_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
+
+
+def _subject_or_refusal(tool: str, subject: str) -> tuple[str, str]:
+    """``(subject, "")`` in its stored form, or ``("", refusal)``.
+
+    The grammar is the ONE grant grammar of D12,
+    ``acb_auth.permissions.normalize_grant_subject``, which the route also
+    calls. The chat holds no copy of it.
+    """
+    from acb_auth.permissions import normalize_grant_subject
+
+    try:
+        return normalize_grant_subject(subject), ""
+    except ValueError as exc:
+        return "", (
+            f"{REFUSED} {tool} could not read the subject, so nothing was done.\n"
+            f"Gateway said: {data(str(exc))}\n"
+            "Next: Pass org for everyone in the organization, group:<slug> for a "
+            "group, or one member's email address. Then call the tool once more."
+        )
+
+
+def _unknown_group(subject: str, grants: dict[str, Any]) -> str:
+    """A refusal when *subject* is ``group:<slug>`` and no such group exists.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``groups`` come from
+    the gateway (``core.org_groups``), the list that ``POST`` checks too, so
+    the tool holds no copy of the directory. A payload without ``groups``
+    lets the tool go on, and the route decides.
+    """
+    groups = grants.get("groups")
+    if not subject.startswith("group:") or not isinstance(groups, list):
+        return ""
+    slug = subject.split(":", 1)[1]
+    if any(str(g.get("slug") or "").lower() == slug for g in groups):
+        return ""
+    lines = [f"{REFUSED} There is no group called {data(slug)}, so nothing was done."]
+    if groups:
+        listed = ", ".join(
+            f"{data(g.get('display_name'))} ({data('group:' + str(g.get('slug') or ''))})"
+            for g in groups
+        )
+        lines.append(f"The groups are: {listed}.")
+        lines.append(
+            "Next: Ask the member which group they mean. Then call the tool once "
+            "more with its group:<slug>."
+        )
+    else:
+        lines.append("This organization has no groups.")
+        lines.append(
+            "Next: Tell the member. Pass org or one member's email address, or ask "
+            "an admin to make the group first."
+        )
+    return "\n".join(lines)
+
+
+async def _sees_parent(node: dict[str, Any]) -> bool:
+    """Can the member see the parent of *node*? A grant covers the subtree, so a
+    member who sees the parent also sees *node* without a grant on it."""
+    parent = node.get("parent_project_id")
+    if not parent:
+        return False
+    parent_id = uuid_of(str(parent), "parent_project_id")
+    try:
+        await get(f"/projects/nodes/{parent_id}")
+    except GatewayRefusal:
+        return False
+    return True
+
+
+#: The impact clauses of a revoke that removes the last way in (OP-6b, fix
+#: round 1). They come first on the card.
+LAST_GRANT_CLAUSE = (
+    "This is the last grant. Afterwards only a member who can see every "
+    "project will see this project."
+)
+LOSE_SIGHT_CLAUSE = "You will lose sight of this project."
+
+
+async def _revoke_warnings(
+    node: dict[str, Any], row: dict[str, Any], grants: dict[str, Any],
+) -> list[str]:
+    """The clauses that go first on a revoke card, or ``[]``.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``yours`` and
+    ``you_see_all`` come from the gateway's own visibility. A sub-project
+    stays in sight of each member who sees its parent, so the last-grant
+    clause is for a top project only.
+    """
+    rows = grants.get("rows") or []
+    others = [g for g in rows if str(g.get("id")) != str(row.get("id"))]
+    clauses = []
+    if not others and not node.get("parent_project_id"):
+        clauses.append(LAST_GRANT_CLAUSE)
+    if (
+        row.get("yours") is True
+        and not grants.get("you_see_all")
+        and not any(g.get("yours") is True for g in others)
+        and not await _sees_parent(node)
+    ):
+        clauses.append(LOSE_SIGHT_CLAUSE)
+    return clauses
+
+
+async def _project_path(node: dict[str, Any]) -> str:
+    """``«Space» / «Team» / «Project»``: the node and the parents the member
+    can see, walked up through ``parent_project_id``. Capped, because a cycle
+    is a database fault and not a reason to loop."""
+    names = [data(node.get("name"))]
+    current = node
+    for _ in range(8):
+        parent = current.get("parent_project_id")
+        if not parent:
+            break
+        parent_id = uuid_of(str(parent), "parent_project_id")
+        try:
+            current = (await get(f"/projects/nodes/{parent_id}")) or {}
+        except GatewayRefusal:
+            break
+        names.append(data(current.get("name")))
+    return " / ".join(reversed(names))
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def grant_access(project_id: str, subject: str) -> str:
+    """Let more people see a project and every sub-project under it. subject
+    is org (everyone in the organization), group:<slug> (one group) or one
+    member's email address. ONE subject per call. The card names the project
+    path and who will see it. The server decides if the member may change who
+    can see the project, and a refusal comes back in its words."""
+    if _many(subject) or _many(project_id):
+        return f"grant_access {ONE_ACT.replace('id', 'subject')}"
+    clean, refused = _subject_or_refusal("grant_access", subject)
+    if refused:
+        return refused
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    refused = _unknown_group(clean, grants)
+    if refused:
+        return refused
+    held = grants.get("rows") or []
+    if any(str(g.get("subject") or "").lower() == clean for g in held):
+        return (
+            f"{subject_words(clean)} can already see {data(node.get('name'))} through a "
+            f"grant on it. Nothing changed.\n  project_id: {pid}"
+        )
+    path = await _project_path(node)
+    who = subject_words(clean)
+    impact = (
+        f"access widens: {who} will see {path} and every sub-project under it, "
+        "with their tasks"
+    )
+    if not await _confirm(
+        title="Change who can see this project?",
+        detail=f"{path} · add {who}",
+        context=_guard_card(
+            impact,
+            {"project": path, "gives access to": who,
+             "covers": "this project and every sub-project under it"},
+        ),
+    ):
+        return CANCELLED
+    row = (await post(f"/projects/nodes/{pid}/grants", {"subject": clean})) or {}
+    return (
+        f"{who} can now see {path} and every sub-project under it."
+        f"\n  project_id: {pid}\n  grant_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def revoke_access(project_id: str, grant: str) -> str:
+    """Remove one grant from a project. grant is a grant_id from
+    project_access, or the grant's subject (org, group:<slug> or an email
+    address). ONE grant per call. The card names the project path and whose
+    access goes. A person with another way in, such as another grant, keeps
+    it. To change the audience, grant the new one with grant_access first, and
+    then revoke the old one. The card warns when this is the last grant, or
+    when the member loses sight of the project. The server decides if the
+    member may change who can see the project."""
+    if _many(grant) or _many(project_id):
+        return f"revoke_access {ONE_ACT.replace('id', 'grant')}"
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    rows = grants.get("rows") or []
+    wanted = str(grant or "").strip()
+    row = next((g for g in rows if str(g.get("id") or "").lower() == wanted.lower()), None)
+    if row is None:
+        # Not a grant_id of this project, so read it as a subject. A value that
+        # is neither finds no grant, and the answer below says so.
+        clean, _bad = _subject_or_refusal("revoke_access", wanted)
+        row = next(
+            (g for g in rows if clean and str(g.get("subject") or "").lower() == clean), None
+        )
+    if row is None:
+        return (
+            f"{data(node.get('name'))} has no grant like that. project_access lists "
+            f"its grants, each with a grant_id.\n  project_id: {pid}"
+        )
+    gid = uuid_of(str(row.get("id")), "grant")
+    path = await _project_path(node)
+    who = subject_words(str(row.get("subject") or ""))
+    warnings = await _revoke_warnings(node, row, grants)
+    impact = " ".join([*warnings, (
+        f"access narrows: {who} loses the access this grant gives to {path} and every "
+        "sub-project under it. Another grant can still let some of them see it"
+    )])
+    if not await _confirm(
+        title="Change who can see this project?",
+        detail=f"{path} · remove {who}",
+        context=_guard_card(
+            impact,
+            {"project": path, "takes access from": who,
+             "covers": "this project and every sub-project under it"},
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/grants/{gid}")
+    return (
+        f"Removed the grant of {who} on {path}."
+        f"\n  project_id: {pid}\n  grant_id: {gid}"
+    )
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
@@ -1915,4 +2172,6 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "delete_area",
     "nudge_task",
     "attach_to_task",
+    "grant_access",
+    "revoke_access",
 ]

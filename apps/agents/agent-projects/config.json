@@ -148,11 +148,13 @@
     "delete_task",
     "delete_type",
     "delete_view",
+    "grant_access",
     "merge_tags",
     "merge_tasks",
     "nudge_task",
     "move_project",
     "report_delete",
+    "revoke_access",
     "revert_activity",
     "set_status_set",
     "unarchive_project"

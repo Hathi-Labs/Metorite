@@ -476,7 +476,7 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `GET /knowledge/spaces` | A | The spaces the member can read, with page counts |
 | `POST /knowledge/spaces` | C | Make a space. Needs `knowledge:manage` |
 | `PATCH /knowledge/spaces/{id}` | C | Rename, re-icon, change the purpose |
-| `PUT /knowledge/spaces/{id}/grants` | X | Replace the grants. Never on chat (the D-PM-40 rule) |
+| `PUT /knowledge/spaces/{id}/grants` | X | Replace the grants. Never on chat (the D-PM-40 rule). D-OP-9 reversed D-PM-40 for the Projects chat only, on 2026-10-23. Knowledge keeps the rule |
 | `GET /knowledge/pages?space=&parent=&q=` | A | The tree, or a filtered list |
 | `GET /knowledge/pages/{id}` | A | One page, its files, its links, its versions |
 | `POST /knowledge/pages` | B | Make a draft |

@@ -31,8 +31,10 @@ from gateway.routes.projects.authority import (
     assert_may_delete_project,
     assert_may_move_project,
     assert_may_name_lead,
+    assert_may_revoke_grant,
     assert_may_write_grant,
     attach_can_delete,
+    attach_can_write_grants,
 )
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -46,6 +48,7 @@ from gateway.routes.projects.core import (
     ProjectModel,
     _tenant_session,
     actor,
+    assert_grant_group_exists,
     assert_no_project_cycle,
     assert_node_grammar,
     assert_project_move_keeps_privacy,
@@ -58,6 +61,7 @@ from gateway.routes.projects.core import (
     load_visible_project,
     node_kind,
     node_level,
+    org_groups,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -413,6 +417,8 @@ async def get_node(
         result = row_to_dict(row, ProjectModel)
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="project")
+        # WS-64 OP-6b — the chat refuses before its grant card where this is false.
+        await attach_can_write_grants(db, user, result)
         return result
 
 
@@ -1318,9 +1324,17 @@ async def unarchive_node(
 async def list_grants(
     project_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
+    """The grants on one project, and what the chat needs before a grant card.
+
+    WS-64 OP-6b, fix round 1. Each row carries ``yours``: the grant names the
+    caller, ``org``, or a group of the caller. ``you_see_all`` is true for a
+    caller who sees every project (``data:org:read``). ``groups`` lists the
+    groups of the organization, so the chat refuses an unknown group before
+    its card. The routes decide, and these fields only describe.
+    """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_project_grants "
@@ -1328,8 +1342,16 @@ async def list_grants(
             ),
             {"pid": project_id},
         )).fetchall()
+        mine = {"org", (vis.email or "").lower(), *(g.lower() for g in vis.groups)}
+        out = []
+        for r in rows:
+            item = row_to_dict(r, GrantModel)
+            item["yours"] = str(item.get("subject") or "").lower() in mine
+            out.append(item)
         return {
-            "rows": [row_to_dict(r, GrantModel) for r in rows], "total": len(rows),
+            "rows": out, "total": len(rows),
+            "you_see_all": bool(vis.unrestricted),
+            "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
 
 
@@ -1350,7 +1372,12 @@ async def create_grant(
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
         # WS-64 OP-8 (D-OP-11). A lead or a Projects admin, nobody else.
+        # OP-6b fix round 1: never on a personal tree, for anyone.
         await assert_may_write_grant(db, user, node)
+        # OP-6b fix round 1: a group that does not exist lets nobody in.
+        await assert_grant_group_exists(
+            db, getattr(node, "organization_id", None), subject,
+        )
         row = (await db.execute(
             text(
                 "INSERT INTO pm_project_grants (project_id, subject, created_by) "
@@ -1375,8 +1402,19 @@ async def delete_grant(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
-        # WS-64 OP-8 (D-OP-11). The rule of `create_grant`.
-        await assert_may_write_grant(db, user, node)
+        # WS-64 OP-8 (D-OP-11) and OP-6b. The owner's own grant on a
+        # personal tree never goes; a stray grant there may be removed,
+        # because a revoke only makes the tree more private.
+        found = (await db.execute(
+            text(
+                "SELECT subject FROM pm_project_grants "
+                "WHERE id = CAST(:gid AS uuid) AND project_id = CAST(:pid AS uuid)"
+            ),
+            {"gid": grant_id, "pid": project_id},
+        )).fetchone()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Grant not found")
+        await assert_may_revoke_grant(db, user, node, found.subject)
         row = (await db.execute(
             text(
                 "DELETE FROM pm_project_grants "

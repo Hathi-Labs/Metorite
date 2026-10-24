@@ -85,19 +85,29 @@ INTAKE_ACTIONS = ("accept", "decline", "duplicate", "snooze")
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_access(project_id: str) -> str:
-    """Who may see a project: its grants, each a member address or a
-    `group:<slug>`. Reading only; a grant write is not on the chat surface
-    (spec §12, question 2)."""
+    """Who may see a project: its grants, each org, a `group:<slug>` or a
+    member address, with its grant_id. grant_access adds a grant and
+    revoke_access removes one, each behind a card (WS-64 OP-6b)."""
     pid, node = await _node(project_id)
     rows = ((await get(f"/projects/nodes/{pid}/grants")) or {}).get("rows") or []
     out = [legend(), f"Access to {data(node.get('name'))} ({len(rows)} grants):"]
     for row in rows:
         out.append(
-            f"- {data(row.get('subject'))} · granted by {data(row.get('created_by') or '?')}"
+            f"- {subject_words(str(row.get('subject') or ''))} ({data(row.get('subject'))})"
+            f" · granted by {data(row.get('created_by') or '?')} · grant_id {row.get('id')}"
         )
     if not rows:
         out.append("(no grants of its own; visibility comes from its Center or the org)")
     return "\n".join(out)
+
+
+def subject_words(subject: str) -> str:
+    """A grant subject in plain words, for a card, a receipt and a read."""
+    if subject == "org":
+        return "everyone in the organization"
+    if subject.startswith("group:"):
+        return f"every member of the group {data(subject[len('group:'):])}"
+    return data(subject)
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)

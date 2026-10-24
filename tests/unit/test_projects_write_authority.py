@@ -125,7 +125,7 @@ def test_every_door_calls_the_one_module() -> None:
         tasks.agent_delete_task: "assert_may_delete_task(db, user, doomed)",
         tree.delete_node: "assert_may_delete_project(db, user, node)",
         tree.create_grant: "assert_may_write_grant(db, user, node)",
-        tree.delete_grant: "assert_may_write_grant(db, user, node)",
+        tree.delete_grant: "assert_may_revoke_grant(db, user, node, found.subject)",
         bulk.bulk_edit: "may_delete_task(db, user, task, led=led)",
         tasks.get_task: 'attach_can_delete(db, user, [result], kind="task")',
         tasks.list_tasks: 'attach_can_delete(db, user, page_rows, kind="task")',
@@ -463,6 +463,12 @@ class TestTheGrants:
     async def test_5_a_lead_and_an_admin_write_a_grant_and_a_viewer_gets_403(self, live):
         words = _authority().GRANT_WRITE_REFUSED
         path = f"/projects/nodes/{live.team}/grants"
+        # OP-6b fix round 1: the route refuses a group that does not exist.
+        for slug in ("viewers", "leads", "admins"):
+            live.seeder.one(
+                "INSERT INTO org_group (organization_id, slug, display_name) VALUES"
+                " (CAST(:o AS uuid), :s, :s) ON CONFLICT (organization_id, slug)"
+                " DO UPDATE SET slug = EXCLUDED.slug RETURNING id", o=live.org, s=slug)
         for who in (VIEWER, CREATOR):
             r = await _as(live, who, "POST", path, {"subject": "group:viewers"})
             assert r.status_code == 403, (who, r.text)
