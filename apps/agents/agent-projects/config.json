@@ -139,6 +139,7 @@
     "archive_task",
     "attach_to_task",
     "bulk_update",
+    "convert_folder_to_project",
     "delete_area",
     "delete_attachment",
     "rename_area",

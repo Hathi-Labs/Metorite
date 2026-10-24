@@ -112,6 +112,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
+  // WS-64 OP-10: the folder that `convert_folder_to_project` turns into a project.
+  "folder": { label: "Folder" },
   "from": { label: "From", kind: "task" },
   "gives access to": { label: "Gives access to" },
   "group by": { label: "Group by", kind: "words" },
@@ -190,6 +192,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "statuses": { label: "Statuses" },
   "stops going to": { label: "Stops going to" },
   "subject": { label: "Subject" },
+  // WS-64 OP-10: the projects inside the folder, which become its subprojects.
+  "subprojects": { label: "Become subprojects" },
   "subtasks": { label: "Subtasks" },
   "survivor": { label: "Keeps", kind: "task" },
   "tag": { label: "Tag", kind: "tag" },

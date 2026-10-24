@@ -527,6 +527,81 @@ def assert_node_grammar(
                    "projects. Break the work down with tasks and subtasks.",
         )
 
+
+def assert_folder_converts(
+    *,
+    parent_kind: str | None,
+    parent_generation: int,
+    children: list[tuple[str, int]],
+    kept: frozenset[str] = frozenset(),
+) -> None:
+    """May a folder become a project where it sits? (WS-64 OP-10, D-OP-16.)
+
+    ``children`` holds each project directly inside the folder, as
+    ``(name, depth)``. ``depth`` is the longest project chain in that
+    child's subtree, the child included. A folder cannot hold a folder, so
+    each direct child is a project.
+
+    :func:`assert_node_grammar` decides, as for a create and a move: the
+    converted node is a project whose ``subtree_depth`` is 1 plus the
+    deepest child. This function adds only the words. When the grammar
+    refuses, the 422 names each child project that is too deep, so the
+    member knows what to move. Pure, so the hermetic suite tests each case.
+
+    ``kept`` holds the names of the children that are team nodes, which
+    migration 297 kept under a personal tree. The owner of the tree cannot
+    move one, so the 422 says who can (OP-10 fix round 1).
+    """
+    depth = 1 + max((d for _, d in children), default=0)
+    try:
+        assert_node_grammar(
+            kind="project",
+            parent_kind=parent_kind,
+            parent_generation=parent_generation,
+            subtree_depth=depth,
+        )
+    except HTTPException as refused:
+        # The project chain that may sit below the new project.
+        room = MAX_PROJECT_GENERATIONS - parent_generation - 1
+        blockers = sorted(name for name, d in children if d > room)
+        if not blockers:
+            raise
+        names = ", ".join(f"'{n}'" for n in blockers)
+        team = [n for n in blockers if n in kept]
+        if team:
+            mine = ", ".join(f"'{n}'" for n in blockers if n not in kept)
+            head = (
+                "This folder is inside a project, so as a project it would "
+                "be a subproject, and a subproject cannot hold projects."
+                if room <= 0 else
+                f"{names} have sub-projects of their own, and those would go "
+                f"below the lowest level."
+            )
+            parts = [head]
+            if mine:
+                parts.append(f"Move {mine} out of the folder first.")
+            parts.extend(
+                f"'{n}' is team work. A lead of '{n}' or a Projects admin "
+                f"can move it." for n in team
+            )
+            raise HTTPException(
+                status_code=422, detail=" ".join(parts),
+            ) from refused
+        if room <= 0:
+            detail = (
+                f"This folder is inside a project, so as a project it would "
+                f"be a subproject, and a subproject cannot hold projects. "
+                f"Move {names} out of the folder first."
+            )
+        else:
+            detail = (
+                f"{names} have sub-projects of their own, and those would go "
+                f"below the lowest level. Move their sub-projects out first, "
+                f"or move the project out of the folder."
+            )
+        raise HTTPException(status_code=422, detail=detail) from refused
+
+
 #: The one system task type. Its only rule — an Epic cannot have a parent —
 #: makes it structurally the root level (§3.4). There is deliberately no
 #: 'Subtask' type: a subtask is a task with a parent.
@@ -3658,3 +3733,24 @@ def validate_lifecycle_settings(values: dict[str, Any]) -> None:
                     f"Asia/Kolkata"
                 ),
             ) from None
+
+
+#: SQLSTATEs that mean "try this transaction again": a deadlock (40P01), a
+#: serialization failure (40001), a lock that timed out (55P03). The import
+#: writer retries on them, and the tree routes answer them with a 409 (WS-64
+#: OP-10, fix round 2). One set, so the two cannot disagree.
+TRANSIENT_SQLSTATES = frozenset({"40P01", "40001", "55P03"})
+
+
+def is_transient(err: BaseException) -> bool:
+    """True when ``err``, or the driver error under it, carries a transient
+    SQLSTATE. SQLAlchemy wraps asyncpg twice, so walk the chain."""
+    seen: BaseException | None = err
+    for _ in range(5):
+        if seen is None:
+            return False
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if code in TRANSIENT_SQLSTATES:
+            return True
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return False

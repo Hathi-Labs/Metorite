@@ -52,6 +52,7 @@ import {
   PROJECTS_CACHE,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
+import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
@@ -460,6 +461,15 @@ function ProjectNav({
           ? {
               onDelete: (project: ProjectRow, level: NodeLevel) => {
                 actions.onDelete?.(project, level);
+                onPicked?.();
+              },
+            }
+          : {}),
+        // WS-64 OP-10 — it raises a dialog too, so it closes the drawer.
+        ...(actions.onConvert
+          ? {
+              onConvert: (project: ProjectRow) => {
+                actions.onConvert?.(project);
                 onPicked?.();
               },
             }
@@ -982,6 +992,11 @@ function ProjectsWorkspace() {
   //: SAME row leaves the id unchanged, so the id alone would not remount and
   //: the stale-armed frame would survive exactly where it is easiest to hit.
   const [deleteOpenedAt, setDeleteOpenedAt] = useState(0);
+  //: WS-64 OP-10 — the folder whose "Convert to project" dialog is open, the
+  //: call in flight, and the server's refusal, shown in the dialog.
+  const [convertingNode, setConvertingNode] = useState<ProjectRow | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
   //: WS-27bl — the tasks whose move card is open. One state for both entry
   //: points: a single row from its menu, and the whole bulk selection.
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
@@ -1524,6 +1539,11 @@ function ProjectsWorkspace() {
         setDeleteError(null);
         setDeleteOpenedAt((n) => n + 1);
         setDeletingNode({ project, level });
+      },
+      // WS-64 OP-10. Raises the dialog and nothing else. `convertNode` writes.
+      onConvert: (project) => {
+        setConvertError(null);
+        setConvertingNode(project);
       },
     }),
     [toast]
@@ -3219,6 +3239,27 @@ function ProjectsWorkspace() {
    * the cascade took every task under the node, so an open panel is closed
    * unconditionally.
    */
+  /**
+   * WS-64 OP-10 (D-OP-16) — a folder becomes a project. The tree refetches,
+   * because the level of every project inside it changed. A refusal stays in
+   * the dialog: the 422 names the projects that are too deep.
+   */
+  async function convertNode(node: ProjectRow) {
+    setConverting(true);
+    setConvertError(null);
+    try {
+      const res = await projectsApi.convertFolder(node.id);
+      setConvertingNode(null);
+      setSelected((prev) => (prev && prev.id === node.id ? { ...prev, ...res } : prev));
+      setTreeKey((k) => k + 1);
+      toast.show({ variant: "success", title: `${node.name} is a project now` });
+    } catch (err) {
+      setConvertError(String((err as Error).message));
+    } finally {
+      setConverting(false);
+    }
+  }
+
   async function deleteNode(node: ProjectRow) {
     const selectionIsInside =
       !!selected &&
@@ -4732,6 +4773,24 @@ function ProjectsWorkspace() {
         onConfirm={(destinationId, statusMap, acceptedDrops, _promote, includeSubtasks) =>
           void moveTasksTo(destinationId, statusMap, acceptedDrops, Boolean(includeSubtasks))
         }
+      />
+
+      <ConvertFolderDialog
+        project={convertingNode}
+        childNames={
+          convertingNode
+            ? (pathTo(roots, convertingNode.id).at(-1)?.children ?? []).map(
+                (child) => child.name,
+              )
+            : []
+        }
+        error={convertError}
+        busy={converting}
+        onClose={() => {
+          setConvertingNode(null);
+          setConvertError(null);
+        }}
+        onConfirm={(project) => void convertNode(project)}
       />
 
       <DeleteProjectDialog

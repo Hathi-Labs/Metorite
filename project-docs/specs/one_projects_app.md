@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-4 and OP-5 are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-4 and OP-5 are not built. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`).
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -371,6 +371,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-14** | A move changes who sees a row, so a view of the row is not enough to move it. A re-parent of a project needs the grant authority of D-OP-11 on the moved project. A move of a task to another project needs the delete authority of D-OP-12 on the task where it is now. A reorder under the same parent, and a status move inside one project, need only a view. The 403 names who may move it. A subtask that a move carries follows the check on the task the member names, as a delete does | Supervisor decision, OP-8 fix round 1, 2026-10-23. Review finding: a member who leads a space of their own could move another member's project or task into it, and then delete it |
 | **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
 | **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change. A grant on a personal node shows it to nobody but the owner, so a stray `org`, `group:` or email grant written before OP-6b is inert. Three exceptions are accepted. (a) The assignee arm: a task that a member explicitly handed to another member (D63, H-304) shows to that assignee. `assert_assignable_here` refuses a new assignment into another member's personal tree. (b) `people/core.py compute_load` counts the open tasks assigned to a person, their own personal tasks too, as a number with no title. (c) `projects/vocabulary.py` counts the tasks that use each tag, field and type on the admin vocabulary page, org-wide and personal tasks too, as a number with no title | Owner, 2026-10-24, in chat ("go ahead with your recommendation"). The grant arm and the three exceptions: supervisor decision, OP-9 fix round 1, 2026-10-24 |
+| **D-OP-16** | A folder can become a project, and only in that direction. `POST /projects/nodes/{id}/convert` changes the kind in one transaction. The projects inside become subprojects, because the code derives a level from the kind and the place. The grammar decides through `assert_node_grammar`: a child project with subprojects of its own is too deep, and the 422 names it. The grant authority of D-OP-11 applies, and the owner of a personal tree may convert their own folder. The grants, the lead, the name, the place and `personal_owner` do not change | Owner, 2026-10-24, in chat ("please allow the conversion of a folder into a project"). The shape: supervisor decision, OP-10, 2026-10-24 |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -1067,6 +1068,78 @@ round 1. Not yet merged.** There is one line on each arm of the visibility
 seam in `routes/projects/core.py`. Each arm keeps out every personal node
 whose owner is not the reader. The bell, the file read, the People reads and
 the item lens scope on `t.project_id`, so a team task stays visible. Fence `tests/unit/test_personal_privacy_r8.py`.
+
+### OP-10 — a folder becomes a project · MEDIUM · AGENT-SAFE
+
+**Scope.** D-OP-16. Owner directive of 2026-10-24: a folder that holds
+projects can become a project, and its projects become subprojects. One way
+only. A project does not turn back into a folder.
+
+**What the code said first (2026-10-24, `origin/main` `f32244eac`).**
+
+- `pm_projects.kind` is `project` or `folder` (migration 193). A level is
+  derived from the kind and the place (`core.node_level`). Nothing stores a
+  level, so the children of a converted folder become subprojects with no
+  write to them.
+- `PATCH /nodes/{id}` refuses a change of `kind` with 422. It still does. The
+  conversion has its own route, so no caller can go around the grammar check.
+- A space owns the status set, the types, the custom fields and the task
+  counter. Each node below a space reads them from the nearest owner
+  (migration 196). `create_node` seeds a set only for a new root, and a
+  folder is never a root. So a project below a space needs nothing that a
+  folder lacks, and the conversion writes only `kind`. The run state column
+  defaults to `active`. A value outside `RUN_STATES` becomes `active`.
+- A folder holds no tasks. `POST /tasks` and both task moves refuse a
+  folder.
+
+**Done when.**
+
+1. `POST /projects/nodes/{id}/convert` with `{"to": "project"}` changes the
+   kind in one transaction, with a timeline row "Converted from a folder to a
+   project" and the event `pm.project.updated`.
+2. `core.assert_folder_converts` decides through `assert_node_grammar`. A
+   child project with subprojects of its own gives 422 that names it. A
+   folder inside a project converts only when it is empty.
+3. `authority.may_convert_node` is the grant rule of D-OP-11, and the owner
+   of a personal tree may convert their own folder. The 403 names who may.
+4. `/projects/tree` and `/projects/nodes/{id}` carry `can_convert`. The tree
+   row menu offers "Convert to project" only on `true`, with a confirmation
+   that says the children become subprojects.
+5. The chat has `convert_folder_to_project`, class C, one card for each
+   folder (D-OP-9), with eval case PO-28.
+
+**Status: BUILT 2026-10-24 on branch `ws64-op10-folder-to-project`, with
+fix round 1 and fix round 2. Not yet merged.** Fence `tests/unit/test_projects_folder_convert.py`:
+seven database-free tests, three chat tests and nine R8 tests, each red under
+a named mutation.
+
+**Fix round 1 (2026-10-24).** Four changes from the review:
+
+- The tree read reads `personal_owner` from each row and makes no walk per
+  folder (`attach_can_convert(walk=False)`). The single-node routes keep the
+  walk.
+- `create_node` and `move_node` take `FOR SHARE` on the ancestor chain of the
+  destination before the grammar read. So a convert and a create or a move
+  below the folder wait for each other, and the tree cannot reach four
+  project generations.
+- The chat card lists at most `CONVERT_LIST_LIMIT` names, then "and N more",
+  as the dialog does.
+- Migration 297 kept some team nodes under a personal tree. When the 422
+  names one, it says that a lead of it or a Projects admin can move it.
+
+**Fix round 2 (2026-10-24).** Three changes from the second review:
+
+- One lock order for the tree writes: the own row exclusive first, then the
+  other rows shared. `move_node` locks the moved row `FOR UPDATE` and reads
+  its kind from the locked row. `convert_node` locks the ancestor chain of
+  the folder's parent. So a move of the folder, or of an ancestor, and a
+  convert wait for each other, and the second one gets the 422.
+- A deadlock (40P01) or a lock timeout (55P03) in a create, a move or a
+  convert gives a 409, not a 500. The SQLSTATE set is
+  `core.TRANSIENT_SQLSTATES`, which the import writer also uses.
+- The race tests count only the sessions that their own holder blocks.
+  They wait up to 15 seconds. They skip when the admin role cannot read
+  the lock waits.
 
 
 ### OP-5 — one filter component, and the old shell retires · MEDIUM · AGENT-SAFE
