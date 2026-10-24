@@ -111,9 +111,13 @@ _ROUTINE_INSTRUCTIONS = (
 #: ``test_mcp_edge_agent_runs.py`` ``TestTheInstructions``.
 _RUN_INSTRUCTIONS = (
     " At the start of every session, call list_agent_runs with needs_agent"
-    " true, and continue each run it gives. When you begin work on a task,"
-    " call start_agent_run. While you work, send a thought with"
-    " post_agent_activity at least once a minute. To ask the member, call"
+    " true, and continue each run it gives. Only one AI session may hold a"
+    " task. Pick a task that has no held_by, or use list_tasks with unheld"
+    " true. Never work on a held task. Call claim_task first. When you begin"
+    " work on a task, call start_agent_run. While you work, send a thought"
+    " with post_agent_activity at least once a minute, because that is the"
+    " heartbeat of your hold. If you stop and will not finish, call"
+    " release_task. To ask the member, call"
     " ask_on_task, then call get_agent_run with wait_seconds 20 until the"
     " answer arrives. When a run reads stopping, stop the work at once and"
     " call finish_agent_run. To archive a task, call request_task_archive."

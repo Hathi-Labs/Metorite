@@ -215,6 +215,10 @@ NOT_ON_THE_CALENDAR = {
     # hand order to be an order OF, so accepting it would declare a parameter
     # the endpoint could not act on. Excluded rather than added, deliberately.
     "view_id",
+    # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
+    # no other AI session holds. The board never sends it, so the calendar
+    # cannot drop it silently.
+    "unheld",
 }
 
 
