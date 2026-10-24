@@ -187,7 +187,8 @@ def test_the_two_hard_deletes_are_guarded_tools() -> None:
     [
         # The grant POST left class X in WS-64 OP-6b. The planner stays X.
         ("POST", "/projects/my/calendar/plan"),
-        ("PATCH", "/projects/reports/0f8fad5b-d9cb-469f-a165-70867728950e/schedule"),
+        # The schedule PATCH left class X in WS-64 OP-6d. The import apply stays X.
+        ("POST", "/projects/import/runs/0f8fad5b-d9cb-469f-a165-70867728950e/apply"),
     ],
 )
 async def test_an_excluded_route_never_builds_a_request(

@@ -206,6 +206,7 @@ def _reset_stub(harness: OpsHarness) -> None:
     ops.tasks, ops.rules, ops.nodes = fresh.tasks, fresh.rules, fresh.nodes
     ops.attachments, ops.nudges = fresh.attachments, fresh.nudges
     ops.grants = fresh.grants
+    ops.reports, ops.recipients = fresh.reports, fresh.recipients
 
 
 async def run_task(

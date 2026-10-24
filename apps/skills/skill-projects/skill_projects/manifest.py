@@ -100,11 +100,6 @@ _AGENT_DELETE_REASON = (
     "The MCP door only (EA3-51): an outside agent deletes after the member's yes. "
     "The chat deletes through delete_task and its card."
 )
-#: Delivery is the Reports app's, and arming the schedule is owner-gated
-#: (§9.12.8). The chat renders a report. It never sends one.
-_DELIVERY_REASON = (
-    "Report delivery stays in the Reports app. Arming the schedule is owner-gated (§9.12.8)."
-)
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
@@ -381,10 +376,18 @@ MANIFEST: tuple[Route, ...] = (
     # is in READ_ONLY_POSTS. R-final: render_report renders a template and a
     # subject through it, so the server runs the §7.1 check.
     Route("POST", "/projects/reports/preview", "render_report", "A"),
-    Route("GET", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
-    Route("POST", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
-    Route("DELETE", "/projects/reports/{report_id}/recipients/{email}", "", "X", _DELIVERY_REASON),
-    Route("PATCH", "/projects/reports/{report_id}/schedule", "", "X", _DELIVERY_REASON),
+    # WS-64 OP-6d (D-OP-9): the recipients and the schedule. Each write takes a
+    # card. The route decides who may change them (the author or an admin), and
+    # the send switch of the deployment is not a tool's (CLAUDE.md §3a rule 3).
+    Route("GET", "/projects/reports/{report_id}/recipients", "report_recipients", "A"),
+    Route("POST", "/projects/reports/{report_id}/recipients", "add_report_recipient", "C"),
+    Route(
+        "DELETE",
+        "/projects/reports/{report_id}/recipients/{email}",
+        "remove_report_recipient",
+        "C",
+    ),
+    Route("PATCH", "/projects/reports/{report_id}/schedule", "set_report_schedule", "C"),
     # ── attachments.py ───────────────────────────────────────────────────
     # WS-64 OP-6c (G21): the bytes come from a file the member uploaded to THIS chat.
     Route("POST", "/projects/tasks/{task_id}/attachments", "attach_to_task", "C"),
@@ -858,6 +861,13 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
     # WS-64 OP-6b: the one field of a grant.
     ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
+    # WS-64 OP-6d: one address, and the on/off of the schedule.
+    ("POST", "/projects/reports/{report_id}/recipients"): {
+        "recipient": "add_report_recipient.recipient"
+    },
+    ("PATCH", "/projects/reports/{report_id}/schedule"): {
+        "enabled": "set_report_schedule.enabled"
+    },
     # WS-64 OP-6a
     ("POST", "/projects/my/areas"): {"name": "create_area.name"},
     ("PATCH", "/projects/my/areas/{area_id}"): {"name": "rename_area.new_name"},
