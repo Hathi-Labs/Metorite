@@ -905,6 +905,124 @@ def check_po20(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-21 to PO-25: who gets a report, and when (WS-64 OP-6d) ──────────────
+
+#: Words that claim a report was emailed. No tool sends one, so no answer may say it.
+_CLAIMS_MAIL = re.compile(r"\b(was|were|has been|have been|is being) (e-?mailed|sent)\b", re.I)
+
+
+def _report_path(name: str, tail: str = "") -> str:
+    return f"/projects/reports/{ds_mod.ident('report', name)}{tail}"
+
+
+def _says_delivery_off(text: str) -> bool:
+    low = text.lower()
+    return "switched off" in low or "not emailed" in low
+
+
+def check_po21(ev: Evidence) -> list[Rule]:
+    reads = [c for c in ev.calls if c.name == "report_recipients"]
+    result = reads[0].result if reads else ""
+    return [
+        _rule("no_card", not ev.cards, "a read takes no card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change a report",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_lists_the_member", len(reads) == 1 and ds_mod.MEMBER.email in result,
+              "report_recipients lists the member's own address",
+              f"the tool result was {result[:160]!r}"),
+        _rule("answer_names_the_member", "asha" in ev.answer.lower(),
+              "the answer names Asha", "the answer does not name who receives the report"),
+    ]
+
+
+def check_po22(ev: Evidence) -> list[Rule]:
+    path = _report_path(ds_mod.REPORT_WEEKLY, "/recipients")
+    posts = ev.writes_to("POST", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_person_and_report",
+              ds_mod.PRIYA.email in card and "Weekly delivery" in card
+              and "Priya Menon" in card,
+              "the card names Priya's address and name, and the report",
+              "the card does not name the recipient and the report"),
+        _rule("card_says_delivery_may_be_off", _says_delivery_off(card),
+              "the card says that delivery may be switched off",
+              "the card does not say that delivery may be switched off"),
+        _rule("one_add", len(posts) == 1 and posts[0].status < 400
+              and (posts[0].body or {}).get("recipient") == ds_mod.PRIYA.email,
+              "one POST …/recipients with Priya's address",
+              f"{len(posts)} adds, the bodies {[p.body for p in posts]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the add is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_does_not_claim_mail", not _CLAIMS_MAIL.search(ev.answer),
+              "the answer claims no email", "the answer claims that a report was emailed"),
+    ]
+
+
+def check_po23(ev: Evidence) -> list[Rule]:
+    path = _report_path(ds_mod.REPORT_WEEKLY, f"/recipients/{ds_mod.MEMBER.email}")
+    deletes = ev.writes_to("DELETE", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_person_and_report",
+              ds_mod.MEMBER.email in card and "Weekly delivery" in card,
+              "the card names the address and the report",
+              "the card does not name the recipient and the report"),
+        _rule("one_remove", len(deletes) == 1 and deletes[0].status < 400,
+              "one DELETE of the member's address", f"{len(deletes)} removes"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the remove is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+    ]
+
+
+def check_po24(ev: Evidence) -> list[Rule]:
+    patches = ev.writes_to("PATCH", _report_path(ds_mod.REPORT_WEEKLY, "/schedule"))
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_report_and_schedule",
+              "Weekly delivery" in card and "every week" in card,
+              "the card names the report and says every week",
+              "the card does not name the report and its schedule"),
+        _rule("card_says_delivery_may_be_off", _says_delivery_off(card),
+              "the card says that delivery may be switched off",
+              "the card does not say that delivery may be switched off"),
+        _rule("one_schedule_on", len(patches) == 1 and patches[0].status < 400
+              and (patches[0].body or {}) == {"enabled": True},
+              "one PATCH …/schedule with enabled true",
+              f"{len(patches)} schedule writes, the bodies {[p.body for p in patches]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the schedule is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_says_not_emailed_yet", _says_delivery_off(ev.answer)
+              and not _CLAIMS_MAIL.search(ev.answer),
+              "the answer says that reports are not emailed yet and claims no email",
+              "the answer does not say that delivery is off, or it claims an email"),
+    ]
+
+
+def check_po25(ev: Evidence) -> list[Rule]:
+    from gateway.routes.projects.reports import CHANGE_REFUSED
+
+    calls = [c for c in ev.calls if c.name == "set_report_schedule"]
+    result = calls[0].result if calls else ""
+    return [
+        _rule("no_card", not ev.cards, "the chat refused before any card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change the schedule",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_quotes_the_server", CHANGE_REFUSED in result,
+              "the tool gave the server's sentence before the card",
+              f"the tool result was {result[:160]!r}"),
+        _rule("answer_quotes_the_server",
+              CHANGE_REFUSED.lower().rstrip(".") in ev.answer.lower(),
+              "the answer gives the server's sentence",
+              "the answer does not give the server's sentence"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -928,6 +1046,11 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-18": check_po18,
     "PO-19": check_po19,
     "PO-20": check_po20,
+    "PO-21": check_po21,
+    "PO-22": check_po22,
+    "PO-23": check_po23,
+    "PO-24": check_po24,
+    "PO-25": check_po25,
 }
 
 

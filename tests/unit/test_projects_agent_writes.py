@@ -420,6 +420,26 @@ def _op6b_answers(call: dict) -> Any:
     return None
 
 
+def _op6d_answers(call: dict) -> Any:
+    """WS-64 OP-6d: the list of a report, an add, a remove and the schedule."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/reports/{UUID}"
+    if path == base and method == "GET":
+        return {"id": UUID, "name": "Weekly", "project_id": None, "scope": "portfolio",
+                "can_edit": True, "enabled": False, "schedule": None}
+    if path == f"{base}/recipients" and method == "GET":
+        return {"report_id": UUID, "recipients": [
+            {"recipient": "pm@fracktal.in", "added_by": "pm@fracktal.in", "added_at": None}]}
+    if path == f"{base}/recipients" and method == "POST":
+        return {"report_id": UUID, "recipient": call["json"]["recipient"]}
+    if path.startswith(f"{base}/recipients/") and method == "DELETE":
+        return {}
+    if path == f"{base}/schedule" and method == "PATCH":
+        return {"id": UUID, "enabled": call["json"]["enabled"],
+                "delivery_armed_on_this_deployment": False}
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
@@ -431,7 +451,7 @@ def responder(call: dict) -> Any:
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
     # `_op6c_answers` first: its task answers a `/my/tasks/` read that `_s2b_answers` also claims.
-    answered = _answered(call, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _op6d_answers, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -641,6 +661,10 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
     ],
+    # WS-64 OP-6d — who gets a report, and when
+    "add_report_recipient": [{"report_id": UUID, "recipient": "priya@x.io"}],
+    "remove_report_recipient": [{"report_id": UUID, "recipient": "pm@fracktal.in"}],
+    "set_report_schedule": [{"report_id": UUID, "enabled": True}],
     # WS-64 OP-6a — a new area of the member's own
     "create_area": [{"name": "Garden"}],
     # S4 — the forms: an editable card, then the class B card
@@ -726,6 +750,9 @@ _ONE_ID: dict[str, str] = {
     "attach_to_task": "task_id",
     "grant_access": "subject",
     "revoke_access": "grant",
+    "add_report_recipient": "recipient",
+    "remove_report_recipient": "recipient",
+    "set_report_schedule": "report_id",
 }
 
 
@@ -855,6 +882,12 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "create_area",
             "rename_area",
             "delete_area",
+            # WS-64 OP-6d: a report is named by its name, as report_delete is. The
+            # recipient tools' own tests (test_projects_report_delivery_tools.py)
+            # pin the name, the address and the schedule on the card.
+            "add_report_recipient",
+            "remove_report_recipient",
+            "set_report_schedule",
         )
     ),
 )
@@ -1550,7 +1583,8 @@ def test_the_enum_tuples_match_the_gateway() -> None:
 
 
 def _canonical_names(fn: ast.AST) -> set[str]:
-    """Names bound from `uuid_of(...)`, or unpacked first from `_task`/`_node`."""
+    """Names bound from `uuid_of(...)` or `_path_address(...)` (WS-64 OP-6d: a recipient
+    address as one encoded segment), or unpacked first from `_task`/`_node`."""
     safe: set[str] = set()
     for node in ast.walk(fn):
         if not isinstance(node, ast.Assign):
@@ -1560,7 +1594,7 @@ def _canonical_names(fn: ast.AST) -> set[str]:
         if not isinstance(call, ast.Call):
             continue
         callee = getattr(call.func, "id", "")
-        if callee == "uuid_of":
+        if callee in ("uuid_of", "_path_address"):
             safe.update(t.id for t in node.targets if isinstance(t, ast.Name))
         elif callee in ("_task", "_node"):
             for target in node.targets:

@@ -1659,6 +1659,67 @@ async def report_list() -> str:
     return "\n".join(out)
 
 
+#: WS-64 OP-6d. The send switch of the deployment is the owner's (CLAUDE.md §3a
+#: rule 3). No tool reads it or sets it, and ``test_projects_report_delivery_tools.py``
+#: fails when the skill or the instructions name it. The schedule route answers
+#: ``delivery_armed_on_this_deployment``, and the Reports app shows that field.
+#: A card has no such answer before the write, so it says what may be true.
+DELIVERY_MAY_BE_OFF = (
+    "Delivery may be switched off. Metorite emails a report only when the "
+    "owner has switched delivery on for the deployment."
+)
+DELIVERY_OFF = "Reports are not emailed yet: delivery is switched off."
+#: Says only what the deployment says. No job sends a report yet (the send
+#: path ``reportEmail.ts`` has no caller), so the receipt claims no email.
+DELIVERY_ON = "Delivery is switched on for this deployment."
+
+#: The words of the schedule in the card. ``reports.SCHEDULES`` holds one: weekly.
+SCHEDULE_WORDS = {"weekly": "every week"}
+
+
+async def _names_of(emails: list[str]) -> dict[str, str]:
+    """Display names by lower-case address. A person the directory lacks has none."""
+    wanted = [e for e in emails if e]
+    if not wanted:
+        return {}
+    labels = (await get("/projects/people/names", {"emails": ",".join(wanted)})) or {}
+    names = labels.get("names") or {}
+    return {str(k).lower(): str(v) for k, v in names.items() if v}
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def report_recipients(report_id: str) -> str:
+    """Who one saved report goes to, and whether its schedule is armed. Each
+    recipient shows the address and the name the directory holds. Adding and
+    removing a recipient, and arming the schedule, need a card of their own.
+    Nothing here sends mail."""
+    rid = uuid_of(report_id, "report_id")
+    report = (await get(f"/projects/reports/{rid}")) or {}
+    payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
+    rows = payload.get("recipients") or []
+    names = await _names_of([str(r.get("recipient") or "").lower() for r in rows])
+    armed = bool(report.get("enabled"))
+    out = [
+        legend(),
+        f"Report {data(report.get('name'))} (full_id: {rid}) · {len(rows)} recipients",
+        "  schedule: "
+        + (SCHEDULE_WORDS.get(str(report.get("schedule")), "on") if armed else "off"),
+    ]
+    for r in rows:
+        email = str(r.get("recipient") or "")
+        name = names.get(email.lower())
+        out.append(
+            f"- {data(email)} · {data(name) if name else 'not in the directory'}"
+            f" · added by {data(r.get('added_by') or '?')}"
+        )
+    if not rows:
+        out.append("(nobody receives this report)")
+    if report.get("can_edit") is False:
+        out.append("The member may read this list and may not change it.")
+    out.append(DELIVERY_MAY_BE_OFF)
+    return "\n".join(out)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview

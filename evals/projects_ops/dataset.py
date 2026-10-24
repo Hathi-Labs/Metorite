@@ -23,6 +23,8 @@ The facts that the tasks lean on:
 * The member waits on Priya for #4 in Launch, a task they handed to her
   (PO-15, WS-64 OP-6c). The member uploaded launch-brief.pdf to the chat of
   PO-17, and #6 in Launch takes it.
+* The member wrote the report «Weekly delivery», and the member alone is on its
+  list. Priya wrote «Board pack» (PO-21 to PO-25, WS-64 OP-6d).
 * The member leads Launch and not Ops. Launch has one grant, to Priya (PO-18
   to PO-20, WS-64 OP-6b).
 
@@ -179,6 +181,11 @@ LED_PROJECTS = frozenset({"Launch"})
 #: The file the member uploaded to the chat of PO-17 (WS-64 OP-6c).
 UPLOAD_NAME = "launch-brief.pdf"
 UPLOAD_BYTES = b"%PDF-1.4\n% the launch brief of the eval\n%%EOF\n"
+
+#: WS-64 OP-6d. The member wrote the weekly report, so the member may change who gets it
+#: (PO-21 to PO-24). Priya wrote the board pack, so the route refuses the member (PO-25).
+REPORT_WEEKLY = "Weekly delivery"
+REPORT_BOARD = "Board pack"
 
 MEMBER = Member("asha.iyer@eval.example", "Asha Iyer")
 #: A second member. PO-3's email comes from her.

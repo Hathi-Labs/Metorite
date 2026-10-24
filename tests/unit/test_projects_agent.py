@@ -156,6 +156,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "analytics_finished": [{"weeks": 2, "skip_current_week": True}],
     "analytics_outlook": [{"project_id": UUID}],
     "report_list": [{}],
+    # WS-64 OP-6d: who a report goes to, and whether its schedule is on.
+    "report_recipients": [{"report_id": UUID}],
     "report_render": [{"report_id": UUID}],
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],
