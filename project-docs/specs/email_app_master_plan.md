@@ -21233,6 +21233,46 @@ fences the run with writes on.
 **Fences.** `tests/unit/test_wac_email_confirm.py` and
 `tests/unit/test_wac_email_confirm_r8.py` (R8).
 
+### 21.13 Look-alike letters (H-393, 2026-10-24)
+
+**Status: BUILT on the branch `email-single-mailbox-a`, not merged.** No
+migration and no switch. It closes HANDOFF H-393 and the open P2 of 21.10.
+
+**The rule.** A Cyrillic "а" in a Latin word looks like a Latin "a" on a
+card. A model can hide member data in such letters, or in an invisible
+character inside a word. So each chat send refuses such a word in a held
+chat. In other chats the card shows a warning, and the member decides.
+
+- **The one test.** `acb_skills.reply_card.lookalike_words` reads each word.
+  A word is a run of letters, marks and invisible characters. The test
+  names a word when its letters come from two scripts, or when it holds an
+  invisible character.
+- **Real text passes.** A text in one script passes: Hindi, Russian, Greek.
+  Kanji, hiragana, katakana and Hangul do not count, because Japanese mixes
+  them in one word. In a word with no Latin letter, ZWNJ and ZWJ are
+  writing, as in Persian and Malayalam. Digits and marks do not count.
+- **One table.** The refusal names the Latin letter that the odd letter
+  looks like. That letter comes from `held_card._CONFUSABLE` through
+  `held_card.confusable_of`, the table of the look-alike domain flag.
+- **One sentence.** The refusal names the word, the script, the letter and
+  its code point, for example "U+0430, it looks like the Latin a".
+
+**Where it runs.**
+
+| Path | Held chat | Other chat |
+|---|---|---|
+| `compose_reply` | Refused: the agreed text before any draft, the drafted text before the card, and the member's text before the act | A notice on the card |
+| `send_draft`, `schedule_send` | Refused at the card, for the subject and the sealed text (`_sealed_card`) | A warning first in the card detail |
+| The held card: `send_draft`, `schedule_send`, `forward_email`, `send_email` | Refused by the gateway (`held_card.refuse_lookalike`): the draft subject and text, the note, the new subject and text | Not reached |
+| `forward_email`, `send_email` | Held, so not reached | A warning on the card |
+
+The subject of a reply card is not checked. The server derives it from the
+mail, so the model cannot write it. A held chat also refuses a draft that
+quotes a mail with such a word. That costs a reply to a phishing mail,
+and it is the safe side.
+
+**Fence.** `tests/unit/test_lookalike_letters.py`.
+
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 
 **Status: wave 1 BUILT on the branch `email-chat-parity-w1`. Wave 2 BUILT on the branch

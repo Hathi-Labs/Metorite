@@ -836,6 +836,18 @@ def _refuse_hidden_draft(row: Any) -> None:
         raise HTTPException(status_code=422, detail=exc.detail) from None
 
 
+def refuse_lookalike(texts: dict[str, str]) -> None:
+    """422 for a text with a word that mixes scripts, or with an invisible
+    character inside a word (H-393, §21.13). Each route of this module serves a
+    held chat, so it refuses and never warns. The detail names the word and
+    the letter in one sentence (``reply_card.lookalike_refusal``)."""
+    from acb_skills.reply_card import lookalike_refusal
+
+    why = lookalike_refusal(texts)
+    if why:
+        raise HTTPException(status_code=422, detail=why)
+
+
 def _refuse_new_bcc(rows: Sequence[dict[str, Any]]) -> None:
     if any(r["kind"] == KIND_BCC and r["class"] == CLASS_NEW for r in rows):
         raise HTTPException(status_code=422, detail=BCC_NEW_REFUSED)
@@ -922,6 +934,8 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         if row is None:
             raise HTTPException(status_code=404, detail="Draft not found")
         _refuse_hidden_draft(row)
+        refuse_lookalike({"subject": str(row.subject or ""),
+                          "text": str(row.body_text or "")})
         lists = _lists_of(row)
         _check_lists(lists)
         # Every sender guards the look-alike flag. Only a trusted sender
@@ -1264,6 +1278,7 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
     _refuse_bad_draft_id(req.message_id)
     lists = _people(req)
     note = _clean_text(req.note)
+    refuse_lookalike({"note": note})
     async with _tenant_session() as db:
         mail = (await db.execute(text(FORWARD_MAIL_SQL),
                                  {"mid": req.message_id, "uid": owner})).fetchone()
@@ -1303,6 +1318,7 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     if not body:
         raise HTTPException(status_code=422, detail="The email has no text, so nothing was sent.")
     subject = _clean_subject(req.subject)
+    refuse_lookalike({"subject": subject, "text": body})
     from acb_skills.held_card import is_metorite_file_ref
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
 

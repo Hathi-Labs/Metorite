@@ -106,6 +106,24 @@ def _held_card_mode() -> bool:
     return held_card_send_enabled() and _egress_held()
 
 
+def _lookalike_check(texts: dict[str, Any]) -> tuple[str | None, str | None]:
+    """``(refusal, warning)`` for the text of a chat send (H-393, §21.13).
+
+    A word that mixes scripts, such as a Cyrillic letter in a Latin word, or
+    a word with an invisible character, is refused in a held run, and the
+    refusal names the word and the letter. Outside a held run the card shows
+    the warning instead. ``acb_skills.reply_card.lookalike_words`` is the one
+    test. An older platform with no test checks nothing."""
+    try:
+        from acb_skills.reply_card import lookalike_refusal, lookalike_warning
+    except ImportError:
+        return None, None
+    clean = {k: str(v or "") for k, v in texts.items() if v}
+    if _egress_held():
+        return lookalike_refusal(clean), None
+    return None, lookalike_warning(clean)
+
+
 def _egress_held_answer(act: str) -> str:
     """The answer of a rule tool that refuses its outward part in a held run.
     It starts "Nothing changed.", so the chat card draws an act that did not
@@ -2476,6 +2494,15 @@ _REPLY_NEW_UNTICKED_NOTICE = (
     "starts unticked, so it gets nothing unless you tick it.")
 
 
+def _add_card_notice(form: dict[str, Any], line: str) -> None:
+    """Put *line* on a reply form: a notice while the card has room for one
+    (four at most, ``ask_tools.clean_reply_form``), else first in the note."""
+    if len(form["notices"]) < 4:
+        form["notices"].append(line)
+    else:
+        form["note"] = f"{line} {form['note']}".strip()
+
+
 def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
     """Put the server's classes on a reply form of a held run (§21).
 
@@ -2590,6 +2617,11 @@ async def compose_reply(
         # The tick boxes: the server starts each new address unticked, and the
         # draft in Drafts leaves it out, so the draft holds what the card sends.
         steer["untick_new"] = True
+    # H-393 (§21.13): a held run refuses a look-alike word before any draft
+    # is written. Outside a held run the card warns, below.
+    refusal, _warn = _lookalike_check({"text": draft})
+    if refusal:
+        return refusal
     asked = [str(a).strip() for a in (cc or []) if str(a or "").strip()]
     if asked:
         if _egress_held() and not held_cards:
@@ -2601,6 +2633,11 @@ async def compose_reply(
     form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if held_cards:
         _held_reply_form(form, prep)
+    refusal, warning = _lookalike_check({"text": form["body"]})
+    if refusal:
+        return refusal
+    if warning:
+        _add_card_notice(form, warning)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     card_id = str(prep.get("card_id") or "")
     gone = _left_out_text(form)
@@ -2635,6 +2672,12 @@ async def compose_reply(
     if answer.responder and member and answer.responder.strip().lower() != member:
         return ("Nothing was sent. Another member answered this card, "
                 "and only the member who asked can send this reply.")
+    # H-393: the text that the member posted is checked again, because the
+    # member can edit it on the card. A held run sends no look-alike word.
+    choice = getattr(answer, "choice", None)
+    refusal, _warn = _lookalike_check({"text": getattr(choice, "body", "")})
+    if refusal:
+        return refusal.replace("Not sent.", "Nothing was sent or saved.", 1)
     res = await _post("/email/reply-card/act", {
         "message_id": email_id,
         "card_request_id": answer.request_id,
@@ -5847,6 +5890,13 @@ async def send_email(
         usual = await _usual_mailbox_note(account_id, to[0])
         if usual:
             reply_notices.append(usual)
+    # H-393 (§21.13): a held run never reaches this path (it goes through the
+    # held card, which refuses). So the card warns about a look-alike word.
+    refusal, warning = _lookalike_check({"subject": subject, "text": body})
+    if refusal:
+        return refusal
+    if warning:
+        reply_notices.insert(0, warning)
 
     payload: dict[str, Any] = {
         "account_id": account_id,
@@ -6143,6 +6193,10 @@ async def forward_email(
         carried = mail_files if include_attachments else []
     subject = _card_text(orig.get("subject") or "(no subject)", 120)
     shown_files = _forward_files(carried)
+    # H-393 (§21.13): the note is the one text that the model writes here.
+    refusal, warning = _lookalike_check({"note": note})
+    if refusal:
+        return refusal.replace("Not sent", "Not forwarded", 1)
 
     from acb_skills.ask_tools import request_confirmation
     approved = await request_confirmation(
@@ -6152,7 +6206,8 @@ async def forward_email(
         # files last (verifier F1).
         detail=_card_detail(sender, to=to, files=shown_files, subject=subject),
         context=_card_context(
-            _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
+            _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried))
+            + (f"\n{warning}" if warning else ""),
             note),
         close_on_steer=True,
     )
@@ -6473,6 +6528,14 @@ async def _sealed_card(
     detail, context = _draft_card(sender, seal.get("subject"), lists)
     if not context:
         return too_many
+    # H-393 (§21.13): the subject and the text that the seal covers. A held
+    # run refuses a look-alike word, and any other run warns first on the card.
+    refusal, warning = _lookalike_check({"subject": seal.get("subject"),
+                                         "text": seal.get("body_text")})
+    if refusal:
+        return refusal.replace("Not sent", lead, 1)
+    if warning:
+        detail = f"{warning} {detail}"
     context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"),
                                whole=True)
     if context:
