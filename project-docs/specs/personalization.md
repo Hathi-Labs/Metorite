@@ -22,6 +22,10 @@ of §5.3 and the form of address of §5.2. `GET
 /auth/me/assistant-profile/address` gives My Day the same name, behind
 `NEXT_PUBLIC_ASSISTANT_PROFILE`.
 
+**PZ-6a BUILT 2026-10-24, dark.** The four write tools of §5.5, the Undo
+card, the refusal while `learning` is off, and the write-origin fence. §5.5
+"As built" holds the detail.
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -420,6 +424,44 @@ that person. It never saves from a forwarded mail, a file or a tool result.
 a fact the member asks to keep goes to the profile, and nothing else goes
 there.
 
+**As built (PZ-6a, 2026-10-24, dark).** The orchestrator holds the four
+tools only while `ASSISTANT_PROFILE_ENABLED` is on. They live in
+`acb_skills/profile_tools.py`, beside `resolve_person`. Each calls the PZ-1
+routes as the member, with the internal bearer and `X-User-Email`.
+
+- **The tools.** `profile_remember(text, kind)` refuses a kind outside the
+  five, so it never saves an opinion. An exact copy of a stored fact of the
+  same kind writes nothing and answers "Already saved.". A save lists the
+  other facts of its kind as data, so the model can see a conflict. PZ-6b
+  acts on that conflict. `profile_forget(id)` deletes one fact.
+  `profile_set(key, value)` reads the profile, merges the changed fields into
+  `address` or `style`, and saves the whole object. A null field clears it.
+  `profile_alias(alias, email)` adds or changes an alias, and an empty
+  address removes it.
+- **The Undo line.** Each result ends with one machine line,
+  `undo: {"v":1,…}`. It carries the inverse call and the prior value.
+  `ProfileToolCards.tsx` reads it, never shows it, and gives the receipt an
+  Undo button. The button calls the relays under
+  `/api/auth/me/assistant-profile`. The server keeps no undo store.
+- **WhatsApp Undo is a spoken undo.** WhatsApp shows no card. The text
+  before the line names the inverse call. The member says "undo that", and
+  the model makes that call.
+- **The header `X-Profile-Via`.** Only the tools send it, as `chat` or
+  `whatsapp`, and the web relay does not forward it. With it, a write
+  refuses with 409 `learning_off` while `learning` is false. A PUT of
+  `learning` is a 422, and a new fact takes the channel as its `source`.
+  Without it, a write is a Settings write, so Settings works with
+  `learning` off. The header can only restrict or label.
+- **`WRITES_OPEN`.** This ContextVar in `acb_common.assistant_profile` is
+  False by default. The executor sets it True only for a solo room, a
+  verified member, and a run with no `no_egress`. A delegated, background,
+  scheduled, workflow or shared-room run keeps False, and each tool then
+  refuses. A tool also refuses in a session that read an untrusted answer.
+  Fence: `tests/unit/test_profile_write_tools.py`.
+- **ADVISORY: only the member's own words.** No test can prove that a save
+  holds only what the member said about themselves. The tool docstrings and
+  the orchestrator prompt line carry the rule, and the PZ-10 eval measures it.
+
 ---
 
 ## 6. Identity across channels
@@ -494,7 +536,7 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | A unit test pins the line of each length and the language, and the overlay line. The eval of PZ-10 does not exist yet. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order and the rule of no placeholder. An R8 test shows that no person of another org answers. A test shows the part-of-day line only with a greeting. My Day shows the fetched name. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
-| **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value | AGENT-SAFE · MEDIUM |
+| **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value **PZ-6a BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all, the switch, and the purge when access ends | A real-database test for each. A removed member leaves no profile | AGENT-SAFE · **HIGH** (a member write) |
