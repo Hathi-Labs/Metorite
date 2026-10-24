@@ -17,7 +17,11 @@ The fences:
 * ``test_gmail_scopes_are_exactly_the_two`` pins the list.
 * ``test_the_tree_names_only_the_two_gmail_scopes`` reads each file that git
   knows, except ``tests/``, ``project-docs/`` and ``docs/``. The only hits it
-  allows are the two lines of ``GMAIL_SCOPES``.
+  allows are the two lines of ``GMAIL_SCOPES``, and the Drive scope lists of
+  the one Google client (WS-61 KC-1a, D112: ``DRIVE_READONLY`` and
+  ``ALLOWED_SCOPES`` in ``kb_sources/google_drive/auth.py``). Those lists have
+  their own fence, ``test_kc_sources_read_only_scopes.py``, which refuses any
+  scope that is not read only.
 * ``test_the_retired_oauth_route_has_no_google_entry`` pins the route table.
 * ``test_no_gmail_service_account_setting_or_integration`` and its siblings
   pin each removed part, and that an old env file still loads.
@@ -107,6 +111,34 @@ def _scope_lines() -> tuple[Path, range]:
     raise AssertionError("GMAIL_SCOPES has no assignment in providers/gmail.py")
 
 
+#: WS-61 KC-1a (D112): the Drive source uses the one Google client, so its
+#: scope lists are the second place a Google scope may appear. Only the two
+#: assignments below, by AST, so a Drive scope anywhere else still fails.
+DRIVE_SCOPE_FILE = (REPO / "apps" / "services" / "gateway" / "gateway" / "kb_sources"
+                    / "google_drive" / "auth.py")
+DRIVE_SCOPE_NAMES = ("DRIVE_READONLY", "ALLOWED_SCOPES")
+#: The Google scope URLs that those two assignments hold: drive.readonly and
+#: the two URL forms of the identity scopes.
+DRIVE_SCOPE_URLS = 3
+
+
+def _drive_scope_lines() -> set[int]:
+    """The lines of the two Drive scope assignments of the one Google client."""
+    tree = ast.parse(DRIVE_SCOPE_FILE.read_text(encoding="utf-8"))
+    lines: set[int] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id in DRIVE_SCOPE_NAMES for t in targets):
+            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    assert lines, "the Drive scope lists moved out of kb_sources/google_drive/auth.py"
+    return lines
+
+
 def _walk() -> list[Path]:
     files: list[Path] = []
     for rel in _git_files():
@@ -145,19 +177,25 @@ def test_gmail_scopes_are_exactly_the_two() -> None:
 
 def test_the_tree_names_only_the_two_gmail_scopes() -> None:
     scope_file, scope_range = _scope_lines()
+    drive_file, drive_lines = DRIVE_SCOPE_FILE.resolve(), _drive_scope_lines()
     hits = _scope_hits()
     stray = [
         f"{path.relative_to(REPO)}:{number}: {line}"
         for path, number, line in hits
         if not (path == scope_file and number in scope_range)
+        and not (path == drive_file and number in drive_lines)
     ]
     assert stray == [], (
-        "a Google scope string outside GMAIL_SCOPES. The Gmail app asks for "
-        "one set of scopes (D-EM-31, EM-G11b):\n" + "\n".join(stray)
+        "a Google scope string outside GMAIL_SCOPES and the Drive scope lists. "
+        "The Gmail app asks for one set of scopes (D-EM-31, EM-G11b):\n"
+        + "\n".join(stray)
     )
-    # The companion: the walk must find the two real lines, or it reads
-    # nothing and passes for that reason.
-    assert len(hits) == len(D_EM_31_SCOPES), hits
+    # The companion: the walk must find the real lines, or it reads nothing
+    # and passes for that reason.
+    gmail_hits = [h for h in hits if h[0] == scope_file]
+    drive_hits = [h for h in hits if h[0] == drive_file]
+    assert len(gmail_hits) == len(D_EM_31_SCOPES), hits
+    assert len(drive_hits) == DRIVE_SCOPE_URLS, drive_hits
 
 
 # ── The retired OAuth route ─────────────────────────────────────────────────
