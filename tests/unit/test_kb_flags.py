@@ -58,6 +58,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/gaps", None),
     ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
     ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
+    ("POST", f"/knowledge/gaps/{OTHER}/reopen", None),
 ]
 
 
