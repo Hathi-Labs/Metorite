@@ -33,6 +33,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
     _log,
@@ -59,10 +60,14 @@ READ_FOR_UPDATE_SQL = READ_SQL + " FOR UPDATE"
 #: The answer when the list changed after the caller read it (review P2).
 VERSION_CHANGED = ("Nothing changed. The always-copy rules changed after you read them. "
                    "Read them again, and make the change on the new list.")
-#: The one writer. A mailbox with no settings row gets one with the defaults.
+#: The one writer. A mailbox with no settings row gets one that keeps what
+#: auto-run and the reply drafts read now: the column default of ``auto_run``
+#: is false, and a first row that omitted it turned OFF the mailbox's rules
+#: (test_email_background_writes, the same rule as the writing-style save).
 WRITE_SQL = (
-    "INSERT INTO email_assistant_settings (account_id, always_copy, updated_at) "
-    "VALUES (CAST(:aid AS uuid), CAST(:rules AS jsonb), now()) "
+    "INSERT INTO email_assistant_settings "
+    "(account_id, always_copy, draft_replies, auto_run, updated_at) "
+    "VALUES (CAST(:aid AS uuid), CAST(:rules AS jsonb), :dr, :auto, now()) "
     "ON CONFLICT (account_id) DO UPDATE SET always_copy = EXCLUDED.always_copy, "
     "updated_at = now()")
 
@@ -226,6 +231,8 @@ async def get_always_copy(
 ) -> dict[str, Any]:
     """The always-copy rules of one mailbox of the caller. A read."""
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(
+            db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         rules = await read_rules(db, account_id)
         return {"account_id": account_id, "rules": rules, "version": version_of(rules)}
@@ -241,6 +248,7 @@ async def match_always_copy(
     of a new mail (§21.16). A read: it writes nothing and sends nothing."""
     owner = user.email or "anonymous"
     async with _tenant_session() as db:
+        account_id = await resolve_account_filter(db, account_id, owner, required=True)
         await _assert_account_owner(db, account_id, owner)
         found = await always_copy_people(db, owner, account_id, people[:100],
                                          skip=[*people, owner])
@@ -285,6 +293,11 @@ async def put_always_copy(
             raise HTTPException(status_code=422, detail=(
                 f"Nothing changed. {stranger[0]} is not a colleague, and you never wrote "
                 "to them. A rule copies only a colleague or a person you wrote to before."))
-        await db.execute(text(WRITE_SQL), {"aid": req.account_id, "rules": json.dumps(rules)})
+        from gateway.routes.email.automation.rules import auto_run_on, reply_rule_drafts
+
+        await db.execute(text(WRITE_SQL), {
+            "aid": req.account_id, "rules": json.dumps(rules),
+            "dr": await reply_rule_drafts(db, req.account_id),
+            "auto": await auto_run_on(db, req.account_id)})
     _log.info("email.always_copy_saved", rules=len(rules), people=len(people))
     return {"account_id": req.account_id, "rules": rules, "version": version_of(rules)}

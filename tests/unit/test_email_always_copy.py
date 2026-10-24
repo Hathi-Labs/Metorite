@@ -106,6 +106,15 @@ def routes(monkeypatch) -> _SettingsDb:
     async def owner_ok(*_a: Any, **_k: Any) -> None:
         return None
 
+    # The first settings row keeps what auto-run and the reply drafts read now.
+    from gateway.routes.email.automation import rules as rules_mod
+
+    async def _on(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(rules_mod, "auto_run_on", _on)
+    monkeypatch.setattr(rules_mod, "reply_rule_drafts", _on)
+
     async def me(_db: Any, _aid: str) -> Any:
         return types.SimpleNamespace(self_addresses=frozenset({MEMBER}), address=MEMBER,
                                      label="Work")

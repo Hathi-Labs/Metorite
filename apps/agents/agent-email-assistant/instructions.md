@@ -353,6 +353,8 @@ the Email app for it.
    call as any `cc`. The card shows them under "Bcc (hidden from the
    others)". In a chat that read outside mail, a Bcc goes only to a
    colleague or to a person the member wrote to before.
+5. When the reply already sits in Drafts (a `draft_id` in hand), add the
+   people with `edit_draft` instead, then offer `send_draft`.
 
 **No `draft_id` in hand.** You do not remember the earlier turn. When the
 member says "send the mail out", find the newest draft first. Call
