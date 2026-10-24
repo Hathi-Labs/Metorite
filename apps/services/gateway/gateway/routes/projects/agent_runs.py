@@ -103,6 +103,8 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_STATE_SQL,
     agent_runs_enabled,
     attach_agent_state,
+    connection_gone_sql,
+    holder_free,
     lease_expired,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
@@ -1057,9 +1059,12 @@ async def list_task_agent_runs(
 #: The open run of a task, whoever holds it, with its idle time and the name
 #: of its member. At most one row exists, because the partial unique index
 #: ``pm_agent_runs_one_open_per_task`` allows one open run for each task.
+#: SW-13c: ``connection_gone`` is true when the run's agent connection is
+#: revoked or expired, and :func:`_free` then lets the gate take it over.
 _HOLDER_SQL = (
     f"SELECT r.*, {AGENT_RUN_STATE_SQL} AS state, "
     " EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s, "
+    f" {connection_gone_sql('r')} AS connection_gone, "
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
     "FROM pm_agent_runs r WHERE r.task_id = CAST(:tid AS uuid) "
@@ -1140,13 +1145,35 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     return True
 
 
-async def _gate_task(db: Any, task_id: str, me: str, *, via: str) -> Any | None:
+def _free(holder: Any) -> bool:
+    """True when *holder*, an open run of :data:`_HOLDER_SQL`, keeps its task
+    no longer: its lease ended, or its connection is revoked or expired
+    (SW-13c, ``filters.holder_free``)."""
+    return holder_free(holder.status, float(holder.idle_s),
+                       getattr(holder, "connection_gone", False) is True)
+
+
+def _agent_connection(user: UserContext) -> str | None:
+    """SW-13c. The connection of an AGENT caller, from ``UserContext.agent``,
+    which branch 0 builds from the signed ``X-Agent-Connection`` and the token
+    row. Never from a body. ``None`` for a person."""
+    agent = getattr(user, "agent", None)
+    return str(agent.connection_id) if agent is not None else None
+
+
+async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
+                     connection: str | None) -> Any | None:
     """The ONE gate of EA-14a, before any run opens on *task_id*.
 
     * The caller's own open run (same member, same client, EA12-6): that run.
+      SW-13c: for an AGENT caller, *connection* is its own connection, and
+      the run must carry it too. Two machines of one member share the stamp,
+      so a run of the same member and stamp on ANOTHER connection is a
+      holder like any other. A person passes ``None`` and keeps the old rule.
     * No open run: None. The caller may insert.
-    * Another run whose lease ended (and, for a question, three leases): the
-      run moves to ``abandoned``, and None comes back.
+    * Another run whose lease ended (and, for a question, three leases), or
+      whose connection is revoked or expired (SW-13c): the run moves to
+      ``abandoned``, and None comes back.
     * Any other open run: 409 ``task_held``.
 
     There is no task row lock. The arbiter is the partial unique index
@@ -1159,7 +1186,7 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str) -> Any | None:
     """
     own = (await db.execute(
         text(_OPEN_RUN_SQL),
-        _open_run_args(task_id, me, via),
+        _open_run_args(task_id, me, via, connection),
     )).fetchone()
     if own is not None:
         return own
@@ -1169,7 +1196,7 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str) -> Any | None:
         )).fetchone()
         if holder is None:
             return None
-        if not lease_expired(holder.status, float(holder.idle_s)):
+        if not _free(holder):
             raise _task_held(holder)
         if await _take_over(db, holder, me=me, via=via):
             return None
@@ -1179,13 +1206,14 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str) -> Any | None:
 async def _clear_for_reopen(db: Any, run: Any, user: UserContext) -> None:
     """A member's prompt opens a ``completed`` run again. The task must have
     no OTHER open run, or the unique index would refuse the move with a 500.
-    A run whose lease ended is taken over, as a claim would."""
+    A run whose lease ended, or whose connection is revoked or expired
+    (SW-13c), is taken over, as a claim would."""
     holder = (await db.execute(
         text(_HOLDER_SQL), {"tid": str(run.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
     )).fetchone()
     if holder is None or str(holder.id) == str(run.id):
         return
-    if not lease_expired(holder.status, float(holder.idle_s)) or not await _take_over(
+    if not _free(holder) or not await _take_over(
         db, holder, me=_member(user), via=_agent_via(user),
     ):
         raise _task_held(holder)
@@ -1210,16 +1238,23 @@ _INSERT_RUN_SQL = (
 #: found (H-356 closed the window of EA-13a fix round 1, spec §12.2 item 1).
 #: When it gives no slug, ``mcp:<host>`` is the caller's own stamp, so the
 #: read finds that run.
+#:
+#: SW-13c: ``:cid`` is the connection of an AGENT caller, and the run must
+#: carry it. A person binds NULL, and the read keeps the old rule (member and
+#: stamp). One query for both, so the rule cannot fork.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
     "   AND r.status = ANY(:open) AND r.client_via = :via "
+    "   AND (CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)) "
     " ORDER BY r.created_at DESC LIMIT 1"
 )
 
 
-def _open_run_args(task_id: str, me: str, via: str) -> dict[str, Any]:
-    """The binds of :data:`_OPEN_RUN_SQL`."""
-    return {"tid": task_id, "me": me, "via": via,
+def _open_run_args(task_id: str, me: str, via: str,
+                   connection: str | None) -> dict[str, Any]:
+    """The binds of :data:`_OPEN_RUN_SQL`. *connection* has no default, so
+    each caller names it (SW-13c)."""
+    return {"tid": task_id, "me": me, "via": via, "cid": connection,
             "open": list(AGENT_RUN_OPEN_STATUSES)}
 
 
@@ -1301,7 +1336,12 @@ async def start_agent_run(
 
         # EA-14a: ONE AI for each task. The gate returns this caller's own
         # open run, or None for a free task, or it raises 409 `task_held`.
-        existing = await _gate_task(db, task_id, me, via=client_via)
+        # SW-13c: an agent's own run is of its own connection. A member's
+        # start keeps the old rule (member and stamp), so it binds no
+        # connection here, though its insert stores the one it names.
+        own_connection = _agent_connection(user)
+        existing = await _gate_task(db, task_id, me, via=client_via,
+                                    connection=own_connection)
         if existing is None:
             ts = await _clock(db)
             made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -1319,7 +1359,8 @@ async def start_agent_run(
                 if replay is not None:
                     response.status_code = 200
                     return replay
-                existing = await _gate_task(db, task_id, me, via=client_via)
+                existing = await _gate_task(db, task_id, me, via=client_via,
+                                            connection=own_connection)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
         if existing is not None:
@@ -1637,7 +1678,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     """
     # EA-14a: the gate returns the caller's own open run, None for a free
     # task, or raises 409 `task_held`. A lease that ended is taken over.
-    existing = await _gate_task(db, task_id, me, via=via)
+    existing = await _gate_task(db, task_id, me, via=via,
+                                connection=_agent_connection(user))
     if existing is not None:
         return str(existing.id), False
     ts = await _clock(db)
@@ -1650,7 +1692,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
         return str(made.id), True
     # A concurrent start won the open-run index. Its run is the answer when it
     # is this caller's own. Another member's run is `task_held`.
-    existing = await _gate_task(db, task_id, me, via=via)
+    existing = await _gate_task(db, task_id, me, via=via,
+                                connection=_agent_connection(user))
     return (str(existing.id) if existing is not None else None), False
 
 

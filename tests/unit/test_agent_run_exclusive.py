@@ -50,6 +50,27 @@ test red. ``G`` is ``gateway/routes/projects/agent_runs.py``, ``F`` is
   ``test_the_edge_maps_task_held_to_one_fixed_text``.
 * X12. ``F`` ``unheld_clause``: drop the lease arm.
   ``test_x12_held_by_and_unheld_in_the_task_reads``.
+
+SW-13c (one member, two machines, one stamp; spec §12.3):
+
+* Z1. ``G`` ``_OPEN_RUN_SQL``: drop the ``connection_id`` arm.
+  ``test_z1_a_live_run_of_another_connection_holds_the_task`` (R8) and
+  ``test_the_gate_binds_the_agents_connection_in_the_own_run_read``.
+* Z2. ``G`` ``_free``: ignore ``connection_gone``.
+  ``test_z3_a_revoked_or_expired_holder_is_taken_over_at_once`` (R8),
+  ``test_z5_the_reads_agree_with_the_gate_for_a_revoked_holder`` (R8) and
+  ``test_a_holder_of_a_dead_connection_is_free_and_a_live_one_holds``.
+* Z3. ``G`` ``create_agent_run``: bind the member's named connection as
+  ``own_connection``. ``test_z4_a_person_start_keeps_the_old_rule`` (R8).
+* Z4. ``F`` ``unheld_clause``: drop the ``NOT connection_gone`` arm.
+  ``test_z5_the_reads_agree_with_the_gate_for_a_revoked_holder`` (R8) and
+  ``test_one_text_of_a_dead_connection_for_the_gate_and_the_reads``.
+* Z5. ``F`` ``held_by_of``: ``lease_expired`` for ``holder_free``.
+  ``test_z5_...`` (R8) and ``test_held_by_reads_the_rule_of_the_gate``.
+* Z6. ``F`` ``holder_free``: drop the ``connection_gone`` arm.
+  ``test_the_holder_rule_frees_a_dead_connection``.
+* Z7. ``E``: "from this client" in the ``start_agent_run`` text.
+  ``test_the_tools_say_own_run_means_this_connection``.
 """
 
 from __future__ import annotations
@@ -156,6 +177,117 @@ class TestTheLeaseRule:
         assert "THEN 300 ELSE 100 END" in sql
         monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, "200")
         assert "THEN 600 ELSE 200 END" in filters.unheld_clause()
+
+
+class TestOneConnectionOneOwner:
+    """SW-13c, hermetic. The gate counts a run as the caller's own only when
+    it carries the agent's connection, and a holder whose connection is
+    revoked or expired is free. Spec §12.3."""
+
+    def test_the_holder_rule_frees_a_dead_connection(self) -> None:
+        """Z6."""
+        assert filters.holder_free("in_progress", 10, True)
+        assert filters.holder_free("awaiting", 10, True)
+        assert not filters.holder_free("in_progress", 10, False)
+        assert filters.holder_free("in_progress", 10**9, False)  # the lease still rules
+
+    def test_one_text_of_a_dead_connection_for_the_gate_and_the_reads(self) -> None:
+        """Z4. The gate, ``unheld`` and ``held_by`` read ONE fragment."""
+        assert filters.connection_gone_sql("h") in filters.unheld_clause()
+        assert "AND NOT " + filters.connection_gone_sql("h") in filters.unheld_clause()
+        assert (filters.connection_gone_sql("r") + " AS connection_gone"
+                in filters.agent_state_sql("true"))
+        assert filters.connection_gone_sql("r") + " AS connection_gone" in agent_runs._HOLDER_SQL
+        gone = filters.connection_gone_sql("x")
+        assert "x.connection_id" in gone and "revoked_at IS NOT NULL" in gone
+        assert "expires_at <= now()" in gone
+
+    def test_held_by_reads_the_rule_of_the_gate(self) -> None:
+        """Z5."""
+        hit = SimpleNamespace(member_email=ALICE, member_name="Alice", client_via=VIA,
+                              held_since=None, held_last=None, run_status="in_progress",
+                              idle_s=5.0, connection_gone=True)
+        assert filters.held_by_of(hit)["stale"] is True
+        hit.connection_gone = False
+        assert filters.held_by_of(hit)["stale"] is False
+
+    def test_the_connection_of_a_caller_comes_from_the_agent_scope(self) -> None:
+        conn = str(uuid.uuid4())
+        assert agent_runs._agent_connection(_agent(ALICE, str(uuid.uuid4()), conn, VIA)) == conn
+        assert agent_runs._agent_connection(_person(ALICE, str(uuid.uuid4()))) is None
+
+    def test_the_own_run_read_has_one_connection_arm(self) -> None:
+        assert "CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)" in (
+            agent_runs._OPEN_RUN_SQL)
+        assert agent_runs._open_run_args("t", "m", VIA, None)["cid"] is None
+        assert agent_runs._open_run_args("t", "m", VIA, "c")["cid"] == "c"
+
+    async def test_the_gate_binds_the_agents_connection_in_the_own_run_read(self) -> None:
+        """Z1, hermetic half. The fake answers the own-run read only when it
+        carries the bound connection, as the SQL does. Machine B is not
+        machine A, so it reads the holder and gets ``task_held``."""
+        conn_a, conn_b = str(uuid.uuid4()), str(uuid.uuid4())
+        run = _FakeRun(conn_a)
+        db = _FakeGateDb(run)
+        assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
+                                           connection=conn_a) is run
+        with pytest.raises(HTTPException) as held:
+            await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA, connection=conn_b)
+        assert held.value.status_code == 409
+        assert held.value.detail["error"] == "task_held"
+        # A person binds no connection and keeps the old rule.
+        assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
+                                           connection=None) is run
+
+    async def test_a_holder_of_a_dead_connection_is_free_and_a_live_one_holds(
+            self, monkeypatch) -> None:
+        """Z2, hermetic half."""
+        taken: list[Any] = []
+
+        async def take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
+            taken.append(holder)
+            return True
+
+        monkeypatch.setattr(agent_runs, "_take_over", take_over)
+        run = _FakeRun(str(uuid.uuid4()), gone=True)
+        db = _FakeGateDb(run)
+        assert await agent_runs._gate_task(
+            db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4())) is None
+        assert taken == [run]
+        run.connection_gone = False
+        with pytest.raises(HTTPException):
+            await agent_runs._gate_task(
+                db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4()))
+
+
+class _FakeRun(SimpleNamespace):
+    """One open run of Alice under :data:`VIA`, fresh, on *connection*."""
+
+    def __init__(self, connection: str, *, gone: bool = False) -> None:
+        super().__init__(
+            id=str(uuid.uuid4()), task_id=str(uuid.uuid4()), member_email=ALICE,
+            member_name="Alice Archer", client_via=VIA, connection_id=connection,
+            status="in_progress", idle_s=5.0, connection_gone=gone,
+            started_at=None, created_at=None, last_activity_at=None)
+
+
+class _FakeGateDb:
+    """Answers the two reads of ``_gate_task`` as the SQL would: the own-run
+    read by member, stamp and (when bound) connection, the holder read with
+    the one open run."""
+
+    def __init__(self, run: _FakeRun) -> None:
+        self.run = run
+
+    async def execute(self, statement: Any, params: dict[str, Any]) -> Any:
+        sql, run = str(statement), self.run
+        if sql == agent_runs._OPEN_RUN_SQL:
+            mine = (params["me"] == run.member_email and params["via"] == run.client_via
+                    and params["cid"] in (None, run.connection_id))
+            return SimpleNamespace(fetchone=lambda: run if mine else None)
+        if sql == agent_runs._HOLDER_SQL:
+            return SimpleNamespace(fetchone=lambda: run)
+        raise AssertionError(sql)
 
 
 class TestTheMigration:
@@ -272,6 +404,14 @@ class TestTheEdge:
         assert set(row) == set(tools.LIST_TASK_KEYS)
         free = tools._list_task_row({"id": str(uuid.uuid4()), "project_id": "p"}, {})
         assert free["held_by"] is None
+
+    def test_the_tools_say_own_run_means_this_connection(self) -> None:
+        """SW-13c, Z7. The own run is of this connection, not of this client."""
+        for tool in (tools.START_AGENT_RUN, tools.ASK_ON_TASK):
+            assert "from this connection" in tool.description, tool.name
+            assert "from this client" not in tool.description, tool.name
+        assert "another machine" in tools.START_AGENT_RUN.description
+        assert "own open run from this connection" in tools.CLAIM_TASK.description
 
     def test_list_tasks_takes_unheld_and_sends_it_as_a_query_flag(self) -> None:
         assert "unheld" in tools._LIST_TASKS_INPUT["properties"]
@@ -689,6 +829,111 @@ class TestOneAiForEachTask:
         ids = {r["id"] for r in listing["rows"]}
         assert free in ids and stale in ids and held not in ids
         assert {held, stale, free} <= {r["id"] for r in everything["rows"]}
+
+    # ── SW-13c: one member, two machines, one stamp ──────────────────────
+
+    async def test_z1_a_live_run_of_another_connection_holds_the_task(self, w):
+        """(a) Machine A's live run holds the task. Machine B of the same
+        member, with the same client id and so the same stamp, is refused
+        with ``task_held`` at the claim AND at the start. Mutation Z1."""
+        task = _fresh(w)
+        pc = _agent(ALICE, w.org, _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code"), VIA)
+        async with _session(w.p) as call:
+            held = (await _claim(call, w.alice, task)).json()["agent_run_id"]
+            claim = await _claim(call, pc, task)
+            start = await _start(call, pc, task)
+        for answer in (claim, start):
+            assert answer.status_code == 409, answer.text
+            detail = _detail(answer)
+            assert detail["error"] == "task_held"
+            assert detail["held_by"]["member"] == ALICE and detail["held_by"]["client_via"] == VIA
+        assert [str(r.id) for r in _open_runs(w, task)] == [held]
+
+    async def test_z2_the_same_connection_gets_its_own_run_back(self, w):
+        """(b) The control of (a): machine A gets its own run back, while a
+        second connection of the same stamp exists."""
+        task = _fresh(w)
+        _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code")
+        async with _session(w.p) as call:
+            first = (await _claim(call, w.alice, task)).json()["agent_run_id"]
+            again = await _claim(call, w.alice, task)
+            started = await _start(call, w.alice, task)
+        assert again.status_code == 200 and again.json()["agent_run_id"] == first
+        assert started.status_code == 200 and started.json()["created"] is False
+        assert started.json()["run"]["id"] == first
+
+    @pytest.mark.parametrize("how", ["revoked", "expired"])
+    async def test_z3_a_revoked_or_expired_holder_is_taken_over_at_once(self, w, how):
+        """(c) A member signs in again on the same machine: the old
+        connection is revoked (or it expired). Its run can never send a
+        heartbeat, so a claim from the new connection takes the task over at
+        once, with the line. Mutation Z2."""
+        task = _fresh(w)
+        old_conn = _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code")
+        old = _agent(ALICE, w.org, old_conn, VIA)
+        async with _session(w.p) as call:
+            old_run = (await _claim(call, old, task)).json()["agent_run_id"]
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE agent_connection SET revoked_at = now() WHERE id = CAST(:i AS uuid)"
+                if how == "revoked" else
+                "UPDATE agent_connection SET expires_at = now() - interval '1 minute' "
+                "WHERE id = CAST(:i AS uuid)"), {"i": old_conn})
+        async with _session(w.p) as call:
+            taken = await _claim(call, w.alice, task)
+        assert taken.status_code == 200, taken.text
+        new_run = taken.json()["agent_run_id"]
+        assert new_run != old_run
+        [row] = _rows(w.p, "SELECT status FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                      i=old_run)
+        assert row.status == "abandoned"
+        [line] = _rows(w.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities "
+                            "WHERE run_id = CAST(:i AS uuid)", i=old_run)
+        assert line.body == "Taken over by Alice Archer/Claude Code"
+        assert [str(r.id) for r in _open_runs(w, task)] == [new_run]
+
+    async def test_z4_a_person_start_keeps_the_old_rule(self, w):
+        """(d) A person ("Ask an agent") binds no connection in the gate. The
+        live run of the same member and stamp on another connection is still
+        the person's own run, as before SW-13c: the start answers it with
+        ``created: false`` and no 409. Mutation Z3."""
+        task = _fresh(w)
+        other = _agent(ALICE, w.org, _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code"),
+                       VIA)
+        async with _session(w.p) as call:
+            run = (await _claim(call, other, task)).json()["agent_run_id"]
+            answer = await call(w.alice_person, "POST", f"/projects/tasks/{task}/agent-runs",
+                                {"connection_id": w.conn_alice, "body": "Go on, please",
+                                 "idempotency_key": _key()})
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["created"] is False and answer.json()["run"]["id"] == run
+        assert [str(r.id) for r in _open_runs(w, task)] == [run]
+
+    async def test_z5_the_reads_agree_with_the_gate_for_a_revoked_holder(self, w):
+        """(e) One rule in three places. While the holder's connection lives,
+        ``held_by.stale`` is false, ``unheld`` leaves the task out and the
+        gate refuses. After the revoke, all three say free. Mutations Z2, Z4
+        and Z5."""
+        task = _fresh(w)
+        conn = _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code")
+        holder = _agent(ALICE, w.org, conn, VIA)
+
+        async def reads(call: Any) -> tuple[bool, bool]:
+            one = (await call(w.eve_stranger, "GET", f"/projects/tasks/{task}")).json()
+            listing = (await call(w.eve_stranger, "GET",
+                                  "/projects/tasks?unheld=true&page_size=100")).json()
+            return one["held_by"]["stale"], task in {r["id"] for r in listing["rows"]}
+
+        async with _session(w.p) as call:
+            assert (await _claim(call, holder, task)).status_code == 200
+            assert await reads(call) == (False, False)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE agent_connection SET revoked_at = now() "
+                           "WHERE id = CAST(:i AS uuid)"), {"i": conn})
+        async with _session(w.p) as call:
+            assert await reads(call) == (True, True)
+            taken = await _claim(call, w.bob, task)
+        assert taken.status_code == 200, taken.text
 
     # ── The reopen of a completed run ───────────────────────────────────
 
