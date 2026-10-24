@@ -20,7 +20,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -337,6 +336,7 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
             size="sm"
             variant="secondary"
             icon="Plus"
+            className="shrink-0 whitespace-nowrap"
             disabled={busy || !note.trim() || notes.length >= CAPS.notes}
             onClick={async () => {
               if (await v.onStyle({ notes: [...notes, note.trim()] })) setNote("");
@@ -399,7 +399,6 @@ function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
             <p className="break-words text-sm text-foreground">{f.text}</p>
           )}
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-            <Badge size="xs">{KIND_LABELS[f.kind] ?? f.kind}</Badge>
             {src ? <span>{src}</span> : null}
             {when ? <span>{when}</span> : null}
           </div>
@@ -471,6 +470,7 @@ function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
           size="sm"
           variant="secondary"
           icon="Plus"
+          className="shrink-0 whitespace-nowrap"
           loading={busy}
           disabled={busy || full || !text.trim()}
           onClick={async () => {
@@ -566,6 +566,7 @@ function AliasesSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
           size="sm"
           variant="secondary"
           icon="Plus"
+          className="shrink-0 whitespace-nowrap"
           loading={busy}
           disabled={busy || full || !alias.trim() || !email.trim()}
           onClick={async () => {
