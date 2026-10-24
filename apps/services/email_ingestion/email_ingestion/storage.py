@@ -97,6 +97,8 @@ MESSAGE_COLUMNS: tuple[str, ...] = (
     "to_addresses", "cc_addresses", "bcc_addresses", "subject", "body_text",
     "body_html", "snippet", "importance", "categories", "unsubscribe_link",
     "internet_message_id",
+    # WS-65 SM-1: the author of a local draft of a shared mailbox.
+    "drafted_by",
 )
 ATTACHMENT_COLUMNS: tuple[str, ...] = (
     "filename", "mime_type", "provider_attachment_id", "download_url",

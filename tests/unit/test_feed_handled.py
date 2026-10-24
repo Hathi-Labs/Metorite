@@ -595,7 +595,8 @@ class TestTheReadsStayInStep:
 
         sql = " ".join(runner._APPLIED_SINCE_SQL.split())
         assert "er.status = 'APPLIED'" in sql
-        assert "WHERE user_id = :uid" in sql  # the owner predicate
+        # The owner predicate, from the one mailbox seam (WS-65 SM-2).
+        assert "WHERE {owner}" in sql
         assert "folder" not in sql  # a rule may have put the mail in the trash
         assert sql.endswith("LIMIT :limit")
 

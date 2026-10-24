@@ -60,6 +60,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.transport.attachments import (
     BINARY_REDIS_GATE_SIZE,
     _binary_redis_gate,
@@ -322,7 +323,8 @@ async def _read_pictures(
                 """SELECT ea.provider, ea.credentials_encrypted
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
-                   WHERE em.id = :mid AND ea.user_id = :user_id"""
+                   WHERE em.id = :mid AND """
+                + mailbox_predicate("ea", uid="user_id", level="read")
             ),
             {"mid": row_id, "user_id": user.email or "anonymous"},
         )).fetchone()
@@ -422,7 +424,8 @@ async def get_inline_image(
                                       ea.provider
                                FROM email_messages em
                                JOIN email_accounts ea ON em.account_id = ea.id
-                               WHERE em.id = :mid AND ea.user_id = :user_id"""
+                               WHERE em.id = :mid AND """
+                            + mailbox_predicate("ea", uid="user_id", level="read")
                         ),
                         {"mid": mid, "user_id": user.email or "anonymous"},
                     )).fetchone()

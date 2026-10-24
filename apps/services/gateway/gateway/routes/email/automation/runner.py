@@ -10,20 +10,8 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
-from gateway.routes.email.automation.assistant import _load_assistant_about
-from gateway.routes.email.automation.engine import (
-    _MOVE_ACTIONS,
-    LLMUnavailable,
-    _email_payload_from_id,
-    _is_conversation_status_rule,
-    _match_email_to_rule,
-    _match_email_to_rules_multi,
-    ask_rule_match,
-    classify_matches,
-    email_dict_from_row,
-    read_classification,
-    resolve_classification,
-)
+from gateway.routes.email.account_ref import resolve_account_filter
+
 # Re-exported action machinery (2.3 split): the lazy importers (cleaner sweep,
 # senders, rules) and the tests address these through the runner seam, and the
 # apply loop below calls them via this module's namespace — so a test patching
@@ -39,6 +27,20 @@ from gateway.routes.email.automation.actions import (  # noqa: F401
     mirror_label,
     push_label,
     remove_label,
+)
+from gateway.routes.email.automation.assistant import _load_assistant_about
+from gateway.routes.email.automation.engine import (
+    _MOVE_ACTIONS,
+    LLMUnavailable,
+    _email_payload_from_id,
+    _is_conversation_status_rule,
+    _match_email_to_rule,
+    _match_email_to_rules_multi,
+    ask_rule_match,
+    classify_matches,
+    email_dict_from_row,
+    read_classification,
+    resolve_classification,
 )
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
@@ -57,20 +59,20 @@ from gateway.routes.email.automation.rules import (
     proposes_only,
 )
 from gateway.routes.email.automation.senders import _maybe_block_cold
-from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _date_range_clause,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _parse_iso_date,
     _persist_rotated_creds,
     _provider_for_account,
     _savepoint,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -199,7 +201,7 @@ SELECT id, account_id, message_id, subject, rule_name, created_at FROM (
            er.created_at
       FROM email_executed_rules er
      WHERE er.account_id IN (SELECT id FROM email_accounts
-                              WHERE user_id = :uid
+                              WHERE {owner}
                                 AND id = ANY(CAST(:ids AS uuid[])))
        AND er.status = 'APPLIED'
        AND er.created_at >= CAST(:since AS timestamptz)
@@ -229,7 +231,8 @@ async def applied_rules_since(
     if not ids:
         return []
     async with _tenant_session() as db:
-        rows = (await db.execute(text(_APPLIED_SINCE_SQL), {
+        rows = (await db.execute(text(_APPLIED_SINCE_SQL.format(
+                owner=mailbox_predicate(uid="uid", level="read"))), {
             "uid": user.email or "anonymous", "ids": ids, "since": since,
             "limit": max(1, int(limit)),
         })).fetchall()
@@ -260,7 +263,8 @@ async def rules_history(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "limit": limit}
-        scope = ("er.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid")
+        scope = ("er.account_id IN (SELECT id FROM email_accounts WHERE "
+                 + mailbox_predicate(uid="uid", level="read"))
         if account_id:
             scope += " AND id = :aid"
             params["aid"] = account_id
@@ -374,7 +378,8 @@ async def message_timeline(
                       em.from_address ->> 'name' AS from_name
                FROM email_messages em
                JOIN email_accounts ea ON ea.id = em.account_id
-               WHERE em.id = :mid AND ea.user_id = :uid"""
+               WHERE em.id = :mid AND """
+            + mailbox_predicate("ea", uid="uid", level="read")
         ), {"mid": message_id, "uid": user.email or "anonymous"})).fetchone()
         if msg is None:
             raise HTTPException(status_code=404, detail="Message not found")
@@ -596,7 +601,8 @@ async def approve_execution(
                FROM email_executed_rules er
                JOIN email_accounts ea ON er.account_id = ea.id
                LEFT JOIN email_messages em ON er.message_id = em.id
-               WHERE er.id = :eid AND ea.user_id = :uid"""
+               WHERE er.id = :eid AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"eid": exec_id, "uid": user.email or "anonymous"})).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Execution not found")
@@ -649,7 +655,9 @@ async def reject_execution(
                SET status = 'REJECTED'
                FROM email_accounts ea
                WHERE er.id = :eid AND er.account_id = ea.id
-                 AND ea.user_id = :uid AND er.status = 'PENDING'"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
+            + " AND er.status = 'PENDING'"
         ), {"eid": exec_id, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Pending execution not found")
@@ -670,7 +678,8 @@ async def undo_execution(
                       ea.credentials_encrypted
                FROM email_executed_rules er
                JOIN email_accounts ea ON er.account_id = ea.id
-               WHERE er.id = :eid AND ea.user_id = :uid"""
+               WHERE er.id = :eid AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"eid": exec_id, "uid": user.email or "anonymous"})).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Execution not found")

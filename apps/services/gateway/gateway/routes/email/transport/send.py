@@ -16,6 +16,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -306,7 +307,8 @@ async def _reply_target(
     row = (await db.execute(text(
         "SELECT em.provider_message_id, em.thread_id FROM email_messages em "
         "JOIN email_accounts ea ON ea.id = em.account_id "
-        "WHERE em.account_id = CAST(:aid AS uuid) AND ea.user_id = :uid "
+        "WHERE em.account_id = CAST(:aid AS uuid) AND "
+        + mailbox_predicate("ea", uid="uid", level="send") + " "
         f"AND {match} "
         "ORDER BY (em.provider_message_id = :rid) DESC LIMIT 1"
     ), params)).fetchone()

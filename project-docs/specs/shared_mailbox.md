@@ -1,7 +1,8 @@
 # Shared mailbox — one company address that several members work from
 
-**Status: ACTIVE (2026-10-23). The owner answered §1 on 2026-10-23. SM-1 and SM-2 dispatch
-first.** Verified against the code of `origin/main` at `f72fafb92` on 2026-10-23.
+**Status: ACTIVE (2026-10-23). The owner answered §1 on 2026-10-23. SM-1 and SM-2 are
+BUILT on the branch `ws65-sm1-sm2`, not merged.** Verified against the code of `origin/main`
+at `f72fafb92` on 2026-10-23.
 
 **Origin:** owner decision, 2026-10-23: "Spec a shared mailbox". The example is
 `sales@fracktal.in`, which several members of one organization read and answer.
@@ -495,8 +496,8 @@ Each ships dark behind `EMAIL_SHARED_MAILBOX` (default OFF). Run the database fi
 | Id | Gate | What | Done when | Verification |
 |---|---|---|---|---|
 | **SM-0** | ✅ DONE 2026-10-23 | The owner answered §1 and accepted D-SM-1 to D-SM-9 | Each question has an answer in this file, and a WS row exists in `work_plan.md` §2 | Read §1 |
-| **SM-1** | 🟢 AGENT-SAFE | The expand migration of §8.2 step 1, and the permission seed | A fresh ladder and an upgrade both apply it. The four tables have FORCE RLS. A grant on a private row fails. `test_tenant_coverage.py` passes. | `uv run pytest tests/unit/test_email_shared_mailbox_schema_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py` |
-| **SM-2** | 🟢 AGENT-SAFE | The seam of §8.1. `mailbox_access.py`, the three helpers call it, each inline site moves or gets `# private-only:`. Flag OFF gives the private arm only. | R8 fences 1, 4, 5 and 7 pass. The seam fence passes. No route answers differently with the flag off. | `uv run pytest tests/unit/test_email_shared_mailbox_r8.py tests/unit/test_email_owner_predicate_seam.py` then `uv run python scripts/affected_tests.py --run` |
+| **SM-1** | 🔨 BUILT 2026-10-23, branch `ws65-sm1-sm2`, not merged. Migration 296: re-check the number at merge (R1) | The expand migration of §8.2 step 1, and the permission seed | A fresh ladder and an upgrade both apply it. The four tables have FORCE RLS. A grant on a private row fails. `test_tenant_coverage.py` passes. | `uv run pytest tests/unit/test_email_shared_mailbox_schema_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py` |
+| **SM-2** | 🔨 BUILT 2026-10-23, branch `ws65-sm1-sm2`, not merged. The fence found 91 sites in 27 files. 10 stay in the egress guard, on an allowlist for SM-7 | The seam of §8.1. `mailbox_access.py`, the three helpers call it, each inline site moves or gets `# private-only:`. Flag OFF gives the private arm only. | R8 fences 1, 4, 5 and 7 pass. The seam fence passes. No route answers differently with the flag off. | `uv run pytest tests/unit/test_email_shared_mailbox_r8.py tests/unit/test_email_owner_predicate_seam.py` then `uv run python scripts/affected_tests.py --run` |
 | **SM-3** | 🟢 AGENT-SAFE | Make shared and grants. `POST /email/accounts/{id}/share`, `GET` and `PUT /email/accounts/{id}/grants`, D-SM-3 and D-SM-9, the refusal of Q-SM-7, the org cap of Q-SM-5 | R8 fences 2 and 3 pass. A non-holder of `email:shared:manage` gets 403. The last manager cannot leave. | `uv run pytest tests/unit/test_email_shared_grants_r8.py` |
 | **SM-4** | 🟢 AGENT-SAFE | Send record and the level checks on each write: `email_send_log`, `drafted_by`, the 409 of §5.4 step 2, the scheduled-send check | R8 fence 8 passes. Two sends on one thread: the second answers 409 with the first reply. | `uv run pytest tests/unit/test_email_shared_send_r8.py tests/unit/test_email_send_later.py` |
 | **SM-5** | 🟢 AGENT-SAFE | Assignment: the table use, claim, auto-claim, hand over, Reply Zero by assignee, clear on lost grant | A NEEDS_REPLY thread shows once for its assignee and for no other member. Unassigned shows to each `send` member. | `uv run pytest tests/unit/test_email_shared_assign_r8.py` |

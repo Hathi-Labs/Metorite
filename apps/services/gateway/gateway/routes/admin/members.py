@@ -650,15 +650,20 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     # (`crm_auto_lead_cursors` joined in migration 163: the auto-lead epoch
     # cursor is per-mailbox state and goes with the mailbox. `email_insights`
     # joined in migration 231: the Insights facts of the mailbox, EM-T14a).
+    # WS-65 SM-1 adds the four tables of a shared mailbox. A member purge
+    # reaches a shared row only while its user_id is the leaver, until SM-8
+    # leaves a shared row out of the member scope (shared_mailbox.md §4.2).
     "email_accounts": (
         "crm_auto_lead_cursors",
         "email_actions", "email_ai_drafts", "email_assistant_settings",
         "email_attachments", "email_cold_senders", "email_contacts",
         "email_embeddings", "email_executed_rules", "email_folders",
-        "email_insights", "email_knowledge", "email_learned_patterns", "email_messages",
+        "email_insights", "email_knowledge", "email_learned_patterns",
+        "email_mailbox_grants", "email_mailbox_member_prefs", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
-        "email_rules", "email_scheduled_sends", "email_senders", "email_sync_log",
-        "email_thread_status", "email_voice_profiles",
+        "email_rules", "email_scheduled_sends", "email_send_log", "email_senders",
+        "email_sync_log", "email_thread_assignments", "email_thread_status",
+        "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
     # (`wa_media` and `wa_message_embeddings` hang off `wa_messages`).
@@ -711,6 +716,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # they left, so it goes before the mailbox, and the count is real.
     _PersonRows("scheduled_sends", "email_scheduled_sends",
                 "lower(owner_email) = :email"),
+    # The leaver's own grants on a shared mailbox (WS-65, D-SM-8). Only the
+    # rows whose subject is the address: an `org` or a `group:` grant needs
+    # no change, and the shared mailbox itself stays (MEMBER_MAILBOXES_WHERE).
+    _PersonRows("mailbox_grants", "email_mailbox_grants", "lower(subject) = :email"),
+    # Their own choices for each shared mailbox (sign-off line and the
+    # like). The rows are the leaver's alone, and the mailbox stays.
+    _PersonRows("mailbox_member_prefs", "email_mailbox_member_prefs", "lower(member_email) = :email"),
     # Credentials.
     # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
     # rows and this delete name one set of mailboxes.
