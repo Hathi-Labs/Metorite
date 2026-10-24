@@ -658,6 +658,21 @@ class TestTheProtocol:
         queued = await _prompt_text()
         _in_order(queued, ("409", "share one", "Take only a row that my_work lists"))
 
+    async def test_a_run_of_another_connection_is_never_yours(self, armed):
+        """SW-13b. Two machines of one member share one stamp, and each has
+        its own connection. The text says that a run of another connection is
+        never yours, and that only two terminals of ONE connection stay
+        unseparated (SW-7). Mutation M36: drop the sentence from step 3 of
+        ``_PROTOCOL_RUNS_ON``, and this test fails."""
+        text = await _instructions()
+        _in_order(text, ("3. A 409 task_held", "A run of another connection",
+                         "is never yours", "Two terminals on ONE connection",
+                         "4. Call get_task_context"))
+        assert "A waiting run of another connection or another machine is never yours" in text
+        queued = await _prompt_text()
+        _in_order(queued, ("A waiting run of another connection", "is never yours",
+                           "Two terminals on one connection"))
+
     async def test_a_read_only_connection_gets_no_protocol(self, armed):
         """The protocol claims, so it shows on the test of the routine."""
         text = await _instructions(READ_ONLY)

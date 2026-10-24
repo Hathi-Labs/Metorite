@@ -307,6 +307,15 @@ def _po27(ds: Dataset) -> list[Step]:
     ]
 
 
+def _po28(_ds: Dataset) -> list[Step]:
+    return [
+        tool("projects_tree"),
+        tool("convert_folder_to_project", project_id=ds_mod.ident("folder", ds_mod.FOLDER)),
+        ("text", f"«{ds_mod.FOLDER}» is a project now. «Acme rollout» and «Globex pilot» "
+                 "are its subprojects, and their tasks did not change."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -334,6 +343,7 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-25": _po25,
     "PO-26": _po26,
     "PO-27": _po27,
+    "PO-28": _po28,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)
