@@ -389,7 +389,9 @@ export function projectMenuItems(
   // and the reversible act above it. Every other group here is conditional,
   // which is why this cannot be appended to the archive group and trusted to
   // look separated — on a folder's menu the two would have been adjacent.
-  if (handlers.onDelete) {
+  // WS-64 OP-8 — no Delete where the server says this member may not
+  // delete the node (`can_delete`, D-OP-12). Only an explicit `false` hides it.
+  if (handlers.onDelete && project.can_delete !== false) {
     const onDelete = handlers.onDelete;
     groups.push([
       {

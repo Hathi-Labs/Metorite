@@ -34,6 +34,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import TASK_DELETE_REFUSED, led_projects, may_delete_task
 from gateway.routes.projects.automation import (
     PATCHABLE_FIELDS,
     TaskPatchError,
@@ -52,6 +53,7 @@ from gateway.routes.projects.core import (
     actor,
     archive_note,
     assert_assignable_here,
+    can_manage_settings,
     clean_payload,
     emit,
     lift_subtasks_to_grandparent,
@@ -556,11 +558,23 @@ async def bulk_edit(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        # WS-64 OP-8 (D-OP-12). The lead set is read once for the selection,
+        # and not at all for an admin, who may delete each task.
+        led = (
+            await led_projects(db, user)
+            if action == "delete" and not can_manage_settings(user) else None
+        )
         for task_id in ids:
             try:
                 task = await load_visible_task(db, vis, task_id)
             except HTTPException:
                 skipped.append({"task_id": task_id, "reason": "not_found"})
+                continue
+
+            if action == "delete" and not await may_delete_task(db, user, task, led=led):
+                # A task the member sees and may not delete is a per-task
+                # failure with the 403's sentence, and the rest go on.
+                failed.append({"task_id": task_id, "reason": TASK_DELETE_REFUSED})
                 continue
 
             if action is not None:

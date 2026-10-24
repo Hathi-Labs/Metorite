@@ -525,7 +525,7 @@ async def test_move_cascade_carries_the_subtree_and_remaps_each_set(
     _visible_tree(monkeypatch)
     got = await tasks.move_task_in(
         None, VIS, PARENT,
-        tasks.MoveTask(project_id="proj-z", include_subtasks=True), by="me@x.in")
+        tasks.MoveTask(project_id="proj-z", include_subtasks=True), by="me@x.in", user=None)
     moved = {rid: values for rid, values in mover}
     # The parent and every visible descendant, at every depth.
     assert set(moved) == {
@@ -542,7 +542,7 @@ async def test_move_cascade_carries_the_subtree_and_remaps_each_set(
 async def test_move_without_the_flag_moves_one_task(mover, monkeypatch):
     _visible_tree(monkeypatch)
     got = await tasks.move_task_in(
-        None, VIS, PARENT, tasks.MoveTask(project_id="proj-z"), by="me@x.in")
+        None, VIS, PARENT, tasks.MoveTask(project_id="proj-z"), by="me@x.in", user=None)
     assert [rid for rid, _ in mover] == ["parent"]
     assert "subtasks_moved" not in got
 
@@ -553,7 +553,7 @@ async def test_a_hidden_descendant_refuses_the_whole_move(mover):
         await tasks.move_task_in(
             None, VIS, PARENT,
             tasks.MoveTask(project_id="proj-z", include_subtasks=True),
-            by="me@x.in")
+            by="me@x.in", user=None)
     assert err.value.status_code == 409
     assert err.value.detail.startswith("1 subtask of this task is hidden")
     assert mover == []
@@ -573,7 +573,7 @@ async def test_the_single_move_names_a_d62_subtask_before_any_write(
         await tasks.move_task_in(
             None, VIS, PARENT,
             tasks.MoveTask(project_id="proj-z", include_subtasks=True),
-            by="me@x.in")
+            by="me@x.in", user=None)
     assert err.value.status_code == 422
     # The SUBTASK is named, not the parent.
     assert err.value.detail.startswith("Subtask #21 ")
@@ -596,7 +596,7 @@ async def test_the_bulk_move_refuses_a_hidden_descendant_before_any_write(
     async def resolve_visibility(db, user):
         return VIS
 
-    async def plan(db, vis, payload):
+    async def plan(db, vis, payload, user):
         return {
             "tasks": [], "source_project_id": "a",
             "destination_project_id": "z", "required_missing": [],
@@ -631,7 +631,7 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
     async def resolve_visibility(db, user):
         return VIS
 
-    async def plan(db, vis, payload):
+    async def plan(db, vis, payload, user):
         return {
             "tasks": [], "source_project_id": "a",
             "destination_project_id": "z", "required_missing": [],
@@ -644,7 +644,7 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
             "subtasks": {"count": 3, "hidden": 0, "refused": []},
         }
 
-    async def move_task_in(db, vis, task, payload, *, by, field_map=None):
+    async def move_task_in(db, vis, task, payload, *, by, user, field_map=None):
         carried.append((task.id, payload.project_id, payload.include_subtasks,
                         field_map))
         return {}
@@ -746,13 +746,16 @@ def planner(monkeypatch):
     monkeypatch.setattr(move, "load_subtree", load_subtree)
     monkeypatch.setattr(move, "_status_proposal", status_proposal)
     monkeypatch.setattr(move, "_type_proposal", type_proposal)
+    # D-OP-14 is fenced in `test_projects_write_authority.py`. Here the
+    # member may move what they name.
+    monkeypatch.setattr(move, "assert_may_move_task", noop)
     return _DB()
 
 
 async def test_the_plan_with_subtasks_shows_their_drops_and_required_fields(
     planner,
 ):
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z", include_subtasks=True))
     # k2's Severity has no home in the destination: shown, and so gated by
     # accept_drops like any other loss (D-PM-29).
@@ -765,7 +768,7 @@ async def test_the_plan_with_subtasks_shows_their_drops_and_required_fields(
 
 
 async def test_the_plan_without_subtasks_shows_only_the_selection(planner):
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z"))
     assert plan["drops"] == {}
     assert plan["required_missing"] == []
@@ -783,14 +786,14 @@ async def test_the_plan_names_a_subtask_that_d62_refuses(planner, monkeypatch):
             raise HTTPException(status_code=422, detail="personal")
 
     monkeypatch.setattr(cascade, "assert_move_keeps_privacy", guard)
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z", include_subtasks=True))
     refused = plan["subtasks"]["refused"]
     assert [r["task_id"] for r in refused] == ["k2"]
     assert refused[0]["reason"].startswith("Subtask ")
     assert "Untick" in refused[0]["reason"]
     # Without the box, nothing is carried and nothing is refused.
-    plan = await move._plan(planner, VIS, move.MoveIn(
+    plan = await move._plan(planner, VIS, user=_user(), payload=move.MoveIn(
         task_ids=["p"], destination_project_id="proj-z"))
     assert plan["subtasks"]["refused"] == []
 
@@ -801,7 +804,7 @@ async def test_the_bulk_apply_refuses_a_d62_subtask_before_any_write(monkeypatch
     async def resolve_visibility(db, user):
         return VIS
 
-    async def plan(db, vis, payload):
+    async def plan(db, vis, payload, user):
         return {
             "tasks": [], "source_project_id": "a",
             "destination_project_id": "z", "required_missing": [],

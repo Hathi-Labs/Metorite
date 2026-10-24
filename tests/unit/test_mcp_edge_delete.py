@@ -419,6 +419,12 @@ def world():
     a.member(OTHER, ["feature:projects"])
     team, other = a.project("Team"), a.project("Other")
     _grant(a, team, OTHER)
+    # WS-64 OP-8 (D-OP-12): the seeder's tasks are the OWNER's, so the member
+    # deletes them as the lead of the two projects. ``private`` has no lead.
+    # ``test_projects_write_authority.py`` proves the rule itself.
+    for led in (team, other):
+        a.one("UPDATE pm_projects SET lead = :m WHERE id = CAST(:p AS uuid) RETURNING id",
+              m=MEMBER, p=led)
     private = str(a.one(
         "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
         " timezone, owns_statuses) VALUES ('Private', 'active', 'manual', :a,"
@@ -892,6 +898,10 @@ def _assigned_tree(world, tag: str) -> SimpleNamespace:
     top = world.task(world.private, world.s.private_todo, f"{tag} top")
     task = _kid(world, top, f"{tag} doomed", world.private, world.s.private_todo)
     _assign(world, task)
+    # WS-64 OP-8 (D-OP-12): an assignee alone may not delete, so the member
+    # made this task. Its subtasks stay the owner's.
+    world.seeder.one("UPDATE pm_tasks SET created_by = :m WHERE id = CAST(:t AS uuid)"
+                     " RETURNING id", m=MEMBER, t=task)
     hidden = [_kid(world, task, f"{tag} hidden {n}", world.private, world.s.private_todo)
               for n in range(2)]
     seen = _kid(world, task, f"{tag} seen", world.private, world.s.private_todo)
