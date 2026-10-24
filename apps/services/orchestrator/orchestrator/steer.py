@@ -529,6 +529,14 @@ def guidance_marks(thread_id: str) -> frozenset[int]:
     return frozenset(int(e.get("seq", -1)) for e in _PENDING_GUIDANCE.get(thread_id or "", []))
 
 
+def guidance_texts(thread_id: str) -> dict[int, str]:
+    """The text of each note waiting for *thread_id*, by its mark, without
+    taking any. A waiting card reads it to see which card a steer is about
+    (``ask_tools._steer_target``)."""
+    return {int(e.get("seq", -1)): str(e.get("text") or "")
+            for e in _PENDING_GUIDANCE.get(thread_id or "", [])}
+
+
 def clear_guidance(thread_id: str) -> None:
     """Run-boundary cleanup so a note never leaks into an unrelated later run.
 

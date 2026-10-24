@@ -115,3 +115,74 @@ def test_a_mark_is_a_number_never_an_address():
     steer.buffer_guidance(THREAD, "jane", "two")
     assert steer.guidance_marks(THREAD).isdisjoint(first)
     _clean()
+
+
+# ── Item 5 (owner, 2026-10-24): a steer closes only the card it is about ─────
+
+
+async def _two_cards(first: str, second: str):
+    q: asyncio.Queue = asyncio.Queue()
+    executor._active_run_queue.set(q)
+    executor._stream_relay_thread_id.set(THREAD)
+    one = asyncio.ensure_future(at.request_confirmation(first, close_on_steer=True))
+    c1 = await asyncio.wait_for(q.get(), timeout=2)
+    await asyncio.sleep(0.05)
+    two = asyncio.ensure_future(at.request_confirmation(second, close_on_steer=True))
+    c2 = await asyncio.wait_for(q.get(), timeout=2)
+    return one, two, c1, c2
+
+
+def _answer(card, text="REJECT"):
+    rid = card["value"]["request_id"]
+    executor.resolve_user_input(rid, text, was_freeform=False,
+                                thread_id=executor._pending_user_input.owner_of(rid))
+
+
+def test_a_plain_steer_closes_only_the_newest_card():
+    """Mutation: close each card on a new mark -> the older card closes too."""
+    _clean()
+
+    async def run():
+        one, two, c1, _c2 = await _two_cards("Send this draft to Kiran?",
+                                             "Send this draft to Veena?")
+        steer.buffer_guidance(THREAD, "jane", "make it shorter")
+        newest = await asyncio.wait_for(two, timeout=3)
+        await asyncio.sleep(1.2)
+        still_open = not one.done()
+        _answer(c1, "APPROVE")
+        older = await asyncio.wait_for(one, timeout=2)
+        return newest, still_open, older
+
+    newest, still_open, older = asyncio.run(run())
+    assert newest is at.REVISED
+    assert still_open is True and older is True
+    _clean()
+
+
+def test_a_steer_that_names_a_card_closes_that_card():
+    _clean()
+
+    async def run():
+        one, two, _c1, c2 = await _two_cards("Send this draft to kiran@fracktal.in?",
+                                             "Send this draft to veena@fracktal.in?")
+        steer.buffer_guidance(THREAD, "jane", "for the kiran one, add the date")
+        older = await asyncio.wait_for(one, timeout=3)
+        await asyncio.sleep(1.2)
+        still_open = not two.done()
+        _answer(c2)
+        await asyncio.wait_for(two, timeout=2)
+        return older, still_open
+
+    older, still_open = asyncio.run(run())
+    assert older is at.REVISED and still_open is True
+    _clean()
+
+
+def test_the_target_rule_without_a_loop():
+    at._STEER_CARDS["t-rule"] = {"a": (1, "Reply to sagar@jain.test?"),
+                                 "b": (2, "Send this draft to kiran@fracktal.in?")}
+    try:
+        assert at._steer_target("t-rule", ["shorter please"]) == {"b"}
+        assert at._steer_target("t-rule", ["the sagar reply needs a date"]) == {"a"}
+    finally:
+        at._STEER_CARDS.pop("t-rule", None)
