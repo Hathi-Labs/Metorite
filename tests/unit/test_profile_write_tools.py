@@ -1567,6 +1567,17 @@ class TestWhatsAppConfirm:
         assert _run(_wa_answer("Confirm")) == acts.REPLY_CHANGED
         assert wa.writes() == []
 
+    def test_stored_arguments_that_ask_nothing_still_need_the_card(self, wa) -> None:
+        """At Confirm the card always asks. Stored arguments with no reason
+        to ask (a tampered row) meet the stored card, and write nothing."""
+        from gateway.routes.whatsapp_channel import acts
+
+        _out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                    text="I have diabetes", kind="about"))
+        wa.table["row"] = _row(parked, arguments={"text": "I like tea", "kind": "preference"})
+        assert _run(_wa_answer("Confirm")) == acts.REPLY_CHANGED
+        assert wa.writes() == []
+
     def test_the_confirm_scope_alone_grounds_as_before(self, wa) -> None:
         """Only the Confirm of a stored act skips the typed words. The scope
         with no ``confirming`` grounds against "", and refuses."""
