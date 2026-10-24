@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is BUILT 2026-10-23, in review: `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-2 to OP-5, OP-6b, OP-6d and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is BUILT 2026-10-23, in review: `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-2 to OP-5, OP-6b, OP-6d and OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -498,6 +498,15 @@ The sidebar draws it with a lock. The Areas routes stay as they are.
 2. A move of the personal space, or of a folder in it, under a team node
    fails. Fence: the existing `assert_move_keeps_privacy` test, with the new
    shape.
+
+**A precondition, BUILT 2026-10-24 (task #304).** Each node of a private tree
+carries `personal_owner`, at every depth. `POST /projects/nodes` under a
+personal parent now stamps the child with the tree owner and the owner grant.
+Only the tree owner may file a node there, and anyone else gets 404. Migration
+297 stamps the children that the old route wrote without the owner. Before
+this, such a child showed in each org reader's tree, an agent with
+`include_personal=false` could read it, and a move could take it to a team
+space. Fence: `tests/unit/test_personal_owner_stamp.py` (R8).
 
 ### OP-4 — capture, the tab bar, and the redirect · OWNER-GATE for the nav
 
