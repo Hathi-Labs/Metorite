@@ -366,6 +366,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
 | **D-OP-14** | A move changes who sees a row, so a view of the row is not enough to move it. A re-parent of a project needs the grant authority of D-OP-11 on the moved project. A move of a task to another project needs the delete authority of D-OP-12 on the task where it is now. A reorder under the same parent, and a status move inside one project, need only a view. The 403 names who may move it. A subtask that a move carries follows the check on the task the member names, as a delete does | Supervisor decision, OP-8 fix round 1, 2026-10-23. Review finding: a member who leads a space of their own could move another member's project or task into it, and then delete it |
 | **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
+| **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change | Owner, 2026-10-24, in chat ("go ahead with your recommendation") |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -879,6 +880,31 @@ names the counts.
 3. The counts in the summary, on the button and on the card match what the
    route reports after the delete. Fence: vitest and the R8 tests of EA-6h.
 4. The visual-review skill passes on the dialog at 390 and 1280 px.
+
+### OP-9 — personal tasks stay with their owner · HIGH · AGENT-SAFE
+
+**Scope.** D-OP-15. Today `task_visibility_clause` (`routes/projects/core.py`)
+gives a caller who may read every project `_TENANT_PROJECTS_SQL`. That read
+leaves out sealed trees only, so such a caller reads every member's personal
+tasks through `GET /projects/tasks`, search, reports and the chat. OP-9 adds
+`personal_owner IS NULL OR lower(personal_owner) = :me` to that arm, on the
+tree read, the task read and every read built on them.
+
+**Find each read first.** List every read that uses the unrestricted arm, and
+say for each how OP-9 covers it: the task list and detail, `/projects/tree`
+and `/projects/nodes`, search and `#` references, analytics and reports, the
+delta feed, My Day, the chat's dataset read, and the agent reads.
+
+**Done when.** Each is an R8 test with an owner, a `data:org:read` member and
+a Projects admin, red first under a named mutation:
+
+1. The owner reads their personal task in every read listed above.
+2. The org reader and the admin read it in none of them, and a direct
+   `GET /projects/tasks/{id}` answers 404.
+3. Team projects read as before for the org reader.
+4. The counts of reports and analytics leave out personal tasks for the org
+   reader.
+
 
 ### OP-5 — one filter component, and the old shell retires · AGENT-SAFE
 

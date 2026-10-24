@@ -609,6 +609,15 @@ class Settings(BaseSettings):
     # tests/unit/test_show_in_app.py.
     chat_first_tools: bool = False
 
+    # ── The member's assistant profile in the chat (WS-63 PZ-2) ─────────────
+    #
+    # ON adds the member's own profile block to the orchestrator's per-turn
+    # context, for a solo run with a verified member
+    # (`personalization.md` §5.1). OFF leaves the context byte-identical.
+    # The one reader is `acb_common.assistant_profile.enabled`. Fence:
+    # tests/unit/test_executor_profile_block.py.
+    assistant_profile_enabled: bool = False
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
