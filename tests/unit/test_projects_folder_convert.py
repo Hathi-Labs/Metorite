@@ -116,6 +116,60 @@ def test_the_grammar_decides_through_the_one_seam() -> None:
     assert "assert_may_convert_node(db, user, node)" in route
 
 
+def _chat_gateway(monkeypatch, node: dict[str, Any], children: list[dict[str, Any]]):
+    from tests.unit._projects_agent_fakes import fake_gateway
+
+    def answer(call: dict) -> Any:
+        if call["method"] == "GET" and call["path"] == "/projects/tree":
+            return {"rows": [{"id": "space", "name": "Space", "children": [
+                {**node, "children": children}]}]}
+        if call["method"] == "GET":
+            return node
+        return {**node, "kind": "project"}
+
+    return fake_gateway(monkeypatch, answer)
+
+
+async def test_the_chat_card_says_the_children_become_subprojects(monkeypatch) -> None:
+    from skill_projects import guarded
+
+    from tests.unit._projects_agent_fakes import approve
+
+    fid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    calls = _chat_gateway(monkeypatch, {"id": fid, "name": "Clients", "kind": "folder",
+                                        "can_convert": True},
+                          [{"id": "a", "name": "Acme"}, {"id": "b", "name": "Globex"}])
+    asked = approve(monkeypatch)
+    out = await guarded.convert_folder_to_project(fid)
+    [card] = asked
+    assert "2 projects you can see inside it become its subprojects" in card["context"]
+    assert "«Acme», «Globex»" in card["context"]
+    posts = [c for c in calls if c["method"] == "POST"]
+    assert [c["path"] for c in posts] == [f"/projects/nodes/{fid}/convert"]
+    assert posts[0]["json"] == {"to": "project"}
+    assert out.startswith("Converted «Clients» to a project."), out
+
+
+async def test_the_chat_refuses_before_the_card_and_quotes_the_server(monkeypatch) -> None:
+    from skill_projects import guarded
+
+    from tests.unit._projects_agent_fakes import approve
+
+    fid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    words = wa._authority().CONVERT_REFUSED
+    calls = _chat_gateway(monkeypatch, {"id": fid, "name": "Clients", "kind": "folder",
+                                        "can_convert": False, "convert_refusal": words}, [])
+    asked = approve(monkeypatch)
+    out = await guarded.convert_folder_to_project(fid)
+    assert asked == [] and out.startswith("Refused:"), out
+    assert f"Gateway said: «{words}»" in out
+    # A project is refused before the card too.
+    calls = _chat_gateway(monkeypatch, {"id": fid, "name": "Launch", "kind": "project"}, [])
+    out = await guarded.convert_folder_to_project(fid)
+    assert asked == [] and "already a project" in out
+    assert not [c for c in calls if c["method"] == "POST"]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # R8
 # ═══════════════════════════════════════════════════════════════════════════
