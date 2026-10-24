@@ -1659,3 +1659,20 @@ def test_the_card_form_refuses_a_tick_of_a_person_that_is_not_listed() -> None:
     form["ticked"]["reply_all"]["to"] = ["spy@evil.test"]
     with pytest.raises(ValueError):
         clean_reply_form(form)
+
+
+def test_a_card_with_six_notices_shows_and_loses_none() -> None:
+    """The card shows four notices (clean_reply_form refuses more); the rest
+    go into the note. Mutation: pass every notice to the card → the form is
+    refused → no card shows → red (the defect of 2026-10-24)."""
+    from acb_skills.ask_tools import clean_reply_form
+
+    notices = [f"notice {i}" for i in range(1, 7)]
+    form = agents._reply_form({
+        "message_id": MAIL, "recipients": {
+            "reply": {"to": ["kim@contoso.test"], "cc": []},
+            "reply_all": {"to": ["kim@contoso.test"], "cc": []}},
+        "body": "Hi", "notices": notices}, True)
+    clean = clean_reply_form(form)
+    assert clean["notices"] == notices[:4]
+    assert "notice 5" in form["note"] and "notice 6" in form["note"]
