@@ -70,6 +70,13 @@ _OWNER_PREDICATE = re.compile(
 #: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
 #: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
+    "resolve_metorite_files_route": (
+        "H-392 (owner, 2026-10-24). Reads no email table and no mailbox. It "
+        "resolves Metorite files through their own stores, as the member: an "
+        "Artifacts file through _member_agent_workspace and _safe_resolve, a "
+        "Knowledge page through load_page and visible_pages_clause, a task "
+        "attachment through visible_task_attachment (test_email_metorite_files.py)."
+    ),
     "held_card": (
         "§21. Dispatches by kind. DRAFT_ROW_SQL and FORWARD_MAIL_SQL join "
         "ea.user_id = :uid, _stored_target and _new_card call "
