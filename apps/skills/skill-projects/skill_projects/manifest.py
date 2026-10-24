@@ -1237,11 +1237,8 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/agent-runs/{run_id}/finish"): {
         "summary": "G23", "idempotency_key": "G23",
     },
-    # WS-55 EA-6g (EA3-40): the archive request and its approval.
+    # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
-    ("POST", "/projects/agent-runs/{run_id}/archive-approval"): {
-        "decision": "G23", "idempotency_key": "G23",
-    },
 }
 
 
@@ -1361,7 +1358,7 @@ UI_ACTIONS: dict[str, str] = {
     "agentRunsApi.post": "post_agent_activity",
     # EA-12d: "Ask an agent", a member starts a run for their own agent.
     "agentRunsApi.start": "start_agent_run",
-    "agentRunsApi.enabled": "agent_runs",
+    "agentRunsApi.enabled": "waiting_agent_requests",
     # EA-13e: the strip's five counts. The chat reads the same route through a
     # tool after EA-12e (`PLANNED`).
     "agentRunsApi.summary": "agent_summary",

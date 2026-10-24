@@ -104,6 +104,7 @@ const EVIDENCE: readonly string[] = [
   "analytics_outlook",
   "report_list",
   "report_recipients",
+  "waiting_agent_requests",
   "report_render",
   "open_in_app",
   "show_view",
