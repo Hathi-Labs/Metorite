@@ -612,7 +612,7 @@ the page looks nodes up in `lookupRoots` (`lib/personalTree.ts`). The row menu
 Area keeps Move, and `MoveDialog` shows it the personal tree alone, with no
 "Top level" row. Delete follows `can_delete`. The menu has no share item. A
 team node under the root stays in Spaces. Fence: `personalTree.test.ts`, and
-the e2e case in `e2e/projects-my-work.spec.ts` (not run). The phone Menu sheet
+the e2e case in `e2e/projects-my-work.spec.ts` (passed 2026-10-24 in a browser, 5 of 5). The phone Projects-tab sheet
 reuses `ProjectNav`, so it carries the section.
 
 Fix round 1 (2026-10-24). An archived personal Area leaves the live Personal
