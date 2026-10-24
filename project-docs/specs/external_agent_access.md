@@ -12,6 +12,10 @@
 
 The EA-13a stamp is `mcp:<host>:<slug>`, so Claude Code reads "Claude Code". The timeline names the client of each agent act. A claim by an agent opens its run while `agent_runs_enabled` is on.
 
+**EA-14a is MERGED and live (#1192, `ffc09bb68`, 2026-10-25), under `agent_runs_enabled`.** One AI session holds a task at a time (§12.3). The follow-ups are HANDOFF H-409.
+
+**EA-15 is SPECIFIED (2026-10-25).** `get_task_context`, `my_work` and one protocol for agents, built in the edge from the read routes it already has (§12.4). It goes live at the merge.
+
 **Verified against code on 2026-10-15 at `7512100f5`.** The sixth audit read the anchors of EA-6e and EA-6g at that commit: `mcp.py` (`instructions` and `_dispatch`), `archive_task` at `tasks.py:1160`, `_write_activity` at `agent_runs.py:619`, `TestTheInstructions` at `test_mcp_edge_agent_runs.py:299`, and the class C row of the archive at `manifest.py:161`. The EA-6 audit read §6.1, §9.2, §9.5, §9.6 and §15 on 2026-10-14 at `2295c9bf9`.
 
 **EA-6, 2026-10-14.** The spec audit of EA-6 gave NO-GO, and it narrowed the dispatch to EA-6a. The decisions EA3-28 to EA3-31 (§6.1) answer it. EA-6 now splits into EA-6a, EA-6b, EA-6c and EA-6d. The fifth audit (2026-10-15) adds EA-6e, EA-6f and EA-6g.
@@ -819,6 +823,7 @@ EA-6g adds one write pair, `POST /projects/tasks/{task_id}/archive-request`, the
 4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does: the path, query and header parameters, and the fields of each model in `dependant.body_params`. The tool record declares each map, such as `text` to `q` and `expected_version` to `If-Match`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. A new edge input needs a spec amendment.
    - EA-6d adds a fifth, `idempotency_key` of `create_task`. The edge keeps the key in its own slot, and the route takes no such field (§9.2).
    - EA-6c adds a sixth, `idempotency_key` of `add_comment` (EA3-35). The same slot keeps it, with the tool name in the slot key. The comment route takes no such field either.
+   - EA-15b adds a seventh, `limit` of `my_work` (§12.4). The edge cuts its merged rows to that length. No route of `my_work` takes it.
 
 This is R7. The rule names its fence.
 
@@ -1466,19 +1471,30 @@ Owner go-ahead, 2026-10-25, for the agent swarm plan (Metorite epic #321, phase 
 1. The task route, the relations route, the references route (`refresh=false`) and the open runs, as `get_task` does.
 2. The task route again for each parent, from the task up to the root, at most five levels. A parent that the member cannot see answers 404. The edge then stops and returns one stub `{"hidden": true}` for that level. It never shows a title that the member cannot read.
 3. The project node route, for the name and the description.
-4. The timeline route with `kind=comments` and a page of 20, for the newest comments.
+4. The timeline route with `kind=comments` and `page_size=20`, for the newest comments.
 
-The result holds `task` (the shape of `get_task`), `ancestors` (root first, each with id, number, title, status name and the first 500 characters of the description), `project` (id, name, description), `blocked_by` and `blocks` (from the `blocks` links, each with its status category), `subtasks`, `agent_runs`, `held_by`, `refs`, and `recent_comments` (oldest first). Every value that a person wrote is `untrusted_text` (§9.4). A task that the member cannot see answers the fixed not-found text, as `get_task` does. At most eleven gateway calls serve one result.
+The result holds `task` (the shape of `get_task`), `ancestors` (root first, each with id, number, title, status name and the first 500 characters of the description), `project` (id, name, description), `blocked_by` and `blocks` (from the `blocks` links, each with its status category), `subtasks`, `agent_runs`, `held_by`, `refs`, and `recent_comments` (oldest first). Each ancestor carries the name of its status, so the edge reads the statuses of the task's project once, as `get_task` does, and uses them for each ancestor in that project. An ancestor in another project shows its status category only. Every value that a person wrote is `untrusted_text` (§9.4). A task that the member cannot see answers the fixed not-found text, as `get_task` does.
 
-**EA-15b. `my_work`.** A read (class A, `projects:read`). Its one input is `limit` (1 to 25, default 10). The edge applies it, so `limit` is a named edge input under rule 4 of §9.5. The edge calls the agent-runs list with `needs_agent`, and the task list with `assignee` set to the member and the open status categories. It returns rows in this order:
+**The call ceiling is twelve.** `get_task` makes five calls (the task, the relations, the references, the open runs and the project statuses). Five ancestors make five more. The project node and the timeline make two more.
 
-1. **Runs that wait for this client.** A run with the state `queued`, `answered` or `stopping`, whose member is the caller and whose `client_via` is the caller's stamp. A waiting run of another client is not listed. This is the first half of MCP-G4: a session no longer takes over the runs of another client.
-2. **Tasks this client holds.** `held_by` names the caller and the caller's client, and the lease has not ended.
-3. **Tasks to start.** Open tasks assigned to the member, with no live holder. The edge reads the relations of the first ten, and drops a task that an open `blocks` link still waits on. The rest keep the list order of the task route.
+**EA-15b. `my_work`.** A read (class A, `projects:read`). Its one input is `limit` (1 to 25, default 10). The edge applies it, so `limit` is a named edge input under rule 4 of §9.5. The edge calls, in this order:
+
+1. `GET /auth/me`, for the member's email. The edge token holds no email (`agent_tokens.TokenLookup`), and the task list's `assignee` filter takes one email.
+2. The agent-runs list twice, each filtered by `client_via` = the caller's stamp. Once with `needs_agent=true`, for the runs that wait. Once with no state filter, from which the edge keeps the open runs (`created`, `in_progress`, `awaiting`, `stopping`), for the tasks this client holds.
+3. The task list with `assignee` = the email and `status_category=backlog,todo,in_progress`. `triage`, `done` and `cancelled` are left out, because the claim refuses them.
+4. The relations route of the first ten task rows, for the blocker test.
+
+It returns rows in this order:
+
+1. **Runs that wait for this client.** A run with the state `queued`, `answered` or `stopping`, of the caller's member and the caller's `client_via`. A waiting run of another client is not listed. This is the first half of MCP-G4: a session no longer takes over the runs of another client.
+2. **Tasks this client holds.** The task of each open run of this client, whether or not the member is an assignee. A task that is already in the first group is not listed twice.
+3. **Tasks to start.** Tasks assigned to the member, with no live holder. The edge drops a task that an open `blocks` link still waits on. It checks the first ten only. The rest keep the list order of the task route.
 
 Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `reason` (`run_queued`, `run_answered`, `run_stopping`, `held_by_you` or `assigned`), `run_id` when a run is the reason, and `held_by`.
 
-**What `my_work` does not do.** It never lists a task that the member is not assigned to and does not hold. An agent takes new work only by assignment or by an explicit claim. Two sessions of ONE client still share the stamp, so `my_work` cannot tell them apart. SW-7 of the swarm plan (a session key) closes that.
+**When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
+
+**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this client does not hold. An agent takes new work only by assignment or by an explicit claim. Two sessions of ONE client still share the stamp, so `my_work` cannot tell them apart. SW-7 of the swarm plan (a session key) closes that.
 
 **EA-15c. The protocol.** The server instructions (`mcp.py`) and the prompt `work_on_task` (`prompts.py`) give one order of steps:
 
@@ -1491,7 +1507,13 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `reason`
 
 `docs/external_agents_connect.md` repeats the steps for members.
 
+**The text that changes.** Four places say "call `list_agent_runs` with `needs_agent` true" at the start of a session. All four change to `my_work`, in the same commit: `mcp.py` (the server instructions, about line 113), `prompts.py` (the path with no argument, about line 168), and the two fences that pin the old text, `test_mcp_edge_agent_runs.py` (about lines 283 to 314) and `test_mcp_edge_prompts.py` (about line 442). The description of `list_agent_runs` drops "at the start of every session". It keeps its own use: it lists every run of the member, for an agent that needs the full history.
+
+**Going live.** EA-15 is live at the merge, under the owner's go-ahead of 2026-10-25, as EA-13 batch B2 was. It adds two reads and changes text. Agent access is already live for all organizations, so the tools reach every agent at once. No flag gates them.
+
 **Fence.** `tests/unit/test_mcp_edge_context.py`. Each rule above has a test, and each test fails under a named mutation. `test_mcp_edge_coverage.py` lists the two new tools, and rule 4 lists `limit` of `my_work` as an edge input. `test_mcp_edge_prompts.py` pins that the instructions and the prompt name `my_work`, `get_task_context` and the 409 rule.
+
+*Verified against code: 2026-10-25, at `ffc09bb68` (the routes and parameters of `agent_oauth.MCP_ROUTES`, `activities.get_timeline`, `tasks.list_tasks`, `agent_runs.list_agent_runs` and `tools._get_task`).*
 
 ## 13. The landing-page scenario
 
@@ -1572,6 +1594,12 @@ Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2
 The EA-3 slices create four test files: `tests/unit/test_mcp_edge_protocol.py`, `test_mcp_edge_signing.py`, `test_mcp_edge_coverage.py` and `test_mcp_edge_authority.py`.
 
 **The R8 database.** Run `eval "$(bash scripts/dev_db.sh --export)"`, or export the DSN of a private container. The shared scratch database holds rows from other branches. Use one private pgvector container for each R8 run, and never run two R8 runs at once.
+
+**EA-15 (§12.4).** The new suite, with the three fences whose text EA-15c changes. Export the R8 database first:
+
+```
+uv run pytest tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_prompts.py tests/unit/test_mcp_edge_agent_runs.py -v -rs
+```
 
 **The new suites of EA-3a, with the EA-1 and EA-2a fences.** Each file in this line exists after EA-3a:
 
