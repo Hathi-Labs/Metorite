@@ -60,6 +60,8 @@ class _FakeDB:
         #: The addresses in the org, for the alias check (PZ-5). ``None``
         #: answers yes for every address.
         self.in_org: set[str] | None = None
+        #: The row of ``ADDRESS_SQL`` (PZ-4): preferred name, zone, display.
+        self.address: Any = None
 
     def _base(self) -> dict[str, Any]:
         return copy.deepcopy(self.row) if isinstance(self.row, dict) else {}
@@ -73,6 +75,8 @@ class _FakeDB:
             # The alias check of PZ-5 (`email_in_org`).
             ok = self.in_org is None or p["email"] in self.in_org
             return _Result((1,) if ok else None)
+        if "FROM app_user u LEFT JOIN people p" in sql:
+            return _Result(self.address)
         if sql.startswith("SELECT assistant_profile"):
             return _Result(None if self.row is _NO_ROW else (self.row,))
         if sql.startswith("INSERT INTO user_settings"):
@@ -667,6 +671,59 @@ class TestTheChangeCount:
         finally:
             ex._RUN_SOLO_ROOM.reset(token)
             ex._PROFILE_CACHE.clear()
+
+
+# ── GET /address, the form of address (PZ-4) ───────────────────────────────
+
+
+class TestTheAddress:
+    """``GET /auth/me/assistant-profile/address`` follows §5.2, D-PZ-5."""
+
+    URL = f"{_URL}/address"
+
+    @pytest.mark.parametrize(("stored", "row", "name"), [
+        ({"address": {"name": "VJ"}}, ("Viju", "Asia/Kolkata", "Vijay Varada"), "VJ"),
+        ({"address": {}}, ("Viju", None, "Vijay Varada"), "Viju"),
+        (None, (None, None, "Vijay Varada"), "Vijay"),
+        (_NO_ROW, (None, None, "Vijay Varada"), "Vijay"),
+        (_NO_ROW, (None, None, "vijay@hathilabs.com"), ""),
+        (_NO_ROW, None, ""),
+    ])
+    def test_the_name_follows_the_order(self, fake: _FakeDB, stored: Any, row: Any,
+                                        name: str) -> None:
+        fake.row = stored
+        fake.address = row
+        res = _client().get(self.URL)
+        assert res.status_code == 200
+        assert res.json() == {"name": name}
+
+    def test_the_member_is_the_session_s_and_the_org_is_the_bound_one(
+        self, fake: _FakeDB,
+    ) -> None:
+        _client(_user("bo@alpha.example")).get(self.URL)
+        (read, (sql, params)) = fake.sql
+        assert read[1] == {"uid": "bo@alpha.example"}
+        assert params == {"m": "bo@alpha.example"}
+        assert "current_setting('app.tenant_id', true)" in sql
+        assert "{org}" not in sql and ":org" not in sql
+
+    def test_no_session_address_is_a_401(self, fake: _FakeDB) -> None:
+        assert _client(_user("")).get(self.URL).status_code == 401
+        assert fake.sql == []
+
+    def test_a_fault_is_a_503_never_a_name(self, fake: _FakeDB) -> None:
+        fake.fail = True
+        res = _client().get(self.URL)
+        assert res.status_code == 503
+        assert res.json() == {"detail": "unavailable"}
+
+    def test_the_profile_get_is_unchanged(self, fake: _FakeDB) -> None:
+        fake.address = ("Viju", "Asia/Kolkata", "Vijay Varada")
+        body = _client().get(_URL).json()
+        assert set(body) == {"v", "learning", "address", "style", "aliases", "facts"}
+        assert body["address"] == {"name": "VJ"}
+        assert [s for s, _ in fake.sql] == [s for s, _ in fake.sql
+                                            if s.startswith("SELECT assistant_profile")]
 
 
 def test_the_count_is_by_lower_case_member_and_bounded(monkeypatch) -> None:

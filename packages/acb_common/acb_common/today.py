@@ -69,7 +69,7 @@ def part_of_day_line(zone: str | None, now: datetime | None = None) -> str:
     WS-63 PZ-4 (``personalization.md`` §5.2): the greeting rule says "for the
     time of day", and :func:`today_line` gives no hour. *zone* is the
     member's ``people.timezone``. Fence:
-    ``tests/unit/test_assistant_profile_address.py``."""
+    ``tests/unit/test_executor_profile_block.py``."""
     return f"Part of the day for the member: {part_of_day(zone, now)}."
 
 

@@ -343,7 +343,7 @@ def resolve_address_name(profile_name: Any, preferred: Any, display: Any) -> str
     ``people.preferred_name``, then the first word of
     ``app_user.display_name``. A display name with an ``@`` in it gives
     ``""``, as My Day's ``firstName`` does. No step ever gives a placeholder.
-    Fence: ``tests/unit/test_assistant_profile_address.py``.
+    Fence: ``tests/unit/test_executor_profile_block.py``.
     """
     for one in (profile_name, preferred):
         name = _name_text(one)

@@ -692,3 +692,286 @@ async def test_a_whatsapp_run_gives_the_executor_a_solo_room(world) -> None:  # 
     assert call["agent"] == "orchestrator"
     assert call["solo_room"] is True
     assert call["session_user"] == wac.MEMBER
+
+
+# ── profile-address-order (PZ-4, §5.2, D-PZ-5) ─────────────────────────────
+
+
+@pytest.mark.parametrize(("stored", "preferred", "display", "name"), [
+    ("VJ", "Viju", "Vijay Varada", "VJ"),          # 1. the profile wins
+    ("", "Viju", "Vijay Varada", "Viju"),          # 2. People's preferred name
+    (None, "  Viju  ", "Vijay Varada", "Viju"),
+    ("", "", "Vijay Varada", "Vijay"),             # 3. the first word of the display
+    ("", None, "  Vijay Raghav  ", "Vijay"),
+    ("", "", "vijay@hathilabs.com", ""),           # an address is no name
+    ("", "", "Vijay @ home", ""),
+    ("", "", "", ""),                              # 4. no name
+    (None, None, None, ""),
+    ("   ", " ", " ", ""),
+    ("", "", "​", ""),                        # a format mark alone is empty
+])
+def test_the_name_follows_the_order(stored, preferred, display, name) -> None:
+    assert ap.resolve_address_name(stored, preferred, display) == name
+
+
+def test_a_long_name_stops_at_the_cap() -> None:
+    long = "N" * 80
+    assert ap.resolve_address_name("", long, "") == "N" * ap.NAME_MAX
+    assert ap.resolve_address_name("", "", long + " Rao") == "N" * ap.NAME_MAX
+
+
+def test_a_control_character_never_reaches_the_name() -> None:
+    assert ap.resolve_address_name("", "Vi\nju", "") == "Vi ju"
+    assert ap.resolve_address_name("", "", "Vi\x1bjay Rao") == "Vi"
+
+
+# ── profile-block-render, the PZ-3 and PZ-4 lines ──────────────────────────
+
+_BRIEF = ap.GREETING_LINES["brief"]
+
+
+def _line(raw: Any, fallback: str = "", at: int = 1) -> str:
+    return ap.render_block(raw, fallback).split("\n")[at]
+
+
+def test_an_empty_profile_with_a_name_gives_the_address_line_only() -> None:
+    block = ap.render_block(None, "Vijay")
+    assert block == "\n".join([
+        ap.BLOCK_HEADER, f'Address them as "Vijay". {_BRIEF}', ap.BLOCK_FOOTER])
+    assert ap.render_block({}, "Vijay") == block
+    assert ap.render_block(None, "") == ""
+    assert ap.render_block(ap.empty_profile()) == ""
+
+
+def test_the_stored_name_wins_over_the_fallback() -> None:
+    assert _line({"address": {"name": "VJ"}}, "Vijay") == f'Address them as "VJ". {_BRIEF}'
+
+
+def test_no_name_forbids_a_placeholder() -> None:
+    line = _line({"style": {"length": "short"}})
+    assert line == f"{ap.NO_NAME_LINE} {_BRIEF}"
+    assert line.startswith("Do not address them by name. Never write a placeholder.")
+    assert "[" not in line
+
+
+@pytest.mark.parametrize(("greeting", "text"), [
+    ("none", "Greeting: none. Open with the answer."),
+    ("brief", "Greeting: brief. In the first reply of a chat only, open with one short "
+              "greeting for the time of day. Never greet again in that chat."),
+    ("warm", "Greeting: warm. In the first reply of a chat only, open with a greeting and "
+             "one personal line from a fact in this block. Do this at most once a day."),
+    (None, "Greeting: brief. In the first reply of a chat only, open with one short "
+           "greeting for the time of day. Never greet again in that chat."),
+])
+def test_each_greeting_line_is_golden(greeting, text) -> None:
+    address = {"name": "VJ"} if greeting is None else {"name": "VJ", "greeting": greeting}
+    assert _line({"address": address}) == f'Address them as "VJ". {text}'
+    assert ap.effective_greeting({"address": address}) == (greeting or "brief")
+
+
+@pytest.mark.parametrize(("length", "text"), [
+    ("short", "Answer length: short. Use about half the usual length."),
+    ("default", "Answer length: default."),
+    ("detailed", "Answer length: detailed. Give fuller answers than usual. On WhatsApp "
+                 "keep the channel limits."),
+])
+def test_each_length_line_is_golden(length, text) -> None:
+    block = ap.render_block({"address": {"name": "VJ"}, "style": {"length": length}})
+    assert block.split("\n")[2] == text
+    assert block.split("\n")[-2] == ap.HOUSE_VOICE_LINE
+
+
+def test_the_language_line_lets_the_member_switch() -> None:
+    assert _line({"style": {"language": "hi"}}, "VJ", at=2) == (
+        "Language: hi. Answer in it, unless they write in another language.")
+
+
+def test_the_house_voice_line_needs_a_style_key_or_a_formality() -> None:
+    assert ap.HOUSE_VOICE_LINE not in ap.render_block({"address": {"name": "VJ"}})
+    assert ap.HOUSE_VOICE_LINE not in ap.render_block(
+        {"address": {"name": "VJ", "greeting": "none"},
+         "facts": [{"id": "f1", "text": "x", "kind": "about"}]})
+    for raw in ({"address": {"formality": "formal"}},
+                {"style": {"notes": ["No emoji"]}},
+                {"style": {"language": "en-IN"}}):
+        lines = ap.render_block(raw).split("\n")
+        assert lines[-2:] == [ap.HOUSE_VOICE_LINE, ap.BLOCK_FOOTER]
+
+
+def test_the_block_is_byte_stable_with_a_fallback() -> None:
+    assert ap.render_block(EXAMPLE, "Vijay") == ap.render_block(dict(EXAMPLE), "Vijay")
+    assert ap.render_block(EXAMPLE, "Vijay") == GOLDEN
+
+
+def test_the_cap_keeps_the_new_lines() -> None:
+    facts = [_fact(n, "2026-10-01T00:00:00Z") for n in range(ap.FACTS_MAX)]
+    block = ap.render_block({"style": {"length": "detailed"}, "facts": facts}, "Vijay")
+    lines = block.split("\n")
+    assert len(block) <= ap.RENDER_MAX
+    assert lines[1] == f'Address them as "Vijay". {_BRIEF}'
+    assert lines[2] == ap.LENGTH_LINES["detailed"]
+    assert lines[-2:] == [ap.HOUSE_VOICE_LINE, ap.BLOCK_FOOTER]
+
+
+def test_each_new_sentence_keeps_to_25_words() -> None:
+    import re
+
+    texts = [*ap.GREETING_LINES.values(), *ap.LENGTH_LINES.values(),
+             ap.HOUSE_VOICE_LINE, ap.NO_NAME_LINE]
+    for text in texts:
+        for sentence in re.split(r"(?<=\.)\s+", text):
+            assert len(sentence.split()) <= 25, sentence
+
+
+# ── The part of the day (PZ-4) ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("hour", "part"), [
+    (4, "night"), (5, "morning"), (11, "morning"), (12, "afternoon"), (16, "afternoon"),
+    (17, "evening"), (20, "evening"), (21, "night"), (0, "night"),
+])
+def test_the_part_of_day_bands(hour, part) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from acb_common.today import part_of_day_line
+
+    now = datetime(2026, 10, 24, hour, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert part_of_day_line("Asia/Kolkata", now) == f"Part of the day for the member: {part}."
+
+
+def test_the_part_of_day_reads_the_member_zone_and_a_bad_zone_falls_back() -> None:
+    from datetime import UTC, datetime
+
+    from acb_common.today import part_of_day
+
+    now = datetime(2026, 10, 24, 3, 0, tzinfo=UTC)       # 08:30 in Kolkata
+    assert part_of_day("America/New_York", now) == "night"   # 23:00
+    assert part_of_day("Asia/Kolkata", now) == "morning"
+    assert part_of_day("Not/AZone", now) == "morning"
+    assert part_of_day(None, now) == "morning"
+    assert part_of_day("", datetime(2026, 10, 24, 3, 0)) == "morning"  # naive is UTC
+
+
+# ── The executor and the order (PZ-4) ──────────────────────────────────────
+
+
+def _address(block: str) -> str:
+    return block.split("\n")[1]
+
+
+@pytest.mark.parametrize(("stored", "preferred", "display", "first"), [
+    ({"address": {"name": "VJ"}}, "Viju", "Vijay Varada", 'Address them as "VJ".'),
+    ({"style": {"length": "short"}}, "Viju", "Vijay Varada", 'Address them as "Viju".'),
+    ({"style": {"length": "short"}}, "", "Vijay Varada", 'Address them as "Vijay".'),
+    ({"style": {"length": "short"}}, "", "vijay@x.example", ap.NO_NAME_LINE),
+    ({"style": {"length": "short"}}, "", "", ap.NO_NAME_LINE),
+    (None, "", "Vijay Varada", 'Address them as "Vijay".'),
+])
+def test_the_block_follows_each_step_of_the_order(run, stored, preferred, display,
+                                                   first) -> None:
+    run.update(raw=stored, preferred=preferred, display=display)
+    (block,) = _blocks(_parts())
+    assert _address(block).startswith(first)
+
+
+def test_an_empty_profile_and_no_name_reads_once_and_adds_nothing(run, monkeypatch) -> None:
+    run.update(raw=None, preferred="", display="")
+    _flag(monkeypatch, False)
+    off = _parts()
+    _flag(monkeypatch, True)
+    assert _parts() == off
+    assert len(run["reads"]) == 1
+
+
+def test_the_signing_line_keeps_the_full_display_name(run) -> None:
+    run.update(raw=None, display="Ana Rao")
+    parts = _parts()
+    (block,) = _blocks(parts)
+    assert _address(block).startswith('Address them as "Ana".')
+    assert ex.MEMBER_NAME_LINE.format(name="Ana Rao") in parts
+    at = parts.index(block)
+    assert parts[at - 1] == ex.MEMBER_NAME_LINE.format(name="Ana Rao")
+    assert parts[at + 1] == ns.PROMPT_LINES["indian"]
+
+
+@pytest.mark.parametrize("case", ["shared", "no-member", "flag-off"])
+def test_no_block_no_read_and_no_part_of_day(run, monkeypatch, case) -> None:
+    run.update(raw=None, display="Ana Rao")
+    token = ex._RUN_SOLO_ROOM.set(case != "shared")
+    try:
+        if case == "no-member":
+            run["member"] = ""
+        if case == "flag-off":
+            _flag(monkeypatch, False)
+        parts = _parts()
+    finally:
+        ex._RUN_SOLO_ROOM.reset(token)
+    assert _blocks(parts) == []
+    assert not any(p.startswith("Part of the day") for p in parts)
+    assert run["reads"] == []
+
+
+def test_the_part_of_day_line_follows_today_only_when_the_block_greets(
+    run, monkeypatch,
+) -> None:
+    from acb_common import today
+
+    seen: list[Any] = []
+    monkeypatch.setattr(today, "part_of_day_line",
+                        lambda zone, now=None: seen.append(zone) or "Part of the day: X.")
+    run.update(zone="Europe/Berlin")
+    parts = _parts()
+    assert parts[-1] == "Part of the day: X."
+    assert parts[-2].startswith("Today is ")
+    assert seen == ["Europe/Berlin"]
+
+    for raw in ({"address": {"name": "VJ", "greeting": "none"}},):
+        ex._PROFILE_CACHE.clear()
+        run["raw"] = raw
+        parts = _parts()
+        assert _blocks(parts) and parts[-1].startswith("Today is ")
+    ex._PROFILE_CACHE.clear()
+    run.update(raw={"address": {"name": "VJ", "greeting": "warm"}}, zone="")
+    assert _parts()[-1] == "Part of the day: X."
+    assert seen[-1] is None
+
+
+def test_the_cached_entry_keeps_the_zone_and_the_greeting(run, monkeypatch) -> None:
+    now = {"t": 10.0}
+    monkeypatch.setattr(time, "monotonic", lambda: now["t"])
+    run.update(zone="Europe/Berlin", raw={"address": {"greeting": "none"}}, display="Ana")
+    first = ex._member_profile_entry("orchestrator")
+    assert first[1:] == ("Europe/Berlin", "none")
+    run.update(raw=EXAMPLE, zone="UTC")
+    now["t"] += 30.0
+    assert ex._member_profile_entry("orchestrator") == first
+    assert len(run["reads"]) == 1
+
+
+def test_a_preferred_name_edit_shows_after_the_ttl(run, monkeypatch) -> None:
+    now = {"t": 10.0}
+    monkeypatch.setattr(time, "monotonic", lambda: now["t"])
+    run.update(raw=None, preferred="Viju", display="Vijay Varada")
+    assert _address(_blocks(_parts())[0]).startswith('Address them as "Viju".')
+    run["preferred"] = "VJ"
+    now["t"] += 59.0
+    assert _address(_blocks(_parts())[0]).startswith('Address them as "Viju".')
+    now["t"] += 2.0
+    assert _address(_blocks(_parts())[0]).startswith('Address them as "VJ".')
+
+
+def test_a_failed_read_gives_no_part_of_day(run) -> None:
+    run["fail"] = True
+    parts = _parts()
+    assert _blocks(parts) == []
+    assert parts[-1].startswith("Today is ")
+
+
+def test_the_address_sql_names_the_org_on_both_sides() -> None:
+    sql = ap.ADDRESS_SQL
+    assert "p.organization_id = u.organization_id" in sql
+    assert "u.organization_id = CAST(:org AS uuid)" in sql
+    assert "lower(u.email) = lower(:m)" in sql
+    assert "::" not in sql and "{org}" not in sql
+    assert ap.ADDRESS_SQL_TEMPLATE.count("{org}") == 1
