@@ -22,6 +22,7 @@ Route                      Does
 ``DELETE .../facts/{id}``  Forget one fact
 ``.../aliases[/{id}]``     The same three for aliases
 ``DELETE``                 Forget everything. The column becomes NULL
+``GET .../address``        ``{"name"}``, the form of address of §5.2 (PZ-4)
 =========================  ===============================================
 
 **The shape follows** ``routes/shell/prefs.py``. The write is strict and the
@@ -433,6 +434,35 @@ async def get_assistant_profile(
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
     return stored_profile(row[0] if row is not None else None)
+
+
+@me_router.get("/me/assistant-profile/address",
+               summary="The name the assistant calls the caller (PZ-4)")
+async def get_assistant_profile_address(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """``{"name": ...}``, the form of address of §5.2, or ``""`` for no name.
+
+    The same order as the executor's block (``resolve_address_name``): the
+    stored ``address.name``, then ``people.preferred_name``, then the first
+    word of ``app_user.display_name``. My Day greets with it. The member
+    comes from the session and the org from the bound session (R5). A
+    failed read answers 503, never a name that may be wrong.
+    """
+    from acb_common.assistant_profile import ADDRESS_SQL_TEMPLATE, resolve_address_name
+
+    uid = _member(user)
+    try:
+        async with _tenant_session() as db:
+            row = await _read(db, uid)
+            names = (await db.execute(_sql(ADDRESS_SQL_TEMPLATE), {"m": uid})).first()
+    except Exception as exc:
+        logger.warning("auth.assistant_profile.address_failed",
+                       extra={"error": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    stored = stored_profile(row[0] if row is not None else None)
+    preferred, _zone, display = names[:3] if names else (None, None, None)
+    return {"name": resolve_address_name(stored["address"].get("name"), preferred, display)}
 
 
 @me_router.put("/me/assistant-profile", summary="Save one key of the assistant profile (PZ-1)")

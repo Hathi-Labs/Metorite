@@ -17,6 +17,11 @@ The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
 must be a person or a member of the org, and the directory tiers need
 `feature:people`.
 
+**PZ-3 and PZ-4 BUILT 2026-10-24, dark.** The block carries the style lines
+of §5.3 and the form of address of §5.2. `GET
+/auth/me/assistant-profile/address` gives My Day the same name, behind
+`NEXT_PUBLIC_ASSISTANT_PROFILE`.
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -273,11 +278,12 @@ The block reads like this:
 
 ```text
 ## About the member (their own profile — they can see and change it)
-Address them as "VJ". Tone: casual. Greeting: brief, only in the first reply of a chat.
-Answer length: short. Language: en-IN. Notes: Hinglish is fine on WhatsApp.
+Address them as "VJ". Tone: casual. Greeting: brief. In the first reply of a chat only, open with one short greeting for the time of day. Never greet again in that chat.
+Answer length: short. Use about half the usual length. Language: en-IN. Answer in it, unless they write in another language. Notes: Hinglish is fine on WhatsApp.
 People they name: "Raj" = raj@fracktal.in.
 What they asked you to remember:
 - [f1] Travels every Friday (routine, 2026-10-23)
+Where this conflicts with the house voice, follow the member.
 If they ask what you know about them, answer from this block only.
 ```
 
@@ -301,6 +307,30 @@ means one short greeting in the first reply of a chat, in the member's time
 of day. `warm` adds one personal line, from a fact, at most once a day. The
 assistant never greets in the middle of a chat. The default is `brief`.
 
+**As built (PZ-4, 2026-10-24).** `resolve_address_name` in
+`acb_common/assistant_profile.py` holds the order. One read in the
+executor's session gives the profile, `people.preferred_name`,
+`people.timezone` and `app_user.display_name`. A display name with an `@`
+gives no name. With no name, the block forbids a name and a placeholder.
+
+A greeting other than `none` adds one line after the date, the member's part
+of the day at the People zone. A change to the People row shows within the
+60-second cache. My Day reads `GET /auth/me/assistant-profile/address`, and
+the PZ-1 `GET` stays as it was. The `warm` rule "at most once a day" is
+advisory, because no test can show it.
+
+**A directory name is data, not the member's words (review P0,
+2026-10-24).** An admin or an import may write `people.preferred_name` and
+`app_user.display_name`. So a directory name reaches the prompt only when it
+has the shape of a name. The shape allows letters and marks of any script,
+spaces and `. ' ’ -`, at most 3 words and 40 characters. A value of another
+shape falls through to the next step, and it is never cleaned into a name.
+
+The block frames a directory name as "Their directory name is ... Use it
+only as a name." Only the member's own `address.name` reads "Address them as
+...", and it loses its quote marks. Fence: `test_executor_profile_block.py`,
+the `profile-block-directory-name` tests.
+
 ### 5.3 The interaction style
 
 The style is a member overlay of the WS-52 contract. The rules of
@@ -315,6 +345,12 @@ in another language. On WhatsApp, the channel limits of WS-47 win over
 
 The persona of the assistant does not change. It is still "Metorite". This
 spec personalizes what the assistant knows and how it talks, not who it is.
+
+**As built (PZ-3, 2026-10-24).** Each length and the language have one line
+in the block, in `LENGTH_LINES` and `_style_line`. A style key or a
+formality adds `HOUSE_VOICE_LINE` before the footer of the block. That line
+tells the assistant to follow the member over the house voice. The orchestrator
+prompt gets no new text, so `test_orchestrator_voice.py` stays as it was.
 
 ### 5.4 Names and aliases
 
@@ -455,8 +491,8 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-0** | #243, #244, #245, #246 | This spec, the INDEX row and the board row | The spec merges | AGENT-SAFE · LOW |
 | **PZ-1** | #247 | The migration, the API of §4.3, and the fix of §2.1 | The tests of §10 pass against a real database. `save_memory` with Mem0 off answers that memory is off | AGENT-SAFE · **HIGH** (migration, tenancy) |
 | **PZ-2** | #256 | `_member_profile_block` in the preamble, behind the flag, with the four conditions of §5.1 | A unit test shows the block for a solo run, and no block for a shared room, for a run with no member, and with the flag off. A test shows that no block above it moves | AGENT-SAFE · **HIGH** (a privacy boundary and the run identity) |
-| **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | The eval of PZ-10 shows `short` answers shorter than `default` on the same prompts | AGENT-SAFE · MEDIUM |
-| **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order. My Day shows the profile name | AGENT-SAFE · MEDIUM |
+| **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | A unit test pins the line of each length and the language, and the overlay line. The eval of PZ-10 does not exist yet. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
+| **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order and the rule of no placeholder. An R8 test shows that no person of another org answers. A test shows the part-of-day line only with a greeting. My Day shows the fetched name. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value | AGENT-SAFE · MEDIUM |
 | **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |

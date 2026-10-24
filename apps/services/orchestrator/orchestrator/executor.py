@@ -705,18 +705,26 @@ MEMBER_NO_NAME_LINE = (
 #: The one agent whose per-turn context carries the profile block. The
 #: WhatsApp run uses it too (personalization.md §5.1, point 2).
 _PROFILE_AGENT = "orchestrator"
-#: The rendered block by ``(org, member)``, with the time it was read and the
-#: member's write count (``assistant_profile.generation``). A miss is cached
+#: The rendered block by ``(org, member)``, with the time it was read, the
+#: member's write count (``assistant_profile.generation``), the member's zone
+#: (``people.timezone``) and the greeting of the block. A miss is cached
 #: too, so a member with no profile costs one read a minute. A write in this
 #: process moves the count, so the next turn reads again.
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str]] = {}
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
 
 
-def _read_member_profile(org: str, member: str) -> Any:
-    """The stored ``user_settings.assistant_profile`` of *member* in *org*,
-    or ``None``. One read, and it never raises.
+def _read_member_profile(org: str, member: str) -> tuple[Any, str, str, str] | None:
+    """What the block of *member* in *org* needs, or ``None`` on a fault.
+
+    One session and two statements: ``READ_SQL`` gives the stored
+    ``user_settings.assistant_profile``, and ``ADDRESS_SQL`` gives
+    ``people.preferred_name``, ``people.timezone`` and
+    ``app_user.display_name`` (PZ-4, ``personalization.md`` §5.2). The
+    answer is ``(profile, preferred, zone, display)``, with ``None`` for no
+    profile and ``""`` for each value that is absent. A fault in either
+    statement gives ``None``, so there is one failure path. It never raises.
 
     *org* is the run's tenant and *member* the run's verified member, both
     from the run boundary and never from the payload (R5). With
@@ -728,57 +736,80 @@ def _read_member_profile(org: str, member: str) -> Any:
     if opener is None:
         return None
     try:
-        from acb_common.assistant_profile import READ_SQL
+        from acb_common.assistant_profile import ADDRESS_SQL, READ_SQL
         from sqlalchemy import text
 
         with opener() as session:
             row = session.execute(text(READ_SQL), {"org": org, "m": member}).first()
+            names = session.execute(text(ADDRESS_SQL), {"org": org, "m": member}).first()
+        preferred, zone, display = (
+            (str(v or "") for v in names) if names else ("", "", ""))
+        return (row[0] if row else None, preferred, zone, display)
     except Exception:
         return None
-    return row[0] if row else None
 
 
-def _member_profile_block(agent_name: str) -> str:
-    """The member's profile block for this turn, or ``""``.
+def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
+    """``(block, zone, greeting)`` of this turn, or ``("", "", "")``.
 
     ``personalization.md`` §5.1. The block reaches a run only when all hold:
     ``ASSISTANT_PROFILE_ENABLED`` is on, the agent is ``orchestrator``, the
     run has a verified member (:func:`_verified_run_member`), the run
     boundary says the room is solo (:data:`_RUN_SOLO_ROOM`), and the run has
     an org. Each check comes before the read, so a run that fails one reads
-    nothing. The block is cached per ``(org, member)`` for
-    ``_PROFILE_TTL_SECONDS``, and a profile write in this process ends the
-    entry early (``assistant_profile.mark_changed``). No exception escapes. Fence:
-    ``tests/unit/test_executor_profile_block.py``.
+    nothing.
+
+    The name follows §5.2 (``assistant_profile.resolve_address_name``). The
+    entry is cached per ``(org, member)`` for ``_PROFILE_TTL_SECONDS``, and
+    a profile write in this process ends it early
+    (``assistant_profile.mark_changed``). An edit of
+    ``people.preferred_name`` or ``app_user.display_name`` moves no count,
+    so it shows after the TTL, within a minute. No exception escapes.
+    Fence: ``tests/unit/test_executor_profile_block.py``.
     """
     import time
 
     from acb_common import assistant_profile
 
     if agent_name != _PROFILE_AGENT or not assistant_profile.enabled():
-        return ""
+        return ("", "", "")
     member = _verified_run_member()
     if not member or _RUN_SOLO_ROOM.get() is not True:
-        return ""
+        return ("", "", "")
     org = _current_run_org()
     if not org:
-        return ""
+        return ("", "", "")
     key = (str(org), member)
     now = time.monotonic()
     gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
-        return hit[2]
+        return (hit[2], hit[3], hit[4])
+    block, zone, greeting = "", "", ""
     try:
-        raw = _read_member_profile(str(org), member)
-        block = assistant_profile.render_block(raw) if raw is not None else ""
+        read = _read_member_profile(str(org), member)
+        if read is not None:
+            raw, preferred, zone, display = read
+            stored = assistant_profile.stored_profile(raw)
+            name = assistant_profile.resolve_address_name(
+                stored["address"].get("name"), preferred, display)
+            block = assistant_profile.render_block(raw, name)
+            greeting = assistant_profile.effective_greeting(raw) if block else ""
     except Exception:
-        block = ""
+        block, zone, greeting = "", "", ""
+    if not block:
+        zone, greeting = "", ""
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, gen, block)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
-    return block
+    return (block, zone, greeting)
+
+
+def _member_profile_block(agent_name: str) -> str:
+    """The member's profile block for this turn, or ``""``. The block of
+    :func:`_member_profile_entry`, which holds the rules."""
+    return _member_profile_entry(agent_name)[0]
 
 
 def _member_name_line(agent_name: str) -> str:
@@ -8834,8 +8865,9 @@ def _context_preamble_parts(
     ``memory_context``, then ``system_context`` (which carries the persona),
     then the member's name line (:func:`_member_name_line`), the member's
     profile block (:func:`_member_profile_block`, WS-63 PZ-2), the member's
-    number-system line (:func:`run_number_system`), and last today's date
-    (``acb_common.today.today_line``). :func:`_build_event_message`
+    number-system line (:func:`run_number_system`), today's date
+    (``acb_common.today.today_line``), and last the member's part of the day
+    beside a profile block that greets (``part_of_day_line``, PZ-4). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -8899,7 +8931,7 @@ def _context_preamble_parts(
     # the orchestrator in a solo run with a verified member, behind
     # ASSISTANT_PROFILE_ENABLED. From the run boundary, never the payload
     # (R5). After the name line, so every block above keeps its place.
-    profile_block = _member_profile_block(agent_name)
+    profile_block, profile_zone, profile_greeting = _member_profile_entry(agent_name)
     if profile_block:
         parts.append(profile_block)
 
@@ -8920,6 +8952,14 @@ def _context_preamble_parts(
     line = today_line()
     if line:
         parts.append(line)
+    # WS-63 PZ-4 (personalization.md §5.2): the member's part of the day, at
+    # the zone of their People row, so a greeting fits the hour. Only beside
+    # a profile block whose greeting is not "none". Last, so each block above
+    # keeps its place.
+    if profile_block and profile_greeting != "none":
+        from acb_common.today import part_of_day_line
+
+        parts.append(part_of_day_line(profile_zone or None))
     return parts
 
 
