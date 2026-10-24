@@ -949,7 +949,8 @@ CARD_BOUND_KEY = "card_bound"
 #: link from the stored ``List-Unsubscribe`` header, records its host and its
 #: hash, and acts only when both still match. It takes no link from the tool.
 #: ``name`` stays in the pin because the tool has it today. The held path
-#: does not send it.
+#: does not send it. ``emails`` (H-404) puts several senders on one card,
+#: one row each, with the same three checks for each one.
 #:
 #: ``update_assistant_settings`` (§21.6). In a held run it changes only the
 #: closed keys of ``held_card.HELD_SETTING_DECISIONS``, of the member's own
@@ -973,7 +974,11 @@ HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
     "send_email": frozenset({
         "account_id", "body", "to", "subject", "cc", "bcc", "reply_to_email_id",
         "attachments", "reply_all"}),
-    "unsubscribe_sender": frozenset({"account_id", "email", "name"}),
+    # H-404 (b, owner 2026-10-24): ``emails`` takes several senders behind
+    # ONE held card. The gateway reads, records and re-checks the stored
+    # link, its host and its hash for EACH sender, so the tool still names
+    # no link. One changed link of any ticked sender sends nothing.
+    "unsubscribe_sender": frozenset({"account_id", "email", "name", "emails"}),
     "update_assistant_settings": frozenset({
         "account_id", "about", "signature", "auto_run", "cold_email_blocker",
         "personal_instructions", "writing_style", "draft_replies", "draft_confidence",

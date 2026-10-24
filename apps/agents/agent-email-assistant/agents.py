@@ -7151,11 +7151,121 @@ def _unsubscribe_card(
 # run keeps this tool, and it goes through the held card: the gateway reads
 # the link from the stored header and acts only when its host and its hash
 # still match the card.
+#: The most senders of one ``unsubscribe_sender`` call (H-404), the same
+#: bound as the held card of the gateway (``held_card.MAX_SENDERS``).
+_UNSUBSCRIBE_MAX = 20
+
+
+def _unsubscribe_line(sender: str, target: dict[str, Any]) -> tuple[str, str]:
+    """``(line, refusal)``: the card line of one sender of several, in full."""
+    shown = _card_text(sender, 200)
+    kind = target.get("kind")
+    if kind == "one-click":
+        host, problem = _url_problem(target.get("link"))
+        if problem or len(host) > _TARGET_LIMIT:
+            return "", f"the stored unsubscribe link {problem or 'is too long'}"
+        return f"- {shown}: one-click, host: {host}", ""
+    if kind == "mailto":
+        address = target.get("address")
+        problem = _address_problem(address)
+        if problem or len(str(address)) > _TARGET_LIMIT:
+            return "", (f"the address of the stored unsubscribe link "
+                        f"{problem or 'is too long'}")
+        subject, body = target.get("subject"), target.get("body")
+        problem = (_mailto_text_problem("subject", subject)
+                   or _mailto_text_problem("body", body))
+        if problem:
+            return "", f"the stored unsubscribe link {problem}"
+        return (f"- {shown}: mail to: {address}, subject: "
+                f"{_card_text(subject, _MAILTO_TEXT_LIMIT)}, body: "
+                f"{_card_text(body, _MAILTO_TEXT_LIMIT)}"), ""
+    if kind == "block":
+        return f"- {shown}: no unsubscribe link, so a block in the mailbox", ""
+    return "", "the server named no known unsubscribe target"
+
+
+async def _unsubscribe_many(account_id: str, emails: list[str], name: str | None) -> str:
+    """H-404 (b): several senders behind ONE card. The card lists each
+    sender with the host of its stored link, or its mailto address with the
+    subject and the body. One bad target asks no card and sends nothing."""
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts and ask the user which mailbox to use.")
+    targets: list[tuple[str, dict[str, Any]]] = []
+    lines: list[str] = []
+    for email in emails:
+        target = await _unsubscribe_target(account_id, email)
+        if target is None:
+            return _UNSUBSCRIBE_NOT_READY
+        line, refusal = _unsubscribe_line(email, target)
+        if refusal:
+            return (f"Nothing changed. For {_card_text(email, 200)}, {refusal}, so "
+                    "nothing was sent for any sender. Offer to mark that sender cold "
+                    "with set_sender_status instead.")
+        targets.append((email, target))
+        lines.append(line)
+    context = (f"From the mailbox {sender}. Each sender, and the target of its "
+               "stored unsubscribe link:\n" + "\n".join(lines)
+               + "\n\nA sender whose request fails is blocked, and their mail in "
+               "the inbox is archived.")
+    if len(context) > _CARD_CONTEXT_LIMIT:
+        return ("Nothing changed. These senders do not fit on one card. Ask the user "
+                "for fewer senders at a time.")
+    if not await _confirm_destructive(
+        title=f"Unsubscribe from {len(targets)} senders?",
+        detail=(f"Unsubscribes from {len(targets)} senders. Each sender, and the host "
+                "or the address that its request goes to, is in the list below."),
+        context=context,
+    ):
+        if _channel_open():
+            return f"Cancelled — still subscribed to all {len(targets)} senders."
+        return _NO_CARD_CHANNEL
+    done: list[str] = []
+    for email, target in targets:
+        shown = _card_text(email, 200)
+        if target.get("kind") == "block":
+            res = await _post("/email/newsletters", {
+                "account_id": account_id, "email": email, "name": name,
+                "status": "AUTO_ARCHIVED"})
+            done.append(f"- {shown}: blocked, {res.get('archived', 0)} message(s) archived")
+            continue
+        res = await _post("/email/unsubscribe", {
+            "account_id": account_id, "email": email, "name": name,
+            "unsubscribe_link": target.get("link")})
+        verb = "unsubscribed" if res.get("ok") else "no unsubscribe worked, so blocked"
+        done.append(f"- {shown}: {verb}, {res.get('archived', 0)} message(s) archived")
+    return f"Done for {len(targets)} senders:\n" + "\n".join(done)
+
+
+async def _held_unsubscribe_many(account_id: str, emails: list[str]) -> str:
+    """H-404 (b) in a held run: ONE held card that the gateway records, with
+    each sender, the host of its stored link and the hash of the link."""
+    res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
+                            "emails": emails},
+                           "Nothing changed", "Cancelled — still subscribed to each sender.")
+    if isinstance(res, str):
+        return res
+    lines = []
+    for r in res.get("results") or []:
+        shown = _card_text(r.get("sender"), 200)
+        if r.get("action") == "block":
+            lines.append(f"- {shown}: blocked inside the mailbox, no request left Metorite")
+        elif r.get("unsubscribed"):
+            lines.append(f"- {shown}: unsubscribed through host {r.get('host')}")
+        else:
+            lines.append(f"- {shown}: the request to {r.get('host')} failed, so blocked")
+    left = int(res.get("left_out") or 0)
+    tail = f"\n{left} sender(s) were not ticked, so nothing changed for them." if left else ""
+    return "Done:\n" + "\n".join(lines) + tail
+
+
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def unsubscribe_sender(
     account_id: str,
-    email: str,
+    email: str | None = None,
     name: str | None = None,
+    emails: list[str] | None = None,
 ) -> str:
     """Actually unsubscribe from a sender and archive its existing mail.
 
@@ -7166,7 +7276,24 @@ async def unsubscribe_sender(
     suggest_unsubscribes once the user confirms.
 
     The tool uses the link that the mailbox stored for the sender, and the
-    card names its host or its address. You cannot pass a link."""
+    card names its host or its address. You cannot pass a link.
+
+    For several senders at once, pass ``emails`` (a list of sender
+    addresses, at most 20) and leave ``email`` out. ONE card then lists each
+    sender with its own target."""
+    wanted = [str(e).strip() for e in (emails or []) if str(e or "").strip()]
+    if wanted and (email or "").strip():
+        return "Nothing changed. Pass `email` for one sender or `emails` for several, not both."
+    if len(wanted) > _UNSUBSCRIBE_MAX:
+        return f"Nothing changed. Name at most {_UNSUBSCRIBE_MAX} senders at a time."
+    wanted = list(dict.fromkeys(wanted))
+    if wanted:
+        if _held_card_mode():
+            return await _held_unsubscribe_many(account_id, wanted)
+        return await _unsubscribe_many(account_id, wanted, name)
+    if not (email or "").strip():
+        return "Nothing changed. Name the sender in `email`, or several in `emails`."
+    email = str(email)
     shown = _card_text(email, 200)
     if _held_card_mode():
         res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
