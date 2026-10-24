@@ -276,6 +276,13 @@ def _knowledge_propose_enabled() -> bool:
     return knowledge_propose_enabled()
 
 
+def _assistant_profile_enabled() -> bool:
+    """The one reader of ``ASSISTANT_PROFILE_ENABLED``, in ``acb_common`` (PZ-5)."""
+    from acb_common.assistant_profile import enabled
+
+    return enabled()
+
+
 def _context_recency_enabled() -> bool:
     """The one reader of ``CONTEXT_RECENCY``, in ``acb_skills`` (CX-1)."""
     try:
@@ -786,6 +793,8 @@ def build_orchestrator_agent(
     # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
     # Off until KB-5b ships the Review view, where a person accepts.
     proposals = company_search and _knowledge_propose_enabled()
+    # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
+    profile_on = _assistant_profile_enabled()
 
     # Build the instructions; append memory context when present.
     instructions = _orchestrator_instructions(company_search, recency, proposals)
@@ -831,6 +840,16 @@ def build_orchestrator_agent(
             retrieval_tools += [propose_page, propose_edit]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
+    # WS-63 PZ-5: `resolve_person`, with ASSISTANT_PROFILE_ENABLED on only.
+    # The ONE path of the tool, as for `search_company`: not config.json
+    # tool_scope, not the floor, not the injection chain. The persona does
+    # not change. Fence: tests/unit/test_resolve_person.py.
+    if profile_on:
+        from acb_skills.profile_tools import resolve_person
+
+        profile_tools: list[Any] = [resolve_person]
+    else:
+        profile_tools = []
     # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
     # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
     # tests/unit/test_show_in_app.py, test_company_search_tool.py.
@@ -838,6 +857,7 @@ def build_orchestrator_agent(
     page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
     core_tools: list[Any] = [
         *retrieval_tools,
+        *profile_tools,
         search_timeline,
         *page_tools,
         spawn_copilot_agent,
