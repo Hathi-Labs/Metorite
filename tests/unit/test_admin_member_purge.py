@@ -462,6 +462,7 @@ async def test_the_response_says_what_happened_table_by_table(
         "app_tool_grants": 1,
         # H-375: the fake holds no scheduled send of the member.
         "scheduled_sends": 0,
+        "mailbox_grants": 0,
         "email_accounts": 1,
         "whatsapp_accounts": 1,
         "task_accounts": 1,

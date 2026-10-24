@@ -716,6 +716,10 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # they left, so it goes before the mailbox, and the count is real.
     _PersonRows("scheduled_sends", "email_scheduled_sends",
                 "lower(owner_email) = :email"),
+    # The leaver's own grants on a shared mailbox (WS-65, D-SM-8). Only the
+    # rows whose subject is the address: an `org` or a `group:` grant needs
+    # no change, and the shared mailbox itself stays (MEMBER_MAILBOXES_WHERE).
+    _PersonRows("mailbox_grants", "email_mailbox_grants", "lower(subject) = :email"),
     # Credentials.
     # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
     # rows and this delete name one set of mailboxes.

@@ -144,9 +144,11 @@ FILTER_IDS_SQL = """SELECT n.auto_archive_filter_id AS fid
 #: The mailboxes of one member. ``_PURGE_DELETES`` deletes ``email_accounts``
 #: with THIS clause, and the purge rows of ``memory_purge.py`` use it too. So
 #: the plans, the purge rows and the delete name one set of rows.
-# private-only: a member purge reaches the rows of the member. SM-8 adds
-# ``shared_since IS NULL`` here (shared_mailbox.md §4.2 step 2).
-MEMBER_MAILBOXES_WHERE = "lower(user_id) = :email"
+# private-only: a member purge reaches the private rows of the member. A
+# shared mailbox survives its connector (D-SM-8, shared_mailbox.md §4.2 step
+# 2): its mail, its grants and its send log stay. The member purge removes
+# the leaver's own grants through ``admin/members.py::_PURGE_DELETES``.
+MEMBER_MAILBOXES_WHERE = "lower(user_id) = :email AND shared_since IS NULL"
 
 #: The plan of one mailbox, in the ownership block of the disconnect. The
 #: owner predicate is the one of the ``DELETE``.

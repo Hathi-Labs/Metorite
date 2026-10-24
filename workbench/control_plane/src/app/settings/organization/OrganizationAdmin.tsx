@@ -129,6 +129,8 @@ const PURGE_LABELS: Record<string, string> = {
   app_tool_grants: "remembered tool approval",
   // H-375: a send that the member scheduled for later.
   scheduled_sends: "scheduled send",
+  // WS-65: the member's own grants on a shared mailbox. The mailbox stays.
+  mailbox_grants: "shared mailbox grant",
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
