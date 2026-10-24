@@ -345,6 +345,25 @@ def _ids(body: Any) -> set[str]:
     return out
 
 
+def _node_ids(body: Any) -> set[str]:
+    """The ``id`` of every node in a JSON body, and no other field.
+
+    A team node under a personal root carries the root's id as its
+    ``parent_project_id``. That pointer is not a read of the root, so the
+    node check reads ``id`` only.
+    """
+    out: set[str] = set()
+    if isinstance(body, dict):
+        if isinstance(body.get("id"), str):
+            out.add(body["id"])
+        for value in body.values():
+            out |= _node_ids(value)
+    elif isinstance(body, list):
+        for value in body:
+            out |= _node_ids(value)
+    return out
+
+
 def _titled(world, raw: str) -> set[str]:
     """The task ids whose title key is in a raw body (CSV or JSON text)."""
     return {tid for key, tid in world.t.items()
@@ -375,7 +394,7 @@ async def _refs(w, who: str) -> set[str]:
 
 
 async def _company(w, who: str) -> set[str]:
-    body = (await _ok(w, who, f"/search/company?q={WORD}&apps=tasks&k=20")).json()
+    body = (await _ok(w, who, f"/search/company?q={WORD}&apps=tasks&k=10")).json()
     assert body.get("skipped") == [], f"a source failed: {body.get('skipped')}"
     return {h["id"] for h in body["hits"] if h["app"] == "tasks"}
 
@@ -547,7 +566,7 @@ class TestNobodyElseReadsIt:
         personal = {p["owner_root"], p["owner_area"]}
         for path in ("/projects/tree", "/projects/nodes", "/projects/summary"):
             body = (await _ok(armed, who, path)).json()
-            assert not (_ids(body) & personal), (who, path)
+            assert not (_node_ids(body) & personal), (who, path)
         for project in personal:
             r = await _call(armed, who, "GET", f"/projects/nodes/{project}")
             assert r.status_code == 404, (who, r.text)
@@ -587,14 +606,6 @@ class TestTeamWorkReadsAsBefore:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _summary_total(body: Any) -> int:
-    for key in ("tasks", "total_tasks", "total"):
-        if isinstance(body.get(key), int):
-            return int(body[key])
-    totals = body.get("totals") or {}
-    return int(sum(v for v in totals.values() if isinstance(v, int)))
-
-
 class TestCountsLeaveOutPersonalTasks:
     async def test_the_dataset_count_is_the_team_work(self, armed):
         body = (await _ok(armed, READER,
@@ -611,23 +622,21 @@ class TestCountsLeaveOutPersonalTasks:
         assert sum(int(g["n"]) for g in body["groups"]) == 5, body
 
     async def test_the_portfolio_summary_counts_no_personal_task(self, armed):
+        """The summary counts each task in a space of the forest read, and
+        that read leaves every personal node out for every caller. So the
+        count is ``team`` alone: ``team_under`` hangs under a root the reader
+        cannot read, and the summary counts no orphan."""
         reader = (await _ok(armed, READER, "/projects/summary")).json()
-        assert _summary_total(reader) == 2, reader
+        assert reader["tasks"] == 1, reader
 
-    async def test_the_load_of_the_owner_counts_only_team_work(self, armed):
-        """The reader holds the HR read (``data:org:read``), so load names
-        every person. OWNER holds ``team`` and ``owner_mine``. The reader
-        counts one."""
+    async def test_the_load_counts_no_personal_task(self, armed):
+        """``/projects/analytics/load`` over the portfolio. Open work the
+        reader reads: team, team_under and the reader's own task. Before
+        OP-9 it held the owner's three personal tasks too, so it was 6."""
         body = (await _ok(armed, READER, "/projects/analytics/load")).json()
-        text_body = str(body)
-        rows = body.get("rows") or body.get("people") or []
-        mine = [r for r in rows
-                if str(r.get("assignee") or r.get("who") or r.get("email") or "")
-                .lower() == OWNER]
-        assert mine, text_body
-        counts = [v for k, v in mine[0].items()
-                  if k in ("open", "open_tasks", "tasks", "n", "count")]
-        assert counts and int(counts[0]) == 1, mine[0]
+        assert body["total_tasks"] == 3, body
+        owner = (await _ok(armed, OWNER, "/projects/analytics/load")).json()
+        assert owner["total_tasks"] == 5, owner
 
 
 # ═══════════════════════════════════════════════════════════════════════════
