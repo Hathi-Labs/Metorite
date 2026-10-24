@@ -6217,21 +6217,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
 - **Added:** 2026-10-23 · Projects chat parity session
 
-### H-389 · Finish the email chat polish branch · [AGENT]
-- **Check:** `git log origin/main --oneline | grep -i "spam action"` prints a
-  line. If it does, delete this entry.
-- **Why:** the branch `email-chat-polish` (728061816) holds three changes
-  that nobody verified or reviewed. They are a `spam` action in
-  `manage_inbox`, one retry of a read on a 503, and a plain sentence for a bare
-  403 or 404. Its builder stopped. The branch is cut from main before #1237,
-  so `agents.py` conflicts.
-- **Do this:** rebase it onto main, and fix the conflicts. Run the tests of
-  the changed code, then the verifier. Open a PR. Report the database pool
-  setting and the background jobs that share it (see H-390). Report what an
-  email write over WhatsApp needs (see H-391).
-- **Authority:** the audit of 2026-10-22 in this session's PRs (#1237 body)
-- **Added:** 2026-10-23 · email chat session
-
 ### H-390 · Email reads answer 503 when the gateway's database pool is full · [AGENT]
 - **Check:** `ssh metorite "sudo journalctl -u acb-gateway --since -24h -o cat
   | grep -c 'QueuePool limit'"` prints 0. If it does for a week, delete this

@@ -359,8 +359,33 @@ async def _request(
         return resp
 
 
+#: The wait before the one retry of a read that got a 503 (pool exhausted).
+_GET_RETRY_DELAY_S = 0.6
+#: What the member reads when the gateway refuses a read with no words.
+_CANNOT_SEE = "I cannot see that mailbox or message for this account."
+
+
 async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    return (await _request("GET", path, params=params or {})).json()
+    """A read. It retries ONCE after a short wait on a 503, because the
+    gateway answers 503 while its database pool is full and the next try
+    usually works. A write never retries: only this verb does. A bare
+    403 or 404 gets a plain sentence, and the gateway's own words stay."""
+    try:
+        try:
+            resp = await _request("GET", path, params=params or {})
+        except GatewayError as exc:
+            if exc.status != 503:
+                raise
+            await asyncio.sleep(_GET_RETRY_DELAY_S)
+            resp = await _request("GET", path, params=params or {})
+    except GatewayError as exc:
+        if exc.status in (403, 404) and not exc.detail:
+            raise GatewayError(
+                str(exc), exc.status, detail=_CANNOT_SEE,
+                fields=exc.fields, route=exc.route,
+            ) from exc
+        raise
+    return resp.json()
 
 
 async def _post(path: str, body: dict[str, Any]) -> Any:
