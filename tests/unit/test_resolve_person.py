@@ -209,6 +209,15 @@ class TestTheTiers:
         out = _resolve("tara")
         assert (out["source"], _emails(out)) == ("member", ["t.rao@alpha.example"])
 
+    def test_a_member_local_part_counts_too(self, fake: _FakeDB) -> None:
+        # Re-verify P2: raj@ with the display name "R. Patel" and no people
+        # row is a second Raj, so the assistant asks.
+        fake.people = [{"name": "Raj Kumar", "email": "raj.k@alpha.example"}]
+        fake.members = [{"display_name": "R. Patel", "email": "raj@alpha.example"},
+                        {"display_name": "", "email": "nameless@alpha.example"}]
+        assert _resolve("Raj")["total"] == 2
+        assert _emails(_resolve("nameless")) == ["nameless@alpha.example"]
+
     def test_people_and_members_are_read_together(self, fake: _FakeDB) -> None:
         fake.people = [{"name": "Sam", "email": "sam.p@alpha.example"}]
         fake.members = [{"display_name": "Sam", "email": "sam.m@alpha.example"}]

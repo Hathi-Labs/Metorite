@@ -23,8 +23,8 @@ questions. PZ-5 replaces none of them, and none of them is reused here.
    it let ``priya@`` hide Priya Sharma, so the assistant picked one Priya
    by guess (PZ-5 verify, P1).
 
-An input with an ``@`` matches ``lower(email)`` exactly, in each tier.
-Within a tier, two rows with one address are one person.
+An input with an ``@`` matches ``lower(email)`` exactly, in both tiers.
+Two rows with one address are one person.
 
 **The People gate (owner decision, 2026-10-23).** Tiers 2 and 3 read the
 directory, so they run only for a member who holds ``feature:people``. The
@@ -102,7 +102,6 @@ PEOPLE_SQL = (
 MEMBERS_SQL = (
     "SELECT display_name, email FROM app_user "
     f"WHERE organization_id = {_BOUND} AND status = 'active' "
-    "AND display_name IS NOT NULL AND display_name <> '' "
     "ORDER BY lower(email) LIMIT :cap"
 )
 
@@ -195,7 +194,8 @@ async def _directory_tier(db: Any, wanted: str,
     else:
         from_people = [(p or n or e, e) for n, p, e in people
                        if names_match(p, n) or fold(e.split("@", 1)[0]) == wanted]
-        from_members = [(d, e) for d, e in members if d and names_match(d)]
+        from_members = [(d or e, e) for d, e in members
+                        if (d and names_match(d)) or fold(e.split("@", 1)[0]) == wanted]
     found = _one_each(from_people + from_members)
     source = "people" if from_people else "member"
     return found, source, truncated
