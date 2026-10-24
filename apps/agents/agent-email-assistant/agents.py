@@ -2953,7 +2953,10 @@ def _rule_targets(
                         f'Not saved. The rule "{name}" has a url that '
                         f"{problem}: '{_card_text(value, 120)}'."
                     )
-                rows.append((kind, f"host: {host}, url: {value}", host, name))
+                # H-404: the detail names the host AND the path, and the
+                # list names the whole URL, so the card never shows less.
+                path = urlsplit(value).path or "/"
+                rows.append((kind, f"host: {host}, url: {value}", f"{host}{path}", name))
                 found = True
             if not found:
                 rows.append((kind, "(no address)", "(no address)", name))
@@ -2984,8 +2987,73 @@ def _outward_card(rows: list[tuple[str, str, str, str]]) -> tuple[str, str]:
     return detail, context
 
 
+def _rule_urls(actions: Any) -> frozenset[str]:
+    """Each webhook URL of a list of actions."""
+    return frozenset(str(a.get("url")) for a in actions or []
+                     if isinstance(a, dict) and a.get("url"))
+
+
+async def _webhook_host_public(host: str) -> bool:
+    """True when each address of *host* is public: THE shared test
+    (``acb_common.public_address``), in a worker thread because it resolves
+    the name. A seam, so a test answers without the network."""
+    from acb_common.public_address import host_is_public
+
+    return await asyncio.to_thread(host_is_public, host)
+
+
+async def _own_mailbox_addresses() -> set[str] | None:
+    """The lower-case address of each mailbox of the member, or None when
+    the list cannot be read."""
+    try:
+        return {str(a.get("email_address") or "").strip().lower()
+                for a in await _accounts() if a.get("email_address")}
+    except Exception:  # the caller saves nothing
+        return None
+
+
+async def _target_refusal(
+    rules: list[dict[str, Any]], known_urls: frozenset[str],
+) -> str:
+    """H-404: why a target of an outward rule may not be saved, or "".
+
+    A webhook URL whose host is not public is refused: a private, a
+    loopback, a link-local or an unresolvable host. A URL that the saved rule
+    already holds is not tested again. A FORWARD to an address of a mailbox
+    of the member is refused, as ``rule_copy`` leaves it out (D-EM-29): the
+    mail could go round in a loop."""
+    forwards: list[str] = []
+    for rule in rules:
+        for a in rule.get("actions") or []:
+            if not isinstance(a, dict):
+                continue
+            url = a.get("url")
+            if url and str(url) not in known_urls:
+                host, problem = _url_problem(url)
+                if problem:
+                    return f"Not saved. The webhook url {problem}."
+                if not await _webhook_host_public(host):
+                    return (f"Not saved. The webhook host {host} is not a public address, "
+                            "such as a private, a loopback or a link-local one, or it does "
+                            "not resolve. A rule calls a public https address only.")
+            if a.get("type") == "FORWARD":
+                forwards += [str(a.get(f)) for f in _ADDRESS_FIELDS if a.get(f)]
+    if forwards:
+        own = await _own_mailbox_addresses()
+        if own is None:
+            return ("Not saved. I could not read your mailboxes, so I could not check "
+                    "that the forward does not go to one of them. Try again.")
+        loop = [f for f in forwards if f.strip().lower() in own]
+        if loop:
+            return (f"Not saved. The rule forwards to {loop[0]}, an address of one of "
+                    "your own mailboxes, and such a forward can send mail round in a "
+                    "loop. Use a label or a move instead.")
+    return ""
+
+
 async def _outward_rule_refusal(
     title: str, rules: list[dict[str, Any]], cancelled: str,
+    *, known_urls: frozenset[str] = frozenset(),
 ) -> str | None:
     """None when the save may go on. Else the text that the tool answers.
 
@@ -3004,6 +3072,9 @@ async def _outward_rule_refusal(
     if not outward:
         return None
     rows, bad = _rule_targets(outward)
+    if bad:
+        return bad
+    bad = await _target_refusal(outward, known_urls)
     if bad:
         return bad
     detail, context = _outward_card(rows)
@@ -3158,24 +3229,70 @@ def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
     return enabled is False and not widens and not _egress_held()
 
 
-#: Chat parity wave 1 (owner, 2026-10-23): the action types that the
-#: ``actions`` list of ``create_rule`` and ``update_rule`` may hold. Each one
-#: stays in the mailbox. A forward or a webhook keeps its own path
-#: (``forward_to`` on ``create_rule``), so the list adds no outward act.
-_LIST_ACTION_TYPES = _RULE_ENGINE_TYPES - _OUTWARD_RULE_TYPES
-#: The keys of one item of that list. An address, a URL, a subject, a body
-#: or a file is refused, so the list names no target and writes no text.
-_LIST_ACTION_KEYS = frozenset({"type", "label", "delay_minutes", "label_ai"})
+#: The action types that the ``actions`` list of ``create_rule`` and
+#: ``update_rule`` may hold. Chat parity wave 1 (2026-10-23) took the acts
+#: that stay in the mailbox. H-404 (owner, 2026-10-24) adds the outward acts:
+#: a FORWARD, a REPLY or DRAFT_EMAIL to an address that the rule names, and a
+#: CALL_WEBHOOK. Each outward act asks the outward card, which names each
+#: address and each URL in full (:func:`_outward_rule_refusal`), and a held
+#: run refuses each one (:func:`_held_in_no_egress`).
+_LIST_ACTION_TYPES = _RULE_ENGINE_TYPES
+#: The keys of one item of that list. A subject, a body or a file is
+#: refused, so the list writes no text of the model.
+_LIST_ACTION_KEYS = frozenset({"type", "label", "delay_minutes", "label_ai",
+                               *_ADDRESS_FIELDS, "url"})
+#: H-404: the action types that may name an address, and the ones that must.
+_ADDRESS_ACTION_TYPES = frozenset({"FORWARD", "REPLY", "DRAFT_EMAIL"})
 #: The longest delay of an action: 30 days, in minutes.
 _MAX_DELAY_MINUTES = 43200
+
+
+# H-404: _clean_actions takes to_address, cc_address, bcc_address and a CALL_WEBHOOK url.
+def _list_action_targets(a_type: str, item: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """The address and URL fields of one ``actions`` item (H-404), checked.
+
+    An empty text clears a field that the saved action has
+    (:func:`_carry_over`), so it stays as ``""``."""
+    out: dict[str, Any] = {}
+    for field in (*_ADDRESS_FIELDS, "url"):
+        if field not in item or item[field] is None:
+            continue
+        value = item[field]
+        if field == "url" and a_type != "CALL_WEBHOOK":
+            return {}, "Not saved. Only a CALL_WEBHOOK action takes a url."
+        if field != "url" and a_type not in _ADDRESS_ACTION_TYPES:
+            return {}, (f"Not saved. Only a FORWARD, a REPLY or a DRAFT_EMAIL action "
+                        f"takes {field}.")
+        if isinstance(value, str) and not value.strip():
+            out[field] = ""
+            continue
+        if field == "url":
+            _host, problem = _url_problem(value)
+            if problem:
+                return {}, f"Not saved. The webhook url {problem}: '{_card_text(value, 120)}'."
+        else:
+            problem = _address_problem(value)
+            if problem:
+                return {}, (f"Not saved. The {field} {problem}: '{_card_text(value, 120)}'. "
+                            "Give one address, with no name and no list.")
+        out[field] = value
+    if a_type == "FORWARD" and not out.get("to_address"):
+        return {}, "Not saved. A FORWARD action needs to_address, the person who gets the mail."
+    if a_type == "CALL_WEBHOOK" and not out.get("url"):
+        return {}, "Not saved. A CALL_WEBHOOK action needs url, the https address to call."
+    return out, ""
 
 
 def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
     """``(actions, "")`` for a valid ``actions`` list, else ``([], refusal)``.
 
-    Each item is ``{type, label?, delay_minutes?, label_ai?}``. The type is an
-    act that stays in the mailbox (:data:`_LIST_ACTION_TYPES`). Any other key
-    is refused, so this list never adds a recipient, a URL or a text."""
+    Each item is ``{type, label?, delay_minutes?, label_ai?}``, and H-404 adds
+    ``to_address``, ``cc_address`` and ``bcc_address`` on a FORWARD, a REPLY
+    or a DRAFT_EMAIL, and ``url`` on a CALL_WEBHOOK. A FORWARD needs
+    ``to_address``, and a CALL_WEBHOOK needs ``url``. Each address passes
+    :func:`_address_problem`, and each URL passes :func:`_url_problem`. The
+    public-host test of a URL runs before the card (:func:`_outward_rule_refusal`).
+    Any other key, a subject and a body among them, is refused."""
     if not isinstance(raw, list) or not raw:
         return [], "Not saved. `actions` must be a list with one action at least."
     out: list[dict[str, Any]] = []
@@ -3186,14 +3303,18 @@ def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
         if extra:
             return [], (
                 f"Not saved. An action in `actions` cannot hold {', '.join(extra)}. "
-                "Each item takes only type, label, delay_minutes and label_ai. A "
-                "forward goes through create_rule with forward_to.")
+                "Each item takes only type, label, delay_minutes, label_ai, the "
+                "addresses to_address, cc_address and bcc_address, and url.")
         a_type = str(item.get("type") or "").strip().upper()
         if a_type not in _LIST_ACTION_TYPES:
             return [], (
                 f"Not saved. The action type '{_card_name(a_type)}' is not allowed in "
                 f"`actions`. Use one of: {', '.join(sorted(_LIST_ACTION_TYPES))}.")
         action: dict[str, Any] = {"type": a_type}
+        targets, bad = _list_action_targets(a_type, item)
+        if bad:
+            return [], bad
+        action.update(targets)
         label = item.get("label")
         if label is not None and str(label).strip():
             if len(str(label)) > 200:
@@ -3348,9 +3469,13 @@ async def create_rule(
             an AI label. Each item is {type, label?, delay_minutes?,
             label_ai?}. delay_minutes waits before the action acts.
             label_ai=true reads the label as a prompt, and the AI picks the
-            label for each email. FORWARD and CALL_WEBHOOK are not allowed
-            here. Do not combine it with action_type, forward_to or the draft
-            fields.
+            label for each email. An outward act takes its target in the
+            item: FORWARD {to_address, cc_address?, bcc_address?}, REPLY or
+            DRAFT_EMAIL {to_address?, cc_address?, bcc_address?}, and
+            CALL_WEBHOOK {url}. Each address is one plain address. The url is
+            an https address of a public host. An outward act shows its own
+            card that names each address and the whole url. Do not combine it
+            with action_type, forward_to or the draft fields.
         automated: true = apply automatically; false = propose for approval.
 
     Mailbox: leave ``account_id`` out when the user named no mailbox. One
@@ -3759,9 +3884,10 @@ async def update_rule(
         actions: the WHOLE new action list, which replaces every action. Each
             item is {type, label?, delay_minutes?, label_ai?}. Use it to change
             a label, to add a delay, or to turn on an AI label (LABEL only).
-            FORWARD and CALL_WEBHOOK are not allowed here, and a rule that
-            forwards or calls a webhook refuses the list: change it with
-            remove_action_types and add_action_type. An item of a type that
+            An outward act takes its target in the item, as in create_rule:
+            FORWARD {to_address, cc_address?, bcc_address?}, REPLY or
+            DRAFT_EMAIL {to_address?, cc_address?, bcc_address?}, CALL_WEBHOOK
+            {url}. Pass "" to clear a Cc or a Bcc. An item of a type that
             the rule has keeps that action's other fields, such as a draft
             text or a NOTIFY_ME level. Read the rule first with
             get_rules_and_settings. The card names each removed or changed
@@ -3794,12 +3920,9 @@ async def update_rule(
     was_outward = _has_outward_action(rule.get("actions"))
     first_read = _rule_fingerprint(rule)
     old_actions = [dict(a) for a in rule.get("actions") or [] if isinstance(a, dict)]
-    if actions is not None and was_outward:
-        # Review fix round 1 (P2-3): the list cannot hold a forward or a
-        # webhook, so it would drop the one that the rule has.
-        return ("Nothing changed. This rule sends mail out, and `actions` cannot "
-                "hold that action. Use remove_action_types and add_action_type "
-                "instead.")
+    # H-404: the list can hold a forward and a webhook now, so a rule that
+    # sends mail out takes a list too. The outward card names each target of
+    # the new list in full.
     # Chat parity wave 1: each change that can make the rule act on more mail,
     # or do more, widens it. A rename, a removal, a narrower operator, a
     # proposal instead of an act, or a pause does not.
@@ -3849,6 +3972,10 @@ async def update_rule(
             action["label"] = add_action_label
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
+    if actions is not None and _has_outward_action(rule.get("actions")):
+        # H-404: a new list with an outward act asks the outward card, which
+        # names each address and URL. The inward card does not show them.
+        added_outward = True
     now_outward = _has_outward_action(rule.get("actions"))
     # EM-G11c1: each change asks a card, except a pause of the rule, which
     # turns a write off. One call shows one card. Security review of #1173,
@@ -3862,6 +3989,7 @@ async def update_rule(
     if now_outward and (added_outward or (was_outward and widens)):
         refusal = await _outward_rule_refusal(
             "Change a rule that sends mail out of the mailbox?", [rule], cancelled,
+            known_urls=_rule_urls(old_actions),
         )
         if refusal:
             return refusal
