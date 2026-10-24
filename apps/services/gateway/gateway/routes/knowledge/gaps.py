@@ -92,12 +92,14 @@ _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _UUID = re.compile(r"\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b",
                    re.IGNORECASE)
 _AMOUNT = re.compile(
-    r"(?:[$\u20b9\u20ac\u00a3]|\b(?:rs|inr|usd|eur|gbp)\b\.?)\s*\d[\d,.]*"
-    r"|\b\d[\d,.]*\s*(?:rs|inr|usd|eur|gbp|rupees|dollars)\b",
+    r"(?:[$\u20b9\u20ac\u00a3]|\b(?:rs|inr|usd|eur|gbp)\b\.?)\s*\d(?:[\d ,.]*\d)?"
+    r"|\b\d(?:[\d ,.]*\d)?\s*(?:rs|inr|usd|eur|gbp|rupees|dollars|lakhs?|crores?)\b",
     re.IGNORECASE,
 )
-_PHONE = re.compile(r"(?<![\w.])\+?\d(?:[ ()-]?\d){8,}(?!\w)")
+_PHONE = re.compile(r"(?<![\w.])\+?\(?\d(?:\)?[ -]?\(?\d){8,}(?!\w)")
 _LONG_NUMBER = re.compile(r"\d{5,}")
+#: A figure grouped by commas, such as 85,000 or 1,20,000. A year or 1,200 stays.
+_GROUPED = re.compile(r"(?<![\d,])(?:\d{2,3}(?:,\d{2,3})+|\d(?:,\d{2,3}){2,})(?!\d)")
 _SPACES = re.compile(r"\s+")
 
 #: The Gaps view of the Knowledge app.
@@ -135,8 +137,10 @@ def mask_text(question: str | None) -> str:
     out = _AMOUNT.sub("[amount]", out)
     # A run with a space, bracket or dash in it is a phone number. A run
     # with none is a plain number, and a short run stays.
+    # A leading + also makes a phone number.
     out = _PHONE.sub(lambda m: "[phone]" if re.search(r"\D", m.group().lstrip("+"))
-                     else "[number]", out)
+                     or m.group().startswith("+") else "[number]", out)
+    out = _GROUPED.sub("[number]", out)
     return _LONG_NUMBER.sub("[number]", out)
 
 

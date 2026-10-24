@@ -132,6 +132,26 @@ class TestTheStoredText:
         assert "[amount]" in masked
         assert not any(c.isdigit() for c in masked)
 
+    @pytest.mark.parametrize(("raw", "want"), [
+        ("salary ₹ 85 000 monthly", "salary [amount] monthly"),
+        ("pay 85 000 rupees monthly", "pay [amount] monthly"),
+        ("pay 2 lakh rupees monthly", "pay [amount] rupees monthly"),
+        ("call (044) 2345 6789 today", "call [phone] today"),
+        ("call +919876543210 today", "call [phone] today"),
+        ("pay 85,000 monthly", "pay [number] monthly"),
+        ("pay 1,20,000 monthly", "pay [number] monthly"),
+        ("a 50k budget", "a 50k budget"),
+        ("on 2026-10-25 we met", "on 2026-10-25 we met"),
+        ("a fee of 1,200 or 3D", "a fee of 1,200 or 3D"),
+    ])
+    def test_the_probes_leave_no_figure(self, raw: str, want: str) -> None:
+        assert gaps.mask_text(raw) == want
+
+    def test_a_probe_reaches_gap_for_with_no_digit(self, gates: Any) -> None:
+        found = gaps.gap_for(_user(), "what is the salary ₹ 85 000 per month")
+        assert found is not None
+        assert not any(c.isdigit() for c in "".join(found))
+
     def test_a_long_run_of_digits_becomes_number(self) -> None:
         assert gaps.mask_text("account 123456789012 balance") == "account [number] balance"
 

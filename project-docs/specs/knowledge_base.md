@@ -974,9 +974,12 @@ form above where the two differ.
    before the normal form. So `norm_query` and `sample_query` both hold the
    masked text. An email address becomes `[email]` and a phone number becomes
    `[phone]`. An amount (a currency sign or word beside a figure) becomes
-   `[amount]`. Any other run of 5 digits or more becomes `[number]`. A short
-   figure, such as a year, stays. One side effect: "salary Rs 50000" and "salary Rs 60000" are one
-   gap. A name is not masked. Only a holder of `knowledge:manage` and the
+   `[amount]`. Any other run of 5 digits or more becomes `[number]`. A figure
+   grouped by commas, such as 85,000, also becomes `[number]`. A phone number
+   needs a separator or a leading + to read `[phone]`. A plain run of digits
+   reads `[number]`. A short figure, such as a year, stays. A figure can have
+   spaces inside it, as in "Rs 85 000". One side effect follows. The questions
+   "salary Rs 50000" and "salary Rs 60000" are one gap. A name is not masked. Only a holder of `knowledge:manage` and the
    asker see the stored text. One function does the mask, `mask_text` in
    `gaps.py`. CX-3 may replace it with its shared mask.
 
