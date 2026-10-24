@@ -205,30 +205,40 @@ def test_an_area_holding_work_is_ARCHIVED_not_deleted(db):
 class _OneRead:
     """The two reads the guard makes, and nothing else.
 
-    The moved node's own column, then the walk up from the new parent
+    The own column of both nodes, then the walk up from the new parent
     (``personal_tree_owner``). The walk is told apart by its recursive CTE.
     """
 
-    def __init__(self, moved_owner, parent_owner):
+    def __init__(self, moved_owner, parent_owner, parent_id):
         self._moved = moved_owner
         self._parent = parent_owner
+        self._parent_id = parent_id
 
     async def execute(self, sql, _params=None):
-        owner = self._parent if "WITH RECURSIVE" in str(sql) else self._moved
+        walk = "WITH RECURSIVE" in str(sql)
+        moved, parent, parent_id = self._moved, self._parent, self._parent_id
 
         class R:
             @staticmethod
             def fetchone():
-                if owner is None:
+                if parent is None:
                     return None
-                return SimpleNamespace(personal_owner=owner)
+                return SimpleNamespace(personal_owner=parent)
+
+            @staticmethod
+            def fetchall():
+                assert not walk
+                rows = [SimpleNamespace(id="moved", personal_owner=moved)]
+                if parent_id is not None:
+                    rows.append(SimpleNamespace(id=parent_id, personal_owner=parent))
+                return rows
 
         return R()
 
 
 def _guard(moved_owner, parent_owner, parent_id="parent"):
     return pm_core.assert_project_move_keeps_privacy(
-        _OneRead(moved_owner, parent_owner), "moved", parent_id,
+        _OneRead(moved_owner, parent_owner, parent_id), "moved", parent_id,
     )
 
 
