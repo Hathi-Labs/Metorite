@@ -2291,12 +2291,36 @@ _CARD_REVISED = (
     "they change this mail, change it, keep every part they did not ask to "
     "change, and show a new card with the new text. If they ask about "
     "something else, answer that first, then ask whether to show the card "
-    "again. If they ask to add a Cc or a Bcc, find each person with "
-    "find_contact, and ask with ask_questions when names clash. The card "
-    "already saved this reply to Drafts. Add the people to that draft with "
-    "edit_draft, then offer send_draft. After that, change the draft only "
-    "with edit_draft, because a new card resets the Cc. Never send the "
-    "member to the Email app for it.")
+    "again. If they ask to copy people, find each person with find_contact, "
+    "and ask with ask_questions when names clash. Then call compose_reply "
+    "again with ALL the people in cc, in ONE call, so ONE card shows them. "
+    "The card keeps every person of the email, the Cc of the email "
+    "included, so never drop one. \"X and Y\" means one mail to both. For a "
+    "Bcc, save the reply, add the Bcc with edit_draft, and offer send_draft. "
+    "Never send the member to the Email app for it.")
+
+
+#: The answer of ``compose_reply`` with ``cc`` in a held chat while
+#: ``EMAIL_HELD_CARD_SEND`` is off: the card has no class, so a person that
+#: the assistant names would start ticked.
+_HELD_REPLY_CC_REFUSED = (
+    "Not shown. This chat read outside mail, so the reply card cannot add a "
+    "person here. Show the reply card with no cc, and ask the member to Save "
+    "to Drafts. Then add the people with edit_draft, and offer send_draft.")
+
+
+def _recent_reply_text(prep: dict[str, Any]) -> str:
+    """Item 6 (owner, 2026-10-24): a reply of this thread went out in the
+    last day. To add people, forward THAT mail, and do not send it again."""
+    recent = prep.get("recent_reply") if isinstance(prep.get("recent_reply"), dict) else {}
+    mid = str(recent.get("message_id") or "").strip()
+    if not mid:
+        return ""
+    when = str(recent.get("sent_at") or "").strip()
+    return (f" A reply of this thread already went out{f' at {when}' if when else ''} "
+            f"(email_id {mid}). If the member asks to add people, offer: "
+            "\"Forward the sent mail to <the missing people>\", with forward_email "
+            "of that email_id. Do not send the whole reply again.")
 
 
 def _revised(answer: Any) -> bool:
@@ -2339,21 +2363,43 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     ticked = {k: {"to": list((given.get(k) or v).get("to") or []),
                   "cc": list((given.get(k) or v).get("cc") or [])}
               for k, v in lists.items()}
+    notices = [str(n) for n in prep.get("notices") or [] if str(n or "").strip()]
+    marks = {str(k).strip().lower(): str(v)
+             for k, v in (prep.get("marks") or {}).items() if k and v}
     return {
         "message_id": prep.get("message_id") or "",
-        "notices": list(prep.get("notices") or []),
+        # The card shows four notices at most. The rest go in the note.
+        "notices": notices[:4],
         "mailbox": prep.get("mailbox") or "",
         "subject": prep.get("subject") or "",
         "original": prep.get("original") or {},
         "recipients": lists,
         "ticked": ticked,
+        # Item 8 (owner, 2026-10-24): the words of each person on the card.
+        **({"marks": marks} if marks else {}),
         "reply_all": bool(reply_all),
         "body": body,
         # The draft that this card wrote. The member's Discard trashes it.
         "draft_id": str(prep.get("draft_id") or ""),
-        "note": ("" if body.strip() else
-                 "The assistant did not write a draft for this mail. Write the reply below."),
+        "note": " ".join([*notices[4:], *([] if body.strip() else [
+            "The assistant did not write a draft for this mail. Write the reply below."])]),
     }
+
+
+def _left_out(form: dict[str, Any]) -> list[str]:
+    """The people on the card that do NOT start ticked (item 8)."""
+    shown = (form.get("recipients") or {}).get("reply_all") or {}
+    on = {a.lower() for key in ("to", "cc")
+          for a in ((form.get("ticked") or {}).get("reply_all") or {}).get(key) or []}
+    return [a for key in ("to", "cc") for a in shown.get(key) or [] if a.lower() not in on]
+
+
+def _left_out_text(form: dict[str, Any]) -> str:
+    """"ananda@… will not get this." for the card detail, or ""."""
+    gone = _left_out(form)
+    if not gone:
+        return ""
+    return f"{', '.join(gone)} will not get this."
 
 
 #: The longest card title that ``request_confirmation`` keeps whole.
@@ -2410,13 +2456,14 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
     email_id: str, account_id: str, reply_all: bool | None = None, draft: str = "",
-    instruction: str = "",
+    instruction: str = "", cc: list[str] | None = None,
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
-    member ONE card: the email it answers, who gets the reply, a Reply or
-    Reply all toggle, the text to edit, and Send, Save to Drafts and Discard.
-    The member decides on the card, and the tool then does it and returns
-    what happened. The card is the question, so do not ask in text first.
+    member ONE card: the email it answers, every person who can get the
+    reply with a tick box, the text to edit, and Send, Save to Drafts and
+    Discard. The member decides on the card, and the tool then does it and
+    returns what happened. The card is the question, so do not ask in text
+    first. When the member says "send it", call this tool at once.
 
     The text of each card also goes to the member's Drafts. A new card for
     the same email updates the chat's own draft, and never a draft that the
@@ -2425,14 +2472,18 @@ async def compose_reply(
     member's Discard trashes the card's draft, unless the member edited it
     there.
 
-    Leave ``reply_all`` out and the server chooses: Reply all when anyone
-    besides the sender and the member is on the mail, else Reply. Most mail
-    with other people on it needs Reply all. Pass ``reply_all=false`` only
+    The card lists every person on the email, To and Cc, and each one
+    starts ticked. Leave ``reply_all`` out. Pass ``reply_all=false`` only
     when the text is for the sender alone, or when the member says "just to
-    him". Pass ``true`` when the member asks for everyone. Say which choice
-    the card opened on. The member can change it on the card. The reply always goes from
-    the mailbox that received the email, whatever ``account_id`` says. You
-    choose no recipient: the server derives the recipients.
+    him": then only the sender starts ticked. The member ticks or unticks
+    each person on the card. The reply always goes from the mailbox that
+    received the email, whatever ``account_id`` says. The server derives the
+    people of the email.
+
+    ``cc`` holds each person that the member asks to copy ("copy Kiran and
+    Veena"), as full addresses from find_contact. Put them ALL in this one
+    call, so ONE card shows them with the people of the email. Never make one
+    mail for each person, unless the member says "each" or "individually".
 
     ``draft`` is the reply text that you and the member already agreed in
     the chat, or that the request to you contains. Pass it WORD FOR WORD,
@@ -2444,11 +2495,10 @@ async def compose_reply(
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
-    Each To and Cc on the card has a tick box, and the reply goes only to
-    the people that the member leaves ticked. The card adds no Cc or Bcc.
-    When the member asks for one, do it in the chat: find each person with find_contact. The card saved the reply to
-    Drafts, and the answer names its draft_id. Add the people with
-    edit_draft, and offer send_draft. Never tell the member to open the
+    Each person on the card has a tick box, and the reply goes only to the
+    people that the member leaves ticked. The draft in Drafts names the same
+    people. The card shows no Bcc. For a Bcc, save the reply, add the Bcc
+    with edit_draft, and offer send_draft. Never tell the member to open the
     Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
@@ -2477,16 +2527,29 @@ async def compose_reply(
         # The tick boxes: the server starts each new address unticked, and the
         # draft in Drafts leaves it out, so the draft holds what the card sends.
         steer["untick_new"] = True
+    asked = [str(a).strip() for a in (cc or []) if str(a or "").strip()]
+    if asked:
+        if _egress_held() and not held_cards:
+            # With EMAIL_HELD_CARD_SEND off a held card has no class, so a
+            # person that the model names would start ticked. Refuse it.
+            return _HELD_REPLY_CC_REFUSED
+        steer["cc"] = asked
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if held_cards:
         _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
+    card_id = str(prep.get("card_id") or "")
+    gone = _left_out_text(form)
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, form["reply_all"]),
         detail=_card_text(
-            f"From {form['mailbox']} · {form['subject'] or '(no subject)'}", 300),
+            f"From {form['mailbox']} · {form['subject'] or '(no subject)'}"
+            + (f" · {gone}" if gone else ""), 300),
         reply=form,
+        # The server's record of the people that this card added has this
+        # id, so the act reads the same record (item 2).
+        **({"request_id": card_id} if card_id else {}),
     )
     if answer is ask_tools.REVISED:
         # The id of the card's draft, so a Cc the member asks for goes on it
@@ -2494,7 +2557,8 @@ async def compose_reply(
         did = form["draft_id"]
         ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
         line = _draft_line(did, form["subject"])
-        return _CARD_REVISED + ref + kept + (f"\n{line}" if line else "")
+        return (_CARD_REVISED + ref + kept + _recent_reply_text(prep)
+                + (f"\n{line}" if line else ""))
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
@@ -2510,8 +2574,8 @@ async def compose_reply(
         "card_thread_id": answer.thread_id,
         "answer": answer.answer,
     })
-    to, cc = _addr_text(res.get("to")), _addr_text(res.get("cc"))
-    copy = f", with a copy to {cc}" if cc else ""
+    to, copied = _addr_text(res.get("to")), _addr_text(res.get("cc"))
+    copy = f", with a copy to {copied}" if copied else ""
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
         return f"Sent to {to}{copy}, from {box}.{kept}"
