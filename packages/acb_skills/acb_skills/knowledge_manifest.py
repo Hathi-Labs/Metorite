@@ -104,6 +104,18 @@ _FAVORITE_REASON = (
     "company knowledge. The member stars a page in the app."
 )
 
+#: KC-1a: a consent and a disconnect are the member's own acts, in the browser.
+_SOURCE_CONSENT_REASON = (
+    "A member connects a file source in the browser: the consent page of the "
+    "provider needs the member, and the callback checks the member of the "
+    "session (knowledge_curation.md §7.1). The chat does not connect a drive."
+)
+_SOURCE_DISCONNECT_REASON = (
+    "A disconnect can end the shared Google grant of the member, Gmail "
+    "included (knowledge_base.md §7.4). The member or a manager does it in "
+    "the Knowledge app, never the chat."
+)
+
 MANIFEST: tuple[Route, ...] = (
     # ── Spaces ──
     Route("GET", "/knowledge/spaces", "list_spaces", "A"),
@@ -144,6 +156,17 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
     Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
+    # ── Sources (KC-1a, knowledge_curation.md §7) ── the tree is names only. A
+    # read may join the chat with `search_knowledge` (knowledge_base.md §7.2).
+    Route("POST", "/knowledge/sources/google_drive/connect", "", "X",
+          reason=_SOURCE_CONSENT_REASON),
+    Route("GET", "/knowledge/sources/google_drive/callback", "", "X",
+          reason=_SOURCE_CONSENT_REASON),
+    Route("GET", "/knowledge/sources", "", "A", planned="search_knowledge, deferred (§8.1)"),
+    Route("GET", "/knowledge/sources/{source_id}/tree", "", "A",
+          planned="search_knowledge, deferred (§8.1)"),
+    Route("DELETE", "/knowledge/sources/{source_id}", "", "X",
+          reason=_SOURCE_DISCONNECT_REASON),
 )
 
 
