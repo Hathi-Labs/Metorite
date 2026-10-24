@@ -29,11 +29,13 @@ Fences: ``tests/unit/test_assistant_profile.py`` and
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
 import re
 import unicodedata
+from collections.abc import Iterator
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -252,43 +254,155 @@ def enabled() -> bool:
 
 # ── The write-origin fence (PZ-6a) ─────────────────────────────────────────
 
-#: True only in a run where the member can change their own profile from the
-#: chat: the run boundary bound a solo room, the member is verified, and the
-#: run is not ``no_egress``. The executor sets it at the boundary and resets
-#: it with the run (``orchestrator.executor``). The default is False, so a
-#: background, delegated, scheduled, workflow or shared-room run can write
-#: nothing (personalization.md §5.5). It is never read from a payload (R5).
-#: The four write tools of ``acb_skills.profile_tools`` refuse when it is
-#: False. Fence: ``tests/unit/test_profile_write_tools.py``.
-WRITES_OPEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "assistant_profile_writes_open", default=False)
+class _Writes:
+    """The one holder of a run's profile-write switch. A tool call may run
+    in a COPY of the run's context, so a ``ContextVar.set`` inside it never
+    reaches the next call. The copy holds the same object, so a change of
+    :attr:`open` reaches every later call of the run (PZ-6a fix round 1)."""
+
+    __slots__ = ("open",)
+
+    def __init__(self, open_: bool) -> None:
+        self.open = open_ is True
+
+
+#: The holder of this run's switch. Only a run where the member can change
+#: their own profile from the chat holds an open one: the run boundary bound
+#: a solo room, the member is verified, and the run is not ``no_egress``.
+#: The executor binds a fresh holder at the boundary and resets it with the
+#: run (``orchestrator.executor``). The default is None, so a background,
+#: delegated, scheduled, workflow or shared-room run can write nothing
+#: (personalization.md §5.5). It is never read from a payload (R5). The
+#: write tools of ``acb_skills.profile_tools`` refuse when it is closed.
+#: Fence: ``tests/unit/test_profile_write_tools.py``.
+WRITES_OPEN: contextvars.ContextVar[_Writes | None] = contextvars.ContextVar(
+    "assistant_profile_writes_open", default=None)
 
 
 def writes_open() -> bool:
     """True when this run may write the member's profile from the chat."""
-    return WRITES_OPEN.get() is True
+    gate = WRITES_OPEN.get()
+    return gate is not None and gate.open is True
 
 
-def bind_writes(open_: bool) -> contextvars.Token[bool]:
-    """Set :data:`WRITES_OPEN` for one run. Only ``True`` itself opens it.
-    Hand the token to :func:`release_writes`."""
-    return WRITES_OPEN.set(open_ is True)
+def bind_writes(open_: bool) -> contextvars.Token[_Writes | None]:
+    """Bind a fresh holder for one run. Only ``True`` itself opens it. Hand
+    the token to :func:`release_writes`."""
+    return WRITES_OPEN.set(_Writes(open_ is True))
 
 
 def close_writes() -> None:
-    """Close :data:`WRITES_OPEN` for the rest of this run. It never opens."""
-    WRITES_OPEN.set(False)
+    """Close the run's profile writes for the rest of the run. It never
+    opens. A tool that hands the model text of another person calls it
+    (``search_company``, ``read_page``, ``list_spaces``), and so does the
+    end of a delegated or specialist run (PZ-6a fix round 1, §5.5)."""
+    gate = WRITES_OPEN.get()
+    if gate is not None:
+        gate.open = False
 
 
-def release_writes(token: contextvars.Token[bool] | None) -> None:
-    """Close a :func:`bind_writes` scope. Never raises. A failed reset sets
-    False, so it fails closed and never open."""
+def release_writes(token: contextvars.Token[_Writes | None] | None) -> None:
+    """Close a :func:`bind_writes` scope. Never raises. A failed reset binds
+    a closed holder, so it fails closed and never open."""
     if token is None:
         return
     try:
         WRITES_OPEN.reset(token)
     except (ValueError, RuntimeError):
-        WRITES_OPEN.set(False)
+        WRITES_OPEN.set(_Writes(False))
+
+
+# ── The channel of the run (PZ-6a fix round 1) ─────────────────────────────
+
+#: The channel of the run, and whether that channel may write: ``("chat",
+#: True)`` by default. ``bot_run`` binds ``("whatsapp", <the org's WhatsApp
+#: writes switch>)`` around each WhatsApp run, native or not, so a profile
+#: write labels ``whatsapp`` and a WhatsApp run with writes off holds no
+#: write tool. Never read from a payload (R5).
+CHANNEL: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
+    "assistant_profile_channel", default=("chat", True))
+
+
+@contextlib.contextmanager
+def profile_channel(name: str, *, writes: bool) -> Iterator[None]:
+    """Bind the channel of one run. Closing restores the value it found."""
+    token = CHANNEL.set((str(name), writes is True))
+    try:
+        yield
+    finally:
+        CHANNEL.reset(token)
+
+
+def channel() -> str:
+    """``whatsapp`` inside a WhatsApp run, else ``chat``."""
+    return "whatsapp" if CHANNEL.get()[0] == "whatsapp" else "chat"
+
+
+def channel_writes() -> bool:
+    """False in a WhatsApp run whose org has its writes switch off."""
+    return CHANNEL.get()[1] is True
+
+
+#: The profile tools that change the profile. A WhatsApp run with writes
+#: off holds none of them (``_tool_injection._whatsapp_withheld``).
+WRITE_TOOL_NAMES: frozenset[str] = frozenset({
+    "profile_remember", "profile_forget", "profile_set", "profile_alias",
+    "profile_undo"})
+
+
+# ── The member's own words (PZ-6a fix round 1, D-PZ-2) ─────────────────────
+
+#: The refusal of a value that the member did not say in this turn.
+NOT_YOUR_WORDS = ("I can only save what you tell me yourself. Say it in your own "
+                  "words and I will save it.")
+
+_GROUND_EMAIL = re.compile(r"[^\s@<>()\[\]\"',;:]+@[^\s@<>()\[\]\"',;:]+")
+_GROUND_URL = re.compile(r"(?:https?://|www\.)[^\s<>\"']+")
+_GROUND_DIGITS = re.compile(r"\d{3,}")
+_GROUND_WORD = re.compile(r"[^\W\d_]{3,}")
+
+
+def fold(value: Any) -> str:
+    """*value* for comparison: NFKD, no combining mark, casefold, one space.
+    The fold of ``assistant_profile_people.fold``."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(text.casefold().split())
+
+
+def grounded(value: Any, words: Any) -> bool:
+    """True when the member's own *words* of this turn hold *value*.
+
+    Two rules, on folded text. Every address, URL and run of three or more
+    digits in *value* appears whole in *words*. At least half of the
+    content words of *value* (three letters or more) appear in *words*. A
+    value with no content word must appear whole. An empty *words* holds
+    nothing. Fence: ``tests/unit/test_profile_write_tools.py``.
+    """
+    said, text = fold(words), fold(value)
+    if not text:
+        return True
+    if not said:
+        return False
+    for pattern in (_GROUND_EMAIL, _GROUND_URL, _GROUND_DIGITS):
+        for hit in pattern.findall(text):
+            if hit.rstrip(".") not in said:
+                return False
+    content = _GROUND_WORD.findall(text)
+    if not content:
+        return text in said
+    spoken = set(_GROUND_WORD.findall(said))
+    return 2 * sum(1 for w in content if w in spoken) >= len(content)
+
+
+# ── The last chat change (PZ-6a fix round 1) ───────────────────────────────
+
+#: The reserved key of the stored column that holds the last chat change of
+#: the member, for a spoken Undo (``POST .../undo``). It is not a profile
+#: key: :func:`stored_profile`, :func:`render_block` and the caps ignore it.
+LAST_CHANGE = "last_change"
+#: How long the last chat change stays undoable, in seconds.
+UNDO_WINDOW_S = 15 * 60
 
 
 # ── The change counter (PZ-2) ──────────────────────────────────────────────

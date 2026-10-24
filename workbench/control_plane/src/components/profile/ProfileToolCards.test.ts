@@ -1,14 +1,16 @@
 /**
  * The receipt of an assistant profile write, and its Undo (WS-63 PZ-6a).
  *
- * The server contract: each result of `acb_skills/profile_tools.py` ends with
- * ONE machine line, `undo: {json}`. The card parses it, never shows it, and
- * makes the inverse call through `/api/auth/me/assistant-profile/...`.
+ * The server contract: each result of `acb_skills/profile_tools.py` STARTS
+ * with ONE machine line, `undo: {json}` for a change or `profile: {json}` for
+ * a refusal or an undo. The card parses the first line only, never shows it,
+ * and makes the inverse call through `/api/auth/me/assistant-profile/...`.
  *
  * Mutations this file catches (R7):
  * - the card shows the machine line;
  * - an Undo calls the wrong route, the wrong verb, or not the prior value;
- * - a result with no undo line, or a line that is not the last, gets Undo;
+ * - a result with no undo line, or a line that is not the first, gets Undo;
+ * - a refusal draws as "Saved to your profile", or "Already saved." as an error;
  * - a path outside `facts` and `aliases` reaches a URL.
  */
 import { createElement } from "react";
@@ -33,17 +35,22 @@ vi.mock("next/navigation", () => ({
 }));
 
 const REMEMBER =
-  "Saved: «I like green tea». To undo: profile_forget(f0101).\n" +
-  'undo: {"op":"delete","path":"facts/f0101","v":1}';
+  'undo: {"op":"delete","path":"facts/f0101","v":1}\n' +
+  "Saved: «I like green tea». To undo: profile_undo().";
 const SET =
-  'Set style: {"language": "en", "length": "detailed"}. To undo: profile_set(style, {"language": "en", "length": "short"}).\n' +
-  'undo: {"key":"style","op":"put","v":1,"value":{"language":"en","length":"short"}}';
+  'undo: {"key":"style","op":"put","v":1,"value":{"language":"en","length":"short"}}\n' +
+  'Set style: {"language": "en", "length": "detailed"}. To undo: profile_undo().';
 const FORGET =
-  'Forgot: «I work from Pune». To undo: profile_remember("I work from Pune", "work").\n' +
-  'undo: {"body":{"kind":"work","text":"I work from Pune"},"op":"post","path":"facts","v":1}';
+  'undo: {"body":{"kind":"work","text":"I work from Pune"},"op":"post","path":"facts","v":1}\n' +
+  "Forgot: «I work from Pune». To undo: profile_undo().";
 const ALIAS =
-  'Changed alias «Raj» to <raj.k@alpha.example>. To undo: profile_alias("Raj", "raj@alpha.example").\n' +
-  'undo: {"body":{"email":"raj@alpha.example"},"op":"patch","path":"aliases/a0001","v":1}';
+  'undo: {"body":{"email":"raj@alpha.example"},"op":"patch","path":"aliases/a0001","v":1}\n' +
+  "Changed alias «Raj» to <raj.k@alpha.example>. To undo: profile_undo().";
+const REFUSED =
+  'profile: {"reason":"not_your_words","status":"refused","v":1}\n' +
+  "I can only save what you tell me yourself. Say it in your own words and I will save it.";
+const DUPLICATE = 'profile: {"reason":"duplicate","status":"refused","v":1}\nAlready saved.';
+const UNDONE = 'profile: {"status":"undone","v":1}\nUndone. Your profile is as it was before.';
 
 function ev(name: string, result: string): ToolEvent {
   return { id: `e-${name}`, name, args: {}, result, status: "done", startedAt: 1, endedAt: 2 };
@@ -87,9 +94,9 @@ describe("the machine line", () => {
     expect(html).toContain("Undo");
   });
 
-  it("a result with no undo line shows no Undo", () => {
-    for (const r of ["Already saved.", "Learning is off. Nothing saved.",
-      "Saved.\nundo: {not json}", 'undo: {"op":"delete","path":"facts/f1","v":1}\nlater line']) {
+  it("a result with no undo line FIRST shows no Undo", () => {
+    for (const r of ["Already saved.", "Learning is off. Nothing saved.", DUPLICATE, REFUSED,
+      "undo: {not json}\nSaved.", 'Saved.\nundo: {"op":"delete","path":"facts/f1","v":1}']) {
       expect(readProfileResult(r).undo).toBeNull();
     }
     const html = renderToStaticMarkup(
@@ -97,6 +104,62 @@ describe("the machine line", () => {
     );
     expect(html).toContain("Already saved.");
     expect(html).not.toContain("Undo");
+  });
+
+  it("the line survives a long result, because it is first", () => {
+    const long = `${REMEMBER}\n${"- f1: «x»\n".repeat(400)}`.slice(0, 2000);
+    expect(readProfileResult(long).undo).toEqual({ v: 1, op: "delete", path: "facts/f0101" });
+  });
+});
+
+describe("the four states", () => {
+  const html = (result: string, name = "profile_remember") =>
+    renderToStaticMarkup(createElement(ProfileToolCards, { toolEvents: [ev(name, result)] }));
+
+  it("a refusal is Not saved, never Saved to your profile, and has no Undo", () => {
+    expect(readProfileResult(REFUSED)).toMatchObject({ status: "refused", reason: "not_your_words" });
+    const out = html(REFUSED);
+    expect(out).toContain("Not saved");
+    expect(out).not.toContain("Saved to your profile");
+    expect(out).toContain("I can only save what you tell me yourself.");
+    expect(out).not.toContain("profile:");
+    expect(out).not.toContain("not_your_words");
+    expect(out).not.toContain("Undo");
+    expect(out).toContain("text-destructive");
+  });
+
+  it("every refusal reason draws Not saved", () => {
+    for (const reason of ["learning_off", "not_your_turn", "marked", "invalid"]) {
+      const r = `profile: {"reason":"${reason}","status":"refused","v":1}\nNothing saved.`;
+      expect(html(r)).toContain("Not saved");
+      expect(html(r)).not.toContain("Saved to your profile");
+    }
+  });
+
+  it("already saved is neutral, not an error", () => {
+    expect(readProfileResult(DUPLICATE).status).toBe("duplicate");
+    const out = html(DUPLICATE);
+    expect(out).toContain("Already saved");
+    expect(out).not.toContain("Not saved");
+    expect(out).not.toContain("text-destructive");
+    expect(out).not.toContain("Saved to your profile");
+    expect(out).not.toContain("profile:");
+  });
+
+  it("a success is the receipt, with Undo", () => {
+    const out = html(REMEMBER);
+    expect(out).toContain("Saved to your profile");
+    expect(out).toContain("text-success");
+    expect(out).toContain("Undo");
+  });
+
+  it("an undo is its own receipt, with no Undo button", () => {
+    expect(readProfileResult(UNDONE).status).toBe("undone");
+    const out = html(UNDONE, "profile_undo");
+    expect(out).toContain("Undid your last profile change");
+    expect(out).toContain("Undone. Your profile is as it was before.");
+    expect(out).not.toContain("profile:");
+    expect(out).not.toContain(">Undo<");
   });
 
   it("refuses a path, a verb or a key the relays do not serve", () => {
@@ -148,6 +211,7 @@ describe("Undo calls the inverse route with the prior value", () => {
 
 describe("placement", () => {
   it("each profile write is a write receipt", () => {
-    expect(PROFILE_CARD_TOOLS.map((n) => placementOf(n))).toEqual(["write", "write", "write", "write"]);
+    expect(PROFILE_CARD_TOOLS.map((n) => placementOf(n))).toEqual(
+      ["write", "write", "write", "write", "write"]);
   });
 });

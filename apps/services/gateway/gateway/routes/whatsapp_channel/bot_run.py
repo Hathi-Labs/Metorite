@@ -1642,6 +1642,7 @@ async def _model_answer(req: RunRequest, message: str,
     call. The run then holds the yes for that ONE call, and the act closes
     after it. *shared* is True for a room, which reads no memory (WAC-P2).
     """
+    from acb_common.assistant_profile import profile_channel
     from acb_skills.ask_tools import refuse_cards
     from acb_skills.whatsapp_acts import approving
     from acb_skills.whatsapp_ui import whatsapp_run
@@ -1662,7 +1663,11 @@ async def _model_answer(req: RunRequest, message: str,
     crm_asks = _open_crm_asks(req.organization_id)
     yes: Any = None
     try:
-        with refuse_cards(), (approving(approved.card) if approved is not None
+        # WS-63 PZ-6a fix round 1: the channel of the run, native or not, so
+        # a profile write labels `whatsapp`, and with the org's writes off
+        # the run holds no profile write tool (SCOPE_RULE says the same).
+        with refuse_cards(), profile_channel("whatsapp", writes=writes), (
+                approving(approved.card) if approved is not None
                               else contextlib.nullcontext()) as yes, (whatsapp_run(
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),

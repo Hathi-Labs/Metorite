@@ -317,6 +317,16 @@ def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str
 
 # ── Text helpers ────────────────────────────────────────────────────────────
 
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 1: a page, and a space's purpose, is text that
+    another person wrote. So the run's profile writes close for the rest of
+    the run, BEFORE the text reaches the model. Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    from acb_common.assistant_profile import close_writes
+
+    close_writes()
+
+
 def _line(value: Any) -> str:
     """One line of text, with no guillemet (``company_search_tools._line``)."""
     return _SPACE.sub(" ", str(value or "")).replace("«", "").replace("»", "").strip()
@@ -468,6 +478,7 @@ async def read_page(page_id: str, section: str | None = None) -> str:
     pid = _page_id(page_id)
     if pid is None:
         return BAD_ID
+    _close_profile_writes()
     page = await _get(f"/knowledge/pages/{pid}", tool="read_page", not_found=PAGE_404)
     if not isinstance(page, dict):
         raise RuntimeError("Knowledge read failed (no page)")
@@ -501,6 +512,7 @@ async def list_spaces() -> str:
 
     Use it when the member asks what the company has written down.
     """
+    _close_profile_writes()
     body = await _get("/knowledge/spaces", tool="list_spaces", not_found=KNOWLEDGE_OFF)
     return format_spaces(body)
 

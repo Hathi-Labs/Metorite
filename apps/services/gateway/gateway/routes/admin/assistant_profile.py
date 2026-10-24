@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -93,6 +94,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     FORMALITY,
     GREETING,
     LANGUAGE_MAX,
+    LAST_CHANGE,
     LENGTH,
     NAME_MAX,
     NOTE_MAX,
@@ -100,6 +102,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     PROFILE_MAX,
     PROFILE_VERSION,
     PUT_KEYS,
+    UNDO_WINDOW_S,
     _as_dict,
     _choice,
     _clean_address,
@@ -276,25 +279,85 @@ _HAS_ITEM = (
 )
 
 #: PATCH: rebuild the list in order, with the one item merged.
-_PATCH_ITEM_SQL = (
-    "UPDATE user_settings SET assistant_profile = jsonb_set("
+_PATCH_ITEM_EXPR = (
+    "jsonb_set("
     "user_settings.assistant_profile, ARRAY[CAST(:lkey AS text)], ("
     "SELECT jsonb_agg(CASE WHEN t.e ->> 'id' = CAST(:iid AS text) "
     "THEN t.e || CAST(:patch AS jsonb) ELSE t.e END ORDER BY t.n) "
-    f"FROM jsonb_array_elements({_LIST}) WITH ORDINALITY AS t(e, n)), true), "
-    "updated_at = now() "
-    f"WHERE {_HAS_ITEM} RETURNING assistant_profile"
+    f"FROM jsonb_array_elements({_LIST}) WITH ORDINALITY AS t(e, n)), true)"
 )
 
 #: DELETE one: rebuild the list in order, without the one item.
-_DELETE_ITEM_SQL = (
-    "UPDATE user_settings SET assistant_profile = jsonb_set("
+_DELETE_ITEM_EXPR = (
+    "jsonb_set("
     "user_settings.assistant_profile, ARRAY[CAST(:lkey AS text)], COALESCE(("
     "SELECT jsonb_agg(t.e ORDER BY t.n) "
     f"FROM jsonb_array_elements({_LIST}) WITH ORDINALITY AS t(e, n) "
     "WHERE t.e ->> 'id' IS DISTINCT FROM CAST(:iid AS text)), "
-    "CAST('[]' AS jsonb)), true), updated_at = now() "
-    f"WHERE {_HAS_ITEM} RETURNING assistant_profile"
+    "CAST('[]' AS jsonb)), true)"
+)
+
+
+def _item_update(expr: str) -> str:
+    return (f"UPDATE user_settings SET assistant_profile = {expr}, updated_at = now() "
+            f"WHERE {_HAS_ITEM} RETURNING assistant_profile")
+
+
+_PATCH_ITEM_SQL = _item_update(_PATCH_ITEM_EXPR)
+_DELETE_ITEM_SQL = _item_update(_DELETE_ITEM_EXPR)
+
+# ── The last chat change (PZ-6a fix round 1) ───────────────────────────────
+#
+# A write with ``X-Profile-Via`` records ONE ``last_change`` in the column,
+# in the SAME statement as the change, so a spoken "undo that" can restore
+# it (``POST .../undo``). ``:last`` holds the op and the time. The SQL adds
+# the prior value from the row as it was before the statement. A Settings
+# write records nothing. The lenient read, the block and the caps ignore
+# the key (``acb_common.assistant_profile.LAST_CHANGE``).
+
+#: The base of the record: ``{op, at, key|list, id, after}``.
+_LAST = "CAST(:last AS jsonb)"
+#: PUT, a new row: no prior value.
+_PUT_LAST_NEW = f"{_LAST} || jsonb_build_object('prior', CAST('{{}}' AS jsonb))"
+#: PUT, an existing row: the prior value of the one key.
+_PUT_LAST_MERGE = (
+    f"{_LAST} || jsonb_build_object('prior', COALESCE("
+    "user_settings.assistant_profile -> CAST(:pkey AS text), CAST('{}' AS jsonb)))"
+)
+
+
+def _item_last(after: bool) -> str:
+    """The record of a PATCH (*after*) or a DELETE: the item as it was, and
+    for a PATCH the item as it becomes."""
+    extra = ", 'after', x.e || CAST(:patch AS jsonb)" if after else ""
+    return (
+        f"{_LAST} || COALESCE((SELECT jsonb_build_object('prior', x.e{extra}) "
+        f"FROM jsonb_array_elements({_LIST}) AS x(e) "
+        "WHERE x.e ->> 'id' = CAST(:iid AS text) LIMIT 1), CAST('{}' AS jsonb))"
+    )
+
+
+def _with_last(expr: str, last: str) -> str:
+    """*expr* with the record *last* under :data:`LAST_CHANGE`."""
+    return f"jsonb_set({expr}, ARRAY['{LAST_CHANGE}'], {last}, true)"
+
+
+_PATCH_ITEM_CHAT_SQL = _item_update(_with_last(_PATCH_ITEM_EXPR, _item_last(True)))
+_DELETE_ITEM_CHAT_SQL = _item_update(_with_last(_DELETE_ITEM_EXPR, _item_last(False)))
+
+#: A chat write on an existing row writes only while ``learning`` is not
+#: false. The row lock of :func:`_learning_gate` covers a row that exists.
+#: This covers the row that a Settings write makes between the gate and
+#: the upsert, so a chat write never lands while the switch is off.
+_LEARNING_NOT_OFF = (
+    "(user_settings.assistant_profile -> 'learning') "
+    "IS DISTINCT FROM CAST('false' AS jsonb)"
+)
+
+#: The undo: the whole column, under the row lock of ``_READ_LOCKED_SQL``.
+_UNDO_WRITE_SQL = (
+    "UPDATE user_settings SET assistant_profile = CAST(:p AS jsonb), "
+    "updated_at = now() WHERE organization_id = {org} AND user_id = :uid"
 )
 
 #: DELETE all: the column becomes NULL. The row and its other columns stay.
@@ -315,9 +378,12 @@ async def _read(db: Any, uid: str) -> Any:
     return (await db.execute(_sql(_READ_SQL), {"uid": uid})).first()
 
 
-async def _upsert(db: Any, uid: str, new: str, merge: str, params: dict[str, Any]) -> Any:
+async def _upsert(db: Any, uid: str, new: str, merge: str, params: dict[str, Any],
+                  where: str = "") -> Any:
     """One write of the column, in one statement: ``new`` for a new row,
-    ``merge`` for an existing row. Returns the stored column after it."""
+    ``merge`` for an existing row. Returns the stored column after it.
+    *where* guards the update of an existing row. When it stops the update,
+    this returns None."""
     from gateway.routes.tasks.settings import _seed_from_work_schedule, upsert_settings_sql
     from sqlalchemy import text
 
@@ -335,7 +401,9 @@ async def _upsert(db: Any, uid: str, new: str, merge: str, params: dict[str, Any
 
     sql = upsert_settings_sql(cols, _ph, update=["assistant_profile"],
                               merge={"assistant_profile": merge})
-    row = (await db.execute(text(f"{sql} RETURNING assistant_profile"), params)).first()
+    guard = f" WHERE {where}" if where else ""
+    row = (await db.execute(text(f"{sql}{guard} RETURNING assistant_profile"),
+                            params)).first()
     return _as_dict(row[0]) if row is not None else None
 
 
@@ -368,7 +436,13 @@ def _via(value: str | None) -> str | None:
 
 async def _learning_gate(db: Any, uid: str, via: str | None) -> None:
     """Refuse a chat write while the member's switch is off (§7.3, D-PZ-2).
-    A Settings write (*via* ``None``) passes, because the member acts there."""
+    A Settings write (*via* ``None``) passes, because the member acts there.
+
+    A member with no settings row has the default, ``learning`` true, so a
+    chat write passes, and its upsert makes the row. The lock takes no row
+    then. So the upsert of a chat write carries :data:`_LEARNING_NOT_OFF`:
+    when a Settings write made the row with the switch off in between, the
+    upsert changes nothing, and the write is a 409 too."""
     if via is None:
         return
     row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
@@ -385,8 +459,82 @@ def _check_caps(stored: Any) -> None:
         items = stored.get(key)
         if isinstance(items, list) and len(items) > cap:
             raise _refuse(f"at most {cap} {key}")
-    if profile_size(stored) > PROFILE_MAX:
+    if profile_size({k: v for k, v in stored.items() if k != LAST_CHANGE}) > PROFILE_MAX:
         raise _refuse(f"profile exceeds {PROFILE_MAX} characters")
+
+
+#: The 422 of a chat write that asks to forget the whole profile.
+FORGET_ALL_IN_SETTINGS = "forget everything in Settings, not from the chat"
+
+
+def _last(record: dict[str, Any]) -> str:
+    """The ``:last`` bind of a chat write: the record and its time."""
+    return json.dumps({**record, "at": int(time.time())})
+
+
+#: The answers of :func:`undo_last_change` that refuse.
+UNDO_NOTHING = "nothing_to_undo"
+UNDO_TOO_OLD = "too_old"
+UNDO_CHANGED = "changed_since"
+
+
+def _item_index(items: list[Any], item_id: Any) -> int:
+    for n, one in enumerate(items):
+        if isinstance(one, dict) and one.get("id") == item_id:
+            return n
+    return -1
+
+
+def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
+    """The stored column with its last chat change undone, or ``(None, why)``.
+
+    Pure. It applies :data:`LAST_CHANGE` only while it is younger than
+    :data:`UNDO_WINDOW_S` and the change is still in place: a later
+    Settings edit, or the card's own Undo, makes it :data:`UNDO_CHANGED`.
+    The record leaves the column with the undo, so a second undo finds
+    nothing. A PUT gets its prior whole object back. An added item goes.
+    A removed item comes back as it was. A changed item gets its prior form.
+    """
+    base = _as_dict(raw)
+    if not isinstance(base, dict) or not isinstance(base.get(LAST_CHANGE), dict):
+        return None, UNDO_NOTHING
+    out = dict(base)
+    last = out.pop(LAST_CHANGE)
+    at = last.get("at")
+    if not isinstance(at, (int, float)) or not 0 <= now - at <= UNDO_WINDOW_S:
+        return None, UNDO_TOO_OLD
+    op = last.get("op")
+    if op == "put":
+        key = last.get("key")
+        if key not in ("address", "style") or out.get(key) != last.get("after"):
+            return None, UNDO_CHANGED
+        prior = last.get("prior")
+        out[key] = prior if isinstance(prior, dict) else {}
+        return out, ""
+    lkey = last.get("list")
+    if lkey not in ("facts", "aliases"):
+        return None, UNDO_NOTHING
+    items = list(out.get(lkey)) if isinstance(out.get(lkey), list) else []
+    if op == "post":
+        n = _item_index(items, last.get("id"))
+        if n < 0:
+            return None, UNDO_CHANGED
+        del items[n]
+    elif op == "delete":
+        prior = last.get("prior")
+        if not isinstance(prior, dict) or _item_index(items, prior.get("id")) >= 0:
+            return None, UNDO_CHANGED
+        items.append(prior)
+    elif op == "patch":
+        prior = last.get("prior")
+        n = _item_index(items, last.get("id"))
+        if not isinstance(prior, dict) or n < 0 or items[n] != last.get("after"):
+            return None, UNDO_CHANGED
+        items[n] = prior
+    else:
+        return None, UNDO_NOTHING
+    out[lkey] = items
+    return out, ""
 
 
 # ── The routes ─────────────────────────────────────────────────────────────
@@ -520,10 +668,18 @@ async def put_assistant_profile(
     if via is not None and put.key == "learning":
         raise _refuse("learning is set in Settings, not from the chat")
     params = {"pkey": put.key, "pval": json.dumps(put.value)}
+    new, merge, where = _NEW_KEY, _MERGE_KEY, ""
+    if via is not None:
+        params["last"] = _last({"op": "put", "key": put.key, "after": put.value})
+        new = _with_last(_NEW_KEY, _PUT_LAST_NEW)
+        merge = _with_last(_MERGE_KEY, _PUT_LAST_MERGE)
+        where = _LEARNING_NOT_OFF
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
-        stored = await _upsert(db, uid, _NEW_KEY, _MERGE_KEY, params)
+        stored = await _upsert(db, uid, new, merge, params, where)
+        if stored is None:
+            raise HTTPException(status_code=409, detail=LEARNING_OFF)
         _check_caps(stored)
         return stored
 
@@ -536,12 +692,13 @@ async def delete_assistant_profile(
     user: UserContext = Depends(get_current_user),
     x_profile_via: str | None = Header(default=None),
 ) -> Response:
-    """The column becomes NULL. The settings row and its other columns stay."""
+    """The column becomes NULL. The settings row and its other columns stay.
+    Forget-all is a Settings act: a chat write (``X-Profile-Via``) is a 422."""
     uid = _member(user)
-    via = _via(x_profile_via)
+    if _via(x_profile_via) is not None:
+        raise _refuse(FORGET_ALL_IN_SETTINGS)
 
     async def _run(db: Any) -> None:
-        await _learning_gate(db, uid, via)
         await db.execute(_sql(_FORGET_SQL), {"uid": uid})
 
     await _write(uid, "forget", _run)
@@ -566,12 +723,19 @@ async def _in_org(db: Any, email: str | None) -> None:
 async def _add(uid: str, key: str, item: dict[str, Any],
                via: str | None = None) -> dict[str, Any]:
     params = {"lkey": key, "item": json.dumps(item)}
+    new, merge, where = _NEW_ITEM, _APPEND_ITEM, ""
+    if via is not None:
+        params["last"] = _last({"op": "post", "list": key, "id": item["id"]})
+        new, merge = _with_last(_NEW_ITEM, _LAST), _with_last(_APPEND_ITEM, _LAST)
+        where = _LEARNING_NOT_OFF
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
         if key == "aliases":
             await _in_org(db, item["email"])
-        stored = await _upsert(db, uid, _NEW_ITEM, _APPEND_ITEM, params)
+        stored = await _upsert(db, uid, new, merge, params, where)
+        if stored is None:
+            raise HTTPException(status_code=409, detail=LEARNING_OFF)
         _check_caps(stored)
         return stored
 
@@ -581,12 +745,16 @@ async def _add(uid: str, key: str, item: dict[str, Any],
 async def _patch(uid: str, key: str, item_id: str, patch: dict[str, Any],
                  via: str | None = None) -> dict[str, Any]:
     params = {"uid": uid, "lkey": key, "iid": item_id, "patch": json.dumps(patch)}
+    sql = _PATCH_ITEM_SQL
+    if via is not None:
+        params["last"] = _last({"op": "patch", "list": key, "id": item_id})
+        sql = _PATCH_ITEM_CHAT_SQL
 
     async def _run(db: Any) -> Any:
         await _learning_gate(db, uid, via)
         if key == "aliases":
             await _in_org(db, patch.get("email"))
-        row = (await db.execute(_sql(_PATCH_ITEM_SQL), params)).first()
+        row = (await db.execute(_sql(sql), params)).first()
         if row is None:
             raise HTTPException(status_code=404, detail="Not found")
         stored = _as_dict(row[0])
@@ -598,10 +766,14 @@ async def _patch(uid: str, key: str, item_id: str, patch: dict[str, Any],
 
 async def _remove(uid: str, key: str, item_id: str, via: str | None = None) -> Response:
     params = {"uid": uid, "lkey": key, "iid": item_id}
+    sql = _DELETE_ITEM_SQL
+    if via is not None:
+        params["last"] = _last({"op": "delete", "list": key, "id": item_id})
+        sql = _DELETE_ITEM_CHAT_SQL
 
     async def _run(db: Any) -> None:
         await _learning_gate(db, uid, via)
-        row = (await db.execute(_sql(_DELETE_ITEM_SQL), params)).first()
+        row = (await db.execute(_sql(sql), params)).first()
         if row is None:
             raise HTTPException(status_code=404, detail="Not found")
 
@@ -699,3 +871,37 @@ async def delete_alias(
     """Forget one alias. 404 when the member has no such alias."""
     uid = _member(user)
     return await _remove(uid, "aliases", alias_id, _via(x_profile_via))
+
+
+@me_router.post("/me/assistant-profile/undo",
+                summary="Undo the last chat change of the assistant profile (PZ-6a)")
+async def undo_assistant_profile(
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Undo the member's last chat change, from :data:`LAST_CHANGE`.
+
+    Only a chat write (``X-Profile-Via``) records a change, so only a chat
+    call undoes one. The web card undoes with its own inverse call. 404
+    with :data:`UNDO_NOTHING`, :data:`UNDO_TOO_OLD` or
+    :data:`UNDO_CHANGED` when nothing can be undone. The read and the write
+    run under ONE row lock, so a concurrent write waits. It ignores
+    ``learning``: an undo puts the member's profile back, and learns
+    nothing new.
+    """
+    uid = _member(user)
+    if _via(x_profile_via) is None:
+        raise _refuse("an undo of a chat change comes from the chat")
+
+    async def _run(db: Any) -> dict[str, Any]:
+        row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
+        raw = _as_dict(row[0]) if row is not None else None
+        last = raw.get(LAST_CHANGE) if isinstance(raw, dict) else None
+        out, why = undo_last_change(raw, time.time())
+        if out is None:
+            raise HTTPException(status_code=404, detail=why)
+        _check_caps(out)
+        await db.execute(_sql(_UNDO_WRITE_SQL), {"uid": uid, "p": json.dumps(out)})
+        return {k: last[k] for k in ("op", "key", "list") if k in last}
+
+    return {"undone": await _write(uid, "undo", _run)}

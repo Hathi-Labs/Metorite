@@ -4,18 +4,21 @@
  * ProfileToolCards — the receipt of each assistant profile write, with Undo
  * (WS-63 PZ-6a, `project-docs/specs/personalization.md` §5.5).
  *
- * The orchestrator's four write tools (`acb_skills/profile_tools.py`) act at
- * once on the member's own profile, by D109 point 5. Each result ends with ONE
- * machine line, `undo: {json}`. This file reads that line, never shows it, and
- * gives the receipt an Undo button. The button makes the inverse call through
- * the existing relays, `/api/auth/me/assistant-profile/...`. There is no undo
- * store on the server: the line carries the prior value.
+ * The orchestrator's write tools (`acb_skills/profile_tools.py`) act at once
+ * on the member's own profile, by D109 point 5. Each result STARTS with ONE
+ * machine line, so the stream's cap of 2,000 characters never cuts it:
+ * `undo: {json}` for a change, or `profile: {json}` with a status (`refused`
+ * with its reason, or `undone`). This file reads ONLY the first line, never
+ * shows it, and draws one of four states: saved (with Undo), already saved
+ * (neutral), not saved (a refusal), and undone. Undo makes the inverse call
+ * through the existing relays, `/api/auth/me/assistant-profile/...`. The
+ * line carries the prior value.
  *
  * The relay sends no `X-Profile-Via`, so an Undo is a Settings write. It
  * works with the member's switch off, because the member makes it.
  *
- * WhatsApp has no cards. There the text before the line names the inverse
- * call, and the member says "undo that".
+ * WhatsApp has no cards. There the member says "undo that", and the model
+ * calls `profile_undo`, which the gateway answers from its last chat change.
  *
  * The pattern is `TaskToolCards.tsx`: one meta map, one parser of the result
  * text, and a `RollupCard` receipt. Fence: `ProfileToolCards.test.ts`.
@@ -34,6 +37,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   profile_forget: { icon: "Trash2", label: "Forgot from your profile" },
   profile_set: { icon: "SlidersHorizontal", label: "Profile preference set" },
   profile_alias: { icon: "Users", label: "Profile alias changed" },
+  profile_undo: { icon: "Undo2", label: "Undid your last profile change" },
 };
 
 /** Every tool name this file routes. The placement fence reads it. */
@@ -44,8 +48,13 @@ export function isProfileCardTool(name: string): boolean {
   return Object.hasOwn(ACTION_META, name);
 }
 
-/** The start of the machine line. `profile_tools.UNDO_PREFIX`. */
+/** The start of a change's machine line. `profile_tools.UNDO_PREFIX`. */
 const UNDO_PREFIX = "undo: ";
+/** The start of a status's machine line. `profile_tools.STATUS_PREFIX`. */
+const STATUS_PREFIX = "profile: ";
+
+/** What one result says, from its first line. */
+export type ProfileStatus = "saved" | "duplicate" | "refused" | "undone" | "unknown";
 
 /** The inverse call that one line names. */
 export type ProfileUndo =
@@ -90,23 +99,50 @@ export function parseUndo(line: string): ProfileUndo | null {
   return null;
 }
 
+/** The status of a `profile: {json}` line, or null for anything else. */
+export function parseStatus(line: string): { status: ProfileStatus; reason: string } | null {
+  if (!line.startsWith(STATUS_PREFIX)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line.slice(STATUS_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (!isRecord(raw) || raw.v !== 1) return null;
+  const reason = typeof raw.reason === "string" ? raw.reason : "";
+  if (raw.status === "undone") return { status: "undone", reason: "" };
+  if (raw.status !== "refused") return null;
+  return { status: reason === "duplicate" ? "duplicate" : "refused", reason };
+}
+
 /**
- * The result as the member reads it, and its Undo. Every machine line, and
- * the "To undo:" clause that names the inverse tool call, drops from the text. Only the LAST line counts as the Undo, so a line that a
- * member's own text holds can never make one.
+ * The result as the member reads it, its status and its Undo. Only the FIRST
+ * line is the machine line, so a line that a member's own text holds can never
+ * make one. The machine line, any later `undo:` line, and the "To undo:"
+ * clause for the model drop from the text.
  */
-export function readProfileResult(result: string): { text: string; undo: ProfileUndo | null } {
+export function readProfileResult(result: string): {
+  text: string;
+  undo: ProfileUndo | null;
+  status: ProfileStatus;
+  reason: string;
+} {
   const lines = (result || "").split(/\r?\n/);
-  const last = lines.length > 0 ? lines[lines.length - 1].trim() : "";
+  const first = lines.length > 0 ? lines[0].trim() : "";
+  const undo = parseUndo(first);
+  const said = undo ? null : parseStatus(first);
+  const machine = undo !== null || said !== null;
   return {
-    // The "To undo: profile_forget(…)" clause is for the model on WhatsApp.
+    // The "To undo: profile_undo()." clause is for the model on WhatsApp.
     // The card has its button, and never names a tool to the member.
-    text: lines
-      .filter((l) => !l.trim().startsWith("undo:"))
+    text: (machine ? lines.slice(1) : lines)
+      .filter((l) => !l.trim().startsWith(UNDO_PREFIX.trim()))
       .map((l) => l.replace(/\s*To undo: .*$/, ""))
       .join("\n")
       .trim(),
-    undo: parseUndo(last),
+    undo,
+    status: undo ? "saved" : (said?.status ?? "unknown"),
+    reason: said?.reason ?? "",
   };
 }
 
@@ -142,10 +178,14 @@ type UndoState = "idle" | "busy" | "done" | "failed";
 /** The receipt of one profile write, with its Undo. */
 export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
-  const failed = e.status === "error";
-  const { text, undo } = readProfileResult(e.result || "");
+  const { text, undo, status } = readProfileResult(e.result || "");
+  // A refusal is never "Saved to your profile" (fix round 1, P1).
+  const failed = e.status === "error" || status === "refused";
+  const neutral = !failed && (status === "duplicate" || status === "unknown");
   const [state, setState] = useState<UndoState>("idle");
-  const tone = failed ? "text-destructive" : "text-success";
+  const tone = failed ? "text-destructive" : neutral ? "text-muted-foreground" : "text-success";
+  const title = failed ? "Not saved" : status === "duplicate" ? "Already saved" : meta.label;
+  const icon = failed ? "X" : status === "duplicate" ? "Check" : meta.icon;
 
   const onUndo = async () => {
     if (!undo || state === "busy" || state === "done") return;
@@ -154,7 +194,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   };
 
   return (
-    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={failed ? "X" : meta.icon} summary={text.split("\n")[0]} header="own">
+    <RollupCard id={`tool:${e.id}`} title={title} icon={icon} summary={text.split("\n")[0]} header="own">
       <div
         className={`rounded-lg border px-2.5 py-2 ${
           failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"
@@ -165,7 +205,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
           {text && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap break-words">{text}</div>
           )}
-          {!failed && undo && (
+          {status === "saved" && !failed && undo && (
             <div className="mt-1 flex items-center gap-2">
               <Button
                 variant="text"

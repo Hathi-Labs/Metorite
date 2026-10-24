@@ -1234,6 +1234,19 @@ def _release_profile_writes(token: Any) -> None:
         pass
 
 
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 1: close the profile writes of the run on this
+    frame for the rest of that run. The end of a delegated or specialist run
+    calls it in the parent's frame, because the parent's model reads the
+    answer next. Never raises."""
+    try:
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
+    except Exception:
+        pass
+
+
 #: The card events (``orchestrator.pending_ask.KIND_BY_EVENT``), as they
 #: appear in an SSE line. A plain substring test, so a token delta costs no
 #: JSON parse.
@@ -2348,6 +2361,9 @@ async def _run_sub_agent_streaming(
         # Give the parent back its own artifact context (H-201, §21.16).
         reset_artifact_context(_artifact_token)
         _release_profile_writes(_sub_writes_token)
+        # WS-63 PZ-6a fix round 1: the parent now reads another agent's
+        # answer, so its profile writes close for the rest of its run.
+        _close_profile_writes()
 
 
 def _custom_apps_root() -> Path:
@@ -4127,6 +4143,11 @@ async def run_agent(
                 await _end_sandbox_run()
     finally:
         _release_profile_writes(_writes_token)
+        if solo_room is None:
+            # A nested run (a delegation) hands its answer to the parent's
+            # model, so the parent's writes close (PZ-6a fix round 1). At
+            # the top level no holder is bound, and this does nothing.
+            _close_profile_writes()
         _release_solo_room(_solo_token)
         _unbind_run_identity(_identity)
 

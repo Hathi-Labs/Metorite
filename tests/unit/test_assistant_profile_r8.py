@@ -452,7 +452,6 @@ async def test_a_chat_write_refuses_with_learning_off_and_a_settings_write_works
                 lambda: ap.edit_alias(alias["id"], body={"alias": "R"}, user=user,
                                       x_profile_via="chat"),
                 lambda: ap.delete_alias(alias["id"], user=user, x_profile_via="chat"),
-                lambda: ap.delete_assistant_profile(user=user, x_profile_via="chat"),
             ):
                 with pytest.raises(HTTPException) as exc:
                     await call()
@@ -460,7 +459,7 @@ async def test_a_chat_write_refuses_with_learning_off_and_a_settings_write_works
                 assert exc.value.detail == "learning_off"
         assert _stored(db, email) == before
         settings = await _add_fact(db.org_a, user, "From Settings", "work")
-    assert refused == [409] * 8
+    assert refused == [409] * 7
     assert settings["source"] == "settings"
     assert _stored_learning(db, email) is False
 
@@ -490,3 +489,150 @@ async def test_a_chat_fact_takes_its_channel_as_source(db) -> None:
     assert (chat["source"], wa["source"]) == ("chat", "whatsapp")
     assert (bad.value.status_code, switch.value.status_code) == (422, 422)
     assert [f["text"] for f in read["facts"]] == ["A", "B"]
+
+
+
+# ── PZ-6a fix round 1: forget-all, the no-row race, and the last change ────
+
+
+async def test_a_chat_forget_all_is_a_422_and_changes_nothing(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _add_fact(db.org_a, user, "Kept", "about")
+        before = _stored(db, email)
+        with _tenant(db.org_a), pytest.raises(HTTPException) as exc:
+            await _ap().delete_assistant_profile(user=user, x_profile_via="chat")
+    assert exc.value.status_code == 422
+    assert _stored(db, email) == before
+
+
+async def test_a_chat_write_never_lands_on_a_row_with_learning_off(db, monkeypatch) -> None:
+    """The no-row race: the gate reads no row (learning defaults to true),
+    then a Settings write makes the row with the switch off. The chat
+    upsert carries the guard, so it changes nothing and is a 409."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    real_gate = ap._learning_gate
+
+    async def _gate_then_switch_off(dbs, uid, via) -> None:
+        await real_gate(dbs, uid, via)
+        with db.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO user_settings (organization_id, user_id, assistant_profile) "
+                "VALUES (CAST(:o AS uuid), :u, CAST('{\"learning\": false}' AS jsonb))"),
+                {"o": db.org_a, "u": email})
+
+    monkeypatch.setattr(ap, "_learning_gate", _gate_then_switch_off)
+    async with tenant_engine_scope(_app_dsn(db)):
+        with _tenant(db.org_a), pytest.raises(HTTPException) as exc:
+            await ap.add_fact(body={"text": "Raced", "kind": "about"}, user=user,
+                              x_profile_via="chat")
+    assert (exc.value.status_code, exc.value.detail) == (409, "learning_off")
+    ((_org, stored),) = _stored(db, email)
+    assert stored == {"learning": False}
+
+
+async def _chat(call, org: str):
+    with _tenant(org):
+        return await call()
+
+
+async def _undo(org: str, user: UserContext) -> dict:
+    return await _chat(lambda: _ap().undo_assistant_profile(user=user, x_profile_via="chat"),
+                       org)
+
+
+async def test_set_then_undo_restores_the_prior_whole_object(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "style", {"length": "short", "language": "en"})
+        await _chat(lambda: ap.put_assistant_profile(
+            body={"key": "style", "value": {"length": "detailed"}}, user=user,
+            x_profile_via="chat"), db.org_a)
+        ((_o, mid),) = _stored(db, email)
+        assert mid["last_change"]["prior"] == {"length": "short", "language": "en"}
+        assert "last_change" not in await _get(db.org_a, user)
+        done = await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert done == {"undone": {"op": "put", "key": "style"}}
+    assert read["style"] == {"length": "short", "language": "en"}
+    ((_o, stored),) = _stored(db, email)
+    assert "last_change" not in stored
+
+
+async def test_alias_change_and_remove_then_undo_restore(db) -> None:
+    email, raj, raj2 = _address(), _address(), _address()
+    db.made += [email, raj, raj2]
+    _person(db, raj)
+    _person(db, raj2)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        with _tenant(db.org_a):
+            alias = await ap.add_alias(body={"alias": "Raj", "email": raj}, user=user)
+        await _chat(lambda: ap.edit_alias(alias["id"], body={"email": raj2}, user=user,
+                                          x_profile_via="chat"), db.org_a)
+        await _undo(db.org_a, user)
+        changed_back = (await _get(db.org_a, user))["aliases"]
+        await _chat(lambda: ap.delete_alias(alias["id"], user=user, x_profile_via="chat"),
+                    db.org_a)
+        assert (await _get(db.org_a, user))["aliases"] == []
+        await _undo(db.org_a, user)
+        removed_back = (await _get(db.org_a, user))["aliases"]
+    assert changed_back == [{"id": alias["id"], "alias": "Raj", "email": raj}]
+    assert removed_back == changed_back
+
+
+async def test_forget_then_undo_re_adds_the_text(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        fact = await _chat(lambda: ap.add_fact(body={"text": "I work from Pune", "kind": "work"},
+                                               user=user, x_profile_via="chat"), db.org_a)
+        await _chat(lambda: ap.delete_fact(fact["id"], user=user, x_profile_via="chat"),
+                    db.org_a)
+        await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert [(f["id"], f["text"], f["source"]) for f in read["facts"]] == [
+        (fact["id"], "I work from Pune", "chat")]
+
+
+async def test_a_stale_change_and_a_second_undo_refuse(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _chat(lambda: ap.add_fact(body={"text": "One", "kind": "about"}, user=user,
+                                        x_profile_via="chat"), db.org_a)
+        two = await _chat(lambda: ap.add_fact(body={"text": "Two", "kind": "about"},
+                                              user=user, x_profile_via="chat"), db.org_a)
+        await _undo(db.org_a, user)
+        assert [f["text"] for f in (await _get(db.org_a, user))["facts"]] == ["One"]
+        with pytest.raises(HTTPException) as again:
+            await _undo(db.org_a, user)
+        await _chat(lambda: ap.add_fact(body={"text": "Three", "kind": "about"}, user=user,
+                                        x_profile_via="chat"), db.org_a)
+        with db.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE user_settings SET assistant_profile = jsonb_set(assistant_profile, "
+                "ARRAY['last_change', 'at'], to_jsonb(1)) WHERE user_id = :u"), {"u": email})
+        with pytest.raises(HTTPException) as stale:
+            await _undo(db.org_a, user)
+        with pytest.raises(HTTPException) as web:
+            await _chat(lambda: ap.undo_assistant_profile(user=user), db.org_a)
+        read = await _get(db.org_a, user)
+    assert two["text"] == "Two"
+    assert (again.value.status_code, again.value.detail) == (404, "nothing_to_undo")
+    assert (stale.value.status_code, stale.value.detail) == (404, "too_old")
+    assert web.value.status_code == 422
+    assert [f["text"] for f in read["facts"]] == ["One", "Three"]

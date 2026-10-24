@@ -195,7 +195,7 @@ def test_the_in_space_email_tools_stay_and_the_sends_go(_hermetic) -> None:
 
 
 def test_the_profile_writes_stay_in_a_held_run_and_refuse_there(monkeypatch) -> None:
-    """WS-63 PZ-6a: (A) with a held part. The four profile writes act in
+    """WS-63 PZ-6a: (A) with a held part. The five profile writes act in
     Metorite only, so each says ``open_world=False`` and a held run keeps
     it. A held run never opens ``WRITES_OPEN``, so each refuses at call time
     and sends nothing (test_profile_write_tools.py holds the executor)."""
@@ -208,7 +208,8 @@ def test_the_profile_writes_stay_in_a_held_run_and_refuse_there(monkeypatch) -> 
     assert writes_open() is False
     for tool in pt.WRITE_TOOLS:
         assert eg.is_egress_tool(tool) is False
-    assert asyncio.run(pt.profile_remember("I like tea", "preference")) == pt.NOT_OWN_CHAT
+    out = asyncio.run(pt.profile_remember("I like tea", "preference"))
+    assert out.splitlines()[1:] == [pt.NOT_OWN_CHAT]
 
 
 # ── 2. draft_reply names no recipient and writes no text of the model ────────

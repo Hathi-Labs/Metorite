@@ -199,6 +199,17 @@ def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str
 
 # ── The answer ──────────────────────────────────────────────────────────────
 
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 1: a passage of the answer can be a mail, a
+    WhatsApp message or a page that another person wrote. So the run's
+    profile writes close for the rest of the run, BEFORE the answer reaches
+    the model (``acb_common.assistant_profile.close_writes``). Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    from acb_common.assistant_profile import close_writes
+
+    close_writes()
+
+
 def _line(value: Any) -> str:
     """One line of text, with no guillemet to break the title's marks."""
     return _SPACE.sub(" ", str(value or "")).replace("«", "").replace("»", "").strip()
@@ -298,6 +309,7 @@ async def search_company(query: str, apps: str | None = None) -> str:
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
+    _close_profile_writes()
     body = await _get("/search/company", {"q": words, "apps": apps or None})
     return format_answer(body)
 
@@ -326,6 +338,7 @@ async def _search_company_dated(
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
     since = str(after or "").strip() or None
+    _close_profile_writes()
     body = await _get("/search/company", {"q": words, "apps": apps or None, "after": since})
     return format_answer(body, dated=True)
 
