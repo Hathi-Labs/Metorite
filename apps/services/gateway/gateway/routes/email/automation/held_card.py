@@ -280,9 +280,8 @@ async def classify_addresses(
             out[addr] = CLASS_ORG
         elif r is not None and bool(r.is_sent):
             out[addr] = CLASS_SENT
-        elif addr in senders:
-            out[addr] = CLASS_THREAD
-        elif addr in people and thread_person_guard(addr, senders, org_doms) is None:
+        elif addr in senders or (
+                addr in people and thread_person_guard(addr, senders, org_doms) is None):
             out[addr] = CLASS_THREAD
         else:
             out[addr] = CLASS_NEW
