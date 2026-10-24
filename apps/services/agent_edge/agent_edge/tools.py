@@ -215,6 +215,13 @@ TEXT_SUBTASK_NOT_BELOW = (
 TEXT_DELETE_TITLE = (
     "The title is not the current title of the task. Read the task again with"
     " get_task, show its title to the person, and ask again.")
+#: WS-64 OP-8 (D-OP-12). A copy of the gateway's 403 sentence,
+#: ``authority.TASK_DELETE_REFUSED``, because the edge may not import the
+#: gateway. ``test_projects_write_authority.py`` pins the two equal. The edge
+#: matches the detail to this copy and sends its own copy, never the detail.
+TEXT_DELETE_NOT_ALLOWED = (
+    "Only the person who created this task, the project lead or a Projects "
+    "admin can delete it.")
 
 #: The four annotations of every EA-3 tool (§9.5).
 READ_ANNOTATIONS: Mapping[str, bool] = {
@@ -3587,6 +3594,7 @@ async def _delete_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
                    "confirm_title": str(args["confirm_title"]),
                    "subtasks_to_delete": _subtasks_choice(args["subtasks_to_delete"])},
         details={(403, AGENT_DELETE_OFF): TEXT_DELETE_OFF,
+                 (403, TEXT_DELETE_NOT_ALLOWED): TEXT_DELETE_NOT_ALLOWED,
                  (422, SUBTASK_NOT_BELOW): TEXT_SUBTASK_NOT_BELOW,
                  (409, AGENT_DELETE_STALE): TEXT_STALE,
                  (409, AGENT_DELETE_TITLE): TEXT_DELETE_TITLE},

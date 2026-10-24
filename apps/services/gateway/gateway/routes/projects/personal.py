@@ -2789,6 +2789,7 @@ async def _organize(
     db: Any, vis: Any, email: str, task: Any, payload: OrganizeIn,
     moved_subtasks: list[str] | None = None,
     created_steps: list[tuple[str, list[Saved]]] | None = None,
+    *, user: Any,
 ) -> str:
     """Apply one decision to ``task`` inside the caller's transaction.
 
@@ -2839,7 +2840,9 @@ async def _organize(
         include_subtasks=bool(payload.include_subtasks and dest),
     )
     if move.project_id or move.assignees is not None:
-        shifted = await move_task_in(db, vis, task, move, by=email)
+        shifted = await move_task_in(
+            db, vis, task, move, by=email, user=user,
+        )
         if moved_subtasks is not None:
             # D-PM-38 — the caller emits one "moved" event per subtask.
             moved_subtasks.extend(shifted.get("subtask_ids", []))
@@ -2945,7 +2948,7 @@ async def organize_my_task(
         created_steps: list[tuple[str, list[Saved]]] = []
         disposition = await _organize(
             db, vis, email, task, payload, moved_subtasks=moved_subtasks,
-            created_steps=created_steps,
+            created_steps=created_steps, user=user,
         )
         result = await _read_my_task(db, email, task_id)
     # S6g — a decision that changed the project IS a move, and says so the

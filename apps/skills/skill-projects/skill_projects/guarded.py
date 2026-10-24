@@ -55,6 +55,7 @@ from skill_projects.priority import (
     takes_priority,
 )
 from skill_projects.reads import _day, _task_line
+from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
     CANCELLED,
@@ -104,6 +105,30 @@ ONE_ACT = "takes ONE id. A guarded act is one card per row. Ask again for each o
 #: WS-27bn R5d (§9 Q12). The words of the server's 403, in
 #: ``reports.DELETE_REFUSED``. A test pins the two as one sentence.
 REPORT_DELETE_REFUSED = "Only the author of this report or an admin may delete it."
+
+def delete_refusal(row: dict[str, Any], noun: str, name: Any) -> str:
+    """The server's "no" before a delete card, or ``""`` to go on (WS-64 OP-8).
+
+    *row* is ``GET /projects/tasks/{id}`` or ``GET /projects/nodes/{id}``. Its
+    ``can_delete`` and ``delete_refusal`` come from ``authority.py``, the rule
+    and the 403 words of the delete route (D-OP-12). So the tool quotes the
+    server and never decides who may act. Only an explicit ``False`` stops the
+    tool. A row without the flag lets the tool go on, and the route decides.
+    """
+    if row.get("can_delete") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not delete the {noun} "
+        f"{name}. Nothing was done."
+    ]
+    said = str(row.get("delete_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
 
 
 #: A product rule, not a permission (owner directive 2026-10-07,
@@ -299,6 +324,9 @@ async def delete_project(project_id: str) -> str:
     if _many(project_id):
         return f"delete_project {ONE_ACT}"
     pid, node = await _node(project_id)
+    refused = delete_refusal(node, "project", data(node.get("name")))
+    if refused:
+        return refused
     summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
     below = _descendants(await _tree_node(pid))
     open_tasks = _open_count(summary)
@@ -418,6 +446,9 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
     if _many(task_id):
         return f"delete_task {ONE_ACT}"
     tid, task = await _task(task_id)
+    refused = delete_refusal(task, "task", _ref(task))
+    if refused:
+        return refused
     tree = (await get(f"/projects/tasks/{tid}/subtree")) or {}
     subs: list[dict[str, Any]] = [r for r in tree.get("subtasks") or [] if r.get("id")]
     hidden = int(tree.get("hidden") or 0)

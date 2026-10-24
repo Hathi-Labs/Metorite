@@ -666,7 +666,9 @@ export function TaskBoard({
     // reads as the rename having failed.
     canEditInline: Boolean(onRenamed),
     canArchive: Boolean(onArchive),
-    canDelete: Boolean(onDeleteTask),
+    // WS-64 OP-8 — the server's `can_delete`. Only an explicit `false` hides
+    // the entry, because a row read before the flag existed must still work.
+    canDelete: Boolean(onDeleteTask) && task.can_delete !== false,
     selected: selected?.has(task.id) ?? false,
   });
 

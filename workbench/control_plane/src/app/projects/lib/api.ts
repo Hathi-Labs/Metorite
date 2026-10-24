@@ -158,6 +158,13 @@ export interface ProjectRow {
   description?: string | null;
   parent_project_id?: string | null;
   /**
+   * WS-64 OP-8 (D-OP-12). False when the server will refuse this member's
+   * delete. `/tree` and `/nodes/{id}` carry it, from `authority.py`, the
+   * rule the delete route checks. The menu hides Delete only on `false`, so
+   * a row without the flag still offers it, and the server decides.
+   */
+  can_delete?: boolean;
+  /**
    * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
    * tasks live at or under it, how many were delivered, and how many were
    * abandoned.
@@ -1174,6 +1181,12 @@ export interface TaskRow {
   id: string;
   project_id: string;
   root_project_id: string;
+  /**
+   * WS-64 OP-8 (D-OP-12). False when the server will refuse this member's
+   * delete. The list, the delta feed and the task read carry it, from
+   * `authority.py`. Only `false` hides Delete, and the server decides.
+   */
+  can_delete?: boolean;
   task_number?: number | null;
   parent_task_id?: string | null;
   type_id?: string | null;

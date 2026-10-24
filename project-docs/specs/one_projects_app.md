@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258). Fix round 1 is done, and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-6c is BUILT 2026-10-23, not merged: `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-2 to OP-5, OP-6b, OP-6d and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is BUILT 2026-10-23, in review: `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-2 to OP-5, OP-6b, OP-6d and OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -363,8 +363,9 @@ owe, each with its slice.
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
 | **D-OP-10** | A delete shows the task's subtasks as a tree and lets the member mark each one: keep or delete. Every subtask is kept by default. A kept subtask under a deleted one moves up to its nearest kept ancestor. A delete never removes a subtask that the caller cannot see: it stays, and it moves up too (§9 OP-7, "The rule of the core"). One transaction, with one tombstone for each deleted row. The same choice is in the app, the chat card and the MCP tool. It amends D-PM-38 B10, which only promoted | Owner directive, 2026-10-23 (§9 OP-7) |
-| **D-OP-11** | A project's access grants are written by its lead and by a member who may manage Projects settings (`can_manage_settings`), and by nobody else. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, in chat ("Lead + admins") |
+| **D-OP-11** | A project's access grants are written by its lead and by a member who may manage Projects settings (`can_manage_settings`), and by nobody else. The rule is the same in the app, the chat and MCP. **The lead is that authority, so a write to `lead` is a grant write.** A change of `lead` on a project needs the grant authority on that project: a lead of it or of an ancestor, or a settings admin. A new project that names a lead needs the grant authority on its parent. One exception: a member who creates a new root may name themself its lead, because a member may lead the space they create | Owner, 2026-10-23, in chat ("Lead + admins"). The lead write: supervisor decision, OP-8 fix round 1, 2026-10-23 |
 | **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
+| **D-OP-14** | A move changes who sees a row, so a view of the row is not enough to move it. A re-parent of a project needs the grant authority of D-OP-11 on the moved project. A move of a task to another project needs the delete authority of D-OP-12 on the task where it is now. A reorder under the same parent, and a status move inside one project, need only a view. The 403 names who may move it. A subtask that a move carries follows the check on the task the member names, as a delete does | Supervisor decision, OP-8 fix round 1, 2026-10-23. Review finding: a member who leads a space of their own could move another member's project or task into it, and then delete it |
 | **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
@@ -643,6 +644,27 @@ mutation:
    member who only sees the project gets 403.
 6. The agent route, the chat tool and the app route give the same answer for
    the same member.
+
+**Status: BUILT, 2026-10-23,** on branch `ws64-op8-write-authority`, not
+merged. The rule is `routes/projects/authority.py`. The fence is
+`tests/unit/test_projects_write_authority.py` (R8), with each mutation named
+in its docstring. Done-when 1 to 6 are met. Fix round 1 closed three review
+findings:
+
+- **The lead (D-OP-11).** `POST /nodes` and `PATCH /nodes/{id}` check a
+  write to `lead`. The chat tools `create_project` and `update_project` call
+  those routes. No other write path sets `lead`: the importer, the personal
+  tree and the item lens insert projects with no lead.
+- **The moves (D-OP-14).** `POST /nodes/{id}/move` checks a re-parent.
+  `tasks.move_task_in` checks a task move, so `POST /tasks/{id}/move` and the
+  My Tasks organize check it. `POST /tasks/move` and its preview check each
+  named task. `PATCH /tasks/{id}` refuses `project_id` (422). The chat tools
+  `move_project` and `move_task` call these routes. The MCP edge has no move
+  tool. The rule of a task move is the rule of a delete, so a client that
+  hides Move reads `can_delete`. The app does not hide Move yet, so the
+  server refuses the move with the 403.
+- **The recurrence successor.** It keeps the creator of the series. The
+  member who completed the task is in the activity row only.
 
 ### OP-7 — choose which subtasks go, in the app and in the chat · AGENT-SAFE
 
