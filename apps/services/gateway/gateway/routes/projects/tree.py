@@ -23,6 +23,8 @@ tree.
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -64,6 +66,7 @@ from gateway.routes.projects.core import (
     emit,
     grant_personal_owner,
     insert_row,
+    is_transient,
     load_visible_project,
     node_kind,
     node_level,
@@ -196,8 +199,53 @@ async def _lock_ancestor_chain(db, node_id: str) -> None:
     and the second one reads the first one's result. Without it, a new
     subproject under a child project and a convert of the folder above it
     both pass, and the tree holds four project generations.
+
+    ⚠️ **The one lock order of the tree writes** (OP-10, fix round 2).
+    Each route locks its OWN row exclusive first, then the other rows
+    shared, and it reads the grammar inputs only after both.
+
+    * ``move_node``: the moved row ``FOR UPDATE``, then this chain above
+      the destination.
+    * ``convert_node``: the folder ``FOR UPDATE``, then this chain above
+      the folder's parent, read from the locked row.
+    * ``create_node``: it has no own row yet, so only this chain.
+
+    A route holds at most one exclusive lock and takes it first, so two of
+    these routes cannot wait on each other in a cycle. A deadlock is still
+    possible against some other writer, and ``_tree_race_as_409`` answers it.
     """
     await db.execute(text(_LOCK_ANCESTORS_SQL), {"pid": node_id})
+
+
+#: The words of the 409 when the database refuses a tree write for a race.
+TREE_RACE_DETAIL = (
+    "Someone else changed this part of the tree at the same moment. Try again."
+)
+
+
+def _tree_race_as_409(
+    route: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Answer a deadlock or a lock timeout in *route* with a 409, not a 500.
+
+    Postgres rolled the transaction back, so nothing was written and the
+    caller may send the same request again. The SQLSTATE set is
+    ``core.TRANSIENT_SQLSTATES``, which the import writer retries on.
+    ``functools.wraps`` keeps the signature that FastAPI reads.
+    """
+
+    @functools.wraps(route)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await route(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as err:
+            if is_transient(err):
+                raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL) from err
+            raise
+
+    return guarded
 
 
 async def _subtree_project_depth(db, node_id: str) -> int:
@@ -222,6 +270,20 @@ async def _subtree_project_depth(db, node_id: str) -> int:
         ),
         {"pid": node_id},
     )).scalar() or 0)
+
+
+async def _locked_kind(db, node_id: str, *, exclusive: bool = False) -> Any:
+    """The kind of *node_id*, read after its lock.
+
+    With ``exclusive`` the read takes the row ``FOR UPDATE``. That is the
+    own-row lock of a move. Without it, the caller already holds a share
+    lock through ``_lock_ancestor_chain``, so a plain read is current.
+    """
+    lock = " FOR UPDATE" if exclusive else ""
+    return (await db.execute(
+        text(f"SELECT kind FROM pm_projects WHERE id = CAST(:pid AS uuid){lock}"),
+        {"pid": node_id},
+    )).scalar()
 
 
 #: Seeded on every ROOT project. The owner reshapes these in the app; they exist
@@ -890,6 +952,7 @@ async def _seed_root(db: Any, project_id: str, created_by: str) -> None:
 
 
 @router.post("/nodes", status_code=201)
+@_tree_race_as_409
 async def create_node(
     payload: ProjectIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -951,18 +1014,19 @@ async def create_node(
         # The tree grammar (migration 193): space → [folder] → project →
         # [folder] → subproject, and stop. Checked before the org resolve so
         # a bad shape is refused as a shape, not as a permission.
+        parent_kind = None
         if parent_id:
             # OP-10 fix round 1: serialize with a convert above the parent.
             await _lock_ancestor_chain(db, str(parent_id))
+            # Fix round 2: the parent's kind from after the lock. A convert
+            # of the parent that committed while this waited changed it.
+            parent_kind = node_kind(await _locked_kind(db, str(parent_id)))
         parent_gen = (
             await _project_generation(db, str(parent_id)) if parent_id else 0
         )
         assert_node_grammar(
             kind=kind,
-            parent_kind=(
-                node_kind(getattr(parent_row, "kind", None))
-                if parent_row is not None else None
-            ),
+            parent_kind=parent_kind,
             parent_generation=parent_gen,
             subtree_depth=1 if kind == "project" else 0,
         )
@@ -1098,6 +1162,7 @@ async def patch_node(
 
 
 @router.post("/nodes/{project_id}/move")
+@_tree_race_as_409
 async def move_node(
     project_id: str, payload: MoveProject,
     user: UserContext = Depends(get_current_user),
@@ -1124,9 +1189,10 @@ async def move_node(
         vis = await resolve_visibility(db, user)
         moved = await load_visible_project(db, vis, project_id)
         new_parent = payload.parent_project_id
-        parent_row = None
         if new_parent:
-            parent_row = await load_visible_project(db, vis, str(new_parent))
+            # The 404 for a destination the caller cannot see. Its kind is
+            # read after the lock, below.
+            await load_visible_project(db, vis, str(new_parent))
         await assert_no_project_cycle(db, project_id, new_parent)
         # WS-39 S6b. The line between the company tree and a private one is
         # not crossable in either direction, and nothing checked it before the
@@ -1141,15 +1207,21 @@ async def move_node(
         # The grammar holds through a move, with the subtree's own shape in
         # the sum: a project that carries subprojects cannot land under a
         # project, and a folder cannot land under a folder (migration 193).
+        #
+        # OP-10 fix round 2. The moved row first, exclusive, and its kind
+        # read from the locked row. A convert of this node that committed
+        # while the move waited made it a project, and the grammar must see
+        # that. Then the chain above the destination, shared. The lock order
+        # is the one at ``_lock_ancestor_chain``.
+        moved_kind = node_kind(await _locked_kind(db, project_id, exclusive=True))
+        parent_kind = None
         if new_parent:
             # OP-10 fix round 1: serialize with a convert above the parent.
             await _lock_ancestor_chain(db, str(new_parent))
+            parent_kind = node_kind(await _locked_kind(db, str(new_parent)))
         assert_node_grammar(
-            kind=node_kind(getattr(moved, "kind", None)),
-            parent_kind=(
-                node_kind(getattr(parent_row, "kind", None))
-                if parent_row is not None else None
-            ),
+            kind=moved_kind,
+            parent_kind=parent_kind,
             parent_generation=(
                 await _project_generation(db, str(new_parent))
                 if new_parent else 0
@@ -1260,6 +1332,7 @@ CONVERTED_BODY = "Converted from a folder to a project"
 
 
 @router.post("/nodes/{project_id}/convert")
+@_tree_race_as_409
 async def convert_node(
     project_id: str, payload: ConvertNode,
     user: UserContext = Depends(get_current_user),
@@ -1308,6 +1381,11 @@ async def convert_node(
         parent_id = locked.parent_project_id
         parent = None
         if parent_id is not None:
+            # Fix round 2. The chain above the folder, shared, after the
+            # folder's own lock (the order at `_lock_ancestor_chain`). A move
+            # of an ancestor holds that ancestor exclusive, so this waits for
+            # it and reads the generation it left.
+            await _lock_ancestor_chain(db, str(parent_id))
             # The parent's kind, read without the caller's visibility: the
             # shape is a structural fact, as in `_project_generation`.
             parent = (await db.execute(

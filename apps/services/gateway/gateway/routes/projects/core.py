@@ -3733,3 +3733,24 @@ def validate_lifecycle_settings(values: dict[str, Any]) -> None:
                     f"Asia/Kolkata"
                 ),
             ) from None
+
+
+#: SQLSTATEs that mean "try this transaction again": a deadlock (40P01), a
+#: serialization failure (40001), a lock that timed out (55P03). The import
+#: writer retries on them, and the tree routes answer them with a 409 (WS-64
+#: OP-10, fix round 2). One set, so the two cannot disagree.
+TRANSIENT_SQLSTATES = frozenset({"40P01", "40001", "55P03"})
+
+
+def is_transient(err: BaseException) -> bool:
+    """True when ``err``, or the driver error under it, carries a transient
+    SQLSTATE. SQLAlchemy wraps asyncpg twice, so walk the chain."""
+    seen: BaseException | None = err
+    for _ in range(5):
+        if seen is None:
+            return False
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if code in TRANSIENT_SQLSTATES:
+            return True
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return False
