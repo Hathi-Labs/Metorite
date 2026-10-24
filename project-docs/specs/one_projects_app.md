@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). OP-2 to OP-5, OP-6d and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). OP-2 to OP-5, OP-6d and OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -558,7 +558,7 @@ with no card is a new class, and the owner must decide on it.
 
 #### OP-6b — grants from the chat · HIGH · after OP-8
 
-**Status: BUILT 2026-10-24 on branch `ws64-op6b-chat-grants-mt-e22721d2`, not yet merged.**
+**Status: BUILT 2026-10-24 on branch `ws64-op6b-chat-grants-mt-e22721d2`, with fix round 1. Not yet merged.**
 
 Two tools for `POST/DELETE /projects/nodes/{id}/grants…`, each behind a class
 C card. **This reverses D-PM-40.** OP-8 first puts D-OP-11 on the two routes,
@@ -586,6 +586,31 @@ Invert the D-PM-40 sentence in `agent-projects/instructions.md` and its pin in
   `test_projects_grant_tools_r8.py` (R8: lead, admin, viewer, creator who is not
   a lead, and a member outside the grant), `test_projects_chat_x_pin.py` and
   eval cases PO-18 to PO-20.
+
+**Fix round 1 (2026-10-24, adversarial review).**
+- **A personal tree.** No grant on a node of a personal tree changes by a
+  grant route, for anyone. That includes the owner and a Projects admin
+  (D-OP-2, §8 Q4). `authority.grant_write_refusal` is the one answer for both
+  routes and for `can_write_grants`. It walks up the tree, so a node under a
+  personal root without `personal_owner` is personal too. The 403 says
+  "Access to a personal space cannot be changed. Move the work to a team
+  project to share it." The bootstraps of the tree (`personal._grant_owner`
+  and `item_lens`) write the owner's grant directly, and they still work.
+- **The last grant.** `GET /projects/nodes/{id}/grants` marks each grant
+  `yours` and gives `you_see_all`. On a top project, the revoke card first
+  warns "This is the last grant". It warns "You will lose sight of this
+  project" when the member has no other way in. A sub-project stays in sight of each member
+  who sees its parent. The instructions tell the model to grant the new
+  audience before it revokes the old one.
+- **A group that does not exist.** `POST /projects/nodes/{id}/grants` answers
+  422 for a `group:<slug>` that the organization does not have, and the
+  sentence lists the groups. The same list comes in `groups` on
+  `GET /projects/nodes/{id}/grants`, so the chat refuses before its card.
+  Both read `core.org_groups`, one statement. A revoke of a grant to a
+  deleted group still works, so a stale grant can go.
+- Fences: four new R8 cases in `test_projects_grant_tools_r8.py` and three
+  hermetic cases in `test_projects_grant_tools.py`, each red under a named
+  mutation (R6 to R9, G4 to G6).
 
 #### OP-6c — nudge, export, attach · MEDIUM · BUILT 2026-10-23
 
