@@ -320,3 +320,137 @@ class TestTheConversion:
         r = await _convert(live, owner, folder)
         assert r.status_code == 200, r.text
         assert _row(live, folder).kind == "project"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1 — the tree read costs no walk, and a convert serializes
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_a_page_of_folders_costs_one_query_and_no_walk() -> None:
+    """``attach_can_convert(walk=False)`` reads the lead set once, and the row's
+    own ``personal_owner`` answers the owner arm. No query grows with the rows."""
+    from types import SimpleNamespace
+
+    a = wa._authority()
+    seen: list[str] = []
+
+    class CountingDb:
+        async def execute(self, sql: Any, *_a: Any, **_k: Any) -> Any:
+            seen.append(str(sql))
+            return SimpleNamespace(fetchall=lambda: [], scalar=lambda: None,
+                                   fetchone=lambda: None)
+
+    member = SimpleNamespace(email="me@x.test", has_permission=lambda _p: False)
+    rows = [{"id": f"f{i}", "kind": "folder", "created_by": "other@x.test",
+             "personal_owner": None} for i in range(6)]
+    rows.append({"id": "mine", "kind": "folder", "created_by": "other@x.test",
+                 "personal_owner": "Me@x.test"})
+    await a.attach_can_convert(CountingDb(), member, rows, walk=False)
+    assert len(seen) == 1, seen
+    assert [r["can_convert"] for r in rows] == [False] * 6 + [True]
+
+
+class TestFixRound1:
+    pytestmark = _DB_GATE
+
+    async def test_the_tree_read_makes_no_walk_per_folder(self, live, monkeypatch):
+        from gateway.routes.projects import authority
+
+        for i in range(4):
+            _node(live, f"op10 nwalk folder {i}", live.team, kind="folder")
+        # CREATOR leads nothing and is no admin, so every team folder
+        # falls to the owner arm. Test 5 already gave VIEWER a personal root.
+        owner = CREATOR
+        root = str(live.seeder.one(
+            "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+            " timezone, owns_statuses, personal_owner) VALUES ('op10 nwalk mine', 'active',"
+            " 'manual', :m, CAST(:o AS uuid), 'Asia/Kolkata', true, :m) RETURNING id",
+            m=owner, o=live.org))
+        live.seeder.status(root, "To do", "todo", 0)
+        wa.d._grant(live.seeder, root, owner)
+        mine = _node(live, "op10 nwalk my folder", root, kind="folder",
+                     maker=owner, owner=owner)
+        wa.d._grant(live.seeder, mine, owner)
+
+        walks: list[str] = []
+        real = authority._tree_owner
+
+        async def counted(db: Any, pid: str) -> Any:
+            walks.append(pid)
+            return await real(db, pid)
+
+        monkeypatch.setattr(authority, "_tree_owner", counted)
+        r = await wa._as(live, owner, "GET", "/projects/tree")
+        assert r.status_code == 200, r.text
+        assert walks == [], f"{len(walks)} walks on one tree read"
+        tree = r.json()
+        assert _find(tree["rows"], live.team)["can_convert"] is False
+        assert _find(tree["personal"], mine)["can_convert"] is True
+
+    async def _hold_folder(self, live, folder: str):
+        """An open transaction that holds the folder as ``convert_node`` does."""
+        conn = live.admin.connect()
+        trans = conn.begin()
+        conn.execute(text("SELECT kind FROM pm_projects WHERE id = CAST(:p AS uuid)"
+                          " FOR UPDATE"), {"p": folder})
+        return conn, trans
+
+    async def _waits_on_a_lock(self, live, task) -> bool:
+        import asyncio
+        for _ in range(60):
+            if task.done():
+                return False
+            with live.admin.connect() as c:
+                waiting = c.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+                    " AND datname = current_database()")).scalar()
+            if waiting:
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    async def _race(self, live, act) -> Any:
+        """Hold the folder, start *act*, see it wait, convert, then read its answer."""
+        import asyncio
+
+        folder = _node(live, "op10 race folder", live.team, kind="folder")
+        child = _node(live, "op10 race child", folder)
+        conn, trans = await self._hold_folder(live, folder)
+        try:
+            task = asyncio.ensure_future(act(child))
+            blocked = await self._waits_on_a_lock(live, task)
+            conn.execute(text("UPDATE pm_projects SET kind = 'project'"
+                              " WHERE id = CAST(:p AS uuid)"), {"p": folder})
+            trans.commit()
+        finally:
+            conn.close()
+        r = await task
+        assert blocked, f"the write did not wait for the convert: {r.status_code} {r.text}"
+        return r, child
+
+    async def test_a_create_under_a_child_waits_for_the_convert_and_is_refused(self, live):
+        async def create(child: str) -> Any:
+            return await wa._as(live, ADMIN, "POST", "/projects/nodes",
+                                {"name": "op10 race sub", "parent_project_id": child})
+
+        r, child = await self._race(live, create)
+        assert r.status_code == 422, r.text
+        with live.admin.begin() as c:
+            assert c.execute(text(
+                "SELECT count(*) FROM pm_projects WHERE parent_project_id = CAST(:p AS uuid)"),
+                {"p": child}).scalar() == 0
+
+    async def test_a_move_under_a_child_waits_for_the_convert_and_is_refused(self, live):
+        mover = _node(live, "op10 race mover", live.team)
+
+        async def move(child: str) -> Any:
+            return await wa._as(live, ADMIN, "POST", f"/projects/nodes/{mover}/move",
+                                {"parent_project_id": child})
+
+        r, child = await self._race(live, move)
+        assert r.status_code == 422, r.text
+        with live.admin.begin() as c:
+            assert str(c.execute(text(
+                "SELECT parent_project_id FROM pm_projects WHERE id = CAST(:p AS uuid)"),
+                {"p": mover}).scalar()) == live.team

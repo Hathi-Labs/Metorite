@@ -172,6 +172,34 @@ async def _project_generation(db, node_id: str) -> int:
     )).scalar() or 0)
 
 
+#: WS-64 OP-10, fix round 1. A share lock on each node of the ancestor
+#: chain of ``:pid``, itself included. The CTE finds the ids, and the outer
+#: select locks them, because Postgres refuses ``FOR SHARE`` in a recursive
+#: term.
+_LOCK_ANCESTORS_SQL = (
+    "WITH RECURSIVE anc AS ("
+    "  SELECT id, parent_project_id FROM pm_projects"
+    "    WHERE id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id FROM pm_projects p"
+    "    JOIN anc a ON p.id = a.parent_project_id"
+    ") SELECT id FROM pm_projects WHERE id IN (SELECT id FROM anc) FOR SHARE"
+)
+
+
+async def _lock_ancestor_chain(db, node_id: str) -> None:
+    """Hold a share lock on *node_id* and every node above it.
+
+    ``convert_node`` locks its folder ``FOR UPDATE`` and then reads the
+    depth of the children. A create or a move that reads the generation of
+    its destination takes this lock first. So each waits for the other,
+    and the second one reads the first one's result. Without it, a new
+    subproject under a child project and a convert of the folder above it
+    both pass, and the tree holds four project generations.
+    """
+    await db.execute(text(_LOCK_ANCESTORS_SQL), {"pid": node_id})
+
+
 async def _subtree_project_depth(db, node_id: str) -> int:
     """The longest PROJECT chain inside *node_id*'s subtree, itself included.
 
@@ -923,6 +951,9 @@ async def create_node(
         # The tree grammar (migration 193): space → [folder] → project →
         # [folder] → subproject, and stop. Checked before the org resolve so
         # a bad shape is refused as a shape, not as a permission.
+        if parent_id:
+            # OP-10 fix round 1: serialize with a convert above the parent.
+            await _lock_ancestor_chain(db, str(parent_id))
         parent_gen = (
             await _project_generation(db, str(parent_id)) if parent_id else 0
         )
@@ -1110,6 +1141,9 @@ async def move_node(
         # The grammar holds through a move, with the subtree's own shape in
         # the sum: a project that carries subprojects cannot land under a
         # project, and a folder cannot land under a folder (migration 193).
+        if new_parent:
+            # OP-10 fix round 1: serialize with a convert above the parent.
+            await _lock_ancestor_chain(db, str(new_parent))
         assert_node_grammar(
             kind=node_kind(getattr(moved, "kind", None)),
             parent_kind=(
