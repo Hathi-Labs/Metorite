@@ -211,6 +211,23 @@ SELECT DISTINCT LOWER(em.from_address->>'email') AS addr
 """
 
 
+#: The senders of the received mails of one thread, the first mail first,
+#: with no draft, no Sent mail and no mail in junk or spam. The draft row
+#: holds no link to the mail it answers, so the first received mail stands
+#: for it: the provider sets ``received_at`` when the mail arrives, so a mail
+#: that a stranger sends into the thread later cannot come first.
+#: :func:`trusted_thread_senders` reads it.
+THREAD_SENDER_ROWS_SQL = """
+SELECT LOWER(em.from_address->>'email') AS addr
+  FROM email_messages em
+ WHERE em.account_id = CAST(:aid AS uuid)
+   AND em.thread_id = :tid
+   AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft', 'sent', 'junk', 'spam')
+   AND em.from_address->>'email' IS NOT NULL
+ ORDER BY em.received_at ASC NULLS LAST, em.id ASC
+ LIMIT 200
+"""
+
 #: The people of one thread of one mailbox, each with the sender of its
 #: mail: each To and each Cc of a RECEIVED mail of the thread. A draft, a
 #: Sent mail and a mail in junk or spam are left out. The caller trusts a row
@@ -304,6 +321,29 @@ async def thread_participants(db: Any, account_id: str, thread_id: str | None
                              {"aid": account_id, "tid": thread_id})).fetchall()
     return [(str(r.addr), str(getattr(r, "sender", "") or ""))
             for r in rows if getattr(r, "addr", None)]
+
+
+async def trusted_thread_senders(
+    db: Any, owner: str, account_id: str, thread_id: str | None,
+) -> list[str]:
+    """The senders of the thread that may class ``thread`` (the rule of review
+    P1-a, for senders). The sender of the first received mail counts: it
+    stands for the mail that the draft answers. A later sender counts only
+    when it is ``org`` or ``sent``. A mail in junk or spam never counts."""
+    if not thread_id:
+        return []
+    rows = (await db.execute(text(THREAD_SENDER_ROWS_SQL),
+                             {"aid": account_id, "tid": thread_id})).fetchall()
+    order: list[str] = []
+    for r in rows:
+        a = str(getattr(r, "addr", "") or "")
+        if a and a not in order:
+            order.append(a)
+    if not order:
+        return []
+    rest = order[1:]
+    known = await classify_addresses(db, owner, rest) if rest else {}
+    return [order[0], *[a for a in rest if known.get(a) in (CLASS_ORG, CLASS_SENT)]]
 
 
 async def trusted_thread_participants(
@@ -884,11 +924,14 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         _refuse_hidden_draft(row)
         lists = _lists_of(row)
         _check_lists(lists)
+        # Every sender guards the look-alike flag. Only a trusted sender
+        # classes ``thread`` (the rule of review P1-a, for senders).
         senders = await thread_senders(db, req.account_id, row.thread_id)
+        trusted = await trusted_thread_senders(db, owner, req.account_id, row.thread_id)
         people = await trusted_thread_participants(db, owner, req.account_id, row.thread_id)
         classes = await classify_addresses(
-            db, owner, [a for v in lists.values() for a in v], thread_senders=senders,
-            thread_people=people,
+            db, owner, [a for v in lists.values() for a in v], thread_senders=trusted,
+            thread_people=people, guard_senders=senders,
             org_domains=await org_domains(db, owner) if people else ())
         known = await known_domains(db, owner)
         me = await resolve_self(db, req.account_id)

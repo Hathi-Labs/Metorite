@@ -157,6 +157,9 @@ class FakeDb:
             return _Result([types.SimpleNamespace(d=d) for d in self.domains])
         if q == hc.THREAD_SENDERS_SQL:
             return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
+        if getattr(hc, "THREAD_SENDER_ROWS_SQL", None) == q:
+            # The senders in received order, the first mail first.
+            return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
         if q == hc.THREAD_PARTICIPANTS_SQL:
             # Each row names its mail's sender. A bare address stands for a
             # mail from KNOWN, a person the member wrote to.

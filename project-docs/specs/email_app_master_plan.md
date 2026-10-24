@@ -20776,7 +20776,7 @@ The contract reuses three parts that exist. It adds one record and one classifie
    |---|---|---|
    | `org` | An organization member or a People row | ticked |
    | `sent` | A person that the member wrote to before | ticked |
-   | `thread` | A person that the reply derivation gave for this thread (Reply and Reply all only) | ticked |
+   | `thread` | A person on the mail that the reply answers, or a sender, To or Cc of a thread mail from an `org` or `sent` sender. Junk and spam never count (21.12, 2026-10-24) | ticked |
    | `new` | Anything else, `seen` senders included | unticked, marked |
 
    The classifier reads the same data as `/email/contacts/suggest`. It does not call the
@@ -21087,6 +21087,12 @@ original email" starts ticked. These people are `thread`:
 A mail in junk or spam never names a thread person. Anyone can send a mail
 into a thread, with a Cc of their choice, so a mail from a stranger names
 none (review P1-a).
+
+The same rule holds for a sender on the card of `send_draft`. The sender of
+the first received mail of the thread is `thread`. That mail stands for the
+mail that the draft answers, because the draft row holds no link to it. A
+later sender is `thread` only when `org` or `sent`. A sender in junk or spam
+never is. So a stranger who sends a mail into the thread is `new`.
 
 One carve-out stays. A person on a look-alike domain is `new`, unticked and
 flagged. The guard reads the domain of EVERY sender of the thread, and each

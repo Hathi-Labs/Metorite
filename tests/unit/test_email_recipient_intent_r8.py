@@ -114,6 +114,11 @@ async def test_the_recipient_intent_sql_on_a_real_database(
         assert (planted, f"intruder-{w.tag}@evil-{w.tag}.test") in raw
         people = await _run(w, lambda db: hc.trusted_thread_participants(
             db, w.owner, w.account, thread))
+        # The first received mail is Sagar's: he is a trusted sender. The
+        # intruder's later mail is not, and the junk mail is never read.
+        senders = await _run(w, lambda db: hc.trusted_thread_senders(
+            db, w.owner, w.account, thread))
+        assert senders == [sagar]
         # Sagar is ``sent``: his mail names thread people. The intruder is not.
         assert sorted(people) == sorted([w.owner, ananda])  # no Sent, no draft Cc
 
