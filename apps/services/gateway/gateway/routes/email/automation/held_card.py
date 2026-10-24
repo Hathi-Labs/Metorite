@@ -378,9 +378,15 @@ async def resolve_file_refs(
     ids: list[str] = []
     for ref in refs:
         try:
-            _source, fid = parse_file_ref(ref)
+            source, fid = parse_file_ref(ref)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
+        if source != "attachment":
+            # Review fix round 1: a Metorite file goes through
+            # ``metorite_files.resolve_metorite_files``, never this query.
+            raise HTTPException(status_code=422, detail=(
+                "That reference is not a file of a mail of this mailbox, so nothing "
+                "was sent."))
         if fid not in ids:
             ids.append(fid)
     if not ids:
