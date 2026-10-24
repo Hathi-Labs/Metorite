@@ -1588,19 +1588,29 @@ async def assert_project_move_keeps_privacy(
     gives: the act is incoherent whoever performs it, and phrasing it on the
     two NODES lets an admin tidy somebody's tree without a special case.
     """
-    ids = [project_id] + ([str(new_parent_id)] if new_parent_id else [])
-    rows = (await db.execute(
-        text(
-            "SELECT id, personal_owner FROM pm_projects "
-            " WHERE id = ANY(CAST(:ids AS uuid[]))"
-        ),
-        {"ids": ids},
-    )).fetchall()
-    owners = {str(r.id): (r.personal_owner or "").lower() or None for r in rows}
-    moved = owners.get(str(project_id))
+    # WS-64, task #304, fix round 1. The two sides read differently, and on
+    # purpose.
+    #
+    # The MOVED side reads the node's OWN column. Migration 297 leaves a team
+    # node (one with a grant to someone other than the tree owner) unstamped
+    # under a personal node, so that the team keeps it. The owner or a lead
+    # must be able to move that node OUT to a team space, so it is not
+    # "personal" here even though its ancestor is.
+    #
+    # The DESTINATION side walks up (`personal_tree_owner`). A parent that is
+    # any node of a private tree, stamped or not, is a personal destination.
+    # The direct column alone let a team root sit under an unstamped legacy
+    # child, which is the shape that 297 must then skip.
+    row = (await db.execute(
+        text("SELECT personal_owner FROM pm_projects WHERE id = CAST(:pid AS uuid)"),
+        {"pid": str(project_id)},
+    )).fetchone()
+    moved = (getattr(row, "personal_owner", None) or "").lower() or None
     # A move to the top level is a move OUT of whatever held it. For a personal
     # node that is promotion into the open, which is the same refusal.
-    destination = owners.get(str(new_parent_id)) if new_parent_id else None
+    destination = (
+        await personal_tree_owner(db, str(new_parent_id)) if new_parent_id else None
+    )
 
     if moved == destination:
         return  # team to team, or one of my Areas to another place of mine
@@ -1648,10 +1658,11 @@ async def personal_tree_owner(db: Any, node_id: str) -> str | None:
     nearest ``personal_owner`` wins. A personal root always carries it, so a
     child that was minted without the stamp still answers with its owner.
 
-    ⚠️ This walk is for a WRITE that must stamp a new child. Every read
-    (``tree.py``, ``_AGENT_NOT_PERSONAL_SQL``, the move checks) reads the
-    node's OWN column. So the invariant is "each node of a private tree
-    carries the owner", and each path that inserts a child must keep it.
+    ⚠️ This walk serves a WRITE: the stamp on a new child, and the
+    destination side of ``assert_project_move_keeps_privacy``. Every read
+    (``tree.py``, ``_AGENT_NOT_PERSONAL_SQL``) reads the node's OWN column.
+    So the invariant is "each node of a private tree carries the owner", and
+    each path that inserts a child must keep it.
     """
     row = (await db.execute(
         text(

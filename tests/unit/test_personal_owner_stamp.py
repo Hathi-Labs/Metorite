@@ -239,7 +239,10 @@ async def test_a_a_child_under_my_root_carries_my_name(live):
                 " CAST(:p AS uuid) AND subject = :s", p=child, s=OWNER_P) == OWNER_P
 
 
-async def test_a_an_org_reader_does_not_see_the_child_or_its_tasks(live):
+async def test_a_an_org_reader_does_not_see_the_child_in_the_tree(live):
+    # Only the tree reads. ⚠️ An org reader still reads a personal TASK
+    # through `GET /projects/tasks`. That is an open owner question, and not
+    # this fix, so this test does not claim it.
     child = await _child(live, "a hidden child")
     task = _task(live, child, "a hidden task")
     for path in ("/projects/tree", "/projects/nodes", "/projects/summary"):
@@ -314,18 +317,58 @@ async def test_c_a_move_of_the_child_into_a_team_space_is_refused(live):
                 " CAST(:c AS uuid)", c=child) == live.root
 
 
+async def test_c_a_move_of_the_child_to_the_top_level_is_refused(live):
+    child = await _child(live, "an unpromotable child")
+    r = await d._person(live, OWNER_P, "POST", f"/projects/nodes/{child}/move",
+                        {"parent_project_id": None})
+    assert r.status_code == 422, r.text
+    assert "personal area" in r.json()["detail"]
+
+
+async def test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree(live):
+    # The destination side walks up. An unstamped legacy child reads NULL in
+    # its own column, and the old guard let a team node in under it.
+    legacy = _legacy_child(live, live.root, "a legacy landing")
+    r = await _make(live, OWNER_P, live.team, "a team project to move")
+    assert r.status_code == 201, r.text
+    team_node = r.json()["id"]
+    r = await d._person(live, OWNER_P, "POST", f"/projects/nodes/{team_node}/move",
+                        {"parent_project_id": legacy})
+    assert r.status_code == 422, r.text
+    assert "personal space" in r.json()["detail"]
+    assert _one(live, "SELECT parent_project_id FROM pm_projects WHERE id ="
+                " CAST(:c AS uuid)", c=team_node) == live.team
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # (d) The migration
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _run_migration(url) -> None:
+def _run_migration(url) -> list[str]:
+    """Run 297 once, and return the text of each NOTICE it raised."""
+    notices: list[str] = []
     eng = create_engine(url, future=True)
     try:
         with eng.begin() as conn:
+            raw = conn.connection.dbapi_connection
+            raw.add_notice_handler(lambda diag: notices.append(diag.message_primary))
             w._exec_sql_file(conn, _MIGRATION.read_text(encoding="utf-8"))
     finally:
         eng.dispose()
+    return notices
+
+
+def _team_root_under(world, parent: str, name: str) -> tuple[str, str]:
+    """A team root with an `org` grant, moved under *parent* as the old
+    `move_node` let it be: the privacy check read only the direct parent.
+    Returns ``(root, its child)``."""
+    root = world.seeder.project(name)
+    d._grant(world.seeder, root, "org")
+    kid = _legacy_child(world, root, f"{name} child")
+    world.seeder.one("UPDATE pm_projects SET parent_project_id = CAST(:p AS uuid)"
+                     " WHERE id = CAST(:t AS uuid) RETURNING id", p=parent, t=root)
+    return root, kid
 
 
 def _snapshot(world) -> dict[str, Any]:
@@ -363,3 +406,50 @@ async def test_d_the_migration_stamps_idempotently_and_leaves_team_rows(live):
     _run_migration(make_url(w._URL).set(database=live.app_url.database))
     assert _snapshot(live) == after
     assert json.dumps(sorted(after)) == json.dumps(sorted(before))
+
+
+async def test_d_the_migration_stops_at_a_team_root_under_my_tree(live):
+    # The adversarial review's case. A team root T under an unstamped
+    # personal child X. 297 stamps X, and leaves T and its child as they are.
+    x = _legacy_child(live, live.root, "a legacy X")
+    t, t_kid = _team_root_under(live, x, "Team T")
+    notices = _run_migration(live.app_url)
+    assert _owner_of(live, x) == OWNER_P
+    assert _owner_of(live, t) is None
+    assert _owner_of(live, t_kid) is None
+    # The deploy log names the node it kept.
+    assert any(t in n and live.org in n for n in notices), notices
+    # A team member, who reads T only through the grant, still sees it.
+    r = await d._person(live, w.MEMBER, "GET", "/projects/tree")
+    assert r.status_code == 200, r.text
+    assert t in r.text
+
+
+async def test_d_a_team_node_left_under_my_tree_can_be_moved_out(live):
+    # The repair of the case above. T is not personal itself, so the guard
+    # lets the owner (or a lead) move it out to a team space.
+    x = _legacy_child(live, live.root, "a legacy X2")
+    t, _ = _team_root_under(live, x, "Team T2")
+    _run_migration(live.app_url)
+    assert _owner_of(live, x) == OWNER_P and _owner_of(live, t) is None
+    r = await d._person(live, OWNER_P, "POST", f"/projects/nodes/{t}/move",
+                        {"parent_project_id": live.team})
+    assert r.status_code == 200, r.text
+    assert _one(live, "SELECT parent_project_id FROM pm_projects WHERE id ="
+                " CAST(:c AS uuid)", c=t) == live.team
+
+
+async def test_d_the_migration_keeps_an_owner_that_is_already_set(live):
+    # A descendant that carries an owner keeps it, even one that differs
+    # from the root's owner. Only a NULL takes the stamp.
+    other = "someone.else@mcpwrites.test"
+    same = _legacy_child(live, live.root, "an already stamped child")
+    odd = _legacy_child(live, live.root, "a child stamped for another")
+    with live.admin.begin() as c:
+        c.execute(text("UPDATE pm_projects SET personal_owner = :o WHERE id ="
+                       " CAST(:i AS uuid)"), {"o": OWNER_P, "i": same})
+        c.execute(text("UPDATE pm_projects SET personal_owner = :o WHERE id ="
+                       " CAST(:i AS uuid)"), {"o": other, "i": odd})
+    _run_migration(live.app_url)
+    assert _owner_of(live, same) == OWNER_P
+    assert _owner_of(live, odd) == other
