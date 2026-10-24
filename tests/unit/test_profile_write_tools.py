@@ -328,7 +328,7 @@ class TestRemember:
         listed = [line for line in out.splitlines() if line.startswith("- f")]
         assert len(listed) == pt.SAME_KIND_CAP
         assert all(len(line) < 100 for line in listed)
-        assert "and 34 more" in out.splitlines()
+        assert "Showing 5 of 39 work facts. All of them are in the profile." in out.splitlines()
         assert len(out) < 1000
 
     def test_undo_round_trip(self, own_chat) -> None:

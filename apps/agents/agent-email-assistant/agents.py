@@ -2432,7 +2432,7 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     return {
         "message_id": prep.get("message_id") or "",
         # The card shows four notices at most. The rest go in the note.
-        "notices": notices,  # every notice: none may vanish (read-tool paging fence)
+        "notices": notices[:4],
         "mailbox": prep.get("mailbox") or "",
         "subject": prep.get("subject") or "",
         "original": prep.get("original") or {},
