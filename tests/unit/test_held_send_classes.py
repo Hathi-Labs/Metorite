@@ -232,7 +232,7 @@ async def test_the_reply_card_route_classes_only_with_the_switch_on(monkeypatch)
 
     seen: list = []
 
-    async def classes(owner, addresses, *, primary):
+    async def classes(owner, addresses, *, primary, **_kw):
         seen.append((addresses, primary))
         return {F.KNOWN: "thread", F.STRANGER: "new"}
 
