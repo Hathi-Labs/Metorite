@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from acb_skills import ask_tools
 from acb_skills import reply_card as rcard
 from acb_skills import whatsapp_acts as wacts
