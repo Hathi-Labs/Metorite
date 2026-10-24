@@ -219,6 +219,26 @@ TEXT_ARCHIVE_CONFLICT = (
 TEXT_TASK_HELD = (
     "Another AI session holds this task. Pick another task. Do not claim or"
     " start this task again. Call list_tasks with unheld true to find a free task.")
+#: SW-13c fix round 1 (P2-a). Added to :data:`TEXT_TASK_HELD` when the gateway
+#: marks the holder ``same_client``: the caller's own run from another
+#: connection of the same client. ``{run_id}`` is the run id in its shape.
+TEXT_TASK_HELD_SAME_CLIENT = (
+    " Exception: the holder is your own run from another connection of the"
+    " same client (another machine, or an earlier sign-in). If that session"
+    " has ended, call release_task with run_id {run_id}, then claim the task"
+    " again. If that session still works, leave the task to it.")
+
+
+def task_held_text(detail: Mapping[str, Any]) -> str:
+    """The fixed text of a 409 ``task_held`` (EA-14a). With ``same_client``
+    true and a ``run_id`` in the shape of an id, the hint of SW-13c follows.
+    Nothing else of the gateway's detail reaches the agent."""
+    run_id = _id(detail.get("run_id")) if detail.get("same_client") is True else None
+    if run_id is None:
+        return TEXT_TASK_HELD
+    return TEXT_TASK_HELD + TEXT_TASK_HELD_SAME_CLIENT.format(run_id=run_id)
+
+
 #: A 403 of ``release_task``: the run belongs to another client or member.
 TEXT_RELEASE_FORBIDDEN = "You can release only your own agent run."
 #: The code of the gateway's 409 for a held task (``agent_runs.TASK_HELD``).
@@ -428,8 +448,9 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         # EA-14a: one text for every write that opens a run. It goes before
         # `texts`, so no per-tool 409 text hides it. The gateway's message
         # and the name of the holder never reach the agent. get_task shows
-        # `held_by`, as (U) text.
-        raise ToolError(TEXT_TASK_HELD)
+        # `held_by`, as (U) text. SW-13c: the hint of an own run of another
+        # connection, with its id only in the shape of an id.
+        raise ToolError(task_held_text(detail))
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
     if coded and answer.status == 422:
@@ -3757,7 +3778,8 @@ CLAIM_TASK = Tool(
         " expected_version. When the task changed after that read, the tool"
         " refuses, and you read the task again. A second claim changes"
         " nothing. Returns the task with its new version, and agent_run_id:"
-        " the agent run that the claim opened or found, or null when agent"
+        " the agent run that the claim opened, or your own open run from this"
+        " connection that it found, or null when agent"
         " runs are off. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
         " claim this one again. A holder with no activity for 2 hours loses"
@@ -3901,8 +3923,10 @@ START_AGENT_RUN = Tool(
     description=(
         "Start an agent run on a task this member can see, when you begin work"
         " on that task. The task then shows people that an agent works on it."
-        " If this member already has an open run on the task from this client,"
-        " you get that run back, and created is false. Only one AI session may"
+        " If this member already has an open run on the task from this"
+        " connection, you get that run back, and created is false. A run of"
+        " another connection, such as one on another machine, holds the task"
+        " like any other session. Only one AI session may"
         " hold a task. When another session holds it, the tool refuses: pick"
         " another task, and do not start this one again. While you work, send a"
         " thought with post_agent_activity at least once a minute. After 5"
@@ -4048,7 +4072,7 @@ ASK_ON_TASK = Tool(
     description=(
         "Ask the member a question on a task when you need a decision before"
         " you go on. The tool starts an agent run on the task, or uses the open"
-        " run of this member from this client, and writes the question. Give 2"
+        " run of this member from this connection, and writes the question. Give 2"
         " to 10 options, each with a short id and a label, and mark the one you"
         " recommend with recommended true. Set allow_multiple when more than"
         " one option can apply. With no options, the member answers in free"
@@ -4765,6 +4789,7 @@ __all__ = [
     "TEXT_STALE",
     "TEXT_SUBTASK_NOT_BELOW",
     "TEXT_TASK_HELD",
+    "TEXT_TASK_HELD_SAME_CLIENT",
     "TEXT_TASK_NOT_FOUND",
     "TEXT_UPDATE_EMPTY",
     "TEXT_WRITES_OFF",
@@ -4796,6 +4821,7 @@ __all__ = [
     "offered",
     "reference",
     "run_activity",
+    "task_held_text",
     "text_nul",
     "timeline_meta",
     "untrusted",
