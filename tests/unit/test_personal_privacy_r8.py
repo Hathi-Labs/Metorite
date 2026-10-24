@@ -288,6 +288,26 @@ def world():
             " CAST(:o AS uuid)) RETURNING id",
             p=project, s=subject, o=org)
 
+    # WS-64 OP-3: a node two levels under OWNER's root, stamped as
+    # `create_node` stamps it, with no task, so no count above changes. It
+    # carries a STRAY `group:` grant to a group that holds MEMBER, the third
+    # shape of D-OP-15's grant arm beside the `org` and email grants.
+    p["owner_deep"] = a.project("Owner deep", parent=p["owner_area"],
+                                personal_owner=OWNER, grant_to=OWNER)
+    group = a.one(
+        "INSERT INTO org_group (organization_id, slug, display_name)"
+        " VALUES (CAST(:o AS uuid), 'op3-stray', 'op3-stray') RETURNING id",
+        o=org)
+    a.one(
+        "INSERT INTO org_group_member (group_id, user_id) SELECT"
+        " CAST(:g AS uuid), id FROM app_user WHERE email = :e RETURNING user_id",
+        g=str(group), e=MEMBER)
+    a.one(
+        "INSERT INTO pm_project_grants (project_id, subject, created_by,"
+        " organization_id) VALUES (CAST(:p AS uuid), 'group:op3-stray', 'seed',"
+        " CAST(:o AS uuid)) RETURNING id",
+        p=p["owner_deep"], o=org)
+
     # READER's own personal tree: the unrestricted arm's "my own" half.
     p["reader_root"] = a.project("Reader root", personal_owner=READER,
                                  grant_to=READER)
@@ -630,7 +650,7 @@ class TestNobodyElseReadsIt:
     @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
     async def test_no_personal_project_lists_or_reads(self, armed, who):
         p = armed.p
-        personal = {p["owner_root"], p["owner_area"]}
+        personal = {p["owner_root"], p["owner_area"], p["owner_deep"]}
         for path in ("/projects/tree", "/projects/nodes", "/projects/summary"):
             body = (await _ok(armed, who, path)).json()
             assert not (_node_ids(body) & personal), (who, path)
@@ -787,6 +807,123 @@ class TestTheScopeColumnIsTheTasksOwnNode:
             r = await _call(armed, OWNER, "GET",
                             f"/projects/attachments/{armed.files[key]}/f.txt")
             assert r.status_code == 200, (key, r.text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WS-64 OP-3 — the Personal space in GET /projects/tree
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _walk(nodes: list[dict]) -> dict[str, dict]:
+    """Every node of a nested list, by id."""
+    out: dict[str, dict] = {}
+    for node in nodes:
+        out[node["id"]] = node
+        out.update(_walk(node.get("children") or []))
+    return out
+
+
+class TestThePersonalSpace:
+    """OP-3 done when 1. ``personal`` holds the caller's own tree, nested.
+
+    The mutations (R7), each in ``G/tree.py`` (``G`` is
+    ``apps/services/gateway/gateway/routes/projects``):
+
+    * P1. ``_OWN_PERSONAL_CLAUSE``: drop the
+      ``lower(personal_owner) = :vis_email`` line. Every other member reads
+      OWNER's tree in ``personal``.
+    * P2. ``_OWN_PERSONAL_CLAUSE`` becomes ``vis.project_clause()``. The team
+      nodes enter ``personal``, and OWNER's ``personal`` is not OWNER's tree.
+    * P3. ``_own_personal_projects``: no ``_narrow_for_agent``. An agent
+      without ``include_personal`` reads the tree.
+    """
+
+    def _owner_nodes(self, w) -> set[str]:
+        p = w.p
+        # `owner_under_team` is OWNER's too. Its parent is a team node, so
+        # it is a root of `personal`.
+        return {p["owner_root"], p["owner_area"], p["owner_deep"],
+                p["owner_under_team"]}
+
+    async def test_the_owner_reads_the_root_and_a_node_two_levels_under(self, armed):
+        body = (await _ok(armed, OWNER, "/projects/tree")).json()
+        p = armed.p
+        roots = {n["id"]: n for n in body["personal"]}
+        assert set(roots) == {p["owner_root"], p["owner_under_team"]}, roots
+        area = {c["id"]: c for c in roots[p["owner_root"]]["children"]}
+        assert set(area) == {p["owner_area"]}, "the team node is not personal"
+        deep = [c["id"] for c in area[p["owner_area"]]["children"]]
+        assert deep == [p["owner_deep"]]
+        assert set(_walk(body["personal"])) == self._owner_nodes(armed)
+
+    async def test_each_personal_node_is_marked_and_offers_no_grant(self, armed):
+        from gateway.routes.projects.authority import PERSONAL_GRANT_REFUSED
+
+        body = (await _ok(armed, OWNER, "/projects/tree")).json()
+        for node in _walk(body["personal"]).values():
+            assert node["personal"] is True, node
+            assert node["personal_owner"].lower() == OWNER, node
+            assert node["can_write_grants"] is False, node
+            assert node["grant_refusal"] == PERSONAL_GRANT_REFUSED, node
+            assert isinstance(node["can_delete"], bool), node
+
+    async def test_the_counts_are_the_progress_read(self, armed):
+        body = (await _ok(armed, OWNER, "/projects/tree")).json()
+        nodes = _walk(body["personal"])
+        p = armed.p
+        # owner_private, owner_mine and owner_area. `team_under` hangs under
+        # the root but is team work, so it is in no personal count.
+        assert nodes[p["owner_root"]]["tasks"] == 3, nodes[p["owner_root"]]
+        assert nodes[p["owner_area"]]["tasks"] == 1
+        assert nodes[p["owner_deep"]]["tasks"] == 0
+
+    async def test_rows_keep_their_shape(self, armed):
+        """R6. ``rows`` and ``total`` are what an old client read."""
+        body = (await _ok(armed, OWNER, "/projects/tree")).json()
+        rows = _walk(body["rows"])
+        assert not (set(rows) & self._owner_nodes(armed))
+        assert {armed.p["team"], armed.p["team_under"]} <= set(rows)
+        assert body["total"] == len(rows)
+        assert not any("personal" in n for n in rows.values())
+
+    async def test_an_org_reader_reads_only_their_own_space(self, armed):
+        body = (await _ok(armed, READER, "/projects/tree")).json()
+        assert set(_walk(body["personal"])) == {armed.p["reader_root"]}
+
+    @pytest.mark.parametrize("who", [PADMIN, MEMBER], ids=["padmin", "member"])
+    async def test_a_stray_grantee_and_an_admin_read_no_space(self, armed, who):
+        """PADMIN holds a stray email grant, MEMBER the stray ``org`` and
+        ``group:`` grants. Neither has a personal tree of their own."""
+        body = (await _ok(armed, who, "/projects/tree")).json()
+        assert body["personal"] == [], (who, body["personal"])
+
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
+    async def test_the_deep_node_reads_nowhere_else(self, armed, who):
+        deep = armed.p["owner_deep"]
+        for path in ("/projects/tree", "/projects/nodes"):
+            body = (await _ok(armed, who, path)).json()
+            assert deep not in _node_ids(body), (who, path)
+        r = await _call(armed, who, "GET", f"/projects/nodes/{deep}")
+        assert r.status_code == 404, (who, r.text)
+
+    async def _agent_tree(self, w, who: str, *, include_personal: bool) -> set[str]:
+        from gateway.routes.projects.core import resolve_visibility_for
+        from gateway.routes.projects.tree import _own_personal_projects
+
+        async def _go(db) -> set[str]:
+            vis = dataclasses.replace(
+                await resolve_visibility_for(db, who),
+                agent=AgentScope(connection_id="op3",
+                                 include_personal=include_personal))
+            return {str(r.id) for r in await _own_personal_projects(db, vis)}
+
+        return await _as_app(w, _go)
+
+    async def test_an_agent_without_personal_reads_no_space(self, armed):
+        """D-EA-4. The route-level check is in ``test_personal_owner_stamp``."""
+        assert await self._agent_tree(armed, OWNER, include_personal=False) == set()
+        assert (await self._agent_tree(armed, OWNER, include_personal=True)
+                == self._owner_nodes(armed))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
