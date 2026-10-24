@@ -1,6 +1,6 @@
 # Personalization — the assistant knows who it talks to
 
-**Status: PROPOSED, 2026-10-23. PZ-1 BUILT 2026-10-23** (migration 294,
+**Status: ACCEPTED, 2026-10-24 (D110). PZ-1 BUILT 2026-10-23** (migration 294,
 the routes of §4.3 in `routes/admin/assistant_profile.py`, and the fix of
 §2.1). **PZ-2 BUILT 2026-10-23 (dark, ASSISTANT_PROFILE_ENABLED off).** The
 executor adds the block of §5.1, and `acb_common/assistant_profile.py` is the
@@ -16,7 +16,7 @@ Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
 
-§8 proposes **D-PZ-1** to **D-PZ-9**, each with a default. Every slice in §9
+§8 records **D-PZ-1** to **D-PZ-9**, accepted with their defaults as D110. Every slice in §9
 is AGENT-SAFE to build dark, except where §9 says OWNER-GATE.
 
 **What this spec owns.** What the one assistant knows about the member it
@@ -390,10 +390,10 @@ conversation (WS-47). That org's profile applies.
 
 ---
 
-## 8. Decisions proposed
+## 8. Decisions
 
-Each has a default. The owner accepts or changes them. Until then, the
-slices build the default, dark.
+The owner accepted each default on 2026-10-24: "go ahead with your
+recommendations". `work_plan.md` §3 records them as **D110**.
 
 | # | Question | Default |
 |---|---|---|
@@ -477,9 +477,9 @@ the order of the preamble. `test_resolve_person_r8.py` holds the one-org read.
 
 ---
 
-## 12. Phase 2 — the learned voice, and a setup coach (PROPOSED, 2026-10-24)
+## 12. Phase 2 — the learned voice, and a setup coach (ACCEPTED, 2026-10-24)
 
-**Status: PROPOSED, 2026-10-24. Nothing is built.** Owner directive of
+**Status: ACCEPTED, 2026-10-24 (D110). Nothing is built.** Owner directive of
 2026-10-24, in chat. It extends §1 to §11, and it changes no rule of them.
 The slices start after PZ-11. Each one is dark until the owner says.
 
@@ -602,7 +602,11 @@ profile serves it.
 | **PZ-18** | `preferences` and `setup` in the shell manifest, and the fence of §12.6 | The fence fails on a direct read outside the two modules | AGENT-SAFE · LOW |
 | **PZ-19** | The coach on WhatsApp through Reach | Reach sends a setup question only with its switch on | **OWNER-GATE:** WhatsApp sends · MEDIUM |
 
-### 12.8 Decisions the owner owes
+### 12.8 Decisions
+
+The owner accepted each default on 2026-10-24, recorded as **D110**. The
+wording of the consent notice of D-PZ-10 is drafted in PZ-12, and the owner
+reads it before PZ-12 merges.
 
 | # | Question | Default |
 |---|---|---|
