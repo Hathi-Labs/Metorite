@@ -104,11 +104,11 @@ _GRANTED = (
     "\nWITH RECURSIVE granted AS (\n    SELECT DISTINCT g.project_id AS id\n"
     "    FROM pm_project_grants g\n    JOIN pm_projects gp ON gp.id = g.project_id\n"
     "    WHERE g.organization_id = CAST(:vis_org AS uuid)\n"
-    "      AND gp.sealed_at IS NULL\n"
-    "      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)\n"
-    "      AND (g.subject = 'org'\n"
+    "      AND gp.sealed_at IS NULL\n      AND (g.subject = 'org'\n"
     "           OR lower(g.subject) = :vis_email\n"
-    "           OR g.subject = ANY(:vis_groups))\n    UNION\n    SELECT p.id\n"
+    "           OR g.subject = ANY(:vis_groups))\n"
+    "      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)\n"
+    "    UNION\n    SELECT p.id\n"
     "    FROM pm_projects p\n    JOIN granted a ON p.parent_project_id = a.id\n"
     "    WHERE p.organization_id = CAST(:vis_org AS uuid)\n"
     "      AND p.sealed_at IS NULL\n"
@@ -138,10 +138,10 @@ def _assignee(alias: str) -> str:
 GOLDEN: dict[str, tuple[str, str]] = {
     "restricted.project_clause()": (
         f"id IN ({_GRANTED})",
-        "9562730fc8f8cb77234f75ee274b868902578e341e46f9c890b2c0f13e47e898"),
+        "6e437adf35509eb526f58ecc614250bae397a04520e1d63dc9314066b8bbb8c9"),
     "restricted.project_clause('p.id')": (
         f"p.id IN ({_GRANTED})",
-        "3aee88cebdbad8262bf45d9d94c25f0b5f05324b7dccbdd9b6bf70b26a3a50b5"),
+        "85fb3aaa290e04da742aeaabe29bb16ecdcfdf3318c6e1babdc9d712061b37a5"),
     "unrestricted.project_clause()": (
         f"id IN ({_TENANT_ONLY})",
         "726ab86a486c93b214eed1e3b206aca5f55373758c3be6f8dcfecfb618f2bcfe"),
@@ -151,11 +151,11 @@ GOLDEN: dict[str, tuple[str, str]] = {
     "task_visibility_clause(restricted)": (
         f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_GRANTED})"
         + _assignee("t"),
-        "e2dc1d6188a1b68addd14f3a6b1cfdfdf146131f0e2fcff3673eb5593aec44e2"),
+        "1d8c447e2e30ac1286e5a0f8c0c8514cecfb1384b8404e3edeb7cf822660d408"),
     "task_visibility_clause(restricted, 'x')": (
         f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_GRANTED})"
         + _assignee("x"),
-        "2a74176bc685c247665adc06a37d9134d12e7d6d0a0f562313e9988aaf888ed8"),
+        "172d07827befe1d27e9f33d9a1d3593c472d9428311114345aa1ef11257c86f5"),
     # ⚠️ H-304 changed these two ON PURPOSE (D63). The unrestricted task
     # clause was the tenant alone, so `data:org:read` read a closed tree. It
     # now has the same two arms as the restricted clause, over the tenant set.

@@ -1172,7 +1172,9 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 #: written before OP-6b, shows the tree to nobody but its owner. The seed
 #: drops such a grant, and the recursive step stops at any personal node of
 #: somebody else. A team node under a personal root carries no
-#: ``personal_owner``, so its own grant still seeds it.
+#: ``personal_owner``, so its own grant still seeds it. The seed's line sits
+#: AFTER the subject bracket, so nothing but ``AND`` stands between the
+#: tenant and that bracket (``test_projects_tenancy.py``).
 #: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _VISIBLE_PROJECTS_SQL = """
 WITH RECURSIVE granted AS (
@@ -1181,10 +1183,10 @@ WITH RECURSIVE granted AS (
     JOIN pm_projects gp ON gp.id = g.project_id
     WHERE g.organization_id = CAST(:vis_org AS uuid)
       AND gp.sealed_at IS NULL
-      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)
       AND (g.subject = 'org'
            OR lower(g.subject) = :vis_email
            OR g.subject = ANY(:vis_groups))
+      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)
     UNION
     SELECT p.id
     FROM pm_projects p
