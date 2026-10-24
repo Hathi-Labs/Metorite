@@ -930,7 +930,29 @@ def clean_reply_form(form: dict | None) -> dict | None:
         # each person ticked.
         **({"ticked": _reply_ticked(form["ticked"], reply, reply_all)}
            if isinstance(form.get("ticked"), dict) else {}),
+        # Item 8 (owner, 2026-10-24): the server's words for each person
+        # ("on Dr Sagar's original email"), by lower case. A form with none
+        # draws the class mark only, as before.
+        **({"marks": _reply_marks(form["marks"], reply_all)}
+           if isinstance(form.get("marks"), dict) and form["marks"] else {}),
     }
+
+
+def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
+    """The words of each person, each a person of the card's list. A mark of
+    a person that is not on the card, or an over-long mark, raises."""
+    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"]]}
+    out: dict[str, str] = {}
+    for addr, words in value.items():
+        a = " ".join(str(addr or "").split()).lower()
+        if a not in have:
+            raise ValueError("a mark names a person of the card")
+        line = _whole_line(words)
+        if len(line) > 200:
+            raise ValueError("a mark is too long")
+        if line:
+            out[a] = line
+    return out
 
 
 def _reply_ticked(value: dict, reply: dict, reply_all: dict) -> dict:

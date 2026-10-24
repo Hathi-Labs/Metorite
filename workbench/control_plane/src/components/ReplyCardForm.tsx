@@ -5,16 +5,16 @@
  *
  * It draws inside `ConfirmationCard`, under its shared header, so a reply
  * card is the ONE confirmation card with a form, not a second card. It shows
- * who gets the reply, the mail it answers, the recipients the gateway
- * derived, a Reply or Reply all toggle, the editable body, and Send, Save to
- * Drafts and Discard. The logic is `lib/replyCard.ts`. This file holds the
- * member's edits only.
+ * who gets the reply, the mail it answers, every person the gateway derived
+ * or added, the editable body, and Send, Save to Drafts and Discard. The
+ * logic is `lib/replyCard.ts`. This file holds the member's edits only.
  *
- * The client derives no recipient. The toggle switches between the server's
- * two lists, and each list shows in full. Each To and Cc has a tick box
- * (owner, 2026-10-24). The reply goes only to the ticked people, and the
- * card counts them ("Sends to 3 of 5"). In a held chat a new address starts
- * unticked, as the server chose.
+ * The client derives no recipient. The card shows ONE list with a tick box
+ * for each person (owner, 2026-10-24): there is no Reply or Reply all mode,
+ * because a hidden second list once sent a reply to one person while the
+ * member ticked more. "Only the sender" and "Tick all" change the ticks and
+ * never the list. The reply goes only to the ticked people, the card counts
+ * them ("Sends to 3 of 5"), and it names each person who will not get it.
  *
  * Nothing hides (security review of #1191). The summary names each address
  * the reply goes to, in full. Each notice of the server shows: a Reply-To
@@ -33,8 +33,11 @@ import {
   bodyCanGo,
   classOfAddress,
   discardReplyDraft,
+  leftOutText,
   lineCount,
+  markFor,
   MAX_REPLY_BODY,
+  onlySenderTicks,
   receivedText,
   recipientsFor,
   replyAllAddsSomeone,
@@ -43,6 +46,7 @@ import {
   replySummary,
   sendsCount,
   startTicks,
+  tickAllTicks,
   tickedFor,
   toggleTick,
   type ReplyAction,
@@ -87,7 +91,8 @@ function AddressRow({
       <dd className="min-w-0 flex-1 space-y-0.5 break-words text-foreground">
         {list.map((a) => {
           const cls = classOfAddress(form, a);
-          const mark = cls ? rowMark(cls) : "";
+          // The server's own words win (item 8): "on Dr Sagar's original email".
+          const mark = markFor(form, a) || (cls ? rowMark(cls) : "");
           const on = ticked.has(a.toLowerCase());
           return (
             <label key={a} className="flex cursor-pointer flex-wrap items-center gap-1.5" data-reply-person={a}>
@@ -116,7 +121,9 @@ function AddressRow({
 }
 
 export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
-  const [replyAll, setReplyAll] = useState(form?.replyAll ?? false);
+  // ONE list (item 11): the card always shows every person, so the answer
+  // names the people of that list that the member ticked.
+  const replyAll = true;
   const [body, setBody] = useState(form?.body ?? "");
   const [ticks, setTicks] = useState<ReplyTicks>(() =>
     form ? startTicks(form) : { reply: [], reply_all: [] },
@@ -190,31 +197,30 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
         )}
       </figure>
 
-      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Who gets the reply">
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="Reply"
-          selected={!replyAll}
-          onClick={() => setReplyAll(false)}
-          disabled={disabled}
-          data-reply-mode="reply"
-        >
-          Reply
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="ReplyAll"
-          selected={replyAll}
-          onClick={() => setReplyAll(true)}
-          disabled={disabled || (!widens && !replyAll)}
-          data-reply-mode="reply-all"
-        >
-          Reply all
-        </Button>
-        {!widens && <span className="text-[11px] text-muted-foreground">No one else is on this email.</span>}
-      </div>
+      {widens && (
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Tick shortcuts">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Reply"
+            onClick={() => setTicks((t) => onlySenderTicks(form, t))}
+            disabled={disabled}
+            data-reply-shortcut="sender"
+          >
+            Only the sender
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="ReplyAll"
+            onClick={() => setTicks((t) => tickAllTicks(form, t))}
+            disabled={disabled}
+            data-reply-shortcut="all"
+          >
+            Tick all
+          </Button>
+        </div>
+      )}
 
       <dl className="space-y-1" aria-label="Recipients">
         <AddressRow label="To" list={shown.to} form={form} ticked={ticked} onTick={onTick} disabled={disabled} />
@@ -225,6 +231,11 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
       <p className="text-[11px] text-muted-foreground" data-reply-count="">
         {sendsCount(form, replyAll, ticks)}. Only a ticked person gets the reply.
       </p>
+      {leftOutText(form, ticks) && (
+        <p className="break-words text-[11px] text-foreground" data-reply-left-out="">
+          {leftOutText(form, ticks)}
+        </p>
+      )}
 
       {form.note && <p className="text-[11px] text-muted-foreground">{form.note}</p>}
       <Textarea

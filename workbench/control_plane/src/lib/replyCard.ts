@@ -75,6 +75,12 @@ export interface ReplyForm {
    * unticked. A form with none starts with each person ticked.
    */
   ticked?: { reply: ReplyRecipients; reply_all: ReplyRecipients };
+  /**
+   * The server's words for each person, by lower case (owner, 2026-10-24):
+   * "on Dr Sagar's original email", "you usually copy them". A form with
+   * none draws the class mark only.
+   */
+  marks?: Record<string, string>;
 }
 
 /** The ticked people of each choice, by lower case. */
@@ -147,7 +153,53 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
     draftId: text(v.draft_id, 64),
     ...classesOf(v.classes),
     ...(ticked ? { ticked } : {}),
+    ...marksOf(v.marks, replyAll),
   };
+}
+
+/** The words of each person, only for a person of the card's list. */
+function marksOf(value: unknown, all: ReplyRecipients): { marks?: Record<string, string> } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const have = new Set(lower([...all.to, ...all.cc]));
+  const out: Record<string, string> = {};
+  for (const [addr, words] of Object.entries(value as Record<string, unknown>)) {
+    const a = addr.trim().toLowerCase();
+    if (have.has(a) && typeof words === "string" && words.trim()) out[a] = words.slice(0, 200);
+  }
+  return Object.keys(out).length > 0 ? { marks: out } : {};
+}
+
+/** The server's words for one person, or "" (owner, 2026-10-24, item 8). */
+export function markFor(form: ReplyForm, address: string): string {
+  return form.marks?.[address.trim().toLowerCase()] ?? "";
+}
+
+/**
+ * The card shows ONE list (owner, 2026-10-24, item 11): every person of the
+ * email, and each person the server added. There is no Reply or Reply all
+ * mode. Two shortcuts change the ticks, and never the list.
+ */
+export function onlySenderTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
+  return { ...ticks, reply_all: lower(form.recipients.reply.to) };
+}
+
+/** Tick each person of the list. */
+export function tickAllTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
+  const all = form.recipients.reply_all;
+  return { ...ticks, reply_all: lower([...all.to, ...all.cc]) };
+}
+
+/** The people of the list that do NOT get the reply, in the server's order. */
+export function leftOut(form: ReplyForm, ticks: ReplyTicks): string[] {
+  const on = new Set(ticks.reply_all);
+  const all = form.recipients.reply_all;
+  return [...all.to, ...all.cc].filter((a) => !on.has(a.toLowerCase()));
+}
+
+/** "ananda@… will not get this.", or "" when each person is ticked. */
+export function leftOutText(form: ReplyForm, ticks: ReplyTicks): string {
+  const gone = leftOut(form, ticks);
+  return gone.length > 0 ? `${gone.join(", ")} will not get this.` : "";
 }
 
 /**
