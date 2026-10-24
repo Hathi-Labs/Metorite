@@ -359,3 +359,88 @@ def test_the_replaced_function_counts_drive_rows() -> None:
     assert "public.integration_connections" in replaced
     assert "ic.provider = 'google_drive'" in replaced
     assert "ic.status <> 'disconnected'" in replaced
+
+
+# ── The callback: a bad state or a refused grant saves nothing, revokes nothing ──
+
+
+class TokenGoogle(FakeGoogle):
+    """Answers the code exchange with *scope* and *refresh*, and the account read."""
+
+    def __init__(self, scope: str, refresh: str) -> None:
+        super().__init__()
+        self.scope, self.refresh = scope, refresh
+        self.gets: list[str] = []
+
+    async def get(self, url: str, *, params: Any = None, headers: Any = None) -> HttpAnswer:
+        self.gets.append(url)
+        return HttpAnswer(status_code=200, body=json.dumps({"user": {
+            "emailAddress": ADDRESS, "permissionId": "perm-1"}}).encode())
+
+    async def post(self, url: str, *, form: Any, headers: Any = None) -> HttpAnswer:
+        self.posts.append((url, dict(form)))
+        body: dict[str, Any] = {"access_token": "at", "expires_in": 3600, "scope": self.scope}
+        if self.refresh:
+            body["refresh_token"] = self.refresh
+        return HttpAnswer(status_code=200, body=json.dumps(body).encode())
+
+
+def _callback(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch, google: FakeGoogle,
+              *, payload: dict[str, str] | None) -> Any:
+    monkeypatch.setattr(sources, "make_source",
+                        lambda client: GoogleDriveSource(client, http=google))
+    monkeypatch.setattr(sources, "verify_state", lambda state, *, purpose: payload)
+    user = UserContext(email=ME, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:knowledge"]), organization_id=ORG)
+    app = FastAPI()
+    app.include_router(kb_package.router)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app).get(
+        "/knowledge/sources/google_drive/callback?code=c&state=s", follow_redirects=False)
+
+
+@pytest.mark.parametrize("payload", [
+    None,                                     # forged, expired or another purpose
+    {"org": ORG, "member": "someone@kc.test"},  # another member's state
+    {"org": "22222222-2222-4222-8222-222222222222", "member": ME},  # another org
+])
+def test_a_bad_state_is_400_and_calls_no_google(world: dict[str, Any],
+                                                monkeypatch: pytest.MonkeyPatch,
+                                                payload: dict[str, str] | None) -> None:
+    google = TokenGoogle(google_auth.DRIVE_READONLY, "rt")
+    answer = _callback(world, monkeypatch, google, payload=payload)
+    assert answer.status_code == 400 and answer.json()["detail"] == "invalid_state"
+    assert google.posts == [] and google.gets == []
+
+
+_DRIVE = google_auth.DRIVE_READONLY
+
+
+@pytest.mark.parametrize(("scope", "refresh", "reason"), [
+    ("openid email", "rt", "scope_missing"),
+    (f"openid {_DRIVE} https://www.googleapis.com/auth/drive.file", "rt", "scope_extra"),
+    (f"{_DRIVE} https://www.googleapis.com/auth/gmail.readonly", "rt", "scope_extra"),
+    (f"{_DRIVE} https://www.googleapis.com/auth/drive", "rt", "scope_extra"),
+    (f"openid {_DRIVE}", "", "no_refresh_token"),
+])
+def test_a_refused_grant_saves_nothing_and_is_never_revoked(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch, scope: str, refresh: str,
+    reason: str,
+) -> None:
+    """The fake database raises on any write, so a save would fail the test."""
+    google = TokenGoogle(scope, refresh)
+    answer = _callback(world, monkeypatch, google, payload={"org": ORG, "member": ME})
+    assert answer.status_code == 302
+    assert answer.headers["location"] == f"/knowledge?source_error={reason}"
+    assert [url for url, _ in google.posts] == [google_auth.TOKEN_URL], (
+        "a refused grant must never be revoked: it may be the Gmail grant")
+
+
+def test_the_url_forms_of_the_identity_scopes_pass_the_grant_check() -> None:
+    from gateway.crm_sources.base import SourceCredential
+
+    cred = SourceCredential(
+        access_token="a", refresh_token="r", expires_at=_NOW,
+        scopes=("openid", "https://www.googleapis.com/auth/userinfo.email",
+                "https://www.googleapis.com/auth/userinfo.profile", _DRIVE))
+    assert sources.drive_grant_refusal(cred) is None
