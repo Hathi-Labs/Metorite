@@ -1116,10 +1116,22 @@ WHERE lower(au.email) = :email AND au.status = 'active'
 #: allows is owner-only and LOGGED. An unrestricted clause that skipped this
 #: filter would be exactly the invisible act — `data:org:read` is the widest
 #: grant in the product, and the People Center holds it.
+#:
+#: ⚠️ **A member's personal space binds the reader too** (WS-64 OP-9,
+#: D-OP-15). A task in a personal tree is shown to its owner only. The
+#: ``personal_owner`` line keeps every other member's personal node out of
+#: this set, so ``data:org:read`` reads no personal task of somebody else.
+#: Migration 297 and ``tree.create_node`` stamp ``personal_owner`` on every
+#: node of a personal tree, and leave a TEAM node under it unstamped, so the
+#: node's own column is the whole test and a team node stays in. The owner's
+#: own nodes stay in, so the owner's reads do not change. Every read that
+#: ``project_clause`` or ``task_visibility_clause`` builds takes this line.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _TENANT_PROJECTS_SQL = """
 SELECT id FROM pm_projects
 WHERE organization_id = CAST(:vis_org AS uuid)
   AND sealed_at IS NULL
+  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)
 """
 
 #: Projects the caller may see: those carrying a matching grant, plus everything
