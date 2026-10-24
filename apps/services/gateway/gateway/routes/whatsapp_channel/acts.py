@@ -142,6 +142,11 @@ REPLY_BAD_NUMBER = ("A number in your reply is not a line of the summary, or is 
                     "Check the numbers and reply again.")
 REPLY_NOBODY = ("Your reply leaves out every To line, so nothing was sent. Keep "
                 "one To line, or reply NO.")
+#: The wrong codes that one act takes. The last one closes it.
+MAX_WRONG_CODES = 5
+REPLY_TOO_MANY_WRONG = ("That was the fifth wrong code, so this request is closed, "
+                        "and nothing was sent or changed. Ask again if you still "
+                        "want it.")
 REPLY_NO_ACT = ("No request waits for a code from this phone, so nothing was "
                 "sent or changed. The code works only from the phone that got "
                 "the summary.")
@@ -224,6 +229,14 @@ UPDATE whatsapp_pending_acts
 RETURNING id
 """
 
+#: One more wrong code for a waiting act. It returns the new count.
+_WRONG_CODE_SQL = """
+UPDATE whatsapp_pending_acts
+   SET wrong_codes = COALESCE(wrong_codes, 0) + 1, updated_at = now()
+ WHERE id = CAST(:id AS uuid) AND state = 'pending'
+RETURNING wrong_codes
+"""
+
 _CLOSE_SQL = """
 UPDATE whatsapp_pending_acts
    SET state = :to, close_code = :code, updated_at = now()
@@ -286,6 +299,14 @@ async def _mark_offered(act_id: str, out_wamid: str) -> bool:
             "id": act_id, "out": out_wamid[:200], "ttl": ACT_TTL_S,
             "code_ttl": CODE_TTL_S,
         })).first() is not None
+
+
+async def _wrong_code(act_id: str) -> int:
+    """Count one wrong code of the act. Returns the count, or the cap when no
+    waiting row took it, so a lost count never adds a try."""
+    async with tenant_session() as db:
+        row = (await db.execute(text(_WRONG_CODE_SQL), {"id": act_id})).first()
+    return int(row[0]) if row is not None else MAX_WRONG_CODES
 
 
 async def _close(act_id: str, frm: str, to: str, code: str | None) -> bool:
@@ -541,7 +562,12 @@ async def _settle_code(req: RunRequest, act: dict[str, Any],
         _log.info("whatsapp_channel.act.expired", act_id=act_id)
         return REPLY_CODE_EXPIRED
     if not _code_matches(stored, answer.code):
-        _log.info("whatsapp_channel.act.code_refused", act_id=act_id, reason="wrong_code")
+        tries = await _wrong_code(act_id)
+        _log.info("whatsapp_channel.act.code_refused", act_id=act_id, reason="wrong_code",
+                  tries=tries)
+        if tries >= MAX_WRONG_CODES:
+            await _close(act_id, "pending", "void", "wrong_codes")
+            return REPLY_TOO_MANY_WRONG
         return REPLY_WRONG_CODE
     if (str(act["member_email"]).strip().lower() != req.member_email
             or await _current_link_id(req.wa_id, req.member_email) != act["link_id"]):
