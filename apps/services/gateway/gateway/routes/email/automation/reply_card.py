@@ -95,9 +95,20 @@ BCC_ONLY_NOTICE = "You were Bcc'd, so only the sender is ticked."
 #: added person, because the act could not check one.
 ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the draft in "
                       "Drafts was left as it was. Ask again in a moment.")
-#: The notice when the thread's draft holds a Bcc: the reply card sends no Bcc.
-DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc. This card sends no "
-                    "Bcc. To keep it, send that draft with send_draft.")
+#: The classes that a Bcc of a held chat may have (§21.15, the rule of 21.10
+#: open question 5): a person that the member knows. A held chat refuses a
+#: Bcc to any other address, and no tick can allow it.
+HELD_BCC_CLASSES = frozenset({"org", "sent"})
+#: The refusal of a Bcc that a held chat may not send.
+HELD_BCC_REFUSED = ("This chat read outside mail, so a Bcc can only go to a colleague or "
+                    "to a person you wrote to before. {addr} is neither, so nothing was "
+                    "shown or sent.")
+#: The notice when a held chat leaves a Bcc of the thread's draft off the card.
+HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc that is not a colleague "
+                         "or a person you wrote to before. This chat read outside mail, so "
+                         "the card leaves it out: {addrs}.")
+#: The mark of a Bcc that the thread's draft holds (§21.15).
+DRAFT_BCC_MARK = "on the draft in Drafts"
 
 #: The colleagues that the member copies on mail of this thread, or on mail
 #: to these domains: each Cc of the newest 500 Sent mails of the member's own
@@ -173,6 +184,27 @@ class ReplyCardRequest(BaseModel):
     #: the act takes only a subset of what this card showed. One card
     #: replaces the reply card, the edit_draft card and the send_draft card.
     cc: list[str] = Field(default_factory=list, max_length=MAX_ADDED)
+    #: Bcc people that the tool proposes (§21.15, owner 2026-10-24). Classed
+    #: as ``cc`` is, and recorded apart. The act takes a subset only.
+    bcc: list[str] = Field(default_factory=list, max_length=MAX_ADDED)
+    #: True when the chat read outside mail (H-236). The tool sets it from the
+    #: run, never from the model. A held card refuses a Bcc that is not
+    #: ``org`` or ``sent``, and the record keeps the flag for the Bcc that
+    #: the member types on the card (``/reply-card/bcc``).
+    held: bool = False
+
+
+class ReplyCardBccRequest(BaseModel):
+    """A Bcc that the member typed on the reply card (§21.15). The member's
+    browser posts it, and no tool calls it. The server classes the address
+    and adds it to the record of the card, so the act still takes a subset
+    of the record only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    card_request_id: str = Field(max_length=64)
+    address: str = Field(max_length=320)
 
 
 class ReplyCardDiscardRequest(BaseModel):
@@ -476,6 +508,7 @@ async def reply_card(
     from acb_skills.held_card import held_card_send_enabled
 
     asked = _asked_cc(req.cc)
+    asked_bcc = _asked_cc(req.bcc, label="Bcc")
     own = {a.lower() for a in getattr(mail, "own", set()) or set()}
     on_mail = {a.strip().lower() for a in [*all_to, *all_cc, *reply_to, *reply_cc]}
     # The people of the thread's draft that ``edit_draft`` added stay on the
@@ -487,17 +520,26 @@ async def reply_card(
     # extra address of the draft is.
     carried = [a for a in carried if a.strip().lower() not in on_mail | own]
     usual = await _usual_candidates(owner, mail, [*all_to, *all_cc], skip=on_mail | own)
-    candidates = _unique([*asked, *carried, *usual], set(on_mail | own))[:MAX_ADDED]
+    # §21.16: the member's own "always copy" rules of this mailbox. Each
+    # colleague is an org or a sent person NOW, or it is not offered.
+    rule = await _rule_candidates(owner, mail, [mail.sender, *all_to, *all_cc],
+                                  skip=on_mail | own)
+    rule_match = {a.lower(): m for a, m in rule}
+    candidates = _unique([*asked, *carried, *(a for a, _m in rule), *usual],
+                         set(on_mail | own))[:MAX_ADDED]
+    # §21.15: the Bcc of the card. A person on To or Cc is not a Bcc too.
+    bcc_people = _unique([*asked_bcc, *draft_bcc],
+                         {*on_mail, *own, *(a.lower() for a in candidates)})[:MAX_ADDED]
     held_on = held_card_send_enabled()
     classes: dict[str, str] | None = None
-    if held_on or candidates:
+    if held_on or candidates or bcc_people:
         # §21 and item 1 (owner, 2026-10-24): the server classes each person.
         # The sender of a received mail of the thread, and each To and Cc of
         # one, is ``thread``, unless the domain is a look-alike. A Reply-To
         # that is not the sender is classed on its own merits (fix round 1,
         # P2-a), because a phishing mail names a stranger there.
         classes = await _reply_classes(
-            owner, [*reply_to, *reply_cc, *all_to, *all_cc, *candidates],
+            owner, [*reply_to, *reply_cc, *all_to, *all_cc, *candidates, *bcc_people],
             primary=[mail.sender] if mail.sender else [],
             people=_mail_people(mail), account_id=mail.account_id,
             thread_id=mail.thread_id)
@@ -508,20 +550,27 @@ async def reply_card(
     carried_extra = [a for a in carried if (classes or {}).get(a.lower()) != "thread"]
     # Item 7: only a colleague of the organization is pre-added from Sent.
     usual_added = [a for a in usual if (classes or {}).get(a.lower()) == "org"]
-    added = [a for a in candidates if a in asked or a in carried or a in usual_added]
+    rule_added = [a for a in candidates if a.lower() in rule_match
+                  and (classes or {}).get(a.lower()) in ("org", "sent")]
+    added = [a for a in candidates
+             if a in asked or a in carried or a in usual_added or a in rule_added]
     notices: list[str] = []
-    card_id = ""
+    bcc_people = _held_bcc(bcc_people, asked_bcc, classes, req.held, notices)
+    # The record of the card: the added people, the Bcc and the held flag.
+    # It is written for each card, so the member can type a Bcc on it.
+    card_id = await _write_reply_record(
+        user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held)
     record_failed = False
-    if added:
-        card_id = await _write_reply_record(user, str(_as_uuid(req.message_id)), added)
-        if not card_id:
-            # Review P3-a: the card adds nobody, and the draft stays as it
-            # was below, so a Cc that edit_draft put there is not lost.
-            added, usual_added, carried = [], [], []
-            record_failed = True
-            notices.append(ADDED_NOT_RECORDED)
-    if draft_bcc:
-        notices.append(DRAFT_BCC_NOTICE)
+    if not card_id and (added or bcc_people):
+        # Review P3-a: the card adds nobody, and the draft stays as it
+        # was below, so a Cc that edit_draft put there is not lost.
+        added, usual_added, carried, bcc_people = [], [], [], []
+        record_failed = True
+        notices.append(ADDED_NOT_RECORDED)
+    # A Bcc that the tool proposed starts ticked. A Bcc of the draft starts
+    # ticked only for a person that the member knows (review P2-a).
+    bcc_ticked = [a for a in bcc_people if a in asked_bcc
+                  or (classes or {}).get(a.lower()) in ("org", "sent", "thread")]
     bcc_only = bool(getattr(mail, "bcc_only", lambda: False)())
     # Item 11 (owner, 2026-10-24): ONE list, every person of the mail and
     # each added person, and each starts ticked. Only the sender starts
@@ -545,6 +594,9 @@ async def reply_card(
         "reply_all": {"to": [a for a in everyone_to if a.lower() in keep],
                       "cc": [a for a in everyone_cc if a.lower() in keep]},
     }
+    if bcc_people:
+        for choice in ("reply", "reply_all"):
+            ticked[choice]["bcc"] = list(bcc_ticked)
     if bcc_only:
         notices.append(BCC_ONLY_NOTICE)
     if usual_added:
@@ -555,9 +607,15 @@ async def reply_card(
     if body.strip() and start["to"] and not record_failed:
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
-            prior=prior)
+            prior=prior, **({"bcc": start.get("bcc", [])} if bcc_people else {}))
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
+    marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
+    # §21.16: a colleague of the member's own rule says so, whatever else.
+    from acb_skills.held_card import rule_copy_mark
+
+    marks.update({a.lower(): rule_copy_mark(rule_match[a.lower()]) for a in rule_added
+                  if a in added})
     out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
@@ -577,8 +635,10 @@ async def reply_card(
         "recipients": {
             # "reply" is the shortcut "Only the sender" of the card. It is a
             # subset of "reply_all", so it never names a hidden person.
-            "reply": {"to": reply_to, "cc": added},
-            "reply_all": {"to": everyone_to, "cc": everyone_cc},
+            "reply": {"to": reply_to, "cc": added,
+                      **({"bcc": bcc_people} if bcc_people else {})},
+            "reply_all": {"to": everyone_to, "cc": everyone_cc,
+                          **({"bcc": bcc_people} if bcc_people else {})},
         },
         # The card shows the one list (item 11). The field stays for an
         # older client, and it names the choice that the start ticks match.
@@ -709,7 +769,7 @@ def _mail_people(mail: Any) -> list[str]:
     return [*getattr(mail, "to", []), *getattr(mail, "cc", [])]
 
 
-def _asked_cc(cc: Sequence[str]) -> list[str]:
+def _asked_cc(cc: Sequence[str], *, label: str = "Cc") -> list[str]:
     """The people that the member asked to copy, each a whole address. An
     address that a card cannot show as it is answers 422, never cleaned."""
     from acb_skills.held_card import address_problem
@@ -719,8 +779,46 @@ def _asked_cc(cc: Sequence[str]) -> list[str]:
         addr = parseaddr(str(a or ""))[1] or str(a or "")
         why = address_problem(addr.strip())
         if why:
-            raise HTTPException(status_code=422, detail=f"A Cc address {why}.")
+            raise HTTPException(status_code=422, detail=f"A {label} address {why}.")
         out.append(addr.strip())
+    return out
+
+
+def _held_bcc(bcc: list[str], asked: Sequence[str], classes: dict[str, str] | None,
+              held: bool, notices: list[str]) -> list[str]:
+    """The Bcc of a card (§21.15). Outside a held chat, each one stays.
+
+    In a held chat a Bcc goes only to an ``org`` or a ``sent`` person (21.10,
+    open question 5). A Bcc that the tool proposed to anyone else answers
+    422, so no card shows. A Bcc of the thread's draft to anyone else leaves
+    the card, and a notice names it. A fault reads each person as new."""
+    if not held:
+        return bcc
+    cls = classes or {}
+    keep = [a for a in bcc if cls.get(a.lower(), "new") in HELD_BCC_CLASSES]
+    asked_l = {a.lower() for a in asked}
+    refused = [a for a in bcc if a not in keep and a.lower() in asked_l]
+    if refused:
+        raise HTTPException(status_code=422, detail=HELD_BCC_REFUSED.format(addr=refused[0]))
+    dropped = [a for a in bcc if a not in keep]
+    if dropped:
+        notices.append(HELD_DRAFT_BCC_NOTICE.format(addrs=", ".join(dropped)))
+    return keep
+
+
+def _bcc_marks(bcc: Sequence[str], asked: Sequence[str], classes: dict[str, str] | None,
+               *, held: bool) -> dict[str, str]:
+    """The words of each Bcc on the card, by lower case."""
+    from acb_skills.held_card import ADDED_MARK, ASSISTANT_ADDED_MARK, NEW_MARK
+
+    asked_l = {a.lower() for a in asked}
+    out: dict[str, str] = {}
+    for a in bcc:
+        low = a.lower()
+        words = (ASSISTANT_ADDED_MARK if held else ADDED_MARK) if low in asked_l else DRAFT_BCC_MARK
+        if (classes or {}).get(low) == "new":
+            words = f"{NEW_MARK} · {words}"
+        out[low] = words
     return out
 
 
@@ -772,6 +870,21 @@ async def _usual_candidates(
            if r.addr and (int(r.n or 0) >= USUAL_MIN or bool(r.in_thread))
            and str(r.addr).lower() not in skip]
     return sorted(out)
+
+
+async def _rule_candidates(
+    owner: str, mail: Any, people: Sequence[str], *, skip: set[str],
+) -> list[tuple[str, str]]:
+    """``(colleague, match)`` of the member's always-copy rules for the
+    people of the mail (§21.16). A fault reads as none."""
+    from gateway.routes.email.automation.always_copy import always_copy_people
+
+    try:
+        async with _tenant_session() as db:
+            return await always_copy_people(db, owner, mail.account_id, people, skip=skip)
+    except Exception as exc:
+        _log.warning("email.reply_card_rule_failed", error=type(exc).__name__)
+        return []
 
 
 def _usual_note(added: Sequence[str], mail: Any) -> str:
@@ -838,9 +951,13 @@ def _reply_record_key(card_id: str) -> Any:
     return key(REPLY_RECORD_NAMESPACE, str(card_id))
 
 
-async def _write_reply_record(user: UserContext, message_id: str, added: list[str]) -> str:
+async def _write_reply_record(
+    user: UserContext, message_id: str, added: list[str], *,
+    bcc: Sequence[str] = (), held: bool = False,
+) -> str:
     """Record the added people of one card under a card id that this server
-    mints. Returns the id, or "" on a fault, and then the card adds nobody."""
+    mints. Returns the id, or "" on a fault, and then the card adds nobody.
+    The record also holds the Bcc of the card and the held flag (§21.15)."""
     import uuid
 
     from acb_common.tenant_redis import organization_scope
@@ -851,7 +968,7 @@ async def _write_reply_record(user: UserContext, message_id: str, added: list[st
         return ""
     card_id = uuid.uuid4().hex
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
-           "added": list(added)}
+           "added": list(added), "bcc": list(bcc), "held": bool(held)}
     try:
         with organization_scope(org):
             done = await hc._tenant_redis().set(
@@ -863,35 +980,110 @@ async def _write_reply_record(user: UserContext, message_id: str, added: list[st
     return card_id if done else ""
 
 
-async def _take_reply_record(user: UserContext, card_id: str, message_id: str) -> list[str]:
-    """The added people of the card *card_id*, read once (``GETDEL``). None
-    of another member, another mail, or a fault: the act then takes only the
-    people of the mail."""
+async def _take_reply_record(
+    user: UserContext, card_id: str, message_id: str,
+) -> tuple[list[str], list[str]]:
+    """The added people and the Bcc of the card *card_id*, read once
+    (``GETDEL``). None of another member, another mail, or a fault: the act
+    then takes only the people of the mail, and no Bcc."""
     from acb_common.tenant_redis import organization_scope
     from gateway.routes.email.automation import held_card as hc
 
     org = str(getattr(user, "organization_id", None) or "")
     if not org or not card_id:
-        return []
+        return [], []
     try:
         with organization_scope(org):
             raw = await hc._tenant_redis().getdel(_reply_record_key(card_id))
     except Exception as exc:
         _log.warning("email.reply_card_record_take_failed", error=type(exc).__name__)
-        return []
+        return [], []
+    rec = _record_of(raw, user, message_id)
+    if rec is None:
+        return [], []
+    return ([str(a) for a in rec.get("added") or [] if a],
+            [str(a) for a in rec.get("bcc") or [] if a])
+
+
+def _record_of(raw: Any, user: UserContext, message_id: str) -> dict[str, Any] | None:
+    """The record of a card, when it is of THIS member and THIS mail."""
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
     try:
         rec = json.loads(raw) if isinstance(raw, str) and raw else None
     except ValueError:
-        return []
+        return None
     if not isinstance(rec, dict):
-        return []
+        return None
     if str(rec.get("owner") or "") != (user.email or "").strip().lower():
-        return []
+        return None
     if _as_uuid(str(rec.get("message_id") or "")) != _as_uuid(message_id):
-        return []
-    return [str(a) for a in rec.get("added") or [] if a]
+        return None
+    return rec
+
+
+#: The answer when the record of a card is gone or is not the caller's.
+BCC_NO_RECORD = ("This card can no longer take a Bcc. Ask for the reply again to add one.")
+
+
+@router.post("/reply-card/bcc")
+async def reply_card_bcc(
+    req: ReplyCardBccRequest,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Add a Bcc that the member typed on the reply card (§21.15).
+
+    The member's browser posts it on the member's own click. No tool calls
+    it. The server classes the address with THE classifier and adds it to
+    the record of THIS card, so the act still takes a subset of the record
+    only. A card of a held chat takes an ``org`` or a ``sent`` person only.
+    A person on To or Cc of the card, or the member, answers 409. Nothing
+    is sent."""
+    from acb_common.tenant_redis import organization_scope
+    from acb_skills.held_card import address_problem
+    from gateway.routes.email.automation import held_card as hc
+
+    addr = (parseaddr(req.address)[1] or req.address).strip()
+    why = address_problem(addr)
+    if why:
+        raise HTTPException(status_code=422, detail=f"The Bcc address {why}.")
+    org = str(getattr(user, "organization_id", None) or "")
+    if not org:
+        raise HTTPException(status_code=409, detail=BCC_NO_RECORD)
+    with organization_scope(org):
+        raw = await hc._tenant_redis().get(_reply_record_key(req.card_request_id))
+    rec = _record_of(raw, user, req.message_id)
+    if rec is None:
+        raise HTTPException(status_code=409, detail=BCC_NO_RECORD)
+    owner = user.email or "anonymous"
+    mail = await _load_mail(req.message_id, owner)
+    all_to, all_cc = mail.recipients(True)
+    taken = {a.lower() for a in [*all_to, *all_cc, *(rec.get("added") or []),
+                                  *getattr(mail, "own", set())]}
+    if addr.lower() in taken:
+        raise HTTPException(status_code=409,
+                            detail=f"{addr} is already on this reply, so it is not a Bcc.")
+    classes = await _reply_classes(
+        owner, [addr], primary=[mail.sender] if mail.sender else [],
+        people=_mail_people(mail), account_id=mail.account_id, thread_id=mail.thread_id)
+    cls = classes.get(addr.lower(), "new")
+    held = bool(rec.get("held"))
+    if held and cls not in HELD_BCC_CLASSES:
+        raise HTTPException(status_code=422, detail=HELD_BCC_REFUSED.format(addr=addr))
+    bcc = [str(a) for a in rec.get("bcc") or [] if a]
+    if addr.lower() not in {a.lower() for a in bcc}:
+        if len(bcc) >= MAX_ADDED:
+            raise HTTPException(status_code=422, detail="This card holds enough Bcc people.")
+        bcc.append(addr)
+    rec["bcc"] = bcc
+    with organization_scope(org):
+        done = await hc._tenant_redis().set(_reply_record_key(req.card_request_id),
+                                            json.dumps(rec), xx=True, keepttl=True)
+    if not done:
+        raise HTTPException(status_code=409, detail=BCC_NO_RECORD)
+    _log.info("email.reply_card_bcc_added", cls=cls, held=held)
+    marks = _bcc_marks([addr], [addr], {addr.lower(): cls}, held=False)
+    return {"address": addr, "class": cls, "mark": marks.get(addr.lower(), "")}
 
 
 def ticked_subset(derived: Sequence[str], ticked: Sequence[str]) -> list[str] | None:
@@ -973,14 +1165,18 @@ async def reply_card_act(
     # pick from it. The added people come from the server's record of THIS
     # card, read once, never from a request field.
     derived_to, derived_cc = mail.recipients(True)
-    added = await _take_reply_record(user, req.card_request_id, req.message_id)
+    added, derived_bcc = await _take_reply_record(user, req.card_request_id, req.message_id)
     derived_cc = _unique([*derived_cc, *added], {a.lower() for a in derived_to})
+    # §21.15: the Bcc comes from the record of THIS card too. A Bcc that is
+    # also on To or Cc is not one.
+    derived_bcc = _unique(derived_bcc, {a.lower() for a in [*derived_to, *derived_cc]})
     # The tick boxes (owner, 2026-10-24): the answer names the people that the
     # member TICKED. Each must be on the server's list. A person that is not
     # on the list, or a list that changed after the card, sends nothing.
     to = ticked_subset(derived_to, choice.to) if derived_to else None
     cc = ticked_subset(derived_cc, choice.cc)
-    if not to or cc is None:
+    bcc = ticked_subset(derived_bcc, getattr(choice, "bcc", ()) or ())
+    if not to or cc is None or bcc is None:
         _log.warning("email.reply_card_answer_refused", reason="recipients_changed")
         raise HTTPException(
             status_code=409,
@@ -991,19 +1187,29 @@ async def reply_card_act(
     if choice.action == "send":
         res = await send_email(
             SendEmailRequest(
-                account_id=mail.account_id, to=to, cc=cc or None, subject=subject,
-                body_text=body, reply_to_message_id=req.message_id,
+                account_id=mail.account_id, to=to, cc=cc or None, bcc=bcc or None,
+                subject=subject, body_text=body, reply_to_message_id=req.message_id,
             ),
             background, user,
         )
-        _log.info("email.reply_card_sent", reply_all=choice.reply_all,
-                  left_out=len(derived_to) + len(derived_cc) - len(to) - len(cc))
-        return {"ok": True, "action": "send", "to": to, "cc": cc, "mailbox": mail.mailbox,
-                "id": (res or {}).get("id")}
-    draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body)
+        # Review P1: report each person only from what the server took. A
+        # Bcc that the mail server refused is named as refused, not as sent.
+        refused = {str(a).lower() for a in (res or {}).get("refused") or []}
+        took = [a for a in bcc if a.lower() not in refused]
+        _log.info("email.reply_card_sent", reply_all=choice.reply_all, bcc=len(took),
+                  refused=len(refused),
+                  left_out=len(derived_to) + len(derived_cc) + len(derived_bcc)
+                  - len(to) - len(cc) - len(bcc))
+        return {"ok": True, "action": "send",
+                "to": [a for a in to if a.lower() not in refused],
+                "cc": [a for a in cc if a.lower() not in refused], "mailbox": mail.mailbox,
+                "id": (res or {}).get("id"), **({"bcc": took} if took else {}),
+                **({"refused": sorted(refused)} if refused else {})}
+    draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body,
+                                 **({"bcc": bcc} if derived_bcc else {}))
     _log.info("email.reply_card_saved", reply_all=choice.reply_all)
     return {"ok": True, "action": "save", "to": to, "cc": cc, "mailbox": mail.mailbox,
-            "draft_id": draft_id}
+            "draft_id": draft_id, **({"bcc": bcc} if bcc else {})}
 
 
 async def _chat_record(mail: _Mail) -> list[str] | None:
@@ -1020,6 +1226,7 @@ async def _chat_record(mail: _Mail) -> list[str] | None:
 async def _write_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
     *, chat_wrote: bool = False, prior: list[str] | None = None,
+    bcc: list[str] | None = None,
 ) -> tuple[str, bool]:
     """Write the reply draft of the conversation. Returns its LOCAL id, and
     True when a draft of the member stays beside it.
@@ -1041,6 +1248,9 @@ async def _write_draft(
                 # people that the card starts ticked. The card carries the Cc
                 # of the thread's draft as added people, so no Cc is lost.
                 body=body, exact_to=True, prior=prior, exact_cc=True,
+                # §21.15: a card with a Bcc writes the ticked Bcc. A card with
+                # none keeps the Bcc of the draft, as before.
+                **({"bcc": bcc, "exact_bcc": True} if bcc is not None else {}),
             )
         if chat_wrote and mail.thread_id:
             await _store_ai_draft(db, mail.account_id, mail.thread_id, body,
@@ -1050,12 +1260,12 @@ async def _write_draft(
 
 async def _keep_card_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
-    *, prior: list[str] | None = None,
+    *, prior: list[str] | None = None, bcc: list[str] | None = None,
 ) -> tuple[str, bool]:
     """The draft of a card that shows: best effort, so the card always shows."""
     try:
         return await _write_draft(mail, owner, to, cc, subject, body,
-                                  chat_wrote=True, prior=prior)
+                                  chat_wrote=True, prior=prior, bcc=bcc)
     except Exception as exc:  # the card still shows
         _log.warning("email.reply_card_draft_failed", error=type(exc).__name__)
         return "", False
@@ -1063,6 +1273,7 @@ async def _keep_card_draft(
 
 async def _save_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
+    *, bcc: list[str] | None = None,
 ) -> str:
     """Save the member's reply as the reply draft of the conversation.
 
@@ -1070,7 +1281,7 @@ async def _save_draft(
     ``send_draft`` take. It returned the provider id before, and a schedule
     of that id found no draft. The member chose the Cc on the card, so the
     save writes it as it is."""
-    local_id, _kept = await _write_draft(mail, owner, to, cc, subject, body)
+    local_id, _kept = await _write_draft(mail, owner, to, cc, subject, body, bcc=bcc)
     return local_id
 
 

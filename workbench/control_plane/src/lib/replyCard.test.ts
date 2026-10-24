@@ -38,6 +38,9 @@ import {
   tickAllTicks,
   tickedFor,
   toggleTick,
+  withBcc,
+  addBcc,
+  BCC_LABEL,
 } from "@/lib/replyCard";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -93,7 +96,7 @@ describe("the reply form of the event", () => {
   });
 
   it("travels on the queue's card, and a broken form stays a reply card with no form", () => {
-    expect(cardFromEvent(EVENT)!.reply).toEqual(replyFromEvent(EVENT.reply));
+    expect(cardFromEvent(EVENT)!.reply).toEqual(replyFromEvent(EVENT.reply, "rid-1"))  // §21.15: the card id rides on the form;
     expect(cardFromEvent({ ...EVENT, reply: { body: "x" } })!.reply).toBeNull();
     expect(cardFromEvent({ title: "Archive?", request_id: "r2" })).not.toHaveProperty("reply");
   });
@@ -122,6 +125,7 @@ describe("the answer of Send and Save to Drafts", () => {
         body: "  Edited\n\n",
         to: ["kim@contoso.test", "lee@contoso.test"],
         cc: ["ops@contoso.test"],
+        bcc: [],
         message_id: "0b0b0b0b-0000-4000-8000-00000000000b",
       },
     });
@@ -131,7 +135,8 @@ describe("the answer of Send and Save to Drafts", () => {
     const a = replyAnswer(form, { action: "save", replyAll: false, body: "Hi" })!;
     const body = JSON.parse(a.slice("APPROVE ".length));
     expect(Object.keys(body)).toEqual(["reply"]);
-    expect(Object.keys(body.reply).sort()).toEqual(["action", "body", "cc", "message_id", "reply_all", "to"]);
+    // §21.15: `bcc` is the one key that the server may also read.
+    expect(Object.keys(body.reply).sort()).toEqual(["action", "bcc", "body", "cc", "message_id", "reply_all", "to"]);
   });
 
   it("sends nothing for an empty or a long body", () => {
@@ -331,5 +336,88 @@ describe("one list, words on each person (owner, 2026-10-24)", () => {
     expect(src).toContain("setTicks((t) => replyAllTicks(form, t))");
     expect(src).toContain("data-reply-left-out");
     expect(src).toContain("markFor(form, a)");
+  });
+});
+
+
+describe("a Bcc on the reply card (§21.15)", () => {
+  const BCC_EVENT = {
+    ...EVENT.reply,
+    recipients: {
+      reply: { to: ["kim@contoso.test"], cc: [], bcc: ["veena@acme.test"] },
+      reply_all: { to: ["kim@contoso.test"], cc: ["ops@contoso.test"], bcc: ["veena@acme.test"] },
+    },
+    ticked: {
+      reply: { to: ["kim@contoso.test"], cc: [], bcc: ["veena@acme.test"] },
+      reply_all: { to: ["kim@contoso.test"], cc: ["ops@contoso.test"], bcc: ["veena@acme.test"] },
+    },
+    marks: { "veena@acme.test": "added to this reply" },
+  };
+
+  it("reads the server's Bcc, its tick and its words", () => {
+    const form = replyFromEvent(BCC_EVENT, "rid-9")!;
+    expect(form.recipients.reply_all.bcc).toEqual(["veena@acme.test"]);
+    expect(startTicks(form).reply_all).toContain("veena@acme.test");
+    expect(markFor(form, "veena@acme.test")).toBe("added to this reply");
+    expect(form.requestId).toBe("rid-9");
+  });
+
+  it("the answer names the ticked Bcc, and an unticked one does not go", () => {
+    const form = replyFromEvent(BCC_EVENT)!;
+    const on = JSON.parse(replyAnswer(form, { action: "send", replyAll: true, body: "Hi", ticks: startTicks(form) })!.slice(8));
+    expect(on.reply.bcc).toEqual(["veena@acme.test"]);
+    const off = toggleTick(startTicks(form), true, "veena@acme.test");
+    const a = JSON.parse(replyAnswer(form, { action: "send", replyAll: true, body: "Hi", ticks: off })!.slice(8));
+    expect(a.reply.bcc).toEqual([]);
+    expect(leftOut(form, off)).toEqual(["veena@acme.test"]);
+  });
+
+  it("a Bcc tick that names a person off the list is a form the card cannot read", () => {
+    const bad = { ...BCC_EVENT, ticked: { ...BCC_EVENT.ticked, reply_all: { ...BCC_EVENT.ticked.reply_all, bcc: ["spy@evil.test"] } } };
+    expect(replyFromEvent(bad)).toBeNull();
+  });
+
+  it("the shortcuts keep the Bcc ticks as they are", () => {
+    const form = replyFromEvent(BCC_EVENT)!;
+    expect(onlySenderTicks(form, startTicks(form)).reply_all).toEqual(["kim@contoso.test", "veena@acme.test"]);
+    const off = toggleTick(startTicks(form), true, "veena@acme.test");
+    expect(tickAllTicks(form, off).reply_all).not.toContain("veena@acme.test");
+    expect(sendsCount(form, true, startTicks(form))).toBe("Sends to 3 of 3");
+  });
+
+  it("a Bcc that the server took joins both lists once", () => {
+    const form = replyFromEvent(EVENT.reply, "rid-1")!;
+    const once = withBcc(form, "geo@acme.test", "added to this reply", "org");
+    expect(once.recipients.reply_all.bcc).toEqual(["geo@acme.test"]);
+    expect(withBcc(once, "GEO@acme.test", "").recipients.reply_all.bcc).toEqual(["geo@acme.test"]);
+    expect(tickedFor(once, true, startTicks(once)).bcc).toEqual(["geo@acme.test"]);
+  });
+
+  it("a typed Bcc goes to the server with the card's id, and a refusal shows its words", async () => {
+    const form = replyFromEvent(EVENT.reply, "rid-1")!;
+    const calls: [string, RequestInit][] = [];
+    const ok = (async (url: string, init: RequestInit) => {
+      calls.push([url, init]);
+      return new Response(JSON.stringify({ address: "geo@acme.test", class: "org", mark: "added to this reply" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await addBcc(form, "geo@acme.test", ok);
+    expect(res).toEqual({ ok: true, address: "geo@acme.test", cls: "org", mark: "added to this reply" });
+    expect(calls[0][0]).toBe("/api/email/reply-card/bcc");
+    expect(JSON.parse(String(calls[0][1].body))).toEqual({
+      message_id: form.messageId, card_request_id: "rid-1", address: "geo@acme.test" });
+    const refused = (async () => new Response(JSON.stringify({ detail: "This chat read outside mail." }), { status: 422 })) as unknown as typeof fetch;
+    expect(await addBcc(form, "spy@evil.test", refused)).toEqual({ ok: false, error: "This chat read outside mail." });
+    expect((await addBcc(replyFromEvent(EVENT.reply)!, "x@y.test", ok)).ok).toBe(false);
+  });
+
+  it("the form labels the Bcc row and uses the shared controls", () => {
+    const src = read("components/ReplyCardForm.tsx");
+    expect(src).toContain('label="Bcc"');
+    expect(src).toContain("BCC_LABEL");
+    expect(BCC_LABEL).toBe("Bcc (hidden from the others)");
+    expect(src).toContain("<Input");
+    expect(src).not.toMatch(/<input\b/);
+    // Review note: "Add Bcc" follows the armed rule of the other buttons.
+    expect(src).toContain("disabled={disabled || !armed || bccBusy || !bccDraft.trim()}");
   });
 });

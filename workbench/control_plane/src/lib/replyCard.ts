@@ -35,6 +35,11 @@ export const MAX_REPLY_RECIPIENTS = 100;
 export interface ReplyRecipients {
   to: string[];
   cc: string[];
+  /**
+   * §21.15: the Bcc that the server recorded for the card. The card shows it
+   * apart, as "Bcc (hidden from the others)". A card with none has no key.
+   */
+  bcc?: string[];
 }
 
 export interface ReplyForm {
@@ -81,6 +86,11 @@ export interface ReplyForm {
    * none draws the class mark only.
    */
   marks?: Record<string, string>;
+  /**
+   * The `request_id` of the card (§21.15). A Bcc that the member types goes
+   * to the record of THIS card, so the act can take it.
+   */
+  requestId?: string;
 }
 
 /** The ticked people of each choice, by lower case. */
@@ -112,8 +122,9 @@ function recipients(v: unknown): ReplyRecipients | null {
   const r = v as Record<string, unknown>;
   const to = addresses(r.to);
   const cc = addresses(r.cc ?? []);
-  if (!to || !cc || to.length === 0) return null;
-  return { to, cc };
+  const bcc = addresses(r.bcc ?? []);
+  if (!to || !cc || !bcc || to.length === 0) return null;
+  return bcc.length > 0 ? { to, cc, bcc } : { to, cc };
 }
 
 /**
@@ -121,7 +132,7 @@ function recipients(v: unknown): ReplyRecipients | null {
  * none, or when the card cannot read it. A form the card cannot read is no
  * form: the card then has nothing to send, and it says so.
  */
-export function replyFromEvent(value: unknown): ReplyForm | null {
+export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | null {
   if (!value || typeof value !== "object") return null;
   const v = value as Record<string, unknown>;
   const rec = v.recipients && typeof v.recipients === "object" ? (v.recipients as Record<string, unknown>) : {};
@@ -154,13 +165,14 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
     ...classesOf(v.classes),
     ...(ticked ? { ticked } : {}),
     ...marksOf(v.marks, replyAll),
+    ...(requestId ? { requestId } : {}),
   };
 }
 
 /** The words of each person, only for a person of the card's list. */
 function marksOf(value: unknown, all: ReplyRecipients): { marks?: Record<string, string> } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const have = new Set(lower([...all.to, ...all.cc]));
+  const have = new Set(lower([...all.to, ...all.cc, ...(all.bcc ?? [])]));
   const out: Record<string, string> = {};
   for (const [addr, words] of Object.entries(value as Record<string, unknown>)) {
     const a = addr.trim().toLowerCase();
@@ -180,13 +192,19 @@ export function markFor(form: ReplyForm, address: string): string {
  * mode. Two shortcuts change the ticks, and never the list.
  */
 export function onlySenderTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
-  return { ...ticks, reply_all: lower(form.recipients.reply.to) };
+  return { ...ticks, reply_all: [...lower(form.recipients.reply.to), ...bccTicked(form, ticks)] };
+}
+
+/** The Bcc people that are ticked now. A shortcut keeps them as they are. */
+function bccTicked(form: ReplyForm, ticks: ReplyTicks): string[] {
+  const on = new Set(ticks.reply_all);
+  return lower(form.recipients.reply_all.bcc ?? []).filter((a) => on.has(a));
 }
 
 /** Tick each person of the list. */
 export function tickAllTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
   const all = form.recipients.reply_all;
-  return { ...ticks, reply_all: lower([...all.to, ...all.cc]) };
+  return { ...ticks, reply_all: [...lower([...all.to, ...all.cc]), ...bccTicked(form, ticks)] };
 }
 
 /**
@@ -198,14 +216,14 @@ export function tickAllTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
 export function replyAllTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
   const all = form.recipients.reply_all;
   const keep = [...all.to, ...all.cc].filter((a) => classOfAddress(form, a) !== "new");
-  return { ...ticks, reply_all: lower(keep) };
+  return { ...ticks, reply_all: [...lower(keep), ...bccTicked(form, ticks)] };
 }
 
 /** The people of the list that do NOT get the reply, in the server's order. */
 export function leftOut(form: ReplyForm, ticks: ReplyTicks): string[] {
   const on = new Set(ticks.reply_all);
   const all = form.recipients.reply_all;
-  return [...all.to, ...all.cc].filter((a) => !on.has(a.toLowerCase()));
+  return [...all.to, ...all.cc, ...(all.bcc ?? [])].filter((a) => !on.has(a.toLowerCase()));
 }
 
 /** "ananda@… will not get this.", or "" when each person is ticked. */
@@ -225,14 +243,19 @@ function tickedOf(
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  const out = { reply: { to: [] as string[], cc: [] as string[] }, reply_all: { to: [] as string[], cc: [] as string[] } };
+  const out: { reply: ReplyRecipients; reply_all: ReplyRecipients } = {
+    reply: { to: [], cc: [] },
+    reply_all: { to: [], cc: [] },
+  };
   for (const key of ["reply", "reply_all"] as const) {
     const raw = v[key] && typeof v[key] === "object" ? (v[key] as Record<string, unknown>) : null;
     if (!raw) return null;
-    for (const part of ["to", "cc"] as const) {
+    for (const part of ["to", "cc", "bcc"] as const) {
+      const list = lists[key][part];
+      if (part === "bcc" && !list) continue;
       const got = addresses(raw[part] ?? []);
       if (!got) return null;
-      const have = new Set(lower(lists[key][part]));
+      const have = new Set(lower(list ?? []));
       if (got.some((a) => !have.has(a.toLowerCase()))) return null;
       out[key][part] = got;
     }
@@ -305,7 +328,7 @@ export function bodyCanGo(body: string): boolean {
 export function startTicks(form: ReplyForm): ReplyTicks {
   const of = (key: "reply" | "reply_all") => {
     const t = form.ticked ? form.ticked[key] : form.recipients[key];
-    return lower([...t.to, ...t.cc]);
+    return lower([...t.to, ...t.cc, ...(t.bcc ?? [])]);
   };
   return { reply: of("reply"), reply_all: of("reply_all") };
 }
@@ -314,7 +337,8 @@ export function startTicks(form: ReplyForm): ReplyTicks {
 export function tickedFor(form: ReplyForm, replyAll: boolean, ticks: ReplyTicks): ReplyRecipients {
   const shown = recipientsFor(form, replyAll);
   const on = new Set(replyAll ? ticks.reply_all : ticks.reply);
-  return { to: shown.to.filter((a) => on.has(a.toLowerCase())), cc: shown.cc.filter((a) => on.has(a.toLowerCase())) };
+  const pick = (list: string[]) => list.filter((a) => on.has(a.toLowerCase()));
+  return { to: pick(shown.to), cc: pick(shown.cc), ...(shown.bcc ? { bcc: pick(shown.bcc) } : {}) };
 }
 
 /** Tick or untick one person of the choice. */
@@ -329,7 +353,8 @@ export function toggleTick(ticks: ReplyTicks, replyAll: boolean, address: string
 export function sendsCount(form: ReplyForm, replyAll: boolean, ticks: ReplyTicks): string {
   const shown = recipientsFor(form, replyAll);
   const on = tickedFor(form, replyAll, ticks);
-  return `Sends to ${on.to.length + on.cc.length} of ${shown.to.length + shown.cc.length}`;
+  const got = on.to.length + on.cc.length + (on.bcc ?? []).length;
+  return `Sends to ${got} of ${shown.to.length + shown.cc.length + (shown.bcc ?? []).length}`;
 }
 
 /**
@@ -354,9 +379,64 @@ export function replyAnswer(
     body: choice.body,
     to: shown.to,
     cc: shown.cc,
+    // §21.15: the ticked Bcc, a subset of the server's record of this card.
+    bcc: shown.bcc ?? [],
     message_id: form.messageId,
   };
   return `${REPLY_ANSWER_PREFIX}${JSON.stringify({ reply })}` as ReplyApproval;
+}
+
+/** The label of the Bcc row (§21.15). */
+export const BCC_LABEL = "Bcc (hidden from the others)";
+
+/**
+ * The form with one more Bcc, which the server took for this card
+ * (`POST /email/reply-card/bcc`). Both choices get it, with its mark.
+ */
+export function withBcc(form: ReplyForm, address: string, mark: string, cls?: PersonClass): ReplyForm {
+  const a = address.trim();
+  const have = lower([...(form.recipients.reply_all.bcc ?? [])]);
+  if (!a || have.includes(a.toLowerCase())) return form;
+  const add = (r: ReplyRecipients): ReplyRecipients => ({ ...r, bcc: [...(r.bcc ?? []), a] });
+  return {
+    ...form,
+    recipients: { reply: add(form.recipients.reply), reply_all: add(form.recipients.reply_all) },
+    ...(mark ? { marks: { ...(form.marks ?? {}), [a.toLowerCase()]: mark } } : {}),
+    ...(form.classes && cls ? { classes: { ...form.classes, [a.toLowerCase()]: cls } } : {}),
+  };
+}
+
+/**
+ * The member's own Bcc: the server classes it and adds it to the record of
+ * THIS card, or refuses it. The answer is the address, its class and its
+ * mark, or the server's words for a refusal.
+ */
+export async function addBcc(
+  form: ReplyForm,
+  address: string,
+  post: typeof fetch = fetch,
+): Promise<{ ok: true; address: string; cls?: PersonClass; mark: string } | { ok: false; error: string }> {
+  if (!form.requestId) return { ok: false, error: "This card cannot take a Bcc. Ask for the reply again." };
+  try {
+    const res = await post("/api/email/reply-card/bcc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: form.messageId, card_request_id: form.requestId, address }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      const detail = typeof data.detail === "string" ? data.detail : "The Bcc was not added.";
+      return { ok: false, error: detail.slice(0, 300) };
+    }
+    return {
+      ok: true,
+      address: text(data.address, 320),
+      cls: classOf(data.class),
+      mark: text(data.mark, 200),
+    };
+  } catch {
+    return { ok: false, error: "The Bcc was not added. Try again." };
+  }
 }
 
 /** The time of the mail, short, or "" when it does not parse. */

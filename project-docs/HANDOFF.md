@@ -6282,17 +6282,6 @@ line — never reclaim a number by deleting the other entry.
   delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
-### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
-- **Check:** a fence refuses a word that mixes scripts, for example a
-  Cyrillic letter in a Latin word, at a chat send. If one exists, delete
-  this entry.
-- **Why:** the #1237 review rated this P2. It carries about one bit for each
-  letter, and the letters are visible. `compose_reply` on main has the same
-  gap.
-- **Do this:** add a mixed-script check for each word to
-  `reply_card.has_hidden_text`. Keep Hindi, Bengali and other single-script
-  text working. Add a fence.
-- **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]
@@ -6424,6 +6413,20 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** if the count is not 0, list each row for the owner to review. Give the project, the owner, the subject and `created_at`. Do not delete or change a row without the owner's word.
 - **Authority:** `specs/one_projects_app.md` §8 D-OP-15 and §9 OP-9
 - **Added:** 2026-10-24 · WS-64 OP-9 fix round 1
+
+### H-410 · The look-alike guard refuses Pinyin tone letters and the Azerbaijani ə in a held chat · [AGENT]
+- **Check:** `lookalike_words("Nǐ hǎo")` and `lookalike_words("Azərbaycan")` in `acb_skills/reply_card.py` both return `[]`. If they do, delete this entry.
+- **Why:** #1288 (H-393) refuses a Latin letter outside Basic Latin, Latin-1, Latin Extended-A and the Vietnamese ranges, in a chat that read outside mail. Pinyin tone letters (U+01CE, U+01D0) and ə (U+0259) are real text, not look-alikes, so a held send that holds them is refused. Other chats only warn.
+- **Do this:** allow the letters of Latin Extended-B and IPA that have no ASCII twin in `held_card._CONFUSABLE`. Keep ɑ, ɡ and ı-style twins refused. Add a test for each language.
+- **Authority:** the final check of #1288, 2026-10-24.
+- **Added:** 2026-10-24 · email single-mailbox session
+
+### H-411 · Two first writes of the always-copy list at once can both pass · [AGENT]
+- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row. The agent sends the version that the model read. If both hold, delete this entry.
+- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing. So two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT. So it misses a change in the UI after the model read the list.
+- **Do this:** lock on the account row, or take an advisory lock on the account id. Carry the version from the model's read into the tool call.
+- **Authority:** the final check of #1288, 2026-10-24.
+- **Added:** 2026-10-24 · email single-mailbox session
 
 # DONE — deleted, not archived
 
