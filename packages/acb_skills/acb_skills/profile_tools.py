@@ -141,6 +141,12 @@ def clean(value: Any, cap: int = NAME_CAP) -> str:
     return " ".join(text.split()).strip()[:cap].rstrip()
 
 
+#: The route read only the first rows of a large directory (PZ-5 verify, P2),
+#: so a person may be missing. One match is then not proof of one person.
+TRUNCATED = ("The directory is large, and only part of it was searched. "
+             "Confirm the person with the member before you act.")
+
+
 def format_answer(body: Any, asked: str) -> str:
     """The route's answer as the text that the model reads."""
     body = body if isinstance(body, dict) else {}
@@ -154,11 +160,15 @@ def format_answer(body: Any, asked: str) -> str:
         lines.append(NOBODY)
         if body.get("directory") is False:
             lines.append(NO_DIRECTORY)
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
         return "\n".join(lines)
     if total == 1 and len(people) == 1:
         source = SOURCES.get(str(body.get("source") or ""), "people")
         name, email = people[0]
         lines.append(f"Match: «{name}» <{email}> (source: {source})")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
         return "\n".join(lines)
     lines.append(f"Several people match «{clean(asked)}». Ask which, never guess:")
     # At most five names. The line after them says how many more there are,
@@ -174,8 +184,8 @@ async def resolve_person(name: str) -> str:
     """Find the colleague that the member means by a name, before you act for them.
 
     Call it when the member names a person ("send it to Raj") and you need
-    the address. It looks in the member's saved aliases, then the People
-    directory, then the members. One match: act on it. Several: ask the
+    the address. It looks in the member's saved aliases first. Then it looks
+    in the People directory and the members together. One match: act on it. Several: ask the
     member which one, and never guess. None: ask for the full name or the
     address.
 

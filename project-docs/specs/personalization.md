@@ -334,17 +334,20 @@ alias. The tool reads through the tenant session, so it sees one org only.
 `routes/admin/assistant_profile_people.py` and the tool
 `acb_skills/profile_tools.py`:
 
-- The lookup stops at the first tier with a match. It never merges two
-  tiers. Inside tier 2 it stops at the first rule with a match.
+- **Aliases win outright.** The member set them on purpose, so a hit there
+  ends the lookup, and the directory is not read.
+- **Otherwise, every plausible person counts.** The route reads `people` and
+  `app_user` together. A person counts when the preferred name, the name,
+  the display name or the local part of the email equals the input. For a
+  one-word input, the first word of a name counts too. One candidate
+  acts. Two or more ask. Repair round 1 (2026-10-24) removed the rule that
+  the first match wins, because `priya@` hid Priya Sharma.
 - The match is exact after a fold: NFKD, no accent marks, casefold. An
-  input with an `@` matches the address exactly.
-- **A first name finds a full name.** People say first names. For a
-  one-word input, the last rule of tier 2 and of tier 3 matches the first
-  word of the name. It runs only when no exact rule matched. So "Priya"
-  finds "Priya Sharma", and two people named "Priya …" make the assistant
-  ask.
-- Tiers 2 and 3 read `status = 'active'` rows only, at most 2,000 for each
-  tier.
+  input with an `@` matches the address in lower case, never casefolded.
+- A directory larger than 2,000 rows is cut, and the answer says so. The
+  assistant then confirms the person with the member before it acts.
+- The directory reads `status = 'active'` rows only, at most 2,000 from
+  each table.
 - An alias whose person left the org drops, and the lookup falls through.
 - **The People gate (owner decision, 2026-10-23).** Tiers 2 and 3 run only
   for a member who holds `feature:people`. A member without it gets tier 1,

@@ -146,11 +146,29 @@ class TestTheTiers:
         assert out["total"] == 2
         assert sorted(_emails(out)) == ["priya.k@alpha.example", "priya.s@alpha.example"]
 
-    def test_the_preferred_name_beats_the_name(self, fake: _FakeDB) -> None:
+    def test_a_preferred_name_and_a_name_are_two_people_so_it_asks(
+        self, fake: _FakeDB,
+    ) -> None:
+        # Repair round 1 (verify P2): one rule may not hide another person.
         fake.people = [{"name": "Venkata Jagan", "preferred_name": "VJ",
                         "email": "vj@alpha.example"},
                        {"name": "VJ", "email": "other@alpha.example"}]
-        assert _emails(_resolve("vj")) == ["vj@alpha.example"]
+        assert sorted(_emails(_resolve("vj"))) == ["other@alpha.example", "vj@alpha.example"]
+
+    def test_a_local_part_never_hides_another_first_name(self, fake: _FakeDB) -> None:
+        # Repair round 1 (verify P1): priya@ hid Priya Sharma, so one Priya
+        # came back as a match and the assistant acted on a guess.
+        fake.people = [{"name": "Priya Iyer", "email": "priya@co.example"},
+                       {"name": "Priya Sharma", "email": "priya.sharma@co.example"}]
+        out = _resolve("Priya")
+        assert out["total"] == 2
+
+    def test_a_member_with_no_directory_row_counts_too(self, fake: _FakeDB) -> None:
+        # Review note: one "Raj Kumar" in People and one "Raj Patel" with a
+        # login only. "Raj" must ask, not act.
+        fake.people = [{"name": "Raj Kumar", "email": "raj.k@alpha.example"}]
+        fake.members = [{"display_name": "Raj Patel", "email": "raj.p@alpha.example"}]
+        assert _resolve("Raj")["total"] == 2
 
     def test_a_first_name_finds_the_full_name(self, fake: _FakeDB) -> None:
         # People say first names: "Priya" finds "Priya Sharma".
@@ -165,10 +183,11 @@ class TestTheTiers:
                        {"name": "Priya Kumar", "email": "priya.k@alpha.example"}]
         assert _resolve("Priya")["total"] == 2
 
-    def test_an_exact_name_beats_a_first_name(self, fake: _FakeDB) -> None:
+    def test_an_exact_name_and_a_first_name_both_count(self, fake: _FakeDB) -> None:
+        # Never guess: "Priya" may mean either, so the assistant asks.
         fake.people = [{"name": "Priya", "email": "priya@alpha.example"},
                        {"name": "Priya Kumar", "email": "priya.k@alpha.example"}]
-        assert _emails(_resolve("priya")) == ["priya@alpha.example"]
+        assert _resolve("priya")["total"] == 2
 
     def test_a_two_word_name_never_matches_by_first_word(self, fake: _FakeDB) -> None:
         fake.people = [{"name": "Priya Sharma", "email": "priya.s@alpha.example"}]
@@ -190,12 +209,31 @@ class TestTheTiers:
         out = _resolve("tara")
         assert (out["source"], _emails(out)) == ("member", ["t.rao@alpha.example"])
 
-    def test_tiers_never_merge(self, fake: _FakeDB) -> None:
+    def test_people_and_members_are_read_together(self, fake: _FakeDB) -> None:
         fake.people = [{"name": "Sam", "email": "sam.p@alpha.example"}]
         fake.members = [{"display_name": "Sam", "email": "sam.m@alpha.example"}]
         out = _resolve("Sam")
-        assert (out["source"], _emails(out)) == ("people", ["sam.p@alpha.example"])
-        assert fake.directory_reads() == [rp.PEOPLE_SQL]
+        assert sorted(_emails(out)) == ["sam.m@alpha.example", "sam.p@alpha.example"]
+        assert fake.directory_reads() == [rp.PEOPLE_SQL, rp.MEMBERS_SQL]
+
+    def test_an_alias_still_wins_outright(self, fake: _FakeDB) -> None:
+        # The member set the alias on purpose, so the directory is not read.
+        fake.profile = _aliases(("Sam", "sam.p@alpha.example"))
+        fake.in_org = {"sam.p@alpha.example"}
+        fake.members = [{"display_name": "Sam", "email": "sam.m@alpha.example"}]
+        out = _resolve("Sam")
+        assert (out["source"], _emails(out)) == ("alias", ["sam.p@alpha.example"])
+        assert fake.directory_reads() == []
+
+    def test_a_large_directory_says_it_was_cut(self, fake: _FakeDB, monkeypatch) -> None:
+        monkeypatch.setattr(rp, "DIRECTORY_CAP", 3)
+        fake.people = [{"name": f"P{i}", "email": f"p{i}@alpha.example"} for i in range(3)]
+        assert _resolve("Nobody")["truncated"] is True
+
+    def test_an_address_compares_in_lower_case_not_casefold(self, fake: _FakeDB) -> None:
+        # Verify P3: casefold made "Strauß@" into "strauss@".
+        fake.people = [{"name": "Jo", "email": "strauß@alpha.example"}]
+        assert _emails(_resolve("STRAUß@alpha.example")) == ["strauß@alpha.example"]
 
     def test_one_address_is_one_person(self, fake: _FakeDB) -> None:
         fake.members = [{"display_name": "Lee", "email": "lee@alpha.example"},
@@ -210,7 +248,7 @@ class TestTheTiers:
 
     def test_nobody(self, fake: _FakeDB) -> None:
         assert _resolve("Nobody Here") == {"source": None, "matches": [], "total": 0,
-                                           "directory": True}
+                                           "directory": True, "truncated": False}
 
     def test_the_cap_and_the_count(self, fake: _FakeDB) -> None:
         fake.people = [{"name": "Ana", "email": f"ana{i}@alpha.example"} for i in range(7)]
@@ -258,7 +296,8 @@ class TestThePeopleGate:
         fake.people = [{"name": "Raj", "email": "raj@alpha.example"}]
         fake.members = [{"display_name": "Raj", "email": "raj@alpha.example"}]
         out = _resolve("Raj", _user(people=False))
-        assert out == {"source": None, "matches": [], "total": 0, "directory": False}
+        assert out == {"source": None, "matches": [], "total": 0, "directory": False,
+                       "truncated": False}
         # Not one SELECT of the directory: only the member's own profile.
         assert [s for s, _ in fake.sql if hits(s, "FROM people") or hits(s, "FROM app_user")] == []
 

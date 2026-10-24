@@ -9,20 +9,19 @@ resolves a Person ENTITY of the knowledge graph. ``/projects/assignees``,
 ``_resolve_assignee_name``, ``names_of`` and ``sources._people`` answer other
 questions. PZ-5 replaces none of them, and none of them is reused here.
 
-**Three tiers, in order** (§5.4). The route stops at the FIRST tier with a
-hit and never merges two tiers:
+**Two tiers, in order** (§5.4, repair round 1 of 2026-10-24):
 
-1. ``alias``: the member's own aliases, ``fold(alias) == fold(name)``. Each
-   hit's address must still be in the org (:func:`email_in_org`). An alias
-   of a person who left drops, and the lookup falls through.
-2. ``people``: the directory, ``status = 'active'``, by ``preferred_name``,
-   then ``name``, then the local part of the email, then (for a one-word
-   name only) the FIRST word of the preferred name or the name. The first
-   sub-rule with a hit wins, so "Priya" finds "Priya Sharma" only when
-   nobody is called exactly "Priya", and two "Priya …" make the assistant
-   ask.
-3. ``member``: ``app_user.display_name``, ``status = 'active'``: the whole
-   name first, then the first word for a one-word name.
+1. ``alias``: the member's own aliases, ``fold(alias) == fold(name)``. The
+   member set them on purpose, so a hit here wins outright. Each hit's
+   address must still be in the org (:func:`email_in_org`). An alias of a
+   person who left drops, and the lookup falls through.
+2. ``directory``: ``people`` (``status = 'active'``) and ``app_user``
+   (``status = 'active'``) TOGETHER. Every plausible person counts: the
+   preferred name, the name, the display name or the local part of the
+   email equal to the input, or (for a one-word input) the first word of a
+   name. One candidate acts. Two or more ask. "First rule wins" is gone:
+   it let ``priya@`` hide Priya Sharma, so the assistant picked one Priya
+   by guess (PZ-5 verify, P1).
 
 An input with an ``@`` matches ``lower(email)`` exactly, in each tier.
 Within a tier, two rows with one address are one person.
@@ -151,13 +150,14 @@ def _one_each(pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
     return sorted(seen.values(), key=lambda m: (fold(m["name"]), m["email"].lower()))
 
 
-async def _alias_tier(db: Any, uid: str, org: str, wanted: str) -> list[dict[str, str]]:
+async def _alias_tier(db: Any, uid: str, org: str, wanted: str,
+                      address: str) -> list[dict[str, str]]:
     from sqlalchemy import text
 
     row = (await db.execute(text(READ_SQL), {"org": org, "m": uid})).first()
     aliases = stored_profile(row[0] if row is not None else None)["aliases"]
-    if _is_email(wanted):
-        hits = [a for a in aliases if a["email"].strip().lower() == wanted]
+    if address:
+        hits = [a for a in aliases if a["email"].strip().lower() == address]
     else:
         hits = [a for a in aliases if fold(a["alias"]) == wanted]
     found = _one_each([(a["alias"], a["email"]) for a in hits])
@@ -165,40 +165,40 @@ async def _alias_tier(db: Any, uid: str, org: str, wanted: str) -> list[dict[str
     return [m for m in found if await email_in_org(db, m["email"])]
 
 
-async def _people_tier(db: Any, wanted: str) -> list[dict[str, str]]:
+async def _directory_tier(db: Any, wanted: str,
+                          address: str) -> tuple[list[dict[str, str]], str, bool]:
+    """Every plausible person of the directory and the member list.
+
+    Returns ``(matches, source, truncated)``. ``source`` is ``people`` when a
+    directory row matched, else ``member``. ``truncated`` is true when a
+    table held more than :data:`DIRECTORY_CAP` rows, so a person may be
+    missing from the answer. The two tables are read together and deduped
+    by address, so a person with a login is one person.
+    """
     from sqlalchemy import text
 
-    rows = (await db.execute(text(PEOPLE_SQL), {"cap": DIRECTORY_CAP})).fetchall()
-    people = [(str(r.name or ""), str(r.preferred_name or ""), str(r.email)) for r in rows]
-    if _is_email(wanted):
-        return _one_each([(n or p or e, e) for n, p, e in people if e.lower() == wanted])
-    # The first sub-rule with a hit wins: preferred name, name, local part,
-    # then the first word of either name, for a one-word query only.
+    people_rows = (await db.execute(text(PEOPLE_SQL), {"cap": DIRECTORY_CAP})).fetchall()
+    member_rows = (await db.execute(text(MEMBERS_SQL), {"cap": DIRECTORY_CAP})).fetchall()
+    truncated = DIRECTORY_CAP in (len(people_rows), len(member_rows))
+    people = [(str(r.name or ""), str(r.preferred_name or ""), str(r.email)) for r in people_rows]
+    members = [(str(r.display_name or ""), str(r.email)) for r in member_rows]
     one_word = " " not in wanted
-    rules = (
-        lambda n, p, e: p and fold(p) == wanted,
-        lambda n, p, e: n and fold(n) == wanted,
-        lambda n, p, e: fold(e.split("@", 1)[0]) == wanted,
-        lambda n, p, e: one_word and wanted in {_first(p), _first(n)},
-    )
-    for rule in rules:
-        hits = [(p or n or e, e) for n, p, e in people if rule(n, p, e)]
-        if hits:
-            return _one_each(hits)
-    return []
 
+    def names_match(*names: str) -> bool:
+        if any(n and fold(n) == wanted for n in names):
+            return True
+        return one_word and wanted in {_first(n) for n in names if n}
 
-async def _member_tier(db: Any, wanted: str) -> list[dict[str, str]]:
-    from sqlalchemy import text
-
-    rows = (await db.execute(text(MEMBERS_SQL), {"cap": DIRECTORY_CAP})).fetchall()
-    members = [(str(r.display_name), str(r.email)) for r in rows]
-    if _is_email(wanted):
-        return _one_each([(d, e) for d, e in members if e.lower() == wanted])
-    whole = _one_each([(d, e) for d, e in members if fold(d) == wanted])
-    if whole or " " in wanted:
-        return whole
-    return _one_each([(d, e) for d, e in members if _first(d) == wanted])
+    if address:
+        from_people = [(p or n or e, e) for n, p, e in people if e.strip().lower() == address]
+        from_members = [(d or e, e) for d, e in members if e.strip().lower() == address]
+    else:
+        from_people = [(p or n or e, e) for n, p, e in people
+                       if names_match(p, n) or fold(e.split("@", 1)[0]) == wanted]
+        from_members = [(d, e) for d, e in members if d and names_match(d)]
+    found = _one_each(from_people + from_members)
+    source = "people" if from_people else "member"
+    return found, source, truncated
 
 
 def _name(value: str) -> str:
@@ -225,24 +225,26 @@ async def resolve_person_for_assistant(
     uid = getattr(user, "email", None) or ""
     if not uid:
         raise HTTPException(status_code=401, detail="Authentication required")
-    wanted = fold(_name(name))
+    raw = _name(name)
+    wanted = fold(raw)
+    # An address compares in lower case on both sides, never casefolded:
+    # casefold turns "Strauß@" into "strauss@" (PZ-5 verify, P3).
+    address = raw.strip().lower() if _is_email(raw) else ""
     directory = user.has_permission(PEOPLE_FEATURE)
     org = current_tenant()
     if not org:
         raise HTTPException(status_code=503, detail="unavailable")
-    tiers: list[tuple[str, Any]] = [("alias", lambda db: _alias_tier(db, uid, org, wanted))]
-    if directory:
-        tiers += [("people", lambda db: _people_tier(db, wanted)),
-                  ("member", lambda db: _member_tier(db, wanted))]
     source: str | None = None
     found: list[dict[str, str]] = []
+    truncated = False
     try:
         async with _tenant_session() as db:
-            for tier, run in tiers:
-                found = await run(db)
-                if found:
-                    source = tier
-                    break
+            found = await _alias_tier(db, uid, org, wanted, address)
+            if found:
+                source = "alias"
+            elif directory:
+                found, tier, truncated = await _directory_tier(db, wanted, address)
+                source = tier if found else None
     except HTTPException:
         raise
     except Exception as exc:
@@ -250,4 +252,4 @@ async def resolve_person_for_assistant(
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
     return {"source": source, "matches": found[:MATCHES_MAX], "total": len(found),
-            "directory": directory}
+            "directory": directory, "truncated": truncated}
