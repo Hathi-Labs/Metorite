@@ -144,3 +144,80 @@ export function openFromFocus(
   openPanel(focusedItemId);
   return true;
 }
+
+/**
+ * The strip rule of OP-2b (§4.3), fix round 1. The task store is one
+ * singleton, and a `/tasks` visit hydrates it, so "the store holds the task"
+ * proves nothing about this page. With the flag OFF nothing of My work shows.
+ */
+export function showMyWorkStrip(o: {
+  enabled: boolean;
+  stored: boolean;
+  myWork: boolean;
+  filedByMe: boolean;
+}): boolean {
+  return o.enabled && o.stored && (o.myWork || o.filedByMe);
+}
+
+/**
+ * The overlay the badge shows. The store's row wins only in My work, where
+ * the strip writes through the store. A company view keeps the server read.
+ */
+export function pickMine<T>(o: {
+  myWork: boolean;
+  enabled: boolean;
+  stored: unknown;
+  mine: T | null;
+  fromStore: () => T;
+}): T | null {
+  return o.enabled && o.myWork && o.mine && o.stored ? o.fromStore() : o.mine;
+}
+
+/**
+ * Where a chat card sends the member for a task (fix round 1). On `/projects`
+ * with My work on, the ONE Projects panel opens through its deep link. Any
+ * other place keeps the My Tasks modal. The store focus is raised only on the
+ * second path, because it is not a route change there.
+ */
+export function chatTaskTarget(
+  pathname: string | null | undefined,
+  enabled: boolean,
+  id: string,
+): { kind: "panel"; href: string } | { kind: "modal"; href: string } {
+  if (enabled && (pathname === "/projects" || (pathname ?? "").startsWith("/projects/"))) {
+    return { kind: "panel", href: `/projects?task=${encodeURIComponent(id)}` };
+  }
+  return { kind: "modal", href: "/tasks" };
+}
+
+/** True when a write moved the task's status away from the panel's copy. */
+export function statusDrifted(
+  stored: { statusId?: string } | undefined,
+  taskStatusId: string | null | undefined,
+): boolean {
+  return !!stored?.statusId && !!taskStatusId && stored.statusId !== taskStatusId;
+}
+
+/**
+ * Watch the store's focus, and hand on only a focus raised from inside My
+ * work. A chat card, a search hit or any other caller raises the same field,
+ * and the host must not swallow it. `isInside` reads the gesture mark the
+ * host sets in the capture phase of a click or key press in its subtree.
+ * Returns the unsubscribe.
+ */
+export function watchInsideFocus(
+  store: {
+    subscribe: (
+      l: (s: { focusedItemId: string | null }, prev: { focusedItemId: string | null }) => void,
+    ) => () => void;
+    getState: () => { closeFocus: () => void };
+  },
+  isInside: () => boolean,
+  openPanel: (taskId: string) => void,
+): () => void {
+  return store.subscribe((s, prev) => {
+    if (s.focusedItemId && s.focusedItemId !== prev.focusedItemId && isInside()) {
+      openFromFocus(s.focusedItemId, store.getState().closeFocus, openPanel);
+    }
+  });
+}

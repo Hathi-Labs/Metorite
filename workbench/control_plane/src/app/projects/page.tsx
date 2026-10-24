@@ -2522,14 +2522,12 @@ function ProjectsWorkspace() {
   // Opening a task always resolves ITS project's statuses. From the board that
   // is the set already loaded; from a deep link it may be any project the
   // member can reach, so it is fetched.
-  // OP-2b — set by a My work row, read once by `openWithStatuses`: the panel
-  // opens OVER the My work view and does not leave it. A link or a bell still
-  // leaves the destination for the task's board.
-  const stayInMyWork = useRef(false);
+  // OP-2b — `stay` is an argument, so a failed open cannot leave it armed.
+  // A My work row passes it and the panel opens OVER the My work view. A link
+  // or a bell still leaves the destination for the task's board.
   const openWithStatuses = useCallback(
-    async (task: TaskRow) => {
-      const staying = stayInMyWork.current && isMyWorkId(app);
-      stayInMyWork.current = false;
+    async (task: TaskRow, stay = false) => {
+      const staying = stay && isMyWorkId(app);
       // Opened from one of the app's own destinations — the AI chat slot, most
       // often, where a card's "Open task" landed the panel beside a full-width
       // chat and never showed the project (owner report, 2026-09-23). Leave
@@ -2612,7 +2610,7 @@ function ProjectsWorkspace() {
   }
 
   const openTaskById = useCallback(
-    async (taskId: string) => {
+    async (taskId: string, stay = false) => {
       try {
         let task = await projectsApi.task(taskId);
         // ⚠️ Follow the merge, ONCE. A task folded into another has none of
@@ -2628,7 +2626,7 @@ function ProjectsWorkspace() {
         if (task.merged_into_task_id) {
           task = await projectsApi.task(task.merged_into_task_id);
         }
-        await openWithStatuses(task);
+        await openWithStatuses(task, stay);
       } catch (err) {
         setError(String((err as Error).message));
       }
@@ -3947,10 +3945,7 @@ function ProjectsWorkspace() {
     // WS-64 OP-2 — a My work view: the task store's views, mounted once.
     <MyWorkHost
       app={app}
-      onOpenTask={(id) => {
-        stayInMyWork.current = true;
-        void openTaskById(id);
-      }}
+      onOpenTask={(id) => void openTaskById(id, true)}
     />
   ) : app === "settings" ? (
     // WS-42 (D81) — every setting of the Projects app in one pane.
@@ -4500,10 +4495,7 @@ function ProjectsWorkspace() {
       onMode={isMobile ? undefined : setPanelMode}
       // WS-27p — opening a subtask or a linked task resolves ITS project's
       // statuses, which the panel has no tree to do.
-      onOpenTask={(id) => {
-        stayInMyWork.current = isMyWorkId(app);
-        void openTaskById(id);
-      }}
+      onOpenTask={(id) => void openTaskById(id, isMyWorkId(app))}
       onClose={() => setOpenTask(null)}
       onTaskAdded={() => {
         if (selected) void loadProject(selected);
@@ -4862,7 +4854,7 @@ function ProjectsWorkspace() {
           compact
           title={title}
           actions={projectActions(true)}
-          tools={dockOn ? undefined : <NotificationBell onOpenTask={openTaskById} />}
+          tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
 
         {workArea}
@@ -4904,7 +4896,7 @@ function ProjectsWorkspace() {
             <AppSearchButton onOpen={() => setSearching(true)} />
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
-            {dockOn ? null : <NotificationBell onOpenTask={openTaskById} />}
+            {dockOn ? null : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
             {/* The assistant sits at the right end of the top bar, where My
                 Tasks puts it (owner ask, 2026-09-24). One component for both
                 apps. It lived in the project header's action row until then,

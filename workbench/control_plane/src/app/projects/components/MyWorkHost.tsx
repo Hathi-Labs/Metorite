@@ -13,7 +13,7 @@
  * `hydrate()` runs only then. The store is the one store of D52 to D54.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import Button from "@/components/ui/Button";
 import { DelegatePopup } from "@/app/tasks/components/DelegatePopup";
@@ -35,7 +35,7 @@ import { useUndoScope } from "@/components/UndoProvider";
 
 import { tasksEntryView } from "@/app/tasks/lib/today";
 
-import { myWorkView, openFromFocus, type MyWorkId } from "../lib/myWork";
+import { myWorkView, watchInsideFocus, type MyWorkId } from "../lib/myWork";
 
 export default function MyWorkHost({
   app,
@@ -51,8 +51,6 @@ export default function MyWorkHost({
   const selectView = useTaskStore((s) => s.selectView);
   const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const view = useTaskStore((s) => s.selectedView);
-  const focusedItemId = useTaskStore((s) => s.focusedItemId);
-  const closeFocus = useTaskStore((s) => s.closeFocus);
   const wanted = myWorkView(app);
 
   // My work has its own undo scope, so Ctrl+Z never reaches the board history.
@@ -62,10 +60,28 @@ export default function MyWorkHost({
   // OP-2b — a row click, Enter on a row and the undo toast all raise the
   // store's `openFocus`. In My work that opens the Projects panel and not
   // the My Tasks focus modal, which this host does not mount. `/tasks` is
-  // unchanged.
+  // unchanged. Only a focus raised by a gesture inside this subtree counts:
+  // a chat card or a search hit raises the same field and is left alone.
+  const inside = useRef(false);
+  const openRef = useRef(onOpenTask);
   useEffect(() => {
-    openFromFocus(focusedItemId, closeFocus, onOpenTask);
-  }, [focusedItemId, closeFocus, onOpenTask]);
+    openRef.current = onOpenTask;
+  }, [onOpenTask]);
+  useEffect(
+    () =>
+      watchInsideFocus(
+        useTaskStore,
+        () => inside.current,
+        (id) => openRef.current(id),
+      ),
+    [],
+  );
+  const markInside = () => {
+    inside.current = true;
+    setTimeout(() => {
+      inside.current = false;
+    }, 0);
+  };
 
   // The store is shared with /tasks. Put its view back when My work closes.
   useEffect(() => {
@@ -108,7 +124,12 @@ export default function MyWorkHost({
   const ready = wanted !== null && view === wanted;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-work-host">
+    <div
+      className="flex min-w-0 flex-1 flex-col overflow-hidden"
+      data-testid="my-work-host"
+      onClickCapture={markInside}
+      onKeyDownCapture={markInside}
+    >
       {ready ? (
         wanted === "inbox" ? (
           <div className="min-h-0 flex-1 overflow-hidden">

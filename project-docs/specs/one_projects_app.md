@@ -575,10 +575,19 @@ context, energy and defer. The shared body keeps the estimate (D77).
 `ItemDetail.tsx` exports `PlanningRows`, and both apps use it.
 
 A change in the panel goes back into the task store with `refreshItem`.
-Fences: `lib/myWorkPanel.test.tsx`, and the e2e case in
-`e2e/projects-my-work.spec.ts` (written, not run). Gap: in a company view the
-strip shows only when the task store holds the task. The store loads only in
-My work.
+Fences: `lib/myWorkPanel.test.ts`, and the e2e case in
+`e2e/projects-my-work.spec.ts`. Gap: in a company view the strip shows only
+when the task store holds the task. The store loads in My work, and a `/tasks`
+visit loads it too.
+
+Fix round 1 (2026-10-24). The strip and the badge need the flag
+(`showMyWorkStrip`, `pickMine`), and a company view keeps the server read. A
+chat task card on `/projects` opens the panel through `?task=` and never raises
+the store focus (`chatTaskTarget`). `MyWorkHost` takes only a focus raised
+inside its own subtree (`watchInsideFocus`). `stay` is an argument of
+`openTaskById`. A status that the strip moves is read again into the panel
+(`statusDrifted`). The fence file ran no test before, because vitest includes
+only `*.test.ts`, so it is now `lib/myWorkPanel.test.ts`.
 
 ### OP-3 — the Personal space · AGENT-SAFE · R8
 

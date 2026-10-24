@@ -72,6 +72,7 @@ import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
 import { MyWorkStrip } from "./MyWorkStrip";
+import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { useAccess } from "@/components/AccessProvider";
 import { taskRefResolverFor } from "@/lib/taskRefs";
@@ -175,9 +176,41 @@ export function TaskPanel({
   // OP-2b — the store's row for this task, when the one task store holds it.
   // The strip writes through the store, so the My work list moves with it.
   const stored = useTaskStore((s) => s.items.find((i) => i.id === task.id));
-  const strip =
-    stored && (myWork || filedByMe(mine)) ? <MyWorkStrip taskId={task.id} /> : null;
-  const shownMine = mine && stored ? overlayOf(stored) : mine;
+  // Fix round 1 — the flag gates both. The store is a singleton that a
+  // `/tasks` visit hydrates, so holding the task proves nothing here.
+  const enabled = myWorkEnabled();
+  const strip = showMyWorkStrip({
+    enabled,
+    stored: !!stored,
+    myWork,
+    filedByMe: filedByMe(mine),
+  }) ? (
+    <MyWorkStrip taskId={task.id} />
+  ) : null;
+  const shownMine = pickMine({
+    myWork,
+    enabled,
+    stored,
+    mine,
+    fromStore: () => overlayOf(stored!),
+  });
+  // A strip write can move the status. The store learns the new one from the
+  // server's answer, and the panel's task is read again so its badge follows.
+  const drifted = strip !== null && statusDrifted(stored, task.status_id);
+  useEffect(() => {
+    if (!drifted) return;
+    let live = true;
+    void projectsApi
+      .task(task.id)
+      .then((fresh) => {
+        if (live) onChanged(fresh);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drifted, stored?.statusId, task.id]);
 
   /**
    * WS-27ab — hand the keyboard back on close.

@@ -184,7 +184,8 @@ test("each count equals the count that /tasks shows", async ({ page }) => {
  * OP-2b (`one_projects_app.md` §4.3): a row click in a My work view opens the
  * ONE Projects task panel, with the overlay strip, and not the My Tasks focus
  * modal. A change of disposition moves the row out of Today with no reload.
- * Written, not run: the OP-2b builder ran no browser (2026-10-24).
+ * Fixtures are exact: the sub-requests of the panel get explicit empties, and
+ * the disposition write answers with the updated row.
  */
 test("a Today row opens the Projects panel with the overlay strip", async ({ page }) => {
   test.setTimeout(180_000);
@@ -193,6 +194,18 @@ test("a Today row opens the Projects panel with the overlay strip", async ({ pag
   const one = row("n1", { due_at: "2026-10-24" });
   FIXTURES["projects/tasks/n1"] = { ...one, root_project_id: "root-1", status: "To do" };
   FIXTURES["my/tasks/n1"] = one;
+  for (const sub of ["timeline", "refs", "subtasks", "links", "comments", "activities", "attachments"]) {
+    FIXTURES[`projects/tasks/n1/${sub}`] = { rows: [], items: [], total: 0 };
+  }
+  // The disposition write answers with the updated row, and the next read of
+  // the task carries it.
+  await page.route("**/api/projects/tasks/n1/personal", async (route) => {
+    const patch = route.request().postDataJSON() as Record<string, unknown>;
+    const updated = { ...(FIXTURES["projects/tasks/n1"] as object), ...patch };
+    FIXTURES["projects/tasks/n1"] = updated;
+    FIXTURES["my/tasks/n1"] = { ...one, ...patch };
+    await route.fulfill({ json: updated });
+  });
 
   await page.goto("/projects");
   const target = page.getByText("Task n1", { exact: true }).first();
