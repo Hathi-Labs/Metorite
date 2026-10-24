@@ -263,6 +263,9 @@ def world():
                                  grant_to=READER)
     task("reader_private", p["reader_root"], p["reader_root"], by=READER,
          assignee=READER)
+    # Unassigned, so only the project arm can show it: the assignee arm
+    # cannot stand in for the "my own" half.
+    task("reader_note", p["reader_root"], p["reader_root"], by=READER)
 
     # The delta feed reads nothing newer than its horizon. Put every task an
     # hour back, as `test_sealed_tree_visibility_r8.py` does.
@@ -275,6 +278,7 @@ def world():
     ).render_as_string(hide_password=False)
     w.owner_personal = {w.t[k] for k in OWNER_PERSONAL}
     w.team = {w.t[k] for k in TEAM}
+    w.reader_personal = {w.t["reader_private"], w.t["reader_note"]}
     yield w
 
     eng.dispose()
@@ -509,13 +513,13 @@ class TestTheOwnerReadsTheirOwn:
     async def test_the_owner_reads_every_personal_task(self, armed, read):
         rows = await ALL_READS[read](armed, OWNER)
         assert armed.owner_personal <= rows, (read, armed.owner_personal - rows)
-        assert armed.t["reader_private"] not in rows, read
+        assert not (rows & armed.reader_personal), read
 
     @pytest.mark.parametrize("read", sorted(ALL_READS))
     async def test_an_org_reader_reads_their_own_personal_task(self, armed, read):
         """The unrestricted arm's own half: ``lower(personal_owner) = :me``."""
         rows = await ALL_READS[read](armed, READER)
-        assert armed.t["reader_private"] in rows, read
+        assert armed.reader_personal <= rows, (read, armed.reader_personal - rows)
 
     async def test_the_owner_reads_their_personal_project(self, armed):
         await _ok(armed, OWNER, f"/projects/nodes/{armed.p['owner_root']}")
@@ -548,7 +552,7 @@ class TestNobodyElseReadsIt:
     @pytest.mark.parametrize("who", [OWNER, PADMIN], ids=["owner", "padmin"])
     async def test_the_readers_personal_task_is_the_readers_only(self, armed, who):
         for read in ALL_READS.values():
-            assert armed.t["reader_private"] not in await read(armed, who)
+            assert not (await read(armed, who) & armed.reader_personal)
 
     @pytest.mark.parametrize("who", [READER, PADMIN], ids=["org_reader", "padmin"])
     @pytest.mark.parametrize("key", OWNER_PERSONAL)
@@ -612,8 +616,8 @@ class TestCountsLeaveOutPersonalTasks:
                           "/projects/analytics/dataset?state=all"
                           "&group_by=status_category&measure=count")).json()
         total = sum(int(g["n"]) for g in body["groups"])
-        # team + team_under + the reader's own task. Before OP-9 it was 6.
-        assert total == 3, body
+        # team + team_under + the reader's two own tasks. Before OP-9 it was 7.
+        assert total == 4, body
 
     async def test_the_owner_count_is_unchanged(self, armed):
         body = (await _ok(armed, OWNER,
@@ -631,10 +635,10 @@ class TestCountsLeaveOutPersonalTasks:
 
     async def test_the_load_counts_no_personal_task(self, armed):
         """``/projects/analytics/load`` over the portfolio. Open work the
-        reader reads: team, team_under and the reader's own task. Before
-        OP-9 it held the owner's three personal tasks too, so it was 6."""
+        reader reads: team, team_under and the reader's two own tasks. Before
+        OP-9 it held the owner's three personal tasks too, so it was 7."""
         body = (await _ok(armed, READER, "/projects/analytics/load")).json()
-        assert body["total_tasks"] == 3, body
+        assert body["total_tasks"] == 4, body
         owner = (await _ok(armed, OWNER, "/projects/analytics/load")).json()
         assert owner["total_tasks"] == 5, owner
 
