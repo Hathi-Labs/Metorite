@@ -144,6 +144,7 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
     Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
+    Route("POST", "/knowledge/gaps/{gap_id}/reopen", "", "X", reason=_GAP_DECISION_REASON),
 )
 
 

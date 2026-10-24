@@ -185,6 +185,8 @@ def _page_status(row: Any) -> str:
         return "pending"
     if row.state == "published":
         return "accepted"
+    if origin_of(row).get("expired") is True:
+        return "expired"
     return "rejected"
 
 
@@ -382,12 +384,15 @@ async def _edit_rows(db: Any, user: UserContext, status: str) -> list[dict[str, 
     return kept
 
 
-#: The draft state of a proposed page for each status. ``expired`` has none
-#: until KB-5c.
+#: The draft state of a proposed page for each status. The expiry (KB-5c)
+#: archives a draft and sets ``origin.expired``, so it reads ``expired`` and
+#: not ``rejected``.
 _PAGE_STATE: dict[str, str] = {
     "pending": "p.state = 'draft'",
     "accepted": "p.state = 'published'",
-    "rejected": "p.state = 'archived' AND p.archived_from_state = 'draft'",
+    "rejected": ("p.state = 'archived' AND p.archived_from_state = 'draft' "
+                 "AND COALESCE(p.origin->>'expired', '') <> 'true'"),
+    "expired": "p.state = 'archived' AND p.origin->>'expired' = 'true'",
 }
 
 

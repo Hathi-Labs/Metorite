@@ -40,6 +40,7 @@ import {
   askersLabel,
   dismissGap,
   listGaps,
+  reopenGap,
   titleFromQuestion,
   type Gap,
   type GapList,
@@ -80,12 +81,27 @@ export default function GapsView() {
     }
   }, [wanted, read.data, router, pathname, openNewPage, toast]);
 
+  async function undo(gap: Gap) {
+    try {
+      await reopenGap(gap.id);
+      invalidate(KNOWLEDGE_CACHE);
+      toast.show({ key: `kb-gap:${gap.id}`, title: "The question is open again" });
+    } catch (err) {
+      const reason = err instanceof KnowledgeError ? err.message : String(err);
+      toast.show({ key: `kb-gap:${gap.id}`, variant: "error", title: "Could not reopen the question", description: reason });
+    }
+  }
+
   async function dismiss(gap: Gap) {
     setDismissing(gap.id);
     try {
       await dismissGap(gap.id);
       invalidate(KNOWLEDGE_CACHE);
-      toast.show({ key: `kb-gap:${gap.id}`, title: "Dismissed the question" });
+      toast.show({
+        key: `kb-gap:${gap.id}`,
+        title: "Dismissed the question",
+        action: { label: "Undo", onClick: () => void undo(gap) },
+      });
     } catch (err) {
       const reason = err instanceof KnowledgeError ? err.message : String(err);
       toast.show({ key: `kb-gap:${gap.id}`, variant: "error", title: "Could not dismiss the question", description: reason });

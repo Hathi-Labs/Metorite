@@ -107,6 +107,12 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "carries a stored position: each gives the rank among the siblings "
         "the caller sees (pages._rank, page_dict)."
     ),
+    ("proposal_expiry.py", "<module>"): (
+        "The KB-5c expiry bounds its archive with a CTE that reads the ids "
+        "of old agent drafts, in the same statement as the UPDATE. It runs "
+        "with no member and returns no page to a caller. Its only answer "
+        "is a count."
+    ),
     ("index.py", "select_pending"): (
         "The embed job of KB-3 reads the chunks of one page, already loaded "
         "and written by the route, that have no vector. It runs after the "

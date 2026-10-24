@@ -6332,15 +6332,14 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-23 · Knowledge session
 
 ### H-399 · Build the next Knowledge AI slices of §22 · [AGENT]
-- **Check:** `grep -nE "KB-5c|KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Check:** `grep -nE "KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
 - **Why:** §22 of `knowledge_base.md` is the AI roadmap of 2026-10-22. It ranks the slices by value and names the tier of each.
 - **Do this, in order:**
-  1. KB-5c: the 14-day expiry of pending proposals (no model).
-  2. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
-  3. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
-  4. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
-  5. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
-  6. KB-4b citation chips, then KB-10 `kb:read` on MCP.
+  1. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
+  2. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
+  3. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
+  4. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
+  5. KB-4b citation chips, then KB-10 `kb:read` on MCP.
   Each paid pass has its own flag, default off, which the owner turns on.
 - **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
 - **Added:** 2026-10-23 · Knowledge session
@@ -6357,18 +6356,6 @@ line — never reclaim a number by deleting the other entry.
 - **Why:** many WS-61 slices landed in build mode with the verifier only (engineering_practice.md §7a). The backlog holds K-1 to K-8.
 - **Do this:** open one `harden` PR. Run `diff-reviewer` on the whole wave 2 diff. Add the fences that K-4 to K-8 name. Run the visual review. Then close each K row.
 - **Authority:** owner directive, 2026-10-19. `specs/engineering_practice.md` §7a
-- **Added:** 2026-10-23 · Knowledge session
-
-### H-402 · Fix the four P2s of the KB-9a review, and decide the question-text risk · [AGENT] · OWNER note
-- **Check:** `grep -nE "normali|ask_count|first_asked_at|reopen" apps/services/gateway/gateway/routes/knowledge/gaps.py` shows each fix, and `knowledge_base.md` §8.4 names the question-text rule. If both hold, delete this entry.
-- **Why:** the adversarial review of KB-9a (PR #1241) approved the slice with four P2 findings.
-- **Do this:**
-  1. The normaliser turns Indic vowel signs into spaces, so different Hindi or Tamil questions merge into one gap. Keep Unicode marks (category M) inside a word.
-  2. After 20 askers, a repeat ask by an unstored member still adds 1 to `ask_count`. Count a repeat once, or stop counting at the cap.
-  3. The 30-day window follows `last_asked_at`, so a chain of asks keeps it open. Measure it from `first_asked_at`, or store the asks per day.
-  4. A dismissed or answered gap never reopens. Add an undo for Dismiss, and reopen a gap whose answer page is deleted.
-- **OWNER note:** `sample_query` keeps the raw question, which can hold a name or a salary. Every Knowledge manager can read it. Decide whether to filter it, and record the rule in §8.4.
-- **Authority:** `specs/knowledge_base.md` §8.4
 - **Added:** 2026-10-23 · Knowledge session
 
 ### H-403 · Check that the last two Knowledge PRs of 2026-10-23 merged and reached staging · [AGENT]
@@ -6413,6 +6400,20 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** if the count is not 0, list each row for the owner to review. Give the project, the owner, the subject and `created_at`. Do not delete or change a row without the owner's word.
 - **Authority:** `specs/one_projects_app.md` §8 D-OP-15 and §9 OP-9
 - **Added:** 2026-10-24 · WS-64 OP-9 fix round 1
+
+### H-410 · The look-alike guard refuses Pinyin tone letters and the Azerbaijani ə in a held chat · [AGENT]
+- **Check:** `lookalike_words("Nǐ hǎo")` and `lookalike_words("Azərbaycan")` in `acb_skills/reply_card.py` both return `[]`. If they do, delete this entry.
+- **Why:** #1288 (H-393) refuses a Latin letter outside Basic Latin, Latin-1, Latin Extended-A and the Vietnamese ranges, in a chat that read outside mail. Pinyin tone letters (U+01CE, U+01D0) and ə (U+0259) are real text, not look-alikes, so a held send that holds them is refused. Other chats only warn.
+- **Do this:** allow the letters of Latin Extended-B and IPA that have no ASCII twin in `held_card._CONFUSABLE`. Keep ɑ, ɡ and ı-style twins refused. Add a test for each language.
+- **Authority:** the final check of #1288, 2026-10-24.
+- **Added:** 2026-10-24 · email single-mailbox session
+
+### H-411 · Two first writes of the always-copy list at once can both pass · [AGENT]
+- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row. The agent sends the version that the model read. If both hold, delete this entry.
+- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing. So two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT. So it misses a change in the UI after the model read the list.
+- **Do this:** lock on the account row, or take an advisory lock on the account id. Carry the version from the model's read into the tool call.
+- **Authority:** the final check of #1288, 2026-10-24.
+- **Added:** 2026-10-24 · email single-mailbox session
 
 # DONE — deleted, not archived
 
