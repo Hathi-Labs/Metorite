@@ -502,10 +502,27 @@ The sidebar draws it with a lock. The Areas routes stay as they are.
 carries `personal_owner`, at every depth. `POST /projects/nodes` under a
 personal parent now stamps the child with the tree owner and the owner grant.
 Only the tree owner may file a node there, and anyone else gets 404. Migration
-297 stamps the children that the old route wrote without the owner. Before
-this, such a child showed in each org reader's tree, an agent with
-`include_personal=false` could read it, and a move could take it to a team
-space. Fence: `tests/unit/test_personal_owner_stamp.py` (R8).
+297 stamps the children that the old route wrote without the owner.
+Fence: `tests/unit/test_personal_owner_stamp.py` (R8).
+
+Before this, such a child showed in each org reader's tree. An agent with
+`include_personal=false` could read it. A move could take it to a team space.
+
+**Fix round 1 of task #304, the migration.** Migration 297 does not stamp an
+unstamped node that carries a grant to a subject other than the tree owner.
+That node is team work, and the walk stops there. The old move check read
+only the direct parent, so a team root could sit under an unstamped personal
+child. 297 keeps that team node and its subtree as they are. A NOTICE names
+them in the deploy log.
+
+**Fix round 1 of task #304, the move guard.** The guard now walks up from the
+new parent. A team node cannot move under any node of a private tree. A node
+with its own `personal_owner` cannot leave. A team node that 297 left under a
+private tree can move out to a team space.
+
+**A known gap until OP-3.** After 297, a node two levels under a personal root
+is not in `/projects/tree`. Its URL and My Tasks still reach it. OP-3 shows
+the Personal space, and that closes the gap.
 
 ### OP-4 — capture, the tab bar, and the redirect · OWNER-GATE for the nav
 

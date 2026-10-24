@@ -24,7 +24,7 @@ uses too). Only the tree owner may file a node there. Anyone else gets the
 its own (FORCE RLS). The real gateway app, signed agent calls through the EA
 fixtures. Run::
 
-    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/stamp_fix \\
+    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/stamp_fix2 \\
         uv run pytest tests/unit/test_personal_owner_stamp.py -v -rs
 
 **The mutations (R7).** Each one turned the named tests red. ``G`` is
@@ -40,6 +40,19 @@ fixtures. Run::
   ``test_a_a_child_under_my_root_carries_my_name``.
 * M5. ``infra/postgres/297_personal_owner_stamp_backfill.sql``: no per-tenant
   loop. ``test_d_the_migration_stamps_idempotently_and_leaves_team_rows``.
+
+Fix round 1 (the adversarial review). Each one turned the named tests red.
+
+* M6. 297: no ``NOT EXISTS`` grant test in the walk.
+  ``test_d_the_migration_stops_at_a_team_root_under_my_tree`` and
+  ``test_d_a_team_node_left_under_my_tree_can_be_moved_out``.
+* M7. 297: ``AND p.personal_owner IS NULL`` becomes ``AND true``.
+  ``test_d_the_migration_keeps_an_owner_that_is_already_set``.
+* M8. ``G/core.py`` ``assert_project_move_keeps_privacy``: the destination
+  reads only the parent's own column.
+  ``test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree``.
+* M9. The same guard: the moved side walks up too.
+  ``test_d_a_team_node_left_under_my_tree_can_be_moved_out``.
 """
 
 from __future__ import annotations
