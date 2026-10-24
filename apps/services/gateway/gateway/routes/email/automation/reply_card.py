@@ -574,6 +574,8 @@ async def reply_card(
         "card_id": card_id,
         # Item 9: the people that the draft in Drafts names.
         "draft_recipients": start if draft_id else {"to": [], "cc": []},
+        # Item 6: a reply of this thread that went out in the last day.
+        "recent_reply": await _recent_reply(mail),
         "body": body,
         "skipped": (drafted or {}).get("skipped"),
         "draft_id": draft_id,
@@ -617,6 +619,63 @@ async def _reply_classes(
     except Exception as exc:  # each address reads as new
         _log.warning("email.reply_card_classes_failed", error=type(exc).__name__)
         return {a.strip().lower(): CLASS_NEW for a in addresses if a and a.strip()}
+
+
+#: The newest mail of the thread that the mailbox itself sent in the last 24
+#: hours (item 6). A request to add people then forwards THAT mail, and the
+#: reply does not go to the first people a second time.
+RECENT_REPLY_SQL = (
+    "SELECT em.id::text AS id, em.received_at FROM email_messages em"
+    " JOIN email_accounts ea ON ea.id = em.account_id"
+    " WHERE em.account_id = CAST(:aid AS uuid) AND em.thread_id = :tid"
+    " AND LOWER(COALESCE(em.folder, '')) = 'sent'"
+    " AND LOWER(em.from_address->>'email') = LOWER(ea.email_address)"
+    " AND em.received_at > now() - interval '24 hours'"
+    " ORDER BY em.received_at DESC LIMIT 1")
+
+
+async def recent_thread_reply(db: Any, account_id: str, thread_id: str | None) -> dict[str, str]:
+    """``{message_id, sent_at}`` of :data:`RECENT_REPLY_SQL`, or ``{}``."""
+    if not thread_id:
+        return {}
+    row = (await db.execute(text(RECENT_REPLY_SQL),
+                            {"aid": account_id, "tid": thread_id})).fetchone()
+    if row is None:
+        return {}
+    when = row.received_at.isoformat() if getattr(row.received_at, "isoformat", None) else ""
+    return {"message_id": str(row.id), "sent_at": when}
+
+
+@router.get("/recent-reply")
+async def recent_reply_route(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """The recent reply of the thread of one draft of the member (item 6),
+    for the send card of ``send_draft``. A read: it writes nothing."""
+    did = _as_uuid(draft_id)
+    if did is None:
+        return {}
+    async with _tenant_session() as db:
+        row = (await db.execute(text(
+            "SELECT em.account_id::text AS account_id, em.thread_id FROM email_messages em"
+            " JOIN email_accounts ea ON ea.id = em.account_id"
+            " WHERE em.id = CAST(:id AS uuid) AND ea.user_id = :uid"), {
+            "id": did, "uid": user.email or "anonymous"})).fetchone()
+        if row is None:
+            return {}
+        return await recent_thread_reply(db, row.account_id, row.thread_id)
+
+
+async def _recent_reply(mail: Any) -> dict[str, str]:
+    """The recent reply of the mail's thread. A fault reads as none."""
+    try:
+        async with _tenant_session() as db:
+            return await recent_thread_reply(db, mail.account_id,
+                                             getattr(mail, "thread_id", None))
+    except Exception as exc:
+        _log.warning("email.reply_card_recent_failed", error=type(exc).__name__)
+        return {}
 
 
 def _mail_people(mail: Any) -> list[str]:
