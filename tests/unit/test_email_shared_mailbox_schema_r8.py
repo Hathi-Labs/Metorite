@@ -203,6 +203,36 @@ def test_an_assignment_on_a_private_mailbox_fails(promoted, app_engine, boxes) -
     _as_app(app_engine, promoted.org_a, _ASSIGN, {"a": boxes["shared_a"]})
 
 
+# ── Unshare clears the grants (fix round, P2-3) ─────────────────────────────
+
+def test_an_unshare_deletes_the_grants_and_the_assignments(promoted, app_engine, boxes) -> None:  # noqa: F811
+    """``shared_since`` back to NULL removes each grant and assignment of the
+    mailbox, so a later share opens it to nobody again."""
+    org, box = promoted.org_a, boxes["shared_a"]
+    _as_app(app_engine, org, _GRANT, {"a": box, "s": "org", "l": "read"})
+    _as_app(app_engine, org, _ASSIGN, {"a": box})
+    _as_app(app_engine, org, "UPDATE email_accounts SET shared_since = NULL "
+            "WHERE id = CAST(:a AS uuid)", {"a": box})
+    _as_app(app_engine, org, "UPDATE email_accounts SET shared_since = now() "
+            "WHERE id = CAST(:a AS uuid)", {"a": box})
+    with promoted.admin_engine.connect() as c:
+        for table in ("email_mailbox_grants", "email_thread_assignments"):
+            assert c.execute(text(
+                f"SELECT count(*) FROM {table} WHERE account_id = CAST(:a AS uuid)"),
+                {"a": box}).scalar() == 0, table
+
+
+def test_an_update_that_keeps_the_share_keeps_the_grants(promoted, app_engine, boxes) -> None:  # noqa: F811
+    org, box = promoted.org_a, boxes["shared_a"]
+    _as_app(app_engine, org, _GRANT, {"a": box, "s": "org", "l": "read"})
+    _as_app(app_engine, org, "UPDATE email_accounts SET label = 'Sales' "
+            "WHERE id = CAST(:a AS uuid)", {"a": box})
+    with promoted.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM email_mailbox_grants WHERE account_id = CAST(:a AS uuid)"),
+            {"a": box}).scalar() == 1
+
+
 # ── The send log is append-only ─────────────────────────────────────────────
 
 def test_the_send_log_sets_the_provider_id_once(promoted, app_engine, boxes) -> None:  # noqa: F811

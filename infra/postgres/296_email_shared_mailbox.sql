@@ -25,6 +25,8 @@
 --       `email_mailbox_member_prefs`   — one row for each member and shared
 --                            mailbox: "in All inboxes" and "keep separate"
 --                            (§9, the All inboxes row).
+--       A trigger on `email_accounts` deletes the grants, the assignments and
+--       the member choices of a mailbox when `shared_since` goes back to NULL.
 --       Seed: `email:shared:manage` for the `admin` role of every organization,
 --       and in provision_org_roles, so a new organization has it too (Q-SM-2).
 -- Why:  WS-65 SM-1, spec project-docs/specs/shared_mailbox.md §4.4, §5.2,
@@ -37,7 +39,7 @@
 --       (email_accounts.organization_id on the numbered ladder).
 --
 -- Expand only (R6): two nullable columns with no default, four new tables,
--- their indexes, two trigger functions, one INSERT of rows that ON CONFLICT
+-- their indexes, three trigger functions, one INSERT of rows that ON CONFLICT
 -- DO NOTHING skips, and one function body with one more array element. No
 -- rename, no drop, and no change to an existing column. Old code reads
 -- `user_id = :uid`, so a shared row looks private to its connector and to
@@ -229,6 +231,32 @@ DROP TRIGGER IF EXISTS email_send_log_append_only ON email_send_log;
 CREATE TRIGGER email_send_log_append_only
     BEFORE UPDATE ON email_send_log
     FOR EACH ROW EXECUTE FUNCTION email_send_log_set_once();
+
+-- An unshare clears the access (fix round, P2-3). When `shared_since` goes
+-- from a time back to NULL, the grants, the assignments and the member
+-- choices of the mailbox go too. Else a later share would open the mailbox
+-- again to each old grant, with no admin act. The send log stays: it is the
+-- audit record of each send. SECURITY INVOKER: the deletes run under the RLS
+-- of the writer, which is bound to the organization of the mailbox.
+CREATE OR REPLACE FUNCTION email_accounts_unshare_clears() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    DELETE FROM email_mailbox_grants
+     WHERE account_id = OLD.id AND organization_id = OLD.organization_id;
+    DELETE FROM email_thread_assignments
+     WHERE account_id = OLD.id AND organization_id = OLD.organization_id;
+    DELETE FROM email_mailbox_member_prefs
+     WHERE account_id = OLD.id AND organization_id = OLD.organization_id;
+    RETURN NEW;
+END
+$fn$;
+
+DROP TRIGGER IF EXISTS email_accounts_unshare_clears ON email_accounts;
+CREATE TRIGGER email_accounts_unshare_clears
+    BEFORE UPDATE OF shared_since ON email_accounts
+    FOR EACH ROW
+    WHEN (OLD.shared_since IS NOT NULL AND NEW.shared_since IS NULL)
+    EXECUTE FUNCTION email_accounts_unshare_clears();
 
 DO $rls$
 DECLARE
