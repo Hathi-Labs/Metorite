@@ -21088,33 +21088,37 @@ Reply-To that is not the sender is never `thread`.
 
 **What the member gets.**
 
-1. **One list.** The reply card has no Reply or Reply all mode. It lists
-   each person of the mail and each added person, each with a tick box. Two
-   shortcuts, "Only the sender" and "Tick all", change the ticks. They never
-   change the list. The mail and the draft go to the ticked people only.
-2. **A Bcc copy.** When the member got the mail on Bcc only, only the sender
+1. **One list.** The reply card lists each person of the mail and each
+   added person, each with a tick box. The mail and the draft go to the
+   ticked people only.
+2. **The switch (owner amendment, 2026-10-24).** A Reply and Reply all
+   switch stays on the card, and Reply all is the default. Reply ticks the
+   sender alone. Reply all ticks each person but a `new` one. The switch
+   changes the ticks in view and never the list. So an earlier choice of
+   Reply cannot win over the ticks of the last card.
+3. **A Bcc copy.** When the member got the mail on Bcc only, only the sender
    starts ticked. The card says "You were Bcc'd, so only the sender is
    ticked."
-3. **One card for "copy Kiran and Veena".** `compose_reply` takes `cc`. The
+4. **One card for "copy Kiran and Veena".** `compose_reply` takes `cc`. The
    gateway classes each added person with the one classifier. It records the
    list under the card's id. The act takes a subset of that record only.
-4. **Usual colleagues.** The card adds an `org` colleague from Sent. The
+5. **Usual colleagues.** The card adds an `org` colleague from Sent. The
    member copied that colleague on two Sent mails to the same domain, or on
    one of the thread. The card notes it, for example "Added kiran@…, veena@…. You copy
    them on mail to jainuniversity.ac.in."
-5. **Words on each row.** A person of the mail shows "on Dr Sagar's original
+6. **Words on each row.** A person of the mail shows "on Dr Sagar's original
    email". An added colleague shows "you usually copy them". The card names
    each person who will not get the mail.
-6. **The draft is the card.** The draft in Drafts names exactly the people
+7. **The draft is the card.** The draft in Drafts names exactly the people
    that start ticked. A Cc of the thread's draft stays on the next card, so
    its Send carries it. This was the bug of the owner's report. The card
    derived from the mail alone, and its Send dropped the Cc.
-7. **A reply that already went out.** When a reply of the thread went out in
+8. **A reply that already went out.** When a reply of the thread went out in
    the last day, the tools say so. To add people, the chat offers to forward
    that mail. The send card of `send_draft` warns too.
-8. **One card closes.** A steer closes only the card that it names, or else
+9. **One card closes.** A steer closes only the card that it names, or else
    the newest card. Each other card stays open.
-9. **The prompts.** "X and Y" is one mail. One send card shows at a time.
+10. **The prompts.** "X and Y" is one mail. One send card shows at a time.
    "Send it" calls the tool at once, and the card is the confirmation.
 
 **The pin change.**
@@ -21260,9 +21264,9 @@ member is on the mail. Else it is Reply.
 held reply card with the switch on opens on Reply all, and each new address starts
 unticked.
 
-**One list (2026-10-24, 21.12).** The card no longer has a Reply or Reply all mode. It
-lists each person, and each starts ticked. `reply_all=false` only starts the sender alone
-ticked. The act derives Reply all always and takes the member's ticks from it.
+**One list (2026-10-24, 21.12).** The card lists each person, and each starts ticked. The
+Reply and Reply all switch only changes the ticks. `reply_all=false` only starts the sender
+alone ticked. The act derives Reply all always and takes the member's ticks from it.
 
 ### 22.7 Wave 2: the acts that send out (2026-10-24)
 

@@ -32,6 +32,7 @@ import {
   lineCount,
   markFor,
   onlySenderTicks,
+  replyAllTicks,
   sendsCount,
   startTicks,
   tickAllTicks,
@@ -298,12 +299,36 @@ describe("one list, words on each person (owner, 2026-10-24)", () => {
     ]);
   });
 
-  it("the form has no Reply or Reply all mode, and names who will not get it", () => {
+  it("Reply all ticks each person but a new one, and the answer is the ticks", () => {
+    const held = replyFromEvent({
+      ...base,
+      classes: {
+        "sagar.kg@jainuniversity.ac.in": "thread",
+        "ananda.babu@jainuniversity.ac.in": "new",
+        "kirankumar@fracktal.in": "org",
+      },
+    })!;
+    let t = onlySenderTicks(held, startTicks(held));
+    t = replyAllTicks(held, t);
+    expect(tickedFor(held, true, t)).toEqual({
+      to: ["sagar.kg@jainuniversity.ac.in"],
+      cc: ["kirankumar@fracktal.in"],
+    });
+    // An earlier Reply never wins over the ticks of this card (item 10).
+    t = toggleTick(onlySenderTicks(held, t), true, "kirankumar@fracktal.in");
+    const a = replyAnswer(held, { action: "send", replyAll: true, body: "Hi", ticks: t })!;
+    expect(JSON.parse(a.slice("APPROVE ".length)).reply.cc).toEqual(["kirankumar@fracktal.in"]);
+  });
+
+  it("the switch changes only the ticks, and the card names who will not get it", () => {
     const src = read("components/ReplyCardForm.tsx");
-    expect(src).not.toContain("data-reply-mode");
+    expect(src).toContain('data-reply-mode="reply"');
+    expect(src).toContain('data-reply-mode="reply-all"');
     expect(src).not.toContain("setReplyAll");
+    // One list: the answer always reads the ticks of the whole list.
     expect(src).toContain("const replyAll = true;");
-    expect(src).toContain('data-reply-shortcut="sender"');
+    expect(src).toContain("setTicks((t) => onlySenderTicks(form, t))");
+    expect(src).toContain("setTicks((t) => replyAllTicks(form, t))");
     expect(src).toContain("data-reply-left-out");
     expect(src).toContain("markFor(form, a)");
   });

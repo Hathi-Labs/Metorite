@@ -189,6 +189,18 @@ export function tickAllTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
   return { ...ticks, reply_all: lower([...all.to, ...all.cc]) };
 }
 
+/**
+ * The Reply all switch (owner amendment, 2026-10-24): tick each person of
+ * the list, except a person that the server classed `new` (a look-alike
+ * included), which stays unticked until the member ticks it. The switch only
+ * changes ticks: the answer is always the ticked people of the one list.
+ */
+export function replyAllTicks(form: ReplyForm, ticks: ReplyTicks): ReplyTicks {
+  const all = form.recipients.reply_all;
+  const keep = [...all.to, ...all.cc].filter((a) => classOfAddress(form, a) !== "new");
+  return { ...ticks, reply_all: lower(keep) };
+}
+
 /** The people of the list that do NOT get the reply, in the server's order. */
 export function leftOut(form: ReplyForm, ticks: ReplyTicks): string[] {
   const on = new Set(ticks.reply_all);
