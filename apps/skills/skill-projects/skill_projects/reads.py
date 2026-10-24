@@ -1753,6 +1753,13 @@ def _expired(stamp: Any) -> bool:
     return at.tzinfo is None or at <= datetime.now(UTC)
 
 
+async def _task_of_run(task_id: Any) -> dict[str, Any]:
+    """The task that a run belongs to. The id passes ``uuid_of`` before it
+    reaches a path, as every id does."""
+    tid = uuid_of(task_id, "task")
+    return (await get(f"/projects/tasks/{tid}")) or {}
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def waiting_agent_requests() -> str:
     """The questions and requests that agents have put to the member and that
@@ -1763,11 +1770,14 @@ async def waiting_agent_requests() -> str:
     page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
     runs = [r for r in page.get("rows") or [] if r.get("status") == "awaiting"]
     tasks = await asyncio.gather(
-        *(get(f"/projects/tasks/{r['task_id']}") for r in runs), return_exceptions=True
+        *(_task_of_run(r.get("task_id")) for r in runs), return_exceptions=True
     )
     out = [legend(), f"{len(runs)} agent requests wait for the member"]
     for run, task in zip(runs, tasks, strict=True):
-        tid = str(run.get("task_id"))
+        try:
+            tid = uuid_of(run.get("task_id"), "task")
+        except GatewayRefusal:
+            continue
         ask = run.get("open_elicitation") or {}
         request = (ask.get("content_metadata") or {}).get("request") or {}
         kind = str(request.get("kind") or "")
