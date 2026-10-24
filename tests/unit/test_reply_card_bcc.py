@@ -254,3 +254,19 @@ async def test_compose_reply_passes_the_bcc_and_the_held_flag(monkeypatch) -> No
     await agents.compose_reply(MAIL, "box", reply_all=True, bcc=[VEENA])
     assert posts[0][1]["bcc"] == [VEENA] and posts[0][1]["held"] is True
     assert seen[0]["reply"]["ticked"]["reply_all"]["bcc"] == [VEENA]
+
+
+async def test_the_act_reports_a_bcc_only_when_the_server_took_it(monkeypatch) -> None:
+    """Review P1: a Bcc that the mail server refused is named as refused,
+    never as sent."""
+    w = _World(monkeypatch)
+
+    async def send(req: Any, background: Any, user: Any) -> dict[str, Any]:
+        w.sent.append(req)
+        return {"id": "sent-1", "refused": [STRANGER]}
+
+    monkeypatch.setattr(rc, "send_email", send)
+    out = await w.card(bcc=[STRANGER, VEENA])
+    res = await _act(out, to=[SAGAR], cc=[], bcc=[STRANGER, VEENA])
+    assert w.sent[0].bcc == [STRANGER, VEENA]
+    assert res["bcc"] == [VEENA] and res["refused"] == [STRANGER]

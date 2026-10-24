@@ -1191,11 +1191,19 @@ async def reply_card_act(
             ),
             background, user,
         )
-        _log.info("email.reply_card_sent", reply_all=choice.reply_all, bcc=len(bcc),
+        # Review P1: report each person only from what the server took. A
+        # Bcc that the mail server refused is named as refused, not as sent.
+        refused = {str(a).lower() for a in (res or {}).get("refused") or []}
+        took = [a for a in bcc if a.lower() not in refused]
+        _log.info("email.reply_card_sent", reply_all=choice.reply_all, bcc=len(took),
+                  refused=len(refused),
                   left_out=len(derived_to) + len(derived_cc) + len(derived_bcc)
                   - len(to) - len(cc) - len(bcc))
-        return {"ok": True, "action": "send", "to": to, "cc": cc, "mailbox": mail.mailbox,
-                "id": (res or {}).get("id"), **({"bcc": bcc} if bcc else {})}
+        return {"ok": True, "action": "send",
+                "to": [a for a in to if a.lower() not in refused],
+                "cc": [a for a in cc if a.lower() not in refused], "mailbox": mail.mailbox,
+                "id": (res or {}).get("id"), **({"bcc": took} if took else {}),
+                **({"refused": sorted(refused)} if refused else {})}
     draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body,
                                  **({"bcc": bcc} if derived_bcc else {}))
     _log.info("email.reply_card_saved", reply_all=choice.reply_all)

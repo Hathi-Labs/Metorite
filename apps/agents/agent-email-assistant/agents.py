@@ -2712,6 +2712,9 @@ async def compose_reply(
     copy = f", with a copy to {copied}" if copied else ""
     if res.get("bcc"):
         copy += f", and a Bcc to {_addr_text(res.get('bcc'))}"
+    if res.get("refused"):
+        # Review P1: the mail server refused these people, so they got nothing.
+        copy += f". The mail server refused {_addr_text(res.get('refused'))}, so they got nothing"
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
         return f"Sent to {to}{copy}, from {box}.{kept}"
