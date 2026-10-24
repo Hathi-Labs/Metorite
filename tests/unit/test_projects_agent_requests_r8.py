@@ -153,7 +153,7 @@ async def test_r8_the_list_is_newest_first(_runs_on, monkeypatch) -> None:
     _seed(wd, new, CREATOR, minutes=2)
     out = await _list(wd, monkeypatch, CREATOR)
     assert out.index("OP6E new") < out.index("OP6E old"), out
-    assert "asks a question" in out and "5 hours ago" in out and "just now" in out
+    assert "asks a question" in out and "5 hours ago" in out and "2 minutes ago" in out
 
 
 async def test_r8_the_read_writes_nothing(_runs_on, monkeypatch) -> None:
