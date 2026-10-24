@@ -153,6 +153,36 @@ describe("the four states", () => {
     expect(out).toContain("Undo");
   });
 
+  it("a replace (PZ-6b) is its own receipt, and its Undo patches the old text back", () => {
+    const REPLACED =
+      'undo: {"body":{"kind":"work","text":"I work from Pune"},"op":"patch","path":"facts/f0001","v":1}\n' +
+      "Replaced «I work from Pune» with «I work from Mumbai». To undo: profile_undo().";
+    const read = readProfileResult(REPLACED);
+    expect(read.status).toBe("saved");
+    expect(undoRequest(read.undo as ProfileUndo)).toEqual({
+      url: "/api/auth/me/assistant-profile/facts/f0001",
+      method: "PATCH",
+      body: JSON.stringify({ kind: "work", text: "I work from Pune" }),
+    });
+    const out = html(REPLACED);
+    expect(out).toContain("Replaced in your profile");
+    expect(out).not.toContain("Saved to your profile");
+    expect(out).toContain("text-success");
+    expect(out).toContain("Undo");
+    expect(out).not.toContain("profile_undo");
+  });
+
+  it("a declined card (PZ-6b) is Not saved in the neutral tone, with no Undo", () => {
+    const DECLINED = 'profile: {"reason":"declined","status":"refused","v":1}\nNot saved.';
+    expect(readProfileResult(DECLINED)).toMatchObject({ status: "refused", reason: "declined" });
+    const out = html(DECLINED);
+    expect(out).toContain("Not saved");
+    expect(out).not.toContain("text-destructive");
+    expect(out).toContain("text-muted-foreground");
+    expect(out).not.toContain(">Undo<");
+    expect(out).not.toContain("declined");
+  });
+
   it("an undo is its own receipt, with no Undo button", () => {
     expect(readProfileResult(UNDONE).status).toBe("undone");
     const out = html(UNDONE, "profile_undo");
