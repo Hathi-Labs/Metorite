@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2 to OP-5 are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 to OP-5 are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -196,7 +196,11 @@ rule of `my_tasks_cutover.md` §4.8 item 4.
 ### 4.4 Routes
 
 - `/projects` keeps its URL state grammar. My work adds a view key in that
-  same grammar. The builder of OP-2 picks the key and writes it here.
+  same grammar. OP-2 chose the keys, one `?app=` value for each view:
+  `my-inbox`, `my-today`, `my-next`, `my-waiting`, `my-someday` and
+  `my-done`. They draw the task store views `inbox`, `today`, `next`,
+  `waiting`, `someday` and `done`. `?task=<id>` still opens a task over any
+  view.
 - `/tasks` and each of its deep links redirect to the matching My work view.
   Links in My Day cards, WhatsApp replies and email stay valid.
 - `/calendar` does not change.
@@ -508,7 +512,8 @@ The four gaps that audit found are closed here.
 5. **The landing view (§8 answer 2).** With the flag on, `/projects` with no
    `?project=`, `?task=` or `?app=` opens `my-today`. This must win over the
    effect that selects `visibleRoots[0]` today (`page.tsx`, the
-   `selected` effect).
+   `selected` effect). The links `?assignee=` (the People "Assign work"
+   link) and `?center=` also win over the landing.
 6. **The gate.** D-OP-4 is scoped out. The one seat (`core`) holds both
    `feature:tasks` and `feature:projects`, and `access.ts` maps `/projects`
    to `feature:projects`. A member with only `feature:tasks` keeps `/tasks`
@@ -522,9 +527,11 @@ The four gaps that audit found are closed here.
 2. `?app=my-today` and each other key open their view. `/projects` with
    nothing opens Today. With the flag off, `/projects` behaves exactly as
    before. Fence: vitest on `resolveAppLink` and the landing rule.
-3. No file under `app/projects` has the basename of a file in
+3. No NEW file under `app/projects` has the basename of a file in
    `app/tasks/components`, and nothing imports `app/tasks/page.tsx`. Fence:
-   a source test.
+   a source test. No new basename clash: two existed before OP-2
+   (`AssistantRail.tsx` and `TaskBoard.tsx`), and the test pins them by full
+   path.
 4. The visual review at 390 and 1280 px, in light mode, compact density and
    a changed accent, with the flag on.
 
@@ -532,6 +539,29 @@ The four gaps that audit found are closed here.
 `npx vitest run src/app/projects src/app/tasks src/lib/nav.test.ts
 src/lib/publicFlags.test.ts`, then
 `NEXT_PUBLIC_PROJECTS_MY_WORK=1 npx playwright test e2e/projects-my-work.spec.ts`.
+
+**Status: BUILT 2026-10-24** (branch `ws64-op2-my-work-mt-7cb37509`, task
+#296), dark behind `NEXT_PUBLIC_PROJECTS_MY_WORK`, with fix round 1: Today has
+its own title and empty state, My work gives the store view back on exit, it
+claims its own undo scope, `?assignee=` and `?center=` win over the landing,
+Today reads instants in the member's zone and reloads the date on return, and
+the basename allowlist is pinned by full path. Fix round 2: the count e2e
+reads only settled counts, and a My work view shows its name once, because
+`ItemList` and `InboxView` take an `embedded` prop. One source,
+`tasks/lib/viewTitles.ts`, names the six views for `/tasks` and for My work.
+§4.3 is NOT met by OP-2. A row
+click in a My work view still opens `TaskFocusModal`. OP-2b owes it.
+
+### OP-2b — the task panel in My work · MEDIUM · AGENT-SAFE
+
+Builds after OP-2, dark behind the same flag. It meets §4.3.
+
+**Scope.** A row click in a My work view opens the Projects `TaskPanel.tsx`
+with the overlay strip of S6e (disposition, context, energy, estimate,
+defer), and not `TaskFocusModal`.
+
+**Done when.** A vitest test on the open rule passes, and an e2e spec opens
+`TaskPanel` from a My work row.
 
 ### OP-3 — the Personal space · AGENT-SAFE · R8
 

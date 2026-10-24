@@ -118,6 +118,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_CHAT_FIRST",
       // WS-64 OP-1: the compact chrome of Projects (tool row, sheets, chips).
       "NEXT_PUBLIC_PROJECTS_COMPACT_CHROME",
+      // WS-64 OP-2: My work in the Projects sidebar, and Today as the landing.
+      "NEXT_PUBLIC_PROJECTS_MY_WORK",
       // WS-63 PZ-7: the Assistant pane in Settings.
       "NEXT_PUBLIC_ASSISTANT_PROFILE",
     ];
