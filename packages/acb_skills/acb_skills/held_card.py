@@ -34,8 +34,8 @@ _log = get_logger("acb_skills.held_card")
 __all__ = [
     "ADDED_MARK",
     "ADDRESS_MAX",
-    "ASSISTANT_ADDED_MARK",
     "ARTIFACT_REF",
+    "ASSISTANT_ADDED_MARK",
     "ATTACHMENT_REF",
     "CLASSES",
     "CLASS_NEW",
@@ -56,8 +56,8 @@ __all__ = [
     "METORITE_FILE_REFUSED",
     "NEW_MARK",
     "RECIPIENT_KINDS",
-    "RULE_COPY_MARK",
     "ROW_KINDS",
+    "RULE_COPY_MARK",
     "SETTING_CLOSED",
     "SETTING_MAILBOX",
     "SETTING_REFUSED",
@@ -68,6 +68,7 @@ __all__ = [
     "address_problem",
     "class_mark",
     "closed_setting_value",
+    "confusable_of",
     "domain_of",
     "file_label",
     "held_card_send_enabled",
@@ -76,6 +77,7 @@ __all__ = [
     "lookalike_warning",
     "parse_file_ref",
     "recipient_label",
+    "rule_copy_mark",
     "strongest_class",
     "thread_mark",
 ]
@@ -127,8 +129,9 @@ THREAD_MARK = "from this thread"
 #: member copies them on mail of this thread or to this domain (item 7 of
 #: the owner's request of 2026-10-24).
 USUAL_COPY_MARK = "you usually copy them"
-#: The mark on a person that the member's own "always Cc" rule adds.
-RULE_COPY_MARK = "your rule copies them"
+#: The head of the mark on a person that the member's own "always copy" rule
+#: adds (§21.16): "your rule: always copy on jainuniversity.ac.in".
+RULE_COPY_MARK = "your rule: always copy on"
 #: The mark on a person that the chat added to a reply, outside a held run.
 #: The server cannot know that the member named the person (review P1-b).
 ADDED_MARK = "added to this reply"
@@ -143,6 +146,13 @@ def thread_mark(sender: str) -> str:
     the address."""
     who = " ".join(str(sender or "").split())[:80]
     return f"on {who}'s original email" if who else "on the original email"
+
+
+def rule_copy_mark(match: str) -> str:
+    """The mark of a colleague that the member's always-copy rule for
+    *match* (a domain or an address) adds to a card (§21.16)."""
+    m = " ".join(str(match or "").split())[:120]
+    return f"{RULE_COPY_MARK} {m}" if m else RULE_COPY_MARK
 
 
 def strongest_class(classes: Iterable[str]) -> str:
@@ -312,10 +322,26 @@ _CONFUSABLE = str.maketrans({
     # Greek
     "\u03b1": "a", "\u03bf": "o", "\u03c1": "p", "\u03bd": "v", "\u03b9": "i",
     "\u03ba": "k", "\u03c4": "t", "\u03c5": "u",
+    # Latin forms and number forms that a reader takes for a plain letter
+    # (H-393 review P1): IPA alpha and script g, dotless i, the dental
+    # click, and the small Roman numerals one and fifty.
+    "\u0251": "a", "\u0261": "g", "\u0131": "i", "\u01c0": "l",
+    "\u2170": "i", "\u217c": "l",
 })
 #: The shortest domain that the one-edit rule reads. A short domain has too
 #: many neighbours, so only the folded rule reads it.
 _EDIT_MIN = 6
+
+
+def confusable_of(ch: str) -> str:
+    """The Latin letter that *ch* imitates, by the ONE look-alike table
+    (:data:`_CONFUSABLE`), or "" when the table holds no entry for a
+    letter that is not ASCII. The mixed-script check of a chat send names
+    this letter (H-393, ``reply_card.lookalike_words``)."""
+    if not ch or ch.isascii():
+        return ""
+    folded = ch.translate(_CONFUSABLE)
+    return folded if folded != ch else ""
 
 
 def _unicode_domain(domain: str) -> str:
@@ -447,6 +473,10 @@ HELD_SETTING_DECISIONS: dict[str, str] = {
     # the reading of each later mail. An injection that adds its own domain
     # makes its mail read as internal. So a held chat never changes it.
     "org_domains": SETTING_REFUSED,
+    # §21.16 (owner, 2026-10-24): the always-copy rules decide who goes on
+    # each later reply and new-mail card. An injection that changes them
+    # changes future recipients, so a held chat never changes them.
+    "always_copy": SETTING_REFUSED,
 }
 
 #: The values that each closed key with a fixed set takes.

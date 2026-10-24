@@ -6282,17 +6282,6 @@ line — never reclaim a number by deleting the other entry.
   delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
-### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
-- **Check:** a fence refuses a word that mixes scripts, for example a
-  Cyrillic letter in a Latin word, at a chat send. If one exists, delete
-  this entry.
-- **Why:** the #1237 review rated this P2. It carries about one bit for each
-  letter, and the letters are visible. `compose_reply` on main has the same
-  gap.
-- **Do this:** add a mixed-script check for each word to
-  `reply_card.has_hidden_text`. Keep Hindi, Bengali and other single-script
-  text working. Add a fence.
-- **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]

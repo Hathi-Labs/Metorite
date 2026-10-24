@@ -937,9 +937,16 @@ def has_explicit_open_world(item: Any) -> bool:
 #: the act takes only a subset of that record. In a held run with
 #: ``EMAIL_HELD_CARD_SEND`` on, a ``new`` address starts unticked and
 #: flagged. With the switch off, a held run refuses ``cc`` at call time.
+#:
+#: ``compose_reply`` gains ``bcc`` (owner, 2026-10-24, §21.15). The gateway
+#: classes each Bcc with THE classifier and records it under the card's id,
+#: and the act takes only a subset of that record. In a held run the gateway
+#: takes a Bcc to an ``org`` or a ``sent`` person only, and it refuses any
+#: other address with no card (21.10, open question 5). The tool sets the
+#: ``held`` flag of the card request from the run, never from the model.
 CARD_BOUND_SEND_TOOLS: Mapping[str, frozenset[str]] = {
     "compose_reply": frozenset(
-        {"email_id", "account_id", "reply_all", "draft", "instruction", "cc"}),
+        {"email_id", "account_id", "reply_all", "draft", "instruction", "cc", "bcc"}),
     "send_draft": frozenset({"account_id", "draft_id"}),
     "schedule_send": frozenset({"account_id", "draft_id", "send_at"}),
 }
@@ -1004,6 +1011,11 @@ HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
         # a closed key (mail to the member's own address only), and
         # ``org_domains`` is refused in a held run (it decides who is "org").
         "morning_brief_enabled", "org_domains",
+        # §21.16 (owner, 2026-10-24): the always-copy rules. The row in
+        # ``held_card.HELD_SETTING_DECISIONS`` refuses it in a held run,
+        # because it changes the recipients of each later card. The gateway
+        # takes only an org or a sent colleague in any chat.
+        "always_copy",
     }),
 }
 

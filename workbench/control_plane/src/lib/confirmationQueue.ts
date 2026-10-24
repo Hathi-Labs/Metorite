@@ -288,7 +288,7 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     // ticked and Approve stays off. A plain APPROVE would be refused anyway.
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
     ...(v.fenced === true ? { fenced: true } : {}),
-    ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply) } : {}),
+    ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply, requestId) } : {}),
   };
 }
 

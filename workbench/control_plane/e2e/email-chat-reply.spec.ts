@@ -77,6 +77,11 @@ async function install(page: Page, form: Record<string, unknown> = REPLY_FORM) {
         const path = new URL(url, window.location.href).pathname;
         if (path.startsWith("/api/email/")) {
           emailCalls.push(`${method} ${path}`);
+          if (path === "/api/email/reply-card/bcc") {
+            // §21.15: the server takes the member's Bcc for this card.
+            const body = JSON.parse(String(init?.body ?? "{}"));
+            return json({ address: body.address, class: "org", mark: "added to this reply" });
+          }
           return json({});
         }
         if (url.includes("/api/agent/respond-input")) {
@@ -228,6 +233,7 @@ test.describe("the reply card in the main chat", () => {
       body: "Hi all,\n\nConfirmed for June.\n\nJane",
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
+      bcc: [], // §21.15: the card always names its ticked Bcc
       message_id: MAIL_ID,
     });
     await expect(card).toHaveCount(0);
@@ -235,6 +241,33 @@ test.describe("the reply card in the main chat", () => {
     // No Email app opened, and the page reached no email route itself.
     expect(new URL(page.url()).pathname).toBe("/chat");
     expect(await emailCalls(page)).toEqual([]);
+  });
+
+  test("a Bcc row: the proposed Bcc starts ticked, and a typed Bcc joins it (21.15)", async ({ page }) => {
+    const withBcc = {
+      ...REPLY_FORM,
+      recipients: {
+        reply: { to: ["kim@contoso.test"], cc: [], bcc: ["veena@acme.test"] },
+        reply_all: { ...REPLY_FORM.recipients.reply_all, bcc: ["veena@acme.test"] },
+      },
+      marks: { "veena@acme.test": "added to this reply" },
+    };
+    await ask(page, withBcc);
+    const card = page.locator("[data-reply-card]");
+    const bcc = card.locator('[data-reply-recipients="bcc"]');
+    await expect(bcc).toContainText("veena@acme.test");
+    await expect(card.locator("[data-reply-bcc-note]")).toContainText("Bcc (hidden from the others)");
+    await expect(card.locator("[data-reply-count]")).toContainText("Sends to 4 of 4");
+    await card.getByRole("textbox", { name: "Add a Bcc address" }).fill("geo@acme.test");
+    await card.locator("[data-reply-bcc-submit]").click();
+    await expect(bcc).toContainText("geo@acme.test");
+    await expect(card.locator("[data-reply-count]")).toContainText("Sends to 5 of 5");
+    await page.screenshot({ path: "test-results/reply-bcc-light.png" });
+    await card.locator("[data-reply-send]").click();
+    await expect.poll(() => answers(page)).toHaveLength(1);
+    const reply = parsed((await answers(page))[0].answer);
+    expect(reply.bcc).toEqual(["veena@acme.test", "geo@acme.test"]);
+    expect(await emailCalls(page)).toEqual(["POST /api/email/reply-card/bcc"]);
   });
 
   test("a tick box takes a person off: the answer names only the ticked people", async ({ page }) => {
@@ -302,6 +335,7 @@ test.describe("the reply card in the main chat", () => {
       body: REPLY_FORM.body,
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
+      bcc: [], // §21.15: the card always names its ticked Bcc
       message_id: MAIL_ID,
     });
     await expect(page.getByText(RESULTS.save).first()).toBeVisible({ timeout: 15_000 });
