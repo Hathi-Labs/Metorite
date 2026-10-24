@@ -3,9 +3,9 @@ import { expect, test, type Page } from "@playwright/test";
 /**
  * EM-CR (`email_app_master_plan.md` §18): one email reply, done in the MAIN
  * chat. Owner request of 2026-10-20: the assistant describes the email, the
- * reply card shows every person with a tick box (owner, 2026-10-24: no Reply
- * or Reply all mode), the member edits the text and presses Send, and the
- * reply completes with no Email app opened.
+ * reply card shows every person with a tick box, and a Reply or Reply all
+ * switch that only changes the ticks (owner, 2026-10-24). The member edits
+ * the text and presses Send, and the reply completes with no Email app opened.
  *
  * The page is the real `/chat` with the orchestrator. No gateway runs. The
  * stream is a `fetch` override in the page, as in `email-chat-cards.spec.ts`.
@@ -16,7 +16,7 @@ import { expect, test, type Page } from "@playwright/test";
  * `POST /api/agent/respond-input`.
  *
  * What this holds: the description shows before the card; the card shows
- * the server's one list, the shortcuts change only the ticks, and the page
+ * the server's one list, the switch changes only the ticks, and the page
  * derives no recipient; the answer carries
  * the edited body and the shown lists; the run goes on and its result shows;
  * the page stays on `/chat` and calls no `/api/email/*` route.
@@ -188,8 +188,8 @@ test.describe("the reply card in the main chat", () => {
     await expect(card).toContainText("Kim Lee <kim@contoso.test>");
     await expect(card).toContainText("Quote for June");
     await expect(card.locator("[data-reply-excerpt]")).toContainText("confirm the June price");
-    // ONE list: every person of the email, each ticked. No mode to choose.
-    await expect(card.locator("[data-reply-mode]")).toHaveCount(0);
+    // ONE list: every person of the email, each ticked. Reply all is on.
+    await expect(card.locator('[data-reply-mode="reply-all"]')).toHaveAttribute("aria-pressed", "true");
     const to = card.locator('[data-reply-recipients="to"]');
     await expect(to).toContainText("kim@contoso.test");
     await expect(to).toContainText("lee@contoso.test");
@@ -199,15 +199,15 @@ test.describe("the reply card in the main chat", () => {
     await expect(card.locator("[data-reply-notice]")).toHaveText(REPLY_FORM.notices[0]);
     await expect(card.locator("[data-reply-count]")).toContainText("Sends to 3 of 3");
     await expect(card.locator("[data-reply-left-out]")).toHaveCount(0);
-    // "Only the sender" changes the ticks, and the card names who is left out.
-    await card.locator('[data-reply-shortcut="sender"]').click();
+    // Reply ticks the sender alone, and the card names who is left out.
+    await card.locator('[data-reply-mode="reply"]').click();
     await expect(summary).toHaveText("Reply to kim@contoso.test");
     await expect(card.locator("[data-reply-left-out]")).toHaveText(
       "lee@contoso.test, ops@contoso.test will not get this.",
     );
     await expect(to).toContainText("lee@contoso.test");
     await page.screenshot({ path: "test-results/reply-one-list-sender.png" });
-    await card.locator('[data-reply-shortcut="all"]').click();
+    await card.locator('[data-reply-mode="reply-all"]').click();
     await expect(card.locator("[data-reply-count]")).toContainText("Sends to 3 of 3");
     const box = card.getByRole("textbox", { name: "Reply text" });
     await expect(box).toHaveValue(REPLY_FORM.body);
@@ -273,7 +273,7 @@ test.describe("the reply card in the main chat", () => {
     };
     await ask(page, held);
     const card = page.locator("[data-reply-card]");
-    await expect(card.locator("[data-reply-mode]")).toHaveCount(0);
+    await expect(card.locator('[data-reply-mode="reply-all"]')).toHaveAttribute("aria-pressed", "true");
     await expect(card.locator('[data-reply-person="ops@contoso.test"]')).toContainText(
       "you usually copy them",
     );
@@ -316,6 +316,18 @@ test.describe("the reply card in the main chat", () => {
     await expect(card).toHaveCount(0);
     await expect(page.getByText(RESULTS.REJECT).first()).toBeVisible({ timeout: 15_000 });
     expect(await emailCalls(page)).toEqual([]);
+  });
+
+  test("an earlier Reply never wins: the ticks of the card are what goes", async ({ page }) => {
+    await ask(page);
+    const card = page.locator("[data-reply-card]");
+    await card.locator('[data-reply-mode="reply"]').click();
+    await card.getByRole("checkbox", { name: "Send to ops@contoso.test" }).check();
+    await card.locator("[data-reply-send]").click();
+    await expect.poll(() => answers(page)).toHaveLength(1);
+    const reply = parsed((await answers(page))[0].answer);
+    expect(reply.to).toEqual(["kim@contoso.test"]);
+    expect(reply.cc).toEqual(["ops@contoso.test"]);
   });
 
   test("an empty body cannot be sent", async ({ page }) => {

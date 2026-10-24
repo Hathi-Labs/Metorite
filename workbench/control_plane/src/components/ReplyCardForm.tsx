@@ -10,11 +10,12 @@
  * logic is `lib/replyCard.ts`. This file holds the member's edits only.
  *
  * The client derives no recipient. The card shows ONE list with a tick box
- * for each person (owner, 2026-10-24): there is no Reply or Reply all mode,
- * because a hidden second list once sent a reply to one person while the
- * member ticked more. "Only the sender" and "Tick all" change the ticks and
- * never the list. The reply goes only to the ticked people, the card counts
- * them ("Sends to 3 of 5"), and it names each person who will not get it.
+ * for each person (owner, 2026-10-24). A hidden second list once sent a
+ * reply to one person while the member ticked more. So the Reply and Reply
+ * all switch changes the ticks in view, and never the list: Reply ticks the
+ * sender alone, Reply all ticks each person but a `new` one. The reply goes
+ * only to the ticked people, the card counts them ("Sends to 3 of 5"), and
+ * it names each person who will not get it.
  *
  * Nothing hides (security review of #1191). The summary names each address
  * the reply goes to, in full. Each notice of the server shows: a Reply-To
@@ -46,7 +47,7 @@ import {
   replySummary,
   sendsCount,
   startTicks,
-  tickAllTicks,
+  replyAllTicks,
   tickedFor,
   toggleTick,
   type ReplyAction,
@@ -122,8 +123,11 @@ function AddressRow({
 
 export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
   // ONE list (item 11): the card always shows every person, so the answer
-  // names the people of that list that the member ticked.
+  // names the people of that list that the member ticked. The Reply and
+  // Reply all switch (owner amendment, 2026-10-24) only changes the ticks,
+  // so the ticks of THIS card are always what goes.
   const replyAll = true;
+  const [mode, setMode] = useState<"reply" | "reply-all">(form?.replyAll === false ? "reply" : "reply-all");
   const [body, setBody] = useState(form?.body ?? "");
   const [ticks, setTicks] = useState<ReplyTicks>(() =>
     form ? startTicks(form) : { reply: [], reply_all: [] },
@@ -197,30 +201,37 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
         )}
       </figure>
 
-      {widens && (
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Tick shortcuts">
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="Reply"
-            onClick={() => setTicks((t) => onlySenderTicks(form, t))}
-            disabled={disabled}
-            data-reply-shortcut="sender"
-          >
-            Only the sender
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="ReplyAll"
-            onClick={() => setTicks((t) => tickAllTicks(form, t))}
-            disabled={disabled}
-            data-reply-shortcut="all"
-          >
-            Tick all
-          </Button>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Who gets the reply">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Reply"
+          selected={mode === "reply"}
+          onClick={() => {
+            setMode("reply");
+            setTicks((t) => onlySenderTicks(form, t));
+          }}
+          disabled={disabled}
+          data-reply-mode="reply"
+        >
+          Reply
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="ReplyAll"
+          selected={mode === "reply-all"}
+          onClick={() => {
+            setMode("reply-all");
+            setTicks((t) => replyAllTicks(form, t));
+          }}
+          disabled={disabled || !widens}
+          data-reply-mode="reply-all"
+        >
+          Reply all
+        </Button>
+        {!widens && <span className="text-[11px] text-muted-foreground">No one else is on this email.</span>}
+      </div>
 
       <dl className="space-y-1" aria-label="Recipients">
         <AddressRow label="To" list={shown.to} form={form} ticked={ticked} onTick={onTick} disabled={disabled} />
