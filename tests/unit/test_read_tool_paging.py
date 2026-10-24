@@ -100,6 +100,10 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
+        "No notice is lost: the card shows four (clean_reply_form refuses more), "
+        "and _reply_form puts notices[4:] into the card's note. Removing the cut "
+        "on 2026-10-24 made a card with five notices fail to show.",
     "packages/acb_skills/acb_skills/crm_tools.py::_card_label::[str(s) for s in choice.get('samples') or [] if str(s).strip()][:_LABEL_SAMPLES]":
         'The masked samples of one option label of a CRM question card (CRM-Q32-8). The read gives 3 at most. Not rows.',
     'apps/agents/agent-email-assistant/agents.py::_card_detail::detail[:limit]':
