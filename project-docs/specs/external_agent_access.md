@@ -1462,6 +1462,21 @@ Owner directive, 2026-10-20. If one AI session holds a task, no other AI session
 
 **Locks.** The gate takes no task row lock. It takes the lock order of EA-13c (run, then task row) and the index decides a race. A takeover locks the old run only, and it checks `last_activity_at`, so a heartbeat that arrives first wins.
 
+**SW-13c: the own run is of one connection (BUILT 2026-10-25 on `sw13c-gate-mt-5bbab3c0`, not merged, Metorite task #416).** Two machines of one member share one stamp, and each machine signs in on its own `agent_connection`.
+
+- **The own run.** For an agent caller, the gate counts an open run as its own only when the member, the stamp and the `connection_id` all match. The connection comes from `UserContext.agent`, which branch 0 builds from the signed `X-Agent-Connection` and the token row. It never comes from a body. One read, `_OPEN_RUN_SQL`, holds both rules: an agent binds its connection, and a person binds NULL.
+- **Another machine holds the task.** An open run of the same member and stamp on another connection is a holder like any other. A claim or a start from the second machine gets 409 `task_held`, or a takeover when the lease ended.
+- **A dead connection frees the task at once.** A holder whose connection is revoked or expired can never send a heartbeat again. So the gate takes it over at once, with the line "Taken over by <member>/<client>". A run with no `connection_id` keeps the lease rule only, because no code deletes a connection.
+- **A new sign-in leaves the old connection LIVE (fix round 1).** `approve_authorize` makes a new connection and revokes nothing, because the PC and the VPS share one client id. So the old run holds the task until its lease ends, or until the member's agent releases it.
+  - **The 409 says so.** When the holder is the caller's own member and stamp on another connection, the `task_held` detail carries `same_client: true`, the `run_id` and a hint. Another member's run id never leaves.
+  - **The release path.** The edge adds the hint to its fixed text. If that session has ended, the agent calls `release_task` with the `run_id`, then claims again. The release checks the member and the stamp only (EA-14a), so the agent may release it.
+- **A dead own run is nobody's own (fix round 1).** `_OPEN_RUN_SQL` leaves out a run whose connection is dead. So a person's start does not write into a run that the next claim abandons. The gate takes the dead run over, and a new run opens on the live connection that the person names.
+- **One rule in three places.** `filters.holder_free` is the Python rule of the gate and of `held_by.stale`. `filters.connection_gone_sql` is one SQL text that the holder read, `unheld` and `held_by` use. So a task with a dead holder reads as `stale` and as unheld, and the gate takes it over. The field `lease_expired` of the runs wire keeps the lease only, as its name says.
+  - **Known gap.** `AgentRunPanel.tsx` reads `lease_expired`, so for a dead holder it does not say that the next claim can take the task. The card and `held_by.stale` do say it.
+- **A person keeps the old rules.** "Ask an agent" binds no connection in the gate, so the own run of a person stays member and stamp. The insert still stores the connection that the person names. The dead-connection rule applies to every caller, because it is a fact of the holder.
+- **No migration.** The per-task index `pm_agent_runs_one_open_per_task` already refuses a second open run beside the run of another machine.
+- **Not changed.** A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too, not the connection. An agent move stamps its own connection on the run. SW-7 owns two terminals on one connection.
+
 **Fence.** `tests/unit/test_agent_run_exclusive.py`.
 
 ### 12.4 One call for the context, one call for the queue (EA-15)
