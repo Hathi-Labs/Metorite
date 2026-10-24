@@ -69,6 +69,7 @@
     "report_render",
     "task_detail",
     "vocabulary",
+    "waiting_agent_requests",
     "my_task",
     "recurrence",
     "render_board",
