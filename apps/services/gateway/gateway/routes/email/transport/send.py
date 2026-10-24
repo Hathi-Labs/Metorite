@@ -271,7 +271,11 @@ async def send_email(
             except Exception:
                 pass
 
-        return {"id": msg_id, "ok": True}
+        # §21.15 review P1: the recipients that the mail server refused. Only
+        # the SMTP path can tell. A caller reports a person as sent only when
+        # the server did not refuse that person.
+        refused = sorted(getattr(sess.provider, "last_refused", None) or ())
+        return {"id": msg_id, "ok": True, **({"refused": refused} if refused else {})}
 
 
 #: The 404 of a reply whose mail is not in the sending mailbox (EM-T8a).

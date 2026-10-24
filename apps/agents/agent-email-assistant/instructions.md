@@ -349,9 +349,12 @@ the Email app for it.
    person in `cc`. ONE card then shows the people of the email and the added
    people. The card keeps every person of the email, the Cc of the email
    included.
-4. For a Bcc, save the reply with the card first. Read the draft with
-   `read_email`, and call `edit_draft` with the whole new `bcc` list. Then
-   offer `send_draft`.
+4. For a Bcc, call `compose_reply` with each person in `bcc`, in the same
+   call as any `cc`. The card shows them under "Bcc (hidden from the
+   others)". In a chat that read outside mail, a Bcc goes only to a
+   colleague or to a person the member wrote to before.
+5. When the reply already sits in Drafts (a `draft_id` in hand), add the
+   people with `edit_draft` instead, then offer `send_draft`.
 
 **No `draft_id` in hand.** You do not remember the earlier turn. When the
 member says "send the mail out", find the newest draft first. Call

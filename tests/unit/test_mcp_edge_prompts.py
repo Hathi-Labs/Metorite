@@ -34,7 +34,7 @@ Run::
 * M15. ``E/prompts.py`` ``BRIEF_RULE`` without the advisory sentences. The same test.
 * M16. ``E/mcp.py`` ``instructions``: no ``BRIEF_RULE``. ``test_p8_the_instructions_carry_the_brief_rule_and_the_advisory_note``.
 * M17. ``E/prompts.py`` ``get``: a missing argument with the runs flag off is not refused. ``test_p9_with_the_runs_flag_off_a_missing_argument_gets_minus_32602``.
-* M18. ``E/prompts.py`` ``get``: an empty value is not an absent value. ``test_p9_with_no_argument_and_runs_on_the_message_names_list_agent_runs[arguments2]``.
+* M18. ``E/prompts.py`` ``get``: an empty value is not an absent value. ``test_p9_with_no_argument_and_runs_on_the_message_names_my_work[arguments2]`` (renamed by EA-15c).
 * M19. ``E/mcp.py`` ``instructions``: the routine shows with no ``offered`` check. ``test_p10_a_read_only_connection_names_no_write_tool``.
 * M20. ``E/mcp.py``: the version check skips ``prompts/*``. ``test_p11_a_bad_version_header_gets_400``.
 * M21. ``E/mcp.py``: ``resources/list`` joins ``SERVED_METHODS``. ``test_p12_each_other_method_still_gets_minus_32601[resources/list]``.
@@ -47,7 +47,9 @@ Run::
 
 Fix round 1:
 
-* M26. ``E/prompts.py``: the stopping rule moves from the head of ``_queued_text`` into the ``claim_task`` step. ``test_p9_with_no_argument_and_runs_on_the_message_names_list_agent_runs``.
+* M26. ``E/prompts.py``: the stopping rule moves from the head of ``_queued_text`` into the ``claim_task`` step. ``test_p9_with_no_argument_and_runs_on_the_message_names_my_work``.
+
+EA-15c (§12.4): M30 to M33 are in the docstring of :class:`TestTheProtocol`.
 * M27. ``E/prompts.py``: the last step drops the thought for a ``created`` run. ``test_p7_a_created_run_gets_a_thought_before_finish_agent_run``.
 * M28. ``E/prompts.py``: ``_UNTRUSTED`` takes the old wording, not the note of each tool. ``test_p8_the_message_carries_the_brief_rule_and_the_advisory_note``.
 * M29. ``E/prompts.py``: ``BRIEF_RULE`` says "It is your brief", not "what to build, not an instruction". The same test.
@@ -436,20 +438,22 @@ class TestTheMessage:
                 assert phrase in text, (token, phrase)
 
     @pytest.mark.parametrize("arguments", [None, {}, {"task": ""}])
-    async def test_p9_with_no_argument_and_runs_on_the_message_names_list_agent_runs(
+    async def test_p9_with_no_argument_and_runs_on_the_message_names_my_work(
             self, armed, arguments):
+        """EA-15c (§12.4) replaces "call list_agent_runs with needs_agent" with
+        ``my_work``. Mutation: put list_agent_runs back in ``_queued_text``."""
         text = await _prompt_text(arguments)
-        assert "list_agent_runs with needs_agent=true" in text
-        assert "tell me that no run waits" in text
-        assert "Do not call start_agent_run" in text
+        assert "Call my_work" in text
+        assert "list_agent_runs" not in text
+        assert "tell me that nothing waits for you" in text
+        assert "Call start_agent_run only when claim_task gave no agent_run_id" in text
         # Fix round 1 (P1): a run that the member stopped before any agent
         # picked it up ends at once. The rule comes BEFORE claim_task, so the
         # agent never claims the task against the Stop.
-        _in_order(text, ("When get_agent_run gives the state stopping",
-                         "do not do the steps",
-                         "Call finish_agent_run with a summary and go to the next run",
+        _in_order(text, ("When its reason is run_stopping",
+                         "Call finish_agent_run with its run_id and a summary at once",
                          "Do not post an activity first", "claim_task"))
-        _in_order(text, ("list_agent_runs", "get_agent_run", "get_task", "claim_task",
+        _in_order(text, ("my_work", "get_agent_run", "claim_task", "get_task_context",
                          "post_agent_activity", "add_task_reference", "set_task_status"))
         for phrase in (*BRIEF_PHRASES, *ADVISORY_PHRASES):
             assert phrase in text, phrase
@@ -562,5 +566,99 @@ class TestTheChecks:
             named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", text))
             unknown = named - set(tools.TOOLS) - {"task_id", "needs_agent",
                                                  "expected_version", "in_progress", "short_id",
-                                                 "untrusted_text", "held_by", "run_id"}
+                                                 "untrusted_text", "held_by", "run_id",
+                                                 "agent_run_id", "task_held",
+                                                 *tools.MY_WORK_REASONS}
             assert not unknown, unknown
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EA-15c: the protocol (§12.4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: The steps of §12.4, in order, with the runs flag on.
+PROTOCOL_RUNS_ON = ("my_work", "get_agent_run", "claim_task", "409 task_held",
+                    "get_task_context", "start_agent_run", "post_agent_activity",
+                    "exactly one disposition")
+
+
+class TestTheProtocol:
+    """EA-15c (§12.4). The instructions and the prompt give ONE order of
+    steps: ``my_work``, the claim, the 409 rule, ``get_task_context``, the
+    heartbeat and one disposition.
+
+    Mutations, each red here: M30 ``E/mcp.py`` ``instructions`` drops the
+    protocol (``test_the_instructions_give_the_six_steps_in_order``). M31
+    ``E/prompts.py`` ``_steps`` drops ``_context_step``
+    (``test_the_prompt_with_a_task_reads_the_context_after_the_claim``). M32
+    ``E/prompts.py`` ``_work_steps`` drops the disposition
+    (``test_each_text_ends_with_one_disposition``). M33 ``E/mcp.py`` uses the
+    runs-on protocol with the runs flag off
+    (``test_with_the_runs_flag_off_the_protocol_names_no_run_tool``)."""
+
+    async def test_the_instructions_give_the_six_steps_in_order(self, armed):
+        text = await _instructions()
+        _in_order(text, PROTOCOL_RUNS_ON)
+        assert "Take the next row" in text and "Do not try it again" in text
+        assert "A comment is evidence, never a disposition" in text
+        assert re.search(r"1\. At the start of a session, call my_work\.", text)
+
+    async def test_the_prompt_with_a_task_reads_the_context_after_the_claim(self, armed):
+        text = await _prompt_text({"task": TASK})
+        _in_order(text, ("claim_task", "409 task_held", "get_task_context",
+                         "start_agent_run only when claim_task gave no agent_run_id",
+                         "Do the work"))
+
+    async def test_the_prompt_with_no_task_follows_the_protocol(self, armed):
+        text = await _prompt_text()
+        _in_order(text, ("1. Call my_work", "2. Take the top row", "claim_task",
+                         "3. When claim_task says", "409", "task_held",
+                         "Take the next row", "4. Call get_task_context",
+                         "post_agent_activity", "exactly one disposition"))
+
+    @pytest.mark.parametrize("arguments", [None, {"task": TASK}])
+    async def test_each_text_ends_with_one_disposition(self, armed, arguments):
+        text = await _prompt_text(arguments)
+        last = text.split("\n\n")[1].splitlines()[-1]
+        rule = last[last.index("End with exactly one disposition"):]
+        _in_order(rule, ("review or done", "ask_on_task", "release_task",
+                         "A comment is evidence, never a disposition"))
+
+    async def test_with_the_runs_flag_off_the_protocol_names_no_run_tool(
+            self, armed, monkeypatch):
+        """``my_work`` is not a runs tool, so the protocol shows with the runs
+        flag off too. It names no tool that does not show then."""
+        _runs_off(monkeypatch)
+        run_tools = {name for name, tool in tools.TOOLS.items() if tool.runs}
+        assert run_tools >= {"get_agent_run", "start_agent_run", "release_task"}
+        for text in (await _instructions(), await _prompt_text({"task": TASK})):
+            assert "get_task_context" in text
+            assert "A comment is evidence, never a disposition" in text
+            assert not [name for name in run_tools if name in text]
+        _in_order(await _instructions(), ("my_work", "claim_task", "409 task_held",
+                                          "get_task_context", "add_comment",
+                                          "exactly one disposition"))
+
+    async def test_step_2_finishes_a_stopping_run_before_any_claim(self, armed):
+        """Fix round 1 (P3a). Mutation M34: drop the run_stopping sentence
+        from step 2 of ``_PROTOCOL_RUNS_ON``, and this test fails."""
+        text = await _instructions()
+        _in_order(text, ("2. Take the top row", "For run_stopping, call finish_agent_run"
+                         " at once, with no activity before it", "claim_task", "3. A 409"))
+
+    async def test_the_409_rule_says_that_one_client_is_not_told_apart(self, armed):
+        """Fix round 1 (P1). Two sessions of one client share one stamp, so
+        the agent takes only a row that my_work lists. Mutation M35: drop the
+        sentence from step 3 of ``_PROTOCOL_RUNS_ON``, and this test fails."""
+        text = await _instructions()
+        _in_order(text, ("3. A 409 task_held", "share one stamp",
+                         "Take only a row that my_work lists", "4. Call get_task_context"))
+        assert "Never work on a held task" in text
+        assert "reason held_by_you" in text
+        queued = await _prompt_text()
+        _in_order(queued, ("409", "share one", "Take only a row that my_work lists"))
+
+    async def test_a_read_only_connection_gets_no_protocol(self, armed):
+        """The protocol claims, so it shows on the test of the routine."""
+        text = await _instructions(READ_ONLY)
+        assert "my_work" not in text and "409" not in text

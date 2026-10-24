@@ -491,6 +491,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.kb_embed_sweep_skipped", error=str(exc))
 
+    # Start the Knowledge proposal expiry (spec knowledge_base.md §8.4, WS-61
+    # KB-5c). Every hour it expires a proposal that waited 14 days. The kill
+    # switch KNOWLEDGE_PROPOSAL_EXPIRY (default on) lives inside the start
+    # function.
+    try:
+        from gateway.routes.knowledge.proposal_expiry import start_kb_proposal_expiry
+        kb_expiry_started = await start_kb_proposal_expiry()
+        _log.info("gateway.kb_proposal_expiry", started=kb_expiry_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_proposal_expiry_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -607,6 +618,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.kb_index.sweep import stop_kb_embed_sweep
         await stop_kb_embed_sweep()
+    except Exception:
+        pass
+
+    # Stop the Knowledge proposal expiry and wait for a tick in progress.
+    try:
+        from gateway.routes.knowledge.proposal_expiry import stop_kb_proposal_expiry
+        await stop_kb_proposal_expiry()
     except Exception:
         pass
 

@@ -114,6 +114,17 @@ def _path(template: str, path_params: Mapping[str, str], method: str = _GET) -> 
     return path
 
 
+def actor_via(caller: TokenLookup) -> str:
+    """The client stamp of the connection, ``mcp:<host>:<slug>`` (EA-13a).
+
+    It comes from the connection's own client id, as branch 0 stamps it. The
+    signed ``X-Actor-Via`` header sends it, and ``my_work`` filters the runs
+    of this client by it (EA-15b). One function, so the two cannot differ.
+    """
+    return agent_oauth.actor_via_for(
+        caller.client_origin, client_id=caller.connection_client_id)
+
+
 def signed_request_headers(
     key: str, caller: TokenLookup, path: str, query: Sequence[tuple[str, str]],
     *, method: str = _GET, body: bytes = b"",
@@ -124,9 +135,7 @@ def signed_request_headers(
         key,
         organization_id=caller.organization_id,
         connection_id=caller.connection_id,
-        # EA-13a: the connection's own client id, as branch 0 stamps it.
-        actor_via=agent_oauth.actor_via_for(
-            caller.client_origin, client_id=caller.connection_client_id),
+        actor_via=actor_via(caller),
         method=method,
         path=path,
         query=list(query),
@@ -251,6 +260,7 @@ __all__ = [
     "GatewayNotSent",
     "GatewayUnreachable",
     "RouteRefused",
+    "actor_via",
     "get",
     "signed_request_headers",
     "use_transport",

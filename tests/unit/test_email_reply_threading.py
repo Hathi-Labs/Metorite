@@ -172,7 +172,7 @@ async def test_imap_send_sets_reply_headers_from_thread_id() -> None:
     p = _imap()
     captured: dict[str, object] = {}
 
-    def _fake_send(msg):  # type: ignore[no-untyped-def]
+    def _fake_send(msg, **_kw):  # type: ignore[no-untyped-def]  # to_addrs (§21.15)
         captured["in_reply_to"] = msg["In-Reply-To"]
         captured["references"] = msg["References"]
 

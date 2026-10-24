@@ -17,6 +17,11 @@
  * only to the ticked people, the card counts them ("Sends to 3 of 5"), and
  * it names each person who will not get it.
  *
+ * A Bcc row (§21.15) lists the Bcc that the server recorded for the card,
+ * under "Bcc (hidden from the others)". The member can type one more. The
+ * server classes it and adds it to the record of THIS card, so the act
+ * still takes a subset of the server's list only.
+ *
  * Nothing hides (security review of #1191). The summary names each address
  * the reply goes to, in full. Each notice of the server shows: a Reply-To
  * that is not the sender, and the text the send adds. The text box grows
@@ -29,8 +34,10 @@ import { useLayoutEffect, useRef, useState } from "react";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
-import { Textarea } from "@/components/ui/Input";
+import { Input, Textarea } from "@/components/ui/Input";
 import {
+  addBcc,
+  BCC_LABEL,
   bodyCanGo,
   classOfAddress,
   discardReplyDraft,
@@ -50,6 +57,7 @@ import {
   replyAllTicks,
   tickedFor,
   toggleTick,
+  withBcc,
   type ReplyAction,
   type ReplyApproval,
   type ReplyForm,
@@ -88,7 +96,9 @@ function AddressRow({
   // new or as the person of the thread. Each person has a tick box.
   return (
     <div className="flex gap-3 text-xs" data-reply-recipients={label.toLowerCase()}>
-      <dt className="w-10 shrink-0 pt-px text-muted-foreground">{label}</dt>
+      <dt className="w-10 shrink-0 pt-px text-muted-foreground" title={label === "Bcc" ? BCC_LABEL : undefined}>
+        {label}
+      </dt>
       <dd className="min-w-0 flex-1 space-y-0.5 break-words text-foreground">
         {list.map((a) => {
           const cls = classOfAddress(form, a);
@@ -121,7 +131,12 @@ function AddressRow({
   );
 }
 
-export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
+export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
+  // §21.15: the form grows by each Bcc that the server took for this card.
+  const [form, setForm] = useState<ReplyForm | null>(given);
+  const [bccDraft, setBccDraft] = useState("");
+  const [bccBusy, setBccBusy] = useState(false);
+  const [bccError, setBccError] = useState("");
   // ONE list (item 11): the card always shows every person, so the answer
   // names the people of that list that the member ticked. The Reply and
   // Reply all switch (owner amendment, 2026-10-24) only changes the ticks,
@@ -167,6 +182,23 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
     if (a) onAnswer(a);
   };
   const when = receivedText(form.original.received);
+  const bccList = shown.bcc ?? [];
+  const submitBcc = async () => {
+    const address = bccDraft.trim();
+    if (!address || bccBusy || !armed) return;
+    setBccBusy(true);
+    setBccError("");
+    const res = await addBcc(form, address);
+    setBccBusy(false);
+    if (!res.ok) {
+      setBccError(res.error);
+      return;
+    }
+    setForm((f) => (f ? withBcc(f, res.address, res.mark, res.cls) : f));
+    // The member typed it, so it starts ticked.
+    setTicks((t) => (t.reply_all.includes(res.address.toLowerCase()) ? t : toggleTick(t, replyAll, res.address)));
+    setBccDraft("");
+  };
   return (
     <div className="space-y-2.5" data-reply-card="">
       <div className="min-w-0">
@@ -238,7 +270,52 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
         {shown.cc.length > 0 && (
           <AddressRow label="Cc" list={shown.cc} form={form} ticked={ticked} onTick={onTick} disabled={disabled} />
         )}
+        {bccList.length > 0 && (
+          <AddressRow label="Bcc" list={bccList} form={form} ticked={ticked} onTick={onTick} disabled={disabled} />
+        )}
       </dl>
+      {bccList.length > 0 && (
+        <p className="text-[11px] text-muted-foreground" data-reply-bcc-note="">
+          {BCC_LABEL}: the other people do not see who is on Bcc.
+        </p>
+      )}
+      {form.requestId && (
+        <div className="space-y-1" data-reply-bcc-add="">
+          <div className="flex items-center gap-1.5">
+            <Input
+              inputSize="sm"
+              type="email"
+              aria-label="Add a Bcc address"
+              placeholder="Add a Bcc, for example name@company.com"
+              value={bccDraft}
+              onChange={(e) => setBccDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submitBcc();
+                }
+              }}
+              disabled={disabled || bccBusy}
+              className="min-w-0 flex-1"
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Plus"
+              onClick={() => void submitBcc()}
+              disabled={disabled || !armed || bccBusy || !bccDraft.trim()}
+              data-reply-bcc-submit=""
+            >
+              {bccBusy ? "Adding…" : "Add Bcc"}
+            </Button>
+          </div>
+          {bccError && (
+            <p className="break-words text-[11px] text-destructive" role="alert" data-reply-bcc-error="">
+              {bccError}
+            </p>
+          )}
+        </div>
+      )}
       <p className="text-[11px] text-muted-foreground" data-reply-count="">
         {sendsCount(form, replyAll, ticks)}. Only a ticked person gets the reply.
       </p>

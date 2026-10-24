@@ -75,7 +75,7 @@ describe("both apps render it", () => {
   it("both view headings use Projects' scale", () => {
     // The project name in Projects, the view name in My Tasks.
     expect(read("app/projects/page.tsx")).toMatch(
-      /<h2 className="min-w-0 truncate text-sm font-medium text-foreground">\s*\{title\}/,
+      /<h2 className="min-w-0 truncate text-sm font-medium text-foreground"(?: title=\{title\})?>\s*\{title\}/,
     );
     expect(read("app/tasks/components/ItemList.tsx")).toMatch(
       /<h2 className="whitespace-nowrap text-sm font-medium text-foreground">/,
