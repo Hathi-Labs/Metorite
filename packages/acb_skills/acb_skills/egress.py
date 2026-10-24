@@ -930,9 +930,16 @@ def has_explicit_open_world(item: Any) -> bool:
 #: Any parameter outside a tool's pinned set, a recipient or a file above all,
 #: breaks the pin, and the tool is an egress tool again. Fence:
 #: ``tests/unit/test_email_chat_reply.py``.
+#:
+#: ``compose_reply`` gains ``cc`` (owner, 2026-10-24, item 2: one card in
+#: place of three). The gateway classes each added address with THE
+#: classifier of the held card, records the list under the card's id, and
+#: the act takes only a subset of that record. In a held run with
+#: ``EMAIL_HELD_CARD_SEND`` on, a ``new`` address starts unticked and
+#: flagged. With the switch off, a held run refuses ``cc`` at call time.
 CARD_BOUND_SEND_TOOLS: Mapping[str, frozenset[str]] = {
     "compose_reply": frozenset(
-        {"email_id", "account_id", "reply_all", "draft", "instruction"}),
+        {"email_id", "account_id", "reply_all", "draft", "instruction", "cc"}),
     "send_draft": frozenset({"account_id", "draft_id"}),
     "schedule_send": frozenset({"account_id", "draft_id", "send_at"}),
 }
