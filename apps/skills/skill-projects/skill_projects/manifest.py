@@ -100,6 +100,12 @@ _AGENT_DELETE_REASON = (
     "The MCP door only (EA3-51): an outside agent deletes after the member's yes. "
     "The chat deletes through delete_task and its card."
 )
+#: An agent's archive request is answered on the task card only (EA3-40,
+#: D-OP-13). A chat tool that answered it would be a second door to the answer.
+_CARD_ANSWER_REASON = (
+    "Only the run's member answers an agent's request, on the task card (EA3-40, "
+    "D-OP-13). The chat lists the request and links the card."
+)
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
@@ -415,7 +421,8 @@ MANIFEST: tuple[Route, ...] = (
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
     # §12.1). The in-product chat gets them in EA-12e.
     Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A"),
-    Route("GET", "/projects/agent-runs", "agent_runs", "A"),
+    # WS-64 OP-6e (D-OP-13): the chat lists the member's waiting requests.
+    Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A"),
     Route("GET", "/projects/agent-runs/{run_id}", "agent_runs", "A"),
     Route("POST", "/projects/tasks/{task_id}/agent-runs", "start_agent_run", "B"),
     Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
@@ -425,7 +432,9 @@ MANIFEST: tuple[Route, ...] = (
     # run's member answers on the task. The approval archives, so it is
     # class C, and it stays out of MCP_ROUTES (external_agent_access.md §9.5).
     Route("POST", "/projects/tasks/{task_id}/archive-request", "request_task_archive", "B"),
-    Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "approve_task_archive", "C"),
+    # WS-64 OP-6e (D-OP-13): only the run's member answers, on the task card.
+    # The chat lists the request (`waiting_agent_requests`) and links the card.
+    Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X", _CARD_ANSWER_REASON),
     # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It
     # is class X: the chat never reaches it. `test_mcp_edge_coverage.py`
     # names it as the one class X pair that the edge may hold (§9.5).
@@ -479,10 +488,8 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
     # The chat archives through `archive_task`.
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
-    # ⚠️ NEVER a chat tool (EA3-40): only the run's member answers, in the
-    # card. Do not build it for the assistant. It stays here so the
-    # chat-coverage fence knows the route.
-    "approve_task_archive": "WS-55 EA3-40: member-only answer in the card, never a chat tool",
+    # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
+    # route is class X with a reason, and `waiting_agent_requests` lists it.
 }
 
 
@@ -605,6 +612,11 @@ IDENTITY_HEADERS: frozenset[str] = frozenset(
 #: argument, for example ``create_tasks.tasks.due``. The fence checks each
 #: witness of the tuple on the wire.
 SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
+    # ── agent runs (WS-64 OP-6e) ─────────────────────────────────────────
+    ("GET", "/projects/agent-runs"): {
+        "status": "waiting_agent_requests",
+        "limit": "waiting_agent_requests",
+    },
     # ── tasks ────────────────────────────────────────────────────────────
     ("GET", "/projects/tasks"): {
         "project_id": "list_tasks.project_id",
@@ -1213,9 +1225,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/nodes"): {"source": "G10"},
     # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
     # EA-12e. Today an outside agent reaches them over MCP.
+    # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
     ("GET", "/projects/agent-runs"): {
-        "status": "G23", "needs_agent": "G23", "task_id": "G23",
-        "client_via": "G23", "limit": "G23", "cursor": "G23",
+        "needs_agent": "G23", "task_id": "G23",
+        "client_via": "G23", "cursor": "G23",
     },
     ("GET", "/projects/agent-runs/{run_id}"): {"after": "G23", "wait_s": "G23"},
     ("POST", "/projects/tasks/{task_id}/agent-runs"): {
@@ -1230,11 +1243,8 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/agent-runs/{run_id}/finish"): {
         "summary": "G23", "idempotency_key": "G23",
     },
-    # WS-55 EA-6g (EA3-40): the archive request and its approval.
+    # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
-    ("POST", "/projects/agent-runs/{run_id}/archive-approval"): {
-        "decision": "G23", "idempotency_key": "G23",
-    },
 }
 
 
@@ -1354,12 +1364,12 @@ UI_ACTIONS: dict[str, str] = {
     "agentRunsApi.post": "post_agent_activity",
     # EA-12d: "Ask an agent", a member starts a run for their own agent.
     "agentRunsApi.start": "start_agent_run",
-    "agentRunsApi.enabled": "agent_runs",
+    "agentRunsApi.enabled": "waiting_agent_requests",
     # EA-13e: the strip's five counts. The chat reads the same route through a
     # tool after EA-12e (`PLANNED`).
     "agentRunsApi.summary": "agent_summary",
-    # EA-6g: the run's member approves or declines an archive request.
-    "agentRunsApi.archiveApproval": "approve_task_archive",
+    # EA-6g: the run's member approves or declines an archive request. It is in
+    # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
     "notificationsApi.markRead": "mark_notifications_read",
@@ -1386,6 +1396,10 @@ UI_ACTIONS: dict[str, str] = {
 #: exemption only where the route the method calls is class X. Where a tool
 #: reaches the route, the method names the tool in ``UI_ACTIONS``.
 UI_EXEMPT: dict[str, str] = {
+    "agentRunsApi.archiveApproval": (
+        "The run's member answers an agent's request on the task card only "
+        "(EA3-40, D-OP-13). The chat lists the request and links the card."
+    ),
     "projectsApi.setViewState": (
         "The member's own overlay on a saved view (WS-27ae). " + _UI_STATE_REASON
     ),

@@ -88,6 +88,7 @@ from skill_projects.reads import (
     task_detail,
     team_capacity,
     vocabulary,
+    waiting_agent_requests,
 )
 from skill_projects.views import (
     export_tasks,
@@ -149,6 +150,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "report_render",
     "task_detail",
     "vocabulary",
+    "waiting_agent_requests",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",

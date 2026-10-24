@@ -204,18 +204,29 @@ async def test_update_rule_replaces_the_actions_with_a_delay_and_an_ai_label(
         {"type": "ARCHIVE", "delay_minutes": 60}]
 
 
+#: H-404 (owner, 2026-10-24) let the list hold an outward act with its
+#: target. Wave 1 refused every target here. Each case below still refuses:
+#: an outward act with no target, a target on the wrong type, a target that
+#: the card cannot show plainly, and text of the model.
 @pytest.mark.parametrize("bad", [
-    [{"type": "FORWARD", "to_address": "x@evil.test"}],
     [{"type": "FORWARD"}],
     [{"type": "CALL_WEBHOOK"}],
     [{"type": "LABEL", "label": "x", "url": "https://evil.test"}],
+    [{"type": "LABEL", "to_address": "x@evil.test"}],
+    [{"type": "FORWARD", "to_address": "x@evil.test", "url": "https://evil.test/"}],
+    [{"type": "FORWARD", "to_address": "Evil <x@evil.test>"}],
+    [{"type": "FORWARD", "to_address": "a@evil.test, b@evil.test"}],
+    [{"type": "REPLY", "cc_address": "x@ev\u0430l.test"}],
+    [{"type": "CALL_WEBHOOK", "url": "https://good.test@evil.test/in"}],
+    [{"type": "CALL_WEBHOOK", "url": "ftp://evil.test/in"}],
+    [{"type": "FORWARD", "to_address": "x@evil.test", "content": "the code is 1234"}],
     [{"type": "DRAFT_EMAIL", "content": "the code is 1234"}],
     [{"type": "ARCHIVE", "delay_minutes": -1}],
     [{"type": "LABEL", "label_ai": True}],
     [],
     "LABEL",
 ])
-async def test_the_action_list_adds_no_outward_act(gw: Gateway, bad: Any) -> None:
+async def test_the_action_list_refuses_a_bad_act(gw: Gateway, bad: Any) -> None:
     out = await agents.update_rule(BOX, "r1", actions=bad)
     assert out.startswith("Nothing changed."), out
     assert gw.cards == [] and gw.writes == []
@@ -928,11 +939,105 @@ async def test_p2_2_a_rewrite_of_a_draft_with_no_thread_says_the_text_is_replace
     assert "replaces the whole text" in card["context"]
 
 
-async def test_p2_3_actions_refuse_a_rule_that_forwards(gw: Gateway) -> None:
+async def test_p2_3_a_list_that_drops_a_forward_names_it_on_the_card(gw: Gateway) -> None:
+    """P2-3 refused a list on a rule that forwards, because the list could not
+    hold the forward and dropped it in silence. H-404 lets the list hold it,
+    so a list without it is a removal, and the card names the removal.
+    Mutation: drop the change lines of the inward card → red."""
     gw.rules[BOX].append(dict(FORWARD_RULE, actions=[
         {"type": "FORWARD", "to_address": "out@evil.test"}, {"type": "LABEL", "label": "x"}]))
+    gw.answer = False
     out = await agents.update_rule(BOX, "r2", actions=[{"type": "LABEL", "label": "y"}])
-    assert out.startswith("Nothing changed.") and "remove_action_types" in out
+    [card] = gw.cards
+    assert "- Removed: forwards" in card["context"]
+    assert out.startswith("Cancelled") and gw.writes == []
+
+
+# ── H-404: the outward acts of the action list ──────────────────────────────
+
+
+OUTWARD_LIST = [
+    {"type": "LABEL", "label": "Invoices"},
+    {"type": "FORWARD", "to_address": "ap@vendor.test", "cc_address": "ops@vendor.test",
+     "bcc_address": "records@vendor.test"},
+    {"type": "REPLY", "to_address": "billing@vendor.test"},
+    {"type": "CALL_WEBHOOK", "url": "https://hooks.vendor.test/in/42?k=v"},
+]
+
+
+@pytest.fixture()
+def public(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def yes(_host: str) -> bool:
+        return True
+
+    monkeypatch.setattr(agents, "_webhook_host_public", yes)
+
+
+async def test_an_outward_list_asks_the_outward_card_with_each_target(
+    gw: Gateway, public: None,
+) -> None:
+    """Each address and the whole URL are on the card. Mutation: send a list
+    with an outward act to the inward card → red."""
+    out = await agents.create_rule(BOX, name="AP", actions=OUTWARD_LIST)
+    [card] = gw.cards
+    assert card["title"] == "Create a rule that sends mail out of the mailbox?"
+    for target in ("ap@vendor.test", "ops@vendor.test", "records@vendor.test",
+                   "billing@vendor.test", "url: https://hooks.vendor.test/in/42?k=v"):
+        assert target in card["context"], target
+    assert "hooks.vendor.test/in/42" in card["detail"]
+    [(_m, path, body)] = gw.writes
+    assert path == "/email/rules"
+    assert body["actions"][1] == OUTWARD_LIST[1]
+    assert body["actions"][3] == OUTWARD_LIST[3]
+    assert out.startswith("Created rule 'AP'")
+
+
+async def test_update_rule_takes_an_outward_list_behind_the_outward_card(
+    gw: Gateway, public: None,
+) -> None:
+    gw.answer = False
+    out = await agents.update_rule(BOX, "r1", actions=[
+        {"type": "LABEL", "label": "Finance"},
+        {"type": "FORWARD", "to_address": "cfo@acme-group.test"}])
+    [card] = gw.cards
+    assert card["title"] == "Change a rule that sends mail out of the mailbox?"
+    assert "cfo@acme-group.test" in card["context"]
+    assert out.startswith("Cancelled") and gw.writes == []
+
+
+async def test_an_empty_cc_clears_the_cc_of_a_kept_forward(gw: Gateway, public: None) -> None:
+    gw.rules[BOX].append(dict(FORWARD_RULE, actions=[
+        {"type": "FORWARD", "to_address": "out@evil.test", "cc_address": "old@evil.test"}]))
+    await agents.update_rule(BOX, "r2", actions=[
+        {"type": "FORWARD", "to_address": "out@evil.test", "cc_address": ""}])
+    [(_m, _p, body)] = gw.writes
+    assert body["actions"][0]["cc_address"] == ""
+    assert "old@evil.test" not in str(body)
+
+
+@pytest.mark.parametrize("action", OUTWARD_LIST[1:])
+async def test_a_held_run_refuses_each_outward_act_of_the_list(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch, public: None, action: dict[str, Any],
+) -> None:
+    """Mutation: let ``_held_in_no_egress`` pass an address or a url → red."""
+    _held(monkeypatch)
+    out = await agents.create_rule(BOX, name="X", actions=[action])
+    assert gw.cards == [] and gw.writes == [], out
+    out = await agents.update_rule(BOX, "r1", actions=[action])
+    assert gw.cards == [] and gw.writes == [], out
+
+
+async def test_the_real_hold_refuses_an_outward_list(gw: Gateway, public: None) -> None:
+    """The run context of a held chat, as the executor binds it: no fake of
+    ``_egress_held``."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(no_egress=True, agent_name="email-assistant", session_id="s-1")
+    try:
+        out = await agents.create_rule(BOX, name="X", actions=OUTWARD_LIST)
+    finally:
+        bind_artifact_context(no_egress=False)
+    assert "is off in this run" in out
     assert gw.cards == [] and gw.writes == []
 
 

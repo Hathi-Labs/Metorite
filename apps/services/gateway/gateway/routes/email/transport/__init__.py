@@ -14,12 +14,16 @@ from gateway.routes.email.transport import (
     forward,
     inline_images,
     messages,
+    metorite_files,
     oauth,
     search,
     send,
     storage,
     sync,
 )  # noqa: F401
+
+# H-392: imported for its route only. Its names stay in its own module.
+_ = metorite_files
 
 for _mod in (accounts, attachments, contacts, folders, forward, inline_images,
              messages, oauth, search, send, storage, sync):

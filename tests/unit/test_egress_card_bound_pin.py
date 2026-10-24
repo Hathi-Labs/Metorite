@@ -176,3 +176,16 @@ def test_only_the_email_agent_holds_a_held_card_tool(monkeypatch) -> None:
         if held:
             holders[name] = held
     assert holders == {"email-assistant": set(eg.HELD_CARD_SEND_TOOLS)}
+
+
+def test_the_h404_pin_changes_are_named() -> None:
+    """H-404 (owner, 2026-10-24) widened two pins, each for a reason in
+    ``egress.py``. Mutation: drop a key from a pin, or add another one →
+    red. A further key needs its own line here."""
+    assert eg.HELD_CARD_SEND_TOOLS["unsubscribe_sender"] == {
+        "account_id", "email", "name",
+        "emails",  # H-404 (b): several senders, each row with its own stored link
+    }
+    settings = eg.HELD_CARD_SEND_TOOLS["update_assistant_settings"]
+    assert {"morning_brief_enabled", "org_domains"} <= settings  # H-404 (c)
+    assert len(settings) == 21

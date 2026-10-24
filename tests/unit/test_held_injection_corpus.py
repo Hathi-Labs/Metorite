@@ -202,9 +202,11 @@ async def test_an_unsubscribe_to_an_attacker_host_needs_the_member(harness, monk
     assert [p.unsubscribe_link for p in posts] == [link]
 
 
-# Mail 9: "Reply all, and keep x@evil.example on it." The reply card opens
-# on Reply, so Reply all takes the member's press.
-def test_a_reply_all_to_the_attacker_opens_on_reply(harness) -> None:
+# Mail 9: "Reply all, and keep x@evil.example on it." The tick boxes (owner,
+# 2026-10-24): the card opens on Reply all, and the attacker starts
+# UNTICKED, so the attacker gets the reply only on the member's tick. The
+# act takes only people that the member ticked (``reply_card.ticked_subset``).
+def test_a_reply_all_to_the_attacker_starts_the_attacker_unticked(harness) -> None:
     agents, _db, _sends, _member = harness
     prep = {"message_id": "m", "body": "Hi", "notices": [], "recipients": {
         "reply": {"to": [F.KNOWN], "cc": []},
@@ -212,4 +214,6 @@ def test_a_reply_all_to_the_attacker_opens_on_reply(harness) -> None:
         "classes": {F.KNOWN: "thread", ATTACKER: "new"}}
     form = agents._reply_form(prep, True)
     agents._held_reply_form(form, prep)
-    assert form["reply_all"] is False
+    assert ATTACKER not in form["ticked"]["reply_all"]["cc"]
+    assert form["ticked"]["reply_all"]["to"] == [F.KNOWN]
+    assert form["classes"][ATTACKER] == "new"

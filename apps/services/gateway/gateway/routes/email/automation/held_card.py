@@ -83,6 +83,8 @@ MAX_ROWS = 100
 CONTEXT_MAX = 4000
 #: The longest ``detail``.
 DETAIL_MAX = 500
+#: The most senders of one unsubscribe card (H-404).
+MAX_SENDERS = 20
 
 #: How long the act waits for the record of the answer (``reply_card.TAKE_WAIT_S``).
 #: respond-input writes it just after the run takes the answer.
@@ -376,9 +378,15 @@ async def resolve_file_refs(
     ids: list[str] = []
     for ref in refs:
         try:
-            _source, fid = parse_file_ref(ref)
+            source, fid = parse_file_ref(ref)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
+        if source != "attachment":
+            # Review fix round 1: a Metorite file goes through
+            # ``metorite_files.resolve_metorite_files``, never this query.
+            raise HTTPException(status_code=422, detail=(
+                "That reference is not a file of a mail of this mailbox, so nothing "
+                "was sent."))
         if fid not in ids:
             ids.append(fid)
     if not ids:
@@ -401,6 +409,39 @@ def ticked_file_ids(rows: Sequence[dict[str, Any]], ids: frozenset[str]) -> list
     """The attachment ids of the ticked RECORDED file rows, in card order."""
     return [str(r["attachment_id"]) for r in rows
             if r["kind"] == "file" and r["id"] in ids and r.get("attachment_id")]
+
+
+def metorite_file_rows(files: Sequence[Any], start: int, mail_bytes: int) -> list[dict[str, Any]]:
+    """The recorded rows of the Metorite files of a held send (H-392).
+
+    Each row names the file, its size and its store, and records the
+    reference and the digest of the bytes. The act resolves the file again
+    and sends it only while the digest is the same. The bytes of the mail's
+    files and of these files together are capped."""
+    from acb_skills.held_card import KIND_FILE, file_label
+    from gateway.routes.email.transport.metorite_files import SOURCE_TEXT
+
+    if mail_bytes + sum(int(f.size) for f in files) > MAX_FILES_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"The files are larger than {MAX_FILES_BYTES // (1024 * 1024)} MB "
+                    "together, so nothing was sent."))
+    return [{
+        "id": f"file-{start + i}",
+        "kind": KIND_FILE,
+        "metorite_ref": f.ref,
+        "digest": f.digest,
+        "label": file_label(f.name, _size_text(f.size)),
+        "hint": f"From {SOURCE_TEXT.get(f.source, 'Metorite')}, a file that you can see.",
+        "checked": True,
+    } for i, f in enumerate(files)]
+
+
+def ticked_metorite_files(rows: Sequence[dict[str, Any]], ids: frozenset[str]
+                          ) -> dict[str, str]:
+    """``{reference: digest}`` of the ticked RECORDED Metorite file rows."""
+    return {str(r["metorite_ref"]): str(r["digest"]) for r in rows
+            if r["kind"] == "file" and r["id"] in ids and r.get("metorite_ref")}
 
 
 async def file_payloads(user: UserContext, attachment_ids: Sequence[str]) -> list[dict[str, Any]]:
@@ -531,6 +572,9 @@ class HeldCardRequest(BaseModel):
     #: ``unsubscribe``: the sender to unsubscribe from. No link: the server
     #: reads the stored ``List-Unsubscribe`` header.
     email: str = Field(default="", max_length=320)
+    #: ``unsubscribe`` (H-404): several senders behind one card, in place of
+    #: ``email``. Each one is a row, with its own stored link.
+    emails: list[str] = Field(default_factory=list, max_length=MAX_SENDERS)
     #: ``forward``: the mail to forward, a mail of the member's own mailbox.
     message_id: str = Field(default="", max_length=64)
     #: ``forward`` and ``new``: the people that the model named. The server
@@ -558,6 +602,8 @@ class HeldCardRequest(BaseModel):
         for name in _KIND_NEEDS[self.kind]:
             if not str(getattr(self, name) or "").strip():
                 raise ValueError(f"a {self.kind} card needs {name}")
+        if self.kind == "unsubscribe" and bool(self.email.strip()) == bool(self.emails):
+            raise ValueError("an unsubscribe card takes email or emails, one of the two")
         return self
 
 
@@ -565,18 +611,18 @@ class HeldCardRequest(BaseModel):
 _KIND_FIELDS: dict[str, frozenset[str]] = {
     "draft": frozenset({"account_id", "draft_id"}),
     "schedule": frozenset({"account_id", "draft_id", "send_at"}),
-    "unsubscribe": frozenset({"account_id", "email"}),
+    "unsubscribe": frozenset({"account_id", "email", "emails"}),
     "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files"}),
     "new": frozenset({"account_id", "to", "cc", "bcc", "note", "subject", "files"}),
 }
-_KIND_FIELD_NAMES = ("draft_id", "send_at", "email", "message_id", "to", "cc", "bcc",
-                     "note", "subject", "files")
+_KIND_FIELD_NAMES = ("draft_id", "send_at", "email", "emails", "message_id", "to", "cc",
+                     "bcc", "note", "subject", "files")
 #: The fields that each kind of held card must name. A forward may leave out
 #: its mailbox, which the mail names.
 _KIND_NEEDS: dict[str, tuple[str, ...]] = {
     "draft": ("account_id", "draft_id"),
     "schedule": ("account_id", "draft_id", "send_at"),
-    "unsubscribe": ("account_id", "email"),
+    "unsubscribe": ("account_id",),
     "forward": ("message_id",),
     "new": ("account_id",),
 }
@@ -830,58 +876,102 @@ async def _stored_target(account_id: str, owner: str, sender: str) -> tuple[str,
     return _unsubscribe_kind(link), link
 
 
-async def _unsubscribe_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
-    owner = _owner(user)
-    _refuse_bad_draft_id(req.account_id)
-    sender = req.email.strip()
+async def _one_target(
+    account_id: str, owner: str, sender: str, *, many: bool = False,
+) -> dict[str, Any]:
+    """The checked target of one sender: ``act``, ``host`` and ``hash``.
+    422 for a ``mailto:`` link or a link that is not https with a host. With
+    *many*, the refusal names the sender."""
     why = address_problem(sender)
     if why:
         raise HTTPException(status_code=422, detail=f"The sender {why}.")
-    act, link = await _stored_target(req.account_id, owner, sender)
+    act, link = await _stored_target(account_id, owner, sender)
     host = ""
     if act == "mailto":
-        raise HTTPException(status_code=422, detail=MAILTO_REFUSED)
+        raise HTTPException(status_code=422,
+                            detail=f"{sender}: {MAILTO_REFUSED}" if many else MAILTO_REFUSED)
     if act == "one-click":
         host = _https_host(link)
         if not host:
-            raise HTTPException(status_code=422, detail=LINK_REFUSED)
-        label = f"Unsubscribe from {sender}: a one-click request goes to host {host}."
-        context = "\n".join([
-            f"Sender: {sender}",
-            f"Host of the link: {host}",
-            "The link comes from the List-Unsubscribe header of the sender's own mail.",
-            "If the request fails, the sender is blocked, and their mail in the inbox is "
-            "archived.",
-        ])
+            raise HTTPException(status_code=422,
+                                detail=f"{sender}: {LINK_REFUSED}" if many else LINK_REFUSED)
+    return {"sender": sender, "act": act, "host": host,
+            "hash": link_digest(link) if act == "one-click" else ""}
+
+
+def _unsubscribe_label(t: dict[str, Any]) -> str:
+    if t["act"] == "one-click":
+        return f"Unsubscribe from {t['sender']}: a one-click request goes to host {t['host']}."
+    return f"Block {t['sender']}: their new mail is archived. No request leaves Metorite."
+
+
+async def _unsubscribe_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
+    owner = _owner(user)
+    _refuse_bad_draft_id(req.account_id)
+    many = bool(req.emails)
+    wanted = [e.strip() for e in (req.emails if many else [req.email]) if e.strip()]
+    wanted = list(dict.fromkeys(wanted))
+    targets = [await _one_target(req.account_id, owner, s, many=many) for s in wanted]
+    for i, t in enumerate(targets):
+        t["row"] = f"unsub-{i}"
+    rows = [{"id": t["row"], "kind": "unsubscribe", "label": _unsubscribe_label(t),
+             "hint": "", "checked": True} for t in targets]
+    if not many:
+        t = targets[0]
+        sender, host = t["sender"], t["host"]
+        if t["act"] == "one-click":
+            context = "\n".join([
+                f"Sender: {sender}",
+                f"Host of the link: {host}",
+                "The link comes from the List-Unsubscribe header of the sender's own mail.",
+                "If the request fails, the sender is blocked, and their mail in the inbox is "
+                "archived.",
+            ])
+        else:
+            context = "\n".join([
+                f"Sender: {sender}",
+                "The sender's mail carries no unsubscribe link.",
+                "The block archives their mail in the inbox too.",
+            ])
+        title = (f"Unsubscribe from {sender}?" if t["act"] == "one-click"
+                 else f"Block {sender}?")
+        detail = (f"Sender {sender} · host {host}" if host
+                  else f"Sender {sender} · no unsubscribe link")
     else:
-        label = f"Block {sender}: their new mail is archived. No request leaves Metorite."
-        context = "\n".join([
-            f"Sender: {sender}",
-            "The sender's mail carries no unsubscribe link.",
-            "The block archives their mail in the inbox too.",
-        ])
-    rows = [{"id": UNSUBSCRIBE_ROW, "kind": "unsubscribe", "label": label, "hint": "",
-             "checked": True}]
+        # H-404 (b): each sender with its own host, so a card never shows
+        # less than it does. A list that does not fit shows no card.
+        lines = ["Each sender, and the host of its stored link:"]
+        lines += [f"- {t['sender']}: host {t['host']}" if t["act"] == "one-click"
+                  else f"- {t['sender']}: no unsubscribe link, so a block in the mailbox"
+                  for t in targets]
+        lines += ["", "Each link comes from the List-Unsubscribe header of the sender's own "
+                  "mail. A failed request blocks that sender, and archives their mail."]
+        context = "\n".join(lines)
+        title = f"Unsubscribe from {len(targets)} senders?"
+        detail = (f"{len(targets)} senders · each row names its host. Only a ticked "
+                  "sender is unsubscribed.")
+    if len(context) > CONTEXT_MAX:
+        raise HTTPException(status_code=422, detail="Too many senders for one card.")
     record = {
         "v": 1, "kind": "unsubscribe", "owner": owner.lower(),
-        "account_id": req.account_id, "sender": sender, "act": act,
-        "host": host, "hash": link_digest(link) if act == "one-click" else "",
-        "rows": rows,
+        "account_id": req.account_id, "targets": targets, "rows": rows,
+        # The fields of one sender, as a record of before H-404 holds them.
+        **({k: targets[0][k] for k in ("sender", "act", "host", "hash")} if not many else {}),
     }
     card_id = await write_record(user, record)
-    _log.info("email.held_card_built", kind="unsubscribe", act=act)
-    title = (f"Unsubscribe from {sender}?" if act == "one-click" else f"Block {sender}?")
-    return {"card_id": card_id, "title": title[:120], "context": context, "rows": card_rows(rows),
-            "detail": (f"Sender {sender} · host {host}" if host
-                       else f"Sender {sender} · no unsubscribe link")[:DETAIL_MAX]}
+    _log.info("email.held_card_built", kind="unsubscribe", senders=len(targets))
+    return {"card_id": card_id, "title": title[:120], "context": context,
+            "rows": card_rows(rows), "detail": detail[:DETAIL_MAX]}
 
 
 async def _act_unsubscribe(
     rec: dict[str, Any], ids: frozenset[str], background: BackgroundTasks,
     user: UserContext,
 ) -> dict[str, Any]:
-    """Unsubscribe as the card showed, with the link read again from the
-    stored header. A changed host or a changed link sends nothing."""
+    """Unsubscribe each ticked sender as the card showed, with each link read
+    again from the stored header. A changed host or a changed link of ANY
+    ticked sender sends nothing for every sender: the check runs before the
+    first request."""
     from gateway.routes.email.automation.senders import (
         NewsletterUpdate,
         UnsubscribeRequest,
@@ -889,26 +979,41 @@ async def _act_unsubscribe(
         upsert_newsletter,
     )
 
-    if UNSUBSCRIBE_ROW not in ids:
+    targets = rec.get("targets") or [{
+        "row": UNSUBSCRIBE_ROW, "sender": rec.get("sender"), "act": rec.get("act"),
+        "host": rec.get("host"), "hash": rec.get("hash")}]
+    chosen = [t for t in targets if t.get("row") in ids]
+    if not chosen:
         raise HTTPException(status_code=422, detail="Nothing was ticked, so nothing changed.")
     owner = _owner(user)
-    act, link = await _stored_target(rec["account_id"], owner, rec["sender"])
-    if act != rec["act"]:
-        raise HTTPException(status_code=409, detail=LINK_CHANGED)
-    if act == "one-click":
-        if _https_host(link) != rec["host"] or link_digest(link) != rec["hash"]:
+    links: list[str] = []
+    for t in chosen:
+        act, link = await _stored_target(rec["account_id"], owner, t["sender"])
+        if act != t["act"]:
             raise HTTPException(status_code=409, detail=LINK_CHANGED)
-        res = await unsubscribe_sender(UnsubscribeRequest(
-            account_id=rec["account_id"], email=rec["sender"], unsubscribe_link=link),
-            background, user)
-        return {"ok": True, "action": "unsubscribe", "sender": rec["sender"],
-                "host": rec["host"], "unsubscribed": bool((res or {}).get("ok")),
-                "archived": int((res or {}).get("archived") or 0)}
-    res = await upsert_newsletter(NewsletterUpdate(
-        account_id=rec["account_id"], email=rec["sender"], status="AUTO_ARCHIVED"),
-        background, user)
-    return {"ok": True, "action": "block", "sender": rec["sender"], "unsubscribed": False,
-            "archived": int((res or {}).get("archived") or 0)}
+        if act == "one-click" and (
+                _https_host(link) != t["host"] or link_digest(link) != t["hash"]):
+            raise HTTPException(status_code=409, detail=LINK_CHANGED)
+        links.append(link)
+    results: list[dict[str, Any]] = []
+    for t, link in zip(chosen, links, strict=True):
+        if t["act"] == "one-click":
+            res = await unsubscribe_sender(UnsubscribeRequest(
+                account_id=rec["account_id"], email=t["sender"], unsubscribe_link=link),
+                background, user)
+            results.append({"action": "unsubscribe", "sender": t["sender"],
+                            "host": t["host"], "unsubscribed": bool((res or {}).get("ok")),
+                            "archived": int((res or {}).get("archived") or 0)})
+        else:
+            res = await upsert_newsletter(NewsletterUpdate(
+                account_id=rec["account_id"], email=t["sender"], status="AUTO_ARCHIVED"),
+                background, user)
+            results.append({"action": "block", "sender": t["sender"], "unsubscribed": False,
+                            "archived": int((res or {}).get("archived") or 0)})
+    # One sender answers in the shape of before H-404, and every answer
+    # carries ``results``.
+    return {"ok": True, **(results[0] if len(targets) == 1 else {}), "results": results,
+            "left_out": len(targets) - len(chosen)}
 
 
 # ── The card of a forward or a new mail (§21.3, the Forward and New rows) ────
@@ -1035,15 +1140,26 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     if not body:
         raise HTTPException(status_code=422, detail="The email has no text, so nothing was sent.")
     subject = _clean_subject(req.subject)
+    from acb_skills.held_card import is_metorite_file_ref
+    from gateway.routes.email.transport.metorite_files import resolve_metorite_files
+
+    # H-392: a Metorite file resolves as the member, through the read of its
+    # own app. A file of the held run's own workspace is refused.
+    metorite = [r for r in req.files if is_metorite_file_ref(r)]
+    mail_refs = [r for r in req.files if not is_metorite_file_ref(r)]
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, owner)
         classes = await classify_addresses(db, owner, [a for v in lists.values() for a in v])
         known = await known_domains(db, owner)
-        files = await resolve_file_refs(db, owner, req.account_id, req.files)
+        files = await resolve_file_refs(db, owner, req.account_id, mail_refs)
         me = await resolve_self(db, req.account_id)
+    shared = await resolve_metorite_files(user, metorite, held=True) if metorite else []
     rows = recipient_rows(lists, classes, known)
     _refuse_new_bcc(rows)
-    rows += file_rows(files)
+    mail_rows = file_rows(files)
+    rows += mail_rows
+    rows += metorite_file_rows(
+        shared, len(mail_rows), sum(int(getattr(f, "size_bytes", 0) or 0) for f in files))
     if len(rows) > MAX_ROWS:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
     context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
@@ -1097,14 +1213,30 @@ async def _act_new(
         send_email,
     )
 
+    import base64
+
+    from gateway.routes.email.transport.metorite_files import (
+        check_digests,
+        resolve_metorite_files,
+    )
+
     attachments = [SendAttachment(**f) for f in await file_payloads(user, files)]
+    # H-392: each ticked Metorite file resolves again, as the member, and it
+    # goes only while its bytes are the bytes that the card named.
+    expect = ticked_metorite_files(rec.get("rows") or [], frozenset(rec.get("_ticked") or ()))
+    if expect:
+        shared = await resolve_metorite_files(user, list(expect), held=True)
+        check_digests(shared, expect)
+        attachments += [SendAttachment(filename=f.name, mime_type=f.mime,
+                                       content_b64=base64.b64encode(f.content).decode("ascii"))
+                        for f in shared]
     res = await send_email(SendEmailRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
         bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",
         body_text=rec["body"], attachments=attachments or None,
     ), background, user)
     return {"ok": True, "action": "send", "id": (res or {}).get("id"),
-            "files": len(files), **ticked}
+            "files": len(files) + len(expect), **ticked}
 
 
 @router.post("/held-card")
@@ -1278,7 +1410,9 @@ async def held_card_act(
     if rec.get("kind") == "forward":
         out = await _act_forward(rec, ticked, files, user)
     elif rec.get("kind") == "new":
-        out = await _act_new(rec, ticked, files, background, user)
+        # The ticked ids travel with the record into the act, never from a
+        # request field: they are the ids that ``ticked_rows`` checked.
+        out = await _act_new({**rec, "_ticked": sorted(ids)}, ticked, files, background, user)
     else:
         out = await _act_draft(rec, ticked, background, user)
     _audit(req.card_id, str(rec["kind"]), rows, ids)

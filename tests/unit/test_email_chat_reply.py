@@ -1474,3 +1474,171 @@ async def test_compose_reply_outside_a_held_run_lets_the_server_choose(monkeypat
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL})
+
+
+# ── The tick boxes of the reply card (owner, 2026-10-24) ────────────────────
+#
+# Each To and Cc of the card has a tick box. The gateway stays the only source
+# of the lists, the act takes only a SUBSET of the list of the chosen mode,
+# and the mail goes to exactly the ticked people.
+
+
+async def test_the_act_sends_only_to_the_ticked_people(monkeypatch, redis) -> None:
+    """Mutation: send the derived lists in place of the ticked ones → red."""
+    routes = _Routes(monkeypatch, _mail())
+    text = _answer(reply_all=True, body="Hi Kim.", to=["kim@contoso.test"], cc=[])
+    await _record(ORG, "rid-1", MEMBER, text)
+    out = await _act(text)
+    [sent] = routes.sent
+    assert sent.to == ["kim@contoso.test"] and sent.cc is None
+    assert out["to"] == ["kim@contoso.test"] and out["cc"] == []
+
+
+async def test_the_act_keeps_the_server_order_of_the_ticked_people(monkeypatch, redis) -> None:
+    routes = _Routes(monkeypatch, _mail())
+    text = _answer(reply_all=True, to=["LEE@contoso.test", "kim@contoso.test"],
+                   cc=["ops@contoso.test"])
+    await _record(ORG, "rid-1", MEMBER, text)
+    await _act(text)
+    assert routes.sent[0].to == ["kim@contoso.test", "lee@contoso.test"]
+
+
+async def test_a_save_writes_the_ticked_people_to_the_draft(monkeypatch, redis) -> None:
+    """The draft in Drafts holds what the card sends."""
+    routes = _Routes(monkeypatch, _mail())
+    text = _answer("save", reply_all=True, body="Draft.", to=["lee@contoso.test"],
+                   cc=["ops@contoso.test"])
+    await _record(ORG, "rid-1", MEMBER, text)
+    await _act(text)
+    assert routes.saved == [(["lee@contoso.test"], ["ops@contoso.test"], "Re: Quote", "Draft.")]
+
+
+@pytest.mark.parametrize(("to", "cc"), [
+    (["kim@contoso.test", "spy@evil.test"], []),           # an added To
+    (["kim@contoso.test"], ["spy@evil.test"]),             # an added Cc
+    (["kim@contoso.test", "KIM@contoso.test"], []),        # one person twice
+    (["ops@contoso.test"], []),                            # a Cc moved into To
+])
+async def test_the_act_refuses_a_person_that_the_server_did_not_list(
+    monkeypatch, redis, to: list[str], cc: list[str],
+) -> None:
+    """Mutation: drop ``ticked_subset`` → red. 409, and nothing goes."""
+    from fastapi import HTTPException
+
+    routes = _Routes(monkeypatch, _mail())
+    text = _answer(reply_all=True, to=to, cc=cc)
+    await _record(ORG, "rid-1", MEMBER, text)
+    with pytest.raises(HTTPException) as err:
+        await _act(text)
+    assert err.value.status_code == 409
+    assert routes.sent == [] and routes.saved == []
+
+
+def test_an_answer_with_no_ticked_to_is_no_answer() -> None:
+    assert rcard.parse_reply_answer(_answer(to=[])) is None
+
+
+async def test_the_card_route_starts_each_person_ticked(monkeypatch, card_drafts) -> None:
+    async def load_mail(message_id: str, owner: str) -> Any:
+        return _mail()
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    out = await rc.reply_card(rc.ReplyCardRequest(message_id=MAIL, draft="Hi."), USER)
+    assert out["ticked"] == out["recipients"]
+
+
+async def test_untick_new_leaves_each_new_person_off_the_card_and_the_draft(
+    monkeypatch, card_drafts,
+) -> None:
+    """A held chat with the switch on: the card opens on Reply all (§22.6),
+    each new person starts unticked, and the draft holds only the ticked
+    people. Mutation: write the draft with the whole list → red."""
+    from tests.unit import _held_card_fakes as F
+
+    async def load_mail(message_id: str, owner: str) -> Any:
+        return _mail()
+
+    async def classes(owner: str, addresses: list[str], *, primary: list[str]) -> dict:
+        return {"kim@contoso.test": "thread", "lee@contoso.test": "new",
+                "ops@contoso.test": "org"}
+
+    monkeypatch.setattr(rc, "_load_mail", load_mail)
+    monkeypatch.setattr(rc, "_reply_classes", classes)
+    F.flag_on(monkeypatch)
+    out = await rc.reply_card(
+        rc.ReplyCardRequest(message_id=MAIL, draft="Hi.", untick_new=True), USER)
+    assert out["reply_all"] is True
+    assert out["ticked"]["reply_all"] == {"to": ["kim@contoso.test"],
+                                          "cc": ["ops@contoso.test"]}
+    assert card_drafts.calls == [(["kim@contoso.test"], ["ops@contoso.test"],
+                                  "Re: Quote", "Hi.")]
+    # The switch off: no class, so each person starts ticked, as before.
+    F.flag_off(monkeypatch)
+    card_drafts.calls.clear()
+    out = await rc.reply_card(
+        rc.ReplyCardRequest(message_id=MAIL, draft="Hi.", untick_new=True), USER)
+    assert out["ticked"] == out["recipients"]
+    assert card_drafts.calls[0][0] == ["kim@contoso.test", "lee@contoso.test"]
+
+
+async def test_compose_reply_hands_the_servers_ticks_to_the_card(monkeypatch, gw) -> None:
+    gw.card_extra = {"ticked": {"reply": {"to": ["kim@contoso.test"], "cc": []},
+                                "reply_all": {"to": ["kim@contoso.test"], "cc": []}}}
+    cards = _card_answer(monkeypatch, lambda kw: None)
+    await agents.compose_reply(MAIL, BOX)
+    assert cards[0]["reply"]["ticked"]["reply_all"] == {"to": ["kim@contoso.test"], "cc": []}
+
+
+async def test_an_older_gateway_starts_each_person_ticked(monkeypatch, gw) -> None:
+    cards = _card_answer(monkeypatch, lambda kw: None)
+    await agents.compose_reply(MAIL, BOX)
+    form = cards[0]["reply"]
+    assert form["ticked"] == form["recipients"]
+
+
+async def test_a_held_chat_with_the_switch_on_asks_untick_new_and_lets_the_server_choose(
+    monkeypatch, gw,
+) -> None:
+    """Mutation: keep forcing Reply in a held chat with the switch on → red."""
+    from tests.unit import _held_card_fakes as F
+
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
+    monkeypatch.setattr("acb_skills.ask_tools.reply_card_channel_open", lambda: True)
+    gw.card_extra = {"reply_all": True,
+                     "classes": {"kim@contoso.test": "thread", "lee@contoso.test": "new"},
+                     "ticked": {"reply": {"to": ["kim@contoso.test"], "cc": []},
+                                "reply_all": {"to": ["kim@contoso.test"], "cc": []}}}
+    cards = _card_answer(monkeypatch, lambda kw: None)
+    await agents.compose_reply(MAIL, BOX)
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "untick_new": True})
+    form = cards[0]["reply"]
+    assert form["reply_all"] is True
+    assert form["ticked"]["reply_all"]["to"] == ["kim@contoso.test"]
+    assert agents._REPLY_NEW_UNTICKED_NOTICE in form["notices"]
+    _ = F
+
+
+async def test_a_held_chat_with_the_switch_off_keeps_reply(monkeypatch, gw) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
+    monkeypatch.setattr("acb_skills.ask_tools.reply_card_channel_open", lambda: True)
+    cards = _card_answer(monkeypatch, lambda kw: None)
+    await agents.compose_reply(MAIL, BOX)
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False})
+    assert cards[0]["reply"]["ticked"] == cards[0]["reply"]["recipients"]
+
+
+def test_the_card_form_refuses_a_tick_of_a_person_that_is_not_listed() -> None:
+    from acb_skills.ask_tools import clean_reply_form
+
+    form = agents._reply_form({
+        "message_id": MAIL, "recipients": {
+            "reply": {"to": ["kim@contoso.test"], "cc": []},
+            "reply_all": {"to": ["kim@contoso.test", "lee@contoso.test"], "cc": []}},
+        "body": "Hi"}, True)
+    assert clean_reply_form(form)["ticked"]["reply_all"]["to"] == [
+        "kim@contoso.test", "lee@contoso.test"]
+    form["ticked"]["reply_all"]["to"] = ["spy@evil.test"]
+    with pytest.raises(ValueError):
+        clean_reply_form(form)

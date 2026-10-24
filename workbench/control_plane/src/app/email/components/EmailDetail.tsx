@@ -1523,6 +1523,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
               people={email.cc ?? []}
               accountId={email.accountId}
             />
+            {/* A Bcc shows only on a mail the member sent: the provider
+                gives no Bcc of a received mail. */}
+            <RecipientList
+              label="Bcc"
+              people={email.bcc ?? []}
+              accountId={email.accountId}
+            />
             <div className="text-xs text-muted-foreground">
               {fullDateLabel(email.receivedAt)}
             </div>
