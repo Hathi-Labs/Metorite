@@ -2332,9 +2332,12 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
             f"Nothing changed.\n  report_id: {rid}"
         )
     names = await _names_of(held)
-    people = ", ".join(
-        f"{data(names[e])} ({data(e)})" if e in names else data(e) for e in held[:10]
-    ) + (f" and {len(held) - 10} more" if len(held) > 10 else "")
+    shown: list[str] = []
+    for e in held:
+        if len(shown) == 10:
+            break
+        shown.append(f"{data(names[e])} ({data(e)})" if e in names else data(e))
+    people = ", ".join(shown) + (f" and {len(held) - 10} more" if len(held) > 10 else "")
     if enabled:
         impact = (
             f"the schedule goes on: {data(report.get('name'))} goes by email to {_plural(len(held), 'person')} "
