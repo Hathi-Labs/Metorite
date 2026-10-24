@@ -198,7 +198,11 @@ def test_a_reply_answer_parses() -> None:
 @pytest.mark.parametrize("bad", [
     "APPROVE",
     "REJECT",
-    _answer(bcc=["spy@evil.test"]),
+    # §21.14: ``bcc`` is now an answer key (REPLY_ANSWER_OPTIONAL_KEYS). A
+    # Bcc that is not a list of addresses is still no answer, and a Bcc that
+    # is not on the card's record sends nothing
+    # (``test_a_bcc_that_the_card_did_not_record_sends_nothing``).
+    _answer(bcc="spy@evil.test"),
     _answer(attachments=["outputs/a.pdf"]),
     _answer("forward"),
     _answer(body="   "),
@@ -444,11 +448,12 @@ def test_the_act_request_takes_no_recipient_body_or_file(field: str) -> None:
     with pytest.raises(ValidationError):
         rc.ReplyCardActRequest(message_id=MAIL, card_request_id="r", card_thread_id="t",
                                answer="x", **{field: ["spy@evil.test"]})
-    if field == "cc":
+    if field in ("cc", "bcc"):
         # Item 2 (owner, 2026-10-24): the CARD request takes ``cc``. The server
         # classes and records each one, and the act takes a subset of the
-        # record only (``test_recipient_intent.py``). The ACT request still
-        # takes no cc, above.
+        # record only (``test_recipient_intent.py``). §21.14: ``bcc`` too
+        # (``test_reply_card_bcc.py``). The ACT request still takes neither,
+        # above.
         return
     with pytest.raises(ValidationError):
         rc.ReplyCardRequest(message_id=MAIL, **{field: ["spy@evil.test"]})
@@ -517,8 +522,11 @@ async def test_a_card_with_no_text_writes_no_draft(monkeypatch, card_drafts) -> 
 def test_the_parameter_fence_pins_compose_reply() -> None:
     params = list(inspect.signature(agents.compose_reply).parameters)
     # Item 2 (owner, 2026-10-24): ``cc`` joins the pin. The gateway classes
-    # and records each added person (``test_recipient_intent.py``).
-    assert params == ["email_id", "account_id", "reply_all", "draft", "instruction", "cc"]
+    # and records each added person (``test_recipient_intent.py``). §21.14
+    # (owner, 2026-10-24): ``bcc`` joins the pin on the same terms, and a held
+    # card takes an org or a sent Bcc only (``test_reply_card_bcc.py``).
+    assert params == ["email_id", "account_id", "reply_all", "draft", "instruction", "cc",
+                      "bcc"]
     assert frozenset(params) == eg.CARD_BOUND_SEND_TOOLS["compose_reply"]
     assert agents.compose_reply.__tool_risk__ == {
         "read_only": False, "destructive": True, "idempotent": False,
@@ -530,15 +538,15 @@ def _variant(extra: str) -> Any:
     ns: dict[str, Any] = {}
     exec(  # noqa: S102 - a fixed test source
         "async def compose_reply(email_id, account_id, reply_all=False, draft='', "
-        f"instruction='', cc=None, {extra}=None):\n"
+        f"instruction='', cc=None, bcc=None, {extra}=None):\n"
         "    return ''\n", ns)
     fn = ns["compose_reply"]
     fn.__tool_risk__ = dict(agents.compose_reply.__tool_risk__)
     return fn
 
 
-@pytest.mark.parametrize("extra", ["to", "cc_list", "bcc", "recipients", "attachments", "body",
-                                   "forward_to"])
+@pytest.mark.parametrize("extra", ["to", "cc_list", "bcc_list", "recipients", "attachments",
+                                   "body", "forward_to", "files"])
 def test_the_parameter_fence_fails_when_a_parameter_is_added(extra: str) -> None:
     assert eg.is_card_bound_send(agents.compose_reply) is True
     assert eg.is_egress_tool(agents.compose_reply) is False
@@ -793,7 +801,9 @@ async def test_compose_reply_asks_for_the_reply_all_draft(monkeypatch, gw) -> No
     """The draft in Drafts takes the recipients that the card opens with."""
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX, reply_all=True)
-    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": True})
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": True,
+        # §21.14: a held run tells the card route so. The run sets it.
+        "held": True})
 
 
 async def test_another_members_answer_does_nothing(monkeypatch, gw) -> None:
@@ -903,7 +913,7 @@ async def test_the_reply_card_carries_the_form_and_returns_the_answer(monkeypatc
 
 
 @pytest.mark.parametrize("answer", [{"answer": "APPROVE"}, {"answer": "REJECT"}, None,
-                                    {"answer": _answer(bcc=["spy@evil.test"])}],
+                                    {"answer": _answer(attachments=["x.pdf"])}],
                          ids=["plain-approve", "discard", "timeout", "extra-key"])
 async def test_anything_but_a_reply_answer_is_none(monkeypatch, answer: Any) -> None:
     result, _ = await _ask(monkeypatch, answer)
@@ -1053,7 +1063,8 @@ def test_the_client_builds_the_answer_the_server_reads() -> None:
     block = re.search(r"const reply = \{(.*?)\};", src, re.S)
     assert block, "replyAnswer builds its object as `const reply = {...}`"
     keys = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))
-    assert keys == set(rcard.REPLY_ANSWER_KEYS), keys
+    # §21.14: the client always names ``bcc``, the one optional key.
+    assert keys == set(rcard.REPLY_ANSWER_KEYS) | set(rcard.REPLY_ANSWER_OPTIONAL_KEYS), keys
 
 
 # ── 8. Security review of #1191 ──────────────────────────────────────────────
@@ -1473,7 +1484,9 @@ async def test_compose_reply_leaves_reply_all_to_the_server(monkeypatch, gw) -> 
 async def test_compose_reply_false_is_sent_on_as_reply(monkeypatch, gw) -> None:
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX, reply_all=False)
-    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False})
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False,
+        # §21.14: a held run tells the card route so. The run sets it.
+        "held": True})
 
 
 async def test_compose_reply_in_a_held_run_asks_no_server_reply_all(monkeypatch, gw) -> None:
@@ -1483,7 +1496,9 @@ async def test_compose_reply_in_a_held_run_asks_no_server_reply_all(monkeypatch,
     monkeypatch.setattr(agents, "_egress_held", lambda: True)
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX)
-    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False})
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False,
+        # §21.14: a held run tells the card route so. The run sets it.
+        "held": True})
 
 
 async def test_compose_reply_outside_a_held_run_lets_the_server_choose(monkeypatch, gw) -> None:
@@ -1628,7 +1643,9 @@ async def test_a_held_chat_with_the_switch_on_asks_untick_new_and_lets_the_serve
                                 "reply_all": {"to": ["kim@contoso.test"], "cc": []}}}
     cards = _card_answer(monkeypatch, lambda kw: None)
     await agents.compose_reply(MAIL, BOX)
-    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "untick_new": True})
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "untick_new": True,
+        # §21.14: a held run tells the card route so. The run sets it.
+        "held": True})
     form = cards[0]["reply"]
     assert form["reply_all"] is True
     assert form["ticked"]["reply_all"]["to"] == ["kim@contoso.test"]
@@ -1642,7 +1659,9 @@ async def test_a_held_chat_with_the_switch_off_keeps_reply(monkeypatch, gw) -> N
     monkeypatch.setattr("acb_skills.ask_tools.reply_card_channel_open", lambda: True)
     cards = _card_answer(monkeypatch, lambda kw: None)
     await agents.compose_reply(MAIL, BOX)
-    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False})
+    assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False,
+        # §21.14: a held run tells the card route so. The run sets it.
+        "held": True})
     assert cards[0]["reply"]["ticked"] == cards[0]["reply"]["recipients"]
 
 

@@ -51,6 +51,7 @@ __all__ = [
     "RECORD_TTL_S",
     "REPLY_ACTIONS",
     "REPLY_ANSWER_KEYS",
+    "REPLY_ANSWER_OPTIONAL_KEYS",
     "REPLY_ANSWER_PREFIX",
     "LookalikeWord",
     "ReplyChoice",
@@ -89,6 +90,12 @@ REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
 #: email (security review of #1191).
 REPLY_ANSWER_KEYS: frozenset[str] = frozenset(
     {"action", "reply_all", "body", "to", "cc", "message_id"})
+#: The one key that an answer MAY add: ``bcc``, the Bcc people that the
+#: member ticked (§21.14, owner 2026-10-24). The gateway sends a Bcc only
+#: when each one is on the record of THIS card (``reply_card.ticked_subset``),
+#: so the member can take one off and never add one. An answer of an older
+#: card names no ``bcc``, and it still parses.
+REPLY_ANSWER_OPTIONAL_KEYS: frozenset[str] = frozenset({"bcc"})
 
 #: The longest body the card takes. A longer one is refused, never cut.
 MAX_REPLY_BODY = 20_000
@@ -99,7 +106,7 @@ _MAX_MESSAGE_ID = 200
 #: The longest answer that can be honest: the body escaped as JSON (six
 #: characters for each one at most), the two lists, the email id and the frame.
 MAX_REPLY_ANSWER = (len(REPLY_ANSWER_PREFIX) + 6 * MAX_REPLY_BODY
-                    + 2 * MAX_REPLY_RECIPIENTS * (_MAX_ADDRESS + 4) + _MAX_MESSAGE_ID + 200)
+                    + 3 * MAX_REPLY_RECIPIENTS * (_MAX_ADDRESS + 4) + _MAX_MESSAGE_ID + 200)
 
 #: The Redis namespace of the records (``cc:<org>:reply-card:<thread>:<id>``).
 RECORD_NAMESPACE = "reply-card"
@@ -479,6 +486,9 @@ class ReplyChoice:
     to: tuple[str, ...]
     cc: tuple[str, ...]
     message_id: str = ""
+    #: The Bcc people that the member ticked (§21.14). Empty for an answer
+    #: that names no ``bcc``.
+    bcc: tuple[str, ...] = ()
 
 
 def _addresses(value: Any) -> tuple[str, ...] | None:
@@ -497,8 +507,9 @@ def parse_reply_answer(answer: Any) -> ReplyChoice | None:
 
     Strict, and it fails closed. The answer is ``APPROVE`` and one JSON
     object with the one key ``reply``. That object holds exactly
-    :data:`REPLY_ANSWER_KEYS`. A missing key, an extra key (a ``bcc``, an
-    ``attachments``), an unknown action, an empty body, a body over
+    :data:`REPLY_ANSWER_KEYS`, and it may add ``bcc``
+    (:data:`REPLY_ANSWER_OPTIONAL_KEYS`). A missing key, an extra key (an
+    ``attachments``, a ``files``), an unknown action, an empty body, a body over
     :data:`MAX_REPLY_BODY`, or no email id reads as no answer. Nothing is
     trimmed to fit.
     """
@@ -515,7 +526,8 @@ def parse_reply_answer(answer: Any) -> ReplyChoice | None:
     if not isinstance(payload, dict) or set(payload) != {"reply"}:
         return None
     reply = payload["reply"]
-    if not isinstance(reply, dict) or set(reply) != REPLY_ANSWER_KEYS:
+    if not isinstance(reply, dict) or not (
+            REPLY_ANSWER_KEYS <= set(reply) <= REPLY_ANSWER_KEYS | REPLY_ANSWER_OPTIONAL_KEYS):
         return None
     action, reply_all, body = reply["action"], reply["reply_all"], reply["body"]
     if action not in REPLY_ACTIONS or not isinstance(reply_all, bool):
@@ -523,14 +535,15 @@ def parse_reply_answer(answer: Any) -> ReplyChoice | None:
     if not isinstance(body, str) or not body.strip() or len(body) > MAX_REPLY_BODY:
         return None
     to, cc = _addresses(reply["to"]), _addresses(reply["cc"])
-    if to is None or cc is None or not to:
+    bcc = _addresses(reply.get("bcc", []))
+    if to is None or cc is None or bcc is None or not to:
         return None
     message_id = reply["message_id"]
     if (not isinstance(message_id, str) or not message_id.strip()
             or len(message_id) > _MAX_MESSAGE_ID):
         return None
     return ReplyChoice(action=action, reply_all=reply_all, body=body, to=to, cc=cc,
-                       message_id=message_id.strip())
+                       message_id=message_id.strip(), bcc=bcc)
 
 
 def looks_like_reply_answer(answer: Any) -> bool:

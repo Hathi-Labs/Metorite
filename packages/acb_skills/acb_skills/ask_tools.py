@@ -847,15 +847,16 @@ _REPLY_ADDRESS_MAX = 320
 
 
 def _clean_recipients(value: Any) -> dict[str, list[str]]:
-    """The To and Cc lists of one choice. An address is never cut and a list
-    is never shortened, because the card must show each recipient in full.
-    A list that is too long, or an address that is too long, raises
-    ``ValueError`` before any card is drawn."""
+    """The To, Cc and Bcc lists of one choice. An address is never cut and a
+    list is never shortened, because the card must show each recipient in
+    full. A list that is too long, or an address that is too long, raises
+    ``ValueError`` before any card is drawn. ``bcc`` (§21.14) is the Bcc
+    that the gateway recorded for the card, and it shows apart."""
     from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
 
     v = value if isinstance(value, dict) else {}
     out: dict[str, list[str]] = {}
-    for name in ("to", "cc"):
+    for name in ("to", "cc", "bcc"):
         items = v.get(name) if isinstance(v.get(name), list) else []
         if len(items) > MAX_REPLY_RECIPIENTS:
             raise ValueError("a reply form names too many recipients")
@@ -863,6 +864,9 @@ def _clean_recipients(value: Any) -> dict[str, list[str]]:
         if any(len(a) > _REPLY_ADDRESS_MAX for a in clean):
             raise ValueError("a reply form names an address that is too long")
         out[name] = [a for a in clean if a]
+    if not out["bcc"]:
+        # A card with no Bcc is exactly as before (§21.14).
+        del out["bcc"]
     return out
 
 
@@ -941,7 +945,7 @@ def clean_reply_form(form: dict | None) -> dict | None:
 def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
     """The words of each person, each a person of the card's list. A mark of
     a person that is not on the card, or an over-long mark, raises."""
-    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"]]}
+    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"], *reply_all.get("bcc", [])]}
     out: dict[str, str] = {}
     for addr, words in value.items():
         a = " ".join(str(addr or "").split()).lower()
@@ -961,7 +965,9 @@ def _reply_ticked(value: dict, reply: dict, reply_all: dict) -> dict:
     for key, lists in (("reply", reply), ("reply_all", reply_all)):
         raw = value.get(key) if isinstance(value.get(key), dict) else {}
         out[key] = {}
-        for part in ("to", "cc"):
+        for part in ("to", "cc", "bcc"):
+            if part not in lists:
+                continue
             have = {a.lower(): a for a in lists[part]}
             got = raw.get(part, lists[part])
             if not isinstance(got, list):
