@@ -321,11 +321,12 @@ The name and the role stay in `people`, and the People app stays their owner.
 
 The Knowledge rail gains one group, **Directories**. It holds a row for each
 page type that has at least one entity. The rows are Company, Products,
-People, Customers, Workstreams, Workflows and Topics. A directory is a view
-over the owner records of one type. The owning app's rule filters it (§6.4),
-and the visibility clause filters each page. It is not a space and it holds
-no grant (D-KB-7 holds: a view, not a pane). A rail row shows only when the
-caller can see one entity of that type, or more.
+People, Customers, Workstreams, Workflows and Topics. A rail row shows only
+when the caller can see one entity of that type, or more.
+
+A directory is a view over the owner records of one type. The owning app's
+rule filters it (§6.4), and the visibility clause filters each page. It is
+not a space and it holds no grant (D-KB-7 holds: a view, not a pane).
 
 ### 6.4 Who sees a directory row
 
@@ -825,7 +826,7 @@ nullable with a default (R6).
 
 **`kb_entities`, two rules.** A Knowledge-owned entity (a product, a topic, a
 written workflow) holds `ref_table = 'kb_entities'` and its own id as
-`ref_id`, so the unique index covers it too, and it must hold a `space_id`.
+`ref_id`. So the unique index covers it too. It must hold a `space_id`.
 The page-type list is a code constant in KC-8a, mirrored by a CHECK. A
 per-org rename or a new type is a follow-up with no ticket yet.
 
