@@ -1653,6 +1653,17 @@ class FakeProjectsDB:
         # size, asked by the project delete before it destroys anything. It does
         # not start with SELECT, so the generic count path never sees it and the
         # route would have reported zero.
+        # `remove_my_area` asks for the child nodes and the tasks of a whole
+        # subtree in one row (`AS nodes … AS tasks`). Answered explicitly.
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I) and "AS nodes" in statement:
+            subtree = self._subtree_ids(str(args.get("aid")))
+            return _Result([SimpleNamespace(
+                nodes=len(subtree) - 1,
+                tasks=sum(
+                    1 for t in self.rows("pm_tasks")
+                    if str(t.get("project_id")) in subtree
+                ),
+            )])
         if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I):
             subtree = self._subtree_ids(str(args.get("pid")))
             if re.search(r"SELECT\s+count\(\*\)\s+FROM\s+sub", statement, re.I):

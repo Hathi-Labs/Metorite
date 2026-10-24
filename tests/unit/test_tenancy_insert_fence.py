@@ -227,6 +227,10 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # in the two-arm shape of 207. The no-column half is the one counted; the
     # other names `organization_id` from the ROLE being granted.
     ("272_knowledge_pages.sql", "org_role_permission"): (1, "GUARDED"),
+    # WS-65 SM-1 seeds `email:shared:manage` onto `admin` in every
+    # organization, in the two-arm shape of 207 and 272. The no-column half is
+    # the one counted. The other names `organization_id` from the ROLE.
+    ("296_email_shared_mailbox.sql", "org_role_permission"): (1, "GUARDED"),
 }
 
 

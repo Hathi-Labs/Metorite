@@ -1,6 +1,9 @@
-"""The Projects operations tasks, PO-1 to PO-11 (WS-46 P3 and later slices).
+"""The Projects operations tasks, PO-1 to PO-20 (WS-46 P3 and later slices).
 
 PO-8 is from P6, PO-9 from P7, PO-10 from P13 and PO-11 from H-273.
+PO-12 to PO-14 are from WS-64 OP-6a: make, rename and delete an area.
+PO-15 to PO-17 are from WS-64 OP-6c: a nudge, an export and an attached file.
+PO-18 to PO-20 are from WS-64 OP-6b: a grant, a revoke and a refused grant.
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -21,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from evals.projects_ops.dataset import MEMBER as _MEMBER
+from evals.projects_ops.dataset import UPLOAD_BYTES, UPLOAD_NAME
 
 #: The acting member of every task.
 MEMBER = _MEMBER.email
@@ -41,6 +45,10 @@ class TaskSpec:
     #: WS-46 P13: the row ids the member unticks on a card with rows. The
     #: member approves every other row the card ticked.
     untick: tuple[str, ...] = ()
+    #: WS-64 OP-6c: the files the member uploaded to this chat before the first
+    #: message, as ``(name, bytes)``. The runner puts each in the upload folder
+    #: of the session's thread, where the upload route puts it (H-227).
+    uploads: tuple[tuple[str, bytes], ...] = ()
 
 
 TASKS: tuple[TaskSpec, ...] = (
@@ -118,6 +126,62 @@ TASKS: tuple[TaskSpec, ...] = (
         "Register these 3 tags",
         "Register these 3 tags in the Launch project: vendor, print and av.",
         cards=(APPROVE,),
+    ),
+    # WS-64 OP-6a (D-OP-9): the member's own areas, from the chat.
+    TaskSpec(
+        "PO-12", "A new area",
+        "Make an area called Garden",
+        "Make a new area for my own tasks called Garden.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-13", "Rename an area",
+        "Rename my Home area to House",
+        "Rename my area Home to House.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-14", "Delete an area that holds finished tasks",
+        "Delete my Finance area",
+        "Delete my area Finance.",
+        cards=(APPROVE,),
+    ),
+    # WS-64 OP-6c (D-OP-9): a nudge, an export and an attached file, from the chat.
+    TaskSpec(
+        "PO-15", "Nudge the person I wait on",
+        "Nudge Priya about the banners",
+        "I am waiting on Priya for task #4. Nudge her.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-16", "Export the overdue tasks of a project",
+        "Export the overdue Launch tasks to a CSV file",
+        "Export the overdue tasks of the Launch project to a CSV file.",
+    ),
+    TaskSpec(
+        "PO-17", "Attach a file I uploaded",
+        "Attach launch-brief.pdf to #6",
+        f"I uploaded {UPLOAD_NAME} to this chat. Attach it to task #6.",
+        cards=(APPROVE,),
+        uploads=((UPLOAD_NAME, UPLOAD_BYTES),),
+    ),
+    # WS-64 OP-6b (D-OP-9): who can see a project, from the chat.
+    TaskSpec(
+        "PO-18", "Open a project to the organization",
+        "Let everyone in the organization see Launch",
+        "Let everyone in the organization see the Launch project.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-19", "Remove one person's access",
+        "Remove Priya's access to Launch",
+        "Remove the access that Priya Menon has to the Launch project.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-20", "A grant the member may not write",
+        "Let everyone in the organization see Ops",
+        "Let everyone in the organization see the Ops project.",
     ),
 )
 

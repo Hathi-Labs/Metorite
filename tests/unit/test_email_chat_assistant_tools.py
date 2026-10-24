@@ -519,3 +519,80 @@ async def test_the_route_keeps_the_body_when_asked(monkeypatch, gmail, sent_body
     assert kw["body_text"] == sent_body
     if not gmail:
         assert upserts[0]["body"] == "<stored copy>"
+
+
+async def test_find_contact_says_closest_match_for_a_fuzzy_hit(gw: _Gw) -> None:
+    """Owner, 2026-10-23: "Venna" is Veena. A trigram hit is a guess, so the
+    model must confirm it with the member and not use it at once."""
+    gw.contacts = [{"email": "veena@fracktal.in", "name": "Veena",
+                    "source": "org", "match": "closest"}]
+    out = await agents.find_contact("Venna")
+    assert "CLOSEST" in out and "No exact match" in out
+    assert "Use this address" not in out
+    assert "- Veena <veena@fracktal.in>" in out
+
+
+async def test_edit_draft_body_refuses_to_drop_a_quoted_thread(gw: _Gw) -> None:
+    """§22 gap 3: a new body replaces the whole text, so a reply with a
+    quoted thread is refused, and the answer names a chat step."""
+    gw.draft["body_trimmed"] = True
+    out = await agents.edit_draft(BOX, "d1", body="Hi Ravi, new text")
+    assert out.startswith("Nothing changed.") and "compose_reply" in out
+    assert "Email app" not in out
+    assert not [w for w in gw.writes if w[1] == "/email/drafts"]
+    assert gw.cards == []
+
+
+async def test_edit_draft_body_card_says_no_thread_is_dropped(gw: _Gw) -> None:
+    await agents.edit_draft(BOX, "d1", body="Hi Ravi, new text")
+    assert "holds no quoted thread" in gw.cards[-1]["context"]
+
+
+def test_draft_line_names_the_id_and_the_subject() -> None:
+    """§22 gap 2: call_agent keeps no chat history, so each result that makes
+    a draft ends with a stable line for the next turn."""
+    assert agents._draft_line("d9", "Re:  Quote") == "Draft: draft_id=d9 | subject: Re: Quote"
+    assert agents._draft_line("", "x") == ""
+
+
+async def test_edit_draft_result_ends_with_the_draft_line(gw: _Gw) -> None:
+    out = await agents.edit_draft(BOX, "d1", cc=["kim@contoso.test", "veena@fracktal.in"])
+    assert out.endswith("Draft: draft_id=d1 | subject: Re: Quote")
+
+
+async def test_new_draft_result_ends_with_the_draft_line(gw: _Gw, monkeypatch) -> None:
+    async def put(path, body):
+        return {"id": "n7"}
+
+    monkeypatch.setattr(agents, "_put", put)
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    out = await agents.edit_draft(BOX, "", to=["a@x.test"], subject="Hello", body="Hi")
+    assert out.endswith("Draft: draft_id=n7 | subject: Hello")
+
+
+def test_the_drafts_lookup_exists_with_the_parameter_the_text_names() -> None:
+    """The instructions say: search_emails with folder="drafts". Pin both."""
+    import inspect
+    from pathlib import Path
+
+    assert "folder" in inspect.signature(agents.search_emails).parameters
+    text = Path(agents.__file__).with_name("instructions.md").read_text(encoding="utf-8")
+    assert "`search_emails` with `folder` set to `drafts`" in text
+
+
+async def test_draft_reply_asks_for_the_default_and_names_reply_all(gw: _Gw, monkeypatch) -> None:
+    """§22.6: the draft goes to everyone when others are on the mail, and the
+    first line says so."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
+    posts: list[tuple[str, dict[str, Any]]] = []
+
+    async def post(path, body):
+        posts.append((path, body))
+        return {"draft": "Hi all", "created": True, "draft_id": "d5",
+                "subject": "Re: Quote", "to": ["a@x.test"], "cc": ["b@x.test"]}
+
+    monkeypatch.setattr(agents, "_post", post)
+    out = await agents.draft_reply(MSG, BOX)
+    assert posts[0][1]["auto_reply_all"] is True
+    assert "(Reply all: to a@x.test, Cc b@x.test)" in out.splitlines()[0]
+    assert "draft_id=d5" in out.splitlines()[0]

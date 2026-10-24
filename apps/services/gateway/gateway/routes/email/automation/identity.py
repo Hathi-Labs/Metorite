@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gateway.routes.email.core import IN_ALL_INBOXES_SQL, NOT_A_COPY_FOLDERS
+from gateway.routes.email.mailbox_access import private_predicate
 from gateway.routes.email.mailbox_identity import display_labels
 from sqlalchemy import text
 
@@ -94,17 +95,24 @@ def _member_mailboxes_from(anchor: str) -> str:
     predicate repeats that bind for a session that row level security does
     not bind, so a mailbox of the same member in another organization is
     never ``o``. ``anchor`` is code, never a value from a request, and any
-    other shape raises."""
+    other shape raises.
+
+    A shared mailbox is never "self" for any member (D-SM-5, WS-65 SM-2).
+    ``user_id`` of a shared row is only the member who connected it, so a
+    shared ``a`` pairs with itself alone, and a shared ``o`` never joins a
+    private ``a``. The rule needs no flag: with no shared row, the set is the
+    set of before WS-65."""
     if not _ANCHOR.fullmatch(anchor):
         raise ValueError(f"not a bind name or a column: {anchor!r}")
     return (
         "FROM email_accounts a "
-        "JOIN email_accounts o ON o.user_id = a.user_id "
+        "JOIN email_accounts o ON (o.id = a.id OR (o.user_id = a.user_id "
+        "AND o.shared_since IS NULL AND a.shared_since IS NULL)) "
         "AND o.organization_id IS NOT DISTINCT FROM a.organization_id "
         f"WHERE a.id = {anchor}")
 
 
-#: The FROM clause over ``:aid``. Its text is the same as before EM-T8g-3.
+#: The FROM clause over ``:aid``.
 _MEMBER_MAILBOXES_FROM = _member_mailboxes_from(":aid")
 
 #: The lower-case address of each mailbox of the member who owns ``:aid``
@@ -171,12 +179,15 @@ def _same_sender_sql(copy: str, mail: str) -> str:
 #: ⚠️ Outlook stores ``internet_message_id``, and Gmail does too since WS-17
 #: EM-G2. IMAP stores none, so an IMAP mailbox pairs with nothing. EM-G9
 #: proves a Gmail and Outlook pair (spec §12.3.11).
+# "Also in" pairs the member's private mailboxes (D-EM-30). A shared
+# mailbox is never "self" and never pairs (D-SM-5, WS-65 SM-2).
 ALSO_IN_SQL = f"""
     SELECT m.id::text AS id, p.id::text AS other
       FROM email_messages m
       CROSS JOIN LATERAL ({paired_mailbox_ids_sql("m.account_id")}) AS p (id)
      WHERE m.id = ANY(CAST(:ids AS uuid[]))
-       AND m.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)
+       AND m.account_id IN (SELECT id FROM email_accounts
+                             WHERE {private_predicate(uid="uid")})
        AND COALESCE(m.internet_message_id, '') <> ''
        AND {_not_a_copy_sql("m")}
        AND EXISTS (

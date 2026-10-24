@@ -15,8 +15,9 @@ UI client methods to one decision. P6 is BUILT (2026-10-06). The chat now
 sets each task field of the screen (G5 to G9). P7 is BUILT (2026-10-06).
 The chat sets the project and personal fields of the screen (G12 to G18),
 and a guessed day is the member's own today. P13 is BUILT (2026-10-06):
-`create_tasks` makes several new tasks in one project as one batch. P8 to
-P10 are open.** Written
+`create_tasks` makes several new tasks in one project as one batch. P8 and
+P9 are open. P10 is BUILT (2026-10-23, as WS-64 OP-6c): `attach_to_task`
+sends a chat file to a task.** Written
 2026-10-05.
 
 **§16, owner directive 2026-10-07.** The server decides each write from
@@ -225,14 +226,14 @@ the chat does part of it, or does it in a way that fails in practice.
 | G18 | "What landed on my plate" | My Tasks | `GET /projects/my/inbox?untriaged=true` | The manifest says `my_work` may pass it (`manifest.py:233-235`). It never does | Closed by P7: `my_work.untriaged` | P7 |
 | G19 | **A plan with subprojects** | Nodes made one at a time | `POST /projects/nodes` | `propose_plan` writes one node (`forms.py:934-940`), and W1 tells the model to use subprojects | Partial | P8 |
 | G20 | A repeat rule in a plan, an intake capture or a private capture | Not in one step | `PUT …/recurrence` after the create | None | **Missing** | P8 |
-| G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
+| G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229. Closed by P10: `attach_to_task` | Closed | P10 |
 | G22 | Filter the board from the chat | The filter bar | Browser state | Closed by P11: `show_view` sets the canvas, a saved view, the filters and the grouping | Closed | P11 |
 | G23 | Agent runs on a task: the three reads, the start, an activity and the finish | The task detail (EA-12c) | `routes/projects/agent_runs.py` (`external_agent_access.md` §12.1) | The four tools are in `PLANNED`. An outside agent reaches the routes over MCP | **Missing** | EA-12e |
 
 **Count: 23 gaps.** WS-55 EA-12a added G23 on 2026-10-14. The counts below are the measure of 2026-10-05. P1, P2
 and P6 have closed G1 to G9 since then, and P7 has closed G12 to G18.
 
-- 6 missing: G6, G7, G17, G20, G21 and G22.
+- 6 missing: G6, G7, G17, G20, G21 and G22. G21 is closed by P10 (2026-10-23).
 - 14 partial: G1, G2, G5, G8 to G16, G18 and G19.
 - 2 defects that touch every tool: G3 and G4.
 
@@ -969,7 +970,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P7 · Project and personal fields** ✅ BUILT 2026-10-06 | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
 | **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
-| **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
+| **P10 · Attach a chat file to a task** ✅ BUILT 2026-10-23 | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
 | **P11 · Filter the board** ✅ BUILT 2026-10-22 | `show_view`: the canvas, a saved view by name, the filters in `save_view`'s words, `group_by` and `sub_group_by`. It writes nothing and shows no card. The page reads the filters through `fromConfig`. Fences: `test_projects_show_view.py`, `chatView.test.ts` | G22 | AGENT-SAFE. The owner reversed Q4 on 2026-10-22 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
 | **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, ONE confirmation card with a checkbox for each task, a receipt for each row · eval task PO-10 | — (a chat need, not a UI input) | AGENT-SAFE |
@@ -1174,7 +1175,7 @@ as the answer. The slices build to these answers.
     path of each gateway call. It also reads `exportPath` in
     `lib/export.ts`, because `page.tsx` fetches that path by itself.
   - The fence counts 104 methods. `UI_ACTIONS` holds 90, `UI_EXEMPT`
-    holds 13 and `UI_PLANNED` holds 1, the attachment upload (G21, P10).
+    holds 13 and `UI_PLANNED` holds 1, the attachment upload (G21, P10). P10 then closed it: `UI_PLANNED` is empty, and `UI_ACTIONS` holds the upload and the export.
   - A claim must be true. The tool must reach the route that the method
     calls, and that route must not be class X. An exemption is allowed
     only on a class X route.
@@ -1603,7 +1604,7 @@ as for the app's screens.
 | `report_save`, `report_delete` | `_visible_report`: the author or an admin | The pre-check reads the server's `can_edit` and `can_delete`, and quotes the server's words. Kept |
 | `capture_intake`, `triage_intake` | Visibility, the queue state | None |
 | `mark_notifications_read` | The member's own bell | None |
-| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40) |
+| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40). ⚠️ Superseded 2026-10-24: `grant_access` and `revoke_access` are class C (WS-64 OP-6b, D-OP-9), and the route checks D-OP-11 |
 | Hard delete of a project or a task | Class X in the manifest | No tool (D-PM-35) |
 
 ### 16.7 The rules that stay
@@ -1611,7 +1612,7 @@ as for the app's screens.
 | Rule | Owner | Kind |
 |---|---|---|
 | The chat never hard-deletes a project or a task. Archive is the remove verb | D-PM-35 | Product decision |
-| The chat does not write grants | D-PM-40 | Product decision |
+| The chat does not write grants. ⚠️ Superseded by D-OP-9, built in WS-64 OP-6b | D-PM-40 | Product decision |
 | A guarded act is one card for each act, with the counts first | `projects_ai_chat.md` §3.3 | Product decision |
 | An agent assignee in a run that may not send is refused | H-236 | Product decision (egress) |
 | A comment is edited or deleted by its author only | `activities.py` `_load_own_comment` | Server rule, mirrored before the card |

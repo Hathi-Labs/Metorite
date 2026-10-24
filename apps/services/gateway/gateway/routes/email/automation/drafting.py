@@ -2134,7 +2134,7 @@ async def _reply_target(
     if row or not from_any_owned_mailbox:
         return row
     params: dict[str, Any] = {"mid": message_id, "uid": user_email or ""}
-    owned = _account_scope(None, params)
+    owned = _account_scope(None, params, level="send")
     return (await db.execute(text(
         f"""SELECT {_REPLY_TARGET_COLUMNS}
            FROM email_messages em
@@ -2326,6 +2326,26 @@ class DraftReplyRequest(BaseModel):
     # The member's steer for this one draft, from the chat ("say yes to
     # Friday", "keep it short"). It reaches the drafter as extra instructions.
     instruction: str = Field(default="", max_length=2000)
+    #: §22.6: the chat asks for the card's default. The draft takes Reply all
+    #: when anyone besides the sender and the member is on the mail.
+    auto_reply_all: bool = False
+
+
+async def _auto_reply_lists(message_id: str, owner: str) -> tuple[list[str], list[str]]:
+    """``(to, cc)`` of Reply all when it adds anyone, else ``([], [])`` and the
+    caller keeps Reply. A fault gives ``([], [])``: a draft still saves."""
+    try:
+        from gateway.routes.email.automation.reply_card import (  # noqa: PLC0415
+            auto_reply_all,
+            reply_recipients,
+        )
+        r_to, r_cc = await reply_recipients(message_id, owner)
+        a_to, a_cc = await reply_recipients(message_id, owner, reply_all=True)
+        if r_to and auto_reply_all(r_to, r_cc, a_to, a_cc):
+            return a_to, a_cc
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.reply_draft_auto_all_failed", error=type(exc).__name__)
+    return [], []
 
 
 async def _reply_to_list(message_id: str, owner: str, fallback: str) -> list[str]:
@@ -2354,7 +2374,7 @@ async def draft_reply_smart(
     sales/task-manager). Returns the draft text; optionally also creates a
     provider draft in the user's Drafts."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         email = await _build_reply_context(
             db, req.account_id, req.message_id, user.email or "anonymous")
         if email is None:
@@ -2393,9 +2413,19 @@ async def draft_reply_smart(
 
         created = False
         kept_draft = False
+        # §22 gap 2: the chat finds the draft again by its id and subject.
+        saved_id, saved_subject = "", ""
+        saved_to: list[str] = []
+        saved_cc: list[str] = []
         if req.create_draft:
             reply_to = await _reply_to_list(
                 req.message_id, user.email or "anonymous", email["from"])
+            reply_cc: list[str] | None = None
+            if req.auto_reply_all:
+                all_to, all_cc = await _auto_reply_lists(
+                    req.message_id, user.email or "anonymous")
+                if all_to:
+                    reply_to, reply_cc = all_to, all_cc or None
             try:
                 async with provider_session(
                     db, user.email or "anonymous",
@@ -2421,9 +2451,13 @@ async def draft_reply_smart(
                             reply_to_provider_id=sess.provider_message_id,
                             owner_email=email.get("self") or "",
                             to=reply_to or [email["from"]],
-                            subject=re_subject, body=draft,
+                            subject=re_subject, body=draft, cc=reply_cc,
                         )
                         created, kept_draft = True, wrote.kept_draft
+                        saved_id = str(wrote.local_id or "")
+                        saved_subject = re_subject or ""
+                        saved_to = list(reply_to or [email["from"]])
+                        saved_cc = list(reply_cc or [])
                 # The wrapper's exit commit lands the mirrored local draft.
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
@@ -2438,6 +2472,8 @@ async def draft_reply_smart(
                 db, req.account_id, email["thread_id"], draft, commit=False)
 
         return {"draft": draft, "created": created, "kept_draft": kept_draft,
+                "draft_id": saved_id, "subject": saved_subject,
+                "to": saved_to, "cc": saved_cc,
                 "files_read": files.read_names(), "notices": files.notices()}
 
 
@@ -2488,7 +2524,7 @@ class _ComposeStep:
         on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None,
     ) -> None:
         """Block 1: reads only. It also loads the provider of the target."""
-        await _assert_account_owner(db, req.account_id, user_email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user_email or "anonymous", level="send")
         await _emit_activity(
             on_activity, kind="stage", id="context", status="start")
         # Rank the KB by what's being composed, not recency (3.5).
@@ -3519,7 +3555,7 @@ async def upsert_draft(
     if req.from_chat:
         req = _chat_draft_text(req)
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         # The signature lives IN the draft body so the upstream (provider)
         # draft shows it too. The composer normally seeds it already — this is
         # the idempotent backstop for bodies that arrived without it.
@@ -3861,7 +3897,7 @@ async def draft_seal(
         # address). A seal acts on one mailbox, so it is required.
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, body_text FROM email_messages "
             "WHERE id = :id AND account_id = :aid AND LOWER(folder) IN ('drafts', 'draft')"
@@ -3895,7 +3931,7 @@ async def send_draft_endpoint(
     native send-draft primitive."""
     _refuse_bad_draft_id(req.draft_id)
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, to_addresses, cc_addresses,"
             " bcc_addresses, body_text, thread_id"
@@ -4053,7 +4089,7 @@ async def save_draft(
     the user edits it inline, then saves it to their Drafts folder verbatim. The
     draft is mirrored locally so it shows in Drafts/in-thread immediately."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
             "SELECT subject, thread_id, from_address FROM email_messages "
             "WHERE id = :mid AND account_id = :aid"

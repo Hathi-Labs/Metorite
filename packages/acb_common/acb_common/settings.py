@@ -1398,6 +1398,21 @@ class Settings(BaseSettings):
     email_html_from_provider: bool = False
     email_html_hot_only: bool = False
 
+    # ── The shared mailbox (WS-65 SM-2, 2026-10-23) ─────────────────────────
+    #
+    # `email_shared_mailbox` opens the shared arm of the one mailbox access
+    # seam, `gateway.routes.email.mailbox_access`, which is its one reader.
+    # With it false, each owner check reads the private arm only, with the
+    # same SQL text as before WS-65, so a grant row gives no access to anyone.
+    # With it true, a member reaches a shared mailbox through a grant of
+    # `email_mailbox_grants` at the level that the act needs, and the
+    # connector loses the access that `user_id` gave (D-SM-3).
+    #
+    # 🔴 The value `true` on a box is gate `enforcement-flip`, and in
+    # production it waits for SM-10 and the owner's word (shared_mailbox.md
+    # §10). Fence: tests/unit/test_email_shared_mailbox_r8.py.
+    email_shared_mailbox: bool = False
+
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people
     # .capability_embedding and blend cosine similarity with the keyword match

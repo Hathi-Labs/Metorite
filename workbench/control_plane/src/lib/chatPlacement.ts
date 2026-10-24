@@ -75,6 +75,7 @@ const EVIDENCE: readonly string[] = [
   "projects_tree",
   "project_summary",
   "list_tasks",
+  "export_tasks",
   "find_tasks",
   "task_detail",
   "task_dataset",
@@ -200,6 +201,7 @@ const WRITE: readonly string[] = [
   "propose_plan",
   "save_view",
   "capture_intake",
+  "create_area",
   "triage_intake",
   "mark_notifications_read",
   // ── Projects (class C, the guarded acts) ───────────────────────────────
@@ -222,6 +224,12 @@ const WRITE: readonly string[] = [
   "delete_view",
   "report_delete",
   "delete_attachment",
+  "rename_area",
+  "delete_area",
+  "nudge_task",
+  "attach_to_task",
+  "grant_access",
+  "revoke_access",
   // ── Tasks ──────────────────────────────────────────────────────────────
   "my_tasks_capture",
   "my_tasks_capture_many",

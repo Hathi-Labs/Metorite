@@ -39,6 +39,10 @@ H374_WITHHELD = frozenset({
     # Chat parity wave 1 (§22): the voice profile feeds each later draft, as
     # the knowledge base does. No card form joins it to a held run.
     "voice_profile",
+    # The multi-mailbox settings tool: auto-run and the digest change what
+    # later leaves each mailbox. No held-card form joins it, with the switch
+    # on or off (multi-mailbox review, P0).
+    "apply_settings_to_mailboxes",
 })
 
 #: §21.5: what a held run does not get with the switch on. A new slice that

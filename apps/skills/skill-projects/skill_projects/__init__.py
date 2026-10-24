@@ -20,7 +20,9 @@ from skill_projects.forms import (
 from skill_projects.guarded import (
     archive_project,
     archive_task,
+    attach_to_task,
     bulk_update,
+    delete_area,
     delete_attachment,
     delete_comment,
     delete_field,
@@ -30,17 +32,22 @@ from skill_projects.guarded import (
     delete_task,
     delete_type,
     delete_view,
+    grant_access,
     merge_tags,
     merge_tasks,
     move_project,
+    nudge_task,
+    rename_area,
     report_delete,
     revert_activity,
+    revoke_access,
     set_status_set,
     unarchive_project,
 )
 from skill_projects.inbox import (
     calendar,
     capture_intake,
+    create_area,
     intake_queue,
     mark_notifications_read,
     my_areas,
@@ -79,6 +86,7 @@ from skill_projects.reads import (
     vocabulary,
 )
 from skill_projects.views import (
+    export_tasks,
     render_board,
     render_report,
     render_tasks,
@@ -145,6 +153,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "render_tasks",
     "render_timeline",
     "status_report",
+    # Class A — WS-64 OP-6c, the filtered list as a file of the chat
+    "export_tasks",
     # Class A — the rest of the reads (S5)
     "calendar",
     "intake_queue",
@@ -213,6 +223,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "file_tasks",
     # Class B — several links between tasks, one card (2026-10-19)
     "link_tasks_batch",
+    # Class B — WS-64 OP-6a, a new area of the member's own
+    "create_area",
     # Class B — the rest of the writes (S5)
     "capture_intake",
     "mark_notifications_read",
@@ -221,7 +233,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
+    "attach_to_task",
     "bulk_update",
+    "delete_area",
     "delete_attachment",
     "delete_comment",
     "delete_field",
@@ -231,10 +245,14 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "delete_task",
     "delete_type",
     "delete_view",
+    "grant_access",
     "merge_tags",
     "merge_tasks",
     "move_project",
+    "nudge_task",
+    "rename_area",
     "report_delete",
+    "revoke_access",
     "revert_activity",
     "set_status_set",
     "unarchive_project",

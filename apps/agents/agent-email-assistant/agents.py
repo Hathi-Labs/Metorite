@@ -423,6 +423,18 @@ def _choices(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return pooled if len(pooled) >= 2 else accounts
 
 
+async def _mailbox_line(account_id: str) -> str:
+    """"Mailbox: label · address (account_id <id>)": the mailbox that a tool
+    RESOLVED, on one stable line (§7.1.1 rule 4, review P3).
+
+    The model may name a mailbox in words, so a tool's ``account_id``
+    argument can be "Personal". The chat cards and the working set read the
+    id from this line, at the place that ``email_chat_context
+    .MAILBOX_LINE_TOOLS`` names. The text never holds ``id=``, because the
+    cards read ``id=`` as the id of a mail or of a rule."""
+    return f"Mailbox: {await _named(account_id)} (account_id {account_id})"
+
+
 async def _named(account_id: str) -> str:
     """"Label · address" of the mailbox that a write acted in, for its answer.
 
@@ -471,7 +483,19 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     only shortens the list of the question.
     """
     if account_id:
-        return str(account_id), ""
+        named, hits = await _named_mailbox(str(account_id))
+        if named:
+            return named, ""
+        word = _one_line(account_id, 60)
+        then = (f"Ask the user, then call {tool} again with the account_id of "
+                "that mailbox.")
+        if hits:
+            return "", _mailbox_choices(
+                f"Which mailbox? \"{word}\" matches more than one, so nothing "
+                "changed yet.", hits, then)
+        return "", _mailbox_choices(
+            f"Which mailbox? No mailbox is called \"{word}\", so nothing "
+            "changed yet.", await _accounts(), then)
     try:
         accounts = await _accounts()
     except Exception:
@@ -491,6 +515,48 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
         "mailbox. If the user says all of them, call it once for each mailbox "
         "and name each one.",
     )
+
+
+#: What an id holds and a name does not: a digit, "-" or "_". A label such
+#: as "Personal" holds none, so an unknown label asks and never reaches the
+#: gateway as an id.
+_ID_SHAPE = re.compile(r"[0-9_\-]")
+
+
+def _match_mailbox(value: str, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mailboxes that *value* names (§7.1.1 rule 4), by the ONE matcher
+    that the email working set uses too (``acb_skills.email_chat_context``).
+    An older platform with no matcher matches an id only."""
+    try:
+        from acb_skills.email_chat_context import match_mailbox
+    except ImportError:
+        return [a for a in accounts if str(a.get("id")) == str(value or "").strip()]
+    return match_mailbox(value, accounts)
+
+
+async def _named_mailbox(value: str) -> tuple[str, list[dict[str, Any]]]:
+    """The mailbox that a named ``account_id`` means, as ``(id, matches)``.
+
+    The model may pass the member's own words for a mailbox ("Personal",
+    "my gmail", "vj@…") in place of an id (§7.1.1 rule 4). An id of the
+    member's list wins. A name that matches one mailbox gives its id. A name
+    that matches two or more gives ``("", matches)``, and an unknown name
+    gives ``("", [])``, and the caller asks. When the list cannot be read, or
+    the value has the shape of an id and matches no mailbox, the value goes
+    on as before, and the gateway still checks it (D-EM-20).
+    """
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return value, []
+    if not accounts:
+        return value, []
+    hit = _match_mailbox(value, accounts)
+    if len(hit) == 1:
+        return str(hit[0]["id"]), []
+    if not hit and _ID_SHAPE.search(value):
+        return value, []
+    return "", hit
 
 
 async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
@@ -546,6 +612,35 @@ async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
     )
 
 
+async def _usual_mailbox_note(account_id: str, recipient: str) -> str:
+    """"You usually write to X from Y" when new mail leaves another mailbox.
+
+    Item 3 of the multi-inbox chat wave. A chat in the scope of one mailbox
+    sends from it with no question. If ``GET /email/contacts/sent-from`` says
+    that the member last wrote to the first recipient from ANOTHER mailbox of
+    the member, the send card and the answer say so. The note is advice: it
+    changes no parameter and blocks no send. A failed read gives "", because
+    a warning must never stop a send (the UI row does the same).
+    """
+    addr = parseaddr(recipient or "")[1].strip().lower()
+    if not addr:
+        return ""
+    try:
+        accounts = await _accounts()
+        if len(accounts) < 2:
+            return ""
+        hit = await _get("/email/contacts/sent-from", {"emails": addr})
+        usual = str(hit.get(addr) or "") if isinstance(hit, dict) else ""
+        if not usual or usual == str(account_id):
+            return ""
+        other = next((a for a in accounts if str(a.get("id")) == usual), None)
+    except Exception:
+        return ""
+    if other is None:
+        return ""
+    return f"You usually write to {addr} from {_mailbox_text(other)}."
+
+
 # ── Read / triage tools ──────────────────────────────────────────────────────
 
 async def _account_labels() -> dict[str, str]:
@@ -562,6 +657,111 @@ async def _account_labels() -> dict[str, str]:
         return {str(a["id"]): _mailbox_text(a) for a in await _accounts()}
     except Exception:
         return {}
+
+
+async def _pool_scope_line(account_id: str | None) -> str:
+    """"Across All inboxes (A; B)." for a read that pools, else "".
+
+    The sender routes add up the counts of the pooled mailboxes into one row
+    per sender, so a row names no mailbox. The line says which mailboxes the
+    counts cover. It is display only (D-EM-18).
+    """
+    if account_id:
+        return ""
+    try:
+        pooled = _pooled(await _accounts())
+    except Exception:
+        return ""
+    if len(pooled) < 2:
+        return ""
+    return ("Across All inboxes, one row per sender, counts added up over: "
+            + "; ".join(_mailbox_text(a) for a in pooled) + ".")
+
+
+#: The most mailboxes that one read tool walks when it names none (item 1 of
+#: the multi-inbox chat wave). Each mailbox is one gateway read.
+_MAILBOX_WALK_MAX = 5
+
+
+#: The one step that a mailbox with a lost sign-in needs. OAuth needs a
+#: browser, so the chat cannot do it.
+_RECONNECT_STEP = (
+    "needs reconnecting. Sign in again from the Email app's mailbox menu")
+
+
+def _mailbox_state(a: dict[str, Any]) -> str:
+    """A short state of one mailbox for ``list_accounts``, or "".
+
+    Reads ``needs_reconnect``, ``sync_status``, ``sync_error`` and
+    ``last_synced_at`` of ``GET /email/accounts``. A healthy mailbox gives its
+    last sync time only.
+    """
+    if a.get("needs_reconnect"):
+        return _RECONNECT_STEP
+    status = str(a.get("sync_status") or "").strip().lower()
+    err = _one_line(a.get("sync_error"), 120) if a.get("sync_error") else ""
+    last = str(a.get("last_synced_at") or "")[:16].replace("T", " ")
+    if status == "error":
+        return f"sync failing ({err or 'no reason given'})"
+    if status in ("syncing", "pending"):
+        return "syncing now" + (f", last synced {last}" if last else "")
+    return f"last synced {last}" if last else ""
+
+
+async def _reconnect_note(account_id: str) -> str:
+    """One sentence when this mailbox needs reconnecting, else "".
+
+    A tool that fails on such a mailbox adds it, so the member does not read a
+    bare error. A failed read of the list gives "".
+    """
+    try:
+        for a in await _accounts():
+            if str(a.get("id")) == str(account_id) and a.get("needs_reconnect"):
+                return (f"{_mailbox_text(a)} {_RECONNECT_STEP}"
+                        ", then ask again.")
+    except Exception:
+        pass
+    return ""
+
+
+async def _per_mailbox(account_id: str | None, one: Any) -> str:
+    """Run a one-mailbox read for the mailbox named, or for each pooled one.
+
+    The routes of Reply Zero, the priority list and the cold-sender list take
+    one mailbox, and do not pool. With a mailbox named, ``one`` runs for it
+    alone. With none, ``one`` runs for each mailbox in All inboxes (at most
+    ``_MAILBOX_WALK_MAX``), and each section starts with "Mailbox: label ·
+    address". The reads stay apart (D-EM-18). The sections are for display
+    only, and no prompt gets two mailboxes' mail from one gateway call.
+    """
+    if account_id:
+        try:
+            return await one(account_id)
+        except Exception as exc:
+            if note := await _reconnect_note(account_id):
+                return f"Not read. {note}"
+            raise exc
+    pooled = _pooled(await _accounts())
+    if not pooled:
+        return "No mailbox is in All inboxes. Name one with account_id."
+    if len(pooled) == 1:
+        return f"Mailbox: {_mailbox_text(pooled[0])}\n" + await one(str(pooled[0]["id"]))
+    sections = []
+    # Not a silent cut: the last section says how many mailboxes it left out.
+    for n, a in enumerate(pooled):
+        if n >= _MAILBOX_WALK_MAX:
+            break
+        try:
+            body = await one(str(a["id"]))
+        except Exception:
+            body = (f"Not read. {await _reconnect_note(str(a['id']))}"
+                    if a.get("needs_reconnect") else "Not read. The read failed.")
+        sections.append(f"Mailbox: {_mailbox_text(a)}\n{body}")
+    if len(pooled) > _MAILBOX_WALK_MAX:
+        sections.append(
+            f"Read {_MAILBOX_WALK_MAX} of {len(pooled)} mailboxes. Name another "
+            "with account_id to read it.")
+    return "\n\n".join(sections)
 
 
 async def _mailbox_name(account_id: str) -> str | None:
@@ -596,11 +796,19 @@ async def list_accounts() -> str:
     # round 1, D-EM-30). Its own line still gives its own count.
     total = sum(a.get("unread_count", 0) for a in accounts if _in_all_inboxes(a))
     lines = [f"Connected accounts ({total} unread total):"]
+    # Q-MB-1: the limit comes from the gateway row. No copy of the number here.
+    limit = max((int(a.get("mailbox_limit") or 0) for a in accounts), default=0)
+    if limit:
+        lines.append(
+            f"{len(accounts)} of {limit} mailboxes. At {limit}, connecting "
+            "another is refused until the member disconnects one.")
     for a in accounts:
         mark = "" if _in_all_inboxes(a) else " (separate)"
+        state = _mailbox_state(a)
         lines.append(
             f"• {_mailbox_text(a)}{mark} — id={a.get('id')}, "
             f"{a.get('unread_count', 0)} unread"
+            + (f" — {state}" if state else "")
         )
     if any(not _in_all_inboxes(a) for a in accounts):
         lines.append(
@@ -1154,6 +1362,10 @@ async def read_thread(email_id: str = "", thread_id: str = "",
     # The chat card reads "Thread: N message(s), oldest first:" (threadTitle).
     out = [
         f"Thread: {total} message(s), oldest first:",
+        # The mailbox the thread is in, as its id: the card reads it here.
+        # No label, so the read costs no second request.
+        *([f"Mailbox: the mailbox of this thread (account_id {boxes[0]})"]
+          if boxes else []),
         frame.note(_THREAD_DATA_WHAT) + "\n" + frame.wrap("THREAD", "\n\n".join(inner)),
     ]
     if line := _thread_page_line(total, start, len(msgs)):
@@ -1261,8 +1473,14 @@ async def find_urgent(account_id: str | None = None, offset: int = 0) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def find_needs_reply(account_id: str, offset: int = 0) -> str:
-    """List threads whose latest message is inbound and awaiting your reply."""
+async def find_needs_reply(account_id: str | None = None, offset: int = 0) -> str:
+    """List threads whose latest message is inbound and awaiting your reply.
+    With no ``account_id``, it reads each mailbox in All inboxes and names it."""
+    return await _per_mailbox(
+        account_id, lambda aid: _find_needs_reply_one(aid, offset))
+
+
+async def _find_needs_reply_one(account_id: str, offset: int = 0) -> str:
     # `/email/reply-zero` has a LIMIT (at most 200) and no OFFSET.
     start, size, ask = prefix_limit(offset, 15, default=15, cap=200)
     data = await _get(
@@ -1285,7 +1503,7 @@ async def find_needs_reply(account_id: str, offset: int = 0) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def find_priority(account_id: str, kind: str = "needs_reply",
+async def find_priority(account_id: str | None = None, kind: str = "needs_reply",
                         offset: int = 0) -> str:
     """Surface the emails that most need attention, by ``kind``:
 
@@ -1328,6 +1546,7 @@ async def get_account_overview(account_id: str, days: int = 30) -> str:
     resp = overview.get("responsiveness") or {}
     backlog = overview.get("backlog") or {}
     lines = [
+        f"Mailbox: {await _named(account_id)}",
         f"Account overview ({window}d): {flow.get('received', 0)} received "
         f"({flow.get('received_prev', 0)} the {window}d before), "
         f"{flow.get('sent', 0)} sent, {flow.get('unread', 0)} unread, "
@@ -1356,7 +1575,7 @@ async def get_account_overview(account_id: str, days: int = 30) -> str:
 
 @_annotate_risk(open_world=False)
 async def query_inbox(
-    account_id: str,
+    account_id: str | None = None,
     query: str | None = None,
     folder: str = "inbox",
     days: int | None = None,
@@ -1383,13 +1602,18 @@ async def query_inbox(
       unread_only / starred_only / has_attachments / importance (high|normal|low)
       sort: newest | oldest | importance
       limit / offset: a page of results (limit at most 100)
+    account_id: one mailbox. With none, it reads All inboxes (each mailbox
+      that the member keeps in the pool), and each line carries
+      [label · address] of its mailbox.
     Returns matching emails with ids; call read_email for an id's full content.
     """
     start, size = _page_start(offset, max(1, min(int(limit or 25), 100)))
     params: dict[str, Any] = {
-        "folder": folder, "account_id": account_id, "sort": sort,
+        "folder": folder, "sort": sort,
         "page_size": str(size), "page": str(start // size + 1),
     }
+    if account_id:
+        params["account_id"] = account_id
     if query:
         params["query"] = query
     if days:
@@ -1415,9 +1639,13 @@ async def query_inbox(
     if not emails:
         return page_line(total, start, 0) or "No emails matched those filters."
     shown = emails
-    lines = [f"Found {total} emails ({query or 'filtered'}); showing {len(shown)}:"]
+    labels = {} if account_id else await _account_labels()
+    multi = len(labels) > 1
+    where = " in All inboxes" if multi else ""
+    lines = [f"Found {total} emails{where} ({query or 'filtered'}); showing {len(shown)}:"]
     for e in shown:
         frm = e.get("from_address", {}) or {}
+        acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
         flags = []
         if not e.get("is_read"):
             flags.append("unread")
@@ -1427,7 +1655,7 @@ async def query_inbox(
             flags.append("attachment")
         flag = f" [{', '.join(flags)}]" if flags else ""
         lines.append(
-            f"• id={e.get('id')}{_link_field(e.get('id'), e.get('subject'))} | "
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'), e.get('subject'))} | "
             f"{(e.get('received_at') or '')[:10]} | "
             f"{frm.get('name') or frm.get('email')}: "
             f"{e.get('subject', '(no subject)')}{flag} — "
@@ -1626,14 +1854,20 @@ async def query_insights(
 
 
 @_annotate_risk(open_world=False)
-async def get_important_emails(account_id: str, days: int = 30,
+async def get_important_emails(account_id: str | None = None, days: int = 30,
                                offset: int = 0) -> str:
     """The emails that most need attention — answers "what are the most important
     emails I need to check?".
 
     Ranks recent inbox threads by needs-reply status, unread, high importance,
     starred, and personal/support senders; excludes newsletters, marketing,
-    notifications and cold email so the list stays high-signal."""
+    notifications and cold email so the list stays high-signal. With no
+    ``account_id``, it reads each mailbox in All inboxes and names it."""
+    return await _per_mailbox(
+        account_id, lambda aid: _important_one(aid, days, offset))
+
+
+async def _important_one(account_id: str, days: int = 30, offset: int = 0) -> str:
     # `/email/priority` ranks with a LIMIT (at most 100) and no OFFSET.
     start, size, ask = prefix_limit(offset, 20, default=20, cap=100)
     data = await _get(
@@ -1963,7 +2197,10 @@ async def draft_reply(
     writes from the email alone. To save or send a text that you and the
     member already agreed, use ``compose_reply`` with ``draft``: this tool
     writes a new text. The draft is always made in the mailbox that received
-    the email, whatever ``account_id`` says."""
+    the email, whatever ``account_id`` says.
+
+    The draft goes to everyone when others are on the mail (Reply all), and
+    to the sender alone when nobody else is. Say which one in the answer."""
     try:
         # A read for the mailbox: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -1977,6 +2214,9 @@ async def draft_reply(
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save,
+         # A held chat keeps Reply: Reply all could put a stranger of an
+         # outside mail on the draft with no card (review of §22.6, P2).
+         **({} if _egress_held() else {"auto_reply_all": True}),
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
@@ -1990,6 +2230,15 @@ async def draft_reply(
     sender = await _mailbox_name(account_id) or str(account_id)
     # The files go in the first line too, because the card edits the rest.
     # The member then knows which file the draft used, and which it did not.
+    ref = _draft_line(res.get("draft_id"), res.get("subject"))
+    if ref:
+        note += f" ({ref})"
+    if res.get("to"):
+        who = f"to {_addr_text(res.get('to'))}"
+        if res.get("cc"):
+            note += f" (Reply all: {who}, Cc {_addr_text(res.get('cc'))})"
+        else:
+            note += f" (Reply: {who})"
     read = [str(n) for n in res.get("files_read") or [] if n]
     if read:
         note += f" (used the files: {', '.join(read)})"
@@ -2063,6 +2312,20 @@ def _addr_text(addrs: Any) -> str:
     return ", ".join(str(a) for a in (addrs or []) if a)
 
 
+def _draft_line(draft_id: Any, subject: Any) -> str:
+    """The stable last line of every result that makes or changes a draft
+    (§22 gap 2). ``call_agent`` keeps no chat history, so the next turn finds
+    the draft by this id and subject. Empty when the id is unknown."""
+    did = str(draft_id or "").strip()
+    if not did:
+        return ""
+    import textwrap
+
+    subj = textwrap.shorten(" ".join(str(subject or "").split()), 120,
+                            placeholder="...") or "(no subject)"
+    return f"Draft: draft_id={did} | subject: {subj}"
+
+
 def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     """The card's reply form, from the gateway's ``/email/reply-card``."""
     rec = prep.get("recipients") or {}
@@ -2133,7 +2396,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
-    email_id: str, account_id: str, reply_all: bool = False, draft: str = "",
+    email_id: str, account_id: str, reply_all: bool | None = None, draft: str = "",
     instruction: str = "",
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
@@ -2149,8 +2412,12 @@ async def compose_reply(
     member's Discard trashes the card's draft, unless the member edited it
     there.
 
-    Set ``reply_all=true`` when the member asked to answer everyone on the
-    email. The member can change it on the card. The reply always goes from
+    Leave ``reply_all`` out and the server chooses: Reply all when anyone
+    besides the sender and the member is on the mail, else Reply. Most mail
+    with other people on it needs Reply all. Pass ``reply_all=false`` only
+    when the text is for the sender alone, or when the member says "just to
+    him". Pass ``true`` when the member asks for everyone. Say which choice
+    the card opened on. The member can change it on the card. The reply always goes from
     the mailbox that received the email, whatever ``account_id`` says. You
     choose no recipient: the server derives the recipients.
 
@@ -2181,11 +2448,17 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
-    if reply_all:
+    if reply_all is None and _egress_held():
+        # A held chat does not let the server choose Reply all. The card may
+        # open on Reply (§21), and the draft in Drafts must name the same
+        # people as the card (review of §22.6, P2).
+        reply_all = False
+    if reply_all is not None:
         # The draft in Drafts takes the recipients that the card opens with.
-        steer["reply_all"] = True
+        # Left out, the server chooses (§22.6).
+        steer["reply_all"] = bool(reply_all)
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
-    form = _reply_form(prep, reply_all)
+    form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if _held_card_mode():
         _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
@@ -2200,7 +2473,8 @@ async def compose_reply(
         # with edit_draft (owner, 2026-10-22).
         did = form["draft_id"]
         ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
-        return _CARD_REVISED + ref + kept
+        line = _draft_line(did, form["subject"])
+        return _CARD_REVISED + ref + kept + (f"\n{line}" if line else "")
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
@@ -2224,7 +2498,9 @@ async def compose_reply(
     did = str(res.get("draft_id") or "")
     # The id lets the agent schedule the draft (``schedule_send``, H-375).
     ref = f" (draft_id {did})" if did else ""
-    return f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
+    line = _draft_line(did, res.get("subject") or form["subject"])
+    return (f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
+            + (f"\n{line}" if line else ""))
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -3145,7 +3421,8 @@ async def create_rule(
         if refusal:
             return refusal
     res = await _post("/email/rules", rule)
-    return f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
+    return (f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
+            f"\n{await _mailbox_line(account_id)}")
 
 
 @_annotate_risk(open_world=False)
@@ -3922,6 +4199,120 @@ async def update_assistant_settings(
     return f"Assistant settings updated for {await _named(account_id)}."
 
 
+#: The settings that ``apply_settings_to_mailboxes`` changes in several
+#: mailboxes at once. Free text is left out on purpose: "about", the signature,
+#: the writing style and the personal instructions describe ONE mailbox, so a
+#: copy to another one is a decision of its own (D-EM-18).
+_MULTI_SETTING_KEYS = (
+    "auto_run", "cold_email_blocker", "draft_replies", "draft_confidence",
+    "follow_up_awaiting_days", "follow_up_needs_reply_days",
+    "follow_up_auto_draft", "digest_frequency",
+    "multi_rule_execution", "sensitive_data_protection",
+)
+#: The most mailboxes that one call changes.
+_MULTI_MAILBOX_MAX = 10
+
+
+# open_world: a held run withholds it, as it withholds update_assistant_settings
+# (review of the multi-mailbox branch, P0). Auto-run and the digest settings
+# change what later leaves the mailbox.
+@_annotate_risk(destructive=True, open_world=True)
+async def apply_settings_to_mailboxes(
+    account_ids: list[str] | None = None,
+    all_mailboxes: bool = False,
+    auto_run: bool | None = None,
+    cold_email_blocker: str | None = None,
+    draft_replies: bool | None = None,
+    draft_confidence: str | None = None,
+    follow_up_awaiting_days: int | None = None,
+    follow_up_needs_reply_days: int | None = None,
+    follow_up_auto_draft: bool | None = None,
+    digest_frequency: str | None = None,
+    multi_rule_execution: bool | None = None,
+    sensitive_data_protection: bool | None = None,
+) -> str:
+    """Apply the SAME assistant setting change to several mailboxes behind ONE
+    card. The card lists each mailbox and each change.
+
+    Name the mailboxes in ``account_ids``, or pass ``all_mailboxes=true`` for
+    each mailbox in All inboxes. Pass only the settings to change, the same
+    names and values as update_assistant_settings. Free text (about, signature,
+    writing style, personal instructions) is one mailbox's own, so change it
+    with update_assistant_settings for that mailbox. Every other setting of
+    each mailbox stays as it is."""
+    if _egress_held():
+        # A second lock behind the withhold: a held run never changes the
+        # settings of several mailboxes at once.
+        return ("Nothing changed. In this chat a settings change goes through "
+                "update_assistant_settings, one mailbox at a time.")
+    wanted = {k: v for k, v in {
+        "auto_run": auto_run, "cold_email_blocker": cold_email_blocker,
+        "draft_replies": draft_replies, "draft_confidence": draft_confidence,
+        "follow_up_awaiting_days": follow_up_awaiting_days,
+        "follow_up_needs_reply_days": follow_up_needs_reply_days,
+        "follow_up_auto_draft": follow_up_auto_draft,
+        "digest_frequency": digest_frequency,
+        "multi_rule_execution": multi_rule_execution,
+        "sensitive_data_protection": sensitive_data_protection,
+    }.items() if v is not None}
+    if not wanted:
+        return "Nothing changed. Name at least one setting to change."
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return "Nothing changed. I could not read your mailboxes."
+    if all_mailboxes:
+        chosen = _pooled(accounts)
+    else:
+        ids = [str(i).strip() for i in (account_ids or []) if str(i).strip()]
+        if not ids:
+            return _mailbox_choices(
+                "Which mailboxes? Nothing changed yet.", _choices(accounts),
+                "Ask the user, then call apply_settings_to_mailboxes again with "
+                "account_ids, or all_mailboxes=true for each mailbox in All inboxes.")
+        known = {str(a["id"]): a for a in accounts}
+        missing = [i for i in ids if i not in known]
+        if missing:
+            return (f"Nothing changed. No connected mailbox has the id "
+                    f"{', '.join(missing)}. Call list_accounts for the ids.")
+        chosen = [known[i] for i in dict.fromkeys(ids)]
+    if not chosen:
+        return "Nothing changed. No mailbox is in All inboxes."
+    if len(chosen) > _MULTI_MAILBOX_MAX:
+        return f"Nothing changed. Name at most {_MULTI_MAILBOX_MAX} mailboxes."
+    shown = "\n".join(
+        f"- {_card_name(k)} = {_setting_shown(v)}" for k, v in wanted.items())
+    names = "\n".join(f"- {_mailbox_text(a)}" for a in chosen)
+    refusal = await _card_refusal(
+        f"Change settings in {len(chosen)} mailbox(es)?",
+        "The same change applies to each mailbox in the list. Every other "
+        "setting of each mailbox stays as it is.",
+        "Cancelled — the settings were not changed.",
+        f"Mailboxes:\n{names}\nChanges:\n{shown}",
+    )
+    if refusal:
+        return refusal
+    done: list[str] = []
+    failed: list[str] = []
+    for a in chosen:
+        aid = str(a["id"])
+        try:
+            # Read at the moment of the write, so the PUT keeps each change
+            # that the member made in the settings screen meanwhile.
+            body: dict[str, Any] = dict(
+                await _get("/email/assistant/settings", {"account_id": aid}))
+            body.update(wanted)
+            body["account_id"] = aid
+            await _patch_settings(body)
+            done.append(_mailbox_text(a))
+        except Exception:
+            failed.append(_mailbox_text(a))
+    lines = [f"Settings updated for {len(done)} of {len(chosen)} mailbox(es)."]
+    lines += [f"- Changed: {n}" for n in done]
+    lines += [f"- Failed, not changed: {n}" for n in failed]
+    return "\n".join(lines)
+
+
 def _setting_shown(value: Any) -> str:
     """One value of a setting, as the held card shows it."""
     if value is None or value == "":
@@ -4679,6 +5070,8 @@ async def suggest_unsubscribes(account_id: str | None = None, offset: int = 0) -
     if not page.items:
         return page.line
     lines = ["Unsubscribe candidates (low read-rate / has unsubscribe link):"]
+    if scope := await _pool_scope_line(account_id):
+        lines.append(scope)
     for s in page.items:
         lines.append(
             f"• {s.get('name') or s.get('email')} — {s.get('count')} emails, "
@@ -5047,6 +5440,7 @@ async def send_email(
     if not to:
         return "Not sent. No recipient — pass `to`, or `reply_to_email_id` to reply."
     subject = subject or ""
+    named = bool(account_id)
     if not account_id:
         # New mail that names no mailbox (§11.3 rule 3).
         account_id, ask = await _new_mail_mailbox(to[0])
@@ -5058,6 +5452,11 @@ async def send_email(
             f"Not sent. No connected mailbox has the id {account_id}. Call "
             "list_accounts and ask the user which mailbox to send from."
         )
+    usual = ""
+    if named and not reply_to_email_id:
+        usual = await _usual_mailbox_note(account_id, to[0])
+        if usual:
+            reply_notices.append(usual)
 
     payload: dict[str, Any] = {
         "account_id": account_id,
@@ -5111,7 +5510,9 @@ async def send_email(
     res = await _post("/email/send", payload)
     note = f" with {len(refs)} attachment(s)" if refs else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
-    return f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
+    tail = f" {usual}" if usual else ""
+    return (f"{lead} {', '.join(to)} from {sender}{note} "
+            f"(id={res.get('id', '')}).{tail}")
 
 
 #: The answer of a reply through ``send_email`` in a held run (§21.3, the New row).
@@ -5601,8 +6002,8 @@ _SUBJECT_MAX = 200
 #: The answer for a draft whose text does not fit on a send card (§21 fix
 #: round 3). The Email app is one choice here, never the only way.
 _DRAFT_TOO_LONG_ANSWER = (
-    "This draft is too long to show on the card. I can shorten it with edit_draft, "
-    "or you can send it from the Email app.")
+    "This draft is too long to show on the card. I can shorten it with edit_draft "
+    "and show it again. Tell me what to cut, or ask me to write it shorter.")
 #: The answers for a draft that a card cannot show whole, by the gateway's
 #: words (``drafting.check_draft_send``).
 _SUBJECT_TOO_LONG_ANSWER = (
@@ -5818,6 +6219,13 @@ def _recipient_changes(
     return lines
 
 
+#: The answer when ``edit_draft(body=...)`` would drop a quoted thread.
+_QUOTED_THREAD_REFUSAL = (
+    "Nothing changed. This draft holds a quoted thread, and a new body here "
+    "would drop it. Call compose_reply on the same email, with the change as "
+    "its instruction. It writes the reply again and keeps the thread.")
+
+
 @_annotate_risk(open_world=False, destructive=False)
 async def edit_draft(
     account_id: str,
@@ -5855,6 +6263,17 @@ async def edit_draft(
             return ("Nothing changed. This chat read email from outside senders, so "
                     "it cannot write a new email. Tell the member in one sentence.")
         return await _new_draft(account_id, body, subject, to, cc, bcc, rewrite)
+    if body is not None and not rewrite:
+        # §22 gap 3: PUT /email/drafts replaces the whole body, so a new
+        # ``body`` for a reply would drop its quoted thread. The gateway's
+        # keep_body keeps the stored text and takes no new one, so refuse.
+        try:
+            row = await _get(f"/email/messages/{draft_id}",
+                             params={"trim": "true", "mark_read": "false"}) or {}
+        except GatewayError:
+            row = {}
+        if row.get("body_trimmed"):
+            return _QUOTED_THREAD_REFUSAL
     if rewrite:
         if body is None:
             # The new text only, as read_email gives it: the drafter must not
@@ -5916,6 +6335,8 @@ async def edit_draft(
     else:
         if rewrite:
             context += "\n\nThe text below replaces the whole text of the draft."
+        else:
+            context += "\n\nThis draft holds no quoted thread, so nothing is dropped."
         context = _with_draft_text(context, text)
     # §21 fix round 1 (P1-b): a change of a scheduled draft cancels its send,
     # and the card says so first. The send would not go anyway: the schedule
@@ -5945,7 +6366,9 @@ async def edit_draft(
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
     cancelled = await _cancel_schedules(pending)
-    return f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+    line = _draft_line(draft_id, new_subject)
+    return (f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
+            + (f"\n{line}" if line else ""))
 
 
 def _edit_save_refusal(exc: Exception) -> str:
@@ -6024,8 +6447,10 @@ async def _new_draft(
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
+    line = _draft_line(res.get("id"), subject)
     return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
-            "Nothing was sent. Send it with send_draft when the member asks.")
+            "Nothing was sent. Send it with send_draft when the member asks."
+            + (f"\n{line}" if line else ""))
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:
@@ -6200,7 +6625,13 @@ async def find_contact(
         lines.append((f"- {who} <{addr}>" if who else f"- {addr}") + f" · {src}")
     ask = ("Call ask_questions with one option for each person, with the name "
            "and the full address. Where no card can show, ask in text. Never guess.")
-    if len(found) > 1:
+    closest = [r for r in found if r.get("match") == "closest"]
+    if closest:
+        lead = (f"No exact match for {q!r}. These are the CLOSEST matches by "
+                "spelling, not exact ones. Show the member the name and the "
+                "address, and ask if this is the person they mean. Never use "
+                f"one without that confirmation. {ask}")
+    elif len(found) > 1:
         lead = f"{len(found)} people match. Ask the member which one they mean. {ask}"
     elif str(found[0].get("source") or "") not in ("org", "sent"):
         lead = ("One person matches, but the member never wrote to this address, "
@@ -6478,10 +6909,13 @@ async def list_scheduled_sends() -> str:
     if not rows:
         return "No draft waits to be sent later."
     lines = []
+    labels = await _account_labels()
     for r in rows:
         to = ", ".join(_card_text(a, _TARGET_LIMIT) for a in r.get("to") or [])
         what = _card_text(r.get("subject") or "(no subject)", 120)
-        line = f"- {r.get('send_at')} · {what} · to {to or '(none)'} · {r.get('status')}"
+        box = labels.get(str(r.get("account_id")))
+        line = (f"- {r.get('send_at')} · {what} · to {to or '(none)'} · "
+                f"{r.get('status')}" + (f" · from {box}" if box else ""))
         if r.get("error"):
             line += f" · {_one_line(r['error'], 200)}"
         lines.append(f"{line} (schedule_id {r.get('id')})")
@@ -6723,8 +7157,14 @@ async def keep_newsletter(account_id: str, email: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def list_cold_senders(account_id: str, offset: int = 0) -> str:
-    """List senders flagged by the cold-email blocker."""
+async def list_cold_senders(account_id: str | None = None, offset: int = 0) -> str:
+    """List senders flagged by the cold-email blocker. With no ``account_id``,
+    it reads each mailbox in All inboxes and names it."""
+    return await _per_mailbox(
+        account_id, lambda aid: _list_cold_senders_one(aid, offset))
+
+
+async def _list_cold_senders_one(account_id: str, offset: int = 0) -> str:
     data = await _get("/email/cold-senders", {"account_id": account_id})
     senders = data.get("cold_senders", [])
     if not senders:
@@ -7111,12 +7551,13 @@ async def digest(account_id: str, period: str = "day", send: bool = False) -> st
             "/email/digest/send", {"account_id": account_id, "period": period}
         )
         return f"Digest ({period}) sent to {res.get('to', 'your inbox')}."
+    box = await _named(account_id)
     data = await _get(
         "/email/digest", {"account_id": account_id, "period": period}
     )
     sections = data.get("sections", data)
     body = _fmt_digest_sections(sections)
-    return f"Digest ({period}):\n{body}"
+    return f"Digest ({period}) of {box}:\n{body}"
 
 
 # ── Account sync ─────────────────────────────────────────────────────────────
@@ -7317,7 +7758,7 @@ async def list_senders(
     if v in ("unsubscribe", "unsubscribes", "newsletters"):
         return await suggest_unsubscribes(account_id, offset=offset)
     if v in ("cold", "cold_senders"):
-        return await list_cold_senders(account_id or "", offset=offset)
+        return await list_cold_senders(account_id or None, offset=offset)
     start, size = bounds(offset, limit, default=25)
     params: dict[str, Any] = {
         "folder": folder, "limit": str(size), "offset": str(start),
@@ -7330,6 +7771,8 @@ async def list_senders(
     if not senders:
         return page_line(total, start, 0) or "No senders found."
     lines = ["Top senders by volume:"]
+    if scope := await _pool_scope_line(account_id):
+        lines.append(scope)
     for s in senders:
         rr = s.get("read_rate")
         rr_str = f", {round((rr or 0) * 100)}% read" if rr is not None else ""
@@ -7556,6 +7999,7 @@ _TOOLS = [
     resolve_execution,
     # Assistant config
     update_assistant_settings,
+    apply_settings_to_mailboxes,
     list_knowledge,
     save_knowledge,
     delete_knowledge,
@@ -7609,6 +8053,8 @@ MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     "schedule_send", "cancel_scheduled_send",
     # Chat parity wave 1 (owner, 2026-10-23, §22).
     "copy_rules", "rule_guidance", "voice_profile", "update_account",
+    # Multi-inbox chat wave (owner, 2026-10-23): one card, several mailboxes.
+    "apply_settings_to_mailboxes",
 })
 
 #: The tools that save a reply draft in the member's OWN Drafts with no card,

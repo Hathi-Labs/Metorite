@@ -77,7 +77,23 @@ REF_ROW: dict[str, Any] = {
 }
 VIEW_ID = "df8fad5b-d9cb-469f-a165-70867728950e"
 LIVE = "ef8fad5b-d9cb-469f-a165-70867728950e"
+SUB_A = "3f8fad5b-d9cb-469f-a165-70867728950e"
+SUB_A1 = "4f8fad5b-d9cb-469f-a165-70867728950e"
+SUB_B = "5f8fad5b-d9cb-469f-a165-70867728950e"
+
+
+def _sub(rid: str, parent: str, title: str, archived: bool = False) -> dict[str, Any]:
+    return {
+        "id": rid,
+        "parent_task_id": parent,
+        "title": title,
+        "status_name": "To do",
+        "status_category": "todo",
+        "archived": archived,
+    }
 SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
+#: WS-64 OP-6c. A task the member waits on a colleague for (nudge_task).
+WAITER = "ab8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
     "title": "Fix the extruder",
@@ -132,7 +148,7 @@ def _s3_reads(call: dict) -> Any:
     if path.endswith("/views") and method == "GET":
         return {"rows": [{"id": VIEW_ID, "name": "Board", "view_type": "board"}]}
     if path.endswith("/attachments") and method == "GET":
-        return {"rows": [{"id": FILE, "name": "quote.pdf"}], "total": 1}
+        return {"rows": [{"attachment_id": FILE, "name": "quote.pdf"}], "total": 1}
     if path.endswith("/status-set/preview"):
         return {
             "lanes": [{"name": "Inbox"}, {"name": "Done"}],
@@ -302,11 +318,105 @@ def _refs_answers(call: dict) -> Any:
     return None
 
 
+def _subtree_answers(call: dict) -> Any:
+    """OP-7: the route's real shape (tasks.py `task_subtree`). The visible
+    descendants top down, archived ones too, and a hidden count."""
+    if call["method"] != "GET" or not call["path"].endswith("/subtree"):
+        return None
+    root = call["path"].split("/")[-2]
+    return {
+        "task_id": root,
+        "subtasks": [
+            _sub(SUB_A, root, "Write the notes"),
+            _sub(SUB_B, root, "Book the demo", archived=True),
+            _sub(SUB_A1, SUB_A, "Proofread the notes"),
+        ],
+        "hidden": 1,
+    }
+
+
 def _answered(call: dict, *tables: Any) -> Any:
     for table in tables:
         answered = table(call)
         if answered is not None:
             return answered
+    return None
+
+
+#: WS-64 OP-6a. The member's own areas, as `GET /projects/my/areas` returns them.
+AREAS = [
+    {"id": UUID, "name": "Home", "archived": False, "open_tasks": 2},
+    {"id": SALES, "name": "Finance", "archived": False, "open_tasks": 0},
+]
+
+
+def _area_answers(call: dict) -> Any:
+    """WS-64 OP-6a: the member's areas, and the three writes on them."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/my/areas" and method == "GET":
+        return {"rows": AREAS, "total": len(AREAS)}
+    if path == "/projects/my/areas" and method == "POST":
+        return {"id": OTHER, "name": call["json"]["name"], "archived": False, "open_tasks": 0}
+    if path.startswith("/projects/my/areas/") and method == "DELETE":
+        return {"id": path.rsplit("/", 1)[-1], "outcome": "archived", "tasks": 3}
+    if path.startswith("/projects/my/areas/") and method == "PATCH":
+        return {"id": path.rsplit("/", 1)[-1], "name": call["json"]["name"], "archived": False}
+    return None
+
+
+#: WS-64 OP-6c. What the member uploaded to the chat, as the accessor returns it.
+UPLOAD = ("brief.pdf", b"%PDF-1.4 a brief of 40 bytes, more or less")
+
+
+def stub_chat_upload(monkeypatch: Any, upload: Any = UPLOAD) -> None:
+    """The file the member attached to THIS chat, in place of the thread folder."""
+    from acb_skills import attachment_tools
+
+    async def _bytes(name: str) -> Any:
+        if str(name).strip() == upload[0]:
+            return upload
+        return f"No file named {name} was attached in this chat. Files attached here: {upload[0]}."
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
+
+
+def _op6c_answers(call: dict) -> Any:
+    """WS-64 OP-6c: the nudge, and the upload onto a task."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/tasks/{WAITER}" and method == "GET":
+        return {**TASK, "id": WAITER, "archived_at": None}
+    if path == f"/projects/my/tasks/{WAITER}" and method == "GET":
+        return {
+            "id": WAITER,
+            "disposition": "WAITING",
+            "waiting_on": {"name": "Priya", "email": "priya@x.io"},
+            "last_nudged_at": None,
+        }
+    if path == f"/projects/tasks/{WAITER}/nudge" and method == "POST":
+        return {
+            "notified": ["priya@x.io"],
+            "skipped": [],
+            "last_nudged_at": "2026-10-23T10:00:00+00:00",
+        }
+    if path == f"/projects/tasks/{UUID}/attachments" and method == "POST":
+        return {"attachment_id": FILE, "name": UPLOAD[0], "size": len(UPLOAD[1]), "kind": "file"}
+    return None
+
+
+#: WS-64 OP-6b. The grants of the project, as `GET /projects/nodes/{id}/grants` lists them.
+GRANT_ID = "a1f8fad5-d9cb-469f-a165-70867728950e"
+GRANTS = [{"id": GRANT_ID, "project_id": UUID, "subject": "group:design", "created_by": "a@x.io"}]
+
+
+def _op6b_answers(call: dict) -> Any:
+    """WS-64 OP-6b: the grant list, a new grant and a removed one."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/nodes/{UUID}/grants" and method == "GET":
+        return {"rows": GRANTS, "total": len(GRANTS)}
+    if path == f"/projects/nodes/{UUID}/grants" and method == "POST":
+        return {"id": OTHER, "project_id": UUID, "subject": call["json"]["subject"]}
+    if path == f"/projects/nodes/{UUID}/grants/{GRANT_ID}" and method == "DELETE":
+        return {"deleted": GRANT_ID, "subject": "group:design"}
     return None
 
 
@@ -320,7 +430,9 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
+    # `_op6c_answers` first: its task answers a `/my/tasks/` read that `_s2b_answers` also claims.
+    answered = _answered(call, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+                         _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -517,7 +629,20 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "merge_tags": [{"project_id": UUID, "tag": "urgent", "into": "p0"}],
     "delete_view": [{"project_id": UUID, "view_name": "Board"}],
     "report_delete": [{"report_id": UUID}],
+    "delete_area": [{"area": "Home"}, {"area": SALES}],
+    "rename_area": [{"area": "Home", "new_name": "House"}],
     "delete_attachment": [{"task_id": UUID, "attachment_id": FILE}],
+    # WS-64 OP-6c — a nudge to the person the member waits on, a file from the chat
+    "nudge_task": [{"task_id": WAITER}],
+    "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
+    # WS-64 OP-6b — one grant per card, by grant_id or by subject
+    "grant_access": [{"project_id": UUID, "subject": "org"}],
+    "revoke_access": [
+        {"project_id": UUID, "grant": GRANT_ID},
+        {"project_id": UUID, "grant": "group:Design"},
+    ],
+    # WS-64 OP-6a — a new area of the member's own
+    "create_area": [{"name": "Garden"}],
     # S4 — the forms: an editable card, then the class B card
     "edit_task": [{"task_id": UUID}],
     "edit_project": [{"project_id": UUID}],
@@ -595,6 +720,12 @@ _ONE_ID: dict[str, str] = {
     "delete_view": "view_name",
     "report_delete": "report_id",
     "delete_attachment": "attachment_id",
+    "delete_area": "area",
+    "rename_area": "area",
+    "nudge_task": "task_id",
+    "attach_to_task": "task_id",
+    "grant_access": "subject",
+    "revoke_access": "grant",
 }
 
 
@@ -627,6 +758,11 @@ def test_the_tools_are_annotated_as_writes_not_reads() -> None:
 @pytest.fixture(autouse=True)
 def _forms_answered(monkeypatch) -> None:
     form_stub(monkeypatch, FORM_ANSWERS)
+
+
+@pytest.fixture(autouse=True)
+def _a_chat_upload(monkeypatch) -> None:
+    stub_chat_upload(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
@@ -715,6 +851,10 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "unarchive_project",
             "propose_plan",
             "mark_notifications_read",
+            # WS-64 OP-6a: an area is the member's own category, not a task or a project.
+            "create_area",
+            "rename_area",
+            "delete_area",
         )
     ),
 )

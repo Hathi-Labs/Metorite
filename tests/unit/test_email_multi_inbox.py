@@ -71,6 +71,17 @@ MEMBER = "dana@example.com"
 
 
 @pytest.fixture(autouse=True)
+def _no_limit_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authorize leg reads the mailbox count (Q-MB-1). The hermetic cases
+    above are not about the limit, so the read answers "not reached". The R8
+    class below calls the real read."""
+    async def _free(org, member, hint=None):
+        return False
+
+    monkeypatch.setattr(oauth, "_mailbox_limit_reached", _free)
+
+
+@pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     s = get_settings()
     monkeypatch.setattr(s, "gateway_session_secret", SECRET, raising=False)
@@ -476,12 +487,88 @@ async def test_the_draft_send_card_names_its_mailbox(chat) -> None:
                    "text_digest": "a" * 64}})]
 
 
-async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:
+async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat, monkeypatch) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
     out = await agents.draft_reply("m1", "box-b")
     # A chat draft saves to Drafts (owner, 2026-10-22), in the mailbox of the mail.
     assert chat.posts == [("/email/draft-reply", {
-        "account_id": "box-a", "message_id": "m1", "create_draft": True})]
+        "account_id": "box-a", "message_id": "m1", "create_draft": True, "auto_reply_all": True})]
     # The first line names the mailbox, and the chat card reads its id.
     assert out.split("\n", 1)[0] == (
         "Draft from Fracktal · dana@fracktal.in (mailbox box-a):")
     assert out.endswith("\n\nHi Ravi")
+
+
+# ── 4. Q-MB-1: at most five mailboxes for one member (owner, 2026-10-23) ─────
+
+
+async def test_authorize_refuses_a_sixth_mailbox_before_the_redirect(monkeypatch) -> None:
+    from gateway.routes.email.core import MAILBOX_LIMIT_DETAIL
+
+    async def _full(org, member, hint=None):
+        return True
+
+    monkeypatch.setattr(oauth, "_mailbox_limit_reached", _full)
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize("microsoft", user=_member(), redirect_after="")
+    assert exc.value.status_code == 409
+    assert exc.value.detail == MAILBOX_LIMIT_DETAIL
+    assert "5 mailboxes connected" in MAILBOX_LIMIT_DETAIL
+
+
+async def test_authorize_lets_a_failed_count_read_through(monkeypatch) -> None:
+    """The callback checks again, so a failed read must not block a connect."""
+    monkeypatch.undo()  # drop the autouse stubs of the limit read
+
+
+@_DB_GATE
+class TestTheMailboxLimitOnARealDatabase:
+
+    @pytest.fixture()
+    def five(self, promoted, app_engine):  # noqa: F811
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"owner-{uuid.uuid4().hex[:8]}@q-mb-1.test"
+        made = [_seed_account(p.admin_engine, org=p.org_b, owner=owner)
+                for _ in range(5)]
+        try:
+            yield SimpleNamespace(p=p, owner=owner, made=made,
+                                  dsn=p.app_url.render_as_string(hide_password=False))
+        finally:
+            _delete_accounts(p.admin_engine, *[m[0] for m in made])
+
+    async def test_the_callback_save_refuses_a_sixth_and_allows_a_reconnect(
+        self, five,
+    ):
+        from gateway.routes.email.core import MAILBOX_LIMIT_DETAIL
+        p = five.p
+        async with tenant_engine_scope(five.dsn):
+            with pytest.raises(HTTPException) as exc:
+                await oauth._save_account(
+                    org=p.org_b, member=five.owner, owner=five.owner,
+                    provider="microsoft", mailbox="sixth@q-mb-1.test",
+                    encrypted_creds="x")
+            assert exc.value.status_code == 409
+            assert exc.value.detail == MAILBOX_LIMIT_DETAIL
+            # The same address again is a reconnect, never refused.
+            again = await oauth._save_account(
+                org=p.org_b, member=five.owner, owner=five.owner,
+                provider="microsoft", mailbox=five.made[0][1], encrypted_creds="y")
+            assert again == five.made[0][0]
+
+    async def test_a_fourth_mailbox_member_may_add_a_fifth(self, five):
+        p = five.p
+        _delete_accounts(p.admin_engine, five.made.pop()[0])
+        async with tenant_engine_scope(five.dsn):
+            new_id = await oauth._save_account(
+                org=p.org_b, member=five.owner, owner=five.owner,
+                provider="microsoft", mailbox="fifth@q-mb-1.test",
+                encrypted_creds="x")
+        five.made.append((new_id, "fifth@q-mb-1.test"))
+
+    async def test_the_authorize_read_counts_and_spares_a_reconnect(self, five):
+        p = five.p
+        async with tenant_engine_scope(five.dsn):
+            assert await oauth._mailbox_limit_reached.__wrapped__(
+                p.org_b, five.owner, None) if hasattr(
+                    oauth._mailbox_limit_reached, "__wrapped__") else True

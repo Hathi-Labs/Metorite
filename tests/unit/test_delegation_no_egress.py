@@ -98,6 +98,9 @@ EXPECTED_OPEN_WORLD = frozenset({
     "update_assistant_settings", "save_knowledge",
     # Chat parity wave 1 (§22): the voice profile feeds each later draft.
     "voice_profile",
+    # Multi-mailbox review, P0 (2026-10-23): auto-run and the digest of
+    # several mailboxes change what later leaves each one.
+    "apply_settings_to_mailboxes",
     # H-375: a send of a draft later is a send.
     "schedule_send",
     # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
@@ -760,6 +763,13 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: sits behind one confirmation card and writes only through the gateway.
 #: 2026-10-16 (projects_ai_chat.md §14.10): make_report joined by scope, with the
 #: same PDF seam, the same writes and open_world=False.
+#: 2026-10-23 (WS-64 OP-6a, D-OP-9): create_area, rename_area and delete_area joined.
+#: Each writes only through the gateway, behind one card, and says open_world=False.
+#: 2026-10-23 (WS-64 OP-6c, D-OP-9): nudge_task, export_tasks and attach_to_task joined.
+#: nudge_task and attach_to_task write only through the gateway, behind one card.
+#: export_tasks reads through the gateway and saves one CSV into the chat, as render_report does.
+#: 2026-10-24 (WS-64 OP-6b, D-OP-9): grant_access and revoke_access joined. Each writes
+#: only through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -768,6 +778,9 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "complete", "create_field", "create_personal_task", "create_project",
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer",
+    "create_area", "delete_area", "rename_area",
+    "nudge_task", "export_tasks", "attach_to_task",
+    "grant_access", "revoke_access",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",

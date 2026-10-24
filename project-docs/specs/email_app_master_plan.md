@@ -8760,12 +8760,47 @@ In `workbench/control_plane`, also run `npx tsc --noEmit` and `npx vitest run sr
 Then `POST /email/rules/copy` can keep a rule with a FORWARD to an own address, and D-EM-29 can
 change.
 
+##### The chat across several mailboxes (owner, 2026-10-23) — built
+
+Status: built on branch `email-multi-inbox-chat`. The fence is `tests/unit/test_email_chat_binding.py`.
+
+1. `query_inbox` takes no `account_id` in All inboxes. It reads the pooled mailboxes, and each line carries `[label · address]`.
+2. `find_priority` (needs reply, important) and `list_senders` with `view="cold"` walk each pooled mailbox, five at most. Their routes take one mailbox. Each section starts with `Mailbox: label · address`. The reads stay apart (D-EM-18).
+3. The sender routes add up the counts of the pooled mailboxes. A row names no mailbox, so the answer lists the mailboxes that the counts cover.
+4. `list_scheduled_sends` names the mailbox of each draft. `get_account_overview` and the digest preview keep one required mailbox and name it.
+5. `list_accounts` prints the sync state of each mailbox. A mailbox that needs reconnecting says that the member signs in again from the Email app, because OAuth needs a browser.
+6. New mail from a named mailbox adds "You usually write to X from Y" to the send card and the answer, when `sent-from` names another mailbox. The parameters of `send_email` do not change.
+7. `apply_settings_to_mailboxes` applies one settings change to several mailboxes behind one card. It is a separate tool because `egress.HELD_CARD_SEND_TOOLS` pins the parameters of `update_assistant_settings`. It refuses in a held run, and it takes no free text.
+
+#### 11.7.8 Multi-inbox UI pass (2026-10-23)
+
+**Status.** Built on branch `email-multi-inbox-ui`. Frontend only. The owner asked that the chat
+and the UI can manage more than one inbox.
+
+- **Chat app.** The mailbox reaches the one assistant through the orchestrator work in a later branch. /chat keeps its email-assistant picker unchanged.
+- **Copy rules.** The Rules tab has "Copy rules from..." for two or more mailboxes. The dialog
+  lists the rules that will copy and the rules that stay behind. It asks before it copies. Fence:
+  `email-rules-tab-copy`.
+- **IMAP.** The connect choices have an IMAP and SMTP form. IMAP uses SSL/TLS only. SMTP uses
+  STARTTLS on port 587 or SSL/TLS. Fence: `email-imap-connect`.
+- **Not changed, by design.** The Email Cleaner, the Dashboard and the digest stay in one mailbox.
+  D-EM-18 makes the digest a one-mailbox act, and §11.0 rule 5 says a setting names one mailbox.
+  The header of these views names the mailbox and has a picker. The pooled `/senders` route
+  returns no mailbox for a row, so a chip for each row needs one call for each mailbox. That
+  change needs an owner decision.
+
 ### 11.8 Open owner question
 
 - **Q-MB-1. How many mailboxes can one member connect?** Each mailbox adds a sync loop, Jev calls
   and up to 500 MB of storage. The proposal is 5 for each member at launch, with an admin view of
-  the count. Until the owner answers, the code sets no limit. The limit is a commercial choice, so
-  the agent does not make it.
+  the count. **Answered by the owner on 2026-10-23: 5 for each member.** Built on branch
+  `email-multi-inbox-chat`. `core.MAX_MAILBOXES_PER_MEMBER` holds the number. The OAuth authorize
+  leg refuses a sixth mailbox with 409 before the redirect. The callback and `POST /email/accounts`
+  check again, under a lock on the member, so two tabs cannot pass together. A reconnect of a
+  mailbox that exists is never refused. The callback sends the reason `mailbox_limit` to the
+  workbench, and the workbench still needs a plain message for it. `GET /email/accounts` carries
+  `mailbox_limit`, and `list_accounts` in the chat prints "N of 5 mailboxes". The fence is
+  `TestTheMailboxLimitOnARealDatabase` in `tests/unit/test_email_multi_inbox.py`.
 
 ---
 
@@ -21001,6 +21036,12 @@ and no new route. The agent tools call the routes that the Email app already use
 chat, the rules and the cleaner included. Wave 1 keeps all mail inside the member's own
 mailboxes.
 
+**The one assistant.** There is no separate email assistant (D99). The member talks to the
+one assistant in the shell, and it delegates email work to `email-assistant`.
+`navigation_shell.md` §7.1.1 owns the rules for that path. They cover the working set of
+email ids for each chat and the mailboxes on every surface. They also cover a mailbox named
+in words, the email cards in the dock and the mailbox mark.
+
 ### 22.1 What the chat can do now
 
 | Job | Tool | Route |
@@ -21056,3 +21097,47 @@ A held chat read mail from outside senders (H-236). This wave adds no outward ac
 | A card before each write, and each choice | `tests/unit/test_email_agent_write_cards.py` |
 | The held set | `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_egress_card_bound_pin.py` |
 | The tool count | `tests/unit/test_email_tool_consolidation.py` |
+
+### 22.5 Gaps closed on 2026-10-23
+
+The owner asked the chat to Cc "Venna", and the lookup found nobody. The colleague was
+Veena. An audit then found four gaps. Each one is closed.
+
+1. **A near name finds the person.** `GET /email/contacts/suggest` runs a trigram
+   fallback when the substring search finds fewer than three people. It searches the
+   members and the People rows of the organization with `similarity()`, at a floor of 0.3.
+   Each such hit has `match` set to `closest`. `find_contact` then tells the model to show
+   the name and the address, and to ask the member. A missing `pg_trgm` logs and gives the
+   old result. Migration 170 creates the extension. Fence:
+   `tests/unit/test_email_contact_suggest_r8.py`, on a real database.
+2. **The draft id survives the turn.** `call_agent` keeps no chat history. Every result
+   that makes or changes a draft now carries the line "Draft: draft_id=... | subject:
+   ...". `draft_reply` puts it in its first line, because the card edits the rest. With no
+   id, the model calls `search_emails` with `folder` set to `drafts`. When more than one
+   draft fits, it asks the member. Fence:
+   `tests/unit/test_email_chat_assistant_tools.py`.
+3. **A new `body` keeps the quoted thread.** `edit_draft(body=...)` now refuses when the
+   draft holds a quoted thread. The answer names `compose_reply` with an instruction. The
+   card says that the draft holds no quoted thread when it does not.
+4. **No "Email app" option.** The too-long answer names `edit_draft` as the chat step.
+   Fence: `tests/unit/test_held_send_guidance.py`.
+
+### 22.6 Reply all is the default (2026-10-23)
+
+The owner asked for a smart choice between Reply and Reply all. Most mail with other people
+on it needs Reply all. The default is now Reply all when anyone besides the sender and the
+member is on the mail. Else it is Reply.
+
+- `POST /email/reply-card` takes `reply_all` as `true`, `false` or left out. Left out, the
+  server picks, and the answer names the choice. The card opens on it, and the toggle stays.
+- `compose_reply` sends `reply_all` only when the model sets it. The model sets `false` for
+  text meant for the sender alone, such as a private note.
+- `draft_reply` asks for the same default, and its first line names the choice and the
+  people.
+- Fence: `tests/unit/test_email_chat_reply.py`, `test_auto_reply_all_*` and the card route
+  tests.
+
+**Not built: the held chat.** A held reply card still opens on Reply when Reply all adds a
+new address (section 21). The reply card has no tick boxes. It only marks a new address.
+So the plan to let unticked boxes carry the safety does not hold for this card. The owner
+must decide whether to add tick boxes to the reply card first.

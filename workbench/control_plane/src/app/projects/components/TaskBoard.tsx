@@ -49,7 +49,7 @@ import { StatusChip } from "@/components/StatusChip";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import Button from "@/components/ui/Button";
 import { dropIndexFor, gapKey } from "@/lib/boardDrop";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
@@ -91,6 +91,15 @@ import {
   taskQuickActions,
 } from "../lib/taskMenu";
 import { CardInput } from "./CardInput";
+import ScrollStrip from "@/components/ScrollStrip";
+import {
+  LONG_PRESS_MS,
+  type StatusTab,
+  activeTabKey,
+  pressMoved,
+  stepTab,
+  swipeDirection,
+} from "../lib/compactChrome";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
 import { useAccess } from "@/components/AccessProvider";
@@ -98,6 +107,13 @@ import { useAccess } from "@/components/AccessProvider";
 const NOBODY: ReadonlySet<string> = new Set();
 
 interface Props {
+  /**
+   * WS-64 OP-1 — the compact chrome is on and the screen is a phone. A flat
+   * board then shows ONE status at full width with a row of status tabs, and
+   * a card shows only its tick and "more" (long press opens the menu). The
+   * desktop keeps its columns and its hover actions.
+   */
+  phone?: boolean;
   groups: TaskGroup[];
   groupBy: GroupBy;
   /**
@@ -210,6 +226,7 @@ interface Props {
 }
 
 export function TaskBoard({
+  phone = false,
   groups,
   groupBy,
   subtasks,
@@ -324,6 +341,25 @@ export function TaskBoard({
       ),
     [columns, groupBy, statuses]
   );
+
+  // WS-64 OP-1 — the status tabs of the phone board, and the one status it shows.
+  const [chosenTab, setChosenTab] = useState<string | null>(null);
+  const tabs = useMemo<StatusTab[]>(
+    () =>
+      columns.map((column) => ({
+        key: column.key,
+        label: column.label,
+        count: column.tasks.length,
+      })),
+    [columns]
+  );
+  const shownTab = activeTabKey(tabs, chosenTab);
+  const swipe = useRef<{ x: number; y: number } | null>(null);
+  const press = useRef<{ x: number; y: number; timer: number } | null>(null);
+  const cancelPress = () => {
+    if (press.current) window.clearTimeout(press.current.timer);
+    press.current = null;
+  };
 
   const swimlanes = useMemo<Swimlane[] | null>(
     () =>
@@ -630,7 +666,9 @@ export function TaskBoard({
     // reads as the rename having failed.
     canEditInline: Boolean(onRenamed),
     canArchive: Boolean(onArchive),
-    canDelete: Boolean(onDeleteTask),
+    // WS-64 OP-8 — the server's `can_delete`. Only an explicit `false` hides
+    // the entry, because a row read before the flag existed must still work.
+    canDelete: Boolean(onDeleteTask) && task.can_delete !== false,
     selected: selected?.has(task.id) ?? false,
   });
 
@@ -751,7 +789,43 @@ export function TaskBoard({
     // cost no layout: the shell's primary border and ring, and the tick box
     // in the card's own action pill, which stays lit once the card is in the
     // selection. The card is full width at all times.
-    <li key={task.id} data-card className="rounded-md">
+    <li
+      key={task.id}
+      data-card
+      className="rounded-md"
+      // WS-64 OP-1: a finger that rests on a touch card opens its menu.
+      onTouchStart={
+        phone
+          ? (event) => {
+              const touch = event.touches[0];
+              cancelPress();
+              const at = { x: touch.clientX, y: touch.clientY };
+              press.current = {
+                ...at,
+                timer: window.setTimeout(() => {
+                  press.current = null;
+                  setMenu({ ...at, task });
+                }, LONG_PRESS_MS),
+              };
+            }
+          : undefined
+      }
+      onTouchMove={
+        phone
+          ? (event) => {
+              const touch = event.touches[0];
+              if (
+                press.current &&
+                pressMoved(touch.clientX - press.current.x, touch.clientY - press.current.y)
+              ) {
+                cancelPress();
+              }
+            }
+          : undefined
+      }
+      onTouchEnd={phone ? cancelPress : undefined}
+      onTouchCancel={phone ? cancelPress : undefined}
+    >
       {/* WS-27ad: the same box /tasks draws (`@/components/TaskCardShell`) —
           `bg-card` on the column's `bg-card` well, the shadow lift that says
           "draggable", one radius, one padding, one title treatment. This card
@@ -913,6 +987,7 @@ export function TaskBoard({
             actions={menuActions}
             ctx={ctx}
             onMore={(at) => setMenu({ ...at, task })}
+            touch={phone}
           />
         )}
       </TaskCardShell>
@@ -988,7 +1063,69 @@ export function TaskBoard({
         </div>
       ) : null}
 
-      {!laned ? (
+      {!laned && phone ? (
+        <div
+          data-status-tabs-board=""
+          onTouchStart={(event) => {
+            const touch = event.touches[0];
+            swipe.current = { x: touch.clientX, y: touch.clientY };
+          }}
+          onTouchEnd={(event) => {
+            const from = swipe.current;
+            swipe.current = null;
+            if (!from) return;
+            const touch = event.changedTouches[0];
+            const dir = swipeDirection(touch.clientX - from.x, touch.clientY - from.y);
+            if (dir) setChosenTab(stepTab(tabs, shownTab, dir));
+          }}
+        >
+          <div className="sticky top-0 z-10 border-b border-border bg-background px-3 py-1.5">
+            <ScrollStrip label="Statuses" className="gap-1.5" revealKey={shownTab ?? ""}>
+              {tabs.map((tab) => (
+                <Button
+                  key={tab.key}
+                  variant="ghost"
+                  size="sm"
+                  selected={tab.key === shownTab}
+                  onClick={() => setChosenTab(tab.key)}
+                >
+                  {tab.label}
+                  <span className="ml-1 tabular-nums opacity-70">{tab.count}</span>
+                </Button>
+              ))}
+            </ScrollStrip>
+          </div>
+          <div className="p-3 [&>[role=group]]:w-full">
+            {columns
+              .filter((column) => column.key === shownTab)
+              .map((column) => (
+                <BoardColumn
+                  key={column.key}
+                  {...targetProps(column.key, column.tasks, null)}
+                  as="ul"
+                  header={null}
+                  aria-label={column.label}
+                  dropTarget={false}
+                  empty={
+                    column.tasks.length > 0
+                      ? undefined
+                      : shelf
+                        ? "Nothing archived in this lane"
+                        : waitingOnMe
+                          ? WAITING_ON_ME_EMPTY
+                          : agentWork
+                            ? AGENT_WORK_EMPTY
+                            : "Nothing here"
+                  }
+                  addLabel={`Add to ${column.label}`}
+                  onAdd={shelf ? undefined : (title) => quickAdd(title, column.key, null)}
+                >
+                  {cellCards(column.key, column.tasks, null)}
+                </BoardColumn>
+              ))}
+          </div>
+        </div>
+      ) : !laned ? (
         <Board scroll="parent">
           {columns.map((column, columnIndex) => (
             <BoardColumn

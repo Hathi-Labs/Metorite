@@ -70,6 +70,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # (C) chat parity wave 1 (§22): the voice profile feeds each later
         # reply draft too
         "voice_profile",
+        # (B) settings of several mailboxes at once: auto-run and the digest
+        # change what later leaves the mailbox (multi-mailbox review, P0)
+        "apply_settings_to_mailboxes",
     }),
     "crm-assistant": frozenset({
         # (B) D-CRM-9: an agent write queues for the live Zoho tenant
@@ -305,6 +308,7 @@ async def test_a_held_run_saves_a_reply_draft(gw, held) -> None:
     assert gw.cards == []
     assert gw.posts == [("/email/draft-reply",
                          {"account_id": BOX, "message_id": "m-1", "create_draft": True})]
+    # A held run never asks the server for Reply all (review of §22.6, P2).
 
 
 async def test_a_held_run_saves_a_label_rule(gw, held) -> None:

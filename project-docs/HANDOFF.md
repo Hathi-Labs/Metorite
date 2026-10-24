@@ -6138,19 +6138,6 @@ line — never reclaim a number by deleting the other entry.
   `email_send_later`
 - **Added:** 2026-10-21 · email chat collaboration session
 
-### H-380 · The Projects chat cannot attach a file to a task (WS-46 P10, G21) · [AGENT]
-- **Check:** `grep -n "attachments\", \"\", \"X\"" apps/skills/skill-projects/skill_projects/manifest.py`.
-  A hit means the upload route is still class X, so the gap is open.
-- **Why:** the owner wants the chat to do all that the Projects screens do
-  (2026-10-22). The manifest reason "The chat has no file input" has been
-  false since H-229.
-- **Do this:** build slice P10 of `projects_agent_parity.md` §12. Add a class B
-  tool that sends a file of this thread to `POST /projects/tasks/{id}/attachments`.
-  Add a multipart request to `client.py`. Move the route from X to B, and
-  remove `attachmentsApi.upload` from `UI_PLANNED`.
-- **Authority:** `projects_agent_parity.md` §3.3 G21, §12 P10
-- **Added:** 2026-10-23 · Projects chat parity session
-
 ### H-381 · A chat plan cannot make subprojects or repeat rules (WS-46 P8, G19, G20) · [AGENT]
 - **Check:** `uv run python -m evals.projects_ops.run --scripted`. PO-3 reads
   `xfail` while P8 and P9 are open.
@@ -6229,25 +6216,6 @@ line — never reclaim a number by deleting the other entry.
   slice for any gap.
 - **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
 - **Added:** 2026-10-23 · Projects chat parity session
-
-### H-388 · Turn on the held-chat send cards in production, after #1237 ships · [OWNER]
-- **Check:** `curl -s https://api.metorite.com/version` names an `applied_sha`
-  whose history holds `6097556` (#1237). Then `ssh metorite "sudo grep -c
-  '^EMAIL_HELD_CARD_SEND=true' /opt/acb/app/.env"` prints 1. If both pass,
-  delete this entry.
-- **Why:** #1237 built spec §21 dark behind `EMAIL_HELD_CARD_SEND`, default
-  off. The owner asked on 2026-10-22: "Turn it on after build, the flag". A
-  staging test of the switch is not possible: `acb-staging-flag` refuses every
-  EMAIL and SEND key, because staging keeps outbound switches off.
-- **Do this (agent, with the owner's approval of the command):** wait for
-  the nightly release that carries #1237. Copy the production `.env` to a
-  backup. Set `EMAIL_HELD_CARD_SEND=true`. Restart `acb-gateway`, and wait
-  for `/health`. Report the box, the restart and the evidence in the same
-  message (CLAUDE.md §3a rule 2).
-- **Then (owner):** in a chat that read outside mail, ask "reply to Dr
-  Sagar, CC Geo and Kiran, send it". Each step must stay in the chat.
-- **Authority:** `email_app_master_plan.md` §21 · #1237
-- **Added:** 2026-10-23 · email chat session
 
 ### H-389 · Finish the email chat polish branch · [AGENT]
 - **Check:** `git log origin/main --oneline | grep -i "spam action"` prints a
@@ -6422,6 +6390,15 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** use a session in manual mode, because auto mode blocks an edit of the egress guard. Each outward rule act needs its own card that names each address and URL. A held chat must refuse it. Run a diff-reviewer on Opus before the merge.
 - **Authority:** owner request, 2026-10-23. The owner asked to control every part of the Email app from the chat.
 - **Added:** 2026-10-23 · chat cards session
+
+### H-405 · Confirm that migration 297 stamped each private tree in production · [AGENT]
+- **Check:** after the release that carries 297, run this SQL once on production, as a role that bypasses RLS. It prints 0. Then delete this entry.
+  `WITH RECURSIVE tree AS (SELECT id, personal_owner AS owner FROM pm_projects WHERE parent_project_id IS NULL AND personal_owner IS NOT NULL UNION ALL SELECT c.id, t.owner FROM pm_projects c JOIN tree t ON c.parent_project_id = t.id WHERE c.personal_owner IS NOT NULL OR NOT EXISTS (SELECT 1 FROM pm_project_grants g WHERE g.project_id = c.id AND lower(g.subject) <> lower(t.owner))) SELECT count(*) FROM pm_projects p JOIN tree ON p.id = tree.id WHERE p.personal_owner IS NULL;`
+- **Why:** R6 applies 297 before the services restart. In that window the old `create_node` can still write a child with no `personal_owner` under a private tree. The SQL uses the walk of 297, so it does not count a team node that 297 kept on purpose.
+- **Do this:** if the count is not 0, run the `DO` block of `infra/postgres/297_personal_owner_stamp_backfill.sql` again by hand. It is idempotent. Read its NOTICE lines too. Each one names a team node T under a private tree. A lead of T or a Projects admin moves T out to a team space, because `move_node` asks `assert_may_move_project` for that right.
+- **Also:** `seal.py` `_TREE_SQL` walks down from a personal root with no stop rule. So the seal of a deactivated member still reaches a team node T that 297 kept. Until a lead or an admin moves T out, a seal hides T from its team. Fix `_TREE_SQL` with the stop rule of `core.PERSONAL_TREE_OWNER_SQL`, or move every T out before a seal.
+- **Authority:** `specs/one_projects_app.md` OP-3, the precondition of task #304
+- **Added:** 2026-10-24 · WS-64 task #304 fix round 1
 
 # DONE — deleted, not archived
 

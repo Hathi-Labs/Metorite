@@ -26,6 +26,16 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.authority import (
+    assert_may_change_lead,
+    assert_may_delete_project,
+    assert_may_move_project,
+    assert_may_name_lead,
+    assert_may_revoke_grant,
+    assert_may_write_grant,
+    attach_can_delete,
+    attach_can_write_grants,
+)
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -38,6 +48,7 @@ from gateway.routes.projects.core import (
     ProjectModel,
     _tenant_session,
     actor,
+    assert_grant_group_exists,
     assert_no_project_cycle,
     assert_node_grammar,
     assert_project_move_keeps_privacy,
@@ -46,10 +57,13 @@ from gateway.routes.projects.core import (
     count_where,
     diff_changes,
     emit,
+    grant_personal_owner,
     insert_row,
     load_visible_project,
     node_kind,
     node_level,
+    org_groups,
+    personal_tree_owner,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -265,8 +279,10 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
         vis = await resolve_visibility(db, user)
         rows = await _visible_projects(db, user, vis)
         counts = await _open_and_done(db, vis)
+        nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
+        # WS-64 OP-8 — the app hides Delete on a node where this is false.
+        await attach_can_delete(db, user, list(nodes.values()), kind="project")
 
-    nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
     roots: list[dict] = []
     for node in nodes.values():
         parent = nodes.get(str(node.get("parent_project_id") or ""))
@@ -400,7 +416,12 @@ async def get_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
-        return row_to_dict(row, ProjectModel)
+        result = row_to_dict(row, ProjectModel)
+        # WS-64 OP-8 — the chat refuses before its card where this is false.
+        await attach_can_delete(db, user, [result], kind="project")
+        # WS-64 OP-6b — the chat refuses before its grant card where this is false.
+        await attach_can_write_grants(db, user, result)
+        return result
 
 
 @router.get("/summary")
@@ -789,6 +810,31 @@ async def create_node(
             # and inherit that department's grants for it.
             parent_row = await load_visible_project(db, vis, str(parent_id))
 
+        # WS-64, task #304. A child of a private tree is private too, so it
+        # takes the tree owner's `personal_owner`. Every read tests the node's
+        # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
+        # checks), so an unstamped child read as a team node: an orphan root
+        # in each `data:org:read` tree, open to an agent with
+        # `include_personal=false`, and free to move into a team space.
+        #
+        # Only the tree owner may add a node here. `/projects/my/areas` is
+        # the personal seam, but the Projects app's Personal space (OP-3)
+        # files through this route, so the owner is allowed. Anyone else,
+        # an org reader too, gets the same 404 as an unseen parent: a node
+        # filed in another member's private tree is a taking act, and a
+        # different answer would confirm that the tree exists.
+        #
+        # Fix round 2. `personal_tree_owner` is the one walk, with the stop
+        # rule of migration 297. A team node that 297 kept under a private
+        # tree answers None, so its team files nodes under it as team work.
+        tree_owner = (
+            await personal_tree_owner(db, str(parent_id)) if parent_id else None
+        )
+        if tree_owner is not None:
+            if tree_owner != actor(user).lower():
+                raise HTTPException(status_code=404, detail="Project not found")
+            values["personal_owner"] = tree_owner
+
         # The tree grammar (migration 193): space → [folder] → project →
         # [folder] → subproject, and stop. Checked before the org resolve so
         # a bad shape is refused as a shape, not as a permission.
@@ -812,6 +858,9 @@ async def create_node(
         if values.get("status") is not None:
             assert_run_state_allowed(level)
         _refuse_identity_off_a_space(values, level)
+        # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
+        # naming one is a grant write. After the parent's 404.
+        await assert_may_name_lead(db, user, parent_row, values.get("lead"))
 
         # WS-29a. This is the ONE place in the package that decides a tenant:
         # `pm_projects` is the root of every other `pm_*` row, and migration
@@ -834,6 +883,9 @@ async def create_node(
 
         row = await insert_row(db, "pm_projects", values)
         project_id = str(row.id)
+        if tree_owner is not None:
+            # The grant every personal node carries (`mint_personal_child`).
+            await grant_personal_owner(db, project_id, tree_owner)
 
         if parent_id is None:
             await _seed_root(db, project_id, actor(user))
@@ -891,6 +943,8 @@ async def patch_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). A change of lead is a grant write.
+        await assert_may_change_lead(db, user, before, values)
         _refuse_lifecycle_on_child(
             values, getattr(before, "parent_project_id", None),
         )
@@ -962,6 +1016,11 @@ async def move_node(
         # not crossable in either direction, and nothing checked it before the
         # Areas routes made a personal tree more than one node deep.
         await assert_project_move_keeps_privacy(db, project_id, new_parent)
+        # WS-64 OP-8 (D-OP-14). A re-parent changes who sees the subtree, so
+        # it needs the lead's authority. A reorder under the same parent
+        # does not. After the 404s and the shape refusals, before any write.
+        if str(new_parent or "") != str(getattr(moved, "parent_project_id", None) or ""):
+            await assert_may_move_project(db, user, moved)
 
         # The grammar holds through a move, with the subtree's own shape in
         # the sum: a project that carries subprojects cannot land under a
@@ -1069,7 +1128,10 @@ async def delete_node(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-12). Checked on the project the member names. The
+        # sub-projects and the tasks inside it, other members' too, follow.
+        await assert_may_delete_project(db, user, node)
 
         subtree = (await db.execute(
             text(
@@ -1292,9 +1354,17 @@ async def unarchive_node(
 async def list_grants(
     project_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
+    """The grants on one project, and what the chat needs before a grant card.
+
+    WS-64 OP-6b, fix round 1. Each row carries ``yours``: the grant names the
+    caller, ``org``, or a group of the caller. ``you_see_all`` is true for a
+    caller who sees every project (``data:org:read``). ``groups`` lists the
+    groups of the organization, so the chat refuses an unknown group before
+    its card. The routes decide, and these fields only describe.
+    """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_project_grants "
@@ -1302,8 +1372,16 @@ async def list_grants(
             ),
             {"pid": project_id},
         )).fetchall()
+        mine = {"org", (vis.email or "").lower(), *(g.lower() for g in vis.groups)}
+        out = []
+        for r in rows:
+            item = row_to_dict(r, GrantModel)
+            item["yours"] = str(item.get("subject") or "").lower() in mine
+            out.append(item)
         return {
-            "rows": [row_to_dict(r, GrantModel) for r in rows], "total": len(rows),
+            "rows": out, "total": len(rows),
+            "you_see_all": bool(vis.unrestricted),
+            "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
 
 
@@ -1322,7 +1400,14 @@ async def create_grant(
     subject = validate_grant_subject(payload.subject)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11). A lead or a Projects admin, nobody else.
+        # OP-6b fix round 1: never on a personal tree, for anyone.
+        await assert_may_write_grant(db, user, node)
+        # OP-6b fix round 1: a group that does not exist lets nobody in.
+        await assert_grant_group_exists(
+            db, getattr(node, "organization_id", None), subject,
+        )
         row = (await db.execute(
             text(
                 "INSERT INTO pm_project_grants (project_id, subject, created_by) "
@@ -1346,7 +1431,20 @@ async def delete_grant(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
+        # WS-64 OP-8 (D-OP-11) and OP-6b. The owner's own grant on a
+        # personal tree never goes; a stray grant there may be removed,
+        # because a revoke only makes the tree more private.
+        found = (await db.execute(
+            text(
+                "SELECT subject FROM pm_project_grants "
+                "WHERE id = CAST(:gid AS uuid) AND project_id = CAST(:pid AS uuid)"
+            ),
+            {"gid": grant_id, "pid": project_id},
+        )).fetchone()
+        if found is None:
+            raise HTTPException(status_code=404, detail="Grant not found")
+        await assert_may_revoke_grant(db, user, node, found.subject)
         row = (await db.execute(
             text(
                 "DELETE FROM pm_project_grants "

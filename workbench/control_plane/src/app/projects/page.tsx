@@ -68,7 +68,8 @@ import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
-import { FilterBar } from "./components/FilterBar";
+import { FilterChrome } from "./components/CompactFilterBar";
+import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
@@ -81,7 +82,9 @@ import { CalendarView } from "./components/CalendarView";
 import { MoreTasksBar } from "./components/MoreTasksBar";
 import { SearchPalette } from "./components/SearchPalette";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import DeleteTaskDialog from "./components/DeleteTaskDialog";
 import { deleteTaskCopy, deleteTasksCopy } from "./lib/deleteCopy";
+import { afterDeleteTitle } from "./lib/deleteSubtasks";
 import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
@@ -3158,22 +3161,23 @@ function ProjectsWorkspace() {
    *
    * Without `confirmed` this only opens the dialog. Its confirm calls back.
    */
-  async function deleteTaskById(taskId: string, confirmed = false) {
+  async function deleteTaskById(
+    taskId: string,
+    confirmed = false,
+    deleteSubtaskIds: string[] = [],
+    deleteAllSubtasks = false,
+  ) {
     if (!confirmed) {
       setConfirmingDelete({ kind: "one", taskId });
       return;
     }
     try {
-      const done = await projectsApi.deleteTask(taskId);
+      const done = await projectsApi.deleteTask(taskId, { deleteSubtaskIds, deleteAllSubtasks });
       await refreshRef.current();
       setTreeKey((k) => k + 1);
-      const promoted = done.cascaded.subtasks_promoted;
-      toast.show({
-        variant: "success",
-        title: promoted
-          ? `Deleted. ${promoted} subtask${promoted === 1 ? "" : "s"} moved up a level.`
-          : "Task deleted",
-      });
+      // The words come from the route's own counts (D-OP-10), so what the
+      // member was told in the dialog and what happened are one number.
+      toast.show({ variant: "success", title: afterDeleteTitle(done.cascaded) });
     } catch (err) {
       setError(String((err as Error).message));
     }
@@ -3803,6 +3807,14 @@ function ProjectsWorkspace() {
    */
   const canvasKey = `${selected?.id ?? "none"}:${canvasLabel}`;
 
+  // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
+  // filter row, the old strip and the old banner, exactly as before.
+  const compactChrome = compactChromeEnabled();
+  const onAgentFocus = (next: AgentFocus | null) => {
+    setWaitingOnMe(next === "waiting");
+    setAgentFocus(next === "waiting" ? null : next);
+  };
+
   /** Everything between the chrome and the canvas, plus the canvas. */
   /**
    * The member's PLACE, which both chat mounts hand the rail — the node they
@@ -3919,7 +3931,16 @@ function ProjectsWorkspace() {
       {shownError ? renderState("error", shownError) : null}
 
       {selected && !overview ? (
-        <FilterBar
+        <FilterChrome
+          compact={compactChrome}
+          phone={isMobile}
+          modes={MODE_OPTIONS}
+          onMode={(next) => setChosenMode(next)}
+          resultCount={taskTotal}
+          loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
+          agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
+          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
           archivedCount={archivedCount}
@@ -3972,16 +3993,16 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && agentRunsOn ? (
+      {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
+          in the active-filter row of the tool bar above. */}
+      {selected && !overview && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
           focus={waitingOnMe ? "waiting" : agentFocus}
-          onFocus={(next) => {
-            setWaitingOnMe(next === "waiting");
-            setAgentFocus(next === "waiting" ? null : next);
-          }}
+          onFocus={onAgentFocus}
+          hideZero={compactChrome}
         />
       ) : null}
 
@@ -4087,7 +4108,9 @@ function ProjectsWorkspace() {
           over them would be a second way to say one thing (§5), and it would
           disagree, because the two endpoints cap differently. The overview
           counts in SQL and is never short. */}
-      {selected && (mode === "board" || mode === "list" || mode === "table") ? (
+      {selected &&
+      !compactChrome &&
+      (mode === "board" || mode === "list" || mode === "table") ? (
         <MoreTasksBar
           loaded={tasks.length}
           total={taskTotal}
@@ -4201,6 +4224,7 @@ function ProjectsWorkspace() {
           ) : mode === "board" ? (
             <TaskBoard
           personLabels={personLabels}
+              phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}
               subtasks={subtaskMode}
@@ -4277,6 +4301,19 @@ function ProjectsWorkspace() {
               onSelect={(task) => void openWithStatuses(task)}
             />
           )}
+          {/* OP-1: with the compact chrome the load-more row sits at the END of
+            the list, and the count "100 of 219" sits in the tool row. */}
+          {selected &&
+          compactChrome &&
+          (mode === "board" || mode === "list" || mode === "table") ? (
+            <MoreTasksBar
+              atEnd
+              loaded={tasks.length}
+              total={taskTotal}
+              busy={loadingMore}
+              onLoadMore={() => void loadMoreTasks()}
+            />
+          ) : null}
         </LayoutBoundary>
       </div>
     </>
@@ -4518,8 +4555,22 @@ function ProjectsWorkspace() {
 
       {/* One delete confirmation, shared with My Tasks. The words are this
           app's own and true for it: a Projects delete is permanent. */}
+      {confirmingDelete?.kind === "one" ? (
+        <DeleteTaskDialog
+          key={confirmingDelete.taskId}
+          taskId={confirmingDelete.taskId}
+          title={doomedTask?.title ?? null}
+          isMobile={isMobile}
+          onCancel={() => setConfirmingDelete(null)}
+          onConfirm={(ids, all) => {
+            const pending = confirmingDelete;
+            setConfirmingDelete(null);
+            void deleteTaskById(pending.taskId, true, ids, all);
+          }}
+        />
+      ) : null}
       <ConfirmDialog
-        open={Boolean(confirmingDelete)}
+        open={Boolean(confirmingDelete) && confirmingDelete?.kind !== "one"}
         {...deleteCopy}
         onCancel={() => setConfirmingDelete(null)}
         onConfirm={() => {

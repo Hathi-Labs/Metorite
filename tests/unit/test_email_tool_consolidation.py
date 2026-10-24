@@ -144,7 +144,9 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # rule_guidance (the classifier guidance and the policies), and
     # voice_profile (a store that feeds drafts, withheld in a held run), and
     # update_account (the name, colour, pool, default and disconnect).
-    assert len(tools) == 57
+    # 58 since apply_settings_to_mailboxes (multi-inbox chat wave): one card
+    # for one settings change in several mailboxes.
+    assert len(tools) == 58
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",

@@ -168,6 +168,10 @@ class _Store:
         return f"enc:{raw}"
 
 
+async def _login_ok() -> None:
+    """The login test of a new IMAP mailbox, faked: the host is not real."""
+
+
 @pytest.fixture()
 def fakes(monkeypatch):
     """The key store and the sync loop, faked. The database stays real."""
@@ -179,6 +183,7 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
     monkeypatch.setattr(sched, "refresh_account_sync", _noop)
+    monkeypatch.setattr(accounts, "_verify_imap_login", lambda *_a, **_k: _login_ok())
 
 
 _IMAP = {

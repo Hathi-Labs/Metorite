@@ -138,7 +138,8 @@ def test_a_tool_has_one_class() -> None:
 #: the report card and its PDF with make_report=true (``projects_ai_chat.md``
 #: §14.10, review of #1064).
 #: ``render_report`` joined on the same terms (§14.10.9, slice B3).
-CHAT_FILE_WRITERS = frozenset({"status_report", "render_report"})
+#: ``export_tasks`` joined in WS-64 OP-6c: it saves one CSV into the chat.
+CHAT_FILE_WRITERS = frozenset({"status_report", "render_report", "export_tasks"})
 
 
 def test_built_read_tools_are_annotated_read_only() -> None:
@@ -184,7 +185,8 @@ def test_the_two_hard_deletes_are_guarded_tools() -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("POST", "/projects/nodes/0f8fad5b-d9cb-469f-a165-70867728950e/grants"),
+        # The grant POST left class X in WS-64 OP-6b. The planner stays X.
+        ("POST", "/projects/my/calendar/plan"),
         ("PATCH", "/projects/reports/0f8fad5b-d9cb-469f-a165-70867728950e/schedule"),
     ],
 )

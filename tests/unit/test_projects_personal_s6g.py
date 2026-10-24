@@ -239,7 +239,11 @@ async def test_purge_refuses_a_board_task_and_deletes_nothing(
 async def test_the_projects_delete_route_shares_the_one_body() -> None:
     """One delete body, two doors: the board's route and My Tasks' purge."""
     import inspect
-    assert "delete_task_in(db, doomed)" in inspect.getsource(pm_tasks.delete_task)
+    board = inspect.getsource(pm_tasks.delete_task)
+    # OP-7 split the call over three lines (the "all" flag of D-OP-10). The
+    # fence is the one body with the caller's visibility, not the layout.
+    assert "await delete_task_in(" in board
+    assert "db, doomed, vis=vis," in board
     assert "delete_task_in(db, task)" in inspect.getsource(pm_personal.purge_my_task)
 
 

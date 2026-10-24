@@ -1,14 +1,19 @@
 # The Projects operations eval (WS-46 P3)
 
-This folder holds the eval of WS-46 P3. It runs eleven Projects operations
-tasks, PO-1 to PO-11, against projects-assistant, and checks each result. The
+This folder holds the eval of WS-46 P3. It runs twenty Projects operations
+tasks, PO-1 to PO-20, against projects-assistant, and checks each result. The
 owning spec is `project-docs/specs/projects_agent_parity.md`, §11 and slice P3
 of §12. D91 is the decision.
 
 **Status.** Built on 2026-10-06. On the same day P6 added PO-8, P7 added
-PO-9 and P13 added PO-10, and on 2026-10-08 H-273 added PO-11. The scripted
-run passes ten tasks in ten, uncovered and covered. PO-3 is `xfail` until P8 and P9 ship. Nobody has run
-the model sweep yet.
+PO-9 and P13 added PO-10, and on 2026-10-08 H-273 added PO-11. On 2026-10-23
+WS-64 OP-6a added PO-12 to PO-14, one for each area tool. On the same day
+OP-6c added PO-15 to PO-17: a nudge, an export and an attached file. On
+2026-10-24 OP-6b added PO-18 to PO-20: a grant, a revoke, and a grant that the
+server refuses.
+
+The scripted run passes nineteen tasks in nineteen, uncovered and covered.
+PO-3 is `xfail` until P8 and P9 ship. Nobody has run the model sweep yet.
 
 ## What it reuses, and what it adds
 
@@ -46,13 +51,13 @@ both, so a guessed day in PO-2 is the member's own.
 | File | What it holds |
 |---|---|
 | `run.py` | The runner. It extends the coding `Harness` with this stub and the cover |
-| `tasks.py` | The eleven tasks, their full prompts and the answer to each card |
+| `tasks.py` | The twenty tasks, their full prompts and the answer to each card |
 | `checkers.py` | One checker for each task, and the rules that bind every task |
 | `dataset.py` | The synthetic dataset, and the expected values that come from it |
 | `stub_api.py` | The stub of the Projects API, with write routes and a record of each request |
 | `scripted.py` | One known-good tool sequence for each task, for `--scripted` |
 
-## The eleven tasks
+## The twenty tasks
 
 Each checker reads the requests that the stub saw, the cards and the tool
 results. The answer of the model is one input, and never the only one.
@@ -70,6 +75,15 @@ results. The answer of the model is one input, and never the only one.
 | PO-9 | Save a board of the overdue work in Launch, grouped by owner | One approved card. One `POST …/views` on Launch, a board, with `filters` `{"overdue": true}` and `group_by` assignee. The stub keeps the config through the route's own `normalise_view_config`, and the stored config must equal the sent one. No other write. The answer names the view |
 | PO-10 | Add these 3 tasks to project X | One `create_tasks` call, and no `create_task` call. One approved card with a box for each task. Three `POST /projects/tasks` in Launch, each with its own title. One assign `PUT` on a new task, to Priya. No other write. The answer says 3 |
 | PO-11 | Register these 3 tags | One `create_tags` call, and no `create_tag` call. One approved card with a box for each tag. Three `POST …/tags` on Launch, for vendor, print and av. No other write. The answer says 3 |
+| PO-12 | Make an area called Garden | One approved card. One `POST /projects/my/areas` with the name Garden. No other write. The answer names Garden |
+| PO-13 | Rename my Home area to House | One approved card that names «Home» and «House». One `PATCH` on the Home area with the name House, and nothing else. No other write. The answer names both names |
+| PO-14 | Delete my Finance area | Finance holds two done tasks and no open task, so the route archives it. One approved card that leads with `impact:` and says that an area with tasks is archived. One `DELETE` on the Finance area. The answer says archived and does not say deleted |
+| PO-15 | I wait on Priya for #4. Nudge her | One approved card that names «Priya Menon» and #4. One `POST …/nudge` on #4, and no other write. The answer names Priya and claims no email |
+| PO-16 | Export the overdue Launch tasks to a CSV file | No card. One `GET …/export/tasks.csv` for Launch with the overdue filter. The tool saves the CSV as a chat document and says how many tasks it holds. No write to Projects. The answer says the count and a CSV file |
+| PO-17 | Attach launch-brief.pdf, which I uploaded, to #6 | The run stages the file in the upload folder of the thread. One approved card that names the file, its size and #6. One multipart `POST …/attachments` on #6 with the real name and size, and no other write. The answer names the file |
+| PO-18 | Let everyone in the organization see Launch | The member leads Launch. One approved card that names «Launch» and "everyone in the organization". One `POST …/grants` on Launch with the subject `org`, and no other write. The answer says the organization |
+| PO-19 | Remove Priya's access to Launch | One approved card that names «Launch» and Priya's address. One `DELETE` of Priya's grant on Launch, and no other write. The answer names Priya |
+| PO-20 | Let everyone in the organization see Ops | The member does not lead Ops. No card and no write. The tool gives the 403 sentence of the route, and the answer gives the same sentence |
 
 Four rules bind every task. The run must end, and the cover must be as the
 sweep asked. Every request must act as the acting member. The fourth rule is
