@@ -332,7 +332,11 @@ async def visible_task_attachment(db: Any, user: UserContext, attachment_id: str
     # `TRUE` — skipping a predicate that filters nothing costs nothing. It
     # is now the TENANT, so skipping it served every organization's files to
     # any `data:org:read` holder.
-    clauses.append(vis.project_clause("t.root_project_id"))
+    # WS-64 OP-9 (D-OP-15): scoped on the task's OWN node. A team node under
+    # a personal root is visible, and its tasks carry that root as
+    # ``root_project_id``, so a root scope would hide them. Both arms hold
+    # every visible node at any depth, so this is the task read's own set.
+    clauses.append(vis.project_clause("t.project_id"))
     params.update(vis.params)
     return (await db.execute(
         text(

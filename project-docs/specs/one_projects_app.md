@@ -366,7 +366,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
 | **D-OP-14** | A move changes who sees a row, so a view of the row is not enough to move it. A re-parent of a project needs the grant authority of D-OP-11 on the moved project. A move of a task to another project needs the delete authority of D-OP-12 on the task where it is now. A reorder under the same parent, and a status move inside one project, need only a view. The 403 names who may move it. A subtask that a move carries follows the check on the task the member names, as a delete does | Supervisor decision, OP-8 fix round 1, 2026-10-23. Review finding: a member who leads a space of their own could move another member's project or task into it, and then delete it |
 | **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
-| **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change | Owner, 2026-10-24, in chat ("go ahead with your recommendation") |
+| **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change. A grant on a personal node shows it to nobody but the owner, so a stray `org`, `group:` or email grant written before OP-6b is inert. Three exceptions are accepted. (a) The assignee arm: a task that a member explicitly handed to another member (D63, H-304) shows to that assignee. `assert_assignable_here` refuses a new assignment into another member's personal tree. (b) `people/core.py compute_load` counts the open tasks assigned to a person, their own personal tasks too, as a number with no title. (c) `projects/vocabulary.py` counts the tasks that use each tag, field and type on the admin vocabulary page, org-wide and personal tasks too, as a number with no title | Owner, 2026-10-24, in chat ("go ahead with your recommendation"). The grant arm and the three exceptions: supervisor decision, OP-9 fix round 1, 2026-10-24 |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -904,6 +904,12 @@ a Projects admin, red first under a named mutation:
 3. Team projects read as before for the org reader.
 4. The counts of reports and analytics leave out personal tasks for the org
    reader.
+
+**Status: BUILT 2026-10-24 on branch `ws64-op9-personal-privacy`, with fix
+round 1. Not yet merged.** There is one line on each arm of the visibility
+seam in `routes/projects/core.py`. Each arm keeps out every personal node
+whose owner is not the reader. The bell, the file read, the People reads and
+the item lens scope on `t.project_id`, so a team task stays visible. Fence `tests/unit/test_personal_privacy_r8.py`.
 
 
 ### OP-5 — one filter component, and the old shell retires · AGENT-SAFE

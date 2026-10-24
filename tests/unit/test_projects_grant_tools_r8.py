@@ -233,8 +233,8 @@ async def test_r8_a_subject_outside_the_grammar_is_refused(live, monkeypatch) ->
 # ── Fix round 1 ──────────────────────────────────────────────────────────────
 
 #: A member who sees every project of the organization (``data:org:read``)
-#: and is a Projects admin. Only such a member reaches another member's
-#: personal tree, through ``_TENANT_PROJECTS_SQL``.
+#: and is a Projects admin. Since WS-64 OP-9 (D-OP-15) ``_TENANT_PROJECTS_SQL``
+#: leaves out every other member's personal tree, so this member reads none.
 ORG_ADMIN = "orgadmin@mcpwrites.test"
 
 
@@ -246,6 +246,20 @@ def _org_admin(wld: Any) -> str:
         wld.seeder.member(
             ORG_ADMIN, ["feature:projects", "projects:settings:write", "data:org:read"])
     return ORG_ADMIN
+
+
+#: A Projects admin WITHOUT ``data:org:read`` (WS-64 OP-9). Such a member
+#: reads a personal tree only through a grant on it.
+SETTINGS_ADMIN = "settingsadmin@mcpwrites.test"
+
+
+def _settings_admin(wld: Any) -> str:
+    with wld.admin.begin() as c:
+        known = c.execute(text("SELECT 1 FROM app_user WHERE email = :e"),
+                          {"e": SETTINGS_ADMIN}).first()
+    if known is None:
+        wld.seeder.member(SETTINGS_ADMIN, ["feature:projects", "projects:settings:write"])
+    return SETTINGS_ADMIN
 
 
 async def _personal_root(wld: Any, who: str) -> str:
@@ -269,29 +283,38 @@ async def test_r8_nobody_changes_the_grants_of_a_personal_space(live, monkeypatc
     area = r.json()["id"]
     assert [s for _g, s in _grant_rows(live, area)] == [VIEWER]
 
-    # The org admin sees the tree, and the flag says no, with the sentence.
-    got = (await _as(live, admin, "GET", f"/projects/nodes/{root}")).json()
+    # WS-64 OP-9 (D-OP-15): the org admin no longer sees the tree at all.
+    # The read, the grant and the revoke are each the one 404.
+    r = await _as(live, admin, "GET", f"/projects/nodes/{root}")
+    assert r.status_code == 404, r.text
+    # The owner sees it, and the flag says no, with the sentence.
+    got = (await _as(live, VIEWER, "GET", f"/projects/nodes/{root}")).json()
     assert got["can_write_grants"] is False, got
     assert got["grant_refusal"] == PERSONAL_GRANT_REFUSED
 
     for node in (root, area):
-        # An admin grants org: 403, no row.
+        # An admin grants org: 404, no row.
         r = await _as(live, admin, "POST", f"/projects/nodes/{node}/grants", {"subject": "org"})
-        assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+        assert r.status_code == 404, r.text
         # The member themself cannot share their own space either.
         r = await _as(live, VIEWER, "POST", f"/projects/nodes/{node}/grants",
                       {"subject": "org"})
         assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
-    # An admin revokes the owner's grant: 403, the row stays.
+    # An admin revokes the owner's grant: 404, the row stays.
     r = await _as(live, admin, "DELETE", f"/projects/nodes/{root}/grants/{owner_grant}")
-    assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+    assert r.status_code == 404, r.text
     assert _grant_rows(live, root) == before
 
-    # The chat refuses before its card, with the same sentence.
+    # The chat refuses before its card. The admin's chat cannot read the
+    # node (OP-9), and the owner's chat gets the sentence.
     asked = approve(monkeypatch)
     for act in (lambda: guarded.grant_access(root, "org"),
                 lambda: guarded.revoke_access(root, owner_grant)):
-        out = await _chat(live, monkeypatch, admin, act)
+        from acb_common.tool_refusals import GatewayRefusal
+
+        with pytest.raises(GatewayRefusal, match="Not found"):
+            await _chat(live, monkeypatch, admin, act)
+        out = await _chat(live, monkeypatch, VIEWER, act)
         assert out.startswith("Refused:") and PERSONAL_GRANT_REFUSED in out, out
     assert asked == []
     assert _grant_rows(live, root) == before
@@ -301,16 +324,23 @@ async def test_r8_nobody_changes_the_grants_of_a_personal_space(live, monkeypatc
 async def test_r8_a_stray_grant_on_a_personal_space_can_be_removed(live) -> None:
     """Review round 2. A grant on a personal tree that was written before OP-6b
     (``org`` here) must not be stuck: a revoke only makes the tree more
-    private. The owner and a Projects admin remove it. A member who is
-    neither gets 403. The owner's own grant still never goes.
+    private. The owner removes it. A member who is neither gets 403 or 404.
+    The owner's own grant still never goes.
+
+    WS-64 OP-9 fix round 1 (D-OP-15): the stray grant shows the tree to
+    nobody but the owner. So the org admin and the settings admin both read
+    a 404, and the row stays until the owner removes it.
 
     Mutation N1: ``delete_grant`` calls ``assert_may_write_grant`` again in
-    place of ``assert_may_revoke_grant``. The admin's revoke gets 403 and
-    this test fails.
+    place of ``assert_may_revoke_grant``. The owner's revoke gets 403 and
+    this test fails. Mutation G1: delete the ``personal_owner`` line from the
+    seed of ``_VISIBLE_PROJECTS_SQL``. The settings admin reads the tree
+    through the stray grant, the revoke answers 200, and this test fails.
     """
     from gateway.routes.projects.authority import GRANT_WRITE_REFUSED, PERSONAL_GRANT_REFUSED
 
     admin = _org_admin(live)
+    settings_admin = _settings_admin(live)
     root = await _personal_root(live, VIEWER)
 
     def stray() -> str:
@@ -325,11 +355,16 @@ async def test_r8_a_stray_grant_on_a_personal_space_can_be_removed(live) -> None
     if r.status_code == 403:
         assert r.json()["detail"] == GRANT_WRITE_REFUSED, r.text
     assert "org" in _grants(live, root)
-    r = await _as(live, admin, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
-    assert r.status_code == 200, r.text
-    assert "org" not in _grants(live, root)
+    # WS-64 OP-9 (D-OP-15): the org admin reads no personal tree, so the
+    # revoke is a 404 and the row stays. Fix round 1: the stray grant shows
+    # the tree to nobody but the owner, so the settings admin who used to
+    # read it through that grant gets the same 404.
+    for who in (admin, settings_admin):
+        r = await _as(live, who, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
+        assert r.status_code == 404, (who, r.text)
+        assert "org" in _grants(live, root)
 
-    gid = stray()
+    # The owner removes it.
     r = await _as(live, VIEWER, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
     assert r.status_code == 200, r.text
     assert "org" not in _grants(live, root)

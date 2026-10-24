@@ -6390,6 +6390,19 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
 
+### H-408 · Stray grants on personal nodes in production, for the owner to review · [AGENT] · privacy
+- **Check:** run this query on production. If it prints 0, delete this entry.
+
+      SELECT count(*) FROM pm_project_grants g
+        JOIN pm_projects p ON p.id = g.project_id
+       WHERE p.personal_owner IS NOT NULL
+         AND lower(g.subject) <> lower(p.personal_owner);
+
+- **Why:** WS-64 OP-9 (D-OP-15) makes a grant on a personal node inert. Such a grant shows the tree to nobody but its owner. A grant from before OP-6b still sits in the table. It is noise, and a later change could make it live again.
+- **Do this:** if the count is not 0, list each row for the owner to review. Give the project, the owner, the subject and `created_at`. Do not delete or change a row without the owner's word.
+- **Authority:** `specs/one_projects_app.md` §8 D-OP-15 and §9 OP-9
+- **Added:** 2026-10-24 · WS-64 OP-9 fix round 1
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
