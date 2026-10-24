@@ -33,6 +33,7 @@ from gateway.routes.projects.authority import (
     assert_may_name_lead,
     assert_may_write_grant,
     attach_can_delete,
+    attach_can_write_grants,
 )
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -413,6 +414,8 @@ async def get_node(
         result = row_to_dict(row, ProjectModel)
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="project")
+        # WS-64 OP-6b — the chat refuses before its grant card where this is false.
+        await attach_can_write_grants(db, user, result)
         return result
 
 

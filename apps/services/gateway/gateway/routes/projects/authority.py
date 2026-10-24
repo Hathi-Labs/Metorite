@@ -257,6 +257,20 @@ async def assert_may_write_grant(db: Any, user: Any, project: Any) -> None:
         raise HTTPException(status_code=403, detail=GRANT_WRITE_REFUSED)
 
 
+async def attach_can_write_grants(db: Any, user: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """Set ``can_write_grants`` on one project row, through :func:`may_write_grant`.
+
+    WS-64 OP-6b. The chat reads it from ``GET /projects/nodes/{id}`` and
+    refuses before its grant card where it is false. A row with the flag
+    false also carries ``grant_refusal``, the words of the 403, which the chat
+    quotes. The chat holds no copy of the rule, and the route still decides.
+    """
+    row["can_write_grants"] = await may_write_grant(db, user, row)
+    if not row["can_write_grants"]:
+        row["grant_refusal"] = GRANT_WRITE_REFUSED
+    return row
+
+
 async def attach_can_delete(
     db: Any, user: Any, rows: list[dict[str, Any]], *, kind: str,
 ) -> list[dict[str, Any]]:

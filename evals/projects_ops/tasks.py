@@ -164,6 +164,24 @@ TASKS: tuple[TaskSpec, ...] = (
         cards=(APPROVE,),
         uploads=((UPLOAD_NAME, UPLOAD_BYTES),),
     ),
+    # WS-64 OP-6b (D-OP-9): who can see a project, from the chat.
+    TaskSpec(
+        "PO-18", "Open a project to the organization",
+        "Let everyone in the organization see Launch",
+        "Let everyone in the organization see the Launch project.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-19", "Remove one person's access",
+        "Remove Priya's access to Launch",
+        "Remove the access that Priya Menon has to the Launch project.",
+        cards=(APPROVE,),
+    ),
+    TaskSpec(
+        "PO-20", "A grant the member may not write",
+        "Let everyone in the organization see Ops",
+        "Let everyone in the organization see the Ops project.",
+    ),
 )
 
 TASK_IDS: tuple[str, ...] = tuple(t.id for t in TASKS)

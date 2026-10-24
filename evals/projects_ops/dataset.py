@@ -23,6 +23,8 @@ The facts that the tasks lean on:
 * The member waits on Priya for #4 in Launch, a task they handed to her
   (PO-15, WS-64 OP-6c). The member uploaded launch-brief.pdf to the chat of
   PO-17, and #6 in Launch takes it.
+* The member leads Launch and not Ops. Launch has one grant, to Priya (PO-18
+  to PO-20, WS-64 OP-6b).
 
 Today is the member's own date in :data:`TIMEZONE`. Since WS-46 P7 the tools
 take today from ``GET /projects/my/today``, which the stub answers with this
@@ -171,6 +173,9 @@ AREAS: tuple[Area, ...] = (Area("Home", 2, 2), Area("Finance", 0, 2))
 
 #: WS-64 OP-6c. The task the member handed to Priya and waits on (PO-15).
 DELEGATED = 4
+#: WS-64 OP-6b. The member leads Launch, so the member may change who sees it.
+#: The member does not lead Ops, so the route refuses a grant write there (PO-20).
+LED_PROJECTS = frozenset({"Launch"})
 #: The file the member uploaded to the chat of PO-17 (WS-64 OP-6c).
 UPLOAD_NAME = "launch-brief.pdf"
 UPLOAD_BYTES = b"%PDF-1.4\n% the launch brief of the eval\n%%EOF\n"

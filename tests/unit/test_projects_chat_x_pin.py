@@ -85,9 +85,6 @@ STAYS_X: dict[str, str] = {
 
 #: Routes that later slices of OP-6 move out of class X. Each value is the slice.
 PENDING_OP6: dict[str, str] = {
-    # 6b: grants. BLOCKED on the owner's answer on who may write a grant.
-    "POST /projects/nodes/{project_id}/grants": "OP-6b",
-    "DELETE /projects/nodes/{project_id}/grants/{grant_id}": "OP-6b",
     # 6d: report recipients and schedule
     "GET /projects/reports/{report_id}/recipients": "OP-6d",
     "POST /projects/reports/{report_id}/recipients": "OP-6d",
@@ -96,7 +93,7 @@ PENDING_OP6: dict[str, str] = {
 }
 
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
-SLICES = frozenset({"OP-6b", "OP-6d"})
+SLICES = frozenset({"OP-6d"})
 
 
 def _class_x() -> dict[str, str]:
@@ -125,10 +122,11 @@ def test_no_route_is_in_both_lists_and_every_value_is_known() -> None:
 
 
 def test_the_counts_the_spec_states() -> None:
-    """39 routes were class X on 2026-10-23. OP-6a took 3 and OP-6c took 3. The rest wait or stay."""
+    """39 routes were class X on 2026-10-23. OP-6a took 3, OP-6c took 3 and OP-6b
+    took 2. The rest wait or stay."""
     assert len(STAYS_X) == 27
-    assert len(PENDING_OP6) == 6
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_OP6) == 33
+    assert len(PENDING_OP6) == 4
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_OP6) == 31
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:
@@ -150,6 +148,18 @@ def test_the_nudge_export_and_attach_routes_left_class_x_for_their_tools() -> No
     ):
         row = m.route_for(verb, path)
         assert row is not None and (row.tool, row.cls) == (tool, cls)
+
+
+def test_the_grant_routes_left_class_x_for_their_tools() -> None:
+    """WS-64 OP-6b (D-OP-9 reverses D-PM-40). Each grant write takes a card, and
+    the route decides who may write it (D-OP-11)."""
+    for verb, path, tool in (
+        ("POST", "/projects/nodes/{project_id}/grants", "grant_access"),
+        ("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access"),
+    ):
+        row = m.route_for(verb, path)
+        assert row is not None and (row.tool, row.cls) == (tool, "C")
+    assert not hasattr(m, "_GRANT_REASON")
 
 
 def test_the_spec_names_every_stays_x_group() -> None:

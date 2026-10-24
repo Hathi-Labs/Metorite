@@ -206,6 +206,36 @@ def _po17(ds: Dataset) -> list[Step]:
     ]
 
 
+def _po18(ds: Dataset) -> list[Step]:
+    return [
+        tool("projects_tree"),
+        tool("grant_access", project_id=ds.project("Launch").id, subject="org"),
+        ("text", "Everyone in the organization can now see «Launch» and every "
+                 "sub-project under it."),
+    ]
+
+
+def _po19(ds: Dataset) -> list[Step]:
+    launch = ds.project("Launch").id
+    return [
+        tool("projects_tree"),
+        tool("project_access", project_id=launch),
+        tool("revoke_access", project_id=launch,
+             grant=ds_mod.ident("grant", launch, ds_mod.PRIYA.email)),
+        ("text", "I removed the grant of «Priya Menon» on «Launch»."),
+    ]
+
+
+def _po20(ds: Dataset) -> list[Step]:
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+    return [
+        tool("projects_tree"),
+        tool("grant_access", project_id=ds.project("Ops").id, subject="org"),
+        ("text", f"I did not change who can see «Ops». The server said: {GRANT_WRITE_REFUSED}"),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -223,6 +253,9 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-15": _po15,
     "PO-16": _po16,
     "PO-17": _po17,
+    "PO-18": _po18,
+    "PO-19": _po19,
+    "PO-20": _po20,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)
