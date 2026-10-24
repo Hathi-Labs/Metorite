@@ -10,7 +10,7 @@ import { expect, it } from "vitest";
 
 it("ItemList names the Today view", () => {
   const src = fs.readFileSync(path.join(__dirname, "ItemList.tsx"), "utf8");
-  expect(src).toMatch(/\btoday: \{ title: "Today"/);
+  expect(src).toMatch(/\btoday: \{ title: VIEW_TITLES\.today/);
 });
 
 it("the /tasks page maps a leaked Today view on mount", () => {

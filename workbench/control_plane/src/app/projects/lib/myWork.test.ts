@@ -67,8 +67,8 @@ describe("the My work section", () => {
     expect(MY_WORK_VIEWS.map((v) => v.label)).toEqual([
       "Inbox",
       "Today",
-      "Next actions",
-      "Waiting for",
+      "My Next Actions",
+      "Waiting For",
       "Someday / Maybe",
       "Done",
     ]);

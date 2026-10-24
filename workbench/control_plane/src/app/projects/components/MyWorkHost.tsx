@@ -96,7 +96,7 @@ export default function MyWorkHost({ app }: { app: MyWorkId }) {
       {ready ? (
         wanted === "inbox" ? (
           <div className="min-h-0 flex-1 overflow-hidden">
-            <InboxView />
+            <InboxView embedded />
           </div>
         ) : (
           <>
@@ -111,7 +111,7 @@ export default function MyWorkHost({ app }: { app: MyWorkId }) {
               </Button>
             </div>
             <div className="min-h-0 flex-1">
-              <ItemList />
+              <ItemList embedded />
             </div>
           </>
         )

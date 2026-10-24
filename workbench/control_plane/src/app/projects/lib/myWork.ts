@@ -13,6 +13,7 @@
 import { inboxCount } from "@/app/tasks/lib/inbox";
 import { viewCounts } from "@/app/tasks/lib/taskStore";
 import type { MyTask, ViewKey } from "@/app/tasks/lib/types";
+import { VIEW_TITLES } from "@/app/tasks/lib/viewTitles";
 
 /**
  * The flag. ⚠️ Only the LITERAL `process.env.NEXT_PUBLIC_PROJECTS_MY_WORK`
@@ -46,24 +47,24 @@ export interface MyWorkView {
 
 /** The six views of the section, in the order of §4.1. */
 export const MY_WORK_VIEWS: readonly MyWorkView[] = [
-  { id: "my-inbox", view: "inbox", label: "Inbox", icon: "Inbox", note: "Capture lands here" },
+  { id: "my-inbox", view: "inbox", label: VIEW_TITLES.inbox, icon: "Inbox", note: "Capture lands here" },
   {
     id: "my-today",
     view: "today",
-    label: "Today",
+    label: VIEW_TITLES.today,
     icon: "CalendarDays",
     note: "My next actions dated today or before",
   },
-  { id: "my-next", view: "next", label: "Next actions", icon: "ListChecks", note: "Mine to do" },
-  { id: "my-waiting", view: "waiting", label: "Waiting for", icon: "Clock", note: "Who owes me what" },
+  { id: "my-next", view: "next", label: VIEW_TITLES.next, icon: "ListChecks", note: "Mine to do" },
+  { id: "my-waiting", view: "waiting", label: VIEW_TITLES.waiting, icon: "Clock", note: "Who owes me what" },
   {
     id: "my-someday",
     view: "someday",
-    label: "Someday / Maybe",
+    label: VIEW_TITLES.someday,
     icon: "Lightbulb",
     note: "Not now",
   },
-  { id: "my-done", view: "done", label: "Done", icon: "CheckCircle2", note: "Completed work" },
+  { id: "my-done", view: "done", label: VIEW_TITLES.done, icon: "CheckCircle2", note: "Completed work" },
 ];
 
 const BY_ID: ReadonlyMap<string, MyWorkView> = new Map(MY_WORK_VIEWS.map((v) => [v.id, v]));

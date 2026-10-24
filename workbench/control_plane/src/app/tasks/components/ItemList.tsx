@@ -12,6 +12,7 @@ import { allSelected } from "@/lib/selection";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRemoval } from "../lib/useRemoval";
 import { useTaskStore, itemsForView, itemsInArea } from "../lib/taskStore";
+import { VIEW_TITLES } from "../lib/viewTitles";
 import { isUntagged } from "../lib/priority";
 import { ViewKey } from "../lib/types";
 import { isWaitingOverdue } from "../lib/waiting";
@@ -61,20 +62,20 @@ const VIEW_META: Record<
   string,
   { title: string; icon: ThemedIcon; hint: string }
 > = {
-  inbox: { title: "Inbox", icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
-  today: { title: "Today", icon: themedIcon("CalendarDays"), hint: "Your next actions dated today or before, in your time zone." },
-  next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by stage and sorted by priority — the very next physical step for each." },
+  inbox: { title: VIEW_TITLES.inbox, icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
+  today: { title: VIEW_TITLES.today, icon: themedIcon("CalendarDays"), hint: "Your next actions dated today or before, in your time zone." },
+  next: { title: VIEW_TITLES.next, icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by stage and sorted by priority — the very next physical step for each." },
   // D78: one priority system, the matrix, in both apps.
   priority: { title: "Priority", icon: themedIcon("Target"), hint: "Your open work by priority level — Critical first, Low Priority last." },
   engage: { title: "Engage · Now", icon: themedIcon("Zap"), hint: "What you can pick up right now, matched to your energy." },
-  waiting: { title: "Waiting For", icon: themedIcon("Clock"), hint: "Delegated or blocked on someone else." },
+  waiting: { title: VIEW_TITLES.waiting, icon: themedIcon("Clock"), hint: "Delegated or blocked on someone else." },
   calendar: { title: "Calendar", icon: themedIcon("Calendar"), hint: "Date-specific actions — the hard landscape." },
-  someday: { title: "Someday / Maybe", icon: themedIcon("Lightbulb"), hint: "Incubating. Reviewed weekly." },
-  done: { title: "Done", icon: themedIcon("CheckCircle2"), hint: "Completed tasks. They stay here until you archive them." },
+  someday: { title: VIEW_TITLES.someday, icon: themedIcon("Lightbulb"), hint: "Incubating. Reviewed weekly." },
+  done: { title: VIEW_TITLES.done, icon: themedIcon("CheckCircle2"), hint: "Completed tasks. They stay here until you archive them." },
   archive: { title: "Archive", icon: themedIcon("Archive"), hint: "Archived tasks — hidden from active views. Restore anytime." },
 };
 
-export function ItemList() {
+export function ItemList({ embedded = false }: { embedded?: boolean } = {}) {
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const view = useTaskStore((s) => s.selectedView);
@@ -251,11 +252,11 @@ export function ItemList() {
         {/* flex-wrap: on narrow (mobile) widths the controls drop to their own
             row instead of crushing the title into a two-line break. */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-          <Icon className="h-4 w-4 shrink-0 text-primary" />
+          {!embedded && <Icon className="h-4 w-4 shrink-0 text-primary" />}
           {/* An h2: the app bar holds the page's one h1. The view heading
               is Projects' scale, `text-sm font-medium`. */}
           <h2 className="whitespace-nowrap text-sm font-medium text-foreground">
-            {meta.title}
+            {!embedded && meta.title}
             {context && (
               <span className="ml-2 font-mono text-sm font-normal text-primary/80">
                 {context}

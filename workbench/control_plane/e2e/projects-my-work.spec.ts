@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { VIEW_TITLES } from "../src/app/tasks/lib/viewTitles";
+
 /**
  * My work in the Projects sidebar (WS-64 OP-2, `one_projects_app.md` §4.1 and
  * §9 OP-2).
@@ -43,7 +45,12 @@ function row(id: string, over: Record<string, unknown> = {}) {
   };
 }
 
-/** 2 inbox, 3 next (2 of them dated today or before), 1 waiting, 1 someday. */
+/**
+ * The gateway answers `my/inbox` with every open row, whatever its disposition,
+ * so the store counts all of them. The test never assumes a number: it compares
+ * the settled counts of the two pages.
+ *
+ * 2 inbox, 3 next (2 of them dated today or before), 1 waiting, 1 someday. */
 const ROWS = [
   row("i1", { disposition: "INBOX" }),
   row("i2", { disposition: "INBOX" }),
@@ -72,7 +79,7 @@ async function mock(page: Page) {
   });
 }
 
-const ENTRIES = ["Inbox", "Today", "Next actions", "Waiting for", "Someday / Maybe", "Done"];
+const ENTRIES = Object.values(VIEW_TITLES);
 
 /** The number in a sidebar entry, or null when it shows none. */
 async function countOf(page: Page, name: string): Promise<number | null> {
@@ -111,12 +118,30 @@ test("?app=my-waiting opens its view", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await mock(page);
   await page.goto("/projects?app=my-waiting");
-  await expect(page.getByRole("button", { name: /^Waiting for/ }).first()).toHaveAttribute(
+  await expect(page.getByRole("button", { name: /^Waiting For/ }).first()).toHaveAttribute(
     "aria-pressed",
     "true",
     { timeout: 30_000 },
   );
 });
+
+/**
+ * Read until three reads in a row agree. The store fills in steps, so a count
+ * seen once can be a value on the way to the settled one. The test compares
+ * only the settled value, never a number it expects in advance.
+ */
+async function settled<T>(read: () => Promise<T>): Promise<T> {
+  let last = await read();
+  let same = 0;
+  for (let i = 0; i < 100 && same < 3; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    const now = await read();
+    same = JSON.stringify(now) === JSON.stringify(last) ? same + 1 : 0;
+    last = now;
+  }
+  expect(same, "the counts never settled").toBeGreaterThanOrEqual(3);
+  return last;
+}
 
 test("each count equals the count that /tasks shows", async ({ page }) => {
   test.setTimeout(180_000);
@@ -127,26 +152,30 @@ test("each count equals the count that /tasks shows", async ({ page }) => {
   await expect(page.getByRole("button", { name: /^Today/ }).first()).toHaveAttribute("aria-pressed", "true", {
     timeout: 30_000,
   });
-  // The store loads when the view opens, so wait for the Inbox count.
-  await expect(page.getByRole("button", { name: /^Inbox\s*2/ }).first()).toBeVisible({ timeout: 30_000 });
-  const mine = {
+  // The store loads when the view opens. Wait for a count to show, then for it to stop moving.
+  await expect(page.getByRole("button", { name: /^Inbox\s*\d/ }).first()).toBeVisible({ timeout: 30_000 });
+  const mine = await settled(async () => ({
     inbox: await countOf(page, "Inbox"),
-    next: await countOf(page, "Next actions"),
-    waiting: await countOf(page, "Waiting for"),
-    someday: await countOf(page, "Someday / Maybe"),
-  };
+    next: await countOf(page, VIEW_TITLES.next),
+    waiting: await countOf(page, VIEW_TITLES.waiting),
+    someday: await countOf(page, VIEW_TITLES.someday),
+  }));
 
   await page.goto("/tasks");
   const nav = page.getByRole("navigation").filter({ hasText: "Your lists" });
-  await expect(nav.getByRole("button", { name: /^Inbox\s*2/ })).toBeVisible({ timeout: 30_000 });
+  await expect(nav.getByRole("button", { name: /^Inbox\s*\d/ })).toBeVisible({ timeout: 30_000 });
   const theirs = async (name: string) => {
     const text = (await nav.getByRole("button", { name: new RegExp(`^${name}`) }).first().innerText())
       .replace(name, "")
       .trim();
     return /^\d+$/.test(text) ? Number(text) : null;
   };
-  expect(mine.inbox).toBe(await theirs("Inbox"));
-  expect(mine.next).toBe(await theirs("My Next Actions"));
-  expect(mine.waiting).toBe(await theirs("Waiting For"));
-  expect(mine.someday).toBe(await theirs("Someday / Maybe"));
+  const tasks = await settled(async () => ({
+    inbox: await theirs("Inbox"),
+    next: await theirs(VIEW_TITLES.next),
+    waiting: await theirs(VIEW_TITLES.waiting),
+    someday: await theirs(VIEW_TITLES.someday),
+  }));
+  expect(mine.inbox).not.toBeNull();
+  expect(mine).toEqual(tasks);
 });
