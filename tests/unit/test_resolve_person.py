@@ -474,10 +474,14 @@ class TestTheFlag:
         off = _build(monkeypatch, False)
         on = _build(monkeypatch, True)
         assert "resolve_person" not in _names(off)
-        assert _names(on) == [*_names(off)[:2], "resolve_person", *_names(off)[2:]]
+        # PZ-6a adds the four profile writes after it, on the same flag
+        # (test_profile_write_tools.py holds them and their persona line).
+        writes = [fn.__name__ for fn in pt.WRITE_TOOLS]
+        assert _names(on) == [*_names(off)[:2], "resolve_person", *writes, *_names(off)[2:]]
         assert pt.resolve_person in on.kwargs["tools"]
         assert off.kwargs["instructions"] is _orchestrator_module()._PULL_INSTRUCTIONS
-        assert on.kwargs["instructions"] == off.kwargs["instructions"]
+        old, new = _orchestrator_module()._PROFILE_SWAP
+        assert on.kwargs["instructions"] == off.kwargs["instructions"].replace(old, new, 1)
         assert "resolve_person" not in on.kwargs["instructions"]
 
 

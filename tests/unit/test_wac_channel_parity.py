@@ -67,10 +67,17 @@ class _Orchestrator:
         async def remember(query: str) -> str: ...
         # WS-63 PZ-5: an own tool of the orchestrator, behind its flag.
         async def resolve_person(name: str) -> str: ...
+        # WS-63 PZ-6a: the four profile writes, own tools on the same flag.
+        async def profile_remember(text: str, kind: str) -> str: ...
+        async def profile_forget(id: str) -> str: ...
+        async def profile_set(key: str, value: dict[str, Any]) -> str: ...
+        async def profile_alias(alias: str, email: str = "") -> str: ...
 
         self.name = "orchestrator"
         self.default_options: dict[str, Any] = {
-            "tools": [search_company, remember, resolve_person], "instructions": "Persona."}
+            "tools": [search_company, remember, resolve_person, profile_remember,
+                      profile_forget, profile_set, profile_alias],
+            "instructions": "Persona."}
 
 
 def _names(agent: _Orchestrator) -> set[str]:
@@ -150,7 +157,8 @@ async def test_a_whatsapp_run_of_a_crm_member_holds_the_crm_reads_and_org_facts(
     wa, _ = await _assemble("whatsapp")
     assert {"crm_aggregate", "crm_list_modules", "crm_list_module_records",
             "crm_get_module_record", "org_facts", "crm_answer_question",
-            "search_company", "resolve_person"} <= wa
+            "search_company", "resolve_person", "profile_remember", "profile_forget",
+            "profile_set", "profile_alias"} <= wa
     # Every CRM tool that the orchestrator's scope names, none withheld.
     scoped = {n for n in _orchestrator_scope() if n.startswith("crm_") or n == "org_facts"}
     assert scoped <= wa, sorted(scoped - wa)
