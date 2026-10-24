@@ -1298,8 +1298,51 @@ def reply_card_channel_open() -> bool:
     """True when this run can show the reply card (EM-CR): a card channel
     (:func:`confirmation_channel_open`) and no WhatsApp run. The reply tool
     asks it BEFORE it drafts, so a run with no card drafts, saves and sends
-    nothing."""
+    nothing.
+
+    H-391: a WhatsApp run with writes on is a reply path too. Its card parks
+    for the member's reply code (:func:`_whatsapp_email_path`)."""
+    if _whatsapp_email_path():
+        return True
     return confirmation_channel_open() and not _whatsapp_run()
+
+
+def _whatsapp_email_path() -> bool:
+    """True in a WhatsApp run with writes on, where an email card can park
+    for a reply code or take the yes of one (H-391). A fault reads False."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        run = current_run()
+    except Exception:
+        return False
+    return run is not None and bool(getattr(run, "writes", False))
+
+
+#: The answer of :func:`_whatsapp_email_answer` that leaves the card to the gate.
+_NOT_EMAIL = object()
+
+
+async def _whatsapp_email_answer(title: str, detail: str, context: str,
+                                 rows: list[dict] | None, reply: dict | None,
+                                 request_id: str | None, with_answer: bool,
+                                 cut: bool = False) -> Any:
+    """``acb_skills.whatsapp_acts.answer_email_card``, or :data:`_NOT_EMAIL`.
+
+    H-391: an email card of a WhatsApp run parks for the member's reply code,
+    or takes the yes of the code that approved it. A fault is no answer from
+    here, so the card goes to the gate below, which denies inside
+    ``refuse_cards``. It fails closed."""
+    if not _whatsapp_email_path():
+        return _NOT_EMAIL
+    try:
+        from acb_skills.whatsapp_acts import NOT_EMAIL, answer_email_card
+
+        answer = await answer_email_card(title, detail, context, rows, reply,
+                                         request_id, with_answer, cut=cut)
+    except Exception:
+        return _NOT_EMAIL
+    return _NOT_EMAIL if answer is NOT_EMAIL else answer
 
 
 def _whatsapp_answer(title: str, detail: str, context: str,
@@ -1402,6 +1445,16 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    # H-391: an email card in a WhatsApp run parks for the member's reply
+    # code, or takes the yes of the code that approved it. Anything else
+    # goes on below, as before.
+    _email = await _whatsapp_email_answer(
+        _title, _detail, _context, _rows, _reply, request_id, _with_answer,
+        cut=(len(str(title or "").strip()) > len(_title)
+             or len(str(detail or "").strip()) > len(_detail)
+             or len(str(context or "").strip()) > len(_context)))
+    if _email is not _NOT_EMAIL:
+        return _email
     if _reply is not None:
         if _rows is not None:
             raise ValueError("a card has rows or a reply form, never both")

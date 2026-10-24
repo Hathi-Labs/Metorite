@@ -6240,14 +6240,16 @@ line — never reclaim a number by deleting the other entry.
 ### H-391 · An email write over WhatsApp says "ask in the app" · [AGENT]
 - **Check:** in a WhatsApp chat, ask the assistant to archive one mail. If it
   does so after a confirm, delete this entry.
-- **Why:** WhatsApp has no card channel. So each email write answers
-  `_NO_CARD_CHANNEL` in `agent-email-assistant/agents.py`. The owner wants
-  every email job to work from the chat.
-- **Do this:** find whether a confirm-by-reply flow exists for WhatsApp
-  (grep `wac_untrusted_confirm`). Write a spec slice for email writes over
-  WhatsApp, with the same server checks as the chat cards.
-- **Authority:** `email_app_master_plan.md` §21 · the owner rule "a channel
-  changes delivery, not function"
+- **Why:** WhatsApp had no card channel, so each email write answered
+  `_NO_CARD_CHANNEL`. The branch `email-whatsapp-confirm` builds the reply
+  code flow (`whatsapp_assistant_channel.md` §18). It is dark behind
+  `WHATSAPP_ASSISTANT_WRITES`.
+- **Do this:** after the merge, check that migration 298 is in the ledger.
+  Then the owner turns on `WHATSAPP_ASSISTANT_WRITES` for one org (WAC-9).
+  Run the Check from a linked phone, and reply with the code.
+- **Authority:** `whatsapp_assistant_channel.md` §18 ·
+  `email_app_master_plan.md` §21.13 · the owner rule "a channel changes
+  delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
 ### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
