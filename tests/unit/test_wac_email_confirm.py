@@ -182,13 +182,15 @@ async def _park(fn: Any, kwargs: dict[str, Any]) -> tuple[str, wacts.ParkedAct]:
 
 
 async def _approve(act: wacts.ParkedAct, *, without: frozenset[int] = frozenset(),
-                   include: frozenset[int] = frozenset()) -> tuple[str, Any, Any]:
-    """The approval run: the stored call, inside the yes of the code."""
-    fn = getattr(agents, act.tool)
+                   include: frozenset[int] = frozenset(), call: dict[str, Any] | None = None,
+                   fn: Any = None) -> tuple[str, Any, Any]:
+    """The approval run inside the yes of the code. The run makes the stored
+    call, or *fn* with *call* when a test makes another call."""
+    fn = fn or getattr(agents, act.tool)
     with wui.whatsapp_run("orchestrator", writes=True) as run, wacts.approving_email(
-            act.card, without=without, include=include, org=ORG, member=MEMBER,
-            thread=THREAD) as yes:
-        out = await _call(fn, dict(act.arguments))
+            act.card, tool=act.tool, arguments=act.arguments, without=without,
+            include=include, org=ORG, member=MEMBER, thread=THREAD) as yes:
+        out = await _call(fn, dict(act.arguments if call is None else call))
     return out, yes, run
 
 
@@ -376,7 +378,8 @@ async def test_the_yes_answers_one_card_only(gw) -> None:
     _out, act = await _park(agents.manage_inbox, {"action": "archive", "message_ids": [MAIL]})
     fn = agents.manage_inbox
     with wui.whatsapp_run("orchestrator", writes=True), wacts.approving_email(
-            act.card, org=ORG, member=MEMBER, thread=THREAD):
+            act.card, tool=act.tool, arguments=act.arguments, org=ORG, member=MEMBER,
+            thread=THREAD):
         await _call(fn, dict(act.arguments))
         again = await _call(fn, dict(act.arguments))
     assert len(gw.sent) == 1
@@ -589,3 +592,51 @@ async def test_a_card_that_the_gate_cuts_never_parks(gw) -> None:
         out = await _call(send_email, {"body": "x"})
     assert run.parked is None
     assert out == wacts.EMAIL_TOO_LONG_TEXT
+
+
+# ── The yes binds the call, not only the text (review P1) ───────────────────
+
+
+def _ids(n: int, start: int = 0) -> list[str]:
+    return [f"0b0b0b0b-0000-4000-8000-{i:012d}" for i in range(start, start + n)]
+
+
+async def test_same_text_with_other_message_ids_gets_no_yes(gw) -> None:
+    """A trash of 25 shows 20 lines and a count. Five swapped ids give the
+    same card text, and must get no yes."""
+    shown = _ids(25)
+    _out, act = await _park(agents.manage_inbox, {"action": "trash", "message_ids": shown})
+    swapped = shown[:20] + _ids(5, start=100)
+    out, yes, run = await _approve(act, call={"action": "trash", "message_ids": swapped})
+    assert not yes.used and gw.sent == []
+    assert out == wacts.EMAIL_PARKED_TEXT and run.parked.arguments["message_ids"] == swapped
+
+
+async def test_another_tool_with_the_same_text_gets_no_yes(gw) -> None:
+    async def send_draft(**_kw: Any) -> str:
+        ok = await ask_tools.request_confirmation(title="Same card", detail="d", context="c")
+        return "sent" if ok else (agents._wa_parked() or "no")
+
+    async def schedule_send(**_kw: Any) -> str:
+        ok = await ask_tools.request_confirmation(title="Same card", detail="d", context="c")
+        return "sent" if ok else (agents._wa_parked() or "no")
+
+    _out, act = await _park(send_draft, {"account_id": BOX, "draft_id": "d1"})
+    out, yes, _run = await _approve(act, fn=schedule_send)
+    assert not yes.used and out == wacts.EMAIL_PARKED_TEXT
+
+
+@pytest.mark.parametrize("changed", [{"draft_id": "d2"}, {"account_id": "acc-2"}])
+async def test_a_held_send_of_another_draft_gets_no_yes(gw, monkeypatch, changed) -> None:
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
+    _out, act = await _park(agents.send_draft, {"account_id": BOX, "draft_id": "d1"})
+    out, yes, _run = await _approve(act, call={**act.arguments, **changed})
+    assert not yes.used and gw.sent == []
+    assert out == wacts.EMAIL_PARKED_TEXT
+
+
+async def test_the_honest_call_gets_the_yes(gw) -> None:
+    shown = _ids(25)
+    _out, act = await _park(agents.manage_inbox, {"action": "trash", "message_ids": shown})
+    _out, yes, _run = await _approve(act)
+    assert yes.used and gw.sent == [{"action": "trash", "message_ids": shown}]
