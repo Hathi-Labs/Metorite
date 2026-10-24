@@ -36,6 +36,19 @@ Run::
   ``test_1_a_lead_converts_a_folder_with_three_projects``.
 * C5. ``G/authority.py`` ``attach_can_convert``: a project row reads true.
   ``test_4_the_reads_carry_can_convert``.
+
+Fix round 1:
+
+* C6. ``G/tree.py`` ``get_tree``: no ``walk=False``.
+  ``test_the_tree_read_makes_no_walk_per_folder``.
+* C7. ``G/authority.py`` ``may_convert_node``: the ``walk`` arm ignored.
+  ``test_a_page_of_folders_costs_one_query_and_no_walk``.
+* C8. ``G/tree.py`` ``create_node`` and ``move_node``: no
+  ``_lock_ancestor_chain``. Both ``..._waits_for_the_convert_and_is_refused``.
+* C9. ``G/tree.py`` ``convert_node``: ``kept`` always empty.
+  ``test_the_422_says_who_can_move_a_kept_team_child``.
+* C10. ``skill_projects/guarded.py`` ``_convert_list``: no cap.
+  ``test_the_chat_card_says_and_n_more``.
 """
 
 from __future__ import annotations
