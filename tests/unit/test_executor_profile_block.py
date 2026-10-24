@@ -702,13 +702,13 @@ async def test_a_whatsapp_run_gives_the_executor_a_solo_room(world) -> None:  # 
     ("", "Viju", "Vijay Varada", "Viju"),          # 2. People's preferred name
     (None, "  Viju  ", "Vijay Varada", "Viju"),
     ("", "", "Vijay Varada", "Vijay"),             # 3. the first word of the display
-    ("", None, "  Vijay Raghav  ", "Vijay"),
+    ("", None, "  Vijay\u2028Raghav  ", "Vijay"),
     ("", "", "vijay@hathilabs.com", ""),           # an address is no name
     ("", "", "Vijay @ home", ""),
     ("", "", "", ""),                              # 4. no name
     (None, None, None, ""),
     ("   ", " ", " ", ""),
-    ("", "", "​", ""),                        # a format mark alone is empty
+    ("", "", "\u200b", ""),                        # a format mark alone is empty
 ])
 def test_the_name_follows_the_order(stored, preferred, display, name) -> None:
     assert ap.resolve_address_name(stored, preferred, display) == name
