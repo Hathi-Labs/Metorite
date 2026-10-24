@@ -210,7 +210,7 @@ def test_the_reply_form_keeps_the_classes_and_a_plain_form_is_as_before() -> Non
         clean_reply_form(form)
 
 
-async def test_the_reply_card_route_classes_only_with_the_switch_on(monkeypatch) -> None:
+async def test_the_reply_card_route_returns_classes_only_with_the_switch_on(monkeypatch) -> None:
     """Mutation: send ``classes`` with the switch off → red."""
     from gateway.routes.email.automation import reply_card as rc
 
