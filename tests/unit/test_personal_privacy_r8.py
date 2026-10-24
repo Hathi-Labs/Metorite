@@ -34,6 +34,11 @@ so they test the grant arm.
 on ``t.project_id``, so a task in the team node under OWNER's root stays
 visible to the org reader and a task in OWNER's own node does not.
 
+**WS-64 OP-3.** ``GET /projects/tree`` returns OWNER's own tree in a
+``personal`` key. A node two levels under OWNER's root carries a STRAY
+``group:`` grant to a group that holds MEMBER. ``TestThePersonalSpace``
+names its mutations P1 to P3.
+
 The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 
     eval "$(bash scripts/dev_db.sh --export)"

@@ -68,6 +68,12 @@ Each one turned the named tests red.
   ``test_a_a_node_under_a_legacy_unstamped_child_is_stamped``,
   ``test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree`` and
   ``test_projects_grant_tools_r8.py::test_r8_a_team_node_under_a_personal_root_is_personal_too``.
+
+WS-64 OP-3 (the ``personal`` key of ``GET /projects/tree``). The owner reads
+the tree in ``personal``, and every team read still leaves it out.
+
+* M12. ``G/tree.py`` ``_own_personal_projects``: no ``_narrow_for_agent``.
+  ``test_b_an_agent_without_personal_cannot_read_the_child_or_its_tasks``.
 """
 
 from __future__ import annotations
