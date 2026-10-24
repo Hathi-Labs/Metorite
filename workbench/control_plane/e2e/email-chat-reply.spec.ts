@@ -43,7 +43,8 @@ const REPLY_FORM = {
     reply: { to: ["kim@contoso.test"], cc: [] },
     reply_all: { to: ["kim@contoso.test", "lee@contoso.test"], cc: ["ops@contoso.test"] },
   },
-  reply_all: false,
+  // The server opens a mail with other people on it on Reply all (21.12).
+  reply_all: true,
   body: "Hi Kim,\n\nThe June price stands. I confirm it.\n\nJane",
   note: "",
 };
