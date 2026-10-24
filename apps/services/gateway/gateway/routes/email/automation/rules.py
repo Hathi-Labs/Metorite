@@ -23,6 +23,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
@@ -205,7 +206,7 @@ async def list_rules(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         return {"rules": await _load_rules(db, account_id)}
 
 
@@ -819,7 +820,7 @@ async def rule_policies(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         cb_row = (await db.execute(text(
             "SELECT cold_email_blocker FROM email_assistant_settings "
             "WHERE account_id = :aid"
@@ -994,7 +995,8 @@ async def update_rule(
         owner = (await db.execute(text(
             """SELECT er.account_id FROM email_rules er
                JOIN email_accounts ea ON er.account_id = ea.id
-               WHERE er.id = :rid AND ea.user_id = :uid"""
+               WHERE er.id = :rid AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"rid": rule_id, "uid": user.email or "anonymous"})).fetchone()
         if not owner:
             raise HTTPException(status_code=404, detail="Rule not found")
@@ -1029,7 +1031,8 @@ async def delete_rule(
             """DELETE FROM email_rules er
                USING email_accounts ea
                WHERE er.id = :rid AND er.account_id = ea.id
-                 AND ea.user_id = :uid"""
+                 AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"rid": rule_id, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Rule not found")
@@ -1186,7 +1189,7 @@ async def list_rule_guidance(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         rows = (await db.execute(text(
             """SELECT g.id, g.rule_id, r.name AS rule_name, g.guidance,
                       g.source, g.thread_id, g.created_at
@@ -1493,7 +1496,7 @@ async def list_rule_patterns(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         try:
             rows = (await db.execute(text(
                 f"""SELECT p.id, p.rule_id, r.name AS rule_name, p.pattern_type,
@@ -1589,7 +1592,8 @@ async def delete_rule_pattern(
     async with _tenant_session() as db:
         res = await db.execute(text(
             """DELETE FROM email_rule_patterns p USING email_accounts ea
-               WHERE p.id = :id AND p.account_id = ea.id AND ea.user_id = :uid"""
+               WHERE p.id = :id AND p.account_id = ea.id AND """
+            + mailbox_predicate("ea", uid="uid", level="manage")
         ), {"id": pattern_id, "uid": user.email or "anonymous"})
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Not found")

@@ -106,6 +106,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
@@ -280,7 +281,10 @@ def forwards_to_own_address(rule: dict[str, Any], own: set[str]) -> bool:
 async def _own_addresses(db: Any, owner: str) -> set[str]:
     """The lower-case address of each mailbox of the member."""
     rows = (await db.execute(text(
-        "SELECT email_address FROM email_accounts WHERE user_id = :uid"
+        # The own-address set of D-EM-29 is the member's private
+        # mailboxes (private_predicate). SM-6 adds the set of a shared target.
+        "SELECT email_address FROM email_accounts WHERE "
+        + private_predicate(uid="uid")
     ), {"uid": owner})).fetchall()
     return {(r.email_address or "").strip().lower() for r in rows if r.email_address}
 
@@ -311,7 +315,7 @@ async def _target_provider(db: Any, account_id: str, owner: str) -> str:
     """The provider of the target. The owner predicate stays in the read."""
     row = (await db.execute(text(
         "SELECT provider FROM email_accounts "
-        "WHERE id = CAST(:aid AS uuid) AND user_id = :uid"
+        "WHERE id = CAST(:aid AS uuid) AND " + mailbox_predicate(uid="uid", level="manage")
     ), {"aid": account_id, "uid": owner})).fetchone()
     return (row.provider or "") if row else ""
 

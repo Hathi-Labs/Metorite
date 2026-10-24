@@ -626,7 +626,9 @@ class TestTheRoute:
 
         params = inspect.signature(ii.get_inline_image).parameters
         assert set(params) == {"message_id", "cid", "user"}
-        assert "ea.user_id = :user_id" in inspect.getsource(ii.get_inline_image)
+        # The owner read goes through the one mailbox seam (WS-65 SM-2).
+        assert 'mailbox_predicate("ea", uid="user_id", level="read")' in (
+            inspect.getsource(ii.get_inline_image))
         src = inspect.getsource(ii)
         assert "get_db(" not in src and "create_async_engine" not in src
         assert "redis.asyncio" not in src and "Redis(" not in src

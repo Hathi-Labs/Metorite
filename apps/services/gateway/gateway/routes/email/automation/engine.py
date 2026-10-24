@@ -27,6 +27,7 @@ from gateway.routes.email.core import (
     _log,
     _savepoint,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from sqlalchemy import text
 
 
@@ -1671,7 +1672,7 @@ async def _email_payload_from_id(
                   em.from_address, em.to_addresses, em.cc_addresses, em.thread_id,
                   em.received_at, ea.email_address
            FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id
-           WHERE em.id = :mid AND ea.user_id = :uid{in_mailbox}"""
+           WHERE em.id = :mid AND {mailbox_predicate("ea", uid="uid", level="manage")}{in_mailbox}"""
     ), params)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Message not found")

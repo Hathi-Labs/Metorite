@@ -20,6 +20,7 @@ from gateway.routes.email.transport.contacts import (
     _preview,
     _signature_block,
 )
+
 from tests.unit._email_fakes import bind_db
 
 
@@ -118,12 +119,13 @@ def test_every_query_is_scoped_to_the_callers_own_accounts():
     email_messages must go through ``_account_scope`` (which resolves
     email_accounts.user_id), and the rollup lookups must filter on :uid too."""
     src = inspect.getsource(C.contact_card)
-    assert "_account_scope(account_id, params)" in src
+    assert '_account_scope(account_id, params, level="read")' in src
     # Three statements read mail/rollups; each must carry a user predicate.
     for fragment in ("FROM email_messages em\n                 WHERE {from_them}",
                      "WHERE {scope}"):
         assert fragment in src, fragment
-    assert src.count("WHERE user_id = :uid") >= 2, (
+    # Since WS-65 SM-2 the predicate comes from the one mailbox seam.
+    assert src.count('mailbox_ids_sql(uid="uid", level="read")') >= 2, (
         "the email_senders / email_newsletters lookups must be scoped to the "
         "caller's accounts, not matched on the address alone"
     )

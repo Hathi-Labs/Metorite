@@ -146,7 +146,7 @@ async def schedule_draft(
     _refuse_bad_draft_id(req.account_id)
     when = _when(req.send_at)
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         draft = (await db.execute(text(
             "SELECT id, subject FROM email_messages WHERE id = CAST(:id AS uuid) "
             "AND account_id = CAST(:aid AS uuid) AND LOWER(folder) IN ('drafts', 'draft')"

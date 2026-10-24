@@ -28,6 +28,7 @@ from fastapi import Depends, Query
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import _account_scope, _tenant_session, router
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from sqlalchemy import text
 
 # Mail that was never really "received into" the mailbox, or has already been
@@ -39,9 +40,10 @@ _INBOUND = f"LOWER(COALESCE(m.folder, '')) <> 'sent' AND {_LIVE_MAIL}"
 
 # A sender is only "yours" if it is one of the connected accounts. Without this
 # the user is their own #1 correspondent (the whole Sent folder is from-self).
+# "Self" is the member's private mailboxes only (D-SM-5): private_predicate.
 _NOT_SELF = ("LOWER(COALESCE(m.from_address->>'email', '')) NOT IN "
              "(SELECT LOWER(email_address) FROM email_accounts "
-             "WHERE user_id = :uid)")
+             "WHERE " + private_predicate(uid="uid") + ")")
 
 
 def _round(value: Any, places: int = 1) -> float | None:
@@ -65,7 +67,7 @@ async def analytics_overview(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous", "days": days}
-        scope = _account_scope(account_id, params)
+        scope = _account_scope(account_id, params, level="read")
         # _account_scope names the table `em`; these queries alias it `m`.
         scope = scope.replace("em.account_id", "m.account_id")
 
@@ -263,7 +265,7 @@ async def _backlog(db: Any, params: dict[str, Any],
     classifier had reached 295 of 3,487 threads and the backlog looked healthy
     because most of it was invisible.
     """
-    scope = "ts.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+    scope = "ts.account_id IN (" + mailbox_ids_sql(uid="uid", level="read")
     if account_id:
         scope += " AND id = :aid"
     scope += ")"
@@ -302,7 +304,7 @@ async def _backlog(db: Any, params: dict[str, Any],
 async def _replyzero_coverage(db: Any, params: dict[str, Any],
                               account_id: str | None) -> dict:
     """What share of live inbound threads Reply Zero has ever classified."""
-    m_scope = "m.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+    m_scope = "m.account_id IN (" + mailbox_ids_sql(uid="uid", level="read")
     if account_id:
         m_scope += " AND id = :aid"
     m_scope += ")"
@@ -451,8 +453,7 @@ async def _automation(db: Any, params: dict[str, Any],
     and a batch of bad patterns sitting in it is exactly what went unnoticed
     until 24 of 45 had to be purged by hand.
     """
-    scope = ("er.account_id IN (SELECT id FROM email_accounts "
-             "WHERE user_id = :uid")
+    scope = "er.account_id IN (" + mailbox_ids_sql(uid="uid", level="read")
     if account_id:
         scope += " AND id = :aid"
     scope += ")"
