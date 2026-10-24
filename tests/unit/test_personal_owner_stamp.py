@@ -48,8 +48,8 @@ Fix round 1 (the adversarial review). Each one turned the named tests red.
   ``test_d_a_team_node_left_under_my_tree_can_be_moved_out``.
 * M7. 297: ``AND p.personal_owner IS NULL`` becomes ``AND true``.
   ``test_d_the_migration_keeps_an_owner_that_is_already_set``.
-* M8. ``G/core.py`` ``assert_project_move_keeps_privacy``: the destination
-  reads only the parent's own column.
+* M8. ``G/core.py`` ``assert_project_move_keeps_privacy``: no walk-up
+  override, so the destination reads only the parent's own column.
   ``test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree``.
 * M9. The same guard: the moved side walks up too.
   ``test_d_a_team_node_left_under_my_tree_can_be_moved_out``.
