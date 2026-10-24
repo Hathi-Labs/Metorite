@@ -93,8 +93,8 @@ REPLY_RECORD_TTL_S = 3700
 BCC_ONLY_NOTICE = "You were Bcc'd, so only the sender is ticked."
 #: The notice when the record of the added people failed: the card shows no
 #: added person, because the act could not check one.
-ADDED_NOT_RECORDED = ("The people you asked to add could not be put on this card. "
-                      "Ask again in a moment.")
+ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the draft in "
+                      "Drafts was left as it was. Ask again in a moment.")
 #: The notice when the thread's draft holds a Bcc: the reply card sends no Bcc.
 DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc. This card sends no "
                     "Bcc. To keep it, send that draft with send_draft.")
@@ -502,10 +502,14 @@ async def reply_card(
     added = [a for a in candidates if a in asked or a in carried or a in usual_added]
     notices: list[str] = []
     card_id = ""
+    record_failed = False
     if added:
         card_id = await _write_reply_record(user, str(_as_uuid(req.message_id)), added)
         if not card_id:
-            added, usual_added = [], []
+            # Review P3-a: the card adds nobody, and the draft stays as it
+            # was below, so a Cc that edit_draft put there is not lost.
+            added, usual_added, carried = [], [], []
+            record_failed = True
             notices.append(ADDED_NOT_RECORDED)
     if draft_bcc:
         notices.append(DRAFT_BCC_NOTICE)
@@ -522,6 +526,10 @@ async def reply_card(
         keep = {a.lower() for a in [*everyone_to, *everyone_cc]}
     if req.untick_new and classes is not None:
         keep = {a for a in keep if classes.get(a, "new") != "new"}
+    # Review P2-a: a held run's edit_draft can put a stranger on the draft.
+    # A carried person starts unticked unless ``org`` or ``sent``, in any chat.
+    keep -= {a.lower() for a in carried
+             if (classes or {}).get(a.lower()) not in ("org", "sent")}
     ticked = {
         "reply": {"to": [a for a in reply_to if a.lower() in keep],
                   "cc": [a for a in added if a.lower() in keep]},
@@ -535,12 +543,12 @@ async def reply_card(
     draft_id, kept_draft = "", False
     # Item 9: the draft in Drafts names exactly the people that start ticked.
     start = ticked["reply_all"]
-    if body.strip() and start["to"]:
+    if body.strip() and start["to"] and not record_failed:
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior)
     marks = _person_marks(mail, classes, asked, carried, usual_added,
-                          [*everyone_to, *everyone_cc])
+                          [*everyone_to, *everyone_cc], held=req.untick_new)
     out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
@@ -596,26 +604,32 @@ async def _reply_classes(
 
     The From sender of the mail is ``thread`` (*primary*), never a Reply-To
     that differs from it (fix round 1, P2-a). The owner answered open
-    question 1 on 2026-10-24: each To and Cc of a received mail of the
-    thread is ``thread`` too (*people*, and the thread's received mails),
-    except an address on a look-alike domain of a sender domain or an
-    organization domain. A fault fails closed: each address is ``new``."""
+    question 1 on 2026-10-24, "everyone on the original email": each To and
+    Cc of the mail being answered is ``thread`` (*people*). A To or Cc of
+    another mail of the thread is ``thread`` only when that mail's sender is
+    ``org`` or ``sent`` (review P1-a). An address on a look-alike domain of
+    ANY sender of the thread, or of an organization domain, stays ``new``
+    (review P2-b). A fault fails closed: each address is ``new``."""
     from acb_skills.held_card import CLASS_NEW
     from gateway.routes.email.automation.held_card import (
         classify_addresses,
         org_domains,
-        thread_participants,
+        thread_senders,
+        trusted_thread_participants,
     )
 
     try:
         async with _tenant_session() as db:
             everyone = list(people)
+            senders: list[str] = []
             if account_id and thread_id:
-                everyone += await thread_participants(db, account_id, thread_id)
+                everyone += await trusted_thread_participants(
+                    db, owner, account_id, thread_id)
+                senders = await thread_senders(db, account_id, thread_id)
             doms = await org_domains(db, owner) if everyone else frozenset()
             return await classify_addresses(
                 db, owner, addresses, thread_senders=primary, thread_people=everyone,
-                org_domains=doms)
+                org_domains=doms, guard_senders=senders)
     except Exception as exc:  # each address reads as new
         _log.warning("email.reply_card_classes_failed", error=type(exc).__name__)
         return {a.strip().lower(): CLASS_NEW for a in addresses if a and a.strip()}
@@ -761,14 +775,22 @@ def _usual_note(added: Sequence[str], mail: Any) -> str:
 def _person_marks(
     mail: Any, classes: dict[str, str] | None, asked: Sequence[str],
     carried: Sequence[str], usual: Sequence[str], shown: Sequence[str],
+    *, held: bool = False,
 ) -> dict[str, str]:
-    """The words of each person on the card (item 8), by lower case."""
+    """The words of each person on the card (item 8), by lower case.
+
+    Review P1-b: the server cannot know that the member named a person, so
+    an added person never reads "you asked". In a held run it reads "the
+    assistant added them", else "added to this reply"."""
     from acb_skills.held_card import (
-        ASKED_MARK,
+        ADDED_MARK,
+        ASSISTANT_ADDED_MARK,
         NEW_MARK,
         USUAL_COPY_MARK,
         thread_mark,
     )
+
+    ASKED_MARK = ASSISTANT_ADDED_MARK if held else ADDED_MARK  # noqa: N806
 
     sender = str(getattr(mail, "sender", "") or "").lower()
     who = str(getattr(mail, "sender_name", "") or "") or sender

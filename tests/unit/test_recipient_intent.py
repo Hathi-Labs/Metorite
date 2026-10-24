@@ -67,7 +67,11 @@ class _Db:
     def __init__(self) -> None:
         self.org = {KIRAN, VEENA, MEMBER}
         self.sent: set[str] = set()
-        self.participants: list[str] = [MEMBER, ANANDA]
+        #: Each To and Cc of a received mail of the thread, with that mail's
+        #: sender: ``(address, sender)``.
+        self.participants: list[tuple[str, str]] = [(MEMBER, SAGAR), (ANANDA, SAGAR)]
+        #: The senders of the received mails of the thread.
+        self.senders: list[str] = [SAGAR]
         self.org_domains = ["fracktal.in"]
         self.draft: dict[str, Any] | None = None
         self.usual: list[tuple[str, int, bool]] = []
@@ -85,7 +89,9 @@ class _Db:
                                                is_sent=a in self.sent)
                          for a in p["wanted"]])
         if q == hc.THREAD_PARTICIPANTS_SQL:
-            return rows([types.SimpleNamespace(addr=a) for a in self.participants])
+            return rows([types.SimpleNamespace(addr=a, sender=s) for a, s in self.participants])
+        if q == hc.THREAD_SENDERS_SQL:
+            return rows([types.SimpleNamespace(addr=a) for a in self.senders])
         if q == hc.ORG_DOMAINS_SQL:
             return rows([types.SimpleNamespace(d=d) for d in self.org_domains])
         if q == rc.THREAD_DRAFT_PEOPLE_SQL:
@@ -177,10 +183,47 @@ async def test_a_lookalike_person_on_the_thread_stays_new() -> None:
 
 
 def test_the_participants_sql_reads_received_mail_only() -> None:
-    assert "NOT IN ('drafts', 'draft', 'sent')" in hc.THREAD_PARTICIPANTS_SQL
+    assert "NOT IN ('drafts', 'draft', 'sent', 'junk', 'spam')" in hc.THREAD_PARTICIPANTS_SQL
     assert "to_addresses" in hc.THREAD_PARTICIPANTS_SQL
     assert "cc_addresses" in hc.THREAD_PARTICIPANTS_SQL
     assert "bcc_addresses" not in hc.THREAD_PARTICIPANTS_SQL
+    # Each row names the sender of its mail, so the caller can trust it.
+    assert "AS sender" in hc.THREAD_PARTICIPANTS_SQL
+
+
+async def test_a_cc_of_an_injected_stranger_mail_is_new(monkeypatch) -> None:
+    """Review P1-a. A stranger sends a mail INTO the thread with a Cc of
+    drop@evil.example. A held reply with that address in ``cc`` must not
+    class it ``thread``: only the mail being answered, or a mail from an
+    ``org`` or ``sent`` sender, names thread people. Mutation: trust every
+    mail of the thread → drop@evil is thread and ticked → red."""
+    drop = "drop@evil.example"
+    w = _World(monkeypatch)
+    F.flag_on(monkeypatch)
+    w.db.participants += [(drop, "intruder@evil.example"), (KIRAN.replace("kiran", "ravi"), KIRAN)]
+    w.db.senders += ["intruder@evil.example"]
+    out = await w.card(cc=[drop], untick_new=True)
+    assert out["classes"][drop] == "new"
+    assert drop not in out["ticked"]["reply_all"]["cc"]
+    # A Cc of a mail from a colleague of the organization is a thread person.
+    db = F.FakeDb()
+    db.classes = {KIRAN: (True, False)}
+    db.participants = [(drop, "intruder@evil.example"), ("ravi@fracktal.in", KIRAN)]
+    people = await hc.trusted_thread_participants(db, F.MEMBER, F.BOX, "t")
+    assert people == ["ravi@fracktal.in"]
+
+
+async def test_the_lookalike_guard_reads_every_sender_of_the_thread(monkeypatch) -> None:
+    """Review P2-b. The thread holds a mail from partner.com. A Cc on
+    partnerr.com of the answered mail is new, not thread. Mutation: guard
+    with the answered mail's sender only → red."""
+    fake = "bob@partnerr.com"
+    w = _World(monkeypatch, _mail(cc=[fake]))
+    F.flag_on(monkeypatch)
+    w.db.senders = [SAGAR, "alice@partner.com"]
+    out = await w.card(untick_new=True)
+    assert out["classes"][fake] == "new"
+    assert fake not in out["ticked"]["reply_all"]["cc"]
 
 
 async def test_the_held_draft_card_classes_a_thread_person_thread(monkeypatch) -> None:
@@ -354,9 +397,14 @@ async def test_each_person_has_words(monkeypatch) -> None:
     w.db.usual = [(VEENA, 3, False)]
     out = await w.card(cc=[KIRAN])
     assert out["marks"][ANANDA] == "on Dr Sagar's original email"
-    assert out["marks"][KIRAN] == H.ASKED_MARK
+    # Review P1-b: the server cannot know that the member named a person, so
+    # the words never say "you asked". Not held: "added to this reply".
+    assert out["marks"][KIRAN] == H.ADDED_MARK
     assert out["marks"][VEENA] == H.USUAL_COPY_MARK
     assert SAGAR not in out["marks"]
+    held = await w.card(cc=[KIRAN], untick_new=True)
+    assert held["marks"][KIRAN] == H.ASSISTANT_ADDED_MARK == "the assistant added them"
+    assert "you asked" not in json.dumps(held["marks"])
 
 
 # ── Item 7: who the member usually copies ────────────────────────────────────
@@ -450,6 +498,39 @@ async def test_a_cc_that_edit_draft_added_stays_on_the_next_card(monkeypatch) ->
     assert rc.DRAFT_BCC_NOTICE in out["notices"]
     await w.act(out, to=[SAGAR], cc=[KIRAN])
     assert w.sent[0].to == [SAGAR] and w.sent[0].cc == [KIRAN]
+
+
+async def test_a_carried_stranger_starts_unticked_in_any_chat(monkeypatch) -> None:
+    """Review P2-a. A held run's edit_draft can put a stranger on the draft.
+    A later card, held or not, shows that person unticked unless ``org`` or
+    ``sent``. Mutation: tick each carried person → red."""
+    stranger = "drop@evil.example"
+    w = _World(monkeypatch)
+    w.db.draft = {"cc_addresses": json.dumps([{"email": KIRAN}, {"email": stranger}]),
+                  "bcc_addresses": "[]"}
+    out = await w.card()  # not held, switch off
+    assert stranger in out["recipients"]["reply_all"]["cc"]
+    assert stranger not in out["ticked"]["reply_all"]["cc"]
+    assert KIRAN in out["ticked"]["reply_all"]["cc"]
+    assert w.drafts[-1] == ([SAGAR], [ANANDA, KIRAN])
+
+
+async def test_a_failed_record_leaves_the_draft_as_it_was(monkeypatch) -> None:
+    """Review P3-a. The record of the added people fails: the card adds
+    nobody, says so, and does NOT write the draft, so the Cc that
+    edit_draft put there stays. Mutation: write the draft anyway → red."""
+    w = _World(monkeypatch)
+    w.db.draft = {"cc_addresses": json.dumps([{"email": KIRAN}]), "bcc_addresses": "[]"}
+
+    async def broken(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(rc, "_write_reply_record", broken)
+    out = await w.card()
+    assert rc.ADDED_NOT_RECORDED in out["notices"]
+    assert "left as it was" in rc.ADDED_NOT_RECORDED
+    assert w.drafts == [] and out["draft_id"] == ""
+    assert KIRAN not in out["recipients"]["reply_all"]["cc"]
 
 
 async def test_the_held_send_draft_card_sends_exactly_the_ticked_rows(monkeypatch) -> None:

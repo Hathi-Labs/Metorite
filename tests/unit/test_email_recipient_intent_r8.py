@@ -102,7 +102,19 @@ async def test_the_recipient_intent_sql_on_a_real_database(
             _mail(c, w, folder="drafts", frm=w.owner, to=[sagar], cc=[w.kiran],
                   bcc=[w.geo], thread=thread, when=now, tag="draft")
 
-        people = await _run(w, lambda db: hc.thread_participants(db, w.account, thread))
+        with w.p.admin_engine.begin() as c:
+            # Review P1-a: a stranger's mail sent INTO the thread, and a mail
+            # of the thread in junk. Neither names a thread person.
+            _mail(c, w, folder="inbox", frm=f"intruder-{w.tag}@evil-{w.tag}.test",
+                  to=[w.owner], cc=[planted], thread=thread, when=now, tag="intr")
+            _mail(c, w, folder="junk", frm=sagar, to=[w.owner], cc=[hidden],
+                  thread=thread, when=now, tag="junk")
+        raw = await _run(w, lambda db: hc.thread_participants(db, w.account, thread))
+        assert (hidden, sagar) not in raw  # junk is never read
+        assert (planted, f"intruder-{w.tag}@evil-{w.tag}.test") in raw
+        people = await _run(w, lambda db: hc.trusted_thread_participants(
+            db, w.owner, w.account, thread))
+        # Sagar is ``sent``: his mail names thread people. The intruder is not.
         assert sorted(people) == sorted([w.owner, ananda])  # no Sent, no draft Cc
 
         doms = await _run(w, lambda db: hc.org_domains(db, w.owner))
