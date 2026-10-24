@@ -68,6 +68,12 @@ Each one turned the named tests red.
   ``test_a_a_node_under_a_legacy_unstamped_child_is_stamped``,
   ``test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree`` and
   ``test_projects_grant_tools_r8.py::test_r8_a_team_node_under_a_personal_root_is_personal_too``.
+
+WS-64 OP-3 (the ``personal`` key of ``GET /projects/tree``). The owner reads
+the tree in ``personal``, and every team read still leaves it out.
+
+* M12. ``G/tree.py`` ``_own_personal_projects``: no ``_narrow_for_agent``.
+  ``test_b_an_agent_without_personal_cannot_read_the_child_or_its_tasks``.
 """
 
 from __future__ import annotations
@@ -277,8 +283,15 @@ async def test_a_an_org_reader_does_not_see_the_child_in_the_tree(live):
         for who in (READER, OWNER_P):
             r = await d._person(live, who, "GET", path)
             assert r.status_code == 200, r.text
-            assert child not in r.text, (who, path)
+            # WS-64 OP-3: the owner's tree reads in `personal`, and only
+            # there. Every team read, `rows` too, still leaves it out.
+            seen = r.text
+            if path == "/projects/tree" and who == OWNER_P:
+                seen = json.dumps(r.json()["rows"])
+            assert child not in seen, (who, path)
             assert task not in r.text, (who, path)
+    r = await d._person(live, OWNER_P, "GET", "/projects/tree")
+    assert child in json.dumps(r.json()["personal"])
     # The summary counts the task nowhere: it has one space, and no task.
     r = await d._person(live, READER, "GET", "/projects/summary")
     assert [c["id"] for c in r.json()["children"]] == [live.team]
@@ -321,6 +334,12 @@ async def test_b_an_agent_without_personal_cannot_read_the_child_or_its_tasks(li
         r = await _signed_get(live, "np", path)
         assert r.status_code == 200, r.text
         assert child not in r.text and task not in r.text, path
+    # WS-64 OP-3: the tree's `personal` key follows D-EA-4 too.
+    r = await _signed_get(live, "np", "/projects/tree")
+    assert r.json()["personal"] == []
+    r = await _signed_get(live, "p", "/projects/tree")
+    assert child in json.dumps(r.json()["personal"])
+    assert child not in json.dumps(r.json()["rows"])
     r = await _signed_get(live, "p", "/projects/tasks")
     assert task in r.text
     # The control: the same member's connection WITH personal reads it.
@@ -343,6 +362,36 @@ async def test_c_a_move_of_the_child_into_a_team_space_is_refused(live):
     assert "personal area" in r.json()["detail"]
     assert _one(live, "SELECT parent_project_id FROM pm_projects WHERE id ="
                 " CAST(:c AS uuid)", c=child) == live.root
+
+
+async def test_c_the_space_and_a_deep_folder_read_from_the_tree_stay_in_it(live):
+    """WS-64 OP-3 done when 2, with the new shape: the nodes that the tree's
+    ``personal`` key gives cannot move under a team node."""
+    child = await _child(live, "a folder of the space")
+    r = await _make(live, OWNER_P, child, "a deep folder")
+    assert r.status_code == 201, r.text
+    deep = r.json()["id"]
+
+    def _personal_ids(body: Any) -> set[str]:
+        out: set[str] = set()
+        stack = list(body["personal"])
+        while stack:
+            node = stack.pop()
+            assert node["personal"] is True
+            out.add(node["id"])
+            stack.extend(node["children"])
+        return out
+
+    r = await d._person(live, OWNER_P, "GET", "/projects/tree")
+    assert {live.root, child, deep} <= _personal_ids(r.json())
+    for node in (live.root, deep):
+        r = await d._person(live, OWNER_P, "POST", f"/projects/nodes/{node}/move",
+                            {"parent_project_id": live.team})
+        assert r.status_code == 422, (node, r.text)
+    r = await d._person(live, OWNER_P, "GET", "/projects/tree")
+    assert {live.root, child, deep} <= _personal_ids(r.json())
+    assert _one(live, "SELECT parent_project_id FROM pm_projects WHERE id ="
+                " CAST(:c AS uuid)", c=deep) == child
 
 
 async def test_c_a_move_of_the_child_to_the_top_level_is_refused(live):

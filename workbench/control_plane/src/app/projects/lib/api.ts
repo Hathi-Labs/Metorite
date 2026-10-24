@@ -2571,6 +2571,17 @@ export const agentRunsApi = {
     }),
 
   /**
+   * EA-14a. Give a task up: the run becomes `released`. The task keeps its
+   * status and its assignees. 403 for a caller who is not the run's member,
+   * an assignee or an admin.
+   */
+  release: (runId: string) =>
+    call<{ run: AgentRun; released: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/release`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.

@@ -46,6 +46,7 @@ from gateway.routes.projects.core import (
     GrantModel,
     ProjectIn,
     ProjectModel,
+    _narrow_for_agent,
     _tenant_session,
     actor,
     assert_grant_group_exists,
@@ -265,6 +266,52 @@ async def _visible_projects(
     )).fetchall()
 
 
+#: WS-64 OP-3 (D-OP-2, D-OP-15). The caller's OWN personal tree, at every
+#: depth. Migration 297 and ``create_node`` stamp ``personal_owner`` on each
+#: node of the tree, so the node's own column is the whole test.
+#:
+#: ⚠️ **This is NOT ``vis.project_clause``, on purpose.** That clause is
+#: everything the caller may read. The personal space is what the caller
+#: OWNS. A ``data:org:read`` holder, a Projects admin and a stray grantee
+#: get nothing here, because the owner line names the caller alone. The
+#: tenant and the seal still bind, as in ``_TENANT_PROJECTS_SQL``.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py`` (TestThePersonalSpace).
+_OWN_PERSONAL_CLAUSE = (
+    "organization_id = CAST(:vis_org AS uuid)"
+    " AND sealed_at IS NULL"
+    " AND lower(personal_owner) = :vis_email"
+)
+
+
+async def _own_personal_projects(db: Any, vis: Any) -> list[Any]:
+    """The rows of the caller's own personal tree, flat.
+
+    An outside agent is narrowed by the one seam (``_narrow_for_agent``). A
+    connection without ``include_personal`` (D-EA-4) gets no row, and a
+    pinned connection gets its pins only.
+    """
+    clause = _narrow_for_agent(_OWN_PERSONAL_CLAUSE, "id", vis.agent)
+    # `vis_groups` has no place in this statement. The other binds do.
+    params = {k: v for k, v in vis.params.items() if k != "vis_groups"}
+    return (await db.execute(
+        text(
+            f"SELECT * FROM pm_projects WHERE {clause} "
+            f"ORDER BY position NULLS LAST, name, id"
+        ),
+        params,
+    )).fetchall()
+
+
+def _nest(nodes: dict[str, dict]) -> list[dict]:
+    """The roots of *nodes*, each with its children. A node whose parent is
+    not in *nodes* is a root."""
+    roots: list[dict] = []
+    for node in nodes.values():
+        parent = nodes.get(str(node.get("parent_project_id") or ""))
+        (parent["children"] if parent else roots).append(node)
+    return roots
+
+
 @router.get("/tree")
 async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     """The caller's forest, nested.
@@ -274,22 +321,42 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     what came back costs nothing. A node whose parent is *not* visible surfaces
     as a root here — that is not a bug to fix by hiding it, it is the shape of a
     subtree granted to a Center without its parent department.
+
+    WS-64 OP-3. ``personal`` holds the caller's own personal tree, nested,
+    with the same counts. ``rows`` does not change (R6), so an old client
+    sees no change. Each personal node carries ``personal: true``, and
+    ``can_write_grants`` false with the words of the 403 (OP-6b).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         rows = await _visible_projects(db, user, vis)
         counts = await _open_and_done(db, vis)
         nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
+        own = await _own_personal_projects(db, vis)
+        personal = {
+            str(r.id): {
+                **row_to_dict(r, ProjectModel),
+                "children": [],
+                "personal": True,
+                # The caller's own address. The grant flag below reads it,
+                # so it answers without a walk.
+                "personal_owner": r.personal_owner,
+            }
+            for r in own
+        }
         # WS-64 OP-8 — the app hides Delete on a node where this is false.
-        await attach_can_delete(db, user, list(nodes.values()), kind="project")
+        await attach_can_delete(
+            db, user, [*nodes.values(), *personal.values()], kind="project",
+        )
+        # WS-64 OP-6b — a personal space is not shared (D-OP-2).
+        for node in personal.values():
+            await attach_can_write_grants(db, user, node)
 
-    roots: list[dict] = []
-    for node in nodes.values():
-        parent = nodes.get(str(node.get("parent_project_id") or ""))
-        (parent["children"] if parent else roots).append(node)
-
+    roots = _nest(nodes)
     _attach_progress(roots, counts)
-    return {"rows": roots, "total": len(nodes)}
+    personal_roots = _nest(personal)
+    _attach_progress(personal_roots, counts)
+    return {"rows": roots, "total": len(nodes), "personal": personal_roots}
 
 
 #: The categories that close a task WITHOUT delivering it.
