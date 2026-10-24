@@ -33,6 +33,26 @@ When the connection can change tasks, Claude Code shows the command `/mcp__metor
 - When the pull request opens, the agent moves the task to an "in progress" status whose name says review. It moves the task to done only after the merge.
 - **Ask an agent** in Metorite gives work to the agent. To continue that work, run the command with no number.
 
+## How the agent finds its next work
+
+Each agent session follows the same six steps. The server instructions and the command `/mcp__metorite__work_on_task` both give them.
+
+1. At the start of a session, the agent calls `my_work`.
+2. The agent takes the top row. When you asked it to stop, it ends that run at once. For another run that waits, it reads the run with `get_agent_run`. For a task, it calls `claim_task`.
+3. A refusal with `409 task_held` means that another session holds the task. The agent does not try that task again. It takes the next row.
+   Two sessions of one client share one client name, and Metorite cannot tell them apart. So the agent takes only a row that `my_work` gives.
+4. The agent calls `get_task_context`. Then it calls `start_agent_run` when the claim opened no run.
+5. The agent posts a progress line at least once a minute.
+6. The agent ends with exactly one result. The task moves to review or done. Or a question waits for a named member. Or the agent gives the task back with `release_task`. A comment is a record of the work, and it is never a result.
+
+`my_work` gives the rows in this order:
+
+1. The runs that wait for this client. You queued work for it, you answered its question, or you asked it to stop.
+2. The tasks of a run of this client whose session went quiet for five minutes. The agent can take that work back. A run that another session of this client works on now does not show.
+3. The tasks assigned to you that no AI session holds and that no open task blocks.
+
+It never gives a task that is not assigned to you and that this client does not hold. A waiting run of another client does not show. Two sessions of one client share the client name, so `my_work` cannot tell them apart.
+
 The description of the task is the brief of the agent. Metorite limits what the connection can reach. It cannot limit the tools of the agent on your computer, such as the shell and `git push`. Your Claude Code permission settings control those tools.
 
 ## The choices on the consent page
@@ -43,7 +63,7 @@ The description of the task is the brief of the agent. Metorite limits what the 
 
 ## What the agent can do
 
-Seven tools read:
+Nine tools read:
 
 | Tool | What it reads |
 |---|---|
@@ -54,6 +74,8 @@ Seven tools read:
 | `get_task` | One task, with its references |
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
+| `get_task_context` | One task, with its parent tasks, its project, the tasks that block it and the newest 20 comments. A parent task that you cannot see shows as hidden, with no title |
+| `my_work` | The next work of this agent, at most 25 rows. "How the agent finds its next work" above tells the order |
 
 Six tools make or change a task:
 
@@ -85,7 +107,7 @@ The agent can also do these two things:
 2. Choose one of your connected agents. Only an agent that may make changes shows in the list.
 3. Write what the agent must do, then send it. The task shows "Queued for" and the name of the agent.
 
-Your agent finds the work when it next starts a session, because it looks for queued runs first. It does not start by itself.
+Your agent finds the work when it next starts a session, because `my_work` gives the queued runs first. It does not start by itself.
 
 While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
 
@@ -97,7 +119,7 @@ Six tools work with these runs:
 | `post_agent_activity` | It posts a progress line, a result or a question in the run |
 | `ask_on_task` | It asks you a question on a task, with choices or free text |
 | `get_agent_run` | It reads a run and your answers |
-| `list_agent_runs` | It lists your runs, such as the runs that wait for the agent |
+| `list_agent_runs` | It lists all your runs, from each agent, for the full history |
 | `finish_agent_run` | It ends a run |
 
 ## What the agent cannot do

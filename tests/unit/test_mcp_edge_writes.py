@@ -518,7 +518,8 @@ class TestTheWriteToolsAtTheEdge:
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
-        assert len(off) == 7
+        # The seven reads of EA-3 and the two reads of EA-15 (§12.4).
+        assert len(off) == 9
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),
