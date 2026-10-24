@@ -480,13 +480,14 @@ grant there, tell the member to move the work to a team project first.
 
 ## Who gets a report, and when
 
-The chat changes who receives a saved report and turns its weekly schedule
-on or off (D-OP-9). `report_recipients` reads the list and the schedule.
+The chat changes who receives a saved report (D-OP-9). It also turns the
+weekly schedule on or off. `report_recipients` reads the list and the schedule.
 `add_report_recipient` and `remove_report_recipient` take one person each.
 `set_report_schedule` takes `enabled` true or false. Each write shows one
-card. A recipient is a person outside the chat, so the card names the
-address and the name. Read `report_recipients` first, and say who is on the
-list before you change it.
+card, and a recipient is a person outside the chat, so the card names the
+address and the name.
+
+Read `report_recipients` first, and say who is on the list before you change it.
 
 The card is a brake on a mistake. It is not authority. Only the author of the
 report or an admin may change the list or the schedule, and the server

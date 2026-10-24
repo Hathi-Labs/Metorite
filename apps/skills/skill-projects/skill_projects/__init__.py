@@ -19,8 +19,6 @@ from skill_projects.forms import (
 )
 from skill_projects.guarded import (
     add_report_recipient,
-    remove_report_recipient,
-    set_report_schedule,
     archive_project,
     archive_task,
     attach_to_task,
@@ -40,10 +38,12 @@ from skill_projects.guarded import (
     merge_tasks,
     move_project,
     nudge_task,
+    remove_report_recipient,
     rename_area,
     report_delete,
     revert_activity,
     revoke_access,
+    set_report_schedule,
     set_status_set,
     unarchive_project,
 )

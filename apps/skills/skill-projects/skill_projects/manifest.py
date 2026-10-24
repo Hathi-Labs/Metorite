@@ -516,6 +516,12 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "render_board": frozenset({"project_summary", "vocabulary", "list_tasks"}),
     "render_tasks": frozenset({"list_tasks", "vocabulary"}),
     "render_report": frozenset({"report_render"}),
+    # WS-64 OP-6d: each tool reads the report (for its name and `can_edit`), and the
+    # three writes read the list and the directory names before their card.
+    "report_recipients": frozenset({"report_render", "people_for"}),
+    "add_report_recipient": frozenset({"report_render", "report_recipients", "people_for"}),
+    "remove_report_recipient": frozenset({"report_render", "report_recipients", "people_for"}),
+    "set_report_schedule": frozenset({"report_render", "report_recipients", "people_for"}),
     "status_report": frozenset(
         {"project_summary", "analytics_stuck", "analytics_load", "analytics_outlook"}
     ),
@@ -863,10 +869,10 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
     # WS-64 OP-6d: one address, and the on/off of the schedule.
     ("POST", "/projects/reports/{report_id}/recipients"): {
-        "recipient": "add_report_recipient.recipient"
+        "payload": "add_report_recipient.recipient"
     },
     ("PATCH", "/projects/reports/{report_id}/schedule"): {
-        "enabled": "set_report_schedule.enabled"
+        "payload": "set_report_schedule.enabled"
     },
     # WS-64 OP-6a
     ("POST", "/projects/my/areas"): {"name": "create_area.name"},

@@ -78,7 +78,7 @@ GHOST = "ghost@nowhere.test"
 
 
 @pytest.fixture
-def reps(live):
+def reps(live):  # noqa: F811
     """The shared world, and one more member who holds ``admin:members:read``."""
     if not getattr(live, "repadmin", False):
         live.seeder.member(REPADMIN, ["feature:projects", "admin:members:read"])
@@ -103,30 +103,30 @@ def _no_mail(monkeypatch):
     assert tries == [], "mail was sent"
 
 
-def _report(world: Any, name: str, author: str = CREATOR) -> str:
-    return str(world.seeder.one(
+def _report(wd: Any, name: str, author: str = CREATOR) -> str:
+    return str(wd.seeder.one(
         "INSERT INTO pm_reports (organization_id, name, config, created_by)"
         " VALUES (CAST(:o AS uuid), :n, '{}'::jsonb, :a) RETURNING id",
-        o=world.org, n=f"{name} {uuid.uuid4().hex[:6]}", a=author))
+        o=wd.org, n=f"{name} {uuid.uuid4().hex[:6]}", a=author))
 
 
-def _list(world: Any, report: str) -> list[str]:
-    with world.admin.begin() as c:
+def _list(wd: Any, report: str) -> list[str]:
+    with wd.admin.begin() as c:
         return sorted(r.recipient for r in c.execute(text(
             "SELECT recipient FROM pm_report_recipients"
             " WHERE report_id = CAST(:r AS uuid)"), {"r": report}))
 
 
-def _put(world: Any, report: str, *emails: str) -> None:
+def _put(wd: Any, report: str, *emails: str) -> None:
     for e in emails:
-        world.seeder.one(
+        wd.seeder.one(
             "INSERT INTO pm_report_recipients (report_id, recipient, created_by,"
             " organization_id) VALUES (CAST(:r AS uuid), :e, :a, CAST(:o AS uuid))"
-            " RETURNING report_id", r=report, e=e, a=CREATOR, o=world.org)
+            " RETURNING report_id", r=report, e=e, a=CREATOR, o=wd.org)
 
 
-def _row(world: Any, report: str) -> Any:
-    with world.admin.begin() as c:
+def _row(wd: Any, report: str) -> Any:
+    with wd.admin.begin() as c:
         return c.execute(text(
             "SELECT enabled, schedule FROM pm_reports WHERE id = CAST(:r AS uuid)"),
             {"r": report}).one()

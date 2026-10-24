@@ -34,9 +34,9 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from urllib.parse import quote
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from skill_projects import client as _client
 from skill_projects.client import (
@@ -69,13 +69,13 @@ from skill_projects.reads import (
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
-    REPORT_CHANGE_REFUSED,
     CANCELLED,
     CARD_CONTEXT_LIMIT,
     CARD_NOTE,
     FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
+    REPORT_CHANGE_REFUSED,
     _clears,
     _confirm,
     _field_of,
@@ -2179,7 +2179,17 @@ async def _report_for_change(report_id: str, tool: str) -> tuple[str, dict[str, 
     return rid, report, ""
 
 
-async def _recipient_rows(rid: str) -> list[str]:
+def _path_address(value: str) -> str:
+    """A recipient address as ONE path segment of the delete route. A slash, a
+    dot-dot or a query mark cannot ride in it."""
+    raw = str(value or "").strip().lower()
+    if "@" not in raw or any(c in raw for c in "/\\?#% \t\n"):
+        raise GatewayRefusal("A recipient must be an email address.")
+    return quote(raw, safe="@")
+
+
+async def _recipient_rows(report_id: str) -> list[str]:
+    rid = uuid_of(report_id, "report_id")
     payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
     return [str(r.get("recipient") or "").lower() for r in payload.get("recipients") or []]
 
@@ -2206,6 +2216,7 @@ async def add_report_recipient(report_id: str, recipient: str) -> str:
     rid, report, refused = await _report_for_change(report_id, "add_report_recipient")
     if refused:
         return refused
+    rid = uuid_of(rid, "report_id")
     email = await _recipient_address(recipient)
     held = await _recipient_rows(rid)
     if email in held:
@@ -2252,6 +2263,7 @@ async def remove_report_recipient(report_id: str, recipient: str) -> str:
     rid, report, refused = await _report_for_change(report_id, "remove_report_recipient")
     if refused:
         return refused
+    rid = uuid_of(rid, "report_id")
     held = await _recipient_rows(rid)
     wanted = str(recipient or "").strip().lower()
     email = wanted if wanted in held else ""
@@ -2285,7 +2297,8 @@ async def remove_report_recipient(report_id: str, recipient: str) -> str:
         ),
     ):
         return CANCELLED
-    await delete(f"/projects/reports/{rid}/recipients/{quote(email, safe='@')}")
+    tail = _path_address(email)
+    await delete(f"/projects/reports/{rid}/recipients/{tail}")
     return (
         f"{who} is off the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
         f"\n  report_id: {rid}"
@@ -2303,6 +2316,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
     rid, report, refused = await _report_for_change(report_id, "set_report_schedule")
     if refused:
         return refused
+    rid = uuid_of(rid, "report_id")
     if not isinstance(enabled, bool):
         return "enabled must be true or false."
     held = await _recipient_rows(rid)
@@ -2323,7 +2337,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
     ) + (f" and {len(held) - 10} more" if len(held) > 10 else "")
     if enabled:
         impact = (
-            f"the schedule goes on: {len(held)} people get {data(report.get('name'))} by email "
+            f"the schedule goes on: {data(report.get('name'))} goes by email to {_plural(len(held), 'person')} "
             f"every week · {DELIVERY_MAY_BE_OFF}"
         )
         rest = {"report": data(report.get("name")), "schedule": "every week",
@@ -2331,7 +2345,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
     else:
         impact = (
             f"the schedule goes off: {data(report.get('name'))} stops going to its "
-            f"{len(held)} people. The list stays"
+            f"{_plural(len(held), 'person')}. The list stays"
         )
         rest = {"report": data(report.get("name")), "schedule": "off",
                 "stops going to": people or "nobody"}
@@ -2348,7 +2362,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
     tail = DELIVERY_ON if armed is True else DELIVERY_OFF if armed is False else DELIVERY_MAY_BE_OFF
     return (
         f"The schedule of {data(report.get('name'))} is on, every week, for "
-        f"{len(held)} people. {tail}\n  report_id: {rid}"
+        f"{_plural(len(held), 'person')}. {tail}\n  report_id: {rid}"
     )
 
 

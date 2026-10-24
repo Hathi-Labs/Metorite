@@ -158,7 +158,7 @@ async def test_a_member_who_may_not_change_the_report_gets_no_card_and_the_serve
 def test_the_skills_sentence_is_the_servers_sentence() -> None:
     from skill_projects.writes import REPORT_CHANGE_REFUSED
 
-    assert REPORT_CHANGE_REFUSED == _server_words()
+    assert _server_words() == REPORT_CHANGE_REFUSED
 
 
 async def test_a_report_without_the_flag_goes_on_and_the_route_decides(monkeypatch) -> None:
