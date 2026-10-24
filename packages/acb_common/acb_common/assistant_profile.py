@@ -69,6 +69,22 @@ FACT_SOURCES: tuple[str, ...] = ("chat", "whatsapp", "settings")
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
+#: A digit run that no short language tag of a member needs (PZ-6b, P3).
+_LANGUAGE_DIGITS = re.compile(r"\d{3,}")
+
+
+def _language_has_number(tag: str) -> bool:
+    """True when *tag* carries a number. One subtag of exactly three digits
+    is a UN M.49 region ("es-419", Latin American Spanish), so it passes.
+    Any other run of three digits or more is refused ("en-48213")."""
+    regions = 0
+    for sub in tag.split("-")[1:]:
+        if sub.isdigit() and len(sub) == 3:
+            regions += 1
+            continue
+        if _LANGUAGE_DIGITS.search(sub):
+            return True
+    return regions > 1
 
 
 def empty_profile() -> dict[str, Any]:
@@ -142,7 +158,9 @@ def _clean_style(value: Any) -> dict[str, Any]:
         out["length"] = _choice(raw["length"], LENGTH, "style.length")
     if "language" in raw:
         lang = _text(raw["language"], LANGUAGE_MAX, "style.language")
-        if not _LANGUAGE.match(lang):
+        # PZ-6b (P3): a tag is exempt from grounding, so it may not carry a
+        # number. A run of 3 digits or more is refused ("en-48213").
+        if not _LANGUAGE.match(lang) or _language_has_number(lang):
             raise ValueError("style.language is a BCP 47 tag")
         out["language"] = lang
     if "notes" in raw:
@@ -460,6 +478,38 @@ def _numbers(text: str) -> set[str]:
     return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
 
 
+#: PZ-6b (re-verify P2-1): an address written out in words. "(at)",
+#: "[dot]" and "{at}" alone are enough.
+_BRACKET_AT_DOT = re.compile(r"[\[({]\s*(?:at|dot)\s*[\])}]")
+#: "x at y dot z": a word, " at ", a word, then " dot " or "." and a top
+#: level of letters.
+_SPOKEN_ADDRESS = re.compile(
+    r"[\w.+\-]+\s+at(?:\s+the\s+rate|\s+rate)?\s+[\w\-]+(?:(?:\s+dot\s+|\.)[\w\-]+)*"
+    r"(?:\s+dot\s+|\.)[^\W\d_]{2,24}"
+    r"(?![\w\-])")
+#: The full stops of other scripts that a domain can hide behind. NFKD makes
+#: U+FF0E a "." and U+FF61 a U+3002 already.
+_OTHER_DOTS = ("\u3002", "\uff0e", "\uff61")
+#: A domain of any script, such as "пример.рф" (an IDN).
+_ANY_DOMAIN = re.compile(r"(?<![\w@.\-])(?:[^\W_][\w\-]{0,62}\.)+[^\W\d_]{2,24}(?![\w\-])")
+#: A spaced dot between two words: "acme . io".
+_SPACED_DOT = re.compile(r"(?<=\w)\s+\.\s+(?=\w)")
+#: The words of a digit, spoken. "oh" is the zero of a phone number.
+DIGIT_WORDS: frozenset[str] = frozenset({
+    "zero", "oh", "one", "two", "three", "four", "five", "six", "seven",
+    "eight", "nine"})
+
+
+def _digit_word_run(text: str) -> int:
+    """The longest run of digit words in folded *text*. A space, a comma, a
+    dash or a dot may sit between two of them."""
+    best = run = 0
+    for word in re.split(r"[\s,.\-]+", text):
+        run = run + 1 if word in DIGIT_WORDS else 0
+        best = max(best, run)
+    return best
+
+
 def needs_confirm(value: Any) -> bool:
     """True when *value* holds an address, a link or a long number.
 
@@ -467,7 +517,12 @@ def needs_confirm(value: Any) -> bool:
     domain. A long number has :data:`CONFIRM_DIGITS` digits or more,
     counted across spaces, dots, dashes, parentheses and a leading ``+``.
     Such a value never writes from the chat without the member's approve
-    (PZ-6a fix round 2, the primary fence). Fence:
+    (PZ-6a fix round 2, the primary fence).
+
+    PZ-6b adds the written-out forms: "x at y dot z", "(at)" and "[dot]",
+    a domain behind a fullwidth or an ideographic full stop or a spaced
+    " . ", a domain of any script ("пример.рф"), and 6 digit words or more
+    in a row ("nine eight four five oh one"). Fence:
     ``tests/unit/test_profile_write_tools.py``.
     """
     text = fold(value)
@@ -477,7 +532,95 @@ def needs_confirm(value: Any) -> bool:
         return True
     if _GROUND_URL.search(text) or _DOMAIN.search(text):
         return True
+    if _BRACKET_AT_DOT.search(text) or _SPOKEN_ADDRESS.search(text):
+        return True
+    dotted = text
+    for mark in _OTHER_DOTS:
+        dotted = dotted.replace(mark, ".")
+    dotted = _SPACED_DOT.sub(".", dotted)
+    if _DOMAIN.search(dotted) or _ANY_DOMAIN.search(dotted):
+        return True
+    if _digit_word_run(text) >= CONFIRM_DIGITS:
+        return True
     return any(len(n) >= CONFIRM_DIGITS for n in _numbers(text))
+
+
+# ── Sensitive facts (PZ-6b, D-PZ-16) ───────────────────────────────────────
+
+#: The words of a sensitive fact: health, religion, caste, politics,
+#: sexuality and finance, with common Indian-English terms. Folded, and
+#: matched as whole words. A fact with one needs the member's second yes.
+#: The list over-asks on purpose: an extra card costs a tap, and a missed one
+#: stores a sensitive fact in silence. The model may add ``sensitive=True``
+#: for a fact that holds none of them, and can never take the ask away.
+SENSITIVE_WORDS: frozenset[str] = frozenset({
+    # Health. A bare "health" names a team or a sector too, so only its
+    # personal phrases are here (PZ-6b review P2).
+    "my health", "health issue", "health issues", "health condition",
+    "health problem", "illness", "disease", "diagnosis", "diagnosed",
+    "diabetes", "diabetic", "sugar patient", "blood sugar", "cancer",
+    "chemo", "chemotherapy", "hiv", "pregnant", "pregnancy", "miscarriage",
+    "ivf", "periods", "therapy", "therapist", "counselling", "counseling",
+    "counsellor", "counselor", "psychiatrist", "antidepressant",
+    "antidepressants", "depression", "depressed", "anxiety", "adhd",
+    "autism", "autistic", "bipolar", "schizophrenia", "ocd", "ptsd",
+    "mental health", "medication", "medicines", "insulin", "asthma",
+    "thyroid", "blood pressure", "high bp", "low bp", "hypertension",
+    "cholesterol", "heart condition", "heart disease", "stroke",
+    "migraine", "migraines", "epilepsy",
+    "disability", "disabled", "surgery", "rehab", "addiction", "alcoholic",
+    "menopause", "pcos", "pcod",
+    # Religion
+    "religion", "religious", "hindu", "muslim", "christian", "sikh", "jain",
+    "buddhist", "jewish", "parsi", "zoroastrian", "atheist", "agnostic",
+    "islam", "islamic", "church", "mosque", "temple", "gurudwara", "namaz",
+    "ramadan", "ramzan", "roza", "puja", "pooja", "pray", "prayer",
+    "navratri", "fasting",
+    # Caste
+    "caste", "dalit", "brahmin", "kshatriya", "vaishya", "shudra", "obc",
+    "sc st", "sc/st", "scheduled caste", "scheduled tribe", "adivasi",
+    "reservation quota", "caste reservation",
+    # Politics. A bare "vote", "liberal" or "conservative" names a work
+    # habit too, so only the personal phrases are here.
+    "politics", "political", "bjp", "congress", "cpi", "cpm", "tmc", "aap",
+    "dmk", "aiadmk", "shiv sena", "aam aadmi", "rss", "i vote", "i voted",
+    "voted for",
+    "vote for", "my vote", "election", "leftist", "rightwing", "right wing",
+    "communist", "socialist",
+    # Sexuality. A bare "trans" names shipping too ("trans-shipment").
+    "sexuality", "sexual", "gay", "lesbian", "bisexual", "queer",
+    "transgender", "i am trans", "i'm trans", "trans woman", "trans man",
+    "trans person", "lgbt",
+    "lgbtq", "lgbtqia", "homosexual", "asexual", "non binary", "nonbinary",
+    "sexual orientation",
+    # Finance. A bare "tax" or "loan" names a team or a product too.
+    "salary", "income", "ctc", "payslip", "my loan", "home loan",
+    "personal loan", "car loan", "loan to repay", "i owe", "pf balance",
+    "debt", "debts", "emi", "emis", "mortgage",
+    "credit score", "cibil", "bank balance", "net worth", "savings",
+    "bankrupt", "bankruptcy", "overdraft", "credit card debt",
+    "income tax", "my taxes", "investments", "i earn", "my earnings",
+    "take home",
+})
+
+#: :data:`SENSITIVE_WORDS` as one pattern of whole words. A space in a term
+#: matches any run of spaces or dashes.
+_SENSITIVE = re.compile(
+    r"(?<!\w)(?:"
+    + "|".join(re.escape(w).replace(r"\ ", r"[\s\-]+")
+               for w in sorted(SENSITIVE_WORDS, key=len, reverse=True))
+    + r")(?!\w)")
+
+
+def is_sensitive(value: Any) -> bool:
+    """True when *value* holds a word of :data:`SENSITIVE_WORDS`.
+
+    The text is folded as :func:`fold` folds it, so the case and the marks
+    do not matter. The match is a whole word: "transport" is not "trans".
+    Fence: ``tests/unit/test_profile_write_tools.py``.
+    """
+    text = fold(value)
+    return bool(text) and _SENSITIVE.search(text) is not None
 
 
 def grounded(value: Any, words: Any) -> bool:

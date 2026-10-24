@@ -20,6 +20,11 @@
  * WhatsApp has no cards. There the member says "undo that", and the model
  * calls `profile_undo`, which the gateway answers from its last chat change.
  *
+ * PZ-6b: a fact that replaces a saved fact asks the member first, on the
+ * existing confirm card. Its receipt reads "Replaced in your profile", and
+ * its Undo PATCHes the old text back. A card that the member declined reads
+ * "Not saved" in the neutral tone: the member chose it, and nothing failed.
+ *
  * The pattern is `TaskToolCards.tsx`: one meta map, one parser of the result
  * text, and a `RollupCard` receipt. Fence: `ProfileToolCards.test.ts`.
  */
@@ -178,14 +183,19 @@ type UndoState = "idle" | "busy" | "done" | "failed";
 /** The receipt of one profile write, with its Undo. */
 export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
-  const { text, undo, status } = readProfileResult(e.result || "");
+  const { text, undo, status, reason } = readProfileResult(e.result || "");
+  // The member said no on the confirm card (PZ-6b): not saved, and no error.
+  const declined = e.status !== "error" && status === "refused" && reason === "declined";
   // A refusal is never "Saved to your profile" (fix round 1, P1).
-  const failed = e.status === "error" || status === "refused";
-  const neutral = !failed && (status === "duplicate" || status === "unknown");
+  const failed = e.status === "error" || (status === "refused" && !declined);
+  const neutral = !failed && (declined || status === "duplicate" || status === "unknown");
   const [state, setState] = useState<UndoState>("idle");
   const tone = failed ? "text-destructive" : neutral ? "text-muted-foreground" : "text-success";
-  const title = failed ? "Not saved" : status === "duplicate" ? "Already saved" : meta.label;
-  const icon = failed ? "X" : status === "duplicate" ? "Check" : meta.icon;
+  // A replace (PZ-6b) is a PATCH of a fact: its Undo PATCHes the old text back.
+  const replaced = e.name === "profile_remember" && undo?.op === "patch";
+  const label = replaced ? "Replaced in your profile" : meta.label;
+  const title = failed || declined ? "Not saved" : status === "duplicate" ? "Already saved" : label;
+  const icon = failed || declined ? "X" : status === "duplicate" ? "Check" : replaced ? "Replace" : meta.icon;
 
   const onUndo = async () => {
     if (!undo || state === "busy" || state === "done") return;

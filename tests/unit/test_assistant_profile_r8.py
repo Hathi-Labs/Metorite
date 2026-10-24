@@ -671,3 +671,29 @@ async def test_an_undo_of_an_unchanged_saved_fact_removes_it(db) -> None:
         await _undo(db.org_a, user)
         read = await _get(db.org_a, user)
     assert read["facts"] == []
+
+
+async def test_a_chat_replace_then_undo_restores_the_old_text(db) -> None:
+    """WS-63 PZ-6b: ``profile_remember(replaces=...)`` PATCHes the fact
+    from the chat. The spoken undo puts the old text and kind back."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        fact = await _chat(lambda: ap.add_fact(body={"text": "I work from Pune", "kind": "work"},
+                                               user=user, x_profile_via="chat"), db.org_a)
+        await _chat(lambda: ap.edit_fact(fact["id"], body={"text": "I work from Mumbai",
+                                                           "kind": "about"},
+                                         user=user, x_profile_via="whatsapp"), db.org_a)
+        mid = (await _get(db.org_a, user))["facts"]
+        ((_o, stored),) = _stored(db, email)
+        done = await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert [(f["id"], f["text"], f["kind"]) for f in mid] == [
+        (fact["id"], "I work from Mumbai", "about")]
+    assert stored["last_change"]["op"] == "patch"
+    assert stored["last_change"]["prior"]["text"] == "I work from Pune"
+    assert done == {"undone": {"op": "patch", "list": "facts"}}
+    assert [(f["id"], f["text"], f["kind"]) for f in read["facts"]] == [
+        (fact["id"], "I work from Pune", "work")]
