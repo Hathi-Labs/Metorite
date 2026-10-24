@@ -74,7 +74,7 @@ export interface ToolEvent {
   /** Live streaming text from the sub-agent (appended as it streams). */
   subAgentText?: string;
   /** Tool calls made by the sub-agent. */
-  subAgentTools?: Array<{id: string; name: string; result?: string; status: "running" | "done" | "error"}>;
+  subAgentTools?: Array<{id: string; name: string; result?: string; status: "running" | "done" | "error"; args?: Record<string, unknown>}>;
   /** True while the sub-agent is actively streaming. */
   subAgentActive?: boolean;
 }

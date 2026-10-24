@@ -96,6 +96,18 @@ EXPECTED_OPEN_WORLD = frozenset({
     # run (test_no_egress_tool_audit.py).
     "send_email", "forward_email", "send_draft", "unsubscribe_sender",
     "update_assistant_settings", "save_knowledge",
+    # Chat parity wave 1 (§22): the voice profile feeds each later draft.
+    "voice_profile",
+    # Multi-mailbox review, P0 (2026-10-23): auto-run and the digest of
+    # several mailboxes change what later leaves each one.
+    "apply_settings_to_mailboxes",
+    # H-375: a send of a draft later is a send.
+    "schedule_send",
+    # EM-CR (email_app_master_plan.md §18): the reply card sends, so it says
+    # open_world. It, send_draft and schedule_send (H-374) are the sends that
+    # a held run keeps, only because of a card and pinned parameters
+    # (eg.CARD_BOUND_SEND_TOOLS).
+    "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
     # task-manager (skill_my_tasks)
@@ -171,6 +183,21 @@ def _no_process(monkeypatch) -> list[str]:
     """Every process start raises, and the self-mutation container never
     starts, so a mutation of the control can never reach a real process."""
     import os
+    import platform
+
+    # H-394: the openai client reads the platform on its first request
+    # (``get_platform``), and that read can start a process. Read it here,
+    # BEFORE the guard goes on, so the answer is cached. The guard is not
+    # weakened: any other process start still raises.
+    platform.platform()
+    platform.machine()
+    try:
+        from openai import _base_client as _oai
+
+        _oai.get_platform()
+        _oai.get_architecture()
+    except ImportError:
+        pass
 
     seen: list[str] = []
 
@@ -284,6 +311,8 @@ def test_the_open_world_tools_are_pinned_and_the_egress_set_is_the_rule() -> Non
     )
     egress = {n for n, t in names.items() if eg.is_egress_tool(t)}
     want = (EXPECTED_OPEN_WORLD | specialists | (eg.STORE_WRITES & set(names))) - eg.DELEGATION_TOOLS
+    # EM-CR and H-374: the card-bound sends stay in a held run although they send.
+    want -= set(eg.CARD_BOUND_SEND_TOOLS)
     assert egress == want, (sorted(egress - want), sorted(want - egress))
 
 
@@ -745,8 +774,21 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: is no `_HOST_FILE_TOOLS` member, and it says open_world=False.
 #: 2026-10-15 (H-315): make_document joined by scope. It lays out a PDF in the
 #: gateway's own child and writes the chat's outputs, and says open_world=False.
+#: 2026-10-22 (owner, over D-PM-35): delete_project and delete_task joined. Each
+#: sits behind one confirmation card and writes only through the gateway.
 #: 2026-10-16 (projects_ai_chat.md §14.10): make_report joined by scope, with the
 #: same PDF seam, the same writes and open_world=False.
+#: 2026-10-23 (WS-64 OP-6a, D-OP-9): create_area, rename_area and delete_area joined.
+#: Each writes only through the gateway, behind one card, and says open_world=False.
+#: 2026-10-23 (WS-64 OP-6c, D-OP-9): nudge_task, export_tasks and attach_to_task joined.
+#: nudge_task and attach_to_task write only through the gateway, behind one card.
+#: export_tasks reads through the gateway and saves one CSV into the chat, as render_report does.
+#: 2026-10-24 (WS-64 OP-6b, D-OP-9): grant_access and revoke_access joined. Each writes
+#: only through the gateway, behind one card, and says open_world=False.
+#: 2026-10-24 (WS-64 OP-6d, D-OP-9): report_recipients (a read) and add_report_recipient,
+#: remove_report_recipient and set_report_schedule (one card each) joined. None sends mail.
+#: 2026-10-24 (WS-64 OP-6e, D-OP-13): waiting_agent_requests (a read) joined. It lists, links the
+#: task card and answers nothing.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -755,7 +797,12 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "complete", "create_field", "create_personal_task", "create_project",
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer",
-    "delete_attachment", "delete_comment", "delete_field", "delete_status",
+    "create_area", "delete_area", "rename_area",
+    "nudge_task", "export_tasks", "attach_to_task",
+    "grant_access", "revoke_access",
+    "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
+    "waiting_agent_requests",
+    "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",
     "file_tasks",
@@ -766,7 +813,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
     "move_project",
     "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
-    "notifications", "open_in_app", "package_artifacts", "people_for", "project_access",
+    "notifications", "open_in_app", "package_artifacts", "people_for", "project_access", "show_view",
     "project_summary", "project_views", "projects_tree", "propose_plan",
     "read_attachment", "rebalance", "recall_timeline", "recurrence", "remember", "render_board",
     "render_report", "render_tasks", "render_timeline", "report_delete",
@@ -1504,8 +1551,15 @@ async def test_redis_down_asks_no_card_for_a_specialist_delegation(
     ``whatsapp_assistant``) are open-world, so they pass the egress gate.
     With Redis down, the state is unknown. A specialist tool is a
     delegation, so it runs with no card. A plain egress tool asks the card,
-    and with no card channel it is refused. A KNOWN mark still asks the card
-    for the specialist tool too."""
+    and with no card channel it is refused.
+
+    EM-CR (email_app_master_plan.md §18, owner 2026-10-20): a KNOWN mark used
+    to ask the card for the specialist tool too. That card guarded nothing:
+    in a marked session the run that the hand-off starts binds ``no_egress``
+    (``_delegated_no_egress``), so it holds no send, and each of its writes
+    asks its own card. So the hand-off now runs with no card, and the plain
+    egress tool still asks. The test below keeps the card for a hand-off
+    whose child would NOT be held."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
@@ -1544,8 +1598,102 @@ async def test_redis_down_asks_no_card_for_a_specialist_delegation(
         mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:chat-marked"] = "1"
         with artifact_context_scope():
             bind_artifact_context(run_id="r2", session_id="chat-marked", member="m@example.com")
-            assert "did not run" in await call(specialist, task="send hi to Y")
-            assert cards == ["fetch_page", "whatsapp_assistant"], cards
+            # The child of this hand-off is held, by the same function that
+            # the executor binds it with, so no card asks. The gate read the
+            # mark from Redis first, so the process holds it.
+            assert await call(specialist, task="send hi to Y") == "delegated: send hi to Y"
+            assert ti._run_no_egress("whatsapp-assistant", ti_artifact_context()) is True
+            assert "did not run" in await call(fetch, url=_EVIL)
+            assert cards == ["fetch_page", "fetch_page"], cards
+    finally:
+        release_tenant(token)
+
+
+def ti_artifact_context() -> Any:
+    from acb_skills.write_artifact import artifact_context
+
+    return artifact_context()
+
+
+def _gated_specialist(name: str, agent: str) -> Any:
+    async def specialist(task: str) -> str:
+        return f"delegated: {task}"
+
+    specialist.__name__ = name
+    specialist.__tool_risk__ = {  # type: ignore[attr-defined]
+        "read_only": False, "destructive": False, "idempotent": False, "open_world": True}
+    specialist.__delegates_to__ = agent  # type: ignore[attr-defined]
+    return ti._gate_injected_tool(specialist)
+
+
+async def test_a_handoff_card_asks_only_when_the_child_would_not_be_held(
+    monkeypatch, mark_store,
+) -> None:
+    """EM-CR: in a marked session the hand-off card asks only for a child
+    that the executor would NOT hold. The gate asks ``_run_no_egress``, the
+    function that binds the child's flag, so a change of that rule moves the
+    card with it. Mutation: drop the ``_handoff_child_held`` test from the
+    gate, and the held case asks a card again."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    cards: list[str] = []
+
+    async def yes_card(tool_name: str, _kwargs: Any) -> bool:
+        cards.append(tool_name)
+        return True
+
+    asked: list[tuple[str, Any]] = []
+    real = ti._run_no_egress
+
+    def spy(agent_name: Any, parent_ctx: Any, organization_id: Any = None) -> bool:
+        asked.append((agent_name, parent_ctx.get("session_id")))
+        return held_answer
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", yes_card)
+    monkeypatch.setattr(ti, "_run_no_egress", spy)
+    email = _gated_specialist("email_assistant", "email-assistant")
+    mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:chat-m2"] = "1"
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id="chat-m2", member="m@example.com")
+            held_answer = True
+            assert await email(task="read the mail from Kim") == "delegated: read the mail from Kim"
+            assert cards == []
+            held_answer = False
+            assert await email(task="read it again") == "delegated: read it again"
+            assert cards == ["email_assistant"]
+        assert asked == [("email-assistant", "chat-m2")] * 2
+    finally:
+        release_tenant(token)
+    assert real is not spy
+
+
+async def test_the_first_handoff_of_a_fresh_session_asks_nothing(
+    monkeypatch, mark_store,
+) -> None:
+    """A fresh chat has no mark, so its first hand-off to the email assistant
+    asks no card, before and after EM-CR. Its child is not held either: the
+    executor marks the session only as that run starts."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    cards: list[str] = []
+
+    async def no_card(tool_name: str, _kwargs: Any) -> bool:
+        cards.append(tool_name)
+        return False
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", no_card)
+    email = _gated_specialist("email_assistant", "email-assistant")
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id="chat-fresh", member="m@example.com")
+            assert await email(task="what did Kim send?") == "delegated: what did Kim send?"
+            assert cards == []
+            assert ti._run_no_egress("email-assistant", ti_artifact_context()) is False
     finally:
         release_tenant(token)
 

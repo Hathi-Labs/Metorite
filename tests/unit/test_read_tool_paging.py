@@ -100,6 +100,10 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
+        "No notice is lost: the card shows four (clean_reply_form refuses more), "
+        "and _reply_form puts notices[4:] into the card's note. Removing the cut "
+        "on 2026-10-24 made a card with five notices fail to show.",
     "packages/acb_skills/acb_skills/crm_tools.py::_card_label::[str(s) for s in choice.get('samples') or [] if str(s).strip()][:_LABEL_SAMPLES]":
         'The masked samples of one option label of a CRM question card (CRM-Q32-8). The read gives 3 at most. Not rows.',
     'apps/agents/agent-email-assistant/agents.py::_card_detail::detail[:limit]':
@@ -140,8 +144,6 @@ ALLOWED: dict[str, str] = {
         'A digest. Each section prints its count, and query_inbox pages the mail.',
     'apps/agents/agent-email-assistant/agents.py::_one::(items or [])[:5]':
         'A digest. Each section prints its count, and query_inbox pages the mail.',
-    "apps/agents/agent-email-assistant/agents.py::get_account_overview::overview.get('top_senders', [])[:5]":
-        "A 'top 5 senders' summary. list_senders pages every sender.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::evicted[:5]':
         "A plan receipt. It prints the count and '…', and my_tasks_list(view='next') lists the tasks.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::unplaced[:5]':
@@ -800,15 +802,19 @@ def test_query_inbox_page_two_holds_items_31_to_35(monkeypatch, ea) -> None:
 
 
 def test_read_thread_pages_the_newest_messages_in(monkeypatch, ea) -> None:
-    """The thread is oldest first. The old read showed the oldest 25 of at
-    most 50, and called the dropped NEWEST ones 'earlier'."""
+    """The old read showed the oldest 25 of at most 50, and called the
+    dropped NEWEST ones 'earlier'. Since 2026-10-22 the first page holds
+    the NEWEST 25, oldest first within the page, and offset pages back."""
     _gw(monkeypatch, ea, _paged_messages(_messages(60)))
     first = asyncio.run(ea.read_thread(thread_id="t1"))
     assert "60 message(s)" in first
-    assert "Showing 1-25 of 60. Call again with offset=25 for the rest." in first
+    assert "[36]" in first and "[60]" in first and "x60@y.io" in first
+    assert "[35]" not in first
+    assert ("Showing messages 36-60 of 60. Call again with offset=25 for the 25 "
+            "messages before these.") in first
     last = asyncio.run(ea.read_thread(thread_id="t1", offset=50))
-    assert "[51]" in last and "[60]" in last and "x60@y.io" in last
-    assert "This is the last page." in last
+    assert "[1]" in last and "[10]" in last and "[11]" not in last
+    assert "These are the oldest messages." in last
 
 
 def test_find_urgent_names_the_total(monkeypatch, ea) -> None:

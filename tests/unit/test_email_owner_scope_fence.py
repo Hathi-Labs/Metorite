@@ -48,9 +48,15 @@ _OUTSIDE_ROOTS = (_ROOT / "apps", _ROOT / "packages")
 #: download route and the text route call. That helper carries its own SQL
 #: owner predicate, and ``test_the_attachment_fetch_proves_ownership_itself``
 #: checks it, because this fence does not read the helpers that it trusts.
+#: WS-65 SM-2 adds the builders of ``routes/email/mailbox_access.py``, the one
+#: mailbox access seam. Each returns the owner predicate (with the flag off,
+#: the text ``user_id = :uid``), and ``test_email_owner_predicate_seam.py``
+#: and ``test_email_shared_mailbox_r8.py`` check it.
 OWNER_HELPERS = frozenset({
     "_account_scope", "_assert_account_owner", "provider_session",
     "_fetch_owned_attachment",
+    "mailbox_predicate", "mailbox_ids_sql", "private_predicate",
+    "assert_mailbox_access", "may_access", "_owned_accounts_sql",
 })
 #: A SQL owner predicate on ``user_id``: ``user_id = :uid``, ``ea.user_id =
 #: :user_id``, ``LOWER(user_id) = LOWER(:uid)``.
@@ -64,9 +70,55 @@ _OWNER_PREDICATE = re.compile(
 #: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
 #: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
+    "resolve_metorite_files_route": (
+        "H-392 (owner, 2026-10-24). Reads no email table and no mailbox. It "
+        "resolves Metorite files through their own stores, as the member: an "
+        "Artifacts file through _member_agent_workspace and _safe_resolve, a "
+        "Knowledge page through load_page and visible_pages_clause, a task "
+        "attachment through visible_task_attachment (test_email_metorite_files.py)."
+    ),
+    "held_card": (
+        "§21. Dispatches by kind. DRAFT_ROW_SQL and FORWARD_MAIL_SQL join "
+        "ea.user_id = :uid, _stored_target and _new_card call "
+        "_assert_account_owner, and OWNED_FILES_SQL and MAIL_FILES_SQL join "
+        "acc.user_id = :uid (R8: test_held_send_files_r8.py)."
+    ),
+    "held_card_act": (
+        "§21. Takes the caller's own answer and card record (take_record "
+        "checks the owner of the record). Each act then calls a route that "
+        "proves the owner again: send_draft_endpoint, schedule_draft, "
+        "unsubscribe_sender and upsert_newsletter call _assert_account_owner, "
+        "forward_email joins user_id, and a file comes through "
+        "_fetch_owned_attachment."
+    ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."
+    ),
+    "reply_card": (
+        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
+        "join holds ea.user_id = :uid. That read is the proof when the chat "
+        "passes an agreed draft and no drafter runs. Else draft_reply_smart "
+        "also calls _assert_account_owner (EM-CR)."
+    ),
+    "list_scheduled": (
+        "Send later (H-375). Each read names owner_email = the session's own "
+        "email, and only schedule_draft writes a row, after "
+        "_assert_account_owner. A row of another member is never read."
+    ),
+    "cancel_scheduled": (
+        "Send later (H-375). The row is read FOR UPDATE with owner_email = the "
+        "session's own email, so a row of another member is a 404."
+    ),
+    "reply_recipients_route": (
+        "A thin wrapper. reply_recipients calls _load_mail, which reads the "
+        "mail with REPLY_ROW_SQL, whose join holds ea.user_id = :uid. A mail "
+        "of another member is a 404. It writes nothing."
+    ),
+    "reply_card_act": (
+        "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
+        "join holds ea.user_id = :uid, and _save_draft opens provider_session "
+        "for the caller (EM-CR)."
     ),
     "compose_assist": (
         "A thin wrapper. _compose_assist_run calls _assert_account_owner "
@@ -129,6 +181,11 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
 #: and why its read is scoped. A key that ends in ``/`` is a package. Paths
 #: are relative to the repository root.
 OUTSIDE_EMAIL_READERS: dict[str, str] = {
+    "apps/services/gateway/gateway/routes/admin/members.py": (
+        "An admin removes or purges a member (H-375). It cancels or deletes "
+        "only the scheduled sends whose owner_email is that member, inside "
+        "the admin's own tenant session, after the admin permission check."
+    ),
     "apps/services/gateway/gateway/routes/crm/activities.py": (
         "The CRM timeline reads email through _email_account_scope, a copy "
         "of _account_scope bound to the caller (WS-26d-email). Mutation "
@@ -358,8 +415,11 @@ class TestEveryEmailHandlerProvesOwnership:
         [helper] = [fn for fn in ast.walk(tree)
                     if isinstance(fn, ast.AsyncFunctionDef)
                     and fn.name == "_fetch_owned_attachment"]
-        assert any(_OWNER_PREDICATE.search(s) for s in _strings(helper)), (
-            "_fetch_owned_attachment lost its user_id predicate, and two "
+        # Since WS-65 SM-2 the predicate comes from the one seam, so the
+        # body calls ``mailbox_predicate`` and holds no ``user_id`` literal.
+        assert (any(_OWNER_PREDICATE.search(s) for s in _strings(helper))
+                or "mailbox_predicate" in _called_names(helper)), (
+            "_fetch_owned_attachment lost its owner predicate, and two "
             "routes trust it as an owner proof"
         )
         routes = {name: proof for name, proof in handlers_of(

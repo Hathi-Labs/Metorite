@@ -24,7 +24,9 @@ Mutations this file catches (R7):
   or keeps ``search_company`` -> ``TestFlagOff``;
 * the swap keeps a legacy retriever or leaves rule 1 -> ``TestFlagOn``;
 * the tool calls the gateway with no member -> ``TestTheMember``;
-* the header or the ``full_id`` line leaves the answer -> ``TestTheAnswer``.
+* the header or the ``full_id`` line leaves the answer -> ``TestTheAnswer``;
+* the two proposal tools, or their persona line, join with
+  ``KNOWLEDGE_PROPOSALS`` off -> ``TestTheProposalsFlag``.
 """
 
 from __future__ import annotations
@@ -96,6 +98,12 @@ MAIN_TOOLS = [
     "remember", "recall_timeline", "save_memory", "save_episode",
 ]
 
+#: WS-62 CF-3: with CHAT_FIRST_TOOLS on, the orchestrator's own page tool
+#: joins after search_timeline (test_show_in_app.py). Off, the list is MAIN_TOOLS.
+MAIN_TOOLS_CHAT_FIRST = [
+    *MAIN_TOOLS[:3], "show_in_app", *MAIN_TOOLS[3:],
+]
+
 
 # ── The flag ────────────────────────────────────────────────────────────────
 
@@ -115,6 +123,19 @@ class TestFlagOff:
         flag(state)
         assert _names(_build(monkeypatch)) == MAIN_TOOLS
 
+    def test_chat_first_tools_adds_show_in_app_only(self, flag, monkeypatch):
+        """WS-62 CF-3: the page tool joins with its own flag, and nothing else moves."""
+        from acb_common.settings import get_settings
+
+        flag(None)
+        monkeypatch.setenv("CHAT_FIRST_TOOLS", "true")
+        get_settings.cache_clear()
+        try:
+            assert _names(_build(monkeypatch)) == MAIN_TOOLS_CHAT_FIRST
+        finally:
+            monkeypatch.delenv("CHAT_FIRST_TOOLS", raising=False)
+            get_settings.cache_clear()
+
     @pytest.mark.parametrize("state", [None, False])
     def test_the_persona_is_mains_byte_for_byte(self, flag, monkeypatch, state):
         flag(state)
@@ -130,7 +151,8 @@ class TestFlagOn:
     def test_search_company_replaces_the_two_legacy_retrievers(self, flag, monkeypatch):
         flag(True)
         tools = _build(monkeypatch).kwargs["tools"]
-        # KB-4a: the two Knowledge reads join on the same path.
+        # KB-4a: the two Knowledge reads join on the same path. The KB-5a
+        # proposals need KNOWLEDGE_PROPOSALS too (TestTheProposalsFlag).
         assert [getattr(t, "__name__", "") for t in tools] == [
             "search_company", "read_page", "list_spaces", *MAIN_TOOLS[2:]]
         assert cst.search_company in tools
@@ -167,6 +189,67 @@ class TestFlagOn:
         for name in ("retrieve_entity_context", "retrieve_sales_context"):
             assert name in mod.__all__ and name in pkg.__all__
             assert getattr(pkg, name) is getattr(mod, name)
+
+
+# ── KB-5a: the proposals have their own flag ────────────────────────────────
+
+@pytest.fixture()
+def proposals(monkeypatch):
+    """Set ``KNOWLEDGE_PROPOSALS`` and clear the settings cache, both ways."""
+    from acb_common.settings import get_settings
+
+    def _set(on: bool | None) -> None:
+        if on is None:
+            monkeypatch.delenv("KNOWLEDGE_PROPOSALS", raising=False)
+        else:
+            monkeypatch.setenv("KNOWLEDGE_PROPOSALS", "true" if on else "false")
+        get_settings.cache_clear()
+
+    yield _set
+    monkeypatch.delenv("KNOWLEDGE_PROPOSALS", raising=False)
+    get_settings.cache_clear()
+
+
+PROPOSE = ("propose_page", "propose_edit")
+PROPOSE_LINE = "- propose_page, propose_edit:"
+
+
+class TestTheProposalsFlag:
+    def test_it_ships_off(self, proposals):
+        from acb_skills import knowledge_tools as kt
+
+        proposals(None)
+        assert kt.knowledge_propose_enabled() is False
+
+    @pytest.mark.parametrize("state", [None, False])
+    def test_off_the_tools_and_the_line_are_absent(self, flag, proposals, monkeypatch, state):
+        flag(True)
+        proposals(state)
+        agent = _build(monkeypatch)
+        assert not set(PROPOSE) & set(_names(agent))
+        assert "read_page" in _names(agent)
+        assert "propose_" not in agent.kwargs["instructions"]
+
+    def test_on_the_two_tools_follow_the_reads(self, flag, proposals, monkeypatch):
+        flag(True)
+        proposals(True)
+        agent = _build(monkeypatch)
+        assert _names(agent) == [
+            "search_company", "read_page", "list_spaces", *PROPOSE, *MAIN_TOOLS[2:]]
+        persona = agent.kwargs["instructions"]
+        assert persona.count(PROPOSE_LINE) == 1
+        mod = _orchestrator_module()
+        assert persona == mod._orchestrator_instructions(True, False, True)
+        # Undo the one swap and the KR-2 persona is back, byte for byte.
+        old, new = mod._PROPOSALS_SWAP
+        assert persona.replace(new, old, 1) == mod._orchestrator_instructions(True)
+
+    def test_on_without_company_search_changes_nothing(self, flag, proposals, monkeypatch):
+        flag(False)
+        proposals(True)
+        agent = _build(monkeypatch)
+        assert _names(agent) == MAIN_TOOLS
+        assert agent.kwargs["instructions"] is _orchestrator_module()._PULL_INSTRUCTIONS
 
 
 # ── One path ────────────────────────────────────────────────────────────────

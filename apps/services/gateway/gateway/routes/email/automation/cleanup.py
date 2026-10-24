@@ -61,11 +61,11 @@ from gateway.routes.email.automation.senders import (
 )
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
     _provider_for_account_any,
+    _tenant_session,
     router,
 )
 from pydantic import BaseModel
@@ -1135,7 +1135,7 @@ async def uncategorized_overview(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         internal_domains = await _internal_domains(db, account_id)
         params = _cleanup_scope_params(account_id, internal_domains)
         total = (await db.execute(text(

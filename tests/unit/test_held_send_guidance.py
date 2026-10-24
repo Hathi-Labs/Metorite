@@ -1,0 +1,227 @@
+"""H-374: no text that a model reads sends the member away to send a mail.
+
+Owner decision of 2026-10-22, "Drafts, with a card"
+(``email_app_master_plan.md`` §18.5). A held chat keeps ``send_draft``
+behind its card. Before this change, the chat told the owner to "paste it by
+hand" or to "ask me in a new conversation" for a draft that it could send.
+
+This fence reads each text that a model reads: the hold texts of
+``acb_skills.egress``, each agent's ``instructions.md``, and each string in
+each agent's ``agents.py`` (the docstrings, which MAF gives to the model as
+tool descriptions, and the tool answers). A sentence that suggests a new
+conversation, a new chat, pasting or doing it by hand fails, unless the
+sentence forbids it ("Never tell the member to paste ...").
+
+It also pins the in-chat next steps of the H-374 audit. A refusal of
+``send_draft``, ``unsubscribe_sender`` or ``run_rules``, and the cut text on
+the draft card, give a step in the chat and never only "the Email app".
+
+What breaks it (R7), each run red by hand on this branch:
+
+* put "or ask for it in a new conversation" back in ``EGRESS_HOLD_NOTE_MAIL``;
+* put "Send it from the Email app." back in ``send_draft``;
+* put "You cannot add a CC or a BCC." back in ``compose_reply``.
+"""
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+
+import pytest
+from acb_skills import egress as eg
+
+REPO = Path(__file__).resolve().parents[2]
+AGENTS_DIR = REPO / "apps" / "agents"
+EMAIL_AGENT = AGENTS_DIR / "agent-email-assistant" / "agents.py"
+
+#: A way out of the chat that the model must not offer as the way to send.
+_WORKAROUND = re.compile(
+    r"\bnew (conversation|chat)\b|\bby hand\b|\bpaste\b", re.IGNORECASE)
+#: A sentence that forbids the workaround may name it.
+_FORBIDS = re.compile(r"\b(never|not|no)\b", re.IGNORECASE)
+
+
+def _sentences(text: str) -> list[str]:
+    flat = " ".join(text.split())
+    return [s for s in re.split(r"(?<=[.!?])\s+", flat) if s]
+
+
+def _offers(text: str) -> list[str]:
+    return [s for s in _sentences(text)
+            if _WORKAROUND.search(s) and not _FORBIDS.search(s)]
+
+
+def _strings(path: Path, only: set[str] | None = None) -> list[str]:
+    """Each string constant of *path*, or of the named functions only."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    roots: list[ast.AST] = [tree]
+    if only is not None:
+        roots = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef) and n.name in only]
+        assert {n.name for n in roots} == only, "a named function is gone"
+    return [n.value for r in roots for n in ast.walk(r)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+
+_HOLD_TEXTS = ("EGRESS_HELD_MAIL_ANSWER", "EGRESS_HOLD_NOTE_MAIL",
+               "EGRESS_HOLD_NOTE_SANDBOX", "EGRESS_WITHHELD_ANSWER",
+               # §21: the note and the answer of a held mail run while
+               # EMAIL_HELD_CARD_SEND is on.
+               "EGRESS_HOLD_NOTE_MAIL_CARDS", "EGRESS_HELD_MAIL_ANSWER_CARDS")
+
+
+@pytest.mark.parametrize("name", _HOLD_TEXTS)
+def test_no_hold_text_offers_a_workaround(name: str) -> None:
+    assert _offers(getattr(eg, name)) == [], name
+
+
+#: §21: the refusals of the held card, which the model reads as the answer
+#: of a tool. Each says what to do in the chat.
+_HELD_CARD_TEXTS = ("BCC_NEW_REFUSED", "TEXT_TOO_LONG", "NO_TICKED_RECIPIENT",
+                    "MAILTO_REFUSED", "LINK_REFUSED", "LINK_CHANGED", "SUBJECT_REFUSED",
+                    "FILE_NOT_OWNED")
+
+
+@pytest.mark.parametrize("name", _HELD_CARD_TEXTS)
+def test_no_held_card_refusal_offers_a_workaround(name: str) -> None:
+    from gateway.routes.email.automation import held_card as hc
+
+    text = getattr(hc, name)
+    assert _offers(text) == [], name
+    assert "Email app" not in text, name
+
+
+def test_the_cards_note_says_what_works_and_what_does_not() -> None:
+    """§21 (open question 3): the note tells the model never to tick for
+    the member, and never to press the member to tick a person that the
+    email asked for. It still names what stays held."""
+    note = " ".join(eg.EGRESS_HOLD_NOTE_MAIL_CARDS.split())
+    assert "send_draft" in note and "in one sentence" in note
+    assert "starts unticked" in note
+    assert "Never tick for the member" in note
+    assert "fetches a link" in note and "searches the web" in note
+    # Slice (e): a forward and a new mail work, a reply goes to compose_reply,
+    # and a file is attachment:<id> of the member's own mailbox.
+    assert "A forward and a new email send through the same card" in note
+    assert "compose_reply, not send_email" in note
+    assert "attachment:<id>" in note
+
+
+def test_the_cards_answer_names_what_stays_held() -> None:
+    answer = " ".join(eg.EGRESS_HELD_MAIL_ANSWER_CARDS.split())
+    assert "fetch a link" in answer and "search the web" in answer
+    assert "in one sentence" in answer
+    assert "each through its card" in answer
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_held_answer_follows_the_switch(monkeypatch, on: bool) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "email_held_card_send", on)
+    got = eg.egress_held_answer("fetch_page", {"agent_name": "email-assistant"})
+    want = eg.EGRESS_HELD_MAIL_ANSWER_CARDS if on else eg.EGRESS_HELD_MAIL_ANSWER
+    assert got == want.format(name="fetch_page")
+
+
+def test_the_mail_hold_says_a_saved_draft_still_sends() -> None:
+    for text in (eg.EGRESS_HOLD_NOTE_MAIL, eg.EGRESS_HELD_MAIL_ANSWER):
+        assert "send_draft" in text
+        assert "in one sentence" in text
+
+
+@pytest.mark.parametrize(
+    "path", sorted(AGENTS_DIR.glob("*/instructions.md")), ids=lambda p: p.parent.name)
+def test_no_agent_instruction_offers_a_workaround(path: Path) -> None:
+    assert _offers(path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.parametrize(
+    "path", sorted(AGENTS_DIR.glob("*/agents.py")), ids=lambda p: p.parent.name)
+def test_no_agent_string_offers_a_workaround(path: Path) -> None:
+    found = [s for text in _strings(path) for s in _offers(text)]
+    assert found == []
+
+
+def test_the_email_instructions_send_a_held_draft_with_send_draft() -> None:
+    text = " ".join((AGENTS_DIR / "agent-email-assistant" / "instructions.md")
+                    .read_text(encoding="utf-8").split())
+    assert "`send_draft` works in every chat" in text
+    assert "this chat cannot do it because it read outside mail" in text
+    assert "Give no other way." in text
+
+
+#: Text that the H-374 audit removed. Each one sent the member to the Email
+#: app as the only way, or contradicted the in-chat Cc flow or the card.
+_REMOVED = (
+    "Add one in the Email app",
+    "Fix it in the Email app",
+    "Send it from the Email app",
+    "block the sender in the Email app",
+    "unsubscribe in the Email app",
+    "rules screen of the Email app",
+    "Open the draft in the Email app",
+    "You cannot add a CC",
+    "ALWAYS confirm the recipients",
+)
+
+
+@pytest.mark.parametrize("phrase", _REMOVED)
+def test_the_audit_text_stays_out_of_the_email_agent(phrase: str) -> None:
+    flat = [" ".join(s.split()) for s in _strings(EMAIL_AGENT)]
+    assert not [s for s in flat if phrase in s], phrase
+
+
+def test_the_send_refusals_give_a_step_in_the_chat() -> None:
+    """``_NO_CARD_CHANNEL`` names the Email app on purpose (a run with no
+    card), and these functions return it by name, not as a literal."""
+    funcs = {"send_draft", "unsubscribe_sender", "run_rules", "_with_draft_text"}
+    texts = [" ".join(s.split()) for s in _strings(EMAIL_AGENT, funcs)]
+    assert not [s for s in texts if "Email app" in s]
+
+
+
+def test_the_email_instructions_name_no_fixed_list_of_held_jobs() -> None:
+    """Fix round 1 (P2-b). With EMAIL_HELD_CARD_SEND on, a held run CAN
+    forward, send a new email, unsubscribe and attach a file of the mailbox.
+    A fixed list in instructions.md said the opposite of the run's note. The
+    instructions defer to the note "Held in this run". Mutation: put the old
+    sentence "This run may not forward, send a new email, ..." back → red."""
+    text = " ".join((AGENTS_DIR / "agent-email-assistant" / "instructions.md")
+                    .read_text(encoding="utf-8").split())
+    start = text.index("**A held run**")
+    held = text[start:text.index("**Only the user asks for a rule**")]
+    assert "Held in this run" in held
+    for job in ("forward", "new email", "unsubscribe", "attach", "fetch a link"):
+        assert job not in held, job
+    for line in text.split(". "):
+        if "may not" in line or "cannot" in line:
+            assert not ("forward" in line and "unsubscribe" in line), line
+
+
+
+def test_the_draft_tools_give_an_in_chat_step() -> None:
+    """Fix round 1 (P3). The docstrings of the draft and send tools name the
+    in-chat step, and not the Email app. Mutation: put "or in the Email app"
+    back in compose_reply or draft_reply → red."""
+    funcs = {"compose_reply", "draft_reply", "send_draft", "schedule_send", "edit_draft"}
+    tree = ast.parse(EMAIL_AGENT.read_text(encoding="utf-8"))
+    docs = [ast.get_docstring(n) or "" for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name in funcs]
+    assert len(docs) == len(funcs)
+    # A sentence that forbids it ("Never tell the member to open the Email
+    # app") may name it.
+    offers = [x for d in docs for x in _sentences(d)
+              if "Email app" in x and not _FORBIDS.search(x)]
+    assert offers == []
+
+
+def test_the_too_long_answer_names_a_chat_step_and_not_the_email_app() -> None:
+    """Owner, 2026-10-23: the owner rejects "do it in the Email app"."""
+    flat = [" ".join(t.split()) for t in _strings(EMAIL_AGENT)]
+    hits = [t for t in flat if "too long to show on the card. I can" in t]
+    assert hits
+    for text in hits:
+        assert "Email app" not in text
+        assert "edit_draft" in text

@@ -118,8 +118,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_eleven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 12)) == T.TASK_IDS
+def test_the_twenty_seven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 28)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -131,7 +131,7 @@ def test_the_task_selector() -> None:
     assert [t.id for t in T.select("all")] == list(T.TASK_IDS)
     assert [t.id for t in T.select("PO-4, PO-1")] == ["PO-4", "PO-1"]
     with pytest.raises(ValueError):
-        T.select("PO-12")
+        T.select("PO-99")
 
 
 # ── 2. the scripted sweep, through the REAL executor ────────────────────────
@@ -189,7 +189,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 11
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 27
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -615,6 +615,46 @@ def test_po11_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
     assert _failed(_run(harness, "PO-11", steps)) == {"answer_counts_three"}
 
 
+# ── PO-12 to PO-14: the member's own areas (WS-64 OP-6a) ────────────────────
+
+
+def test_po12_to_po14_the_known_good_runs_pass(harness: R.OpsHarness) -> None:
+    for task in ("PO-12", "PO-13", "PO-14"):
+        record = _run(harness, task)
+        assert record["status"] == "pass", (task, record["failure"])
+
+
+def test_po12_a_declined_card_fails_and_writes_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-12"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-12", spec=spec)
+    assert {"one_card", "one_area_made"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po13_the_card_shows_the_old_name_and_the_new_one(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-13")
+    [card] = record["cards"]
+    assert "«Home»" in card["context"] and "«House»" in card["context"]
+
+
+def test_po13_a_rename_of_another_area_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("rename_area", area="Finance", new_name="House"), ("text", "Home is House.")]
+    assert {"one_rename_on_home"} <= _failed(_run(harness, "PO-13", steps))
+
+
+def test_po14_an_answer_that_says_deleted_fails(harness: R.OpsHarness) -> None:
+    """Finance holds two done tasks, so the route archives. 'Deleted' would be false."""
+    steps = [tool("delete_area", area="Finance"), ("text", "I deleted the area Finance.")]
+    assert _failed(_run(harness, "PO-14", steps)) == {"answer_says_archived"}
+
+
+def test_po14_the_card_says_what_the_route_will_do(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-14")
+    [card] = record["cards"]
+    assert "impact: 0 open tasks" in card["context"]
+    assert "archived and everything stays" in card["context"]
+
+
 def test_the_runner_answers_the_rows_of_a_card_as_drawn() -> None:
     """A card with rows is approved with the rows the tool ticked, minus the
     task's unticks. A decline and a plain card stay plain words."""
@@ -873,3 +913,254 @@ def test_a_card_that_repeats_a_read_fails() -> None:
     assert _card_rule([read, _genui(part)], "no_read_recarded")
     # No read before it: nothing to repeat.
     assert _card_rule([_genui(mirror)], "no_read_recarded")
+
+
+# ── PO-15 to PO-17: a nudge, an export and an attached file (WS-64 OP-6c) ───
+
+LAUNCH_OVERDUE = len([t for t in D.overdue(DS) if t.project == "Launch"])
+
+
+def test_the_stub_keeps_the_nudge_routes_rules() -> None:
+    stub = stub_api.OpsStub(DS)
+    mine = f"/projects/tasks/{DS.task(3).id}/nudge"
+    status, body = stub.handle("POST", mine, T.MEMBER)
+    assert status == 409 and body["detail"] == "You are not waiting on anybody for this task."
+    done = f"/projects/tasks/{DS.task(1).id}/nudge"
+    status, body = stub.handle("POST", done, T.MEMBER)
+    assert status == 409 and "done" in body["detail"]
+    status, body = stub.handle("POST", f"/projects/tasks/{DS.task(D.DELEGATED).id}/nudge", T.MEMBER)
+    assert status == 200 and body["notified"] == [D.PRIYA.email]
+    assert [n["to"] for n in stub.nudges] == [D.PRIYA.email]
+
+
+def test_the_stub_answers_the_export_as_csv_and_refuses_above_the_cap(monkeypatch) -> None:
+    stub = stub_api.OpsStub(DS)
+    query = f"?project_id={LAUNCH.id}&overdue=true&shown_fields=status,assignees"
+    status, raw = stub.handle("GET", "/projects/export/tasks.csv" + query, T.MEMBER)
+    assert status == 200 and raw.rows == LAUNCH_OVERDUE
+    assert raw.headers["X-Export-Rows"] == str(LAUNCH_OVERDUE)
+    first = raw.body.decode("utf-8-sig").splitlines()[0]
+    assert first == "#,Title,Status,Assignees"
+    monkeypatch.setattr(stub_api, "EXPORT_CAP", 1)
+    status, body = stub.handle("GET", "/projects/export/tasks.csv" + query, T.MEMBER)
+    assert status == 422 and "export cap is 1" in body["detail"]
+
+
+def test_the_stub_keeps_the_upload_routes_rules() -> None:
+    stub = stub_api.OpsStub(DS)
+    path = f"/projects/tasks/{DS.task(6).id}/attachments"
+
+    def part(name: str, size: int) -> dict[str, Any]:
+        return {"file": {"name": name, "size": size, "mime": "application/pdf"}}
+
+    assert stub.handle("POST", path, T.MEMBER, part("setup.exe", 5))[0] == 400
+    assert stub.handle("POST", path, T.MEMBER, part("empty.pdf", 0))[0] == 400
+    assert stub.handle("POST", path, T.MEMBER, part("huge.pdf", 16 * 1024 * 1024))[0] == 413
+    assert stub.handle("POST", path, T.MEMBER, part("a.pdf", 8 * 1024 * 1024))[0] == 200
+    assert stub.handle("POST", path, T.MEMBER, part("b.pdf", 3 * 1024 * 1024))[0] == 413
+    _, listed = stub.handle("GET", path, T.MEMBER)
+    assert [f["name"] for f in listed["rows"]] == ["a.pdf"]
+
+
+def test_po15_to_po17_the_known_good_runs_pass(harness: R.OpsHarness) -> None:
+    for task in ("PO-15", "PO-16", "PO-17"):
+        record = _run(harness, task)
+        assert record["status"] == "pass", (task, record["failure"])
+
+
+def test_po15_the_card_names_the_person_and_the_task(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-15")
+    [card] = record["cards"]
+    assert "«Priya Menon»" in card["detail"] and "#4" in card["detail"]
+    assert "impact: 1 notification to «Priya Menon»" in card["context"]
+    assert [r["path"] for r in record["requests"] if r["method"] == "POST"] == [
+        f"/projects/tasks/{DS.task(D.DELEGATED).id}/nudge"
+    ]
+
+
+def test_po15_a_declined_card_nudges_nobody(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-15"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-15", spec=spec)
+    assert {"one_card", "one_nudge"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po15_a_second_nudge_in_one_run_fails_the_checker(harness: R.OpsHarness) -> None:
+    """The tool never loops: a model that calls it twice is caught, though the
+    member answered both cards."""
+    task = DS.task(D.DELEGATED).id
+    steps = [tool("nudge_task", task_id=task), tool("nudge_task", task_id=task),
+             ("text", "I nudged «Priya Menon» twice.")]
+    spec = dataclasses.replace(T.by_id("PO-15"), cards=(T.APPROVE, T.APPROVE))
+    failed = _failed(_run(harness, "PO-15", steps, spec=spec))
+    assert {"one_card", "one_nudge", "nothing_else_written"} <= failed
+
+
+def test_po15_a_task_the_member_does_not_wait_on_is_refused_before_the_card(
+    harness: R.OpsHarness,
+) -> None:
+    steps = [tool("nudge_task", task_id=DS.task(3).id), ("text", "You wait on nobody for #3.")]
+    record = _run(harness, "PO-15", steps)
+    assert not record["cards"]
+    assert {"one_card", "one_nudge", "answer_names_priya_and_no_email"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po15_an_answer_that_claims_an_email_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("nudge_task", task_id=DS.task(D.DELEGATED).id),
+             ("text", "I emailed Priya Menon about #4.")]
+    assert _failed(_run(harness, "PO-15", steps)) == {"answer_names_priya_and_no_email"}
+
+
+def test_po16_the_export_is_a_chat_document_and_takes_no_card(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-16")
+    assert record["cards"] == []
+    [call] = [c for s in record["sessions"] for c in s["tool_calls"] if c["name"] == "export_tasks"]
+    assert call["result"].startswith(f"Exported {LAUNCH_OVERDUE} tasks to outputs/")
+    [csv] = [r for r in record["requests"] if r["path"] == "/projects/export/tasks.csv"]
+    assert csv["query"]["project_id"] == LAUNCH.id and csv["query"]["overdue"] == "true"
+
+
+def test_po16_an_export_of_the_whole_company_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("export_tasks", overdue=True), ("text", "I exported 4 tasks to a CSV file.")]
+    failed = _failed(_run(harness, "PO-16", steps))
+    assert {"one_export_of_launch_overdue", "file_saved_in_the_chat"} <= failed
+
+
+def test_po16_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("export_tasks", project_id=LAUNCH.id, overdue=True), ("text", "Done.")]
+    assert _failed(_run(harness, "PO-16", steps)) == {"answer_says_the_count"}
+
+
+def test_po16_a_write_beside_the_export_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("export_tasks", project_id=LAUNCH.id, overdue=True),
+             tool("create_area", name="Garden"),
+             ("text", f"I exported {LAUNCH_OVERDUE} tasks to a CSV file.")]
+    spec = dataclasses.replace(T.by_id("PO-16"), cards=(T.APPROVE,))
+    assert {"no_card", "nothing_written"} <= _failed(_run(harness, "PO-16", steps, spec=spec))
+
+
+def test_po16_a_file_that_was_not_saved_fails(harness: R.OpsHarness, monkeypatch) -> None:
+    from acb_skills import documents
+
+    async def full(*_a, **_k):
+        return {"error": "The working dir of the chat is over its quota, so nothing was written."}
+
+    monkeypatch.setattr(documents, "save_outputs", full)
+    assert _failed(_run(harness, "PO-16")) == {"file_saved_in_the_chat"}
+
+
+def test_po17_the_card_names_the_file_its_size_and_the_task(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-17")
+    [card] = record["cards"]
+    assert f"«{D.UPLOAD_NAME}»" in card["detail"] and "#6" in card["detail"]
+    assert "MB" in card["detail"] and "everyone who can open the task" in card["context"]
+    [post] = [r for r in record["requests"] if r["method"] == "POST"]
+    assert post["body"]["file"]["size"] == len(D.UPLOAD_BYTES)
+
+
+def test_po17_a_declined_card_attaches_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-17"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-17", spec=spec)
+    assert {"one_card", "one_upload_of_the_file"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po17_the_wrong_task_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("attach_to_task", task_id=DS.task(7).id, file_name=D.UPLOAD_NAME),
+             ("text", f"I attached «{D.UPLOAD_NAME}» to #7.")]
+    failed = _failed(_run(harness, "PO-17", steps))
+    assert {"card_names_file_size_and_task", "one_upload_of_the_file"} <= failed
+
+
+def test_po17_a_file_that_was_never_uploaded_attaches_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-17"), uploads=())
+    record = _run(harness, "PO-17", spec=spec)
+    assert not record["cards"]
+    assert {"one_card", "one_upload_of_the_file"} <= _failed(record)
+    [call] = [c for s in record["sessions"] for c in s["tool_calls"] if c["name"] == "attach_to_task"]
+    assert call["result"].startswith(f"No file named {D.UPLOAD_NAME} was attached in this chat.")
+
+
+def test_po17_an_answer_without_the_file_name_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("attach_to_task", task_id=DS.task(6).id, file_name=D.UPLOAD_NAME),
+             ("text", "Done, it is attached.")]
+    assert _failed(_run(harness, "PO-17", steps)) == {"answer_names_the_file"}
+
+
+# ── PO-18 to PO-20: who can see a project (WS-64 OP-6b) ────────────────────
+
+OPS = DS.project("Ops")
+PRIYA_GRANT = D.ident("grant", LAUNCH.id, D.PRIYA.email)
+
+
+def _grant_refused() -> str:
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+    return GRANT_WRITE_REFUSED
+
+
+def test_the_stub_keeps_the_grant_routes_rules() -> None:
+    """The grammar first (422), then the rule of D-OP-11 (403), in the route's words."""
+    stub = stub_api.OpsStub(DS)
+    path = f"/projects/nodes/{LAUNCH.id}/grants"
+    status, body = stub.handle("POST", path, T.MEMBER, {"subject": "everyone"})
+    assert status == 422 and "Unknown grant subject" in body["detail"]
+    status, body = stub.handle("POST", f"/projects/nodes/{OPS.id}/grants", T.MEMBER,
+                               {"subject": "org"})
+    assert status == 403 and body["detail"] == _grant_refused()
+    status, body = stub.handle("POST", path, T.MEMBER, {"subject": "org"})
+    assert status == 200 and body["subject"] == "org"
+    _, node = stub.handle("GET", f"/projects/nodes/{OPS.id}", T.MEMBER)
+    assert node["can_write_grants"] is False and node["grant_refusal"] == _grant_refused()
+    status, _ = stub.handle("DELETE", f"{path}/{PRIYA_GRANT}", T.MEMBER)
+    assert status == 200
+    _, listed = stub.handle("GET", path, T.MEMBER)
+    assert [g["subject"] for g in listed["rows"]] == ["org"]
+
+
+def test_po18_to_po20_the_known_good_runs_pass(harness: R.OpsHarness) -> None:
+    for task in ("PO-18", "PO-19", "PO-20"):
+        record = _run(harness, task)
+        assert record["status"] == "pass", (task, record["failure"])
+
+
+def test_po18_a_declined_card_grants_nothing(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-18"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-18", spec=spec)
+    assert {"one_card", "one_org_grant"} <= _failed(record)
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+
+
+def test_po18_a_subject_outside_the_grammar_is_refused_before_the_card(
+    harness: R.OpsHarness,
+) -> None:
+    steps = [tool("grant_access", project_id=LAUNCH.id, subject="everybody"),
+             ("text", "I could not read that subject.")]
+    record = _run(harness, "PO-18", steps)
+    assert not record["cards"]
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+    [call] = [c for s in record["sessions"] for c in s["tool_calls"] if c["name"] == "grant_access"]
+    assert call["result"].startswith("Refused: grant_access could not read the subject")
+
+
+def test_po19_the_card_names_whose_access_goes(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-19")
+    [card] = record["cards"]
+    assert "«Launch»" in card["detail"] and f"«{D.PRIYA.email}»" in card["detail"]
+    # «Launch» is a top project and this is its only grant, so the card warns
+    # first (OP-6b fix round 1), and then says that access narrows.
+    from skill_projects.guarded import LAST_GRANT_CLAUSE
+
+    assert f"impact: {LAST_GRANT_CLAUSE} access narrows" in card["context"]
+
+
+def test_po20_a_grant_on_a_project_the_member_does_not_lead_shows_no_card(
+    harness: R.OpsHarness,
+) -> None:
+    record = _run(harness, "PO-20")
+    assert not record["cards"]
+    assert not [q for q in record["requests"] if q["method"] != "GET"]
+    steps = [tool("grant_access", project_id=OPS.id, subject="org"),
+             ("text", "Done, everyone can see «Ops» now.")]
+    assert _failed(_run(harness, "PO-20", steps)) == {"answer_quotes_the_server"}

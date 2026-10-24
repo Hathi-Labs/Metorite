@@ -18,27 +18,39 @@ from skill_projects.forms import (
     propose_plan,
 )
 from skill_projects.guarded import (
+    add_report_recipient,
     archive_project,
     archive_task,
+    attach_to_task,
     bulk_update,
+    delete_area,
     delete_attachment,
     delete_comment,
     delete_field,
+    delete_project,
     delete_status,
     delete_tag,
+    delete_task,
     delete_type,
     delete_view,
+    grant_access,
     merge_tags,
     merge_tasks,
     move_project,
+    nudge_task,
+    remove_report_recipient,
+    rename_area,
     report_delete,
     revert_activity,
+    revoke_access,
+    set_report_schedule,
     set_status_set,
     unarchive_project,
 )
 from skill_projects.inbox import (
     calendar,
     capture_intake,
+    create_area,
     intake_queue,
     mark_notifications_read,
     my_areas,
@@ -51,7 +63,7 @@ from skill_projects.inbox import (
     triage_intake,
     watchers,
 )
-from skill_projects.nav import open_in_app
+from skill_projects.nav import open_in_app, show_view
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -70,13 +82,16 @@ from skill_projects.reads import (
     rebalance,
     recurrence,
     report_list,
+    report_recipients,
     report_render,
     task_dataset,
     task_detail,
     team_capacity,
     vocabulary,
+    waiting_agent_requests,
 )
 from skill_projects.views import (
+    export_tasks,
     render_board,
     render_report,
     render_tasks,
@@ -131,9 +146,11 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "project_summary",
     "projects_tree",
     "report_list",
+    "report_recipients",
     "report_render",
     "task_detail",
     "vocabulary",
+    "waiting_agent_requests",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",
@@ -143,6 +160,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "render_tasks",
     "render_timeline",
     "status_report",
+    # Class A — WS-64 OP-6c, the filtered list as a file of the chat
+    "export_tasks",
     # Class A — the rest of the reads (S5)
     "calendar",
     "intake_queue",
@@ -157,6 +176,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "watchers",
     # Class A — navigation (S6)
     "open_in_app",
+    "show_view",
     # Class A — team intelligence (S7a capacity, S7b fit and rebalancing,
     # S7c conflicts, S7e on-the-fly analysis)
     "team_capacity",
@@ -210,6 +230,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "file_tasks",
     # Class B — several links between tasks, one card (2026-10-19)
     "link_tasks_batch",
+    # Class B — WS-64 OP-6a, a new area of the member's own
+    "create_area",
     # Class B — the rest of the writes (S5)
     "capture_intake",
     "mark_notifications_read",
@@ -218,18 +240,29 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
+    "attach_to_task",
     "bulk_update",
+    "delete_area",
     "delete_attachment",
     "delete_comment",
     "delete_field",
+    "delete_project",
     "delete_status",
     "delete_tag",
+    "delete_task",
     "delete_type",
     "delete_view",
+    "grant_access",
     "merge_tags",
     "merge_tasks",
     "move_project",
+    "nudge_task",
+    "rename_area",
     "report_delete",
+    "revoke_access",
+    "add_report_recipient",
+    "remove_report_recipient",
+    "set_report_schedule",
     "revert_activity",
     "set_status_set",
     "unarchive_project",

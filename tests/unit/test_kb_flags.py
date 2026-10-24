@@ -25,7 +25,7 @@ from gateway.routes.knowledge import flags as kb_flags
 ORG = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
-#: Each route of KB-1 and KB-3, with a body that passes validation where one
+#: Each route of KB-1, KB-2f, KB-2g, KB-3 and KB-5a, with a body that passes validation where one
 #: is needed.
 CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/spaces", None),
@@ -41,7 +41,23 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/pages/{OTHER}/archive", None),
     ("POST", f"/knowledge/pages/{OTHER}/restore", None),
     ("POST", f"/knowledge/pages/{OTHER}/revert", {"version": 1}),
+    ("GET", f"/knowledge/pages/{OTHER}/versions/2", None),
+    ("GET", f"/knowledge/pages/{OTHER}/backlinks", None),
     ("GET", "/knowledge/search?q=refund+window", None),
+    # KB-2f: the home lists and the favourites.
+    ("GET", "/knowledge/recent", None),
+    ("GET", "/knowledge/favorites", None),
+    ("POST", f"/knowledge/pages/{OTHER}/favorite", None),
+    ("DELETE", f"/knowledge/pages/{OTHER}/favorite", None),
+    # KB-5a: the proposals.
+    ("POST", "/knowledge/proposals", {"kind": "page", "title": "A page"}),
+    ("GET", "/knowledge/proposals", None),
+    ("POST", f"/knowledge/proposals/{OTHER}/accept", None),
+    ("POST", f"/knowledge/proposals/{OTHER}/reject", None),
+    # KB-9a: the gaps.
+    ("GET", "/knowledge/gaps", None),
+    ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
+    ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
 ]
 
 
@@ -80,15 +96,26 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_enabled"].default is False
     assert fields["knowledge_orgs"].default == ""
     assert fields["knowledge_embed"].default == ""
+    assert fields["knowledge_gaps"].default == ""
 
 
-def test_the_router_carries_all_fourteen_routes() -> None:
+def _template(path: str) -> str:
+    """The route template of a concrete path in ``CALLS``."""
+    if "/proposals/" in path:
+        name = "{proposal_id}"
+    elif "/gaps/" in path:
+        name = "{gap_id}"
+    else:
+        name = "{page_id}" if "/pages/" in path else "{space_id}"
+    out = path.split("?")[0].replace(OTHER, name)
+    return out.replace("/versions/2", "/versions/{version}")
+
+
+def test_the_router_carries_every_route() -> None:
     found = {
         (sorted(r.methods)[0], r.path) for r in kb_package.router.routes
     }
-    assert found == {(m, p.split("?")[0].replace(
-        OTHER, "{page_id}" if "/pages/" in p else "{space_id}"))
-                     for m, p, _ in CALLS}
+    assert found == {(m, _template(p)) for m, p, _ in CALLS}
 
 
 def test_switch_off_answers_404_on_each_route(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,7 +159,7 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
 
 
 @pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED",
-                                  "KNOWLEDGE_EMBED_SWEEP"])
+                                  "KNOWLEDGE_EMBED_SWEEP", "KNOWLEDGE_GAPS"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""
     assert is_platform_env(name)

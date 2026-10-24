@@ -189,6 +189,11 @@ Ten rules on top of the three above. Each one exists because it was broken:
    The rule of record is `projects_ai_chat.md` §24.
    - An element that needs the member stays in the flow, and `AskPin` keeps
      it in view.
+   - **No card pins above the message box** (owner, 2026-10-23). Only a
+     one-line status sits outside the thread. A card holds no scroll box.
+     A long body uses `components/ui/ShowMore.tsx`. A typed message answers
+     the one waiting question. The rules are C1 to C8 in
+     `projects_ai_chat.md` §24.10. Fence: `src/lib/chatCardScroll.test.ts`.
    - A read draws inside its step in the trail, closed, and never after the
      answer.
    - A write's receipt draws compact after the text. An answer card is one

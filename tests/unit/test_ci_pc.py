@@ -130,6 +130,26 @@ def test_a_bare_ci_local_call_passes_no_empty_argument():
     assert '[ ${#pass[@]} -gt 0 ] && args="$(printf' in text
 
 
+def test_the_browser_suite_is_opt_in_and_runs_in_three_fresh_parts():
+    # 2026-10-20: one `next dev` for the whole suite was OOM-killed at its
+    # cap, and 409 of 482 tests "failed" on runs GitHub passed.
+    assert re.search(r"^E2E=no\b", _RUN_SUITE, re.M)
+    assert "--shard=$p/3" in _RUN_SUITE
+    # It starts only after the unit phase has finished.
+    e2e = _RUN_SUITE.index('if [ "$E2E" = yes ]; then')
+    guard = _RUN_SUITE.index('job unit-tests "" unit-tests')
+    assert guard < e2e
+
+
+def test_the_summary_reads_the_verdict_not_a_test_name():
+    # A parameter id like "pg_restore FAILED in the verify container" is a
+    # PASSED test. The verdict sits at the end of the line.
+    pattern = re.search(r'grep -hE "( \(FAILED\|ERROR\)[^"]*)"', _RUN_SUITE).group(1)
+    rx = re.compile(pattern.replace("\\|", "|"))
+    assert rx.search("tests/unit/t.py::test_x FAILED [ 40%]")
+    assert not rx.search("tests/unit/t.py::test_y[pg_restore FAILED in the verify] PASSED [  6%]")
+
+
 def test_run_suite_refuses_a_starved_vm():
     assert re.search(r'if \[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
 

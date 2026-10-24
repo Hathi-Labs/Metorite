@@ -231,6 +231,56 @@ def _mark_truncated_nonstream(choices: Any) -> bool:
 # worth keeping once the prompt is under pressure.
 _CONTEXT_FIT_SAFETY_TOKENS: int = 512
 _CONTEXT_FIT_MIN_OUTPUT: int = 1024
+# The output floor that old history pays for. A long chat drops its oldest
+# turns before the reply shrinks below this, because a reply cut at 1024
+# tokens ends mid-sentence or in the middle of a tool call's JSON. A small
+# window caps it at a quarter of the window, so the prompt keeps room.
+# Fence: tests/unit/test_v1_context_fit.py.
+_CONTEXT_FIT_PREFERRED_OUTPUT: int = 8192
+
+
+def _output_floor(window: int, requested: int) -> int:
+    """The output reservation that history eviction protects."""
+    preferred = max(
+        _CONTEXT_FIT_MIN_OUTPUT, min(_CONTEXT_FIT_PREFERRED_OUTPUT, window // 4),
+    )
+    return min(requested, preferred)
+
+
+def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
+    """Group message indexes into the units that eviction removes whole.
+
+    An assistant message with ``tool_calls`` and the tool results after it
+    are one unit, so eviction never leaves an orphan tool result or an
+    orphan tool call. Each other non-system message is a unit of its own.
+    System and developer messages, and the LAST user message (the current
+    request), are in no unit, so eviction never removes them. Nor is the
+    NEWEST tool group of the current turn: the model would lose the result it
+    just got, call the tool again, and loop (review of #1220, P2). Character
+    trimming cuts that group instead.
+    """
+    last_user = max(
+        (i for i, m in enumerate(messages) if m.get("role") == "user"),
+        default=-1,
+    )
+    units: list[list[int]] = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        role = m.get("role")
+        if role in ("system", "developer") or i == last_user:
+            i += 1
+            continue
+        unit = [i]
+        i += 1
+        if role == "assistant" and m.get("tool_calls"):
+            while i < len(messages) and messages[i].get("role") == "tool":
+                unit.append(i)
+                i += 1
+        units.append(unit)
+    if units and units[-1][0] > last_user:
+        units.pop()
+    return units
 
 
 def _fit_context_window(
@@ -251,11 +301,15 @@ def _fit_context_window(
     No-op when the request already fits (the overwhelming majority). Otherwise
     recover in escalating steps — a trimmed request that works beats a faithful
     one the provider rejects:
-      1. shrink ``max_tokens`` so prompt + completion fits (never below
-         ``_CONTEXT_FIT_MIN_OUTPUT``);
-      2. still over → drop oldest non-system messages, dropping any tool
-         results orphaned by an evicted assistant turn;
-      3. still over → char-trim the longest remaining message
+      1. shrink ``max_tokens`` so prompt + completion fits, but never below
+         the output floor (``_output_floor``, up to
+         ``_CONTEXT_FIT_PREFERRED_OUTPUT``);
+      2. still over → evict the oldest whole turns until the floor fits. An
+         assistant tool-call message goes with ALL its tool results. System
+         messages and the last user message (the current request) stay;
+      3. still over → shrink ``max_tokens`` further, to
+         ``_CONTEXT_FIT_MIN_OUTPUT`` at the lowest;
+      4. still over → char-trim the longest remaining message
          (``fit_messages_to_context``).
     """
     try:
@@ -270,9 +324,11 @@ def _fit_context_window(
         if prompt_tokens + max_tokens + _CONTEXT_FIT_SAFETY_TOKENS <= window:
             return messages, max_tokens
 
-        # 1. Shrink the output reservation before touching the prompt.
+        floor = _output_floor(window, max_tokens)
+
+        # 1. Shrink the output reservation, but not below the floor.
         room = window - prompt_tokens - _CONTEXT_FIT_SAFETY_TOKENS
-        if room >= _CONTEXT_FIT_MIN_OUTPUT:
+        if room >= floor:
             _log.warning(
                 "v1.context_fit_output_shrunk", model=model, window=window,
                 prompt_tokens=prompt_tokens, requested=max_tokens,
@@ -280,27 +336,20 @@ def _fit_context_window(
             )
             return messages, min(max_tokens, room)
 
-        # 2. Evict oldest non-system turns until the floor reservation fits.
+        # 2. Evict the oldest whole turns until the floor reservation fits.
         out = [dict(m) for m in messages]
-        budget = window - _CONTEXT_FIT_MIN_OUTPUT - _CONTEXT_FIT_SAFETY_TOKENS
+        budget = window - floor - _CONTEXT_FIT_SAFETY_TOKENS
         dropped = 0
         while count_message_tokens(out, model) + tools_tokens > budget:
-            idx = next(
-                (i for i, m in enumerate(out[:-1])
-                 if m.get("role") not in ("system", "developer")),
-                None,
-            )
-            if idx is None:
-                break  # only system + the current turn left
-            del out[idx]
-            dropped += 1
-            # A tool result whose assistant tool_call was just evicted is an
-            # orphan some providers reject — evict it with its turn.
-            while idx < len(out) - 1 and out[idx].get("role") == "tool":
+            units = _eviction_units(out)
+            if not units:
+                break  # only system + the current request left
+            for idx in reversed(units[0]):
                 del out[idx]
                 dropped += 1
 
-        # 3. Last resort: char-trim the longest remaining message.
+        # 3 + 4. Shrink the output to the minimum, then char-trim what is
+        # still too long.
         out, _trimmed = fit_messages_to_context(
             out, model,
             max_output_tokens=_CONTEXT_FIT_MIN_OUTPUT,

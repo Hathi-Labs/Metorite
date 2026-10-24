@@ -1012,6 +1012,62 @@ register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KIN
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
+# ── Knowledge (WS-61 KB-9a, knowledge_base.md §9, feed only, gated) ─────────
+#
+# `kb_gap`: a question that two members or more asked inside 30 days, that
+# Knowledge could not answer, and that nobody closed. It keys on
+# `knowledge:gap:<id>`. Its first act opens the Gaps view with the New page
+# form, the question as the title. The source names `knowledge:manage` as
+# its permission, because a gap stores no space. A closed Knowledge switch or
+# a closed `KNOWLEDGE_GAPS` raises `SourceAbsent` before any read.
+# `gaps.my_day_rows` opens ONE tenant session, and this file opens none.
+# KB-9b adds `doc_needs_review`, `doc_shared_with_me` and
+# `source_sync_failed` to this source. Fences: `tests/unit/test_kb_gaps.py`
+# and `tests/unit/test_kb_gaps_r8.py` (R8).
+
+#: The kinds of the source. KB-9a builds the first.
+KNOWLEDGE_KINDS = frozenset({"kb_gap"})
+
+
+def _gap_signal(row: dict[str, Any]) -> Signal:
+    """``kb_gap``: one open question with no page. The title is the first
+    wording a member typed. The facts are a count and a time."""
+    from gateway.routes.knowledge.gaps import GAPS_HREF, write_href
+
+    gap_id = str(row["id"])
+    question = str(row.get("question") or "").strip() or "(no words)"
+    href = write_href(gap_id)
+    return Signal(
+        signal_id=f"knowledge:gap:{gap_id}", app="knowledge", kind="kb_gap",
+        entity={"type": "gap", "id": gap_id, "label": question}, title=question,
+        facts={"askers": int(row.get("ask_count") or 0),
+               "last_asked_at": _iso(row.get("last_asked_at"))},
+        href=href,
+        acts=(link("write-page", "Write a page", href),
+              link("open-gaps", "See all gaps", GAPS_HREF)),
+        at=_iso(row.get("last_asked_at")),
+    )
+
+
+async def _knowledge(user: UserContext) -> Found:
+    from gateway.routes.knowledge import flags as kb_flags
+    from gateway.routes.knowledge.gaps import my_day_rows
+
+    if not kb_flags.knowledge_gaps_allowed(user.organization_id):
+        raise needs.SourceAbsent("KNOWLEDGE_GAPS does not name the org")
+    rows = await my_day_rows(user, PER_APP + 1)
+    signals = [_gap_signal(r) for r in rows]
+    return Found([], 0, capped=len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP])
+
+
+# The gate (§9): `feature:knowledge` and `knowledge:manage`. Gated, so it
+# runs only while MY_DAY_PROVIDERS lists `knowledge` (§5.8 item 1). The
+# source id is the app id, and it has no Handled read.
+register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, needs=False,
+                  gated=True, permission="knowledge:manage"))
+
+
 # ── The templates (§4.2): code writes every why line ────────────────────────
 
 
@@ -1188,10 +1244,21 @@ def _colleague_line(facts: dict[str, Any]) -> str:
     return f"{names[0] if names else 'A colleague'} is away today. You share {task} with them."
 
 
-#: The why line of each CRM card of the org: its template id and its line.
+def _gap_line(facts: dict[str, Any]) -> str:
+    """The why line of ``kb_gap`` (WS-61 KB-9a, ``knowledge_base.md`` §9). A
+    code template over a count. The question is the card's title."""
+    raw = facts.get("askers")
+    n = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+    who = f"{n} people asked this" if n > 1 else "People asked this"
+    return f"{who} in the last 30 days. Nobody has written it down in Knowledge."
+
+
+#: The why line of each card of the org, a CRM card or a Knowledge gap
+#: (KB-9a): its template id and its line.
 _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     "digest_ready": ("digest_ready", _digest_line),
     "crm_open_questions": ("open_questions", _questions_line),
+    "kb_gap": ("gap", _gap_line),
 }
 
 
@@ -1236,8 +1303,9 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
     if kind == "colleague_out":
         return "colleague_out", _colleague_line(facts)
     if kind in _ORG_CARD_LINES:
-        # The two CRM cards of the org (CRM-Q28 and CRM-Q32-4): one template
-        # each over the facts, never a word of a model.
+        # The two CRM cards of the org (CRM-Q28 and CRM-Q32-4) and the
+        # Knowledge gap (KB-9a): one template each over the facts, never a
+        # word of a model.
         template, line = _ORG_CARD_LINES[kind]
         return template, line(facts)
     if kind == "agent_asks":

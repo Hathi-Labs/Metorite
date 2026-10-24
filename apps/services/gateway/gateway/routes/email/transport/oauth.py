@@ -49,7 +49,17 @@ from email_ingestion.providers.gmail import GMAIL_SCOPES
 from email_ingestion.providers.outlook import GRAPH_SCOPES
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from gateway.routes.email.core import _default_label, _log, _tenant_session, router
+from gateway.routes.email.core import (
+    MAILBOX_LIMIT_DETAIL,
+    MAX_MAILBOXES_PER_MEMBER,
+    _default_label,
+    _log,
+    _tenant_session,
+    enforce_mailbox_limit,
+    member_mailbox_count,
+    router,
+)
+from gateway.routes.email.mailbox_access import connector_predicate
 from gateway.routes.email.mailbox_identity import NEXT_SLOT_SQL
 from gateway.routes.email.transport.signing import (
     SigningUnavailable,
@@ -290,6 +300,12 @@ async def oauth_authorize(
         ) from None
 
     client_hint = _login_hint(login_hint)
+    # Q-MB-1: the sixth mailbox is refused before the redirect. A hint for a
+    # mailbox the member has is a reconnect and passes. The callback checks
+    # again, because two tabs can race.
+    if await _mailbox_limit_reached(
+            str(user.organization_id), user.email.strip().lower(), client_hint):
+        raise HTTPException(status_code=409, detail=MAILBOX_LIMIT_DETAIL)
     another = False
     if client_hint is None:
         try:
@@ -528,6 +544,11 @@ async def oauth_callback(
             encrypted_creds=encrypted_creds,
             import_months=claims["import_months"],
         )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return _bounce("mailbox_limit")
+        _log.error("email.oauth_account_save_failed", error=str(exc.detail)[:200])
+        return _bounce("account_save_failed")
     except Exception as exc:
         _log.error("email.oauth_account_save_failed", error=str(exc)[:200])
         return _bounce("account_save_failed")
@@ -671,6 +692,35 @@ async def _verified_claims(
     return claims
 
 
+async def _mailbox_limit_reached(
+    org: str, member: str, hint: str | None = None,
+) -> bool:
+    """True when ``member`` has the most mailboxes and ``hint`` names no one of them.
+
+    The authorize leg asks this (Q-MB-1). A hint that matches a mailbox of the
+    member is a reconnect, so it is never refused. A failed read answers
+    False, because the callback checks the limit again before it inserts.
+    """
+    try:
+        async with _tenant_session(org) as db:
+            if await member_mailbox_count(db, member) < MAX_MAILBOXES_PER_MEMBER:
+                return False
+            if hint:
+                row = (await db.execute(
+                    # private-only: the connect flow reads the member's own rows. It mirrors
+                    # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
+                    text("SELECT 1 FROM email_accounts WHERE lower(user_id) = :m "
+                         "AND lower(email_address) = :a LIMIT 1"),
+                    {"m": member, "a": hint.strip().lower()},
+                )).fetchone()
+                if row is not None:
+                    return False
+            return True
+    except Exception as exc:
+        _log.warning("email.oauth_limit_check_failed", error=str(exc)[:200])
+        return False
+
+
 async def _member_has_mailbox(org: str, member: str, provider: str) -> bool:
     """True when ``member`` already has a mailbox of ``provider`` in ``org``.
 
@@ -682,6 +732,8 @@ async def _member_has_mailbox(org: str, member: str, provider: str) -> bool:
     async with _tenant_session(org) as db:
         row = (await db.execute(
             text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                 """SELECT 1 FROM email_accounts
                    WHERE lower(user_id) = :member AND provider = :provider
                    LIMIT 1"""
@@ -725,6 +777,8 @@ async def _save_account(
         # keeps Gmail out of the connect flow until EM-G10 (EM-G7).
         existing_row = (await db.execute(
             text(
+                # private-only: the connect flow reads the member's own rows. It mirrors
+                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
                 """SELECT id FROM email_accounts
                    WHERE lower(user_id) = :member
                      AND provider = :provider
@@ -746,11 +800,15 @@ async def _save_account(
                 {"creds": encrypted_creds, "id": account_id},
             )
             return account_id
+        # A new mailbox, not a reconnect: the limit applies (Q-MB-1).
+        await enforce_mailbox_limit(db, member)
         # organization_id is set explicitly. The column default reads the same
         # GUC, but a write names its tenant (R5).
         nothing_old = import_months == 0
         result = await db.execute(
             text(
+                # The first-mailbox test mirrors the partial unique index of
+                # one default for each user_id (migration 223, WS-65 SM-2).
                 f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
@@ -759,7 +817,7 @@ async def _save_account(
                    VALUES (:id, :user_id, :provider, :email, :label,
                             :color, :creds,
                             NOT EXISTS (SELECT 1 FROM email_accounts
-                                        WHERE lower(user_id) = :member),
+                                        WHERE {connector_predicate(uid="member", fold="column")}),
                             CAST(:org AS uuid), :import_since,
                             :initial_sync_done, :import_phase,
                             {NEXT_SLOT_SQL})

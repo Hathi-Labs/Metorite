@@ -136,6 +136,8 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "LOG_LEVEL", "LOG", "LLM_USAGE_AUDIT", "PROJECTS_IMPORT",
     "AGENTS_CLONE_DIR", "GITHUB_INSTALLATION_ID", "GITHUB_ORG",
     "GITHUB_BOT_NAME", "GITHUB_BOT_EMAIL", "GITHUB_PAT",
+    # H-363: the read credential of the agent clones. Only the operator sets it.
+    "GITHUB_READ_TOKEN",
     "ENABLE_INSTRUMENTATION", "CI",
     # WS-45 (D90): the agents that the tier policy covers. It moves what an
     # organization pays, so only the operator writes it (ai_tier_routing.md).
@@ -226,6 +228,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # and passes --homedir to gpg as well, and this is the second layer. zstd
     # reads ZSTD_CLEVEL and ZSTD_NBTHREADS.
     "BACKUP_", "KEEP_", "RCLONE_", "ZSTD_",
+    # MT-1g-1 (D108): the one object store. OBJECT_STORE_* holds the bucket's
+    # key, the Supabase sign-in and the bucket name, so a tenant that set it
+    # could read or write every org's objects.
+    "OBJECT_STORE_",
     # WS-38 T-9: STAGING_EXPORT_SLUGS names the organizations whose data the
     # nightly backup copies to the staging box. A tenant that set it could
     # send its neighbours' data there.

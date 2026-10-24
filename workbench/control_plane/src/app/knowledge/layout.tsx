@@ -22,12 +22,17 @@
  * shell owns those (`AGENTS.md` rule 10, `seams.test.ts`). The job
  * "Write a page" (KB-12) arrives as `?do=write-page`, and `ShellJob` opens
  * the New page form through the leave guard. The form saves nothing by itself.
+ *
+ * KB-9a: a manager of Knowledge (`knowledge:manage`) gets the Gaps row in the
+ * rail when the gaps read answers. A New page made from a gap marks the gap
+ * answered with the new page, after the page is made.
  */
 
 import { Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AppTopBar } from "@/components/AppTopBar";
+import { useAccess } from "@/components/AccessProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
@@ -36,6 +41,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { hasCapability } from "@/lib/access";
 import { invalidate } from "@/lib/dataCache";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -49,9 +55,19 @@ import {
 } from "./components/KnowledgeContext";
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
+import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
+import {
+  GAPS_KEY,
+  KNOWLEDGE_GAPS,
+  MANAGE_CAPABILITY,
+  gapCount,
+  listGaps,
+  markGapAnswered,
+  type GapList,
+} from "./lib/gaps";
 import type { PageSummary, Space } from "./lib/types";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
+import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
   KNOWLEDGE_OFF_TITLE,
   LOAD_FAILED_BODY,
@@ -179,6 +195,18 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const pageId = pageIdOf(pathname);
   const atHomePath = pathname === KNOWLEDGE_HOME;
   const atSearch = pathname === KNOWLEDGE_SEARCH;
+  const atReview = pathname === KNOWLEDGE_REVIEW;
+  const reviewCount = usePendingCount();
+
+  const atGaps = pathname === KNOWLEDGE_GAPS;
+
+  // KB-9a: the Gaps row, for a manager of Knowledge. The read is the Gaps
+  // view's own key, so the view and the count share one answer. Gaps off for
+  // the org (`off`, a 404) hide the row.
+  const { access } = useAccess();
+  const manager = hasCapability(access, MANAGE_CAPABILITY);
+  const gapsRead = useCachedResource<GapList>(manager ? GAPS_KEY : null, listGaps);
+  const showGaps = (manager && gapsRead.data?.scope === "org" && !gapsRead.data.off) || atGaps;
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
@@ -255,6 +283,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     selectedPageId: pageId,
     atHome: atHomePath && !spaceParam,
     atSearch,
+    atReview,
+    reviewCount,
+    gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
     onArchive: setArchiving,
   };
 
@@ -372,7 +403,26 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
         spaces={spaces}
         onClose={() => setAsk(null)}
         onCreated={(page) => {
+          const answering = ask?.gap ?? null;
           setAsk(null);
+          if (answering) {
+            // KB-9a: the page answers a gap. The page stands even when this
+            // fails, so a failure is a toast and never a lost page.
+            void markGapAnswered(answering.id, page.id)
+              .then(() => {
+                invalidate(KNOWLEDGE_CACHE);
+                toast.show({ key: `kb-gap:${answering.id}`, title: "The question is answered with this page" });
+              })
+              .catch((err) => {
+                const reason = err instanceof KnowledgeError ? err.message : String(err);
+                toast.show({
+                  key: `kb-gap:${answering.id}`,
+                  variant: "error",
+                  title: "The page is made, but the question stays open",
+                  description: reason,
+                });
+              });
+          }
           invalidate(KNOWLEDGE_CACHE);
           router.push(pageHref(page.id, { edit: true }));
         }}

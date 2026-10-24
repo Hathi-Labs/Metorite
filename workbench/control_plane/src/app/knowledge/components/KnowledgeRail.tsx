@@ -4,9 +4,11 @@
  * The Knowledge rail (WS-61 KB-2a, KB-3b and KB-2e, `knowledge_base.md`
  * §11.1 and §21.5).
  *
- * Two entries today, Search (KB-3b) and Spaces (KB-2a). Files, Sources and
- * Review join them with KB-2c, KB-7a and KB-5, and each is ABSENT until
- * then, never a stub. Search sits first, above the tree, so it stays in one
+ * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a),
+ * and Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org.
+ * Review shows only while a proposal of the assistant waits (with the
+ * count) or while the member is on it. Files and Sources join them with
+ * KB-2c and KB-7a, and each is ABSENT until then, never a stub. Search sits first, above the tree, so it stays in one
  * place while a space opens. Under Spaces, each space the member can open is
  * a row, and the open space shows its page tree. Every row is a `RailRow`
  * (AGENTS.md rule 12), as the Projects tree and the CRM rail draw theirs.
@@ -46,11 +48,15 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
-import { pageIcon, spaceIcon } from "../lib/labels";
-import { KNOWLEDGE_HOME, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
+import { KNOWLEDGE_GAPS } from "../lib/gaps";
+import { spaceIcon } from "../lib/labels";
+import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
 import { applyMove, dropZoneAt, planDrop, targetFor, type PageDropTarget } from "../lib/treeDrop";
 import type { PageSummary, Space } from "../lib/types";
+import { favoriteMenuItem, useFavoriteToggle } from "./Favorites";
+import { PageGlyph } from "./PageIcon";
+import SpaceSwitcher from "./SpaceSwitcher";
 
 const ICON = "h-3.5 w-3.5 shrink-0";
 
@@ -74,6 +80,15 @@ export interface KnowledgeRailProps {
   atHome: boolean;
   /** True on `/knowledge/search`. */
   atSearch: boolean;
+  /**
+   * The Gaps row (KB-9a): `null` hides it. The layout shows it to a manager
+   * of Knowledge whose gaps read answered. `count` is the open gaps.
+   */
+  gaps?: { selected: boolean; count: string | null } | null;
+  /** True on `/knowledge/review` (KB-5b). */
+  atReview?: boolean;
+  /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
+  reviewCount?: number;
   /** Go to an address. On a phone it also closes the drawer. */
   onNavigate: (href: string) => void;
   /** Open the New page form under a row. Absent: the rows offer no `+`. */
@@ -93,12 +108,17 @@ export default function KnowledgeRail({
   selectedPageId,
   atHome,
   atSearch,
+  gaps = null,
+  atReview = false,
+  reviewCount = 0,
   onNavigate,
   onNewSubPage,
   onArchive,
 }: KnowledgeRailProps) {
   return (
     <div className="flex flex-col gap-0.5" onKeyDown={moveRailFocus}>
+      {/* KB-2f: the searchable space switcher. */}
+      <SpaceSwitcher spaces={spaces} selectedSpaceId={selectedSpaceId} onNavigate={onNavigate} />
       <RailRow
         label="Search"
         tier="group"
@@ -107,6 +127,30 @@ export default function KnowledgeRail({
         buttonProps={{ "aria-current": atSearch ? "page" : undefined }}
         onSelect={() => onNavigate(KNOWLEDGE_SEARCH)}
       />
+      {/* KB-5b: Review shows while a proposal waits, and while it is open. */}
+      {reviewCount > 0 || atReview ? (
+        <RailRow
+          label="Review"
+          tier="group"
+          selected={atReview}
+          icon={<Icon name="ClipboardCheck" className={ICON} />}
+          meta={reviewCount > 0 ? reviewCount : undefined}
+          metaTone="attention"
+          buttonProps={{ "aria-current": atReview ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_REVIEW)}
+        />
+      ) : null}
+      {gaps ? (
+        <RailRow
+          label="Gaps"
+          tier="group"
+          selected={gaps.selected}
+          icon={<Icon name="MessageCircleQuestion" className={ICON} />}
+          meta={gaps.count ?? undefined}
+          buttonProps={{ "aria-current": gaps.selected ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_GAPS)}
+        />
+      ) : null}
       <RailRow
         label="Spaces"
         tier="group"
@@ -400,6 +444,8 @@ function PageBranch({
   const selected = page.id === selectedPageId;
   const [menu, setMenu] = useState<{ x: number; y: number; keyboard: boolean } | null>(null);
   const menuButton = useRef<HTMLButtonElement | null>(null);
+  // KB-2f: the star of the row's menu. Only a row with a menu reads it.
+  const favorite = useFavoriteToggle(page, acts !== null);
 
   const dragging = drag?.draggingId === page.id;
   const over = drag?.over ?? null;
@@ -465,6 +511,7 @@ function PageBranch({
           icon: themedIcon("Link"),
           onSelect: () => acts.copyLink(page),
         },
+        favoriteMenuItem(favorite.starred, () => void favorite.toggle()),
         ...(acts.newSubPage
           ? [
               {
@@ -532,7 +579,7 @@ function PageBranch({
           tree
           selected={selected && !litInto}
           className={`${dragging ? "opacity-40" : ""} ${litInto ? "ring-1 ring-primary" : ""}`}
-          icon={<Icon name={pageIcon(page)} className={ICON} />}
+          icon={<PageGlyph page={page} className={ICON} />}
           meta={page.state === "draft" ? <span className="text-[10px]">Draft</span> : null}
           expand={children.length ? { expanded, onToggle: () => onToggle(page.id) } : undefined}
           buttonProps={{ "aria-current": selected ? "page" : undefined }}

@@ -3,11 +3,12 @@
 // Pure. One list: the `/` menu offers it, and the tests insert each entry.
 // Each block names the act it runs on the editor. Two entries need the
 // component: an image asks for its address in a dialog, and a page link
-// opens the `[[` picker.
+// opens the `@` menu (Notion's way, and `[[` still works).
 
 import type { Editor, Range } from "@tiptap/core";
 
 import { CALLOUT_TONES, type CalloutTone } from "./schema";
+import { STORED_FORM_BLOCKS } from "./storedFormBlocks";
 
 export type BlockKind = "insert" | "image" | "pageLink";
 
@@ -21,7 +22,17 @@ export interface BlockItem {
   kind: BlockKind;
   /** The act, for an `insert` block. The range is the typed `/query`. */
   run?: (editor: Editor, range: Range) => void;
+  /** The heading it sits under in the menu. `BLOCKS` fills it in. */
+  group?: BlockGroup;
+  /** One line under the label. `BLOCKS` fills it in. */
+  description?: string;
+  /** The Markdown a member can type for it, drawn muted at the right. */
+  shortcut?: string;
 }
+
+/** The headings of the `/` menu, in the order the menu draws them. */
+export const BLOCK_GROUPS = ["Basic blocks", "Lists", "Media", "Advanced", "Inline"] as const;
+export type BlockGroup = (typeof BLOCK_GROUPS)[number];
 
 /** The words and the glyph of each callout tone. */
 export const CALLOUT_LOOK: Record<CalloutTone, { label: string; icon: string }> = {
@@ -38,7 +49,7 @@ export const CALLOUT_LOOK: Record<CalloutTone, { label: string; icon: string }> 
  */
 const at = (editor: Editor, range: Range) => editor.chain().focus().deleteRange(range);
 
-export const BLOCKS: readonly BlockItem[] = [
+const RAW_BLOCKS: readonly BlockItem[] = [
   { id: "text", label: "Text", keywords: "paragraph plain body", icon: "Pilcrow", kind: "insert",
     run: (e, r) => at(e, r).setParagraph().run() },
   { id: "h1", label: "Heading 1", keywords: "title h1 #", icon: "Heading1", kind: "insert",
@@ -73,9 +84,56 @@ export const BLOCKS: readonly BlockItem[] = [
     run: (e, r) => at(e, r).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { id: "divider", label: "Divider", keywords: "hr rule line separator ---", icon: "Minus", kind: "insert",
     run: (e, r) => at(e, r).setHorizontalRule().run() },
+  // KB-2i (§21.7): a footnote mark at the caret, and its note at the end.
+  { id: "footnote", label: "Footnote", keywords: "reference citation note [^", icon: "Superscript", kind: "insert",
+    run: (e, r) => at(e, r).addFootnote().run() },
+  ...STORED_FORM_BLOCKS,
   { id: "image", label: "Image", keywords: "picture photo url img", icon: "Image", kind: "image" },
-  { id: "page", label: "Link to a page", keywords: "page wiki link [[", icon: "FileText", kind: "pageLink" },
+  { id: "page", label: "Link to a page", keywords: "page wiki link mention @ [[", icon: "FileText", kind: "pageLink" },
 ];
+
+/** The group, the line and the Markdown shortcut of each block, by id. */
+const META: Record<string, { group: BlockGroup; description: string; shortcut?: string }> = {
+  text: { group: "Basic blocks", description: "Plain text, the start of any page" },
+  h1: { group: "Basic blocks", description: "Big section heading", shortcut: "#" },
+  h2: { group: "Basic blocks", description: "Medium section heading", shortcut: "##" },
+  h3: { group: "Basic blocks", description: "Small section heading", shortcut: "###" },
+  quote: { group: "Basic blocks", description: "Set a passage apart", shortcut: ">" },
+  divider: { group: "Basic blocks", description: "A line between two parts", shortcut: "---" },
+  code: { group: "Basic blocks", description: "A block of code with a language", shortcut: "```" },
+  bullet: { group: "Lists", description: "A simple list of points", shortcut: "-" },
+  ordered: { group: "Lists", description: "A list with numbers", shortcut: "1." },
+  task: { group: "Lists", description: "Track work with checkboxes", shortcut: "[]" },
+  toggle: { group: "Lists", description: "Hide and show a part of the page" },
+  image: { group: "Media", description: "Add a picture from an address" },
+  table: { group: "Advanced", description: "Rows and columns of data" },
+  footnote: { group: "Advanced", description: "A mark in the text and a note below" },
+  status: { group: "Advanced", description: "A coloured label for a state" },
+  subpages: { group: "Advanced", description: "A list of the pages under this one" },
+  "page-break": { group: "Advanced", description: "Start a new sheet when you print" },
+  date: { group: "Inline", description: "A day, with a picker" },
+  page: { group: "Inline", description: "Mention a page or a date", shortcut: "@" },
+};
+
+/** The line under a callout or a column block, which share their words. */
+function metaOf(id: string): { group: BlockGroup; description: string; shortcut?: string } {
+  if (META[id]) return META[id];
+  if (id.startsWith("callout-")) return { group: "Advanced", description: "Call out a note, a tip or a warning" };
+  if (id.startsWith("columns-")) return { group: "Advanced", description: "Place blocks side by side" };
+  return { group: "Advanced", description: "" };
+}
+
+/**
+ * Every block with its group, its line and its shortcut, in the order the
+ * menu draws: by group, and in list order inside a group.
+ */
+export const BLOCKS: readonly BlockItem[] = RAW_BLOCKS.map((b, index) => ({ b, index }))
+  .sort((x, y) => {
+    const gx = BLOCK_GROUPS.indexOf(metaOf(x.b.id).group);
+    const gy = BLOCK_GROUPS.indexOf(metaOf(y.b.id).group);
+    return gx - gy || x.index - y.index;
+  })
+  .map(({ b }) => ({ ...b, ...metaOf(b.id) }));
 
 /** True when each letter of `needle` comes in order in `hay`. */
 function isSubsequence(needle: string, hay: string): boolean {

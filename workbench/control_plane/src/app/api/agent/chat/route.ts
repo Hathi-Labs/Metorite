@@ -49,6 +49,7 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
+import { isSpecialistTool } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 
@@ -231,7 +232,7 @@ async function translateAndPersistStream(
   let subAgent: {
     name: string;
     text: string;
-    tools: Array<{ id: string; name: string; status: string; result?: string }>;
+    tools: Array<{ id: string; name: string; status: string; result?: string; args?: Record<string, unknown> }>;
   } = { name: "", text: "", tools: [] };
   let buf = "";
   let assistantContent = "";
@@ -398,7 +399,9 @@ async function translateAndPersistStream(
           // Attach the nested delegation timeline accumulated since the last
           // delegate ended (SUB_AGENT_* events stream BETWEEN the delegate
           // tool's start and end).  Same shape the frontend live loop builds.
-          const isDelegate = name.toLowerCase().includes("call_agent");
+          // The orchestrator's own tool for an agent is a hand-off too
+          // (navigation_shell.md §7.1.1 rule 5), so its steps stay on it.
+          const isDelegate = name.toLowerCase().includes("call_agent") || isSpecialistTool(name, subAgent.name);
           const subAgentFields = isDelegate && (subAgent.name || subAgent.text || subAgent.tools.length > 0)
             ? { subAgentName: subAgent.name, subAgentText: subAgent.text, subAgentTools: subAgent.tools }
             : {};
@@ -452,8 +455,11 @@ async function translateAndPersistStream(
           const agent = String(ev.agentName ?? "");
           const stId = String(ev.toolCallId ?? "");
           subAgent.name = subAgent.name || agent;
-          subAgent.tools.push({ id: stId, name: String(ev.toolCallName ?? "tool"), status: "running" });
-          out = { type: "sub_agent_tool_start", agentName: agent, id: stId, name: String(ev.toolCallName ?? "") };
+          // The step's arguments, so the email card of a delegated step draws
+          // live and after a reload (§7.1.1 rule 5).
+          const stArgs = typeof ev.args === "string" ? parseToolArgs(ev.args) : ((ev.args as Record<string, unknown>) ?? {});
+          subAgent.tools.push({ id: stId, name: String(ev.toolCallName ?? "tool"), status: "running", args: stArgs });
+          out = { type: "sub_agent_tool_start", agentName: agent, id: stId, name: String(ev.toolCallName ?? ""), args: stArgs };
         } else if (t === "SUB_AGENT_TOOL_CALL_RESULT") {
           const stId = String(ev.toolCallId ?? "");
           const ok = ev.success !== false;

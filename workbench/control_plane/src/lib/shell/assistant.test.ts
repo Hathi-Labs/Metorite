@@ -18,11 +18,14 @@ import { bindChatScope } from "@/lib/sessions";
 import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
+  CHAT_FIRST_PERSONA_LINE,
+  CHAT_LANDED_KEY,
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
   DOCK_MIN_VIEWPORT,
   STALE_CHAT_MS,
+  STRIP_TEXT_MAX,
   __resetAssistantForTests,
   assistantState,
   barMayJoin,
@@ -35,18 +38,33 @@ import {
   dataText,
   dockFloats,
   effectiveMode,
+  navigateAct,
+  modeOnOpen,
+  onChatLink,
   onPageChange,
   openAssistant,
+  opensOnLanding,
   paneAt,
   paneForDelegate,
   publishAssistantFacts,
+  raiseOnNeed,
   setAssistantMode,
   setDockWidth,
+  BRIEF_HOLD_MS,
+  briefAskedToday,
+  holdsForBrief,
+  localDay,
+  markBriefAsked,
   startsFresh,
+  stripShowsRun,
+  stripText,
   surfaceContext,
   switchTarget,
+  wantsBrief,
 } from "./assistant";
-import { shellChatOn } from "./chatFlag";
+import { briefPath, requestBrief } from "./briefTurn";
+import { chatFirstOn, shellChatOn } from "./chatFlag";
+import { landingSettled } from "./ChatNudge";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -200,6 +218,84 @@ describe("a fresh chat, or the last one", () => {
   it("a recent chat is joined, and one from hours ago is not", () => {
     expect(startsFresh({ messageCount: 4, updatedAt: at(STALE_CHAT_MS - 1000) }, now)).toBe(false);
     expect(startsFresh({ messageCount: 4, updatedAt: at(STALE_CHAT_MS + 1000) }, now)).toBe(true);
+  });
+});
+
+describe("the brief as the first turn (WS-62 CF-5, §4.6, D-CF-6)", () => {
+  const phone = { chatFirst: true, phone: true, messageCount: 0, askedFor: false };
+
+  it("a fresh chat on a phone, with the flag on, asks once", () => {
+    expect(wantsBrief(phone)).toBe(true);
+  });
+
+  it("never with the flag off, and never on a desktop (§9.2 Q1: the desktop reads My Day)", () => {
+    expect(wantsBrief({ ...phone, chatFirst: false })).toBe(false);
+    expect(wantsBrief({ ...phone, phone: false })).toBe(false);
+  });
+
+  it("never under the member's own words, and never twice in a day on one page", () => {
+    expect(wantsBrief({ ...phone, messageCount: 1 })).toBe(false);
+    expect(wantsBrief({ ...phone, askedFor: true })).toBe(false);
+  });
+
+  it("the page's mark is the member's local day, and a new member clears it", () => {
+    const d = new Date(2026, 9, 22, 23, 50);
+    expect(localDay(d)).toBe("2026-10-22");
+    expect(briefAskedToday(d)).toBe(false);
+    markBriefAsked(d);
+    expect(briefAskedToday(d)).toBe(true);
+    // Ten minutes later is a new day, so a fresh chat may ask again.
+    expect(briefAskedToday(new Date(2026, 9, 23, 0, 10))).toBe(false);
+    __resetAssistantForTests();
+    expect(briefAskedToday(d)).toBe(false);
+  });
+
+  it("the call reads a 200 with a preview, and nothing else", async () => {
+    const calls: string[] = [];
+    const answer = (status: number, body?: unknown) => (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${init?.method} ${String(url)}`);
+      return new Response(body === undefined ? null : JSON.stringify(body), { status });
+    }) as typeof fetch;
+    expect(await requestBrief("c1", answer(200, { posted: true, message_id: "brief-2026-10-22", preview: "Your day." })))
+      .toEqual({ preview: "Your day." });
+    expect(await requestBrief("c1", answer(204))).toBeNull();
+    expect(await requestBrief("c1", answer(503, { error: "x" }))).toBeNull();
+    expect(await requestBrief("c1", answer(200, { posted: false }))).toBeNull();
+    expect(await requestBrief("c1", (async () => { throw new Error("offline"); }) as typeof fetch)).toBeNull();
+    expect(calls[0]).toBe(`POST ${briefPath("c1")}`);
+    expect(briefPath("a/b")).toBe("/api/chat/sessions/a%2Fb/brief");
+  });
+
+  it("a chat waits only while ITS ask is out, and the hold is capped (review of #1216)", () => {
+    expect(holdsForBrief(null, "c1")).toBe(false);
+    expect(holdsForBrief("c1", "c1")).toBe(true);
+    expect(holdsForBrief("c2", "c1")).toBe(false);
+    expect(holdsForBrief("", "")).toBe(false);
+    expect(BRIEF_HOLD_MS).toBe(4_000);
+    const dock = read("lib/shell/AssistantDock.tsx");
+    // The gate reads the hold alone: no clock, no flag, so no spinner past midnight.
+    expect(dock).toContain("briefPending: (s: ChatSession) => holdsForBrief(briefHold, s.id),");
+    // The hold is set before the paint, and released by the answer or the cap.
+    expect(dock).toMatch(/useLayoutEffect\(\(\) => \{\r?\n\s+if \(!scope \|\| !open \|\| !activeIdForBrief/);
+    expect(dock).toContain("const timer = setTimeout(release, BRIEF_HOLD_MS);");
+  });
+
+  it("the dock asks only through the rule, and marks the day before it asks", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    // One ask, guarded by the rule, and the mark comes first.
+    expect(dock.match(/requestBrief\(/g)?.length).toBe(1);
+    const guard = dock.indexOf("if (!wantsBrief({");
+    const mark = dock.indexOf("markBriefAsked();");
+    const ask = dock.indexOf("requestBrief(");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(mark);
+    expect(mark).toBeLessThan(ask);
+    // The chat mounts only after the ask answers, so its first load reads the row.
+    expect(dock).toContain("{active && !chat.briefPending(active) ? (");
+    // No model call: the ask is a POST with no body, and the server decides.
+    const call = read("lib/shell/briefTurn.ts");
+    expect(call).toContain('{ method: "POST", cache: "no-store" }');
+    expect(call).not.toMatch(/\/api\/agent\//);
   });
 });
 
@@ -363,6 +459,123 @@ describe("the app switch (owner, 2026-10-12)", () => {
   });
 });
 
+describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
+  const live = {
+    open: true, threadId: "t1", activeId: "t1", path: "/projects?task=42", sections: SECTIONS,
+    phone: false, chatFirst: true, form: "dock" as const, canDock: true,
+  };
+  const projects = paneAt("/projects", SECTIONS);
+  const none = { push: false, dock: false, offer: false, pane: null };
+
+  it("the page line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind chatFirstOn", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("show_in_app");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
+    expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+  });
+
+  it("a desktop pushes the route and keeps the panel", () => {
+    expect(navigateAct(live)).toEqual({ push: true, dock: false, offer: false, pane: projects });
+  });
+
+  it("a desktop full view becomes the panel, so the page shows", () => {
+    expect(navigateAct({ ...live, form: "full" })).toEqual({ push: true, dock: true, offer: false, pane: projects });
+    expect(navigateAct({ ...live, form: "full", canDock: false })).toEqual({ push: true, dock: false, offer: false, pane: projects });
+  });
+
+  it("a phone keeps the chat open and offers the page (owner report, 2026-10-22)", () => {
+    expect(navigateAct({ ...live, phone: true, form: "full", canDock: false })).toEqual({ push: false, dock: false, offer: true, pane: projects });
+  });
+
+  it("a phone with the flag off keeps the chat open too", () => {
+    expect(navigateAct({ ...live, phone: true, chatFirst: false, form: "full", canDock: false })).toEqual({ push: false, dock: false, offer: true, pane: projects });
+  });
+
+  it("moves nothing while the assistant is closed, or for another chat", () => {
+    expect(navigateAct({ ...live, open: false })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: "other" })).toEqual(none);
+    expect(navigateAct({ ...live, threadId: undefined })).toEqual(none);
+    expect(navigateAct({ ...live, activeId: null })).toEqual(none);
+  });
+
+  it("checks the path again, and refuses one that leaves the app", () => {
+    for (const path of ["https://evil.example", "//evil.example", "/\\evil.example", "/api/x", "", undefined]) {
+      expect(navigateAct({ ...live, path }), String(path)).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/tasks#today" }).push).toBe(true);
+  });
+
+  it("refuses a dot segment that walks out of the pane (review of #1197, P0)", () => {
+    for (const path of ["/projects/../crm", "/projects/../../settings/organization", "/projects/%2e%2e/crm",
+      "/projects/../centers/sales", "/projects/../api/x", "/people/me/../../crm", "/projects/%252e%252e/crm"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+  });
+
+  it("the allowlist is the control: no pane, no move, except the root", () => {
+    for (const path of ["/connect/authorize", "/signup", "/settings/appearance", "/settings/organization", "/_next/x", "/centers/sales", "/nowhere"]) {
+      expect(navigateAct({ ...live, path }), path).toEqual(none);
+    }
+    expect(navigateAct({ ...live, path: "/" })).toEqual({ push: true, dock: false, offer: false, pane: null });
+    expect(navigateAct({ ...live, path: "/people/me" }).pane?.href).toBe("/people/me");
+  });
+
+  it("never moves to a pane the member does not hold", () => {
+    const noProjects = visibleSections(ALL.filter((f) => f !== "projects"), true);
+    expect(navigateAct({ ...live, sections: noProjects })).toEqual(none);
+    expect(navigateAct({ ...live, sections: noProjects, path: "/email" }).push).toBe(true);
+  });
+
+  it("the live loop emits onNavigate once, and the replay loop never does", () => {
+    const hook = read("hooks/useAgentChat.ts");
+    expect((hook.match(/emitAgentEvent\("onNavigate"/g) ?? []).length).toBe(1);
+    const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
+    expect(reconnect).toBeGreaterThan(0);
+    expect(hook.indexOf('emitAgentEvent("onNavigate"')).toBeLessThan(reconnect);
+    // The event draws nothing in the transcript, on both loops.
+    expect((hook.match(/evtName !== NAVIGATE_EVENT/g) ?? []).length).toBe(2);
+  });
+
+  it("the dock acts through navigateAct, pushes the route and offers Go back", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toMatch(/onNavigate: \(\{ path, why, threadId \}\) => \{[\s\S]{0,400}?navigateAct\(/);
+    expect(dock).toMatch(/if \(!act\.push\) return;\s*const back = live\.pathname \?\? "\/";\s*router\.push\(path\);/);
+    expect(dock).toMatch(/if \(act\.dock\) setAssistantMode\("dock"\);/);
+    // A phone keeps the chat open: the toast offers the page (2026-10-22).
+    expect(dock).toMatch(/if \(act\.offer\) \{[\s\S]{0,500}?openFromPhone\(path\)[\s\S]{0,40}?return;/);
+    expect(dock).toMatch(/if \(!runMovesPage\(live\)\) \{[\s\S]{0,400}?openFromPhone\(target\.href\)[\s\S]{0,60}?return;/);
+    expect(dock).toMatch(/title: label \? `Opened \$\{label\}` : "Opened a page"/);
+  });
+});
+
+describe("the chat-first flag needs the one assistant (WS-62, review of #1197 P1)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is on with the four, and off without its own flag or without the assistant", () => {
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({});
+    expect(chatFirstOn()).toBe(false);
+  });
+
+  it("its dev override key is the one CF-1 writes too", () => {
+    expect(read("lib/shell/chatFlag.ts")).toContain('flag(process.env.NEXT_PUBLIC_CHAT_FIRST, "cc-shell-chat-first")');
+  });
+});
+
 describe("Chat leaves the sidebar with the flag on, and only then", () => {
   const hrefs = (on: boolean) => shellSidebar(SECTIONS, undefined, on).flatMap((s) => s.items.map((p) => p.href));
 
@@ -443,5 +656,367 @@ describe("the source keeps the flag's two sides apart", () => {
     const reconnect = hook.indexOf("updLast((m) => applySubAgentEvent(m, evt));");
     expect(reconnect).toBeGreaterThan(0);
     expect(hook.lastIndexOf('emitAgentEvent("onDelegate"')).toBeLessThan(reconnect);
+  });
+});
+
+describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md §4.1)", () => {
+  it("a phone draws the strip when asked, and the sheet for anything else", () => {
+    expect(effectiveMode("peek", 390, true)).toBe("peek");
+    expect(effectiveMode("full", 390, true)).toBe("full");
+    expect(effectiveMode("dock", 390, true)).toBe("full");
+  });
+
+  it("a desktop never draws the strip, and its two forms are unchanged (D-CF-1)", () => {
+    expect(effectiveMode("peek", 1440, false)).toBe("dock");
+    expect(effectiveMode("peek", DOCK_MIN_VIEWPORT - 1, false)).toBe("dock");
+    expect(effectiveMode("dock", 1440, false)).toBe("dock");
+    expect(effectiveMode("full", 1440, false)).toBe("full");
+  });
+
+  it("a pill link drops the sheet to the strip with the flag on, and closes it with the flag off", () => {
+    expect(onChatLink({ phone: true, chatFirst: true })).toBe("peek");
+    expect(onChatLink({ phone: true, chatFirst: false })).toBe("close");
+    expect(onChatLink({ phone: false, chatFirst: true })).toBeNull();
+    expect(onChatLink({ phone: false, chatFirst: false })).toBeNull();
+  });
+
+  it("a card that waits raises the strip to the sheet, and nothing else does", () => {
+    expect(raiseOnNeed({ phone: true, form: "peek", needsInput: true })).toBe("full");
+    expect(raiseOnNeed({ phone: true, form: "peek", needsInput: false })).toBeNull();
+    expect(raiseOnNeed({ phone: true, form: "full", needsInput: true })).toBeNull();
+    expect(raiseOnNeed({ phone: false, form: "peek", needsInput: true })).toBeNull();
+    expect(raiseOnNeed({ phone: false, form: "dock", needsInput: true })).toBeNull();
+  });
+
+  it("the dock raises only on a wait that BEGINS under the strip", () => {
+    const src = read("lib/shell/AssistantDock.tsx");
+    expect(src).toContain("const began = needsInput && !wasNeeding.current;");
+    expect(src).toContain('if (began && raiseOnNeed({ phone: true, form: "peek", needsInput }) === "full") onRaise();');
+    // The two existing sources: this tab's run state, and the one shared poller.
+    expect(src).toContain("const serverNeeds = useThreadNeedsInput(threadId || null);");
+    expect(src).toContain('run.phase === "waiting_for_you" || run.phase === "parked"');
+  });
+
+  it("the strip's line is the run status while a run goes on", () => {
+    expect(stripText({ phase: "working", statusText: "Asking Projects assistant · 12s", lastPreview: "Old words." })).toBe(
+      "Asking Projects assistant · 12s",
+    );
+    expect(stripText({ phase: "waiting_for_you", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
+      "Waiting for your answer",
+    );
+    // A parked card still waits on the member, so the strip says so.
+    expect(stripText({ phase: "parked", statusText: "Paused. Answer the card to go on", lastPreview: "Old words." })).toBe(
+      "Paused. Answer the card to go on",
+    );
+    // A run with no status text yet falls back to the last reply.
+    expect(stripText({ phase: "starting", statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
+      "The due date is Friday.",
+    );
+  });
+
+  it("a run that ended gives way to the last reply at once, never \"Done · 0s\" (fix round on PR #1198)", () => {
+    // The status row still shows "Done" for a few seconds. The strip does not.
+    for (const [phase, status] of [["done", "Done · 0s"], ["stopped", "Stopped"], ["failed", null], ["idle", null]] as const) {
+      expect(stripText({ phase, statusText: status, lastPreview: "The due date is Friday." }), phase).toBe(
+        "The due date is Friday.",
+      );
+    }
+    expect(stripShowsRun("done")).toBe(false);
+    expect(stripShowsRun("stopped")).toBe(false);
+    expect(stripShowsRun("idle")).toBe(false);
+    expect(stripShowsRun("failed")).toBe(false);
+    for (const phase of ["starting", "working", "waiting_for_you", "finishing", "parked"] as const) {
+      expect(stripShowsRun(phase), phase).toBe(true);
+    }
+    // The dock feeds the phase, not "the row shows".
+    expect(read("lib/shell/AssistantDock.tsx")).toContain(
+      "const line = stripText({ phase: run.phase, statusText: view ? runViewText(view) : null, lastPreview });",
+    );
+  });
+
+  it("while idle, the line is the last reply, as plain words, cut at a whole word", () => {
+    expect(
+      stripText({ phase: "idle", statusText: null, lastPreview: "**Done.** I moved «Plan the release» to [the board](/projects)." }),
+    ).toBe("Done. I moved Plan the release to the board.");
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: "## Plan\n- step_one is `ready`" })).toBe(
+      "Plan step_one is ready",
+    );
+    const long = "The release plan has five steps and each one names an owner a due date and the project it belongs to.";
+    const line = stripText({ phase: "idle", statusText: null, lastPreview: long });
+    expect(line.endsWith("\u2026")).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(STRIP_TEXT_MAX + 1);
+    // A whole word: the cut never splits one.
+    expect(long.startsWith(line.slice(0, -1))).toBe(true);
+    expect(long.charAt(line.length - 1)).toBe(" ");
+  });
+
+  it("with no reply yet, the line is the assistant's name", () => {
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: undefined })).toBe("Metorite");
+    expect(stripText({ phase: "idle", statusText: null, lastPreview: "   " })).toBe("Metorite");
+  });
+
+  it("a page change under the strip leaves it alone", () => {
+    expect(onPageChange({ open: true, form: "peek", canDock: false, phone: true })).toBeNull();
+  });
+
+  it("an open that asks for something raises the strip to the sheet (fix round on PR #1198)", () => {
+    const peek = { phone: true, open: true, current: "peek" as const };
+    // A run toast's or a card's "Open", words, a draft, a new chat, the Ask tab.
+    expect(modeOnOpen({ ...peek, opts: { sessionId: "t-1" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { sessionId: null } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { text: "what is due" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { draft: "a draft" } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { fresh: true } })).toBe("full");
+    expect(modeOnOpen({ ...peek, opts: { mode: "full" } })).toBe("full");
+    // A plain open asks for nothing, so the strip stays. Blank words are nothing.
+    expect(modeOnOpen({ ...peek, opts: {} })).toBe("peek");
+    expect(modeOnOpen({ ...peek, opts: { text: "   ", draft: "" } })).toBe("peek");
+  });
+
+  it("the desktop rule is unchanged: closed opens the side panel, open keeps its form", () => {
+    const desk = { phone: false } as const;
+    expect(modeOnOpen({ ...desk, open: false, current: "full", opts: {} })).toBe("dock");
+    expect(modeOnOpen({ ...desk, open: false, current: "full", opts: { sessionId: "t-1" } })).toBe("dock");
+    expect(modeOnOpen({ ...desk, open: false, current: "dock", opts: { mode: "full" } })).toBe("full");
+    expect(modeOnOpen({ ...desk, open: true, current: "full", opts: { sessionId: "t-1" } })).toBe("full");
+    expect(modeOnOpen({ ...desk, open: true, current: "dock", opts: { text: "hi" } })).toBe("dock");
+    // A phone sheet that is already full stays full.
+    expect(modeOnOpen({ phone: true, open: true, current: "full", opts: { sessionId: "t-1" } })).toBe("full");
+    // A phone from closed is the side panel in the store, which a phone draws as the sheet.
+    expect(modeOnOpen({ phone: true, open: false, current: "peek", opts: {} })).toBe("dock");
+  });
+
+  it("the store raises the strip on an open that names a chat, and keeps it on a plain open", () => {
+    openAssistant({ mode: "full" });
+    setAssistantMode("peek");
+    openAssistant();
+    expect(assistantState().mode).toBe("peek");
+    openAssistant({ sessionId: "t-2" });
+    expect(assistantState().mode).toBe("full");
+    expect(assistantState().sessionId).toBe("t-2");
+    setAssistantMode("peek");
+    openAssistant({ draft: "check this" });
+    expect(assistantState().mode).toBe("full");
+    closeAssistant();
+  });
+
+  it("every open from closed is still the side panel, after a strip", () => {
+    openAssistant({ mode: "full" });
+    setAssistantMode("peek");
+    expect(assistantState().mode).toBe("peek");
+    closeAssistant();
+    openAssistant();
+    expect(assistantState().mode).toBe("dock");
+  });
+});
+
+describe("the chat-first flag needs the one assistant (chat_first_surface.md §7)", () => {
+  const KEYS = ["NEXT_PUBLIC_CHAT_FIRST", "NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is off by default, on with the assistant, and off without it", () => {
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(true);
+    set({ NEXT_PUBLIC_CHAT_FIRST: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(chatFirstOn()).toBe(false);
+  });
+});
+
+describe("the strip in the dock's source: phone only, flag only", () => {
+  const dock = () => read("lib/shell/AssistantDock.tsx");
+
+  it("flag off: no handle, no minimize button, and no way to reach the strip", () => {
+    const src = dock();
+    expect(src).toContain("const [chatFirst] = useState(() => chatFirstOn());");
+    expect(src).toContain('const strip = phone && form === "peek";');
+    expect(src).toContain("{phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}");
+    expect(src).toMatch(/\{phone && chatFirst \? \(\s*<Button[\s\S]{0,120}?icon="ChevronDown"\s*aria-label="Show as a strip"/);
+    // Every way into the strip: the flag-gated handle and chevron (`toPeek`),
+    // the pill rule's "peek", and a phone toast's Open (`openFromPhone`,
+    // owner report 2026-10-22: a run no longer moves a phone's page by
+    // itself). All three read the flag.
+    expect((src.match(/setAssistantMode\("peek"\)/g) ?? []).length).toBe(3);
+    expect(src).toContain('if (act === "peek") setAssistantMode("peek");');
+    expect(src).toContain('const how = onChatLink({ phone: true, chatFirst: liveRef.current.chatFirst });');
+  });
+
+  it("the strip is the same element: the body wrapper is there in every form", () => {
+    const src = dock();
+    expect(src).toContain("data-panel-form={motionForm}");
+    expect(src).toContain('const motionForm: PanelForm = phone ? (form === "peek" ? "peek" : "sheet") : form;');
+    expect(src).toMatch(/<div\s+data-assistant-body=""\s+inert=\{strip\}/);
+  });
+
+  it("the page's last row and the toasts move up while the strip shows", () => {
+    expect(dock()).toContain('document.documentElement.setAttribute(PEEK_ATTR, "");');
+    const css = read("app/globals.css");
+    expect(css).toContain(":root[data-assistant-peek] .pb-nav {");
+    expect(css).toContain(":root[data-assistant-peek] .toast-viewport-bottom {");
+    expect(css).toContain('.assistant-panel[data-moving][data-panel-form="peek"]');
+  });
+});
+
+describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () => {
+  const landing = { chatFirst: true, phone: true, pathname: "/", search: "", seen: false };
+
+  it("a phone with the flag on that lands on `/` opens the sheet", () => {
+    expect(opensOnLanding(landing)).toBe(true);
+    expect(opensOnLanding({ ...landing, search: "?" })).toBe(true);
+    expect(opensOnLanding({ ...landing, search: null })).toBe(true);
+  });
+
+  it("the flag off, a desktop, and a second `/` in the session open nothing", () => {
+    expect(opensOnLanding({ ...landing, chatFirst: false })).toBe(false);
+    expect(opensOnLanding({ ...landing, phone: false })).toBe(false);
+    expect(opensOnLanding({ ...landing, seen: true })).toBe(false);
+  });
+
+  it("a deep link opens nothing: another path, or `/` with a query", () => {
+    expect(opensOnLanding({ ...landing, pathname: "/projects" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "/projects", search: "?task=42" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "/chat" })).toBe(false);
+    expect(opensOnLanding({ ...landing, search: "?welcome=new-org" })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: null })).toBe(false);
+    expect(opensOnLanding({ ...landing, pathname: "" })).toBe(false);
+  });
+
+  it("the session mark keeps the shell prefix, so it never reads as a chat cache key", () => {
+    expect(CHAT_LANDED_KEY).toBe("cc-shell-chat-landed");
+    expect(CHAT_LANDED_KEY.startsWith("cc-chat")).toBe(false);
+  });
+
+  it("the landing waits for the session, the access read, the layout read, the bound identity and the welcome dialog (review of #1206)", () => {
+    const all = { sessionStatus: "authenticated", accessLoading: false, shellEnabled: true, shellAnswered: true, identityBound: true, welcomeOpen: false };
+    expect(landingSettled(all)).toBe(true);
+    expect(landingSettled({ ...all, sessionStatus: "loading" })).toBe(false);
+    expect(landingSettled({ ...all, accessLoading: true })).toBe(false);
+    // "Not enabled yet" is not settled: the read is off while access loads.
+    expect(landingSettled({ ...all, shellEnabled: false })).toBe(false);
+    expect(landingSettled({ ...all, shellAnswered: false })).toBe(false);
+    expect(landingSettled({ ...all, identityBound: false })).toBe(false);
+    expect(landingSettled({ ...all, welcomeOpen: true })).toBe(false);
+  });
+
+  it("the shell opens it once, from the rule, and marks the session", () => {
+    const src = read("lib/shell/ChatNudge.tsx");
+    expect(src).toContain("const settled = landingSettled({");
+    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
+    expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
+    expect(src).toContain('openAssistant({ mode: "full" });');
+    expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
+  });
+
+  it("the nudge retires on the member's first message, from the dock's one activity seam", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    // A MEMBER turn, never a bare count: the day's brief is an agent turn
+    // that lands before the member types (CF-5, review of #1216).
+    expect(dock).toContain("if (info.firstUserMessage && chatFirstOn()) void markChatFirstMessage(boundChatScope());");
+    expect(dock).not.toContain("info.messageCount > 0 && chatFirstOn()");
+  });
+});
+
+describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () => {
+  const dock = () => read("lib/shell/AssistantDock.tsx");
+  const chat = () => read("components/AgentChat.tsx");
+  const menu = () => read("components/ChatMoreMenu.tsx");
+
+  it("the sheet passes the phone prop only with the flag on, and compact stays the side panel's", () => {
+    const src = dock();
+    expect(src).toContain("const phoneChrome = phone && chatFirst;");
+    expect(src).toContain("phoneChrome={phoneChrome}");
+    // `compact` is NOT the way: it turns the room off, and Share is a room act.
+    expect(src).toContain('compact={form === "dock"}');
+    expect(src).not.toMatch(/compact=\{[^}]*phone/);
+  });
+
+  it("the chat drops its agent row and its Share row on the phone, and keeps the room on", () => {
+    const src = chat();
+    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-agent-row=""/);
+    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-room-row=""/);
+    expect(src).toContain("useRoom(sessionId, viewerEmail, { enabled: !compact });");
+  });
+
+  it("one field, one send: the pickers leave the composer for the one \"…\" control", () => {
+    const src = chat();
+    expect(src).toContain("{hasComposerControls && !phoneChrome && (");
+    expect((src.match(/<ChatMoreMenu\b/g) ?? []).length).toBe(1);
+    expect(src).toMatch(/\{phoneChrome && \(\s*<ChatMoreMenu/);
+    // The ring joins the composer only where the compaction band begins.
+    expect(src).toContain("export const PHONE_RING_PCT = 75;");
+    expect(src).toContain("const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;");
+    // The phone's tap size on Attach and Send.
+    expect(src).toContain('const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";');
+    expect(src).toContain("large={phoneChrome}");
+    // Share stays reachable: the same sheet the Share row raises.
+    expect(src).toMatch(/\{phoneChrome && sharing && room && \(\s*<ShareSheet/);
+  });
+
+  it("the \"…\" control is built from the ui primitives only, at the phone's tap size", () => {
+    const src = menu();
+    expect(src).toContain('from "@/components/ui/AnchoredPanel"');
+    expect(src).toContain('from "@/components/ui/Button"');
+    expect(src).not.toMatch(/lucide-react|@base-ui/);
+    expect(src).toContain('const ROW = "min-h-11 w-full gap-3 px-3 text-left text-sm";');
+    expect(src).toContain('className="h-11 w-11"');
+  });
+
+  it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
+    const src = dock();
+    expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11" : "";');
+    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
+    expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
+    expect(src).toMatch(/label: "This chat's files"/);
+    expect(src).toContain("moreActs={moreActs}");
+  });
+
+  it("the reading width: a 16 px gutter on the phone sheet", () => {
+    const src = chat();
+    expect(src).toContain('${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin');
+  });
+});
+
+describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.md §4.6)", () => {
+  const chat = () => read("components/AgentChat.tsx");
+
+  it("the chat reads the starter pills through the one rule, and only with the flag on", () => {
+    const src = chat();
+    expect(src).toContain('import { starterPills } from "@/lib/starterPills";');
+    expect(src).toContain('import { chatFirstOn } from "@/lib/shell/chatFlag";');
+    expect(src).toContain("const [chatFirst] = useState(() => chatFirstOn());");
+    // The one assistant's empty chat, and nothing else: no messages, no
+    // history on its way, and not another agent's chat.
+    expect(src).toContain(
+      "const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;",
+    );
+    expect(src).toMatch(/starterPills\(\{\s*chatFirst: starterFeedWanted,\s*cards: starterFeedCards,/);
+    // The empty state draws the rule's answer. The follow-up pills stay as they were.
+    expect(src).toMatch(/<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}\s*\/>/);
+    expect(src).toMatch(/<SuggestionPills\s+suggestions=\{smartSuggestions\.length > 0/);
+    expect((src.match(/<SuggestionPills\b/g) ?? []).length).toBe(2);
+  });
+
+  it("the feed comes through the key My Day reads, so the chat adds no second fetch and no route", () => {
+    const src = chat();
+    const hook = "useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed()";
+    expect(src).toContain(hook);
+    // The same key and the same fetcher as My Day's `useFeed` (AGENTS.md rule 9).
+    expect(read("lib/shell/FeedCard.tsx")).toContain(
+      "useCachedResource<FeedAnswer>(enabled ? feedKey() : null, () => fetchFeed())",
+    );
+    // No `starter` branch on the follow-up route, and no model call for a pill.
+    expect(src).not.toMatch(/starter:\s*true/);
+    expect(read("app/api/chat/suggestions/route.ts")).not.toMatch(/\bstarter\b/i);
+    // The rule itself is pure: no fetch, no cache, no feed import.
+    const rule = read("lib/starterPills.ts");
+    expect(rule).not.toMatch(/\bfetch\(|useCachedResource|from "@\//);
   });
 });

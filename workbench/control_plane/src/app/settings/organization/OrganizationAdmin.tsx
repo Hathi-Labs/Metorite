@@ -127,6 +127,11 @@ const PURGE_LABELS: Record<string, string> = {
   room_participations: "room membership",
   app_grants: "app grant",
   app_tool_grants: "remembered tool approval",
+  // H-375: a send that the member scheduled for later.
+  scheduled_sends: "scheduled send",
+  // WS-65: the member's own grants on a shared mailbox. The mailbox stays.
+  mailbox_grants: "shared mailbox grant",
+  mailbox_member_prefs: "shared mailbox setting",
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
@@ -134,6 +139,8 @@ const PURGE_LABELS: Record<string, string> = {
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
+  // WS-61 KB-2f: the member's starred Knowledge pages.
+  knowledge_favorites: "starred Knowledge page",
   audit_entries: "app audit entry",
   audit_events: "audit event",
   agent_runs: "agent run trace",
@@ -141,6 +148,8 @@ const PURGE_LABELS: Record<string, string> = {
   apps: "app",
   workflows: "workflow",
   meetings: "meeting",
+  // WS-61 KB-5a: an edit the assistant proposed for the member, kept.
+  knowledge_proposals: "proposed Knowledge edit",
 };
 
 function purgeLabel(key: string, n: number): string {

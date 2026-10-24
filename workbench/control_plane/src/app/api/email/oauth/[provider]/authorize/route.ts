@@ -150,6 +150,9 @@ export async function GET(
     return failed("gateway_unreachable", provider);
   }
 
+  // A 409 from authorize is the mailbox limit (Q-MB-1, owner 2026-10-23,
+  // 5 per member). The callback page names it by its code (`callbackView`).
+  if (res.status === 409) return failed("mailbox_limit", provider);
   if (res.status < 300 || res.status >= 400) {
     return failed(await refusalReason(res), provider);
   }

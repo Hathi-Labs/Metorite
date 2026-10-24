@@ -214,6 +214,12 @@ export interface StoredShell {
   known: string[] | null;
   cardOrder: CardKey[] | null;
   newOrder: string[] | null;
+  /**
+   * When the member first wrote to the assistant, or dismissed the nudge
+   * (WS-62 CF-2, `chat_first_surface.md` §4.7, D-CF-7). ISO 8601. `null`:
+   * the nudge shows. The server keeps it when a layout save omits it.
+   */
+  chat_first_message_at: string | null;
 }
 
 export const EMPTY_SHELL: StoredShell = {
@@ -223,6 +229,7 @@ export const EMPTY_SHELL: StoredShell = {
   known: null,
   cardOrder: null,
   newOrder: null,
+  chat_first_message_at: null,
 };
 
 export interface ShellLayout {

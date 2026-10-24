@@ -33,6 +33,8 @@ const NEW_APPS = [
   ["crm", "CRM", "/crm", "KanbanSquare"],
   ["people", "People", "/people", "Users"],
   ["chat", "Chat", "/chat", "MessageCircle"],
+  // WS-61 KB-9a: the `kb_gap` card of the Knowledge app (`knowledge_base.md` §9).
+  ["knowledge", "Knowledge", "/knowledge", "BookOpen"],
 ] as const;
 
 describe("the feed apps of MD-3b", () => {

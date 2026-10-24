@@ -1,16 +1,19 @@
 """Who may land agent code: the ONE rule of the reviewer of agent commits.
 
-An agent's local clone holds the operator's ``GITHUB_TOKEN`` in its remote URL
-(``acb_skills.loader._refresh_remote_auth``), and the clone is shared by every
-organization. So a push of agent code is a deployment-wide act, done with the
-operator's credentials. Two paths can do it, and both call this one rule:
+A push of agent code uses the operator's ``GITHUB_TOKEN``, and an agent's
+clone is shared by every organization. So a push of agent code is a
+deployment-wide act, done with the operator's credentials. Since H-363 the
+clone holds no token: ``acb_common.git_credentials`` gives it to one gateway
+git process, and only on a push that one of these paths allows. Both paths
+call this one rule:
 
 * the self-mutation review queue (``/agent/mutations/*``), whose approve
   pushes a pending commit (``gateway.routes.agent._require_mutation_reviewer``);
-* a chat run whose agent pushes its own commit, when the member said
-  "commit and push" (``orchestrator.executor._agent_push_allowed``, read by the
-  permission guard of ``acb_skills.permission_policy``, by ``run_script`` and
-  by ``_detect_agent_commits``).
+* a chat run whose member said "commit and push"
+  (``orchestrator.executor._agent_push_allowed``, read by the permission
+  guard of ``acb_skills.permission_policy``, by ``run_script`` and by
+  ``_detect_agent_commits``, which then pushes as the gateway through
+  ``_push_reviewed_run``).
 
 The rule: the member holds ``agents:manage`` (owner and admin only, migration
 130) AND the member's org is not empty AND it is either the first-party org

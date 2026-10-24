@@ -156,6 +156,10 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "analytics_finished": [{"weeks": 2, "skip_current_week": True}],
     "analytics_outlook": [{"project_id": UUID}],
     "report_list": [{}],
+    # WS-64 OP-6d: who a report goes to, and whether its schedule is on.
+    "report_recipients": [{"report_id": UUID}],
+    # WS-64 OP-6e: the agent requests that wait for the member.
+    "waiting_agent_requests": [{}],
     "report_render": [{"report_id": UUID}],
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],
@@ -168,6 +172,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # catalogue and the subjects and then the preview.
     "render_report": [{"report_id": UUID}, {"template": "team pulse", "subject": "Design"}],
     "status_report": [{"project_id": UUID}, {}],
+    # WS-64 OP-6c — the filtered list as a CSV file of the chat.
+    "export_tasks": [{}, {"project_id": UUID, "overdue": True, "shown_fields": "status"}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
     "project_views": [{"project_id": UUID}],
@@ -203,6 +209,12 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
         {"target": "task", "target_id": UUID},
         {"target": "project", "target_id": UUID},
         {"target": "app", "target_id": "analytics"},
+    ],
+    # WS-46 P11 — what the open page shows
+    "show_view": [
+        {"project_id": UUID, "mode": "timeline"},
+        {"project_id": UUID, "view_name": "Board"},
+        {"project_id": UUID, "filters": '{"overdue": true}', "group_by": "assignee"},
     ],
 }
 

@@ -513,3 +513,63 @@ export function threadWithoutComposerDrafts<T extends { id: string }>(
   if (hidden.size === 0) return [...messages];
   return messages.filter((m) => !(hidden.has(m.id) && isDraft(m)));
 }
+
+/**
+ * True when draft `a` is newer than draft `b`: the later `receivedAt`, then
+ * the larger id. That is the order of `_THREAD_DRAFT_SQL` on the gateway.
+ */
+export function newerDraft(
+  a: { id: string; receivedAt: string },
+  b: { id: string; receivedAt: string },
+): boolean {
+  const ta = Date.parse(a.receivedAt);
+  const tb = Date.parse(b.receivedAt);
+  if (ta !== tb) return (Number.isNaN(ta) ? -Infinity : ta) > (Number.isNaN(tb) ? -Infinity : tb);
+  return a.id.toLowerCase() > b.id.toLowerCase();
+}
+
+/**
+ * The draft of the conversation that a new reply continues, or null (owner
+ * directive, 2026-10-22). A reply drafted in the chat lands in Drafts as the
+ * newest draft of the conversation. Reply in the reading pane then opens
+ * THAT draft, so the member finishes and sends it, and no second draft starts.
+ *
+ * It is the newest draft of the thread (`newerDraft`) that no send or
+ * discard ended (`gone`). Each save of a draft moves its `received_at`
+ * (`_upsert_local_draft`), so the gateway and this pane pick the draft that
+ * was saved last. A forward never continues a reply draft, so the caller
+ * asks only for Reply and Reply all.
+ */
+/** A forward prefix: English and the common localised ones (review P2). */
+const FORWARD_SUBJECT = /^\s*(fwd?|fw|wg|tr|rv|enc|doorst|vs|pd)\s*:/i;
+
+/** A draft subject that reads as a forward, never a reply to continue. */
+export function isForwardSubject(subject: string | null | undefined): boolean {
+  return FORWARD_SUBJECT.test(subject ?? "");
+}
+
+export function draftToContinue<T extends { id: string; receivedAt: string }>(
+  thread: readonly T[] | null,
+  gone: readonly string[],
+  isDraft: (m: T) => boolean,
+): T | null {
+  let best: T | null = null;
+  for (const m of thread ?? []) {
+    if (!isDraft(m) || gone.includes(m.id)) continue;
+    if (!best || newerDraft(m, best)) best = m;
+  }
+  return best;
+}
+
+/**
+ * The editable text and the quote of a continued draft. The inline reply
+ * saves its text and then the quote, so a draft that it saved ends with the
+ * same quote. That quote comes off, and the reply shows it apart again. A
+ * draft from the chat holds no quote, so its whole body is the text, and the
+ * quote stays empty: each save then keeps the body as the draft held it.
+ */
+export function continuedBody(body: string, quote: string): { text: string; quote: string } {
+  const tail = quote ? `\n\n${quote}` : "";
+  if (tail && body.endsWith(tail)) return { text: body.slice(0, -tail.length), quote };
+  return { text: body, quote: "" };
+}

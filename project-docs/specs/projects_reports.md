@@ -1932,7 +1932,7 @@ works with no saved report. With no id, the tool calls
   reader may report on.
 - `GET /projects/reports/templates` maps to `render_report`, class A, if
   the tool resolves a template by name.
-- Every `_DELIVERY_REASON` row stays unchanged.
+- Every `_DELIVERY_REASON` row stays unchanged. *(Superseded for the four routes by WS-64 OP-6d, 2026-10-24: they now have chat tools, and the send switch stays the owner's.)*
 
 **Cut, and why (§9 Q15, Q16):**
 - **R4 and R4b.** Stored runs, "what changed", the change arrows and the

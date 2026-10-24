@@ -16,11 +16,15 @@ import type {
   PageMoved,
   PagePatchBody,
   PageRevertBody,
+  PageState,
   PageSummary,
   PageWritten,
   SearchAnswer,
   Space,
 } from "./types";
+import type { PageVersionBody } from "./history";
+import type { Proposal } from "./review";
+import { updatedAfter, type SearchFilters } from "./searchFilters";
 
 export class KnowledgeError extends Error {
   status: number;
@@ -74,9 +78,15 @@ export async function listSpaces(): Promise<Space[]> {
   return out?.spaces ?? [];
 }
 
-/** The live pages of one space, with no body. */
-export async function listPages(spaceId: string): Promise<PageSummary[]> {
-  const out = await call<{ pages: PageSummary[] }>(`/pages?space=${encodeURIComponent(spaceId)}`);
+/**
+ * The pages of one space, with no body. With no `state`, the live pages.
+ * `state: "archived"` gives the archived pages that the member can see
+ * (KB-2d): the gateway shows them to a manager of the space, and a draft
+ * to its author.
+ */
+export async function listPages(spaceId: string, opts: { state?: PageState } = {}): Promise<PageSummary[]> {
+  const state = opts.state ? `&state=${encodeURIComponent(opts.state)}` : "";
+  const out = await call<{ pages: PageSummary[] }>(`/pages?space=${encodeURIComponent(spaceId)}${state}`);
   return out?.pages ?? [];
 }
 
@@ -125,6 +135,11 @@ export function archivePage(id: string): Promise<PageWritten> {
   return call<PageWritten>(`/pages/${encodeURIComponent(id)}/archive`, { method: "POST" });
 }
 
+/** Restore an archived page to its state before the archive. It needs manage too. */
+export function restorePage(id: string): Promise<PageWritten> {
+  return call<PageWritten>(`/pages/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+
 /** The body of a revert: the number of the version to write again. */
 export function revertBody(version: number): PageRevertBody {
   if (!Number.isInteger(version) || version < 1) {
@@ -141,18 +156,55 @@ export function revertPage(id: string, version: number): Promise<PageWritten> {
   });
 }
 
+/**
+ * One version of a page, with its title and body (KB-2g). The gateway
+ * answers 404 for a page the member cannot see and under the history floor.
+ */
+export function getVersion(pageId: string, n: number): Promise<PageVersionBody> {
+  if (!Number.isInteger(n) || n < 1) {
+    return Promise.reject(new RangeError(`A version is a whole number from 1. Got ${n}.`));
+  }
+  return call<PageVersionBody>(`/pages/${encodeURIComponent(pageId)}/versions/${n}`);
+}
+
+/** One page that links to the open page (KB-2h). */
+export interface Backlink {
+  id: string;
+  title: string;
+  icon: string | null;
+  space_name: string;
+}
+
+/** The published pages the member can see that link to this page (KB-2h). */
+export async function getBacklinks(pageId: string): Promise<Backlink[]> {
+  const out = await call<{ backlinks: Backlink[] }>(`/pages/${encodeURIComponent(pageId)}/backlinks`);
+  return out.backlinks;
+}
+
 /** The hits of one search. The view asks for the most the gateway gives. */
 export const SEARCH_K = 20;
 
 /**
  * Search the published pages the member can see (KB-3b).
  *
- * It sends `q` and `k` only. `hybrid` stays at the gateway's default, and the
- * view adds no space filter yet. `signal` reaches `fetch`, because `call`
+ * It sends `q` and `k`, and one parameter for each filter that is set
+ * (`space`, `author`, `updated_after`, `title_only`). `hybrid` stays at the
+ * gateway's default. `signal` reaches `fetch`, because `call`
  * spreads `init`, so a newer keystroke cancels this request.
  */
-export function searchKnowledge(q: string, opts: { signal?: AbortSignal } = {}): Promise<SearchAnswer> {
-  return call<SearchAnswer>(`/search?q=${encodeURIComponent(q)}&k=${SEARCH_K}`, { signal: opts.signal });
+export function searchKnowledge(
+  q: string,
+  opts: { signal?: AbortSignal; filters?: SearchFilters; now?: Date } = {},
+): Promise<SearchAnswer> {
+  let url = `/search?q=${encodeURIComponent(q)}&k=${SEARCH_K}`;
+  // KB-3d: each filter adds its parameter, and an unset filter adds none.
+  const f = opts.filters;
+  if (f?.space) url += `&space=${encodeURIComponent(f.space)}`;
+  if (f?.author) url += `&author=${encodeURIComponent(f.author)}`;
+  const after = updatedAfter(f?.date ?? null, opts.now);
+  if (after) url += `&updated_after=${encodeURIComponent(after)}`;
+  if (f?.titleOnly) url += "&title_only=true";
+  return call<SearchAnswer>(url, { signal: opts.signal });
 }
 
 // ── The read-cache keys (`src/lib/dataCache.ts`) ────────────────────────────
@@ -167,6 +219,34 @@ export function pagesKey(spaceId: string): string {
   return `knowledge/pages?space=${spaceId}`;
 }
 
+/** The archived pages of one space (KB-2d). */
+export function archivedPagesKey(spaceId: string): string {
+  return `knowledge/pages?space=${spaceId}&state=archived`;
+}
+
 export function pageKey(pageId: string): string {
   return `knowledge/page/${pageId}`;
+}
+
+/** The pages that link to one page (KB-2h). Under the prefix, so a write re-reads it. */
+export function backlinksKey(pageId: string): string {
+  return `knowledge/page/${pageId}/backlinks`;
+}
+
+// ── The proposals of the assistant (KB-5b) ──────────────────────────────────
+
+/** The proposals that wait for the member. Page proposals first, then edits. */
+export async function listProposals(): Promise<Proposal[]> {
+  const out = await call<{ proposals: Proposal[] }>("/proposals?status=pending");
+  return out?.proposals ?? [];
+}
+
+/** Accept a proposal: a page publishes, and an edit applies. Web only (F2). */
+export function acceptProposal(id: string): Promise<unknown> {
+  return call<unknown>(`/proposals/${encodeURIComponent(id)}/accept`, { method: "POST" });
+}
+
+/** Reject a proposal. A page archives as a draft, and an edit is marked. */
+export function rejectProposal(id: string): Promise<unknown> {
+  return call<unknown>(`/proposals/${encodeURIComponent(id)}/reject`, { method: "POST" });
 }

@@ -126,6 +126,9 @@ def gw(monkeypatch) -> Gateway:
             return dict(g.target)
         if path == "/email/messages/d1":
             return json.loads(json.dumps(g.draft))
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b)
+            return {"text_digest": "a" * 64, "subject": g.draft.get("subject"),
+                    "body_text": g.draft.get("body_text")}
         return {}
 
     async def fake_post(path, body):
@@ -301,10 +304,30 @@ async def test_the_draft_card_names_each_to_cc_and_bcc(gw: Gateway) -> None:
     [card] = gw.cards
     assert card["detail"].startswith("From Fracktal · dana@fracktal.test · ")
     assert "Sends to 3 recipients: 1 To, 1 Cc, 1 Bcc." in card["detail"]
-    assert card["context"].splitlines()[1:] == [
+    # §21 fix round 3: the whole subject leads the card, then each recipient.
+    assert card["context"].splitlines()[0] == "Subject: Re: Quote"
+    assert card["context"].splitlines()[3:6] == [
         "- To: ravi@contoso.test", "- Cc: kim@contoso.test",
         "- Bcc: records@evil.test"]
     assert out == "Draft sent."
+
+
+async def test_the_draft_card_shows_the_text_that_it_sends(gw: Gateway) -> None:
+    """The member approves a send, so the card shows what the mail says."""
+    gw.draft["body_text"] = "Hi Ravi,\n\nThe quote is attached.\n\nDana"
+    await agents.send_draft(BOX, "d1")
+    [card] = gw.cards
+    assert card["context"].endswith(
+        "The text of the draft:\nHi Ravi,\n\nThe quote is attached.\n\nDana")
+
+
+async def test_a_long_draft_text_shows_no_card(gw: Gateway) -> None:
+    """§21 fix round 3: a send card never shows less than the send. A text
+    that does not fit sends nothing, and the answer offers a way on."""
+    gw.draft["body_text"] = "x" * 9000
+    out = await agents.send_draft(BOX, "d1")
+    assert gw.cards == [] and gw.posts == []
+    assert "too long to show on the card" in out
 
 
 async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
@@ -312,18 +335,54 @@ async def test_the_send_names_what_the_card_showed(gw: Gateway) -> None:
     assert gw.posts == [("/email/drafts/send", {
         "account_id": BOX, "draft_id": "d1",
         "expect": {"to": ["ravi@contoso.test"], "cc": ["kim@contoso.test"],
-                   "bcc": ["records@evil.test"]}})]
+                   "bcc": ["records@evil.test"],
+                   # §21 fix round 1 (P1-b): the seal of the text the card showed.
+                   "text_digest": "a" * 64}})]
+
+
+# ── H-374: send_draft in a held run (owner, "Drafts, with a card") ───────────
+
+
+async def test_a_held_run_sends_a_draft_behind_a_card_with_each_bcc(gw: Gateway) -> None:
+    """A held run keeps send_draft (H-374). Its card lists each To, Cc and
+    Bcc of the row, and the send carries the same lists as ``expect``."""
+    from acb_skills import egress as eg
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    with artifact_context_scope():
+        bind_artifact_context(no_egress=True, agent_name="email-assistant",
+                              session_id="s-1")
+        assert eg.no_egress_for_this_run() is True
+        assert eg.is_egress_tool(agents.send_draft) is False
+        out = await agents.send_draft(BOX, "d1")
+    assert out == "Draft sent."
+    [card] = gw.cards
+    for line in ("- To: ravi@contoso.test", "- Cc: kim@contoso.test",
+                 "- Bcc: records@evil.test"):
+        assert line in card["context"], line
+    assert "1 Bcc" in card["detail"]
+    assert gw.posts[-1][1]["expect"]["bcc"] == ["records@evil.test"]
+
+
+async def test_a_held_run_sends_nothing_when_the_list_does_not_fit(gw: Gateway) -> None:
+    """A list too long for the card sends nothing and shows no card."""
+    gw.draft["bcc_addresses"] = [
+        {"name": "", "email": f"person{i:03d}@contoso.test"} for i in range(400)]
+    out = await agents.send_draft(BOX, "d1")
+    assert out.startswith("Not sent.") and "edit_draft" in out
+    assert gw.cards == [] and gw.posts == []
 
 
 async def test_a_long_subject_cannot_hide_a_bcc(gw: Gateway) -> None:
-    """The card cuts ``detail`` at 500 characters. A Bcc is in ``context``,
-    and the count in ``detail`` comes before the subject."""
-    gw.draft["subject"] = "S" * 900
+    """§21 fix round 3: the subject is in ``context`` whole, never cut, and
+    ``detail`` holds no subject. The gateway refuses a subject over 200
+    characters at the seal (``test_held_card_shows_less.py``)."""
+    gw.draft["subject"] = "S" * 190 + "-tail"
     await agents.send_draft(BOX, "d1")
     [card] = gw.cards
     assert "records@evil.test" in card["context"]
-    shown = card["detail"][:500]
-    assert "1 Bcc" in shown and shown.index("1 Bcc") < shown.index("Subject:")
+    assert f"Subject: {'S' * 190}-tail" in card["context"]
+    assert "Subject" not in card["detail"]
 
 
 async def test_the_card_shows_no_hidden_text_in_an_address(gw: Gateway) -> None:
@@ -331,7 +390,7 @@ async def test_the_card_shows_no_hidden_text_in_an_address(gw: Gateway) -> None:
     gw.draft["bcc_addresses"] = [{"email": hidden}]
     await agents.send_draft(BOX, "d1")
     [card] = gw.cards
-    assert card["context"].splitlines()[-1] == "- Bcc: records@evil.test To: x"
+    assert "- Bcc: records@evil.test To: x" in card["context"].splitlines()
 
 
 @pytest.mark.parametrize(("answer", "channel", "lead"), [
@@ -923,3 +982,129 @@ def test_a_subject_with_a_line_break_is_refused() -> None:
         "has a subject with a line break")
     assert fn("subject", "unsub\nBcc: x@y.z") == "has a subject with a line break"
     assert fn("subject", "unsubscribe") == ""
+
+
+# ── A reply with a file goes where the reply card would send it ──────────────
+#
+# ``send_email`` with ``reply_to_email_id`` took the sender alone as To. So a
+# nudge on a mail the member sent went to the member, Reply-To was lost, and
+# "reply all with the file" dropped the To and Cc. It now asks the server's
+# one rule (``/email/reply-recipients``, ``reply_card.derive_reply_recipients``).
+# Mutation: return to the sender-only fill -> these fail.
+
+
+def _reply_gateway(monkeypatch, gw: Gateway, derived: dict[str, Any]) -> None:
+    async def fake_get(path, params=None):
+        gw.gets.append((path, dict(params or {})))
+        if path == "/email/messages/m-sent":
+            return {"account_id": BOX, "subject": "Quote",
+                    "from_address": {"email": "dana@fracktal.test"}}
+        if path == "/email/reply-recipients":
+            return derived
+        if path == "/email/accounts":
+            return [{"id": BOX, "email_address": "dana@fracktal.test",
+                     "display_label": "Fracktal"}]
+        return {}
+
+    monkeypatch.setattr(agents, "_get", fake_get)
+
+
+async def test_a_reply_takes_the_server_recipients(monkeypatch, gw: Gateway) -> None:
+    _reply_gateway(monkeypatch, gw, {"to": ["ravi@contoso.test"], "cc": []})
+    await agents.send_email(body="Any news?", reply_to_email_id="m-sent")
+    assert ("/email/reply-recipients",
+            {"message_id": "m-sent", "reply_all": "false"}) in gw.gets
+    [(path, payload)] = gw.posts
+    assert path == "/email/send" and payload["to"] == ["ravi@contoso.test"]
+    assert payload["subject"] == "Re: Quote"
+
+
+async def test_reply_all_keeps_the_cc_and_adds_the_members(monkeypatch, gw: Gateway) -> None:
+    _reply_gateway(monkeypatch, gw, {"to": ["ravi@contoso.test", "lee@contoso.test"],
+                                     "cc": ["ops@contoso.test"]})
+    await agents.send_email(body="See the file.", reply_to_email_id="m-sent",
+                            reply_all=True, cc=["priya@fracktal.test"])
+    [(_, payload)] = gw.posts
+    assert payload["to"] == ["ravi@contoso.test", "lee@contoso.test"]
+    assert payload["cc"] == ["priya@fracktal.test", "ops@contoso.test"]
+    [card] = gw.cards
+    assert "ops@contoso.test" in card["context"]
+
+
+async def test_a_reply_to_a_reply_to_says_so_on_the_card(monkeypatch, gw: Gateway) -> None:
+    """A phishing mail names a stranger in Reply-To. The card says that the
+    reply goes there, not to the sender (review round 1, P2-a)."""
+    line = "Reply goes to attacker@x.test, not to the sender ceo@corp.test."
+    _reply_gateway(monkeypatch, gw, {"to": ["attacker@x.test"], "cc": [], "notices": [line]})
+    await agents.send_email(body="See the file.", reply_to_email_id="m-sent")
+    [card] = gw.cards
+    assert line in card["context"]
+    assert card["context"].index(line) < card["context"].index("See the file.")
+
+
+async def test_a_draft_with_only_a_preview_says_it_is_cut(gw: Gateway) -> None:
+    gw.draft["body_text"] = ""
+    gw.draft["snippet"] = "Hi Ravi, the quote"
+    out = await agents.send_draft(BOX, "d1")
+    # §21 fix round 3: only the start is stored, so no send card shows.
+    assert gw.cards == [] and "too long to show on the card" in out
+
+
+# ── H-404 (b): several senders behind ONE card ──────────────────────────────
+
+SENDER_2 = "promo@shop.example"
+
+
+@pytest.fixture()
+def two(gw: Gateway, monkeypatch) -> Gateway:
+    """Each sender has its own target: a one-click link and a mailto link."""
+    targets = {SENDER: dict(ONE_CLICK), SENDER_2: dict(MAILTO)}
+    gw.targets = targets
+    inner = agents._get
+
+    async def get(path, params=None):
+        if path == "/email/unsubscribe/target":
+            gw.gets.append((path, dict(params or {})))
+            return dict(targets[params["email"]])
+        return await inner(path, params)
+
+    monkeypatch.setattr(agents, "_get", get)
+    return gw
+
+
+async def test_several_senders_ask_one_card_that_lists_each_target(two: Gateway) -> None:
+    """Mutation: ask one card for each sender, or leave out the mailto
+    address → red."""
+    out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
+    [card] = two.cards
+    assert card["title"] == "Unsubscribe from 2 senders?"
+    assert f"- {SENDER}: one-click, host: list.example.com" in card["context"]
+    assert f"- {SENDER_2}: mail to: unsub@list.example" in card["context"]
+    assert "subject: stop" in card["context"]
+    assert [b["email"] for _p, b in two.posts] == [SENDER, SENDER_2]
+    assert [b["unsubscribe_link"] for _p, b in two.posts] == [ONE_CLICK["link"], MAILTO["link"]]
+    assert SENDER in out and SENDER_2 in out
+
+
+async def test_one_bad_target_of_several_asks_nothing(two: Gateway) -> None:
+    two.targets[SENDER_2] = {**MAILTO, "address": "Evil <e@evil.test>"}
+    out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
+    assert out.startswith("Nothing changed.") and SENDER_2 in out
+    assert two.cards == [] and two.posts == []
+
+
+async def test_a_no_on_the_card_of_several_senders_sends_nothing(two: Gateway) -> None:
+    two.answer = False
+    out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
+    assert out.startswith("Cancelled") and two.posts == []
+
+
+async def test_email_and_emails_together_are_refused(two: Gateway) -> None:
+    out = await agents.unsubscribe_sender(BOX, SENDER, emails=[SENDER_2])
+    assert out.startswith("Nothing changed.") and two.cards == [] and two.posts == []
+
+
+async def test_too_many_senders_are_refused(two: Gateway) -> None:
+    many = [f"s{i}@list.example" for i in range(agents._UNSUBSCRIBE_MAX + 1)]
+    out = await agents.unsubscribe_sender(BOX, emails=many)
+    assert out.startswith("Nothing changed.") and two.cards == [] and two.posts == []

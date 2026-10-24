@@ -161,10 +161,19 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-63 PZ-5: a name to one colleague (`profile_tools.py`). It reads
+    # `GET /auth/me/assistant-profile/resolve-person` as the member, and
+    # nothing leaves the platform.
+    "resolve_person":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-61 KB-4a: the two Knowledge reads (`knowledge_tools.py`). Each reads
     # a `/knowledge` route as the member, and nothing leaves the platform.
     "read_page":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "list_spaces":           {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-61 KB-5a: the two Knowledge proposals. Each files a draft or a
+    # proposal row behind one card, as the member, and publishes nothing.
+    # A person accepts in the app. Nothing leaves the platform.
+    "propose_page":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "propose_edit":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -221,6 +230,15 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # WS-61 KB-4a: the two Knowledge reads, on the same terms.
     "read_page",
     "list_spaces",
+    # WS-61 KB-5a: the two proposals. Only the orchestrator holds them,
+    # behind COMPANY_SEARCH_ENABLED, and each asks with a card first. So
+    # every risk block stays byte-identical.
+    "propose_page",
+    "propose_edit",
+    # WS-63 PZ-5: the colleague lookup only reads, and only the orchestrator
+    # holds it, behind ASSISTANT_PROFILE_ENABLED. So every risk block stays
+    # byte-identical.
+    "resolve_person",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
@@ -241,12 +259,19 @@ def annotate(
     destructive: bool = False,
     idempotent: bool = False,
     open_world: bool | None = None,
+    card_bound: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering risk annotations for an agent-defined tool.
 
     ``open_world`` has no default (H-236). A tool that omits it carries no
     ``open_world`` key, and ``acb_skills.egress`` then counts it as able to
     send data off the platform. So every tool states it.
+
+    ``card_bound`` (EM-CR and H-374, ``email_app_master_plan.md`` §18) marks
+    a send that the member confirms on its card. The mark alone keeps
+    nothing in a held run: ``egress.is_card_bound_send`` also needs the
+    tool's name on its list and its pinned parameters. The key is set only
+    when it is true, so every other tool's hints stay as they were.
 
     Example::
 
@@ -260,6 +285,8 @@ def annotate(
     }
     if open_world is not None:
         hints["open_world"] = bool(open_world)
+    if card_bound:
+        hints["card_bound"] = True
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         TOOL_ANNOTATIONS[fn.__name__] = hints

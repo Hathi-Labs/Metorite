@@ -460,6 +460,10 @@ async def test_the_response_says_what_happened_table_by_table(
         "room_participations": 1,
         "app_grants": 1,
         "app_tool_grants": 1,
+        # H-375: the fake holds no scheduled send of the member.
+        "scheduled_sends": 0,
+        "mailbox_grants": 0,
+        "mailbox_member_prefs": 0,
         "email_accounts": 1,
         "whatsapp_accounts": 1,
         "task_accounts": 1,
@@ -467,6 +471,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
         "crm_member_rules": 0,
+        # WS-61 KB-2f: the fake holds no star of the member.
+        "knowledge_favorites": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -477,6 +483,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "apps": 1,
         "workflows": 1,
         "meetings": 1,
+        # WS-61 KB-5a: the fake holds no proposal of the member. It stays.
+        "knowledge_proposals": 0,
     }
 
 

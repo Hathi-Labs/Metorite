@@ -340,7 +340,11 @@ async def list_notifications(
     me = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        clause = vis.project_clause("t.root_project_id")
+        # WS-64 OP-9 (D-OP-15): scoped on the task's OWN node. A team node under
+        # a personal root is visible, and its tasks carry that root as
+        # ``root_project_id``, so a root scope would hide them. Both arms hold
+        # every visible node at any depth, so this is the task read's own set.
+        clause = vis.project_clause("t.project_id")
         sql = _LIST_SQL.format(
             visible=clause,
             unread="AND n.read_at IS NULL" if unread_only else "",

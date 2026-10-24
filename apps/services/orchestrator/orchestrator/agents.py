@@ -79,6 +79,39 @@ SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
   ONE task store. Send that work to projects_assistant.
 - Call the specialist tool, then answer from its reply. Its reply is your
   evidence, not your answer: never relay it whole.
+- Two parts of an email_assistant reply ARE the answer, so keep them. When
+  it describes an email, give that in a few lines: who sent it, what it asks
+  of the member, and by when. When it reports a reply card ("Sent to ...",
+  "Saved in Drafts ...", "Reply discarded ..."), say that result as it said
+  it. The card already showed in the chat, so never ask the same question
+  again in text.
+- A third part of an email_assistant reply is the answer too: the TEXT of a
+  draft. Give it whole, word for word, so the member can read and change it.
+- email_assistant has no memory of this chat. Each task you give it must
+  hold the in-app link of the email, for example [BQ quote](/email?email=<id>),
+  and the mailbox. When the member asks to reply, save or send a text that
+  you or the member wrote in this chat, put that text in the task WORD FOR
+  WORD, and write "use this text as is". A summary makes it write a
+  different email.
+- The per-turn context can hold "The member's mailboxes" and "Email working
+  set of this chat". Put the ids that the member means in each task: the
+  email_id, the draft_id and the account_id or mailbox label. For "send it"
+  or "send the draft", give the draft_id of the working set. When the member
+  names no mailbox, name none: email_assistant reads All inboxes and asks
+  which mailbox before a write.
+- When the member asks for a reply, a Cc and a send in one message, give
+  email_assistant ONE task that holds all of them, with each Cc address.
+  Never split one request into two tasks. "X and Y" means ONE mail with
+  both people on it. Ask for one mail for each person only when the member
+  says "each" or "individually".
+- Forward the people of an email_assistant reply WORD FOR WORD, the Cc of
+  the email included. Never drop a person from your summary.
+- When the member says "send it" or "send it out", hand it to
+  email_assistant at once. Its card IS the confirmation, so never ask for a
+  confirmation in text first.
+- Email work happens here, through email_assistant. Never tell the member to
+  open the Email app to do it. Only a mailbox that needs reconnecting needs
+  the Email app, because the sign-in needs a browser.
 - Keep each in-app link in the response verbatim, for example
   [BQ quote](/email?email=<id>). An in-app link starts with ONE "/" and then a
   letter. A link that starts with "//" or "/\\" is not in-app. Do not drop an
@@ -194,16 +227,35 @@ _RECENCY_SWAP: tuple[str, str] = (
 )
 
 
-def _orchestrator_instructions(company_search: bool, recency: bool = False) -> str:
+# WS-61 KB-5a (knowledge_base.md §8.1 and §13). With KNOWLEDGE_PROPOSALS on
+# too, the tool list of the persona gains the line of the two proposal tools,
+# by one more exact swap. Off, the persona is the KR-2 one, byte for byte.
+# Fence: tests/unit/test_company_search_tool.py.
+_PROPOSALS_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[0][1],
+    _COMPANY_SEARCH_SWAPS[0][1]
+    + "- propose_page, propose_edit: when the member asks, file a proposed page or\n"
+    "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
+)
+
+
+def _orchestrator_instructions(
+    company_search: bool, recency: bool = False, proposals: bool = False,
+) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
-    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and only when
+    *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
+    (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. Each acts only when
     *company_search* is on too.
     """
     if not company_search:
         return _PULL_INSTRUCTIONS
     text = _PULL_INSTRUCTIONS
-    swaps = _COMPANY_SEARCH_SWAPS + ((_RECENCY_SWAP,) if recency else ())
+    swaps = (
+        _COMPANY_SEARCH_SWAPS
+        + ((_RECENCY_SWAP,) if recency else ())
+        + ((_PROPOSALS_SWAP,) if proposals else ())
+    )
     for old, new in swaps:
         if text.count(old) != 1:
             # A persona edit moved a line the swap names. Fail loud at build,
@@ -220,6 +272,22 @@ def _company_search_enabled() -> bool:
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
         return False
     return company_search_enabled()
+
+
+def _knowledge_propose_enabled() -> bool:
+    """The one reader of ``KNOWLEDGE_PROPOSALS``, in ``acb_skills`` (KB-5a)."""
+    try:
+        from acb_skills.knowledge_tools import knowledge_propose_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return knowledge_propose_enabled()
+
+
+def _assistant_profile_enabled() -> bool:
+    """The one reader of ``ASSISTANT_PROFILE_ENABLED``, in ``acb_common`` (PZ-5)."""
+    from acb_common.assistant_profile import enabled
+
+    return enabled()
 
 
 def _context_recency_enabled() -> bool:
@@ -297,6 +365,77 @@ async def search_timeline(entity_name: str, query: str) -> str:
         is not enabled or no facts found.
     """
     return await search_entity_timeline(entity_name, query)
+
+
+# WS-62 CF-3 (chat_first_surface.md §4.4). The one tool that moves the page.
+# Only the orchestrator holds it (§9.2 Q3), so the page moves once and from
+# one place. read_only: it changes no data, it only tells the client where to
+# look. open_world=False: nothing leaves the platform.
+# Fence: tests/unit/test_show_in_app.py.
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def show_in_app(path: str, why: str) -> dict:
+    """Open a page of the app for the member, and say why in one sentence.
+
+    Use it when the member asks to see a page, a list or a record. The
+    page opens beside the chat. Then tell the member what they will see, in
+    one sentence. Call it at most once per reply.
+
+    Args:
+        path: An in-app path. It starts with one "/" and names a pane:
+            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
+            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
+            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
+            URL, and never another site.
+        why: One short sentence the member reads, such as "Here is the
+            board for Website relaunch."
+
+    Returns:
+        ``{"opened": path}`` when the page opens. ``{"error": reason}`` when
+        it does not: a bad path, a pane the member does not hold, or a
+        second call in the same reply. Then say so in words and move on.
+    """
+    from orchestrator import in_app_path as _iap
+    from orchestrator.executor import resolve_run_queue
+
+    path = str(path or "").strip()
+    why = str(why or "").strip()
+    # Review of #1197, P2: a specialist that holds call_agent can call the
+    # orchestrator, and that nested run sees the parent's queue. Only the
+    # member's own run, the one with no ancestor, moves the page.
+    try:
+        from acb_skills.agent_tools import _delegation_chain
+
+        nested = bool(_delegation_chain.get())
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        nested = False
+    if nested:
+        return {"error": "only the member's own assistant opens a page"}
+    if not _iap.is_in_app_path(path):
+        return {"error": "not a path inside this app"}
+    # The queue IS the run's state: one queue per turn, made by the run
+    # frame. MAF runs each tool call in a COPY of the context
+    # (agent_framework/_tools.py, copy_context().run(create_task)), so a
+    # ContextVar set here never reaches the next call. A mark on the queue
+    # does, and it dies with the turn. No module state is needed.
+    queue = resolve_run_queue()
+    if queue is None:
+        return {"error": "no page to open from here"}
+    if getattr(queue, "_show_in_app_done", False):
+        return {"error": "already opened a page this turn"}
+    reason = _iap.refusal(path, await _iap.member_features())
+    if reason is not None:
+        return {"error": reason}
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
+    # The same channel artifact_created uses. The client's live loop acts on
+    # it, and the replay loop does not (useAgentChat.ts).
+    await queue.put({
+        "type": "CUSTOM",
+        "name": "navigate",
+        "value": {"path": path, "why": why},
+    })
+    # The note makes the model hedge: a closed assistant, or another chat
+    # in front, moves nothing on the client.
+    return {"opened": path, "note": "the page opens only while the member watches this chat"}
 
 
 # H-236: open_world, because the container it starts has a network and a
@@ -570,7 +709,12 @@ def _load_specialist_agents_as_tools() -> list[Any]:
                 input_model={
                     "type": "object",
                     "properties": {
-                        "task": {"type": "string", "description": f"Task for {name}. Include all context needed — this agent has no memory of the current conversation."}
+                        "task": {"type": "string", "description": (
+                            f"Task for {name}. Include all context needed — this agent "
+                            "has no memory of the current conversation. Name each record "
+                            "by its in-app link or id. Copy any text that the member "
+                            "agreed (an email, a message) WORD FOR WORD, and say to use "
+                            "it as is.")}
                     },
                     "required": ["task"],
                     "additionalProperties": False,
@@ -653,9 +797,14 @@ def build_orchestrator_agent(
     # WS-61 CX-1: read once too, so the persona and the tool agree. It acts
     # only with company search on.
     recency = company_search and _context_recency_enabled()
+    # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
+    # Off until KB-5b ships the Review view, where a person accepts.
+    proposals = company_search and _knowledge_propose_enabled()
+    # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
+    profile_on = _assistant_profile_enabled()
 
     # Build the instructions; append memory context when present.
-    instructions = _orchestrator_instructions(company_search, recency)
+    instructions = _orchestrator_instructions(company_search, recency, proposals)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -679,19 +828,45 @@ def build_orchestrator_agent(
     # `search_company` takes the place of the two legacy retrievers. This is
     # the ONE path of the tool: not config.json tool_scope, not the floor.
     # KB-4a: the two Knowledge reads join it on the same path, and only then.
+    # KB-5a: the two proposals too, and only with KNOWLEDGE_PROPOSALS on. Each
+    # asks with a card and never publishes.
     if company_search:
         from acb_skills.company_search_tools import search_company, search_company_dated
-        from acb_skills.knowledge_tools import list_spaces, read_page
+        from acb_skills.knowledge_tools import (
+            list_spaces,
+            propose_edit,
+            propose_page,
+            read_page,
+        )
 
         # CX-1: with CONTEXT_RECENCY on, the tool of the same name that takes
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
         retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        if proposals:
+            retrieval_tools += [propose_page, propose_edit]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
+    # WS-63 PZ-5: `resolve_person`, with ASSISTANT_PROFILE_ENABLED on only.
+    # The ONE path of the tool, as for `search_company`: not config.json
+    # tool_scope, not the floor, not the injection chain. The persona does
+    # not change. Fence: tests/unit/test_resolve_person.py.
+    if profile_on:
+        from acb_skills.profile_tools import resolve_person
+
+        profile_tools: list[Any] = [resolve_person]
+    else:
+        profile_tools = []
+    # WS-62 CF-3: the orchestrator's own, never a specialist's (§9.2 Q3).
+    # Dark until CHAT_FIRST_TOOLS is on (review of #1197, P1). Fence:
+    # tests/unit/test_show_in_app.py, test_company_search_tool.py.
+    from orchestrator.in_app_path import chat_first_tools_enabled
+    page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
     core_tools: list[Any] = [
         *retrieval_tools,
+        *profile_tools,
         search_timeline,
+        *page_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
@@ -802,6 +977,7 @@ __all__ = [
     "retrieve_entity_context",
     "retrieve_sales_context",
     "search_timeline",
+    "show_in_app",
     "spawn_copilot_agent",
     "delegate_to_agent",
 ]

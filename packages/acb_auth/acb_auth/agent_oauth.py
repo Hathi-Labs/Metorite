@@ -544,6 +544,10 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: /projects/agent-runs/{run_id}/archive-approval`` and ``POST
 #: /projects/tasks/{task_id}/archive`` stay OUT of both sets: only the
 #: member archives, and branch 0 refuses a signed request to either.
+#: EA-6h adds the agent delete, the route of ``delete_task`` (EA3-51). It
+#: is the ONE destructive pair. The route refuses it unless the member's
+#: switch is on, and it checks the version and the exact title. ⚠️ The plain
+#: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
@@ -557,6 +561,7 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # EA-14a: the holder gives a task up. The route of ``release_task``.
     ("POST", "/projects/agent-runs/{run_id}/release"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
+    ("POST", "/projects/tasks/{task_id}/agent-delete"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -565,9 +570,12 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: request. EA-3 listed the GET routes of the seven read tools (§9.1). EA-6a
 #: adds the references read and the two write pairs of
 #: :data:`MCP_WRITE_ROUTES` (§9.2). EA-12a adds the three GET pairs of the
-#: agent runs (§12.1). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+#: agent runs (§12.1). EA-6h adds the read of the member's switch, which the
+#: edge sends at ``tools/list``. ⚠️ Its ``PUT`` stays out: only the member
+#: sets the switch. Fence: ``tests/unit/test_mcp_edge_coverage.py``.
 MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/auth/me"),
+    ("GET", "/auth/me/agent-access"),
     ("GET", "/projects/tree"),
     ("GET", "/projects/nodes/{project_id}"),
     ("GET", "/projects/nodes/{project_id}/statuses"),

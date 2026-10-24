@@ -22,15 +22,21 @@ holds each one:
    carries the count the route reports. A card that says "delete X" with no
    size is a signature bought under a misdescription.
 
-What is deliberately NOT here: hard delete of a project or a task (D-PM-35,
-class X until WS-40), a bulk ``delete`` action for the same reason, and a
-grant write (spec §12, question 2).
+Hard delete of a project or a task IS here since 2026-10-22 (owner, over
+D-PM-35): ``delete_project`` and ``delete_task``, one act per card. A grant
+write IS here since WS-64 OP-6b (D-OP-9, which reverses D-PM-40):
+``grant_access`` and ``revoke_access``, one grant per card. The route decides
+who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
+``delete`` action.
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from skill_projects import client as _client
 from skill_projects.client import (
@@ -38,9 +44,12 @@ from skill_projects.client import (
     data,
     delete,
     get,
+    patch,
     post,
+    post_file,
     uuid_of,
 )
+from skill_projects.inbox import _area_key, _clean_area_name, _my_area, subject_words
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -48,14 +57,25 @@ from skill_projects.priority import (
     priority_fields,
     takes_priority,
 )
-from skill_projects.reads import _day, _task_line
+from skill_projects.reads import (
+    DELIVERY_MAY_BE_OFF,
+    DELIVERY_OFF,
+    DELIVERY_ON,
+    SCHEDULE_WORDS,
+    _day,
+    _names_of,
+    _task_line,
+)
+from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
     CANCELLED,
     CARD_CONTEXT_LIMIT,
     CARD_NOTE,
+    FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
+    REPORT_CHANGE_REFUSED,
     _clears,
     _confirm,
     _field_of,
@@ -67,6 +87,7 @@ from skill_projects.writes import (
     _overlay_values,
     _ref,
     _resolve_assignee,
+    _resolve_assignee_name,
     _same_chase,
     _split,
     _subtask_counts,
@@ -97,6 +118,30 @@ ONE_ACT = "takes ONE id. A guarded act is one card per row. Ask again for each o
 #: WS-27bn R5d (§9 Q12). The words of the server's 403, in
 #: ``reports.DELETE_REFUSED``. A test pins the two as one sentence.
 REPORT_DELETE_REFUSED = "Only the author of this report or an admin may delete it."
+
+def delete_refusal(row: dict[str, Any], noun: str, name: Any) -> str:
+    """The server's "no" before a delete card, or ``""`` to go on (WS-64 OP-8).
+
+    *row* is ``GET /projects/tasks/{id}`` or ``GET /projects/nodes/{id}``. Its
+    ``can_delete`` and ``delete_refusal`` come from ``authority.py``, the rule
+    and the 403 words of the delete route (D-OP-12). So the tool quotes the
+    server and never decides who may act. Only an explicit ``False`` stops the
+    tool. A row without the flag lets the tool go on, and the route decides.
+    """
+    if row.get("can_delete") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not delete the {noun} "
+        f"{name}. Nothing was done."
+    ]
+    said = str(row.get("delete_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
 
 
 #: A product rule, not a permission (owner directive 2026-10-07,
@@ -279,6 +324,237 @@ async def unarchive_project(project_id: str) -> str:
     return (
         f"Restored {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
         f"back on the surface.\n  project_id: {pid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_project(project_id: str) -> str:
+    """Delete a project and EVERYTHING under it for good: its subprojects,
+    their tasks (archived ones too), comments and grants. ONE project per
+    call. There is no undo. The card leads with how many projects and open
+    tasks you can see go with it. When the member only wants it out of the
+    way, archive_project is the reversible act: offer that first."""
+    if _many(project_id):
+        return f"delete_project {ONE_ACT}"
+    pid, node = await _node(project_id)
+    refused = delete_refusal(node, "project", data(node.get("name")))
+    if refused:
+        return refused
+    summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
+    below = _descendants(await _tree_node(pid))
+    open_tasks = _open_count(summary)
+    # Both reads are visibility-filtered and the delete is not: it takes the
+    # whole subtree, archived tasks included. So the card says "you can see".
+    impact = (
+        f"{_plural(1 + below, 'project')} you can see deleted for good · "
+        f"{_plural(open_tasks, 'open task')} you can see go with them, with every "
+        "archived task, comment and grant below; rows you cannot see go too"
+    )
+    if not await _confirm(
+        title="Delete this project for good?",
+        detail=f"{data(node.get('name'))} · {impact}",
+        context=_guard_card(
+            impact,
+            {
+                "project": data(node.get("name")),
+                "undo": "none; deleting is permanent. Archiving is the reversible way",
+            },
+        ),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/nodes/{pid}")) or {}
+    gone = result.get("cascaded") or {}
+    return (
+        f"Deleted {data(node.get('name'))}: {_plural(int(gone.get('projects') or 0), 'project')}, "
+        f"{_plural(int(gone.get('tasks') or 0), 'task')} and "
+        f"{_plural(int(gone.get('grants') or 0), 'grant')} removed."
+        f"\n  project_id: {pid}"
+    )
+
+
+#: The most rows one card holds (``acb_skills.ask_tools.MAX_CARD_ROWS``). The
+#: task is the first row, so a task with more subtasks than this draws no
+#: tick boxes, and the choice is "none" or "all".
+DELETE_CARD_ROWS = 100
+
+
+#: The most ids one delete sends in its query. Same number as the route's
+#: ``MAX_QUERY_DELETE_IDS``. More than this and "all" sends a flag instead.
+DELETE_QUERY_IDS = 200
+
+
+def _subtree_order(subs: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
+    """The visible subtasks depth first, each parent before its children.
+    A row whose parent the member cannot see counts as a child of the task."""
+    ids = {str(r["id"]) for r in subs}
+    kids: dict[str, list[dict[str, Any]]] = {}
+    for r in subs:
+        p = str(r.get("parent_task_id") or "")
+        kids.setdefault(p if p in ids and p != str(r["id"]) else root, []).append(r)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(pid: str) -> None:
+        for r in kids.get(pid, []):
+            rid = str(r["id"])
+            if rid not in seen:
+                seen.add(rid)
+                out.append(r)
+                walk(rid)
+
+    walk(root)
+    out.extend(r for r in subs if str(r["id"]) not in seen)
+    return out
+
+
+def _subtree_depths(subs: list[dict[str, Any]], root: str) -> dict[str, int]:
+    """Each visible subtask's depth below the task. A row whose parent the
+    member cannot see counts as a child of the task, as the app draws it."""
+    ids = {str(r["id"]) for r in subs}
+    parent = {str(r["id"]): str(r.get("parent_task_id") or "") for r in subs}
+    depth: dict[str, int] = {}
+    for rid in parent:
+        d, cur, seen = 1, parent[rid], {rid}
+        while cur in ids and cur != root and cur not in seen:
+            seen.add(cur)
+            d += 1
+            cur = parent[cur]
+        depth[rid] = d
+    return depth
+
+
+def _subtasks_choice(value: str, offered: set[str]) -> frozenset[str] | str:
+    """``subtasks_to_delete`` as ids: "none", "all", or a list of ids.
+
+    A wrong word or an id that is not a visible subtask is a refusal text
+    and no card. The route checks the ids again (422 ``subtask_not_below``).
+    """
+    raw = str(value or "none").strip()
+    word = raw.lower()
+    if word in ("", "none"):
+        return frozenset()
+    if word == "all":
+        return frozenset(offered)
+    ids = frozenset(uuid_of(part, "subtasks_to_delete") for part in _split(raw.replace("\n", ",")))
+    if ids - offered:
+        return (
+            "subtasks_to_delete names an id that is not a subtask of this task that you "
+            "can see. Read task_detail for the subtasks, or pass none or all. "
+            "Nothing was changed."
+        )
+    return ids
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
+    """Delete one task for good, with its comments, attachments and links.
+    ONE task per call. There is no undo. subtasks_to_delete is none (the
+    default: every subtask moves up one level, to this task's own parent),
+    all (every subtask the member can see is deleted too), or a comma list
+    of subtask ids to delete. The others move up. The card shows the subtask
+    tree with a box for each. Your choice is ticked, and the member may change
+    the ticks before the yes. Subtasks the member cannot see are never deleted.
+    When the member only wants it out of the way, archive_task is the
+    reversible act."""
+    if _many(task_id):
+        return f"delete_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    refused = delete_refusal(task, "task", _ref(task))
+    if refused:
+        return refused
+    tree = (await get(f"/projects/tasks/{tid}/subtree")) or {}
+    subs: list[dict[str, Any]] = [r for r in tree.get("subtasks") or [] if r.get("id")]
+    hidden = int(tree.get("hidden") or 0)
+    offered = {str(r["id"]) for r in subs}
+    chosen = _subtasks_choice(subtasks_to_delete, offered)
+    if isinstance(chosen, str):
+        return chosen
+    lane = await _status_name(task)
+    total = len(subs)
+    ticks = len(subs) + 1 <= DELETE_CARD_ROWS
+    if total and not ticks and chosen not in (frozenset(), frozenset(offered)):
+        return (
+            f"This task has {total} subtasks, too many for tick boxes on one card. "
+            "Pass subtasks_to_delete as none or all. Nothing was changed."
+        )
+    if total:
+        tail = (
+            f"{len(chosen)} of {_plural(total, 'subtask')} marked to delete, "
+            f"{total - len(chosen)} would move up one level"
+        )
+        if hidden:
+            tail += f" · {_plural(hidden, 'subtask')} hidden from you, kept and moved up"
+    else:
+        tail = "no subtasks" if not hidden else (
+            f"{_plural(hidden, 'subtask')} hidden from you, kept and moved up"
+        )
+    impact = f"1 task deleted for good from lane {lane} · {tail}"
+    rows = None
+    if total and ticks:
+        depth = _subtree_depths(subs, tid)
+        rows = [{"id": tid, "label": f"Delete this task {_ref(task)}", "hint": f"lane {lane}",
+                 "checked": True}]
+        for r in _subtree_order(subs, tid):
+            rid = str(r["id"])
+            state = str(r.get("status_name") or "")
+            if r.get("archived"):
+                state += " · archived" if state else "archived"
+            rows.append({
+                "id": rid,
+                "label": "— " * (depth[rid] - 1) + data(r.get("title")),
+                "hint": state,
+                "checked": rid in chosen,
+            })
+    answer = await _confirm(
+        title="Delete this task for good?",
+        detail=f"{_ref(task)} · {impact}",
+        context=_guard_card(
+            impact,
+            {
+                "task": _ref(task),
+                "status": lane,
+                "subtasks": (
+                    "a ticked box deletes that subtask. A subtask left unticked stays and "
+                    "moves up to its nearest kept parent. Untick the first box to cancel"
+                    if rows
+                    else (
+                        "all of them are deleted too" if total and chosen
+                        else "none is deleted; each moves up one level"
+                    )
+                ),
+                "undo": "none; deleting is permanent. Archiving is the reversible way",
+            },
+        ),
+        rows=rows,
+    )
+    if rows is not None:
+        # The task is the first row, so a yes always ticks it. A card where
+        # the member cleared it is no yes to the delete.
+        if not isinstance(answer, frozenset) or tid not in answer:
+            return CANCELLED
+        if not answer <= {r["id"] for r in rows}:
+            return FORGED_BATCH_ROWS
+        chosen = frozenset(answer - {tid})
+    elif not answer:
+        return CANCELLED
+    if len(chosen) > DELETE_QUERY_IDS:
+        # Only "all" gets here: a card with tick boxes holds under 100 rows,
+        # and a wider tree refuses any list above. A flag has no id list to
+        # overrun the URL.
+        params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
+    else:
+        params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
+    result = (await delete(f"/projects/tasks/{tid}", params)) or {}
+    gone = result.get("cascaded") or {}
+    deleted = int(gone.get("subtasks_deleted") or 0)
+    moved = int(gone.get("subtasks_promoted") or 0)
+    unseen = int(gone.get("subtasks_kept_hidden") or 0)
+    return (
+        f"Deleted {_ref(task)}."
+        + (f" {_plural(deleted, 'subtask')} deleted too." if deleted else "")
+        + (f" {_plural(moved, 'subtask')} moved up one level." if moved else "")
+        + (f" Kept, because hidden from you: {_plural(unseen, 'subtask')}." if unseen else "")
+        + f"\n  task_id: {tid}"
     )
 
 
@@ -1396,7 +1672,7 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
     tid, task = await _task(task_id)
     aid = uuid_of(attachment_id, "attachment_id")
     files = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
-    row = next((f for f in files if str(f.get("id")) == aid), None)
+    row = next((f for f in files if str(f.get("attachment_id") or f.get("id")) == aid), None)
     if row is None:
         return f"{_ref(task)} has no attachment with that id. task_detail lists them."
     impact = f"1 file detached from {_ref(task)}; the bytes are kept"
@@ -1408,6 +1684,689 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
         return CANCELLED
     await delete(f"/projects/tasks/{tid}/attachments/{aid}")
     return f"Detached {data(row.get('name'))} from {_ref(task)}.\n  full_id: {tid}"
+
+
+# ── The member's own areas (WS-64 OP-6a, D-OP-9) ─────────────────────────────
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def rename_area(area: str, new_name: str) -> str:
+    """Rename one of the member's own areas, the categories of their private
+    tasks. area is its project_id from my_areas, or its exact name. The card
+    shows the old name and the new name. Tasks in the area stay in it."""
+    if _many(area):
+        return f"rename_area {ONE_ACT.replace('id', 'area')}"
+    row = await _my_area(area)
+    aid = uuid_of(str(row.get("id")), "area")
+    clean = _clean_area_name(new_name)
+    if clean == str(row.get("name") or ""):
+        return f"The area is already called {data(clean)}. Nothing changed.\n  area_id: {aid}"
+    rows = ((await get("/projects/my/areas")) or {}).get("rows") or []
+    key = _area_key(clean)
+    twin = next(
+        (r for r in rows if not r.get("archived") and str(r.get("id")) != aid
+         and _area_key(r.get("name")) == key),
+        None,
+    )
+    if twin is not None:
+        return (
+            f"You already have another area called {data(twin.get('name'))}. "
+            f"Choose a different name.\n  area_id: {aid}"
+        )
+    held = int(row.get("open_tasks") or 0)
+    impact = (
+        f"1 area renamed {data(row.get('name'))} → {data(clean)} · "
+        f"{held} open task{'' if held == 1 else 's'} in it, none moved"
+    )
+    if not await _confirm(
+        title="Rename this area?",
+        detail=f"{data(row.get('name'))} → {data(clean)}",
+        context=_guard_card(impact, {"area": data(row.get("name")), "name": data(clean)}),
+    ):
+        return CANCELLED
+    result = (await patch(f"/projects/my/areas/{aid}", {"name": clean})) or {}
+    return f"Renamed the area to {data(result.get('name') or clean)}.\n  area_id: {aid}"
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def delete_area(area: str) -> str:
+    """Delete one of the member's own areas. The route deletes an area that
+    holds no task and no folder inside it. Any other area is archived and
+    everything in it stays. The card says which, with the open count,
+    and the receipt says which happened. area is its project_id from
+    my_areas, or its exact name."""
+    if _many(area):
+        return f"delete_area {ONE_ACT.replace('id', 'area')}"
+    row = await _my_area(area)
+    aid = uuid_of(str(row.get("id")), "area")
+    held = int(row.get("open_tasks") or 0)
+    impact = (
+        f"{held} open task{'' if held == 1 else 's'} in the area. "
+        "An area with no task and no folder inside is deleted for good. "
+        "Otherwise it is archived and everything stays. "
+        "The receipt says which happened"
+    )
+    if not await _confirm(
+        title="Delete this area?",
+        detail=data(row.get("name")),
+        context=_guard_card(impact, {"area": data(row.get("name"))}),
+    ):
+        return CANCELLED
+    result = (await delete(f"/projects/my/areas/{aid}")) or {}
+    tasks = int(result.get("tasks") or 0)
+    if result.get("outcome") == "archived":
+        return (
+            f"Archived the area {data(row.get('name'))}. It held {tasks} "
+            f"task{'' if tasks == 1 else 's'}, and they stay.\n  area_id: {aid}"
+        )
+    if result.get("outcome") == "deleted":
+        return f"Deleted the empty area {data(row.get('name'))}.\n  area_id: {aid}"
+    return f"Removed the area {data(row.get('name'))}.\n  area_id: {aid}"
+
+
+# ── Nudge and attach (WS-64 OP-6c, D-OP-9) ───────────────────────────────────
+
+#: What one task may hold in files, and the types the upload refuses. The
+#: route owns both (``attachments.py`` ``_TASK_ATTACHMENT_BUDGET``,
+#: ``tasks/attachments.py`` ``_BLOCKED_EXT``). The tool says them BEFORE the
+#: card, so a member never approves an upload that the route will refuse.
+#: ``test_projects_nudge_attach_tools.py`` pins each value to the route's.
+TASK_FILE_BUDGET = 10 * 1024 * 1024
+BLOCKED_FILE_TYPES = frozenset({".exe", ".dll", ".so", ".bat", ".cmd", ".sh", ".ps1", ".msi"})
+
+
+def _mb(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _nudge_refusal(task: dict[str, Any], mine: dict[str, Any]) -> str:
+    """The route's refusal for a task that nobody can be chased on, in the
+    route's own words, said before the card. ``""`` when the nudge may go."""
+    if task.get("completed_at"):
+        return "This task is done. There is nobody to chase."
+    person = mine.get("waiting_on") if isinstance(mine.get("waiting_on"), dict) else {}
+    email = str(person.get("email") or "").strip()
+    if not email:
+        return (
+            "You are not waiting on anybody for this task. set_my_overlay with "
+            "waiting_on starts a chase."
+        )
+    if email.lower().startswith("agent:"):
+        return (
+            "An agent has no inbox to nudge. Agents are handed work by "
+            "dispatch, not by a notification."
+        )
+    return ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def nudge_task(task_id: str) -> str:
+    """Nudge the person the member is waiting on for a task. It sends ONE
+    notification to their bell inside Metorite. It sends no email and no
+    message, and it never repeats: one call is one nudge. The card names the
+    person and the task. The route refuses a task that is done or that the
+    member is not waiting on, and the refusal comes back in its words."""
+    if _many(task_id):
+        return f"nudge_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    try:
+        mine = (await get(f"/projects/my/tasks/{tid}")) or {}
+    except GatewayRefusal as exc:
+        # A task that is not in the member's own lists holds no chase of theirs.
+        if exc.status != 404:
+            raise
+        mine = {}
+    refusal = _nudge_refusal(task, mine)
+    if refusal:
+        return f"{refusal}\n  full_id: {tid}"
+    person = mine["waiting_on"]
+    who = data(person.get("name") or person.get("email"))
+    impact = (
+        f"1 notification to {who} in their Metorite bell, about {_ref(task)} · "
+        "no email, no message outside Metorite · one nudge, and it does not repeat"
+    )
+    rest: dict[str, Any] = {
+        "person": who,
+        "task": _ref(task),
+        "sent as": "a notification in their bell only",
+    }
+    if mine.get("last_nudged_at"):
+        rest["last nudged"] = _day(mine.get("last_nudged_at"))
+    if not await _confirm(
+        title="Nudge this person?",
+        detail=f"{who} about {_ref(task)}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    result = (await post(f"/projects/tasks/{tid}/nudge")) or {}
+    if not result.get("notified"):
+        skipped = ", ".join(data(x) for x in result.get("skipped") or []) or who
+        return (
+            f"Nobody was told. {skipped} cannot open this task, so the nudge reached no one."
+            f"\n  full_id: {tid}"
+        )
+    return (
+        f"Nudged {who} about {_ref(task)}. They see it in their Metorite bell. "
+        f"I sent no email.\n  full_id: {tid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def attach_to_task(task_id: str, file_name: str) -> str:
+    """Attach a file that the member uploaded to THIS chat onto a task. Pass
+    the file name that the upload message shows. The card names the file, its
+    size and the task, because everyone who can open the task can open the
+    file. One task holds 10 MB of files in all. A file over that, or of a
+    blocked type such as .exe, is refused before the card."""
+    if _many(task_id):
+        return f"attach_to_task {ONE_ACT}"
+    tid, task = await _task(task_id)
+    from acb_skills import attachment_tools
+
+    got = await attachment_tools.read_attachment_bytes(file_name)
+    if isinstance(got, str):
+        return got
+    name, content = got
+    size = len(content)
+    if not size:
+        return f"{data(name)} is empty, so there is nothing to attach."
+    if Path(name).suffix.lower() in BLOCKED_FILE_TYPES:
+        return f"File type not allowed: {data(name)}. Ask the member for another file."
+    if size > TASK_FILE_BUDGET:
+        return (
+            f"{data(name)} is {_mb(size)} and one task may hold {_mb(TASK_FILE_BUDGET)} "
+            "in total. Attach a smaller file."
+        )
+    held = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
+    used = sum(int(f.get("size") or 0) for f in held)
+    if used + size > TASK_FILE_BUDGET:
+        return (
+            f"{_ref(task)} would hold {_mb(used + size)} with {data(name)}, and the limit is "
+            f"{_mb(TASK_FILE_BUDGET)}. It holds {_mb(used)} now. Detach a file first."
+        )
+    impact = (
+        f"1 file of {_mb(size)} attached to {_ref(task)} · everyone who can open "
+        "the task can open the file"
+    )
+    if not await _confirm(
+        title="Attach this file?",
+        detail=f"{data(name)} ({_mb(size)}) to {_ref(task)}",
+        context=_guard_card(
+            impact,
+            {"file": data(name), "size": _mb(size), "task": _ref(task),
+             "visible to": "everyone who can open the task"},
+        ),
+    ):
+        return CANCELLED
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    row = (await post_file(f"/projects/tasks/{tid}/attachments", "file", name, content, mime)) or {}
+    return (
+        f"Attached {data(row.get('name') or name)} to {_ref(task)}."
+        f"\n  full_id: {tid}\n  attachment_id: {row.get('attachment_id')}"
+    )
+
+
+# ── Who can see a project (WS-64 OP-6b, D-OP-9, D-OP-11) ────────────────────
+
+
+def grant_refusal(node: dict[str, Any]) -> str:
+    """The server's "no" before a grant card, or ``""`` to go on.
+
+    *node* is ``GET /projects/nodes/{id}``. Its ``can_write_grants`` and
+    ``grant_refusal`` come from ``authority.attach_can_write_grants``, the rule
+    and the 403 words of the two grant routes (D-OP-11). So the tool quotes the
+    server and never decides who may act. Only an explicit ``False`` stops the
+    tool. A row without the flag lets the tool go on, and the route decides.
+    """
+    if node.get("can_write_grants") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not change who can see "
+        f"the project {data(node.get('name'))}. Nothing was done."
+    ]
+    said = str(node.get("grant_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
+
+
+def _subject_or_refusal(tool: str, subject: str) -> tuple[str, str]:
+    """``(subject, "")`` in its stored form, or ``("", refusal)``.
+
+    The grammar is the ONE grant grammar of D12,
+    ``acb_auth.permissions.normalize_grant_subject``, which the route also
+    calls. The chat holds no copy of it.
+    """
+    from acb_auth.permissions import normalize_grant_subject
+
+    try:
+        return normalize_grant_subject(subject), ""
+    except ValueError as exc:
+        return "", (
+            f"{REFUSED} {tool} could not read the subject, so nothing was done.\n"
+            f"Gateway said: {data(str(exc))}\n"
+            "Next: Pass org for everyone in the organization, group:<slug> for a "
+            "group, or one member's email address. Then call the tool once more."
+        )
+
+
+def _unknown_group(subject: str, grants: dict[str, Any]) -> str:
+    """A refusal when *subject* is ``group:<slug>`` and no such group exists.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``groups`` come from
+    the gateway (``core.org_groups``), the list that ``POST`` checks too, so
+    the tool holds no copy of the directory. A payload without ``groups``
+    lets the tool go on, and the route decides.
+    """
+    groups = grants.get("groups")
+    if not subject.startswith("group:") or not isinstance(groups, list):
+        return ""
+    slug = subject.split(":", 1)[1]
+    if any(str(g.get("slug") or "").lower() == slug for g in groups):
+        return ""
+    lines = [f"{REFUSED} There is no group called {data(slug)}, so nothing was done."]
+    if groups:
+        listed = ", ".join(
+            f"{data(g.get('display_name'))} ({data('group:' + str(g.get('slug') or ''))})"
+            for g in groups
+        )
+        lines.append(f"The groups are: {listed}.")
+        lines.append(
+            "Next: Ask the member which group they mean. Then call the tool once "
+            "more with its group:<slug>."
+        )
+    else:
+        lines.append("This organization has no groups.")
+        lines.append(
+            "Next: Tell the member. Pass org or one member's email address, or ask "
+            "an admin to make the group first."
+        )
+    return "\n".join(lines)
+
+
+async def _sees_parent(node: dict[str, Any]) -> bool:
+    """Can the member see the parent of *node*? A grant covers the subtree, so a
+    member who sees the parent also sees *node* without a grant on it."""
+    parent = node.get("parent_project_id")
+    if not parent:
+        return False
+    parent_id = uuid_of(str(parent), "parent_project_id")
+    try:
+        await get(f"/projects/nodes/{parent_id}")
+    except GatewayRefusal:
+        return False
+    return True
+
+
+#: The impact clauses of a revoke that removes the last way in (OP-6b, fix
+#: round 1). They come first on the card.
+LAST_GRANT_CLAUSE = (
+    "This is the last grant. Afterwards only a member who can see every "
+    "project will see this project."
+)
+LOSE_SIGHT_CLAUSE = "You will lose sight of this project."
+
+
+async def _revoke_warnings(
+    node: dict[str, Any], row: dict[str, Any], grants: dict[str, Any],
+) -> list[str]:
+    """The clauses that go first on a revoke card, or ``[]``.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``yours`` and
+    ``you_see_all`` come from the gateway's own visibility. A sub-project
+    stays in sight of each member who sees its parent, so the last-grant
+    clause is for a top project only.
+    """
+    rows = grants.get("rows") or []
+    others = [g for g in rows if str(g.get("id")) != str(row.get("id"))]
+    clauses = []
+    if not others and not node.get("parent_project_id"):
+        clauses.append(LAST_GRANT_CLAUSE)
+    if (
+        row.get("yours") is True
+        and not grants.get("you_see_all")
+        and not any(g.get("yours") is True for g in others)
+        and not await _sees_parent(node)
+    ):
+        clauses.append(LOSE_SIGHT_CLAUSE)
+    return clauses
+
+
+async def _project_path(node: dict[str, Any]) -> str:
+    """``«Space» / «Team» / «Project»``: the node and the parents the member
+    can see, walked up through ``parent_project_id``. Capped, because a cycle
+    is a database fault and not a reason to loop."""
+    names = [data(node.get("name"))]
+    current = node
+    for _ in range(8):
+        parent = current.get("parent_project_id")
+        if not parent:
+            break
+        parent_id = uuid_of(str(parent), "parent_project_id")
+        try:
+            current = (await get(f"/projects/nodes/{parent_id}")) or {}
+        except GatewayRefusal:
+            break
+        names.append(data(current.get("name")))
+    return " / ".join(reversed(names))
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def grant_access(project_id: str, subject: str) -> str:
+    """Let more people see a project and every sub-project under it. subject
+    is org (everyone in the organization), group:<slug> (one group) or one
+    member's email address. ONE subject per call. The card names the project
+    path and who will see it. The server decides if the member may change who
+    can see the project, and a refusal comes back in its words."""
+    if _many(subject) or _many(project_id):
+        return f"grant_access {ONE_ACT.replace('id', 'subject')}"
+    clean, refused = _subject_or_refusal("grant_access", subject)
+    if refused:
+        return refused
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    refused = _unknown_group(clean, grants)
+    if refused:
+        return refused
+    held = grants.get("rows") or []
+    if any(str(g.get("subject") or "").lower() == clean for g in held):
+        return (
+            f"{subject_words(clean)} can already see {data(node.get('name'))} through a "
+            f"grant on it. Nothing changed.\n  project_id: {pid}"
+        )
+    path = await _project_path(node)
+    who = subject_words(clean)
+    impact = (
+        f"access widens: {who} will see {path} and every sub-project under it, "
+        "with their tasks"
+    )
+    if not await _confirm(
+        title="Change who can see this project?",
+        detail=f"{path} · add {who}",
+        context=_guard_card(
+            impact,
+            {"project": path, "gives access to": who,
+             "covers": "this project and every sub-project under it"},
+        ),
+    ):
+        return CANCELLED
+    row = (await post(f"/projects/nodes/{pid}/grants", {"subject": clean})) or {}
+    return (
+        f"{who} can now see {path} and every sub-project under it."
+        f"\n  project_id: {pid}\n  grant_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def revoke_access(project_id: str, grant: str) -> str:
+    """Remove one grant from a project. grant is a grant_id from
+    project_access, or the grant's subject (org, group:<slug> or an email
+    address). ONE grant per call. The card names the project path and whose
+    access goes. A person with another way in, such as another grant, keeps
+    it. To change the audience, grant the new one with grant_access first, and
+    then revoke the old one. The card warns when this is the last grant, or
+    when the member loses sight of the project. The server decides if the
+    member may change who can see the project."""
+    if _many(grant) or _many(project_id):
+        return f"revoke_access {ONE_ACT.replace('id', 'grant')}"
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    rows = grants.get("rows") or []
+    wanted = str(grant or "").strip()
+    row = next((g for g in rows if str(g.get("id") or "").lower() == wanted.lower()), None)
+    if row is None:
+        # Not a grant_id of this project, so read it as a subject. A value that
+        # is neither finds no grant, and the answer below says so.
+        clean, _bad = _subject_or_refusal("revoke_access", wanted)
+        row = next(
+            (g for g in rows if clean and str(g.get("subject") or "").lower() == clean), None
+        )
+    if row is None:
+        return (
+            f"{data(node.get('name'))} has no grant like that. project_access lists "
+            f"its grants, each with a grant_id.\n  project_id: {pid}"
+        )
+    gid = uuid_of(str(row.get("id")), "grant")
+    path = await _project_path(node)
+    who = subject_words(str(row.get("subject") or ""))
+    warnings = await _revoke_warnings(node, row, grants)
+    impact = " ".join([*warnings, (
+        f"access narrows: {who} loses the access this grant gives to {path} and every "
+        "sub-project under it. Another grant can still let some of them see it"
+    )])
+    if not await _confirm(
+        title="Change who can see this project?",
+        detail=f"{path} · remove {who}",
+        context=_guard_card(
+            impact,
+            {"project": path, "takes access from": who,
+             "covers": "this project and every sub-project under it"},
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/grants/{gid}")
+    return (
+        f"Removed the grant of {who} on {path}."
+        f"\n  project_id: {pid}\n  grant_id: {gid}"
+    )
+
+
+# ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
+
+
+async def _report_for_change(report_id: str, tool: str) -> tuple[str, dict[str, Any], str]:
+    """``(id, report, "")`` when the member may change the report, else
+    ``("", {}, refusal)``. The server decides: ``can_edit`` is its answer
+    (``reports._report_dict``, one rule with the 403 of the three routes).
+    Only an explicit ``False`` stops the tool. A report without the flag lets
+    the tool go on, and the route decides."""
+    if _many(report_id):
+        return "", {}, f"{tool} {ONE_ACT}"
+    rid = uuid_of(report_id, "report_id")
+    report = (await get(f"/projects/reports/{rid}")) or {}
+    if report.get("can_edit") is False:
+        return "", {}, f"{REPORT_CHANGE_REFUSED}\n  report_id: {rid}"
+    return rid, report, ""
+
+
+def _path_address(value: str) -> str:
+    """A recipient address as ONE path segment of the delete route. A slash, a
+    dot-dot or a query mark cannot ride in it."""
+    raw = str(value or "").strip().lower()
+    if "@" not in raw or any(c in raw for c in "/\\?#% \t\n"):
+        raise GatewayRefusal("A recipient must be an email address.")
+    return quote(raw, safe="@")
+
+
+async def _recipient_rows(report_id: str) -> list[str]:
+    rid = uuid_of(report_id, "report_id")
+    payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
+    return [str(r.get("recipient") or "").lower() for r in payload.get("recipients") or []]
+
+
+async def _recipient_address(value: str) -> str:
+    """An address as typed, or the one person a name means. A report goes to a
+    person, so an ``agent:`` value gets the route's own sentence."""
+    address = await _resolve_assignee_name(value)
+    if address.startswith("agent:"):
+        raise GatewayRefusal("A report goes to a person, never to an agent.")
+    return address
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def add_report_recipient(report_id: str, recipient: str) -> str:
+    """Add ONE person to the list that receives a saved report by email.
+    recipient is a member's email address, or a name that matches one person.
+    The card names the address, the name, the report and its schedule. Only
+    the author of the report or an admin may change the list, and only a
+    person the directory knows can be added. A refusal comes back in the
+    words of the server. Delivery may be switched off, and the card says so."""
+    if _many(recipient):
+        return f"add_report_recipient {ONE_ACT.replace('id', 'recipient')}"
+    rid, report, refused = await _report_for_change(report_id, "add_report_recipient")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    email = await _recipient_address(recipient)
+    held = await _recipient_rows(rid)
+    if email in held:
+        return (
+            f"{data(email)} already receives {data(report.get('name'))}. Nothing changed."
+            f"\n  report_id: {rid}"
+        )
+    name = (await _names_of([email])).get(email)
+    who = f"{data(name)} ({data(email)})" if name else f"{data(email)} (not in the directory)"
+    when = (
+        SCHEDULE_WORDS.get(str(report.get("schedule")), "on its schedule")
+        if report.get("enabled")
+        else "not scheduled"
+    )
+    impact = (
+        f"1 person joins the list of {data(report.get('name'))}, which has {len(held)} now. "
+        f"Each report is rendered with their own access · {DELIVERY_MAY_BE_OFF}"
+    )
+    if not await _confirm(
+        title="Add this person to a report?",
+        detail=f"{data(report.get('name'))} · add {who}",
+        context=_guard_card(
+            impact,
+            {"report": data(report.get("name")), "recipient": who,
+             "schedule": when, "people on the list now": len(held)},
+        ),
+    ):
+        return CANCELLED
+    await post(f"/projects/reports/{rid}/recipients", {"recipient": email})
+    return (
+        f"{who} is now on the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
+        f"\n  report_id: {rid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def remove_report_recipient(report_id: str, recipient: str) -> str:
+    """Take ONE person off the list that receives a saved report. recipient
+    is the address from report_recipients, or the name of one person on the
+    list. The card names the person and the report. The server decides if
+    the member may change the list, and a refusal comes back in its words."""
+    if _many(recipient):
+        return f"remove_report_recipient {ONE_ACT.replace('id', 'recipient')}"
+    rid, report, refused = await _report_for_change(report_id, "remove_report_recipient")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    held = await _recipient_rows(rid)
+    wanted = str(recipient or "").strip().lower()
+    email = wanted if wanted in held else ""
+    if not email:
+        names = await _names_of(held)
+        hits = [e for e in held if names.get(e, "").lower() == wanted]
+        email = hits[0] if len(hits) == 1 else ""
+    if not email:
+        return (
+            f"{data(recipient)} is not on the list of {data(report.get('name'))}. "
+            f"report_recipients shows who is.\n  report_id: {rid}"
+        )
+    name = (await _names_of([email])).get(email)
+    who = f"{data(name)} ({data(email)})" if name else data(email)
+    impact = (
+        f"1 person leaves the list of {data(report.get('name'))}, which has {len(held)} now. "
+        "They no longer receive the report. Their access to the data does not change"
+    )
+    if report.get("enabled") and len(held) == 1:
+        impact += (
+            ". This is the LAST person on the list, and the schedule is on, "
+            "so the report would go to nobody"
+        )
+    if not await _confirm(
+        title="Take this person off a report?",
+        detail=f"{data(report.get('name'))} · remove {who}",
+        context=_guard_card(
+            impact,
+            {"report": data(report.get("name")), "recipient": who,
+             "people on the list now": len(held)},
+        ),
+    ):
+        return CANCELLED
+    tail = _path_address(email)
+    await delete(f"/projects/reports/{rid}/recipients/{tail}")
+    return (
+        f"{who} is off the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
+        f"\n  report_id: {rid}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def set_report_schedule(report_id: str, enabled: bool) -> str:
+    """Turn the weekly schedule of a saved report on (enabled=true) or off
+    (enabled=false). The card names the report, the schedule in plain words
+    and the people on the list. A report with nobody on the list cannot be
+    turned on. Delivery may be switched off for the deployment, which is the
+    owner's choice and not a tool's. The receipt says what the server
+    answered. The server decides if the member may change the schedule."""
+    rid, report, refused = await _report_for_change(report_id, "set_report_schedule")
+    if refused:
+        return refused
+    rid = uuid_of(rid, "report_id")
+    if not isinstance(enabled, bool):
+        return "enabled must be true or false."
+    held = await _recipient_rows(rid)
+    if enabled and not held:
+        return (
+            "Add at least one recipient before you turn this on. A schedule with no "
+            f"audience reads as armed and delivers nothing.\n  report_id: {rid}"
+        )
+    if bool(report.get("enabled")) == enabled:
+        state = "on" if enabled else "off"
+        return (
+            f"The schedule of {data(report.get('name'))} is already {state}. "
+            f"Nothing changed.\n  report_id: {rid}"
+        )
+    names = await _names_of(held)
+    shown: list[str] = []
+    for e in held:
+        if len(shown) == 10:
+            break
+        shown.append(f"{data(names[e])} ({data(e)})" if e in names else data(e))
+    people = ", ".join(shown) + (f" and {len(held) - 10} more" if len(held) > 10 else "")
+    if enabled:
+        impact = (
+            f"the schedule goes on: {data(report.get('name'))} goes by email to {_plural(len(held), 'person')} "
+            f"every week · {DELIVERY_MAY_BE_OFF}"
+        )
+        rest = {"report": data(report.get("name")), "schedule": "every week",
+                "sent to": people or "nobody"}
+    else:
+        impact = (
+            f"the schedule goes off: {data(report.get('name'))} stops going to its "
+            f"{_plural(len(held), 'person')}. The list stays"
+        )
+        rest = {"report": data(report.get("name")), "schedule": "off",
+                "stops going to": people or "nobody"}
+    if not await _confirm(
+        title="Turn this report's schedule on?" if enabled else "Turn this report's schedule off?",
+        detail=f"{data(report.get('name'))} · {'every week' if enabled else 'off'}",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    row = (await patch(f"/projects/reports/{rid}/schedule", {"enabled": enabled})) or {}
+    if not enabled:
+        return f"The schedule of {data(report.get('name'))} is off.\n  report_id: {rid}"
+    armed = row.get("delivery_armed_on_this_deployment")
+    tail = DELIVERY_ON if armed is True else DELIVERY_OFF if armed is False else DELIVERY_MAY_BE_OFF
+    return (
+        f"The schedule of {data(report.get('name'))} is on, every week, for "
+        f"{_plural(len(held), 'person')}. {tail}\n  report_id: {rid}"
+    )
 
 
 __all__ = [  # noqa: RUF022 — grouped by what they act on
@@ -1428,4 +2387,13 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "delete_view",
     "report_delete",
     "delete_attachment",
+    "rename_area",
+    "delete_area",
+    "nudge_task",
+    "attach_to_task",
+    "grant_access",
+    "revoke_access",
+    "add_report_recipient",
+    "remove_report_recipient",
+    "set_report_schedule",
 ]

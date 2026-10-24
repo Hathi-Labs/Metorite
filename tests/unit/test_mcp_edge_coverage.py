@@ -14,7 +14,9 @@ EA-6d adds the task create pair, one non-idempotent write (``create_task``)
 and one edge input (its ``idempotency_key``). EA-6c adds the comment pair and
 the sixth edge input, the ``idempotency_key`` of ``add_comment``. EA-6g adds
 the archive request pair, and it holds that the archive and its approval
-stay OFF the edge (EA3-40).
+stay OFF the edge (EA3-40). EA-6h adds the agent delete pair, the ONE class
+X pair that the edge holds, and the read of the member's switch (EA3-51). It
+holds that the plain task DELETE and the PUT of the switch stay OFF the edge.
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH`` or ``POST`` for a pair of ``MCP_WRITE_ROUTES``, which
@@ -54,6 +56,21 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "`whoami` reads the member's own identity. It is not a Projects route,"
         " so the Projects manifest does not carry it (spec §9.1)."
     ),
+    ("GET", "/auth/me/agent-access"): (
+        "EA-6h (EA3-51). The edge reads the member's delete switch at"
+        " tools/list. It is not a Projects route. Its PUT stays off the edge."
+    ),
+}
+
+#: The pairs of ``MCP_WRITE_ROUTES`` that are class X in the manifest, each
+#: with its reason. The chat never reaches them. A new entry needs a spec
+#: amendment (§9.5).
+CLASS_X_WRITES: dict[tuple[str, str], str] = {
+    ("POST", "/projects/tasks/{task_id}/agent-delete"): (
+        "EA-6h (EA3-51). The MCP door only: an outside agent deletes after the"
+        " member's yes and with the member's switch on. The chat deletes"
+        " through delete_task and its card."
+    ),
 }
 
 
@@ -85,7 +102,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     the PATCH and the references POST. EA-6d adds the task create. EA-12a
     adds the three POST pairs of the agent runs (§12.1, EA12-9). EA-6c adds
     the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34). EA-6g
-    adds the archive request (§9.5, EA3-40). EA-14a adds the release (§12.3)."""
+    adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
+    (EA3-51). EA-14a adds the release (§12.3)."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
@@ -97,8 +115,35 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/release"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
+        ("POST", "/projects/tasks/{task_id}/agent-delete"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
+
+
+#: The pairs that an agent must never reach (EA-6h, EA3-51). The plain task
+#: delete has no switch, no version and no title check. The PUT of the switch
+#: would let an agent turn its own delete on.
+NEVER_ON_THE_EDGE = (
+    ("DELETE", "/projects/tasks/{task_id}"),
+    ("PUT", "/auth/me/agent-access"),
+)
+
+
+def test_the_plain_delete_and_the_switch_write_stay_off_the_edge():
+    """EA-6h (H9). Mutation: put the plain DELETE in ``MCP_WRITE_ROUTES``,
+    and this test fails."""
+    served = _gateway_routes()
+    for pair in NEVER_ON_THE_EDGE:
+        assert pair in served, pair
+        assert pair not in MCP_ROUTES, pair
+    from agent_edge.tools import TOOLS
+
+    reached = {(t.method, r) for t in TOOLS.values()
+               for r in (t.route, *t.routes, *t.prior_writes)}
+    assert not reached & set(NEVER_ON_THE_EDGE), reached & set(NEVER_ON_THE_EDGE)
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    for pair in CLASS_X_WRITES:
+        assert pair in MCP_WRITE_ROUTES and classes[pair] == "X", pair
 
 
 #: The two routes that archive (EA-6g, EA3-40). Only the member archives, so
@@ -118,7 +163,9 @@ def test_the_archive_and_its_approval_stay_off_the_edge():
     for pair in ARCHIVE_ROUTES:
         assert pair in served, pair
         assert pair not in MCP_ROUTES, pair
-        assert classes[pair] == "C", pair
+        # WS-64 OP-6e (D-OP-13): the approval is class X, with a reason. The chat
+        # lists the request and never answers it. The archive itself stays class C.
+        assert classes[pair] == ("X" if pair[1].endswith("/archive-approval") else "C"), pair
     request = ("POST", "/projects/tasks/{task_id}/archive-request")
     assert request in MCP_WRITE_ROUTES and classes[request] == "B"
     from agent_edge.tools import TOOLS
@@ -147,6 +194,8 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
             continue
         cls = classes.get(pair)
         allowed = {"A", "B"} if pair in MCP_WRITE_ROUTES else {"A"}
+        if pair in CLASS_X_WRITES:
+            allowed = {"X"}
         if cls not in allowed:
             wrong.append(f"{pair[0]} {pair[1]} (class {cls or 'none'})")
     assert not wrong, (
@@ -159,6 +208,7 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
 def test_every_named_exception_is_still_in_the_allowlist():
     stale = sorted(set(NAMED_EXCEPTIONS) - set(MCP_ROUTES))
     assert not stale, stale
+    assert set(CLASS_X_WRITES) <= set(MCP_WRITE_ROUTES)
 
 
 # ── Rules 3 and 4: the edge's tool records (EA-3b-1) ────────────────────────
@@ -181,6 +231,14 @@ NON_IDEMPOTENT_WRITES: dict[str, str] = {
         "EA-6d. The hint is one value for every call, and a call with no"
         " idempotency_key makes a new task each time (spec §9.2)."
     ),
+}
+
+#: The write tools that destroy data, each with its four hints. A new entry
+#: needs a spec amendment (§9.2).
+DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
+    # EA-6h (EA3-51 layer 2). The client asks the person before each call.
+    "delete_task": {"readOnlyHint": False, "destructiveHint": True,
+                    "idempotentHint": False, "openWorldHint": False},
 }
 
 
@@ -244,6 +302,10 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
         hints = WRITE_HINTS if write else READ_HINTS
         if write and tool.name in NON_IDEMPOTENT_WRITES:
             hints = {**WRITE_HINTS, "idempotentHint": False}
+        if write and tool.name in DESTRUCTIVE_WRITES:
+            hints = DESTRUCTIVE_WRITES[tool.name]
+        if tool.annotations.get("destructiveHint") and tool.name not in DESTRUCTIVE_WRITES:
+            wrong.append(f"{tool.name}: destructive, and not a named exception")
         if dict(tool.annotations) != hints:
             wrong.append(f"{tool.name}: annotations {dict(tool.annotations)}")
         if write and tool.required_scope != PROJECTS_WRITE:

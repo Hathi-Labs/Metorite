@@ -35,6 +35,7 @@
  * and `e2e/email-chat-cards.spec.ts`.
  */
 
+import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { Textarea } from "@/components/ui/Input";
@@ -44,7 +45,7 @@ import AppIcon from "@/components/Icon";
 import { clipWords } from "@/lib/fencedText";
 import Readout from "@/components/Readout";
 import { withoutIds } from "@/lib/readout";
-import { useState, useEffect } from "react";
+import { useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import {
@@ -61,10 +62,10 @@ import { emailLink } from "@/app/email/lib/emailLink";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
+import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
-const DRAFT_TOOLS = new Set(["draft_reply", "draft_email"]);
 const RULE_TOOLS = new Set(["create_rule", "update_rule"]);
 // Tools whose result is a list of emails (each line carries `id=<id>`) — these
 // render as a clickable list that opens the message. Includes the assistant's
@@ -314,7 +315,7 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
   const args = event.args as Record<string, unknown> | undefined;
   const threadId = (args?.thread_id as string) || "";
   const emailId = (args?.email_id as string) || "";
-  const acct = (args?.account_id as string) || accountId || undefined;
+  const acct = resolvedMailboxId(event.name, event.result) || (args?.account_id as string) || accountId || undefined;
   const [msgs, setMsgs] = useState<Email[] | null>(null);
   const [state, setState] = useState<"loading" | "error" | "done">("loading");
 
@@ -371,9 +372,9 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
   // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
-      <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore className="text-xs whitespace-pre-wrap break-words text-foreground/90">
         {threadText(event.result)}
-      </div>
+      </ShowMore>
     );
   }
   if (msgs.length === 0) {
@@ -416,6 +417,7 @@ export default function EmailToolCards({
   emailId?: string | null;
 }) {
   const dismissed = useDismissedToolCards();
+  const pin = useContext(DraftPinContext);
   const all = (toolEvents ?? []).filter((e) => !dismissed.has(e.id));
 
   // When the agent read a whole thread, the thread card IS the canonical view —
@@ -522,6 +524,12 @@ export default function EmailToolCards({
       items.push(<InfoResultCard key={e.id} event={e} />);
       continue;
     }
+    // The draft above the composer, and a draft a newer one replaced, draw
+    // one line here, not a second editable copy (`lib/pinnedDraft.ts`).
+    if (DRAFT_TOOLS.has(e.name) && (e.id === pin.pinnedId || pin.superseded.has(e.id))) {
+      items.push(<DraftLine key={e.id} />);
+      continue;
+    }
     items.push(
       <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
         {renderCard(e, accountId, emailId)}
@@ -625,6 +633,30 @@ export async function setRuleEnabled(accountId: string, ruleId: string, enabled:
   if (!rule) return false;
   await updateRule(ruleId, { ...rule, enabled });
   return true;
+}
+
+/** Where each tool prints the mailbox it RESOLVED (`_mailbox_line` in
+ *  agent-email-assistant). The twin of `MAILBOX_LINE_TOOLS` in
+ *  `acb_skills/email_chat_context.py`. Only that line counts: a read carries
+ *  a stranger's text, and that text can hold "Mailbox:". */
+export const MAILBOX_LINE_TOOLS: Readonly<Record<string, "last" | "second">> = {
+  create_rule: "last",
+  read_thread: "second",
+};
+const MAILBOX_LINE_RE = /^Mailbox: .* \(account_id ([^)\s]+)\)$/;
+
+/**
+ * The id of the mailbox that the tool says it acted in, or null. The model
+ * can name a mailbox in words ("Personal"), so `args.account_id` is not an
+ * id (navigation_shell.md §7.1.1 rule 4, review P3). A card reads this
+ * first, then the arguments.
+ */
+export function resolvedMailboxId(name: string, result: string | null | undefined): string | null {
+  const where = MAILBOX_LINE_TOOLS[name];
+  const lines = (result || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!where || lines.length < (where === "second" ? 2 : 1)) return null;
+  const hit = MAILBOX_LINE_RE.exec(where === "last" ? lines[lines.length - 1] : lines[1]);
+  return hit ? hit[1] : null;
 }
 
 // ── Draft card ────────────────────────────────────────────────────────────────
@@ -735,6 +767,16 @@ function DraftResultCard({
   );
 }
 
+/** One line in the thread for a draft that a newer one replaced. */
+function DraftLine() {
+  return (
+    <div data-email-card="draft-line" className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+      <AppIcon name="PenLine" size={12} className="shrink-0" />
+      <span className="min-w-0 truncate">Earlier draft · a newer draft replaced it</span>
+    </div>
+  );
+}
+
 // ── Rule card ─────────────────────────────────────────────────────────────────
 
 const RULE_ID_RE = /id=([0-9a-fA-F-]{8,})/;
@@ -783,7 +825,8 @@ function RuleResultCard({
   accountId?: string | null;
 }) {
   const args = e.args as Record<string, unknown> | undefined;
-  const acctId = (args?.account_id as string) || accountId || "";
+  // The id the tool resolved, never the model's words for the mailbox.
+  const acctId = resolvedMailboxId(e.name, e.result) || (args?.account_id as string) || accountId || "";
   const ruleId = (args?.rule_id as string) || (e.result?.match(RULE_ID_RE)?.[1] ?? "");
   const name = (args?.name as string) || e.result?.match(/'([^']+)'/)?.[1] || "rule";
   const created = e.name === "create_rule";
@@ -791,7 +834,7 @@ function RuleResultCard({
   const conds = ruleConditions(a);
   const actions = ruleActions(a);
   const op = String(a.conditional_operator ?? "OR").toUpperCase() === "AND" ? "and" : "or";
-  const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled">("idle");
+  const [state, setState] = useState<"idle" | "busy" | "deleted" | "disabled" | "failed">("idle");
 
   const del = async () => {
     if (!ruleId || !confirm(`Delete rule "${name}"?`)) return;
@@ -807,10 +850,10 @@ function RuleResultCard({
     if (!ruleId || !acctId) return;
     setState("busy");
     try {
-      await setRuleEnabled(acctId, ruleId, false);
-      setState("disabled");
+      // False when the mailbox holds no such rule: say so, never a silent reset.
+      setState((await setRuleEnabled(acctId, ruleId, false)) ? "disabled" : "failed");
     } catch {
-      setState("idle");
+      setState("failed");
     }
   };
 
@@ -825,6 +868,11 @@ function RuleResultCard({
       <CardHead tone={tone.icon}>
         {state === "deleted" && <span data-rule-status="" className="text-[10px] text-destructive">Deleted.</span>}
         {state === "disabled" && <span data-rule-status="" className="text-[10px] text-muted-foreground">Disabled.</span>}
+        {state === "failed" && (
+          <span data-rule-status="" role="alert" className="text-[10px] text-destructive">
+            Could not disable the rule.
+          </span>
+        )}
         {state === "idle" && ruleId && (
           <>
             {acctId && (
@@ -1584,9 +1632,9 @@ function EmailRow({
                   From: {body.from}
                 </div>
               )}
-              <div className="max-h-72 overflow-y-auto overflow-x-hidden rounded">
+              <ShowMore className="rounded">
                 <MessageContent html={body.body_html} text={body.body_text} messageId={row.id} />
-              </div>
+              </ShowMore>
             </>
           ) : null}
         </div>
@@ -1968,7 +2016,7 @@ function RulesOverviewCard({
       icon={<AppIcon name="Sparkles" size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="space-y-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin pr-0.5">
+      <ShowMore className="space-y-1">
         {rules.map((r) => (
           <div
             key={r.id}
@@ -2039,7 +2087,7 @@ function RulesOverviewCard({
             )}
           </div>
         ))}
-      </div>
+      </ShowMore>
       {parsed.settings && (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
           {parsed.settings}
@@ -2114,9 +2162,9 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       {/* The read as UI through the one `Readout`: no id, a labelled fact
           for each `key: value`, a chip for a category (follow-up of #716
           and #735). It drew the result as it is before. */}
-      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <ShowMore>
         <Readout result={text} />
-      </div>
+      </ShowMore>
     </ToolCardShell>
   );
 }
@@ -2144,11 +2192,11 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       <CardHead tone={tone.icon} />
       <RollupBody>
           {/* Compact, and through `Readout`, so an id never shows. The
-              box holds about three lines, and a longer result scrolls. */}
+              body shows about three lines, and "Show all" opens the rest. */}
           {detail && (
-            <div className="mt-0.5 max-h-16 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            <ShowMore cap={64} className="mt-0.5">
               <Readout result={detail} />
-            </div>
+            </ShowMore>
           )}
       </RollupBody>
     </div>

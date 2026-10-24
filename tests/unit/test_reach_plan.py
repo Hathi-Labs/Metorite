@@ -319,3 +319,10 @@ class TestTheTemplateParameters:
     def test_the_full_brief_key_is_the_brief_key_and_a_suffix(self):
         d = date(2026, 10, 15)
         assert plan.full_brief_key("m@x.test", d) == plan.brief_key("m@x.test", d) + ":full"
+
+
+def test_the_no_plan_line_asks_for_the_act():
+    """A chat pill sends its line as the member's message, so the line is a
+    request, not a bare fact (owner report, 2026-10-22)."""
+    now = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
+    assert plan.line({"kind": "no_plan_yet"}, now) == "Plan my day: nothing is planned yet"

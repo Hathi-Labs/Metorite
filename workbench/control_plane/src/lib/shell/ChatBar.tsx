@@ -36,6 +36,7 @@ import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import { visibleSections } from "@/lib/nav";
 
+import { ChatNudge } from "./ChatNudge";
 import { ResultList, resultOptionId, useBarResults } from "./CommandBar";
 import { heldPanes } from "./registry";
 import { useShellPrefs } from "./shellPrefs";
@@ -305,6 +306,10 @@ export function AskField() {
           </div>
         </div>
       ) : null}
+      {/* CF-2: one nudge under the field, for a member who never wrote to
+          the assistant. Behind the chat-first flag. It hides while the
+          results show, so it never covers them. */}
+      <ChatNudge placement="field" hidden={panel} />
     </form>
   );
 }

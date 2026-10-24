@@ -8,10 +8,14 @@
  * The specialists are its tools (`multi_agent_orchestration.md` §5.1). The
  * member keeps sessions, not agents.
  *
- * **Two forms, one element.** `dock` is a panel at the right of the page.
- * `full` covers the page column, with the session list. `AssistantDock.tsx`
- * renders ONE element and changes its shape, so a running reply survives a
- * switch. Below `DOCK_MIN_VIEWPORT`, and on a phone, only `full` exists.
+ * **Two forms on a desktop, one element.** `dock` is a panel at the right of
+ * the page. `full` covers the page column, with the session list.
+ * `AssistantDock.tsx` renders ONE element and changes its shape, so a running
+ * reply survives a switch. Below `DOCK_MIN_VIEWPORT` the panel floats.
+ *
+ * **Two forms on a phone** (`chat_first_surface.md` §4.1, CF-1). `full` is
+ * the sheet. `peek` is a strip above the bottom nav, with the flag
+ * `NEXT_PUBLIC_CHAT_FIRST` on. A desktop never draws `peek` (D-CF-1).
  *
  * **The context.** An app publishes FACTS with `useAssistantFacts`: the open
  * record, the view. Facts are data, never instructions, and the member never
@@ -33,9 +37,11 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import { agentSlug } from "@/lib/agentName";
+import { inAppPathname } from "@/lib/inAppLink";
 import type { NavPane, NavSection } from "@/lib/nav";
-import { chatKey, type ChatSession } from "@/lib/sessions";
+import { chatKey, truncateAtWord, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
+import { isLivePhase, type RunPhase } from "@/lib/runStatus";
 
 // ── The agent ────────────────────────────────────────────────────────────────
 
@@ -60,9 +66,21 @@ export const ASSISTANT_PERSONA = [
   "Confirm before an action that changes data. Be concise and direct.",
 ].join(" ");
 
+/**
+ * The line that joins the persona when the chat-first surface is on
+ * (WS-62 CF-3, `chat_first_surface.md` §4.4, flag `chatFirstOn`). The dock
+ * joins it, so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const CHAT_FIRST_PERSONA_LINE =
+  "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
+
 // ── The forms ────────────────────────────────────────────────────────────────
 
-export type AssistantMode = "dock" | "full";
+/**
+ * `dock` and `full` exist on a desktop. `full` and `peek` exist on a phone.
+ * `effectiveMode` decides which one draws.
+ */
+export type AssistantMode = "dock" | "full" | "peek";
 
 /** The side panel's width: default, and the two ends of the drag. */
 export const DOCK_DEFAULT = 400;
@@ -82,13 +100,15 @@ export function clampDockWidth(width: number): number {
 }
 
 /**
- * The form that draws. A phone has room for one thing, so it is always the
- * full sheet. Every desktop draws the form the member asked for: the side
- * panel unless they asked for the full view. The width never decides it.
+ * The form that draws. A phone draws the full sheet, or the peek strip when
+ * the member asked for it. Every desktop draws the form the member asked
+ * for: the side panel unless they asked for the full view. The width never
+ * decides it. A desktop never draws the strip (D-CF-1). A `peek` that
+ * reaches a desktop, from a phone turned wide, draws the side panel.
  */
 export function effectiveMode(mode: AssistantMode, _viewportWidth: number, isMobile: boolean): AssistantMode {
-  if (isMobile) return "full";
-  return mode;
+  if (isMobile) return mode === "peek" ? "peek" : "full";
+  return mode === "peek" ? "dock" : mode;
 }
 
 /** Whether the side panel floats over the page: a desktop narrower than the floor. */
@@ -123,12 +143,156 @@ export function onPageChange(a: {
 /**
  * What the assistant does when a link inside its chat (a task pill) opens a
  * page (review of PR #1156). On a phone the sheet covers the page, and
- * `onPageChange` does nothing there, so the page would open unseen: the
- * sheet closes, as it does for the chat's files. A desktop keeps the chat,
- * and `onPageChange` docks a full view when the route changes.
+ * `onPageChange` does nothing there, so the page would open unseen.
+ *
+ * - `peek`: with the chat-first flag on, the sheet drops to the strip. The
+ *   page shows, and the chat is one tap away (CF-1). A delegation that moves
+ *   the page uses this answer too.
+ * - `close`: with the flag off, the sheet closes, as it does for the chat's
+ *   files.
+ * - null: a desktop keeps the chat, and `onPageChange` docks a full view
+ *   when the route changes.
  */
-export function onChatLink(a: { phone: boolean }): "close" | null {
-  return a.phone ? "close" : null;
+/**
+ * Whether a RUN may move the page by itself: a delegation to an app's
+ * agent, or `show_in_app`. On a phone it may not (owner report,
+ * 2026-10-22): the chat closed and the app opened while the member was
+ * still talking, which was jarring. The phone keeps the chat open and
+ * offers the page in a toast instead. A link the member taps still opens
+ * (`onChatLink`). On a desktop the page moves beside the chat, as before.
+ */
+export function runMovesPage(a: { phone: boolean }): boolean {
+  return !a.phone;
+}
+
+export function onChatLink(a: { phone: boolean; chatFirst: boolean }): "peek" | "close" | null {
+  if (!a.phone) return null;
+  return a.chatFirst ? "peek" : "close";
+}
+
+/**
+ * Whether the strip goes back up to the sheet by itself (CF-1). It goes up
+ * when a card waits for the member (`needs input`, WS-51 S2) and the strip
+ * shows. A card that nobody sees is a run that never ends. Nothing else
+ * raises the sheet without a tap.
+ *
+ * The caller asks this only when the wait BEGINS. A member who drops a
+ * waiting chat to the strip asked for the strip, so it stays.
+ */
+export function raiseOnNeed(a: { phone: boolean; form: AssistantMode; needsInput: boolean }): "full" | null {
+  return a.phone && a.form === "peek" && a.needsInput ? "full" : null;
+}
+
+/** The longest line the strip shows, in characters, before it cuts at a word. */
+export const STRIP_TEXT_MAX = 80;
+
+/** Markdown marks and fence marks, out of one line of plain words. */
+function plainLine(text: string): string {
+  return text
+    .replace(/^\s*(?:#+|>|[-+*]|\d+\.)\s+/gm, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|__|[*`~«»]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Whether the strip shows the run's status, by the run's phase. A live run
+ * does, and so does a parked one, because its card waits on the member. A
+ * run that ended does not: "Done" and "Stopped" give way to the reply at
+ * once (fix round on PR #1198).
+ */
+export function stripShowsRun(phase: RunPhase): boolean {
+  return isLivePhase(phase) || phase === "parked";
+}
+
+/**
+ * The one line of the peek strip (CF-1). While a run goes on, it is the run
+ * status row's own text, so the strip and the chat say the same thing
+ * (`chat_run_continuity.md` §4.10). Else it is the last assistant reply,
+ * cut at a whole word. Else the assistant's name.
+ */
+export function stripText(a: { phase: RunPhase; statusText: string | null | undefined; lastPreview: string | null | undefined }): string {
+  const status = a.statusText?.trim();
+  if (stripShowsRun(a.phase) && status) return status;
+  const last = plainLine(a.lastPreview ?? "");
+  if (last) return truncateAtWord(last, STRIP_TEXT_MAX);
+  return ASSISTANT_NAME;
+}
+
+/**
+ * What the assistant does when the live run opens a page with `show_in_app`
+ * (WS-62 CF-3, `chat_first_surface.md` §4.4). The server sends ONE `navigate`
+ * event per turn, and the client only acts.
+ *
+ * - `push`: the route moves. Only while the member watches that chat, as for
+ *   a delegation, and only to a path inside the app (`inAppPathname`, checked
+ *   again here) whose pane the member holds (`paneAt` over `sections`, their
+ *   visible set), or the root. A closed assistant moves nothing, and so does
+ *   `/connect`, `/signup`, `/settings` or a pane they lack (review of #1197).
+ * - `dock`: a desktop full view becomes the side panel, so the page shows
+ *   beside the chat.
+ * - `offer`: on a phone nothing moves (`runMovesPage`). The chat stays open,
+ *   and a toast offers the page (owner report, 2026-10-22).
+ *
+ * `pane` is the pane the path opens, for the toast's label. Null for the root.
+ */
+export function navigateAct(a: {
+  open: boolean;
+  threadId: string | undefined;
+  activeId: string | null | undefined;
+  path: string | undefined;
+  sections: readonly NavSection[];
+  phone: boolean;
+  chatFirst: boolean;
+  form: AssistantMode;
+  canDock: boolean;
+}): { push: boolean; dock: boolean; offer: boolean; pane: NavPane | null } {
+  const none = { push: false, dock: false, offer: false, pane: null };
+  if (!a.open || !a.threadId || a.threadId !== a.activeId) return none;
+  const pathname = inAppPathname(a.path);
+  if (pathname === null) return none;
+  const pane = paneAt(pathname, a.sections);
+  if (pathname !== "/") {
+    // The allowlist is the control, as `PANES` is on the server: a LIVE pane
+    // the member holds, and never an admin page or a settings page.
+    if (!pane || pane.launch !== "live" || pane.adminOnly) return none;
+    if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
+  }
+  if (!runMovesPage(a)) return { push: false, dock: false, offer: true, pane };
+  return { push: true, dock: a.form === "full" && a.canDock, offer: false, pane };
+}
+
+/**
+ * The browser-session mark of the landing open (CF-2). `sessionStorage`, so
+ * a new tab lands on the chat again and a reload in this tab does not.
+ * ⚠️ The key keeps the shell prefix. A key that starts with "cc-" and then
+ * "chat" reads as a chat cache key with no namespace (`railSessions.test.ts`).
+ */
+export const CHAT_LANDED_KEY = "cc-shell-chat-landed";
+
+/**
+ * Whether a phone that just landed opens the assistant as the full sheet
+ * (WS-62 CF-2, `chat_first_surface.md` §4.2, D-CF-2, D-CF-3). True only when
+ * every one of these holds:
+ *
+ * - the chat-first flag is on;
+ * - it is a phone (D-CF-2: a desktop gets the nudge, never an auto-open);
+ * - the path is exactly `/` with no query. `/projects?task=…` is a link
+ *   somebody sent, and `/?welcome=new-org` is the founder's welcome;
+ * - this browser session has not opened it yet (`seen`, D-CF-3). A member
+ *   who dropped the sheet or closed it said so.
+ */
+export function opensOnLanding(a: {
+  chatFirst: boolean;
+  phone: boolean;
+  pathname: string | null | undefined;
+  search: string | null | undefined;
+  seen: boolean;
+}): boolean {
+  if (!a.chatFirst || !a.phone || a.seen) return false;
+  if (a.pathname !== "/") return false;
+  return !(a.search ?? "").replace(/^\?/, "").trim();
 }
 
 function subscribeWidth(listener: () => void): () => void {
@@ -239,6 +403,35 @@ function withPrefs(s: AssistantState): AssistantState {
   return { ...s, ...readPrefs() };
 }
 
+/** What an open asks for. */
+export interface OpenOptions {
+  text?: string;
+  draft?: string;
+  sessionId?: string | null;
+  mode?: AssistantMode;
+  fresh?: boolean;
+}
+
+/**
+ * The form an open gives the assistant.
+ *
+ * - An asked `mode` wins.
+ * - An open from closed is the side panel (owner, 2026-10-14).
+ * - An open while it is open keeps its form, with one exception. On a phone
+ *   the strip goes up to the sheet when the open asks for something: words,
+ *   a draft, a chat, or a new chat (fix round on PR #1198). A run toast's
+ *   "Open" and a card's "Open" must show the chat they name. A plain open
+ *   asks for nothing, so the strip stays.
+ */
+export function modeOnOpen(a: { phone: boolean; open: boolean; current: AssistantMode; opts: OpenOptions }): AssistantMode {
+  const { opts } = a;
+  if (opts.mode) return opts.mode;
+  if (!a.open) return "dock";
+  const asks = Boolean(opts.text?.trim() || opts.draft?.trim() || opts.sessionId !== undefined || opts.fresh);
+  if (a.phone && a.current === "peek" && asks) return "full";
+  return a.current;
+}
+
 /**
  * Open the assistant. With `text`, the words go to the chat as the member's
  * turn. With `draft`, they wait in the composer for the member to send. With
@@ -247,20 +440,17 @@ function withPrefs(s: AssistantState): AssistantState {
  * The form: an open from closed is the side panel, unless `mode` asks for the
  * full view. An open while it is open keeps the form it has.
  */
-export function openAssistant(opts: {
-  text?: string;
-  draft?: string;
-  sessionId?: string | null;
-  mode?: AssistantMode;
-  fresh?: boolean;
-} = {}): void {
+export function openAssistant(opts: OpenOptions = {}): void {
   const base = withPrefs(_state);
   const text = opts.text?.trim();
   const draft = opts.draft?.trim();
+  // Only a phone stores `peek` (the handle, the chevron, and `onChatLink` on
+  // a phone), so a stored `peek` is the phone. The store reads no viewport.
+  const phone = base.mode === "peek";
   _set({
     ...base,
     open: true,
-    mode: opts.mode ?? (base.open ? base.mode : "dock"),
+    mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
     ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
     draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,
@@ -340,6 +530,7 @@ export function __resetAssistantForTests(): void {
   _factsSnapshot = NO_FACTS;
   _listeners.clear();
   _factListeners.clear();
+  _briefAskedOn = null;
 }
 
 // A new member on this browser starts closed, and reads their own preference.
@@ -386,6 +577,76 @@ export function barMayJoin(
   if ((chat.participantCount ?? 0) > 1) return false;
   return !startsFresh(chat, now);
 }
+
+// ── The brief as the first turn (WS-62 CF-5, §4.6, D-CF-6) ──────────────────
+
+/**
+ * Whether a chat asks the server for the day's brief as its first turn.
+ * True only when every one of these holds:
+ *
+ * - the chat-first flag is on;
+ * - it is a phone (D-CF-6 and §9.2 Q1: the desktop reads the brief on My Day);
+ * - the chat holds no message. A fresh chat from `startFresh`, or a restored
+ *   chat that is still empty, both count. A chat with a turn is a chat the
+ *   member wrote in, and the brief never lands under their words;
+ * - this page has not asked today (`askedFor`). The server stamps the
+ *   member's day too, so a second device gets no second brief. The page's
+ *   own mark saves the round trip, and keeps a new chat opened an hour
+ *   later from asking again.
+ *
+ * The dock calls the brief route only through this rule (`assistant.test.ts`).
+ */
+export function wantsBrief(a: {
+  chatFirst: boolean;
+  phone: boolean;
+  messageCount: number;
+  askedFor: boolean;
+}): boolean {
+  if (!a.chatFirst || !a.phone || a.askedFor) return false;
+  return a.messageCount === 0;
+}
+
+/**
+ * How long the dock holds a fresh chat for the brief's answer, at most
+ * (review of #1216). The feed read behind the route can be slow on a cold
+ * morning, and the composer must never wait on it.
+ */
+export const BRIEF_HOLD_MS = 4_000;
+
+/**
+ * Whether a chat waits for its brief: only while ITS ask is out. The dock
+ * mounts the chat the moment this is false. The rule reads no clock and no
+ * flag, so nothing can hold a chat that no effect would release.
+ */
+export function holdsForBrief(hold: string | null, sessionId: string): boolean {
+  return Boolean(hold) && hold === sessionId;
+}
+
+/** The member's local date, as the page's mark of the brief ask keys on it. */
+export function localDay(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// The day this page last asked for the brief. Memory only, and a change of
+// member or org clears it with the rest (`onClear`).
+let _briefAskedOn: string | null = null;
+
+/** Whether this page already asked for today's brief. */
+export function briefAskedToday(now: Date = new Date()): boolean {
+  return _briefAskedOn === localDay(now);
+}
+
+/** Mark that this page asked for today's brief. A second call does nothing. */
+export function markBriefAsked(now: Date = new Date()): void {
+  _briefAskedOn = localDay(now);
+}
+
+onClear(() => {
+  _briefAskedOn = null;
+});
 
 // ── The context ──────────────────────────────────────────────────────────────
 

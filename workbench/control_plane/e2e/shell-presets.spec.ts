@@ -86,6 +86,8 @@ interface StubOptions {
   myDay?: boolean;
   /** Hold `/api/auth/me` until `releaseMe()`. */
   holdMe?: boolean;
+  /** Turn the one assistant and the chat-first surface on (WS-62 CF-2). */
+  chatFirst?: boolean;
 }
 
 /** The browser copy's key for MEMBER (`shellCache.ts`). */
@@ -102,18 +104,22 @@ async function stub(page: Page, start: Layout = EMPTY, opts: StubOptions = {}): 
   });
   const store: Store = { layout: start, puts: [], gets: 0, release: () => release(), releaseMe: () => releaseMe() };
   await page.addInitScript(
-    ({ cached, key, myDay }) => {
+    ({ cached, key, myDay, chatFirst }) => {
       localStorage.setItem("cc-shell-bar", "1");
       localStorage.setItem("cc-shell-nav", "1");
       localStorage.removeItem("cc-sidebar-collapsed");
       if (myDay) localStorage.setItem("cc-my-day", "1");
+      if (chatFirst) {
+        localStorage.setItem("cc-shell-chat", "1");
+        localStorage.setItem("cc-shell-chat-first", "1");
+      }
       // Only before the first load: a reload must read what the page wrote.
       if (cached && !sessionStorage.getItem("ns7-seeded")) {
         localStorage.setItem(key, JSON.stringify(cached));
         sessionStorage.setItem("ns7-seeded", "1");
       }
     },
-    { cached: opts.cached ?? null, key: CACHE_KEY, myDay: !!opts.myDay },
+    { cached: opts.cached ?? null, key: CACHE_KEY, myDay: !!opts.myDay, chatFirst: !!opts.chatFirst },
   );
   // One router, on purpose (`org-branding.spec.ts` says why).
   await page.route("**/api/**", async (route: Route) => {
@@ -530,6 +536,57 @@ test.describe("phone", () => {
     await drawer.getByRole("button", { name: "Add apps" }).click();
     const launcher = page.getByRole("dialog", { name: "All apps" });
     await expect(launcher.getByTestId("launcher-hint")).toHaveText("Star the apps you want in your sidebar.");
+  });
+
+  test("with the chat-first flag on, step 1's answer writes the preset's stars and there is no step 2 (CF-2)", async ({ page }) => {
+    const store = await stub(page, EMPTY, { chatFirst: true });
+    await page.goto("/settings/appearance");
+    await expect(question(page)).toBeVisible();
+    await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+    await expect(appsStep(page)).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    // One write: the answer, and the stars step 2 would have ticked.
+    await expect.poll(() => store.puts.length).toBe(1);
+    expect(store.puts[0]).toEqual({
+      preset: "engineer",
+      answered: "answered",
+      pins: ENGINEER_DEFAULTS,
+      known: KNOWN,
+      cardOrder: null,
+      newOrder: null,
+    });
+    // The drawer then lists the ticked apps, as a Done on step 2 would leave it.
+    // ⚠️ The drawer takes its content at the tap, so wait for the page to
+    // hold the server's answer first: the browser copy is written from it.
+    await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), CACHE_KEY)).toContain('"engineer"');
+    await page.getByRole("button", { name: "Menu" }).click();
+    const drawer = page.locator("aside:not([data-collapsed])");
+    // Chat is starred and stored, and the chat bar takes it out of the
+    // drawer (D99): the Ask tab is its door.
+    await expect.poll(() => shape(page, drawer)).toEqual([
+      ["personal", ["My Tasks", "Calendar", "My Email"]],
+      ["across", ["Projects"]],
+      ["admin", ["Approvals"]],
+    ]);
+  });
+
+  test("with the flag off, a phone keeps step 2, as before", async ({ page }) => {
+    await stub(page, EMPTY);
+    await page.goto("/settings/appearance");
+    await expect(question(page)).toBeVisible();
+    await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+    await expect(appsStep(page)).toBeVisible();
+    await appsStep(page).getByRole("button", { name: "Done" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), CACHE_KEY)).toContain('"engineer"');
+    await page.getByRole("button", { name: "Menu" }).click();
+    const drawer = page.locator("aside:not([data-collapsed])");
+    await expect.poll(() => shape(page, drawer)).toEqual([
+      ["personal", ["My Tasks", "Calendar", "My Email"]],
+      ["across", ["Projects"]],
+      ["studio", ["Chat"]],
+      ["admin", ["Approvals"]],
+    ]);
   });
 });
 

@@ -310,8 +310,10 @@ class TestTheReviewFactor:
     def test_the_route_gains_no_query_parameter(self):
         from gateway.routes.knowledge.search import search_knowledge
 
+        # CX-1 adds none: `reviewed` is not a parameter. KB-3d (2026-10-22)
+        # added the three filters of the Search view.
         assert set(inspect.signature(search_knowledge).parameters) == {
-            "q", "space", "k", "hybrid", "user"}
+            "q", "space", "k", "hybrid", "user", "author", "updated_after", "title_only"}
 
     def test_the_company_path_asks_for_the_factor_only_with_the_flag(
             self, apps, recency, monkeypatch):  # noqa: F811

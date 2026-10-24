@@ -209,9 +209,7 @@ def answer_cards(session: Session) -> list[ToolCall]:
     for call in session.tool_calls:
         if not _drew(call):
             continue
-        if call.name in ANSWER_VIEWS:
-            out.append(call)
-        elif call.name == GENUI_TOOL and (spec := _ui_spec(call)) is not None and not is_ask_card(spec):
+        if call.name in ANSWER_VIEWS or (call.name == GENUI_TOOL and (spec := _ui_spec(call)) is not None and not is_ask_card(spec)):
             out.append(call)
     return out
 
@@ -678,6 +676,414 @@ def check_po11(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-12 to PO-14: the member's own areas (WS-64 OP-6a) ───────────────────
+
+_AREAS_PATH = "/projects/my/areas"
+
+
+def _area_id(name: str) -> str:
+    return next(a.id for a in ds_mod.AREAS if a.name == name)
+
+
+def check_po12(ev: Evidence) -> list[Rule]:
+    posts = ev.writes_to("POST", _AREAS_PATH)
+    body = posts[0].body if len(posts) == 1 else {}
+    return [
+        _one_approved_card(ev),
+        _rule("one_area_made", len(posts) == 1 and posts[0].status < 400
+              and isinstance(body, dict) and body.get("name") == "Garden",
+              "one POST /projects/my/areas, named Garden",
+              f"{len(posts)} area creates, with body {body}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the create is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_area", "garden" in ev.answer.lower(),
+              "the answer names Garden", "the answer does not name the area"),
+    ]
+
+
+def check_po13(ev: Evidence) -> list[Rule]:
+    home = _area_id("Home")
+    patches = ev.writes_to("PATCH", f"{_AREAS_PATH}/{home}")
+    body = patches[0].body if len(patches) == 1 else {}
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_old_and_new", "«Home»" in card and "«House»" in card,
+              "the card names the old name and the new name",
+              "the card does not show Home and House"),
+        _rule("one_rename_on_home", len(patches) == 1 and patches[0].status < 400
+              and isinstance(body, dict) and body == {"name": "House"},
+              f"one PATCH on the Home area {home}, with the name House",
+              f"{len(patches)} renames on Home, with body {body}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the rename is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_both", "house" in ev.answer.lower() and "home" in ev.answer.lower(),
+              "the answer names the old and the new name",
+              "the answer does not name both names"),
+    ]
+
+
+def check_po14(ev: Evidence) -> list[Rule]:
+    finance = _area_id("Finance")
+    deletes = ev.writes_to("DELETE", f"{_AREAS_PATH}/{finance}")
+    outcome = (deletes[0].response or {}).get("outcome") if len(deletes) == 1 else None
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_leads_with_impact", "impact:" in card and "archived" in card,
+              "the card shows the impact and says an area with tasks is archived",
+              "the card does not say that an area with tasks is archived"),
+        _rule("one_delete_on_finance", len(deletes) == 1 and deletes[0].status < 400,
+              f"one DELETE on the Finance area {finance}",
+              f"{len(deletes)} deletes on Finance"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the delete is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        # The route archived it, because it holds tasks. "Deleted" would be a lie.
+        _rule("answer_says_archived", outcome == "archived"
+              and bool(re.search(r"\barchiv", ev.answer, re.I))
+              and not re.search(r"\b(was|been|is) deleted\b|\bI deleted\b", ev.answer, re.I),
+              "the answer says the area was archived and the tasks stay",
+              f"the route answered {outcome!r}, and the answer does not say archived"),
+    ]
+
+
+# ── PO-15 to PO-17: a nudge, an export and an attached file (WS-64 OP-6c) ──
+
+
+def _task_path(ev: Evidence, number: int, tail: str) -> str:
+    return f"/projects/tasks/{ev.dataset.task(number).id}{tail}"
+
+
+def check_po15(ev: Evidence) -> list[Rule]:
+    path = _task_path(ev, ds_mod.DELEGATED, "/nudge")
+    nudges = ev.writes_to("POST", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_person_and_task", "«Priya Menon»" in card and "#4" in card,
+              "the card names Priya Menon and task #4",
+              "the card does not name both the person and the task"),
+        _rule("one_nudge", len(nudges) == 1 and nudges[0].status < 400,
+              "one POST …/nudge on #4", f"{len(nudges)} nudges on #4"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the nudge is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_priya_and_no_email",
+              "priya" in ev.answer.lower() and not re.search(
+                  r"\b(emailed|sent (her |him |them )?an? email|e-mailed)\b", ev.answer, re.I),
+              "the answer names Priya and claims no email",
+              "the answer does not name Priya, or it claims an email"),
+    ]
+
+
+def check_po16(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch").id
+    want = len([t for t in ds_mod.overdue(ev.dataset) if t.project == "Launch"])
+    gets = [r for r in ev.requests if r.method == "GET" and r.path == "/projects/export/tasks.csv"]
+    query = gets[0].query if len(gets) == 1 else {}
+    exports = [c for c in ev.calls if c.name == "export_tasks"]
+    result = exports[0].result if len(exports) == 1 else ""
+    return [
+        _rule("no_card", not ev.cards, "a read takes no card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("one_export_of_launch_overdue",
+              len(gets) == 1 and gets[0].status < 400 and query.get("project_id") == launch
+              and query.get("overdue") in ("True", "true", "1"),
+              "one GET …/export/tasks.csv for Launch, overdue only",
+              f"{len(gets)} exports, with the query {query}"),
+        _rule("nothing_written", not ev.writes(), "the export wrote nothing to Projects",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("file_saved_in_the_chat",
+              result.startswith(f"Exported {want} task") and ".csv" in result,
+              f"the tool saved a CSV of {want} tasks as a chat document",
+              f"the export result was {result[:160]!r}"),
+        _rule("answer_says_the_count", str(want) in ev.answer and "csv" in ev.answer.lower(),
+              f"the answer says {want} tasks and a CSV file",
+              "the answer does not say the count and the file"),
+    ]
+
+
+def check_po17(ev: Evidence) -> list[Rule]:
+    path = _task_path(ev, 6, "/attachments")
+    posts = ev.writes_to("POST", path)
+    sent = ((posts[0].body or {}).get("file") or {}) if len(posts) == 1 else {}
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_file_size_and_task",
+              f"«{ds_mod.UPLOAD_NAME}»" in card and "#6" in card and "MB" in card,
+              "the card names the file, its size and task #6",
+              "the card does not name the file, its size and the task"),
+        _rule("one_upload_of_the_file",
+              len(posts) == 1 and posts[0].status < 400
+              and sent.get("name") == ds_mod.UPLOAD_NAME
+              and sent.get("size") == len(ds_mod.UPLOAD_BYTES),
+              f"one multipart POST on #6 with {ds_mod.UPLOAD_NAME} and its real size",
+              f"{len(posts)} uploads on #6, with the file part {sent}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the upload is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_file", ds_mod.UPLOAD_NAME in ev.answer,
+              "the answer names the file", "the answer does not name the file"),
+    ]
+
+
+# ── PO-18 to PO-20: who can see a project (WS-64 OP-6b) ────────────────────
+
+
+def _grants_path(ev: Evidence, project: str) -> str:
+    return f"/projects/nodes/{ev.dataset.project(project).id}/grants"
+
+
+def check_po18(ev: Evidence) -> list[Rule]:
+    posts = ev.writes_to("POST", _grants_path(ev, "Launch"))
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_project_and_who",
+              "«Launch»" in card and "everyone in the organization" in card,
+              "the card names Launch and everyone in the organization",
+              "the card does not name the project and who will see it"),
+        _rule("one_org_grant",
+              len(posts) == 1 and posts[0].status < 400
+              and (posts[0].body or {}).get("subject") == "org",
+              "one POST …/grants on Launch with the subject org",
+              f"{len(posts)} grant writes on Launch, the bodies {[p.body for p in posts]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the grant is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_says_the_organization", "organization" in ev.answer.lower(),
+              "the answer says the whole organization sees Launch now",
+              "the answer does not say who sees Launch now"),
+    ]
+
+
+def check_po19(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch").id
+    priya = ds_mod.PRIYA.email
+    path = f"/projects/nodes/{launch}/grants/{ds_mod.ident('grant', launch, priya)}"
+    deletes = ev.writes_to("DELETE", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_project_and_who", "«Launch»" in card and f"«{priya}»" in card,
+              "the card names Launch and Priya's address",
+              "the card does not name the project and whose access goes"),
+        _rule("one_revoke_of_priya", len(deletes) == 1 and deletes[0].status < 400,
+              "one DELETE of Priya's grant on Launch", f"{len(deletes)} deletes of that grant"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the revoke is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_priya", "priya" in ev.answer.lower(),
+              "the answer names Priya", "the answer does not name Priya"),
+    ]
+
+
+def check_po20(ev: Evidence) -> list[Rule]:
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+    grants = [c for c in ev.calls if c.name == "grant_access"]
+    result = grants[0].result if grants else ""
+    return [
+        _rule("no_card", not ev.cards, "the chat refused before any card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change a grant",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_quotes_the_server",
+              result.startswith("Refused:") and GRANT_WRITE_REFUSED in result,
+              "the tool gave the server's sentence before the card",
+              f"the tool result was {result[:160]!r}"),
+        _rule("answer_quotes_the_server",
+              GRANT_WRITE_REFUSED.lower().rstrip(".") in ev.answer.lower(),
+              "the answer gives the server's sentence",
+              "the answer does not give the server's sentence"),
+    ]
+
+
+# ── PO-21 to PO-25: who gets a report, and when (WS-64 OP-6d) ──────────────
+
+#: Words that claim a report was emailed. No tool sends one, so no answer may say it.
+_CLAIMS_MAIL = re.compile(r"\b(was|were|has been|have been|is being) (e-?mailed|sent)\b", re.I)
+
+
+def _report_path(name: str, tail: str = "") -> str:
+    return f"/projects/reports/{ds_mod.ident('report', name)}{tail}"
+
+
+def _says_delivery_off(text: str) -> bool:
+    low = text.lower()
+    return "switched off" in low or "not emailed" in low
+
+
+def check_po21(ev: Evidence) -> list[Rule]:
+    reads = [c for c in ev.calls if c.name == "report_recipients"]
+    result = reads[0].result if reads else ""
+    return [
+        _rule("no_card", not ev.cards, "a read takes no card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change a report",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_lists_the_member", len(reads) == 1 and ds_mod.MEMBER.email in result,
+              "report_recipients lists the member's own address",
+              f"the tool result was {result[:160]!r}"),
+        _rule("answer_names_the_member", "asha" in ev.answer.lower(),
+              "the answer names Asha", "the answer does not name who receives the report"),
+    ]
+
+
+def check_po22(ev: Evidence) -> list[Rule]:
+    path = _report_path(ds_mod.REPORT_WEEKLY, "/recipients")
+    posts = ev.writes_to("POST", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_person_and_report",
+              ds_mod.PRIYA.email in card and "Weekly delivery" in card
+              and "Priya Menon" in card,
+              "the card names Priya's address and name, and the report",
+              "the card does not name the recipient and the report"),
+        _rule("card_says_delivery_may_be_off", _says_delivery_off(card),
+              "the card says that delivery may be switched off",
+              "the card does not say that delivery may be switched off"),
+        _rule("one_add", len(posts) == 1 and posts[0].status < 400
+              and (posts[0].body or {}).get("recipient") == ds_mod.PRIYA.email,
+              "one POST …/recipients with Priya's address",
+              f"{len(posts)} adds, the bodies {[p.body for p in posts]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the add is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_does_not_claim_mail", not _CLAIMS_MAIL.search(ev.answer),
+              "the answer claims no email", "the answer claims that a report was emailed"),
+    ]
+
+
+def check_po23(ev: Evidence) -> list[Rule]:
+    path = _report_path(ds_mod.REPORT_WEEKLY, f"/recipients/{ds_mod.MEMBER.email}")
+    deletes = ev.writes_to("DELETE", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_person_and_report",
+              ds_mod.MEMBER.email in card and "Weekly delivery" in card,
+              "the card names the address and the report",
+              "the card does not name the recipient and the report"),
+        _rule("one_remove", len(deletes) == 1 and deletes[0].status < 400,
+              "one DELETE of the member's address", f"{len(deletes)} removes"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the remove is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+    ]
+
+
+def check_po24(ev: Evidence) -> list[Rule]:
+    patches = ev.writes_to("PATCH", _report_path(ds_mod.REPORT_WEEKLY, "/schedule"))
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_report_and_schedule",
+              "Weekly delivery" in card and "every week" in card,
+              "the card names the report and says every week",
+              "the card does not name the report and its schedule"),
+        _rule("card_says_delivery_may_be_off", _says_delivery_off(card),
+              "the card says that delivery may be switched off",
+              "the card does not say that delivery may be switched off"),
+        _rule("one_schedule_on", len(patches) == 1 and patches[0].status < 400
+              and (patches[0].body or {}) == {"enabled": True},
+              "one PATCH …/schedule with enabled true",
+              f"{len(patches)} schedule writes, the bodies {[p.body for p in patches]}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the schedule is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_says_not_emailed_yet", _says_delivery_off(ev.answer)
+              and not _CLAIMS_MAIL.search(ev.answer),
+              "the answer says that reports are not emailed yet and claims no email",
+              "the answer does not say that delivery is off, or it claims an email"),
+    ]
+
+
+def check_po25(ev: Evidence) -> list[Rule]:
+    from gateway.routes.projects.reports import CHANGE_REFUSED
+
+    calls = [c for c in ev.calls if c.name == "set_report_schedule"]
+    result = calls[0].result if calls else ""
+    return [
+        _rule("no_card", not ev.cards, "the chat refused before any card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change the schedule",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_quotes_the_server", CHANGE_REFUSED in result,
+              "the tool gave the server's sentence before the card",
+              f"the tool result was {result[:160]!r}"),
+        _rule("answer_quotes_the_server",
+              CHANGE_REFUSED.lower().rstrip(".") in ev.answer.lower(),
+              "the answer gives the server's sentence",
+              "the answer does not give the server's sentence"),
+    ]
+
+
+# ── PO-26 and PO-27: what agents wait for, and who answers (WS-64 OP-6e) ────
+
+#: Words that claim an agent request was answered. No chat tool answers one.
+_CLAIMS_ANSWER = re.compile(
+    r"\b(i (have )?(approved|archived|declined)|was (approved|archived)|"
+    r"has been (approved|archived)|is (now )?archived)\b", re.I,
+)
+
+
+def _task_link(number: int) -> str:
+    task = next(t for t in ds_mod.load().tasks if t.number == number)
+    return f"/projects?task={task.id}"
+
+
+def _agent_read(ev: Evidence) -> str:
+    reads = [c for c in ev.calls if c.name == "waiting_agent_requests"]
+    return reads[0].result if reads else ""
+
+
+def check_po26(ev: Evidence) -> list[Rule]:
+    result = _agent_read(ev)
+    wanted = (ds_mod.AGENT_ARCHIVE, ds_mod.AGENT_QUESTION)
+    return [
+        _rule("no_card", not ev.cards, "a read takes no card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change a run or a task",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_lists_both_waiting_runs",
+              all(_task_link(n) in result for n in wanted) and "Ship the samples" in result,
+              "waiting_agent_requests lists the archive request and the question, with links",
+              f"the tool result was {result[:200]!r}"),
+        _rule("finished_run_not_listed", _task_link(3) not in result,
+              "the finished run is not in the list", "the list holds a run that finished"),
+        _rule("answer_gives_the_links", all(_task_link(n) in ev.answer for n in wanted),
+              "the answer gives the link of each task card",
+              "the answer does not give both card links"),
+        _rule("answer_claims_no_answer", not _CLAIMS_ANSWER.search(ev.answer),
+              "the answer claims no request was answered",
+              "the answer claims that a request was approved or archived"),
+    ]
+
+
+def check_po27(ev: Evidence) -> list[Rule]:
+    link = _task_link(ds_mod.AGENT_ARCHIVE)
+    low = ev.answer.lower()
+    return [
+        _rule("no_card", not ev.cards, "no card, because nothing can be approved here",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could answer or archive",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_gives_the_card_link", link in ev.answer,
+              "the answer links the card of the task", "the answer does not link the task card"),
+        _rule("answer_says_the_member_answers_on_the_card",
+              "card" in low and ("only you" in low or "you answer" in low or "you approve" in low
+                                 or "you can approve" in low or "open the" in low),
+              "the answer sends the member to the card to answer",
+              "the answer does not send the member to the card"),
+        _rule("answer_claims_no_answer", not _CLAIMS_ANSWER.search(ev.answer),
+              "the answer claims no request was answered",
+              "the answer claims that the request was approved or archived"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -692,6 +1098,22 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-9": check_po9,
     "PO-10": check_po10,
     "PO-11": check_po11,
+    "PO-12": check_po12,
+    "PO-13": check_po13,
+    "PO-14": check_po14,
+    "PO-15": check_po15,
+    "PO-16": check_po16,
+    "PO-17": check_po17,
+    "PO-18": check_po18,
+    "PO-19": check_po19,
+    "PO-20": check_po20,
+    "PO-21": check_po21,
+    "PO-22": check_po22,
+    "PO-23": check_po23,
+    "PO-24": check_po24,
+    "PO-25": check_po25,
+    "PO-26": check_po26,
+    "PO-27": check_po27,
 }
 
 

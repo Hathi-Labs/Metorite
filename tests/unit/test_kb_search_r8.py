@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -247,8 +248,9 @@ async def test_search_finds_only_visible_published_pages(kb, app_engine) -> None
     assert _found(await _search(kb, admin_a, "pricing ladder", space=sales)) == [on_sales]
 
     hit = (await _search(kb, seller_a, "pricing ladder"))["hits"][0]
+    # KB-2f added the page icon to this route's hits only.
     assert set(hit) == {"page_id", "space_id", "space_name", "title", "heading_path",
-                        "text", "score", "updated_at", "href"}
+                        "text", "score", "updated_at", "href", "icon", "author_email"}
     assert hit["space_id"] == sales and hit["space_name"] == "Sales"
     assert hit["href"] == f"/knowledge/pages/{on_sales}"
     assert hit["heading_path"] == "Sales playbook"
@@ -764,3 +766,113 @@ async def test_a_page_past_its_review_date_ranks_below_a_current_one(
     plain = await _search(kb, member, "warranty nozzle")
     assert _found(plain) == [first, second]
     assert "review_at" not in plain["hits"][0]
+
+
+# ── KB-3d: the filters of the Search view ──────────────────────────────────
+
+async def _filter_world(kb: Any) -> dict[str, Any]:
+    """Two authors, one open space, one space for one reader, and org B."""
+    ann, bob = _address("ann"), _address("bob")
+    ann_p = _principal(ann, kb.org_a, CAPABILITY)
+    bob_p = _principal(bob, kb.org_a, CAPABILITY)
+    reader = _principal(_address("reader"), kb.org_a)
+    open_space = await _space(kb, ann_p, "Open", [{"subject": "org", "level": "read"}])
+    closed = await _space(
+        kb, ann_p, "Closed", [{"subject": ann, "level": "write"}, {"subject": bob, "level": "write"}],
+    )
+    by_ann = await _page(kb, ann_p, open_space, "Dock rota", "Forklift drivers sign the sheet.")
+    by_bob = await _page(kb, bob_p, open_space, "Yard map", "Forklift lanes are painted blue.")
+    hidden = await _page(kb, ann_p, closed, "Dock secrets", "Forklift codes live here.")
+    admin_b = _principal(_address("admin-b"), kb.org_b, CAPABILITY)
+    hb = await _space(kb, admin_b, "B space", [{"subject": "org", "level": "read"}])
+    await _page(kb, admin_b, hb, "Forklift B", "Forklift of org B.")
+    return {"ann": ann, "bob": bob, "ann_p": ann_p, "bob_p": bob_p, "reader": reader,
+            "by_ann": by_ann, "by_bob": by_bob, "hidden": hidden,
+            "member_b": _principal(_address("member-b"), kb.org_b)}
+
+
+async def test_the_author_filter_keeps_only_that_authors_pages(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    reader = w["reader"]
+    assert set(_found(await _search(kb, reader, "forklift"))) == {w["by_ann"], w["by_bob"]}
+    only_ann = await _search(kb, reader, "forklift", author=w["ann"])
+    assert _found(only_ann) == [w["by_ann"]]
+    assert only_ann["hits"][0]["author_email"] == w["ann"]
+    # The email has no case.
+    assert _found(await _search(kb, reader, "forklift", author=w["bob"].upper())) == [w["by_bob"]]
+    assert _found(await _search(kb, reader, "forklift", author="nobody@example.test")) == []
+
+
+async def test_updated_after_drops_older_pages(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    with kb.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_pages SET updated_at = now() - interval '40 days' "
+                       "WHERE id = CAST(:p AS uuid)"), {"p": w["by_bob"]})
+    reader = w["reader"]
+    recent = (datetime.now(UTC) - timedelta(days=7)).date().isoformat()
+    assert _found(await _search(kb, reader, "forklift", updated_after=recent)) == [w["by_ann"]]
+    old = (datetime.now(UTC) - timedelta(days=60)).date().isoformat()
+    assert set(_found(await _search(kb, reader, "forklift", updated_after=old))) == {
+        w["by_ann"], w["by_bob"]}
+    # A bad date is a 422 and never a SQL error.
+    bad = await _call(kb, reader, "GET", "/knowledge/search?q=forklift&updated_after=soon")
+    assert bad.status_code == 422
+
+
+async def test_title_only_matches_a_title_word_and_not_a_body_word(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    reader = w["reader"]
+    # "dock" is in one title. "forklift" is in bodies only.
+    assert _found(await _search(kb, reader, "dock", title_only="true")) == [w["by_ann"]]
+    assert _found(await _search(kb, reader, "forklift", title_only="true")) == []
+    assert _found(await _search(kb, reader, "forklift")) != []
+
+
+async def test_title_only_makes_no_embed_call(kb, app_engine, monkeypatch) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    calls: list[Any] = []
+
+    async def spy(texts: Any, **kw: Any) -> list[list[float]]:
+        calls.append(texts)
+        return [fake_vector(t) for t in texts]
+
+    _embed_on(monkeypatch, spy)
+    await _search(kb, w["reader"], "dock", title_only="true")
+    assert calls == []
+    answer = await _search(kb, w["reader"], "dock")
+    assert calls and answer["degraded"] is False
+
+
+async def test_a_filter_never_shows_a_page_the_caller_cannot_see(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    reader = w["reader"]
+    # Ann wrote the hidden page. The reader asks for Ann's pages, and gets
+    # the one in the open space only.
+    assert _found(await _search(kb, reader, "forklift", author=w["ann"])) == [w["by_ann"]]
+    assert _found(await _search(kb, reader, "secrets", title_only="true",
+                                author=w["ann"])) == []
+    # Ann herself sees both.
+    assert set(_found(await _search(kb, w["ann_p"], "forklift", author=w["ann"]))) == {
+        w["by_ann"], w["hidden"]}
+
+
+async def test_the_filters_leave_org_b_out(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    old = (datetime.now(UTC) - timedelta(days=365)).date().isoformat()
+    assert len(_found(await _search(kb, w["member_b"], "forklift", updated_after=old))) == 1
+    answer = await _search(kb, w["reader"], "forklift", author="admin-b@example.test",
+                           updated_after=old)
+    assert _found(answer) == []
+
+
+async def test_the_answer_carries_the_plain_terms(kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    w = await _filter_world(kb)
+    answer = await _search(kb, w["reader"], '"forklift drivers" or lanes -blue')
+    assert answer["terms"] == ["forklift", "drivers", "lanes"]

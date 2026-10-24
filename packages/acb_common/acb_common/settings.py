@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     db_pool_size: int = 7
     db_max_overflow: int = 2
 
+    # H-390: how many of the connections above BACKGROUND work may hold at one
+    # time (acb_common.db.mark_background). Sync, rule, classify and embed jobs
+    # share the ONE pool with member reads. On 2026-10-22 they filled it
+    # ("QueuePool limit of size 7 overflow 2") and a member read answered 503.
+    # The pooler budget is full, so a second pool is not possible. This cap
+    # keeps (pool + overflow - cap) connections for members: 9 - 4 = 5.
+    # The cap counts tasks that hold a slot, not connections: one task may
+    # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
+    db_background_max: int = 4
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -381,6 +391,37 @@ class Settings(BaseSettings):
     # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
     artifact_registry_enabled: bool = False
 
+    # ── The object store (MT-1g-1, D108, 2026-10-20) ─────────────────────────
+    #
+    # `object_store_enabled` turns on the one seam to object storage,
+    # `acb_common.object_store`, default OFF. Off, every caller keeps its old
+    # place (a column or the box's disk). The store is Supabase Storage
+    # through its S3 endpoint, one private bucket for each environment.
+    #
+    # Two ways to sign in, and the seam picks by what is set:
+    #   * Supabase (production, staging): `object_store_supabase_url`,
+    #     `object_store_auth_email` and `object_store_auth_password` name the
+    #     files user. The seam asks Supabase Auth for a JWT and sends it as
+    #     the S3 session token. `object_store_access_key_id` holds the project
+    #     ref and `object_store_secret_access_key` the anon key, as BH-4 does.
+    #   * A plain key pair (a local MinIO, the tests): only the two key
+    #     fields. The seam refuses this on a `*.supabase.co` endpoint,
+    #     because a Supabase S3 key opens every bucket, backups too (D108).
+    # The password and the keys are secrets: `scripts/secrets.sh`, never chat.
+    # Spec: project-docs/specs/saas_multitenancy.md MT-1g. Fence:
+    # tests/unit/test_object_store.py.
+    object_store_enabled: bool = False
+    object_store_endpoint: str = ""
+    object_store_region: str = "us-east-1"
+    object_store_bucket: str = ""
+    object_store_access_key_id: str = ""
+    object_store_secret_access_key: str = ""
+    object_store_supabase_url: str = ""
+    object_store_auth_email: str = ""
+    object_store_auth_password: str = ""
+    # The largest object one put accepts. A caller may set a lower cap.
+    object_store_max_object_mb: int = 512
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.
@@ -411,6 +452,24 @@ class Settings(BaseSettings):
     # sweep reads it inside its start function. Fence:
     # tests/unit/test_kb_embed_sweep.py.
     knowledge_embed_sweep: bool = True
+    # WS-61 KB-5a (knowledge_base.md §8.1 and §13). The assistant's proposals,
+    # default OFF. ON gives the orchestrator `propose_page`, `propose_edit` and
+    # their persona line, and opens `POST /knowledge/proposals`. OFF keeps the
+    # tools out and the POST answers 404. It stays off until KB-5b ships the
+    # Review view, where a person accepts. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_propose_enabled`, and the gateway
+    # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
+    # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
+    knowledge_proposals: bool = False
+    # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
+    # ids whose `search_company` reads with no Knowledge hit write a
+    # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
+    # Empty, the default, means no organization: nothing writes a gap, the
+    # gap routes answer 404 and the `kb_gap` card stays dark. The one reader
+    # is `gateway.routes.knowledge.flags`. It spends no credit. A flip for an
+    # org is the owner's, gate `enforcement-flip`.
+    # Fence: tests/unit/test_kb_gaps.py.
+    knowledge_gaps: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -550,6 +609,24 @@ class Settings(BaseSettings):
     # agent's under the dev-phase `enforcement-flip` grant (knowledge_base.md
     # §13). Fence: tests/unit/test_company_search_tool.py.
     company_search_enabled: bool = False
+
+    # ── The chat opens a page (WS-62 CF-3, chat_first_surface.md §4.4) ──────
+    #
+    # ON gives the orchestrator `show_in_app` in its core tools. OFF leaves
+    # the tool list byte-identical. The client side is `NEXT_PUBLIC_CHAT_FIRST`
+    # (`chatFlag.ts`), and both must be on for the page to move. The one
+    # reader is `orchestrator.in_app_path.chat_first_tools_enabled`. Fence:
+    # tests/unit/test_show_in_app.py.
+    chat_first_tools: bool = False
+
+    # ── The member's assistant profile in the chat (WS-63 PZ-2) ─────────────
+    #
+    # ON adds the member's own profile block to the orchestrator's per-turn
+    # context, for a solo run with a verified member
+    # (`personalization.md` §5.1). OFF leaves the context byte-identical.
+    # The one reader is `acb_common.assistant_profile.enabled`. Fence:
+    # tests/unit/test_executor_profile_block.py.
+    assistant_profile_enabled: bool = False
 
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
@@ -886,12 +963,48 @@ class Settings(BaseSettings):
     email_insights: bool = False
     email_insights_orgs: str = ""
 
+    # ── A reply draft reads the images of a mail (owner, 2026-10-20) ────────
+    #
+    # False is the default: the drafter names an image as not read, and never
+    # writes that it could not open it. True sends the images of a mail to the
+    # model with `task: "vision"`, but only when the AI Router serves the call,
+    # because only the Router picks a model that reads images (D-AI-2). Turn it
+    # on when a tier reads images. The one reader is `draft_files.images_on()`.
+    # Fence: tests/unit/test_email_draft_files.py.
+    email_draft_reads_images: bool = False
+
+    # ── Send later (H-375, email_app_master_plan.md §19) ─────────────────────
+    #
+    # False is the default, so the feature ships dark: the schedule routes
+    # answer 404 and the send-later job starts no task. True turns on both.
+    # The one reader is `send_later_enabled()` in
+    # gateway/routes/email/automation/send_later.py. Fence:
+    # tests/unit/test_email_send_later.py.
+    email_send_later: bool = False
+
+    # ── Held chat: you confirm new people (email_app_master_plan.md §21) ─────
+    #
+    # False is the default, so the feature ships dark. Then a held chat holds
+    # exactly the tools of H-374, and each `/email/held-card` route answers
+    # 404. True lets a held chat send, schedule, forward and unsubscribe, and
+    # change closed settings, each through one recorded card that classifies
+    # each person. The flag moves mail to real people, so the owner flips it
+    # (CLAUDE.md §3a rule 3). The one reader is `held_card_send_enabled()` in
+    # packages/acb_skills/acb_skills/held_card.py. Fence:
+    # tests/unit/test_egress_card_bound_pin.py.
+    email_held_card_send: bool = False
+
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
     # git pull on each event (no full re-clone per run).
 
     # -- Auth: PAT (simple, use for dev / small teams) --
-    github_token: str = ""                    # PAT with `repo` scope; used in clone URL + remote set-url
+    # H-363: no token is ever written into a clone URL. acb_common.git_credentials
+    # gives a token to ONE git process at a time, through a credential helper.
+    github_token: str = ""                    # PAT with `repo` scope; the PUSH credential (gated)
+    # A read-only token for clone, fetch and ls-remote of private agent and
+    # skill repos. Blank falls back to github_token. A public repo needs none.
+    github_read_token: str = ""
 
     # -- OAuth App (used by Control Plane Device Flow UI only) --
     # Register at: github.com/settings/applications/new  (Callback URL: http://localhost)
@@ -1303,6 +1416,21 @@ class Settings(BaseSettings):
     # tests/unit/test_email_html_tier.py.
     email_html_from_provider: bool = False
     email_html_hot_only: bool = False
+
+    # ── The shared mailbox (WS-65 SM-2, 2026-10-23) ─────────────────────────
+    #
+    # `email_shared_mailbox` opens the shared arm of the one mailbox access
+    # seam, `gateway.routes.email.mailbox_access`, which is its one reader.
+    # With it false, each owner check reads the private arm only, with the
+    # same SQL text as before WS-65, so a grant row gives no access to anyone.
+    # With it true, a member reaches a shared mailbox through a grant of
+    # `email_mailbox_grants` at the level that the act needs, and the
+    # connector loses the access that `user_id` gave (D-SM-3).
+    #
+    # 🔴 The value `true` on a box is gate `enforcement-flip`, and in
+    # production it waits for SM-10 and the owner's word (shared_mailbox.md
+    # §10). Fence: tests/unit/test_email_shared_mailbox_r8.py.
+    email_shared_mailbox: bool = False
 
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people

@@ -851,9 +851,13 @@ class TestTheClaimGuardsAndReach:
     pytestmark = _DB_GATE
 
     async def test_a_task_in_another_persons_personal_project_is_refused(self, live):
+        # WS-64 OP-9 (D-OP-15): the member cannot read another member's
+        # personal task at all, so the claim meets "not found" before the
+        # assignee guard. Before OP-9 an org reader read it and the guard
+        # refused with TEXT_BAD_REQUEST.
         task = _task(live, live.personal.other, live.s.other_todo, "their own")
-        result = await _claim(live, task)
-        assert _text(result) == tools.TEXT_BAD_REQUEST
+        result = await _claim(live, task, "2026-10-15T00:00:00+00:00")
+        assert _text(result) == "Task not found."
         assert _assignees(live, task) == []
         assert _activities(live, task) == []
         assert str(_row(live, task).status_id) == live.s.other_todo

@@ -757,13 +757,29 @@ def clean_card_rows(rows: list[dict] | None) -> list[dict] | None:
         if not rid or len(rid) > _ROW_ID_MAX or rid in seen:
             raise ValueError("each row needs its own short id")
         seen.add(rid)
-        out.append({
+        clean = {
             "id": rid,
             "label": str(row.get("label") or rid).strip()[:ROW_LABEL_MAX],
             "hint": str(row.get("hint") or "").strip()[:_ROW_HINT_MAX],
             "checked": row.get("checked", True) is not False,
-        })
+        }
+        # A held send card (``email_app_master_plan.md`` §21) tells the client
+        # what each row is and how the server classed it. A row with none of
+        # the three keys is exactly as before.
+        for name in _ROW_EXTRA_KEYS:
+            value = row.get(name)
+            if isinstance(value, str) and value.strip():
+                clean[name] = value.strip()[:_ROW_EXTRA_MAX]
+        out.append(clean)
     return out
+
+
+#: The optional keys of a row of a held send card: ``kind`` (to, cc, bcc,
+#: file, ...), ``class`` (org, sent, thread, new) and ``warning`` (a lookalike
+#: domain). The gateway sets them, and the client reads them
+#: (``sendCard.ts``). The card's answer names ids only, as before.
+_ROW_EXTRA_KEYS: tuple[str, ...] = ("kind", "class", "warning")
+_ROW_EXTRA_MAX = 300
 
 
 #: The longest answer a rows card can honestly send: the prefix, the JSON
@@ -806,6 +822,422 @@ def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
     return ticked
 
 
+# ── The reply form of a confirmation card (EM-CR, email_app_master_plan §18) ──
+#
+# ``request_confirmation(..., reply=form)`` draws the ONE confirmation card with
+# a reply form in its body: the mail it answers, the recipients the gateway
+# derived for Reply and for Reply all, a toggle, the editable body, and Send,
+# Save to Drafts and Discard. Its answer is ``acb_skills.reply_card``'s
+# ``APPROVE {"reply": {...}}``. A client that does not know the form draws a
+# plain card, and its plain ``APPROVE`` is no reply answer, so nothing acts.
+
+#: The longest text of one field of the form, but the body.
+_REPLY_FIELD_MAX = 500
+#: The longest excerpt of the mail the card answers.
+_REPLY_EXCERPT_MAX = 1200
+
+
+def _clip_line(value: Any, limit: int = _REPLY_FIELD_MAX) -> str:
+    """One line of the form, cut at a word with an ellipsis (:func:`clip_words`)."""
+    return clip_words(" ".join(str(value or "").split()), limit)
+
+
+#: The longest address the form takes. A longer one is refused, never cut.
+_REPLY_ADDRESS_MAX = 320
+
+
+def _clean_recipients(value: Any) -> dict[str, list[str]]:
+    """The To and Cc lists of one choice. An address is never cut and a list
+    is never shortened, because the card must show each recipient in full.
+    A list that is too long, or an address that is too long, raises
+    ``ValueError`` before any card is drawn."""
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    v = value if isinstance(value, dict) else {}
+    out: dict[str, list[str]] = {}
+    for name in ("to", "cc"):
+        items = v.get(name) if isinstance(v.get(name), list) else []
+        if len(items) > MAX_REPLY_RECIPIENTS:
+            raise ValueError("a reply form names too many recipients")
+        clean = [" ".join(str(a or "").split()) for a in items]
+        if any(len(a) > _REPLY_ADDRESS_MAX for a in clean):
+            raise ValueError("a reply form names an address that is too long")
+        out[name] = [a for a in clean if a]
+    return out
+
+
+def clean_reply_form(form: dict | None) -> dict | None:
+    """The reply form of a card, checked and clipped, or None for no form.
+
+    The recipients are the gateway's, for Reply and for Reply all. The card
+    shows them in full and never edits them. A form with no Reply recipient
+    is a programming error of the calling tool, so it raises ``ValueError``
+    before any card is drawn. The body is the draft, up to
+    ``reply_card.MAX_REPLY_BODY``, cleaned of each hidden character
+    (``reply_card.clean_reply_body``), so the card shows all of it.
+    ``message_id`` names the email, and the answer echoes it. Each
+    ``notices`` line says what the card must not hide: a Reply-To that is
+    not the sender, and the text that the send adds.
+    """
+    if form is None:
+        return None
+    from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
+
+    if not isinstance(form, dict):
+        raise ValueError("reply is a dict")
+    recipients = form.get("recipients") if isinstance(form.get("recipients"), dict) else {}
+    reply = _clean_recipients(recipients.get("reply"))
+    reply_all = _clean_recipients(recipients.get("reply_all"))
+    if not reply["to"] or not reply_all["to"]:
+        raise ValueError("a reply form needs a recipient")
+    original = form.get("original") if isinstance(form.get("original"), dict) else {}
+    message_id = " ".join(str(form.get("message_id") or "").split())
+    if not message_id or len(message_id) > 200:
+        raise ValueError("a reply form names the email it answers")
+    notices = form.get("notices") if isinstance(form.get("notices"), list) else []
+    if len(notices) > 4:
+        raise ValueError("a reply form has at most four notices")
+    body = clean_reply_body(str(form.get("body") or ""))
+    if len(body) > MAX_REPLY_BODY:
+        # Never cut: the card must show each character that the send carries.
+        raise ValueError("a reply draft is too long for the card")
+    return {
+        "message_id": message_id,
+        "mailbox": _clip_line(form.get("mailbox")),
+        "subject": _clip_line(form.get("subject")),
+        "original": {
+            "from": _clip_line(original.get("from")),
+            "subject": _clip_line(original.get("subject")),
+            "received": _clip_line(original.get("received"), 64),
+            "excerpt": str(original.get("excerpt") or "").strip()[:_REPLY_EXCERPT_MAX],
+        },
+        "recipients": {"reply": reply, "reply_all": reply_all},
+        "reply_all": form.get("reply_all") is True,
+        "body": body,
+        # The local id of the draft that the card wrote. The member's Discard
+        # names it, and the gateway checks it before a trash.
+        "draft_id": _draft_id(form.get("draft_id")),
+        "note": _clip_line(form.get("note")),
+        # A notice names addresses, so it is never cut: an over-long one fails.
+        "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
+        # §21: the server's class of each address, in a held chat only. A form
+        # with no classes is exactly as before.
+        **({"classes": _reply_classes(form["classes"])}
+           if isinstance(form.get("classes"), dict) and form["classes"] else {}),
+        # The tick boxes (owner, 2026-10-24): the people of each choice that
+        # start ticked. Each one is a person of that choice's list, or the
+        # form raises before any card is drawn. A form with none starts with
+        # each person ticked.
+        **({"ticked": _reply_ticked(form["ticked"], reply, reply_all)}
+           if isinstance(form.get("ticked"), dict) else {}),
+        # Item 8 (owner, 2026-10-24): the server's words for each person
+        # ("on Dr Sagar's original email"), by lower case. A form with none
+        # draws the class mark only, as before.
+        **({"marks": _reply_marks(form["marks"], reply_all)}
+           if isinstance(form.get("marks"), dict) and form["marks"] else {}),
+    }
+
+
+def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
+    """The words of each person, each a person of the card's list. A mark of
+    a person that is not on the card, or an over-long mark, raises."""
+    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"]]}
+    out: dict[str, str] = {}
+    for addr, words in value.items():
+        a = " ".join(str(addr or "").split()).lower()
+        if a not in have:
+            raise ValueError("a mark names a person of the card")
+        line = _whole_line(words)
+        if len(line) > 200:
+            raise ValueError("a mark is too long")
+        if line:
+            out[a] = line
+    return out
+
+
+def _reply_ticked(value: dict, reply: dict, reply_all: dict) -> dict:
+    """The ticked start of each choice, each a subset of the choice's lists."""
+    out: dict[str, dict[str, list[str]]] = {}
+    for key, lists in (("reply", reply), ("reply_all", reply_all)):
+        raw = value.get(key) if isinstance(value.get(key), dict) else {}
+        out[key] = {}
+        for part in ("to", "cc"):
+            have = {a.lower(): a for a in lists[part]}
+            got = raw.get(part, lists[part])
+            if not isinstance(got, list):
+                raise ValueError("a ticked list is a list")
+            picked = [str(a).strip().lower() for a in got]
+            if any(a not in have for a in picked):
+                raise ValueError("a ticked address is a person of the card")
+            out[key][part] = [a for a in lists[part] if a.lower() in set(picked)]
+    return out
+
+
+#: The classes of a person on a held card (``acb_skills.held_card.CLASSES``).
+_PERSON_CLASSES = frozenset({"org", "sent", "thread", "new"})
+
+
+def _reply_classes(value: dict) -> dict[str, str]:
+    """The class of each address of a reply form, by its lower-case form.
+
+    An unknown class reads as ``new``, the class that marks a person. A key
+    that is not an address, or too many keys, raises ``ValueError`` before
+    any card is drawn."""
+    if len(value) > 4 * 100:
+        raise ValueError("a reply form names too many classes")
+    out: dict[str, str] = {}
+    for addr, cls in value.items():
+        a = " ".join(str(addr or "").split()).lower()
+        if not a or "@" not in a or len(a) > _REPLY_ADDRESS_MAX:
+            raise ValueError("a reply form classes a value that is not an address")
+        out[a] = cls if cls in _PERSON_CLASSES else "new"
+    return out
+
+
+def _draft_id(value: Any) -> str:
+    """The draft id of a reply form, whole, or "" for none. An id is never
+    cut, because a cut id names no draft."""
+    did = str(value or "").strip()
+    return did if 0 < len(did) <= 64 and did.isprintable() and " " not in did else ""
+
+
+def _whole_line(value: Any) -> str:
+    """One notice line, whole. A line that does not fit is a programming error
+    of the calling tool, because a cut line could hide an address."""
+    line = " ".join(str(value or "").split())
+    if len(line) > 1000:
+        raise ValueError("a reply form notice is too long")
+    return line
+
+
+class _Revised:
+    """The member wrote in the chat while the card waited (:data:`REVISED`)."""
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:  # no approval, for each caller that tests truth
+        return False
+
+    def __repr__(self) -> str:
+        return "REVISED"
+
+
+#: What :func:`request_confirmation` gives when ``close_on_steer`` is on and
+#: the member wrote in the chat while the card waited. It is falsy, so a
+#: caller that only asks "approved?" reads it as no. The member's words reach
+#: the model on the tool's result (``orchestrator.steer.decorate_tool_result``),
+#: so the agent can change the mail and show a new card. Without this, the
+#: words waited behind the card, and the card kept the old text.
+REVISED = _Revised()
+
+#: The closing answer of a card that a steer closed.
+REVISED_ANSWER = "REVISED"
+
+#: How often a waiting card looks for a new steer, in seconds.
+_STEER_POLL_S = 0.5
+
+
+def _steer_marks(thread_id: str) -> frozenset[int] | None:
+    """The waiting steer notes of *thread_id*, or None with no steer seam."""
+    if not thread_id:
+        return None
+    try:
+        from orchestrator.steer import guidance_marks  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - no orchestrator: nothing can steer
+        return None
+    return guidance_marks(thread_id)
+
+
+def _steer_texts(thread_id: str) -> dict[int, str]:
+    """The text of each waiting steer note of *thread_id*, by its mark."""
+    try:
+        from orchestrator.steer import guidance_texts  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - no orchestrator: no text
+        return {}
+    return guidance_texts(thread_id)
+
+
+#: The cards of each thread that a steer can close, in the order they
+#: opened: ``{thread: {request id: (order, title)}}``.
+_STEER_CARDS: dict[str, dict[str, tuple[int, str]]] = {}
+#: The card that each steer note closed: ``{thread: {mark: request id}}``.
+#: The first card that sees a note decides, so two cards never both close.
+_STEER_DECIDED: dict[str, dict[int, str]] = {}
+_STEER_ORDER = __import__("itertools").count()
+
+#: Words of a card title that name no card.
+_TITLE_STOP = frozenset({
+    "send", "this", "that", "draft", "reply", "email", "mail", "with", "from",
+    "your", "recipient", "recipients", "save", "forward", "change", "label",
+    "the", "and", "for", "to", "of", "it", "a", "an", "at", "on", "in", "now",
+})
+
+
+def _title_words(title: str) -> set[str]:
+    """The words of a card title that can name it: each address, the local
+    part of each address, and each other word of four letters or more."""
+    words: set[str] = set()
+    for raw in _re.findall(r"[\w.+-]+@[\w.-]+|[\w'-]+", title.lower()):
+        w = raw.strip(".-'")
+        if "@" in w:
+            words.add(w)
+            words.add(w.split("@", 1)[0])
+        elif len(w) >= 4 and w not in _TITLE_STOP:
+            words.add(w)
+    return words
+
+
+def _steer_target(thread_id: str, texts: list[str]) -> set[str]:
+    """The cards that a steer is about (item 5, owner 2026-10-24).
+
+    A card whose title holds a word of the steer that no other open card
+    holds is named, and only the named cards close. With no card named, each
+    open card is the target (review P3-b)."""
+    cards = _STEER_CARDS.get(thread_id) or {}
+    if not cards:
+        return set()
+    said = set(_re.findall(r"[\w.+@-]+", " ".join(texts).lower()))
+    words = {rid: _title_words(title) for rid, (_o, title) in cards.items()}
+    named: set[str] = set()
+    for rid, mine in words.items():
+        others = set().union(*(w for r, w in words.items() if r != rid)) if len(words) > 1 \
+            else set()
+        if (mine - others) & said:
+            named.add(rid)
+    if named:
+        return named
+    # Review P3-b: a steer that names no card closes EVERY waiting card, the
+    # safe default, so no older card stays answerable with its old text.
+    return set(cards)
+
+
+def _steer_register(thread_id: str, rid: str, title: str) -> None:
+    _STEER_CARDS.setdefault(thread_id, {})[rid] = (next(_STEER_ORDER), title)
+
+
+def _steer_forget(thread_id: str, rid: str) -> None:
+    cards = _STEER_CARDS.get(thread_id)
+    if cards is not None:
+        cards.pop(rid, None)
+        if not cards:
+            _STEER_CARDS.pop(thread_id, None)
+            _STEER_DECIDED.pop(thread_id, None)
+
+
+async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int],
+                              rid: str = "", title: str = "") -> None:
+    """Answer *fut* as revised when a NEW steer for *thread_id* is about it.
+
+    The card closes as the member writes, and the run goes on. Only a note
+    that is not in *before* counts, so a note that waited before the card
+    cannot close each new card at once. The caller reads *before* before the
+    card can reach the member, so a fast answer is never in it.
+
+    Item 5 (owner, 2026-10-24): a steer closes only the card that it is
+    about (:func:`_steer_target`), never each open card. A card that the
+    steer is not about takes the note into its own *before* and stays open."""
+    import asyncio as _asyncio
+
+    if rid:
+        _steer_register(thread_id, rid, title)
+    try:
+        while not fut.done():
+            await _asyncio.sleep(_STEER_POLL_S)
+            now = _steer_marks(thread_id) or frozenset()
+            new = now - before
+            if not new or fut.done():
+                continue
+            if not rid:
+                fut.set_result({"answer": REVISED_ANSWER, "revised": True})
+                return
+            decided = _STEER_DECIDED.setdefault(thread_id, {})
+            undecided = sorted(m for m in new if m not in decided)
+            if undecided:
+                texts = _steer_texts(thread_id)
+                targets = _steer_target(thread_id, [texts.get(m, "") for m in undecided])
+                for m in undecided:
+                    decided[m] = ",".join(sorted(targets))
+            if any(rid in decided.get(m, "").split(",") for m in new):
+                fut.set_result({"answer": REVISED_ANSWER, "revised": True})
+                return
+            before = before | new
+    finally:
+        if rid:
+            _steer_forget(thread_id, rid)
+
+
+class ReplyAnswer:
+    """The member's answer to a reply card: the exact text, and its parse.
+
+    ``answer`` is what the member's browser posted. The tool hands it to the
+    gateway unchanged, and the gateway checks it against its own record
+    (``reply_card.take_reply_answer``). ``responder`` is the gateway's
+    session email of the member who answered.
+    """
+
+    __slots__ = ("answer", "choice", "request_id", "responder", "thread_id")
+
+    def __init__(self, request_id: str, answer: str, choice: Any, responder: str,
+                 thread_id: str = "") -> None:
+        self.request_id = request_id
+        self.answer = answer
+        self.choice = choice
+        self.responder = responder
+        #: The thread that owns the card: the key of the gateway's record.
+        self.thread_id = thread_id
+
+
+class RowsAnswer:
+    """The member's answer to a held send card (``email_app_master_plan.md`` §21).
+
+    ``answer`` is the exact text that the member's browser posted, and
+    ``ticked`` is its parse against the rows that the card offered. The tool
+    hands ``answer`` to the gateway unchanged, and the gateway checks it
+    against its own record and its own rows. ``request_id`` is the card id
+    that the gateway minted. It is falsy when no row is ticked.
+    """
+
+    __slots__ = ("answer", "request_id", "responder", "thread_id", "ticked")
+
+    def __init__(self, request_id: str, answer: str, ticked: frozenset[str],
+                 responder: str, thread_id: str = "") -> None:
+        self.request_id = request_id
+        self.answer = answer
+        self.ticked = ticked
+        self.responder = responder
+        #: The thread that owns the card: the key of the gateway's record.
+        self.thread_id = thread_id
+
+    def __bool__(self) -> bool:
+        return bool(self.ticked)
+
+
+#: A card id that the gateway minted: 32 lower-case hex digits.
+_CARD_ID_RE = _re.compile(r"[0-9a-f]{32}")
+
+
+def _check_card_args(request_id: str | None, with_answer: bool, rows: Any) -> bool:
+    """Check the two arguments of a held send card (§21), and give
+    ``with_answer`` as a bool. A bad one is a programming error of the
+    calling tool, so it raises ``ValueError`` before any card is drawn."""
+    if request_id is not None and not _CARD_ID_RE.fullmatch(str(request_id)):
+        raise ValueError("request_id is a card id that the gateway minted")
+    if with_answer and rows is None:
+        raise ValueError("with_answer needs rows")
+    return bool(with_answer)
+
+
+def _card_id(request_id: str | None, pending: Any) -> str | None:
+    """The card id that the caller named, or None to mint one. An id that a
+    waiting card already holds raises, because two cards on one id would
+    share one answer."""
+    if request_id is None:
+        return None
+    if request_id in pending:
+        raise ValueError("a card with this id already waits")
+    return request_id
+
+
 def _was_parked(request_id: str) -> bool:
     """True when the run parked this card (WS-51 S2). It must stay open."""
     try:
@@ -830,9 +1262,7 @@ def confirmation_channel_open() -> bool:
     (``_active_run_queue``) and path C (the relay thread). A tool reads it
     AFTER a denial, to tell a refusal from a run with no live chat (WS-17
     EM-T13a). A tool may also read it BEFORE a card, but only to choose a
-    narrower act that writes less: ``draft_reply`` of the email assistant
-    returns an unsaved draft when no card can show (WS-17 EM-G11c1). It
-    never approves a write. ``request_confirmation`` stays the one gate,
+    narrower act that writes less. It never approves a write. ``request_confirmation`` stays the one gate,
     and it fails closed, so a drift here can change a message or skip a
     write, and never adds one.
     A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).
@@ -849,6 +1279,70 @@ def confirmation_channel_open() -> bool:
         return bool(resolve_relay_thread_id())
     except Exception:
         return False
+
+
+def _whatsapp_run() -> bool:
+    """True for a run of the WhatsApp channel, which draws no card. A fault
+    reads True, so a reply form fails closed (EM-CR)."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+    except ImportError:
+        return False
+    try:
+        return current_run() is not None
+    except Exception:
+        return True
+
+
+def reply_card_channel_open() -> bool:
+    """True when this run can show the reply card (EM-CR): a card channel
+    (:func:`confirmation_channel_open`) and no WhatsApp run. The reply tool
+    asks it BEFORE it drafts, so a run with no card drafts, saves and sends
+    nothing.
+
+    H-391: a WhatsApp run with writes on is a reply path too. Its card parks
+    for the member's reply code (:func:`_whatsapp_email_path`)."""
+    if _whatsapp_email_path():
+        return True
+    return confirmation_channel_open() and not _whatsapp_run()
+
+
+def _whatsapp_email_path() -> bool:
+    """True in a WhatsApp run with writes on, where an email card can park
+    for a reply code or take the yes of one (H-391). A fault reads False."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        run = current_run()
+    except Exception:
+        return False
+    return run is not None and bool(getattr(run, "writes", False))
+
+
+#: The answer of :func:`_whatsapp_email_answer` that leaves the card to the gate.
+_NOT_EMAIL = object()
+
+
+async def _whatsapp_email_answer(title: str, detail: str, context: str,
+                                 rows: list[dict] | None, reply: dict | None,
+                                 request_id: str | None, with_answer: bool,
+                                 cut: bool = False) -> Any:
+    """``acb_skills.whatsapp_acts.answer_email_card``, or :data:`_NOT_EMAIL`.
+
+    H-391: an email card of a WhatsApp run parks for the member's reply code,
+    or takes the yes of the code that approved it. A fault is no answer from
+    here, so the card goes to the gate below, which denies inside
+    ``refuse_cards``. It fails closed."""
+    if not _whatsapp_email_path():
+        return _NOT_EMAIL
+    try:
+        from acb_skills.whatsapp_acts import NOT_EMAIL, answer_email_card
+
+        answer = await answer_email_card(title, detail, context, rows, reply,
+                                         request_id, with_answer, cut=cut)
+    except Exception:
+        return _NOT_EMAIL
+    return _NOT_EMAIL if answer is NOT_EMAIL else answer
 
 
 def _whatsapp_answer(title: str, detail: str, context: str,
@@ -874,7 +1368,11 @@ async def request_confirmation(
     non_interactive_default: str = "deny",
     rows: list[dict] | None = None,
     fenced: bool | None = None,
-) -> bool | frozenset[str]:
+    reply: dict | None = None,
+    close_on_steer: bool | None = None,
+    request_id: str | None = None,
+    with_answer: bool = False,
+) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -903,6 +1401,23 @@ async def request_confirmation(
             flag the client draws the text exactly as sent, so an email body
             that holds a real « » keeps it. ``None`` leaves the event as it
             was.
+        reply: optional reply form (:func:`clean_reply_form`, EM-CR). The
+            card draws the form, and its Approve carries the member's choice
+            and body. Neither ``rows`` nor the WhatsApp profile goes with it:
+            a run with no card, a WhatsApp run included, gets ``None`` at
+            once, whatever ``non_interactive_default`` says.
+        close_on_steer: close the card when the member writes in the chat
+            while it waits, and give :data:`REVISED`. On by default for a
+            reply form. A send card turns it on, so "make it shorter" changes
+            the mail instead of waiting behind the old card.
+        request_id: the card id that the gateway minted for a held send
+            card (§21), 32 lower-case hex digits. The card takes it as its
+            ``request_id``, so the record of the answer and the gateway's
+            record of the rows share one key. Any other value raises
+            ``ValueError``. ``None`` mints an id, as before.
+        with_answer: with ``rows``, give a :class:`RowsAnswer` (the exact
+            text of the answer, its ticked ids and the card's thread) in
+            place of the set of ids. ``None`` on no approval.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -919,21 +1434,47 @@ async def request_confirmation(
         One exception comes first (WS-47 WAC-4): the WhatsApp profile parks
         an allowed act and answers False, or answers the Confirm of a parked
         act (``acb_skills.whatsapp_acts.answer_card``).
+
+        With ``reply``: a :class:`ReplyAnswer` when the member pressed Send
+        or Save to Drafts, and ``None`` for Discard, a timeout, an answer
+        that is not a reply answer, and a run with no card.
     """
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
     _rows = clean_card_rows(rows)
+    _reply = clean_reply_form(reply)
+    _with_answer = _check_card_args(request_id, with_answer, _rows)
+    # H-391: an email card in a WhatsApp run parks for the member's reply
+    # code, or takes the yes of the code that approved it. Anything else
+    # goes on below, as before.
+    _email = await _whatsapp_email_answer(
+        _title, _detail, _context, _rows, _reply, request_id, _with_answer,
+        cut=(len(str(title or "").strip()) > len(_title)
+             or len(str(detail or "").strip()) > len(_detail)
+             or len(str(context or "").strip()) > len(_context)))
+    if _email is not _NOT_EMAIL:
+        return _email
+    if _reply is not None:
+        if _rows is not None:
+            raise ValueError("a card has rows or a reply form, never both")
+        # No WhatsApp profile and no default: a reply needs the card.
+        if cards_refused() or _whatsapp_run():
+            return None
     # WS-47 WAC-4: the WhatsApp profile answers first. It parks an allowed
     # act ("not yet"), or answers the Confirm of a parked one. None leaves
     # the card to the gate below. It never approves a card with rows.
     _profile = _whatsapp_answer(_title, _detail, _context, _rows)
     if _profile is not None:
-        return _profile
+        # A held send card (§21) never takes an answer from a profile.
+        return None if _with_answer else _profile
     if cards_refused():
         # A deny, never an approve: a channel with no card is no consent.
+        if _with_answer:
+            return None
         return frozenset() if _rows is not None else False
     _offered = frozenset(r["id"] for r in _rows or [])
+    _steer_closes = (_reply is not None) if close_on_steer is None else bool(close_on_steer)
 
     def _event(request_id: str) -> dict:
         value = {
@@ -944,19 +1485,62 @@ async def request_confirmation(
         }
         if _rows is not None:
             value["rows"] = _rows
+        if _reply is not None:
+            value["reply"] = _reply
         if fenced is not None:
             value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
-    def _verdict(result: dict) -> tuple[str, frozenset[str] | None]:
+    _replied: list[ReplyAnswer] = []
+    #: The answer of a held send card (§21), with its exact text.
+    _rows_replied: list[RowsAnswer] = []
+    #: The thread that owns each card of this call (EM-CR): the key of the
+    #: gateway's record of a reply answer.
+    _card_thread: dict[str, str] = {}
+
+    def _verdict(result: dict, rid: str = "") -> tuple[str, frozenset[str] | None]:
         """The card's closing answer, and the ticked ids of a rows card."""
         said = str(result.get("answer", "")).strip()
+        if result.get("revised") is True:
+            return REVISED_ANSWER, None
+        if _reply is not None:
+            from acb_skills.reply_card import parse_reply_answer
+
+            # The exact text, not the stripped one: the gateway's record holds
+            # the digest of what the browser posted.
+            raw = str(result.get("answer", ""))
+            choice = parse_reply_answer(raw)
+            if choice is None:
+                return "REJECT", None
+            _replied.append(ReplyAnswer(rid, raw, choice,
+                                        str(result.get("responder") or ""),
+                                        _card_thread.get(rid, "")))
+            return "APPROVE", None
         if _rows is None:
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
+        if ticked and _with_answer:
+            # The exact text: the gateway's record holds its digest (§21).
+            _rows_replied.append(RowsAnswer(rid, str(result.get("answer", "")), ticked,
+                                            str(result.get("responder") or ""),
+                                            _card_thread.get(rid, "")))
         return ("APPROVE" if ticked else "REJECT"), ticked
 
-    async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str]:
+    def _steer_baseline() -> tuple[str, frozenset[int]] | None:
+        """The thread and its waiting notes, read BEFORE the card is sent."""
+        if not _steer_closes:
+            return None
+        try:
+            from orchestrator.executor import resolve_relay_thread_id  # noqa: PLC0415
+            tid = resolve_relay_thread_id() or ""
+        except Exception:  # noqa: BLE001
+            return None
+        marks = _steer_marks(tid)
+        return None if marks is None else (tid, marks)
+
+    async def _block_on(
+        _fut, _rid, _pending, _publish, _baseline=None,
+    ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
         """Park on the answer, then say on the stream that the card is closed.
 
         A model can call card-gated tools in parallel, so one stream can carry
@@ -972,16 +1556,24 @@ async def request_confirmation(
         # Any other failure is no approval, so it closes the card as a REJECT.
         _answer = "REJECT"
         _ticked: frozenset[str] | None = None
+        _watch = None
+        if _baseline is not None:
+            # The card's id and title: a steer closes only the card it is
+            # about (item 5, owner 2026-10-24).
+            _watch = _asyncio.ensure_future(
+                _close_on_new_steer(_fut, *_baseline, _rid, _title))
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
-            _answer, _ticked = _verdict(_result)
+            _answer, _ticked = _verdict(_result, _rid)
         except _asyncio.CancelledError:
             _answer = "CANCELLED"
             raise
         except TimeoutError:
             _answer = "TIMEOUT"
         finally:
+            if _watch is not None:
+                _watch.cancel()
             _pending.pop(_rid, None)
             # Best effort: the run's end clears a blocking card too. A PARKED
             # card (WS-51 S2) is not closed: it stays open for a late answer,
@@ -989,6 +1581,14 @@ async def request_confirmation(
             with _contextlib.suppress(Exception):
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
+        if _answer == REVISED_ANSWER:
+            if _with_answer:
+                return REVISED
+            return frozenset() if _rows is not None else REVISED
+        if _reply is not None:
+            return _replied[0] if _answer == "APPROVE" and _replied else None
+        if _with_answer:
+            return _rows_replied[0] if _answer == "APPROVE" and _rows_replied else None
         if _rows is not None:
             return _ticked or frozenset()
         return _answer == "APPROVE"
@@ -1006,11 +1606,14 @@ async def request_confirmation(
         import asyncio as _asyncio
         import uuid as _uuid
 
-        _rid = _uuid.uuid4().hex
+        _rid = _card_id(request_id, _pending_user_input) or _uuid.uuid4().hex
         _fut = _asyncio.get_running_loop().create_future()
         _pending_user_input[_rid] = _fut
+        _card_thread[_rid] = str(getattr(_pending_user_input, "owner_of", lambda _r: "")(_rid)
+                                 or "")
+        _base = _steer_baseline()
         await queue.put(_event(_rid))
-        return await _block_on(_fut, _rid, _pending_user_input, queue.put)
+        return await _block_on(_fut, _rid, _pending_user_input, queue.put, _base)
 
     # ── Path C: Redis relay (blocking on BOTH Copilot-SDK and native MAF) ──
     # resolve_relay_thread_id survives the Copilot SDK thread hop that resets the
@@ -1030,21 +1633,26 @@ async def request_confirmation(
             import asyncio as _asyncio
             import uuid as _uuid
 
-            _rid = _uuid.uuid4().hex
+            _rid = _card_id(request_id, _pending_user_input) or _uuid.uuid4().hex
             _fut = _asyncio.get_running_loop().create_future()
             _pending_user_input[_rid] = _fut
+            _card_thread[_rid] = str(_tid)
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
+            _base = _steer_baseline()
             await _push_sse_to_stream(_tid, _line)
 
             async def _publish(ev: dict, _t: str = _tid) -> None:
                 await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
 
-            return await _block_on(_fut, _rid, _pending_user_input, _publish)
+            return await _block_on(_fut, _rid, _pending_user_input, _publish, _base)
     except Exception:  # noqa: BLE001
         pass
 
     # No delivery channel (non-interactive run) — fail CLOSED unless the
-    # caller explicitly opted a reversible action into auto-approval.
+    # caller explicitly opted a reversible action into auto-approval. A reply
+    # form never auto-approves: there is no body the member submitted.
+    if _reply is not None or _with_answer:
+        return None
     approved = str(non_interactive_default).strip().lower() == "approve"
     if _rows is not None:
         return frozenset(r["id"] for r in _rows if r["checked"]) if approved else frozenset()

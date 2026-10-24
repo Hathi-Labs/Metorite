@@ -37,3 +37,17 @@ Add a section per feature as you build it. Example:
 | # | Item | Why | Done when |
 | E-1 | Two-org test for email_threads | ... | ... |
 ```
+
+### Knowledge (WS-61)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| K-1 | `diff-reviewer` on the whole wave 2 diff, with KB-2h first | KB-2h landed in build mode, with the verifier only | The reviewer reports no P0 on the backlinks write, the read and `read_links` |
+| K-2 | A backfill of `kb_links` for the pages written before KB-2h | Old pages gain links only on their next write | Each live page has the rows its body names, or the spec says why not |
+| K-3 | Visual review of the "Linked from" list | Build mode skipped it | The list reads right in light mode, compact density, a changed accent, and at 390 px |
+| K-4 | A test that `kb_index.query.query(..., title_only=True)` skips the semantic half when a caller passes a vector | Only the route's guard has a test. The second guard in `query.py` has none (KB-3d verify, 2026-10-22) | A test passes a vector with `title_only=True` and finds no semantic hit |
+| K-5 | Two `runImport.test.ts` cases: a relative link to a file outside the import stays as written, and the PATCH list holds only the ids made in the run | A mutation of each survived `runImport.test.ts`. Only `roundTrip.test.ts` caught one (KB-2m verify, 2026-10-22) | Both mutations fail a `runImport.test.ts` test |
+| K-6 | Refuse a zip entry whose header declares less than its real size, not truncate it | fflate cuts the entry to the declared size, so the page loses its tail in silence. Memory stays safe | The import report names the entry as refused |
+| K-7 | Cap the batches that `_edit_rows` reads for one list call (about 10 batches of 500) | A member who keeps few rows makes the list read every pending row in the org, until KB-5c expires them (KB-5a review, 2026-10-22) | A test with 6000 pending rows shows the list reads at most the cap |
+| K-8 | Keep any generic gateway or HTTP tool away from `/knowledge/proposals/*/accept` and `/reject` | `_require_web` treats the internal token plus a member email and no `X-Actor-Via` as a browser. No caller can reach it today (KB-5a review) | A fence test fails when a tool or agent path names the accept or reject route |
+

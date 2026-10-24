@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -209,7 +210,10 @@ def line(card: dict[str, Any], now: datetime, *, kind: str | None = None) -> str
     if kind == "day_overbooked":
         return f"Overbooked: {_clean(card.get('why'), 100)}"
     if kind == "no_plan_yet":
-        return "Nothing is planned for today yet"
+        # A chat pill sends its line as the member's own message, so the
+        # line asks for the act. A plain fact sent back made no sense
+        # (owner report, 2026-10-22).
+        return "Plan my day: nothing is planned yet"
     if kind == "notify_me":
         # Every request line carries its body, cut to one short line (RE-5).
         head = _clean(card.get("title"), REQUEST_TITLE_CHARS)
@@ -315,19 +319,56 @@ def brief_items(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return feed_rank.order(top, len(top)) if top else []
 
 
-def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *,
-                  now: datetime) -> str | None:
-    """The morning brief, or None when no open card is in Now or Needs you."""
+@dataclass(frozen=True)
+class BriefParts:
+    """The one brief, before any channel lays it out (WS-62 CF-5, D-CF-6).
+
+    WhatsApp draws it as text (:func:`compose_brief`). The chat draws it as a
+    card with one pill for each line (``routes/chat_brief.py``). Both read
+    these parts, so the two never disagree on a line.
+    """
+
+    #: "Your day, Thu 15 Oct".
+    title: str
+    #: One line for each shown card, in the feed's order, with no bullet.
+    lines: list[str]
+    #: How many brief items the lines do not show.
+    rest: int
+
+    @property
+    def total(self) -> int:
+        return len(self.lines) + self.rest
+
+
+def brief_parts(cards: list[dict[str, Any]], local_date: date, *,
+                now: datetime) -> BriefParts | None:
+    """The brief's parts, or None when no open card is in Now or Needs you."""
     ordered = brief_items(cards)
     if not ordered:
         return None
     shown = ordered[:BRIEF_LINES]
-    rest = len(ordered) - len(shown)
+    return BriefParts(f"Your day, {_date_words(local_date)}",
+                      [line(c, now) for c in shown], len(ordered) - len(shown))
+
+
+def brief_lead(parts: BriefParts) -> str:
+    """The brief's first sentence, from the counts: the words of the chat
+    turn that carries the card (``my_day_feed.md`` §5.7, "code writes it from
+    the counts")."""
+    n = parts.total
+    return f"{parts.title}. {n} thing{'' if n == 1 else 's'} need{'s' if n == 1 else ''} you."
+
+
+def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *,
+                  now: datetime) -> str | None:
+    """The morning brief, or None when no open card is in Now or Needs you."""
+    parts = brief_parts(cards, local_date, now=now)
+    if parts is None:
+        return None
     tail = f"My Day: {app_url.rstrip('/')}/"
-    if rest > 0:
-        tail = f"+{rest} more. {tail}"
-    return _fit(f"*Your day, {_date_words(local_date)}*",
-                [line(c, now) for c in shown], tail)
+    if parts.rest > 0:
+        tail = f"+{parts.rest} more. {tail}"
+    return _fit(f"*{parts.title}*", parts.lines, tail)
 
 
 # ── The template parameters (RE-2a) ─────────────────────────────────────────

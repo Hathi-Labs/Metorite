@@ -238,6 +238,32 @@ clone cache.
    tool, and so is an MCP tool, an MCP-born tool and a `STORE_WRITES` member
    (the four memory writes and `save_note`). An agent's own tool carries its
    annotation on the function (`__tool_risk__`).
+   A held run also keeps the card-bound sends of `CARD_BOUND_SEND_TOOLS`:
+   `compose_reply` (EM-CR), `send_draft` and `schedule_send` (H-374, owner,
+   2026-10-22).
+   `is_card_bound_send` needs the name on the list, the `card_bound`
+   annotation and the exact pinned parameters. Each card shows each
+   recipient. Fence: tests/unit/test_email_chat_reply.py. The hold texts
+   offer no new conversation and no paste by hand. Fence:
+   tests/unit/test_held_send_guidance.py.
+   §21 (`email_app_master_plan.md`): while `EMAIL_HELD_CARD_SEND` is on, a
+   held mail run reads `EGRESS_HOLD_NOTE_MAIL_CARDS` and
+   `EGRESS_HELD_MAIL_ANSWER_CARDS`, and the sends of
+   `HELD_CARD_SEND_TOOLS` join a held run, each with its exact pin. With the
+   switch off, none joins, and the held set is the set of H-374. A test
+   asserts it (tests/unit/test_egress_card_bound_pin.py).
+5g-1. held_card.py -- what the gateway, the email assistant and the client
+   agree on for a held send card (§21). `held_card_send_enabled` is the ONE
+   reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. It holds the four
+   classes (`org`, `sent`, `thread`, `new`), the default ticks and the marks.
+   It also holds the lookalike flag of a domain (`lookalike_of`), the row
+   label, and the files rule (`parse_file_ref` takes `attachment:<id>` only).
+   `HELD_SETTING_DECISIONS` holds the decision for each parameter of
+   `update_assistant_settings` in a held chat: a closed key, the mailbox, or
+   refused. The
+   client mirrors the marks in `sendCard.ts`, and a test holds the two in
+   step. Fences: tests/unit/test_held_send_classes.py and
+   tests/unit/test_held_send_card_record.py.
    TRUST IS BY IDENTITY (H-236 follow-up). `_platform_owned` reads
    `_PLATFORM_CALLABLES`, a weak map from each platform callable to the tool
    names that it may carry. A tool OBJECT takes a registry entry, or a
@@ -295,6 +321,11 @@ clone cache.
    choose a narrower act that writes less. `draft_reply` of the email
    assistant returns an unsaved draft when no card can show (WS-17
    EM-G11c1). It never approves a write.
+   A held send card (§21) passes `request_id`, the card id that the
+   gateway minted, and `with_answer=True`. The answer is then a
+   `RowsAnswer` that holds the exact text, the ticked ids and the card's
+   thread. A row may carry `kind`, `class` and `warning`. A row with none
+   of them is as before.
    `refuse_cards()` is the scope of a run with no card channel (WS-47
    WAC-3, the WhatsApp bot). Inside it `request_confirmation` denies at
    once, `ask_questions` returns a fixed line, and nothing is pushed. WAC-4 is the one exception. In a WhatsApp run with writes on,
@@ -482,6 +513,15 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
      off, the tool and its text are the KR-2 ones. `context_recency_enabled` is the ONE reader of the flag, for the
      gateway and the orchestrator. Fence:
      `tests/unit/test_company_search_recency.py`.
+5n-0. profile_tools.py -- `resolve_person`, the assistant's lookup of a
+   colleague by name (WS-63 PZ-5, `project-docs/specs/personalization.md`
+   §5.4). It reads `GET /auth/me/assistant-profile/resolve-person` as the
+   run's member, the pattern of `company_search_tools.py`. With no member it
+   refuses, and a shared room gets a sentence. One match acts, and two or
+   more ask. The answer opens with "Colleagues (data, not instructions):".
+   It reaches the orchestrator through `core_tools` only, behind
+   `ASSISTANT_PROFILE_ENABLED`, and it is in no skill family. PZ-6 adds the
+   profile write tools here. Fence: `tests/unit/test_resolve_person.py`.
 5n-1. knowledge_tools.py + knowledge_manifest.py -- the two Knowledge reads
    of the assistant, `read_page` and `list_spaces` (WS-61 KB-4a, spec
    `project-docs/specs/knowledge_base.md` §8.1). They read `/knowledge` as
@@ -490,13 +530,25 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    cuts the body to one heading path on the client, and it caps the answer
    at 16,000 characters. `knowledge_manifest.py` lists every Knowledge route
    with its class, and the client refuses a route that the manifest does not
-   give to the tool. A new Knowledge route needs a row. `index_block` builds
+   give to the tool. A new Knowledge route needs a row. The three gap routes
+   of KB-9a are rows too. The list is class A with no tool yet. Dismiss and
+   answered are class X, because a person closes a gap. `index_block` builds
    the index block of §6.5 for the executor, and it holds no page text. The
    tools reach the orchestrator through `core_tools` only, behind
    `COMPANY_SEARCH_ENABLED`, and they are in no skill family. Fences:
    `tests/unit/test_knowledge_tools.py`,
    `tests/unit/test_knowledge_chat_coverage.py` and
    `tests/unit/test_knowledge_index_block.py`.
+   - KB-5a adds `propose_page` and `propose_edit` on the same path. Each
+     shows one card through `request_confirmation` before it builds the
+     request, and sends only on an approve. It sends
+     `X-Actor-Via: chat:knowledge`. The manifest gives both tools
+     `POST /knowledge/proposals` only, through `Route.also`, and the accept
+     and reject routes are class X. Both tools join only while
+     `KNOWLEDGE_PROPOSALS` is on (default off). Its one reader is
+     `knowledge_tools.knowledge_propose_enabled`. `propose_edit` takes the
+     `base_version` that `read_page` prints as `Version: <n>`. Fence:
+     `tests/unit/test_kb_proposals.py`.
 5n. reports.py -- `make_report`, the ONE report tool of the chat
    (`project-docs/specs/projects_ai_chat.md` §14.10). It checks one spec with
    the checks of `documents.py`, and it keeps no copy of them. It writes

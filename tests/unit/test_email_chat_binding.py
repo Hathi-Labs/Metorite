@@ -163,6 +163,9 @@ class Gateway:
             return self.sent_from
         if path == "/email/messages/d1":
             return dict(DRAFT_D1)
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b): the card's seal
+            return {"text_digest": "a" * 64, "subject": DRAFT_D1.get("subject"),
+                    "body_text": DRAFT_D1.get("body_text") or ""}
         if path.startswith("/email/messages/"):
             mid = path.rsplit("/", 1)[1]
             return next((dict(m) for m in THREAD if m["id"] == mid), {})
@@ -331,12 +334,33 @@ async def test_a_failed_mailbox_read_sends_nothing(gw: Gateway) -> None:
     assert gw.writes == [] and gw.cards == []
 
 
-async def test_a_named_mailbox_needs_no_sent_from(gw: Gateway) -> None:
+async def test_a_named_mailbox_still_sends_but_the_card_says_where_you_usually_write(
+        gw: Gateway) -> None:
+    """Item 3 of the multi-inbox chat wave: the named mailbox still sends, and
+    the card and the answer name the mailbox that the member usually writes
+    to this person from."""
     gw.sent_from = {"kim@contoso.test": BOX_B}
-    await agents.send_email(BOX_A, body="Hi", to=["kim@contoso.test"], subject="S")
+    out = await agents.send_email(BOX_A, body="Hi", to=["kim@contoso.test"], subject="S")
     [sent] = _sends(gw)
     assert sent["account_id"] == BOX_A
-    assert all(p != "/email/contacts/sent-from" for p, _ in gw.gets)
+    note = f"You usually write to kim@contoso.test from {B_TEXT}."
+    [card] = gw.cards
+    assert note in card["context"]
+    assert out.endswith(note)
+
+
+async def test_no_usual_mailbox_note_when_the_mailbox_is_the_usual_one(
+        gw: Gateway) -> None:
+    gw.sent_from = {"kim@contoso.test": BOX_A}
+    out = await agents.send_email(BOX_A, body="Hi", to=["kim@contoso.test"], subject="S")
+    assert "usually write" not in out
+    assert "usually write" not in gw.cards[0]["context"]
+
+
+async def test_a_failed_sent_from_read_never_stops_the_send(gw: Gateway) -> None:
+    gw.fail = {"/email/contacts/sent-from"}
+    await agents.send_email(BOX_A, body="Hi", to=["kim@contoso.test"], subject="S")
+    assert len(_sends(gw)) == 1
 
 
 def test_the_instructions_take_the_sent_from_step() -> None:
@@ -813,7 +837,11 @@ async def test_a_named_separate_mailbox_still_acts(gw: Gateway) -> None:
     gw.accounts = [*TWO, NDA]
     out = await agents.create_rule(BOX_C, name="Bank")
     assert gw.writes and all(BOX_C in f"{p} {b}" for _v, p, b in gw.writes)
-    assert out.endswith(f"in {C_TEXT}.")
+    # The answer names the mailbox, and its last line gives the resolved id
+    # (navigation_shell.md §7.1.1, review P3).
+    first, last = out.split("\n")
+    assert first.endswith(f"in {C_TEXT}.")
+    assert last == f"Mailbox: {C_TEXT} (account_id {BOX_C})"
 
 
 # ── email-chat-write-names-mailbox (EM-T8g-1 review round 1) ────────────────
@@ -863,3 +891,195 @@ async def test_list_accounts_marks_a_separate_mailbox_and_leaves_it_out_of_the_t
     plain = await agents.list_accounts()
     assert "(separate)" not in plain and "leaves out" not in plain
     assert plain.startswith("Connected accounts (3 unread total):")
+
+
+# ── Several mailboxes: the chat reads across them (multi-inbox chat wave) ─────
+
+def _gets(g: Gateway, path: str) -> list[dict[str, Any]]:
+    return [p for path_, p in g.gets if path_ == path]
+
+
+async def test_query_inbox_with_no_account_reads_all_inboxes_and_tags_each_line(
+        gw: Gateway) -> None:
+    out = await agents.query_inbox(query="quote")
+    [params] = _gets(gw, "/email/messages")
+    assert "account_id" not in params
+    assert "in All inboxes" in out
+    assert f"id=m1 [{A_TEXT}]" in out and f"id=m7 [{B_TEXT}]" in out
+
+
+async def test_query_inbox_with_an_account_stays_in_that_mailbox(gw: Gateway) -> None:
+    out = await agents.query_inbox(BOX_A)
+    [params] = _gets(gw, "/email/messages")
+    assert params["account_id"] == BOX_A
+    assert f"[{A_TEXT}]" not in out and "id=m1" in out
+
+
+@pytest.mark.parametrize("call, path", [
+    (lambda: agents.find_priority(), "/email/reply-zero"),
+    (lambda: agents.find_priority(kind="important"), "/email/priority"),
+    (lambda: agents.list_senders(view="cold"), "/email/cold-senders"),
+])
+async def test_one_mailbox_routes_walk_each_pooled_mailbox_and_name_it(
+        gw: Gateway, call: Any, path: str) -> None:
+    gw.accounts = [*TWO, NDA]
+    out = await call()
+    asked = [p["account_id"] for p in _gets(gw, path)]
+    # Each pooled mailbox, one read each. The separate mailbox stays out.
+    assert asked == [BOX_A, BOX_B]
+    assert f"Mailbox: {A_TEXT}" in out and f"Mailbox: {B_TEXT}" in out
+    assert C_TEXT not in out
+
+
+async def test_the_walk_stops_at_five_mailboxes_and_says_so(gw: Gateway) -> None:
+    gw.accounts = [
+        {**TWO[0], "id": f"0d0d0d0d-0000-4000-8000-00000000000{i}",
+         "email_address": f"u{i}@x.test", "display_label": f"M{i}"}
+        for i in range(7)]
+    out = await agents.find_priority()
+    assert len(_gets(gw, "/email/reply-zero")) == 5
+    assert "Read 5 of 7 mailboxes" in out
+
+
+async def test_a_named_mailbox_reads_alone_with_no_heading(gw: Gateway) -> None:
+    out = await agents.find_priority(BOX_B)
+    assert [p["account_id"] for p in _gets(gw, "/email/reply-zero")] == [BOX_B]
+    assert "Mailbox:" not in out
+
+
+async def test_a_walk_names_the_mailbox_that_needs_reconnecting(gw: Gateway) -> None:
+    gw.accounts = [TWO[0], {**TWO[1], "needs_reconnect": True}]
+
+    async def get(path: str, params: Any = None) -> Any:
+        if path == "/email/reply-zero" and params["account_id"] == BOX_B:
+            raise RuntimeError("401")
+        return await Gateway.get(gw, path, params)
+
+    agents._get = get  # the fixture restores it
+    out = await agents.find_priority()
+    assert "Not read" in out and "Sign in again from the Email app's mailbox menu" in out
+    assert f"Mailbox: {A_TEXT}" in out
+
+
+async def test_sender_reads_in_all_inboxes_say_which_mailboxes_they_add_up(
+        gw: Gateway) -> None:
+    gw.accounts = TWO
+
+    async def get(path: str, params: Any = None) -> Any:
+        if path == "/email/senders":
+            return {"senders": [{"email": "a@b.test", "name": "A", "count": 3,
+                                 "unread": 1, "read_rate": 0.5}], "total": 1}
+        return await Gateway.get(gw, path, params)
+
+    agents._get = get
+    out = await agents.list_senders()
+    assert f"{A_TEXT}; {B_TEXT}" in out
+    assert "Across All inboxes" not in await agents.list_senders(BOX_A)
+
+
+async def test_scheduled_sends_name_their_mailbox(gw: Gateway) -> None:
+    async def get(path: str, params: Any = None) -> Any:
+        if path == "/email/drafts/scheduled":
+            return [{"id": "s1", "account_id": BOX_B, "send_at": "2026-10-24T09:00",
+                     "subject": "Hi", "status": "queued", "to": []}]
+        return await Gateway.get(gw, path, params)
+
+    agents._get = get
+    out = await agents.list_scheduled_sends()
+    assert f"from {B_TEXT}" in out
+
+
+async def test_overview_and_digest_name_the_mailbox_they_read(gw: Gateway) -> None:
+    assert f"Mailbox: {A_TEXT}" in await agents.get_account_overview(BOX_A)
+    assert f"of {B_TEXT}:" in await agents.digest(BOX_B)
+
+
+# ── list_accounts prints the state of each mailbox ────────────────────────────
+
+async def test_list_accounts_prints_the_state_of_each_mailbox(gw: Gateway) -> None:
+    gw.accounts = [
+        {**TWO[0], "needs_reconnect": True, "sync_status": "error",
+         "sync_error": "invalid_grant"},
+        {**TWO[1], "sync_status": "idle", "last_synced_at": "2026-10-23T08:15:00+00:00"},
+        {**NDA, "sync_status": "error", "sync_error": "timeout"},
+    ]
+    out = await agents.list_accounts()
+    [a_line] = [ln for ln in out.splitlines() if A_TEXT in ln]
+    [b_line] = [ln for ln in out.splitlines() if B_TEXT in ln]
+    [c_line] = [ln for ln in out.splitlines() if C_TEXT in ln]
+    assert "needs reconnecting. Sign in again from the Email app's mailbox menu" in a_line
+    assert "last synced 2026-10-23 08:15" in b_line
+    assert "sync failing (timeout)" in c_line
+
+
+# ── apply_settings_to_mailboxes: one card, several mailboxes ──────────────────
+
+async def test_apply_settings_shows_one_card_and_changes_each_mailbox(
+        gw: Gateway) -> None:
+    out = await agents.apply_settings_to_mailboxes(
+        account_ids=[BOX_A, BOX_B], draft_replies=True, digest_frequency="DAILY")
+    [card] = gw.cards
+    assert A_TEXT in card["context"] and B_TEXT in card["context"]
+    assert "draft_replies = on" in card["context"] and "DAILY" in card["context"]
+    puts = [b for v, p, b in gw.writes if p == "/email/assistant/settings"]
+    assert [b["account_id"] for b in puts] == [BOX_A, BOX_B]
+    assert all(b["draft_replies"] is True for b in puts)
+    assert "2 of 2" in out
+
+
+async def test_apply_settings_to_all_mailboxes_leaves_out_a_separate_one(
+        gw: Gateway) -> None:
+    gw.accounts = [*TWO, NDA]
+    await agents.apply_settings_to_mailboxes(all_mailboxes=True, auto_run=False)
+    puts = [b["account_id"] for v, p, b in gw.writes if p == "/email/assistant/settings"]
+    assert puts == [BOX_A, BOX_B]
+
+
+async def test_apply_settings_declined_or_unknown_writes_nothing(gw: Gateway) -> None:
+    gw.answer = False
+    out = await agents.apply_settings_to_mailboxes(account_ids=[BOX_A], auto_run=True)
+    assert "Cancelled" in out and gw.writes == []
+    assert "No connected mailbox" in await agents.apply_settings_to_mailboxes(
+        account_ids=["nope"], auto_run=True)
+    assert "Which mailboxes?" in await agents.apply_settings_to_mailboxes(auto_run=True)
+    assert "at least one setting" in await agents.apply_settings_to_mailboxes(
+        account_ids=[BOX_A])
+    assert gw.writes == []
+
+
+def test_apply_settings_leaves_free_text_to_the_one_mailbox_tool() -> None:
+    import inspect
+    params = set(inspect.signature(agents.apply_settings_to_mailboxes).parameters)
+    assert not params & {"about", "signature", "writing_style", "personal_instructions"}
+    assert "apply_settings_to_mailboxes" in agents.MAILBOX_WRITE_TOOLS
+
+
+def test_the_instructions_teach_several_mailboxes() -> None:
+    text = agents.INSTRUCTIONS
+    assert "## Several mailboxes" in text
+    assert "apply_settings_to_mailboxes" in text
+
+
+async def test_list_accounts_says_how_many_of_the_limit_are_used(gw: Gateway) -> None:
+    gw.accounts = [{**a, "mailbox_limit": 5} for a in TWO]
+    out = await agents.list_accounts()
+    assert "2 of 5 mailboxes" in out and "refused until" in out
+    gw.accounts = TWO  # an old gateway sends no limit: no line, no guess
+    assert " of " not in (await agents.list_accounts()).split("\n")[1]
+
+
+async def test_apply_settings_to_mailboxes_refuses_in_any_held_run(monkeypatch) -> None:
+    """Review of the multi-mailbox branch, P0: a held run with the held-card
+    switch OFF kept the tool, and it could turn on settings that later send
+    mail out. It refuses on the hold itself now, and a held run withholds it
+    (test_no_egress_tool_audit.py)."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
+    out = await agents.apply_settings_to_mailboxes(all_mailboxes=True, auto_run=True)
+    assert out.startswith("Nothing changed.")
+
+
+def test_apply_settings_to_mailboxes_takes_no_digest_email_send() -> None:
+    import inspect
+    assert "digest_send_to_email" not in inspect.signature(agents.apply_settings_to_mailboxes).parameters
+    assert "digest_send_to_email" not in agents._MULTI_SETTING_KEYS

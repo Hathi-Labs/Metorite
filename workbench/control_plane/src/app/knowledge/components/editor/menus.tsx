@@ -21,14 +21,16 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
+import FormatExtras from "./FormatExtras";
+import TableExtras from "./TableExtras";
+
 import {
   LINK_REFUSED,
   addressOf,
   isAllowedHref,
+  linkChoices,
   linkedPageId,
   looksLikeAddress,
-  matchPages,
-  pageLinkHref,
   type PageChoice,
 } from "../../lib/editor/pageLinks";
 
@@ -164,6 +166,7 @@ export function FormatBubble({
               }
             />
           ))}
+          <FormatExtras editor={editor} />
         </div>
       )}
     </BubbleMenu>
@@ -173,8 +176,9 @@ export function FormatBubble({
 // ── The link control ────────────────────────────────────────────────────────
 
 /**
- * One field for an address or a page. Words that are not an address search
- * the member's pages, and a pick writes `/knowledge/pages/<id>`.
+ * One field: "Paste a link or search pages". Words that are not an address
+ * search the member's pages, and a pick writes `/knowledge/pages/<id>`. An
+ * address offers "Link to <address>". Enter takes the active row.
  */
 export function LinkPanel({
   editor,
@@ -197,10 +201,8 @@ export function LinkPanel({
   const [active, setActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const address = looksLikeAddress(text);
-  const rows = useMemo(
-    () => (address || !pages ? [] : matchPages(pages, text, { exclude: currentPageId, limit: 5 })),
-    [address, pages, text, currentPageId],
-  );
+  // An address offers "Link to <address>". Other words search the pages.
+  const rows = useMemo(() => linkChoices(text, pages, { exclude: currentPageId }), [text, pages, currentPageId]);
 
   // A refused address keeps the panel open and says what to type. Before
   // this, a `javascript:` address closed the panel and linked nothing.
@@ -213,7 +215,7 @@ export function LinkPanel({
   };
   const submit = () => {
     const row = rows[active];
-    if (row) apply(pageLinkHref(row.id));
+    if (row) apply(row.href);
     else if (text.trim()) apply(addressOf(text));
   };
 
@@ -223,7 +225,7 @@ export function LinkPanel({
         <Input
           autoFocus
           aria-label="Link address or page"
-          placeholder="Paste a link, or search your pages"
+          placeholder="Paste a link or search pages"
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -269,27 +271,32 @@ export function LinkPanel({
           {error}
         </p>
       ) : null}
-      {!address && text.trim() ? (
-        <div role="listbox" aria-label="Pages" className="space-y-0.5">
-          {pagesLoading && !pages ? <p className="px-2 py-1 text-[11px] text-muted-foreground">Loading pages…</p> : null}
-          {pages && rows.length === 0 ? (
+      {text.trim() ? (
+        <div role="listbox" aria-label="Link choices" className="space-y-0.5">
+          {!address && pagesLoading && !pages ? (
+            <p className="px-2 py-1 text-[11px] text-muted-foreground">Loading pages…</p>
+          ) : null}
+          {!address && pages && rows.length === 0 ? (
             <p className="px-2 py-1 text-[11px] text-muted-foreground">No page has that title. Enter links it as an address.</p>
           ) : null}
-          {rows.map((p, i) => (
+          {rows.map((r, i) => (
             <Button
-              key={p.id}
+              key={r.key}
               role="option"
               aria-selected={i === active}
               variant="ghost"
               size="sm"
-              icon="FileText"
+              icon={r.kind === "url" ? "Link" : r.icon ? undefined : "FileText"}
               layout="flex w-full items-center justify-start gap-2"
               selected={i === active}
               onMouseEnter={() => setActive(i)}
-              onClick={() => apply(pageLinkHref(p.id))}
+              onClick={() => apply(r.href)}
             >
-              <span className="min-w-0 flex-1 truncate text-left">{p.title}</span>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{p.spaceName}</span>
+              {r.kind === "page" && r.icon ? <span aria-hidden>{r.icon}</span> : null}
+              <span className="min-w-0 flex-1 truncate text-left">{r.label}</span>
+              {r.kind === "page" ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{r.hint}</span>
+              ) : null}
             </Button>
           ))}
         </div>
@@ -300,12 +307,16 @@ export function LinkPanel({
 
 // ── The table tools ─────────────────────────────────────────────────────────
 
+// The table tools of Docmost's table menu (KB-2i, §21.7). A header column,
+// a merge and a cell colour have no GFM form, so they are KB-2p's.
 const TABLE_ACTS = [
-  { label: "Add a row below", icon: "BetweenHorizontalEnd", run: (e: Editor) => e.chain().focus().addRowAfter().run() },
-  { label: "Remove this row", icon: "Rows3", run: (e: Editor) => e.chain().focus().deleteRow().run() },
-  { label: "Add a column after", icon: "BetweenVerticalEnd", run: (e: Editor) => e.chain().focus().addColumnAfter().run() },
-  { label: "Remove this column", icon: "Columns3", run: (e: Editor) => e.chain().focus().deleteColumn().run() },
-  { label: "Turn the header row on or off", icon: "PanelTop", run: (e: Editor) => e.chain().focus().toggleHeaderRow().run() },
+  { label: "Add column left", icon: "BetweenVerticalStart", run: (e: Editor) => e.chain().focus().addColumnBefore().run() },
+  { label: "Add column right", icon: "BetweenVerticalEnd", run: (e: Editor) => e.chain().focus().addColumnAfter().run() },
+  { label: "Delete column", icon: "Columns3", run: (e: Editor) => e.chain().focus().deleteColumn().run() },
+  { label: "Add row above", icon: "BetweenHorizontalStart", run: (e: Editor) => e.chain().focus().addRowBefore().run() },
+  { label: "Add row below", icon: "BetweenHorizontalEnd", run: (e: Editor) => e.chain().focus().addRowAfter().run() },
+  { label: "Delete row", icon: "Rows3", run: (e: Editor) => e.chain().focus().deleteRow().run() },
+  { label: "Header row", icon: "PanelTop", run: (e: Editor) => e.chain().focus().toggleHeaderRow().run() },
 ] as const;
 
 /** The table around the selection, as drawn, or `null`. */
@@ -317,34 +328,51 @@ function tableAtSelection(editor: Editor): HTMLElement | null {
 
 /** The table tools, over the table while the caret is in it. */
 export function TableTools({ editor, scrollTarget }: { editor: Editor; scrollTarget?: HTMLElement | Window }) {
+  // The header row is on when the first cell of the table is a header.
+  const header = useEditorState({
+    editor,
+    selector: ({ editor: e }) => {
+      const { $from } = e.state.selection;
+      for (let d = $from.depth; d > 0; d--) {
+        const node = $from.node(d);
+        if (node.type.name === "table") return node.firstChild?.firstChild?.type.name === "tableHeader";
+      }
+      return false;
+    },
+  });
   return (
     <BubbleMenu
       editor={editor}
       pluginKey="kbTable"
       shouldShow={({ editor: e, from, to }) => e.isEditable && e.isActive("table") && from === to}
-      // The tools hang over the table, not over the caret, so they never
-      // hide the header row. They hide when the table scrolls out of view.
+      // The tools hang under the table, as in Docmost, so they never hide
+      // a row or the grips above it. They hide when the table scrolls out
+      // of view.
       getReferencedVirtualElement={() => {
         const table = tableAtSelection(editor);
         return table ? { getBoundingClientRect: () => table.getBoundingClientRect() } : null;
       }}
-      options={{ placement: "top-start", hide: true, shift: { padding: 8 }, scrollTarget }}
+      options={{ placement: "bottom", offset: 8, hide: true, shift: { padding: 8 }, scrollTarget }}
       className="kb-bubble shadow-md"
       role="toolbar"
       aria-label="Table"
     >
       <div className="flex items-center gap-0.5" onMouseDown={(e) => e.preventDefault()}>
-        {TABLE_ACTS.map((a) => (
-          <Button
-            key={a.label}
-            variant="ghost"
-            size="icon-sm"
-            icon={a.icon}
-            aria-label={a.label}
-            title={a.label}
-            onClick={() => a.run(editor)}
-          />
+        {TABLE_ACTS.map((a, i) => (
+          <span key={a.label} className="contents">
+            {i === 3 || i === 6 ? <span className="mx-1 h-5 w-px bg-border" aria-hidden /> : null}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              icon={a.icon}
+              aria-label={a.label}
+              title={a.label}
+              selected={a.label === "Header row" ? Boolean(header) : undefined}
+              onClick={() => a.run(editor)}
+            />
+          </span>
         ))}
+        <TableExtras editor={editor} />
         <span className="mx-1 h-5 w-px bg-border" aria-hidden />
         <Button
           variant="ghost"

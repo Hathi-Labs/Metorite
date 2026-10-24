@@ -55,6 +55,7 @@ from __future__ import annotations
 import functools
 import os
 import re
+import threading
 from typing import Any
 
 from acb_common import get_logger
@@ -668,7 +669,7 @@ def _shell_withheld_result() -> Any:
 
 
 # ── A push of agent code needs the operator's reviewer (2026-10-19) ──────────
-# An agent's clone holds the operator's GITHUB_TOKEN in its remote URL. A push
+# A push of agent code uses the operator's GITHUB_TOKEN. A push
 # from a chat run used to need only the member's words "commit and push": the
 # addendum told the model to run ``git push --no-verify``, and the executor
 # then recorded the commit as approved by ``chat:autopush``. So the push
@@ -685,6 +686,16 @@ def _shell_withheld_result() -> Any:
 # it. ``run_script`` checks the script text too, and ``_detect_agent_commits``
 # records a push that got past both as pending, never as approved.
 # Fence: tests/unit/test_chat_autopush_reviewer_gate.py.
+#
+# H-363: the clone and the shell hold NO credential now, so a push that the
+# shell runs fails, also for a reviewer. For a reviewer the guard still lets
+# the command run (the commit in it must happen), and it notes a push
+# request for the run (:func:`note_agent_push_request`). When the run ends,
+# ``orchestrator.executor._detect_agent_commits`` asks the reviewer rule
+# again and, on a yes, the GATEWAY pushes through
+# ``acb_common.git_credentials.push``. A request is only a wish: a run whose
+# member is not a reviewer gets no push, whatever it noted.
+# Fence: tests/unit/test_clone_token_h363.py.
 
 #: The text the model reads when the push gate refuses a push.
 AGENT_PUSH_WITHHELD_REASON = (
@@ -748,6 +759,46 @@ def agent_push_allowed_for_this_run() -> bool:
         return artifact_context().get("agent_push_allowed") is True
     except Exception:
         return False
+
+
+#: The run ids whose shell asked for a push, in arrival order. Only the
+#: guard and ``run_script`` add one, and only for a run that bound
+#: ``agent_push_allowed=True``. The executor takes it at the end of the run.
+_PUSH_REQUESTS: dict[str, None] = {}
+_PUSH_REQUESTS_LOCK = threading.Lock()
+#: A run that never reaches its commit scan must not grow the map forever.
+_PUSH_REQUESTS_MAX = 1024
+
+
+def note_agent_push_request() -> bool:
+    """Note that the run on this frame asked for a push (H-363).
+
+    It notes nothing for a run that did not bind ``agent_push_allowed=True``,
+    or that has no run id. True when it noted the request.
+    """
+    if not agent_push_allowed_for_this_run():
+        return False
+    try:
+        from acb_skills.write_artifact import artifact_context
+        run_id = str(artifact_context().get("run_id") or "").strip()
+    except Exception:
+        return False
+    if not run_id:
+        return False
+    with _PUSH_REQUESTS_LOCK:
+        _PUSH_REQUESTS.pop(run_id, None)
+        _PUSH_REQUESTS[run_id] = None
+        while len(_PUSH_REQUESTS) > _PUSH_REQUESTS_MAX:
+            _PUSH_REQUESTS.pop(next(iter(_PUSH_REQUESTS)))
+    return True
+
+
+def take_agent_push_request(run_id: str | None) -> bool:
+    """True once, when the run *run_id* noted a push request. It clears it."""
+    if not run_id:
+        return False
+    with _PUSH_REQUESTS_LOCK:
+        return _PUSH_REQUESTS.pop(str(run_id), False) is None
 
 
 def _agent_push_withheld_result() -> Any:
@@ -891,6 +942,10 @@ def guard_shared_agent_shell(handler: Any, *, tools: Any = None) -> Any:
                 surface="copilot_shell",
             )
             return _agent_push_withheld_result()
+        if is_git_push_request(request):
+            # A reviewer's push (H-363): the shell holds no credential, so
+            # the gateway pushes when the run ends.
+            note_agent_push_request()
         return handler(request, invocation)
 
     _guarded.__cc_d85_guard__ = True  # type: ignore[attr-defined]

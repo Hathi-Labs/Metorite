@@ -622,6 +622,13 @@ stopped matching the wire"). A class C card starts with the counts.
 
 ### 5.4 D-PM-35 — the chat cannot hard-delete until WS-40 answers who may
 
+⚠️ **SUPERSEDED.** The owner lifted this on 2026-10-22: `delete_project` and
+`delete_task` are class C, one act per card (#1223, in production). On
+2026-10-23 the owner extended the rule: every act of the Projects app is
+reachable from the chat, behind a card where it destroys or reaches a person.
+`one_projects_app.md` §5a (D-OP-9) holds that rule and slice OP-6. The text
+below is the record of 2026-09-29.
+
 **Decision (owner, 2026-09-29).** `delete_project` and `delete_task` are
 class X. The chat's remove verb is archive. The agent proposed this rule, and
 the owner accepted it on 2026-09-29 (§12, question 1).
@@ -642,6 +649,15 @@ two tools on `projects:settings:write`, the one permission Projects already
 has. The owner did not take it. That permission means "may edit the
 vocabulary", and to use it for delete is the near-miss §8d.1 warns about.
 Until WS-40, a person deletes in the app.
+
+**Superseded in part (owner, 2026-10-22).** The owner asked for delete from the
+chat, and the chat now has `delete_project` and `delete_task`. Both are class C.
+Each act shows one approval card that leads with the counts, and no argument
+skips the card. A delete has no undo, and the card says so. The tool text offers
+archive first. This does not close H-121: the routes still check read visibility
+only, so the card remains the one brake. WS-40 adds the permission later. The
+bulk `delete` action stays refused. Fence: `test_projects_chat_coverage.py`
+(`test_the_two_hard_deletes_are_guarded_tools`).
 
 ---
 
@@ -745,7 +761,7 @@ Review the default again after H-42 prices the rate card.
 - **D-PM-39** — only the server creates an agent row or a system row. A
   LiteLLM reply and a compaction summary stay in the browser until a later
   slice gives them a server writer. §20.5.
-- **D-PM-40** — the chat does not write grants. The two grant writes in
+- **D-PM-40** — ⚠️ SUPERSEDED 2026-10-23 by D-OP-9 (`one_projects_app.md` §5a): grants move to class C behind a card in OP-6. Record: the chat does not write grants. The two grant writes in
   `manifest.py` stay class X. The chat may propose a grant in words, and a
   person applies it in the app. §12, question 2.
 
@@ -5721,6 +5737,12 @@ Every element of an assistant turn is one of four kinds.
    bar shows only while the element is out of view, and a press scrolls to
    it. Answering the element removes the bar. The bar reuses the "1 of N"
    confirmation queue and adds no state of its own.
+
+   ~~**Exception: a reply card and a draft pin above the composer** (owner
+   report, 2026-10-22).~~ **Withdrawn by the owner, 2026-10-23.** On a
+   phone the pinned card covered the chat, and a declined question stayed
+   stuck above the box. No card pins now. §24.10 holds the rules that
+   replace the exception.
 2. **EVIDENCE** — the result of a READ. Examples are `projects_tree`,
    `vocabulary`, `list_tasks`, `find_tasks`, `task_detail`, `task_dataset`,
    `project_summary`, `my_work`, and the email and Tasks reads. It draws
@@ -6060,6 +6082,89 @@ and not a stop.
 Fences: `tests/unit/test_question_decline.py`, `declineAnswer.test.ts`,
 `notNow.test.ts`, `elicitationCard.test.ts`, `askAnswers.test.ts` and
 `e2e/genui-option-picker.spec.ts`.
+
+### 24.10 Where a card sits on the screen (owner report, 2026-10-23)
+
+**The answer: a card never pins above the message box.** Every card draws in
+the thread and scrolls with it. Only a one-line status may sit outside the
+thread.
+
+**The report.** The owner wrote an email reply over chat on a phone. Three
+things went wrong:
+
+- The approval card pinned above the box. It took most of the screen, and
+  the chat behind it did not scroll.
+- The owner declined a question. The "Not answered" card stayed stuck above
+  the box for the rest of the run.
+- The owner typed the answer to a question. It went as a steer, so the run
+  waited on the question for minutes.
+
+**The test for a pin.** An element may sit outside the thread only when all
+three of these are true:
+
+1. It is one line on a phone.
+2. It tells the state of the run, or it points to an element in the thread.
+3. It goes away by itself when its state ends.
+
+The ask bar (`AskPin`), the run status row and the caption under the box
+pass. A card fails the first test, so it goes in the thread.
+
+**The rules.**
+
+- **C1 — The box area holds the member's own input.** The form under the
+  thread holds the box, its controls, the status row, the ask bar and one
+  notice. It draws no card. The Todos panel opens folded on a phone, and its
+  one line names the step that runs now.
+- **C2 — A card that waits draws at the foot of the live turn.** It draws
+  after the last message of the thread, so a steer that the member sent
+  sits above it. When it is out of view, the ask bar names it, and a press
+  scrolls to it. This is the only pin.
+- **C3 — A card holds no scroll box.** The thread is the one thing that
+  scrolls. A long body uses `components/ui/ShowMore.tsx`. It shows the
+  first part with a fade, and "Show all" opens the rest in place. Two boxes
+  may scroll: the working trail, which follows its own tail, and the raw
+  text of an error. A wide table may scroll sideways.
+- **C4 — One live copy.** A revision replaces the card. The newest draft
+  draws in full, and an older draft draws as one line that says a newer
+  draft replaced it (`lib/pinnedDraft.ts`).
+- **C5 — An answered card folds.** An answered or declined card folds to
+  one line in its place (`cardRollup.ts`). It leaves when the run ends.
+- **C6 — A typed message answers the one waiting question.** This applies
+  when one question waits, the run parks on it, and it takes typed text.
+  The caption under the box says "Answers the question above". Otherwise a
+  typed message steers the run. A message typed while an approval waits
+  steers it, so the member can ask for a change in words
+  (`lib/typedAnswer.ts`).
+- **C7 — A card that sends shows all that it sends.** Each recipient and the
+  whole text are in the thread, with no box that hides the end. This
+  carries the §21 rule of the email plan ("a send card never shows less
+  than it sends") to the screen.
+- **C8 — The thread follows its foot only when the member is there.** A
+  reader near the foot stays at the foot when a card grows
+  (`stickToBottom.ts`). A reader who scrolled up keeps the place, and the
+  ask bar tells them that a card waits.
+
+**How to check a new card.** Open it at 390 × 844 with the keyboard up.
+The member must see the card and at least two lines of the thread above it.
+The member must reach every control of the card with no inner scroll.
+
+**What this change built.**
+
+| Part | Where |
+|---|---|
+| No pin above the box. The cards draw after the last message. | `AgentChat.tsx` (`hitlAnchorId`, the form) |
+| The newest draft draws in full in the thread. `PinnedDraftCard` is deleted. | `AgentChat.tsx`, `EmailToolCards.tsx` |
+| The approval card shows its whole text. | `ConfirmationCard.tsx` |
+| A typed answer to the one waiting question. | `lib/typedAnswer.ts`, `AgentChat.tsx` |
+| "Show all" in place of 12 scroll boxes in the email, Projects, Tasks and CRM cards. | `components/ui/ShowMore.tsx` |
+| The Todos panel opens folded on a phone. | `TodoPanel.tsx` |
+
+**Fences (R7).** `src/lib/chatCardScroll.test.ts` holds C1 and C3. It fails
+on a scroll box in a file that draws a card, and on a card in the form.
+`src/lib/typedAnswer.test.ts` holds C6. `src/lib/pinnedDraft.test.ts` holds
+C2 and C4. C5, C7 and C8 keep their fences in §24.6 and §24.9.
+
+The check at 390 × 844 is advisory, so review holds it.
 
 ## 25. The fixed prefix of each request (2026-10-09)
 

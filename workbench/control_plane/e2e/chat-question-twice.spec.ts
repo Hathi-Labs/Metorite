@@ -38,8 +38,8 @@ function askFrame(a: Ask): Record<string, unknown> {
   };
 }
 
-async function install(page: Page, asks: Ask[]) {
-  await page.addInitScript(({ asks, frames }) => {
+async function install(page: Page, asks: Ask[], opts: { respondFails?: boolean } = {}) {
+  await page.addInitScript(({ asks, frames, respondFails }) => {
     window.localStorage.clear();
     const w = window as unknown as Record<string, unknown>;
     const bodies: Record<string, unknown>[] = [];
@@ -55,6 +55,7 @@ async function install(page: Page, asks: Ask[]) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/agent/respond-input")) {
         bodies.push(JSON.parse(String(init?.body ?? "{}")));
+        if (respondFails) throw new TypeError("Failed to fetch");
         setTimeout(() => gates[bodies.length - 1]?.(), 50);
         return json({ ok: true });
       }
@@ -77,6 +78,9 @@ async function install(page: Page, asks: Ask[]) {
       if (url.includes("/api/agent/chat")) {
         const body = JSON.parse(String(init?.body ?? "{}"));
         if (body.reconnect) return json({}, 404);
+        ((w.__chat ??= []) as unknown[]).push(body);
+        // A steer is accepted and starts no second stream.
+        if (((w.__chat as unknown[]).length) > 1) return json({ ok: true });
         const stream = new ReadableStream<Uint8Array>({
           async start(c) {
             c.enqueue(frame({ type: "message_start", messageId: "m-1" }));
@@ -92,7 +96,7 @@ async function install(page: Page, asks: Ask[]) {
       }
       return orig(input, init);
     };
-  }, { asks, frames: asks.map(askFrame) });
+  }, { asks, frames: asks.map(askFrame), respondFails: !!opts.respondFails });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -171,5 +175,54 @@ test.describe("a second question starts empty", () => {
     const bodies = await respond(page);
     expect(bodies[0]).toMatchObject({ request_id: "c".repeat(32), answer: "staging-2", was_freeform: true });
     expect(bodies[1]).toMatchObject({ request_id: "d".repeat(32), answer: "production", was_freeform: false });
+  });
+});
+
+// Owner report, 2026-10-23 (`lib/typedAnswer.ts`, spec §24.10 rule C6). The
+// owner typed the answer to a question in the message box. It went as a
+// steer, and the run waited on the question for minutes.
+test.describe("a typed message answers the one waiting question", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("ask_user: the box says so, the text answers the card, and nothing steers", async ({ page }) => {
+    await install(page, [{ kind: "user", rid: "e".repeat(32), options: [], freeform: true }]);
+    await startTurn(page);
+
+    const card = page.locator('[data-elicitation-card="open"]');
+    await expect(card).toContainText(`Which place, ${"e".repeat(32)}?`, { timeout: 15_000 });
+    const box = page.getByRole("textbox", { name: /^Message / });
+    await box.fill("Veena is the name");
+    await expect(page.locator("[data-steer-caption]")).toHaveText("Answers the question above");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+
+    await expect.poll(async () => (await respond(page)).length).toBe(1);
+    expect((await respond(page))[0]).toMatchObject({
+      request_id: "e".repeat(32), answer: "Veena is the name", was_freeform: true,
+    });
+    await expect(box).toHaveValue("");
+    const chats = await page.evaluate(() => ((window as unknown as { __chat: unknown[] }).__chat ?? []).length);
+    expect(chats).toBe(1);
+  });
+
+  test("ask_user: an answer that does not reach the run goes back in the box", async ({ page }) => {
+    await install(page, [{ kind: "user", rid: "g".repeat(32), options: [], freeform: true }], { respondFails: true });
+    await startTurn(page);
+
+    await expect(page.locator('[data-elicitation-card="open"]')).toBeVisible({ timeout: 15_000 });
+    const box = page.getByRole("textbox", { name: /^Message / });
+    await box.fill("veena@fracktal.in");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(async () => (await respond(page)).length).toBeGreaterThan(0);
+    await expect(box).toHaveValue("veena@fracktal.in");
+    await expect(page.locator('[data-elicitation-card="open"]')).toBeVisible();
+  });
+
+  test("ask_questions of one pick-only question: a typed message steers", async ({ page }) => {
+    await install(page, [{ kind: "questions", rid: "f".repeat(32), options: ["#22", "#23"], freeform: false }]);
+    await startTurn(page);
+
+    await expect(page.locator('[data-elicitation-card="open"]')).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("textbox", { name: /^Message / }).fill("also tidy the old ones");
+    await expect(page.locator("[data-steer-caption]")).toHaveText("Adds to the current reply");
   });
 });

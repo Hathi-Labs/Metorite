@@ -97,12 +97,17 @@ ME_PURPOSE = "Your private drafts. Only you can see them."
 #: The days from a publish to the review date (§4.2).
 REVIEW_DAYS = 180
 
-#: The page columns that each page read returns.
+#: The highest version number. ``kb_page_versions.version`` is int4, so a
+#: route refuses a bigger number with 422 before it reaches the driver.
+MAX_VERSION = 2_147_483_647
+
+#: The page columns that each page read returns. ``p.icon`` is one emoji, or
+#: NULL (KB-2f). It is not the icon NAME of a space.
 PAGE_COLUMNS = (
     "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
     "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
     "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from, "
-    "p.archived_from_state"
+    "p.archived_from_state, p.icon"
 )
 
 #: The space columns that each space read returns.
@@ -497,6 +502,7 @@ def page_dict(
         "parent_id": str(row.parent_id) if row.parent_id else None,
         "position": position,
         "title": row.title,
+        "icon": row.icon,
         "state": row.state,
         "author_email": row.author_email,
         "reviewers": list(row.reviewers or []),
@@ -704,11 +710,24 @@ async def read_links(db: Any, user: UserContext, page_id: str) -> list[dict[str,
              "AND page_id = CAST(:pid AS uuid) ORDER BY created_at"),
         {"org": org_of(user), "pid": page_id},
     )).fetchall()
+    # A page link lists only when the CALLER can see its target (§5.5): a
+    # link is a reference and never a grant, and it must not tell a reader
+    # that a hidden page exists. The other kinds are listed as they are.
+    wanted = [str(r.target_id) for r in rows if r.target_kind == "page"]
+    seen: set[str] = set()
+    if wanted:
+        vis, vparams = visible_pages_clause(user, "p")
+        seen = {str(r[0]) for r in (await db.execute(
+            text(f"SELECT p.id::text FROM kb_pages p WHERE {vis} "
+                 "AND p.id::text = ANY(CAST(:rl_ids AS text[]))"),
+            {**vparams, "rl_ids": wanted},
+        )).fetchall()}
     return [
         {"id": str(r.id), "target_kind": r.target_kind, "target_id": r.target_id,
          "label": r.label, "created_by": r.created_by,
          "created_at": _iso(r.created_at)}
         for r in rows
+        if r.target_kind != "page" or str(r.target_id) in seen
     ]
 
 

@@ -1116,10 +1116,22 @@ WHERE lower(au.email) = :email AND au.status = 'active'
 #: allows is owner-only and LOGGED. An unrestricted clause that skipped this
 #: filter would be exactly the invisible act — `data:org:read` is the widest
 #: grant in the product, and the People Center holds it.
+#:
+#: ⚠️ **A member's personal space binds the reader too** (WS-64 OP-9,
+#: D-OP-15). A task in a personal tree is shown to its owner only. The
+#: ``personal_owner`` line keeps every other member's personal node out of
+#: this set, so ``data:org:read`` reads no personal task of somebody else.
+#: Migration 297 and ``tree.create_node`` stamp ``personal_owner`` on every
+#: node of a personal tree, and leave a TEAM node under it unstamped, so the
+#: node's own column is the whole test and a team node stays in. The owner's
+#: own nodes stay in, so the owner's reads do not change. Every read that
+#: ``project_clause`` or ``task_visibility_clause`` builds takes this line.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _TENANT_PROJECTS_SQL = """
 SELECT id FROM pm_projects
 WHERE organization_id = CAST(:vis_org AS uuid)
   AND sealed_at IS NULL
+  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)
 """
 
 #: Projects the caller may see: those carrying a matching grant, plus everything
@@ -1154,6 +1166,16 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 #: Filtering the recursive step as well is not redundant. It stops the closure
 #: descending THROUGH a sealed Area into anything beneath it, and it means a
 #: subtree can be sealed without sealing its parent.
+#:
+#: ⚠️ **A personal node is its owner's only, on BOTH arms too** (WS-64 OP-9,
+#: D-OP-15). A stray ``org``, ``group:`` or email grant on a personal tree,
+#: written before OP-6b, shows the tree to nobody but its owner. The seed
+#: drops such a grant, and the recursive step stops at any personal node of
+#: somebody else. A team node under a personal root carries no
+#: ``personal_owner``, so its own grant still seeds it. The seed's line sits
+#: AFTER the subject bracket, so nothing but ``AND`` stands between the
+#: tenant and that bracket (``test_projects_tenancy.py``).
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _VISIBLE_PROJECTS_SQL = """
 WITH RECURSIVE granted AS (
     SELECT DISTINCT g.project_id AS id
@@ -1164,12 +1186,14 @@ WITH RECURSIVE granted AS (
       AND (g.subject = 'org'
            OR lower(g.subject) = :vis_email
            OR g.subject = ANY(:vis_groups))
+      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)
     UNION
     SELECT p.id
     FROM pm_projects p
     JOIN granted a ON p.parent_project_id = a.id
     WHERE p.organization_id = CAST(:vis_org AS uuid)
       AND p.sealed_at IS NULL
+      AND (p.personal_owner IS NULL OR lower(p.personal_owner) = :vis_email)
 )
 SELECT id FROM granted
 """
@@ -1601,6 +1625,26 @@ async def assert_project_move_keeps_privacy(
     # A move to the top level is a move OUT of whatever held it. For a personal
     # node that is promotion into the open, which is the same refusal.
     destination = owners.get(str(new_parent_id)) if new_parent_id else None
+    # WS-64, task #304, fix round 1. The two sides read differently, and on
+    # purpose.
+    #
+    # The MOVED side reads the node's OWN column (above). Migration 297 leaves
+    # a team node (one with a grant to someone other than the tree owner)
+    # unstamped under a personal node, so that the team keeps it. The owner or
+    # a lead must be able to move that node OUT to a team space, so it is not
+    # "personal" here even though its ancestor is.
+    #
+    # The DESTINATION side walks up (`personal_tree_owner`, the one walk). A
+    # parent that is any node of a private tree, stamped or not, is a
+    # personal destination. The walk stops at a team node as 297 does, so a
+    # node of the team subtree that 297 kept is a team destination. The
+    # direct column alone let a team root sit under an unstamped legacy
+    # child, which is the shape that 297 must then skip.
+    #
+    # ⚠️ Added lines only: `test_github_merge_r8.py::test_d11_core_py_has_no_diff`
+    # refuses a removed line in this file, so the walk overrides the read above.
+    if new_parent_id:
+        destination = await personal_tree_owner(db, str(new_parent_id))
 
     if moved == destination:
         return  # team to team, or one of my Areas to another place of mine
@@ -1623,6 +1667,71 @@ async def assert_project_move_keeps_privacy(
             "from a grant unable to reach its parent."
         ),
     )
+
+
+async def grant_personal_owner(db: Any, project_id: str, email: str) -> None:
+    """The grant every personal node carries — root and child alike.
+
+    The grant is what the visibility model reads; `personal_owner` is only the
+    fast path to finding it. Both, so neither is load-bearing alone.
+    """
+    await db.execute(
+        text(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by) "
+            "VALUES (CAST(:pid AS uuid), :who, :who) "
+            "ON CONFLICT (project_id, subject) DO NOTHING"
+        ),
+        {"pid": project_id, "who": email},
+    )
+
+
+#: THE walk of a private tree (WS-64, task #304, fix round 2). The node and
+#: each ancestor, nearest first, up to and with the nearest stamped node. The
+#: climb stops there, because that node names the tree owner. The owner counts
+#: ONLY when no UNSTAMPED node below it on the path carries a grant to a
+#: subject other than that owner. Such a node is a team node, which
+#: migration 297 leaves unstamped on purpose, so it and its subtree are team
+#: work. `depth < 64` ends a cycle.
+PERSONAL_TREE_OWNER_SQL = (
+    "WITH RECURSIVE anc AS ("
+    "  SELECT id, parent_project_id, personal_owner, 0 AS depth"
+    "    FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id, p.personal_owner, a.depth + 1"
+    "    FROM pm_projects p JOIN anc a ON p.id = a.parent_project_id"
+    "   WHERE a.depth < 64 AND a.personal_owner IS NULL"
+    "), top AS ("
+    "  SELECT personal_owner, depth FROM anc"
+    "   WHERE personal_owner IS NOT NULL ORDER BY depth LIMIT 1"
+    ") SELECT top.personal_owner FROM top"
+    " WHERE NOT EXISTS ("
+    "   SELECT 1 FROM anc a JOIN pm_project_grants g ON g.project_id = a.id"
+    "    WHERE a.depth < top.depth"
+    "      AND lower(g.subject) <> lower(top.personal_owner))"
+)
+
+
+async def personal_tree_owner(db: Any, node_id: str) -> str | None:
+    """The lower-case owner of the private tree that holds *node_id*, or None.
+
+    WS-64, task #304. THE one walk of a private tree, with the stop rule of
+    migration 297 (:data:`PERSONAL_TREE_OWNER_SQL`). A node that carries
+    ``personal_owner`` answers with it. Else the nearest stamped ancestor
+    names the owner, unless a team node (an unstamped node with a grant to
+    another subject) sits between them. Then the answer is None: team work.
+
+    Every door that asks "is this node in a private tree" calls this, and no
+    door has a copy: ``tree.create_node`` (the stamp on a new child), the
+    destination side of :func:`assert_project_move_keeps_privacy`, and
+    ``authority.in_personal_tree`` and ``authority.personal_tree_owner``
+    (the grant writes and the revoke). It lives here and not in
+    ``authority.py`` because ``authority`` imports this module.
+    """
+    row = (await db.execute(
+        text(PERSONAL_TREE_OWNER_SQL), {"pid": str(node_id)},
+    )).fetchone()
+    owner = getattr(row, "personal_owner", None) if row is not None else None
+    return (owner or "").strip().lower() or None
 
 
 async def assert_move_keeps_privacy(
@@ -3014,6 +3123,8 @@ async def lock_task(db: Any, task_id: str) -> Any:
     the lock read it. Only ``claim_task`` calls it. The claim has passed its
     visibility load, so the lock reads by id only. 404 when a delete crossed
     that load."""
+    # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
+    # visibility load, so the version and title checks hold until the delete.
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -3441,6 +3552,53 @@ def validate_grant_subject(subject: str) -> str:
         return normalize_grant_subject(subject)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+#: The groups of one organization, for the grant routes (WS-64 OP-6b, fix
+#: round 1). ``org_group`` has no row security, so the statement names the
+#: organization, as ``report_scope`` does.
+_ORG_GROUPS_SQL = (
+    "SELECT slug, display_name FROM org_group "
+    " WHERE organization_id = CAST(:org AS uuid) ORDER BY slug"
+)
+
+
+async def org_groups(db: Any, organization_id: Any) -> list[dict[str, str]]:
+    """Each group of the organization as ``{"slug", "display_name"}``.
+
+    ``GET /nodes/{id}/grants`` gives the list, so the chat can refuse an
+    unknown group before its card. ``POST /nodes/{id}/grants`` reads it to
+    refuse one at the route.
+    """
+    if not organization_id:
+        return []
+    rows = (await db.execute(text(_ORG_GROUPS_SQL), {"org": str(organization_id)})).fetchall()
+    return [{"slug": str(r.slug), "display_name": str(r.display_name or r.slug)} for r in rows]
+
+
+def unknown_group_sentence(slug: str, groups: list[dict[str, str]]) -> str:
+    """The 422 words for a ``group:<slug>`` that names no group."""
+    if not groups:
+        return f"There is no group called {slug}. This organization has no groups."
+    listed = ", ".join(f"{g['display_name']} (group:{g['slug']})" for g in groups)
+    return f"There is no group called {slug}. The groups are: {listed}."
+
+
+async def assert_grant_group_exists(db: Any, organization_id: Any, subject: str) -> None:
+    """422 when *subject* is ``group:<slug>`` and the organization has no such group.
+
+    *subject* is already in the stored form of ``validate_grant_subject``.
+    ``org`` and an email address pass. A grant to a group that does not
+    exist lets nobody in, and reads as if it worked. The importer refuses the
+    same thing (``imports.GROUP_EXISTS_SQL``).
+    """
+    if not subject.startswith("group:"):
+        return
+    slug = subject.split(":", 1)[1]
+    groups = await org_groups(db, organization_id)
+    if any(g["slug"].lower() == slug.lower() for g in groups):
+        return
+    raise HTTPException(status_code=422, detail=unknown_group_sentence(slug, groups))
 
 
 def validate_choice(value: str | None, allowed: tuple[str, ...], what: str) -> None:

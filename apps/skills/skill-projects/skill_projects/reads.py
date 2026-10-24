@@ -1659,6 +1659,170 @@ async def report_list() -> str:
     return "\n".join(out)
 
 
+#: WS-64 OP-6d. The send switch of the deployment is the owner's (CLAUDE.md §3a
+#: rule 3). No tool reads it or sets it, and ``test_projects_report_delivery_tools.py``
+#: fails when the skill or the instructions name it. The schedule route answers
+#: ``delivery_armed_on_this_deployment``, and the Reports app shows that field.
+#: A card has no such answer before the write, so it says what may be true.
+DELIVERY_MAY_BE_OFF = (
+    "Delivery may be switched off. Metorite emails a report only when the "
+    "owner has switched delivery on for the deployment."
+)
+DELIVERY_OFF = "Reports are not emailed yet: delivery is switched off."
+#: Says only what the deployment says. No job sends a report yet (the send
+#: path ``reportEmail.ts`` has no caller), so the receipt claims no email.
+DELIVERY_ON = "Delivery is switched on for this deployment."
+
+#: The words of the schedule in the card. ``reports.SCHEDULES`` holds one: weekly.
+SCHEDULE_WORDS = {"weekly": "every week"}
+
+
+async def _names_of(emails: list[str]) -> dict[str, str]:
+    """Display names by lower-case address. A person the directory lacks has none."""
+    wanted = [e for e in emails if e]
+    if not wanted:
+        return {}
+    labels = (await get("/projects/people/names", {"emails": ",".join(wanted)})) or {}
+    names = labels.get("names") or {}
+    return {str(k).lower(): str(v) for k, v in names.items() if v}
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def report_recipients(report_id: str) -> str:
+    """Who one saved report goes to, and whether its schedule is armed. Each
+    recipient shows the address and the name the directory holds. Adding and
+    removing a recipient, and arming the schedule, need a card of their own.
+    Nothing here sends mail."""
+    rid = uuid_of(report_id, "report_id")
+    report = (await get(f"/projects/reports/{rid}")) or {}
+    payload = (await get(f"/projects/reports/{rid}/recipients")) or {}
+    rows = payload.get("recipients") or []
+    names = await _names_of([str(r.get("recipient") or "").lower() for r in rows])
+    armed = bool(report.get("enabled"))
+    out = [
+        legend(),
+        f"Report {data(report.get('name'))} (full_id: {rid}) · {len(rows)} recipients",
+        "  schedule: "
+        + (SCHEDULE_WORDS.get(str(report.get("schedule")), "on") if armed else "off"),
+    ]
+    for r in rows:
+        email = str(r.get("recipient") or "")
+        name = names.get(email.lower())
+        out.append(
+            f"- {data(email)} · {data(name) if name else 'not in the directory'}"
+            f" · added by {data(r.get('added_by') or '?')}"
+        )
+    if not rows:
+        out.append("(nobody receives this report)")
+    if report.get("can_edit") is False:
+        out.append("The member may read this list and may not change it.")
+    out.append(DELIVERY_MAY_BE_OFF)
+    return "\n".join(out)
+
+
+#: WS-64 OP-6e (D-OP-13, EA3-40). The chat LISTS what waits for the member and
+#: links each row to its task card. Only the run's member answers, on the card.
+#: No tool of this skill calls the answer routes, and
+#: ``test_projects_agent_requests_tools.py`` fails if one does.
+AGENT_REQUEST_KINDS = {"archive_task": "asks to archive this task"}
+
+
+def _age(stamp: Any) -> str:
+    """How long ago, in plain words. A stamp that does not parse has no age."""
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return "an unknown time ago"
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    secs = max(0, int((datetime.now(UTC) - then).total_seconds()))
+    if secs < 120:
+        return "just now"
+    if secs < 7200:
+        return f"{secs // 60} minutes ago"
+    if secs < 172800:
+        return f"{secs // 3600} hours ago"
+    return f"{secs // 86400} days ago"
+
+
+def _expired(stamp: Any) -> bool:
+    try:
+        at = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return True
+    return at.tzinfo is None or at <= datetime.now(UTC)
+
+
+async def _task_of_run(task_id: Any) -> dict[str, Any]:
+    """The task that a run belongs to. The id passes ``uuid_of`` before it
+    reaches a path, as every id does."""
+    tid = uuid_of(task_id, "task")
+    return (await get(f"/projects/tasks/{tid}")) or {}
+
+
+#: The answer of ``waiting_agent_requests`` while agent runs are switched off.
+AGENT_RUNS_OFF = (
+    "Agent runs are switched off in this organization, so no agent request "
+    "waits for you."
+)
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def waiting_agent_requests() -> str:
+    """The questions and requests that agents have put to the member and that
+    still wait for an answer, newest first. Each row shows the task, the agent,
+    the request in plain words, its age and the link to the task card. Only
+    the member answers, on that card. No chat tool approves, declines or
+    answers one, so send the member to the link."""
+    try:
+        page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
+    except GatewayRefusal as exc:
+        # `require_agent_runs` answers 404 while agent runs are switched off.
+        if exc.status == 404:
+            return AGENT_RUNS_OFF
+        raise
+    runs = [r for r in page.get("rows") or [] if r.get("status") == "awaiting"]
+    tasks = await asyncio.gather(
+        *(_task_of_run(r.get("task_id")) for r in runs), return_exceptions=True
+    )
+    out = [legend(), f"{len(runs)} agent requests wait for the member"]
+    for run, task in zip(runs, tasks, strict=True):
+        try:
+            tid = uuid_of(run.get("task_id"), "task")
+        except GatewayRefusal:
+            continue
+        ask = run.get("open_elicitation") or {}
+        request = (ask.get("content_metadata") or {}).get("request") or {}
+        kind = str(request.get("kind") or "")
+        body = str((ask.get("content") or {}).get("body") or "")
+        if isinstance(task, BaseException):
+            head = "(task not readable)"
+        else:
+            head = f"{_number(task)} {data(task.get('title'))}"
+        who = data(run.get("client_name") or run.get("client_via") or "an agent")
+        if kind:
+            plain = AGENT_REQUEST_KINDS.get(kind, "makes a request of an unknown kind")
+            if _expired(request.get("expires_at")):
+                plain += " (the request has expired)"
+        else:
+            plain = "asks a question"
+        when = _age(ask.get("created_at") or run.get("last_activity_at"))
+        out.append(f"- {head} · {who} {plain} · {when}")
+        if body:
+            out.append(f"    says: {data(body[:400])}")
+        out.append(f"    link: /projects?task={tid}")
+        out.append(f"    full_id: {tid}")
+    if not runs:
+        out.append("(no agent waits for the member)")
+    if page.get("next_cursor"):
+        out.append(f"(more than {MAX_PAGE} wait: this is the newest {MAX_PAGE})")
+    out.append(
+        "Only the member answers, on the task card. Give the link. Do not approve, "
+        "decline or answer for the member."
+    )
+    return "\n".join(out)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview

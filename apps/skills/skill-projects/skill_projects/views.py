@@ -32,7 +32,7 @@ from typing import Any
 
 from acb_common.paging import paged
 
-from skill_projects.client import GatewayRefusal, data, get, post, uuid_of
+from skill_projects.client import GatewayRefusal, data, get, post, request, uuid_of
 from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
     _MISSING,
@@ -1257,10 +1257,125 @@ async def status_report(project_id: str = "", make_report: bool = False) -> str:
     return "\n".join(text_lines)
 
 
+# ── The filtered list as a file of the chat (WS-64 OP-6c, D-OP-9) ────────────
+
+#: The columns of an export when the member names none. The route sends only
+#: ``#`` and ``Title`` for an empty ``shown_fields``, which is a sheet nobody
+#: wants, so the chat asks for the usual set. Each key is one of the route's
+#: ``filters.SHOWN_FIELDS``, and ``test_projects_nudge_attach_tools.py`` holds
+#: that.
+DEFAULT_EXPORT_FIELDS = "status,type,assignees,start_date,due_at,importance,tags,estimate"
+
+
+def _csv_rows(body: bytes) -> int:
+    """The data rows of a CSV body, a header excluded. A cell may span lines."""
+    import csv
+    import io
+
+    text = body.decode("utf-8-sig", errors="replace")
+    return max(0, sum(1 for _ in csv.reader(io.StringIO(text))) - 1)
+
+
+def _export_stem(resp: Any) -> str:
+    """The file name the route chose, without ``.csv``, else a fixed stem."""
+    header = ""
+    try:
+        header = str((getattr(resp, "headers", None) or {}).get("Content-Disposition") or "")
+    except AttributeError:
+        header = ""
+    hit = re.search(r'filename="([A-Za-z0-9._-]{1,80})\.csv"', header)
+    return hit.group(1) if hit else "projects-tasks"
+
+
+# read_only=False, idempotent=False: it writes one file into the chat's
+# outputs, never a Projects row. Its manifest class stays A, because it reaches
+# only a read. CHAT_FILE_WRITERS names it (OP-6c).
+@_annotate(read_only=False, idempotent=False, open_world=False)
+async def export_tasks(
+    project_id: str = "",
+    include_subtree: bool = True,
+    status_category: str = "",
+    assignee: str = "",
+    unassigned: bool = False,
+    overdue: bool = False,
+    due_before: str = "",
+    tags: str = "",
+    watching: bool = False,
+    include_archived: bool = False,
+    query: str = "",
+    shown_fields: str = "",
+) -> str:
+    """Export the tasks that a filter picks as a CSV file in this chat. The
+    filters are those of list_tasks: project_id, include_subtree,
+    status_category, assignee, unassigned, overdue, due_before, tags,
+    watching, include_archived and query. shown_fields is a comma list of
+    columns from status, type, source, assignees, start_date, due_at,
+    importance, subtasks, blocked, pr, tags, attachments, estimate and
+    created_at. Empty shown_fields gives the usual columns. A file card shows
+    the file, so name it in words and paste no link. The export is complete or
+    refused: above the row limit it exports nothing, and the answer says to
+    narrow the filter. Nothing is written to Projects."""
+    params: dict[str, Any] = {
+        "include_subtree": bool(include_subtree),
+        "shown_fields": (shown_fields or "").strip() or DEFAULT_EXPORT_FIELDS,
+    }
+    if project_id:
+        params["project_id"] = uuid_of(project_id, "project_id")
+    if status_category:
+        params["status_category"] = status_category
+    if assignee:
+        params["assignees"] = assignee
+    if unassigned:
+        params["unassigned"] = True
+    if overdue:
+        params["overdue"] = True
+    if due_before:
+        params["due_before"] = due_before
+    if tags:
+        params["tags"] = tags
+    if watching:
+        params["watching"] = True
+    if include_archived:
+        params["include_archived"] = True
+    term = (query or "").strip()
+    if term:
+        params["q"] = term
+    try:
+        resp = await request("GET", "/projects/export/tasks.csv", params=params, timeout=60.0)
+    except GatewayRefusal as exc:
+        if exc.status == 422 and "export cap" in (exc.detail or ""):
+            return (
+                f"Nothing was exported. {exc.detail} Ask the member which filter to add, "
+                "then export again."
+            )
+        raise
+    body = bytes(resp.content or b"")
+    rows = _csv_rows(body)
+    # The route's own count, when it sent one; the file is complete by construction.
+    header = (getattr(resp, "headers", None) or {}).get("X-Export-Rows")
+    if header is not None and str(header).isdigit():
+        rows = int(header)
+    from acb_skills import documents as docs
+
+    saved = await docs.save_outputs(
+        _export_stem(resp), (".csv",), lambda _rels: {".csv": body}, announce=True
+    )
+    if "error" in saved:
+        return f"The tasks were read but the file was not saved: {saved['error']}"
+    written = saved["files"][".csv"]
+    return (
+        f"Exported {rows} task{'' if rows == 1 else 's'} to {written['path']} "
+        f"({written['size']} bytes), with the columns {params['shown_fields']}. "
+        "A card in the chat shows the file. Name it in words, say in one line what it "
+        "holds, and paste no link."
+    )
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they draw
     "render_timeline",
     "render_board",
     "render_tasks",
     "render_report",
     "status_report",
+    "export_tasks",
 ]

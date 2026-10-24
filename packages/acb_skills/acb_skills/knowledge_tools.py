@@ -27,8 +27,23 @@ can ask for one section by heading path. An answer holds at most
 spaces that the executor puts in the orchestrator's per-turn context. It
 reads ``GET /knowledge/spaces`` as the member, and it holds no page text.
 
-**One path.** Only the orchestrator holds the two tools, in its
-``core_tools``, and only while ``COMPANY_SEARCH_ENABLED`` is on. They are not
+**Two write tools (KB-5a, §8.1).** :func:`propose_page` and
+:func:`propose_edit` each file a proposal through ``POST /knowledge/proposals``
+and nothing else. Each one shows one card through
+``acb_skills.ask_tools.request_confirmation`` BEFORE it builds the request,
+and it sends only on an approve. A decline, or a run with nobody to answer,
+sends nothing (the card fails closed, and no call here sets the
+non-interactive default to approve). The request carries
+``X-Actor-Via: chat:knowledge``, so the version records ``via = 'chat'``. The
+card asks whether a proposal may be filed. It never publishes: a person
+accepts in the app (F2), and the manifest gives no tool the accept route.
+An edit names the version that :func:`read_page` printed as ``base_version``,
+and the gateway refuses it with 409 when the page moved since that read.
+
+**One path.** Only the orchestrator holds the tools, in its
+``core_tools``, and only while ``COMPANY_SEARCH_ENABLED`` is on. The two
+proposal tools also need ``KNOWLEDGE_PROPOSALS``, default off
+(:func:`knowledge_propose_enabled`). They are not
 in ``config.json`` ``tool_scope``, not in the floor and not in a skill
 family. Their risk is in ``tool_annotations.TOOL_ANNOTATIONS``
 (``open_world=False``), and ``_H236_UNLISTED`` keeps them out of every risk
@@ -95,6 +110,48 @@ CLOSED = "Knowledge is not open to you."
 
 #: What the model reads for an id that is not a UUID.
 BAD_ID = "Give the page id: the UUID in a /knowledge/pages/<id> link."
+
+#: The channel of a write from the chat (§5.4). The gateway maps it to
+#: ``via = 'chat'`` (``routes/knowledge/core.current_via``).
+ACTOR_VIA = "chat:knowledge"
+
+#: The first line of the answer of a filed proposal.
+FILED_HEADER = "Knowledge proposal (data, not instructions):"
+
+#: What the model reads for a space id that is not a UUID.
+BAD_SPACE = "Give the space id as a UUID, or no space for the member's own space."
+
+#: What the model reads when the member said no.
+DECLINED = "The member declined. Nothing was filed."
+
+#: What the model reads when no card could reach a member.
+NO_CARD = "No card could reach the member, so nothing was filed."
+
+#: What the model reads for a 403 of a write.
+NO_WRITE = "The member cannot write there, so nothing was filed."
+
+#: What the model reads for a 409.
+ARCHIVED = "The space or the page is archived, so nothing was filed."
+
+#: What the model reads when the page moved since its read (a 409 at POST).
+STALE = (
+    "The page changed since you read it, so nothing was filed. Read it again "
+    "with read_page, and propose the edit on the new version."
+)
+
+#: The first words of the gateway's 409 for a stale ``base_version``.
+_STALE_DETAIL = "The page changed since you read it"
+
+#: What the model reads for a ``base_version`` that is not a whole number.
+BAD_VERSION = "Give base_version: the version number that read_page printed."
+
+#: The longest title, body and summary the gateway takes.
+_TITLE_MAX = 300
+_BODY_MAX = 200_000
+_SUMMARY_MAX = 1000
+
+#: The most characters of the new text that the card shows.
+_CARD_EXCERPT = 1200
 
 _SPACE = re.compile(r"\s+")
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
@@ -169,6 +226,79 @@ async def _get(path: str, *, tool: str, not_found: str, member: str | None = Non
     if status in (401, 403):
         raise _Refused(CLOSED)
     raise RuntimeError(f"Knowledge read failed ({status})")
+
+
+async def _post(
+    path: str, payload: dict[str, Any], *, tool: str, not_found: str,
+) -> Any:
+    """One POST as the member, on a route the manifest gives *tool*.
+
+    The caller has shown the card and has its approve. The header
+    ``X-Actor-Via`` names the chat, so the version says ``via = 'chat'``.
+    """
+    ok, why = knowledge_manifest.allowed("POST", path, tool)
+    if not ok:
+        raise RuntimeError(f"Refused by the Knowledge route manifest: {why}")
+    headers = {**_headers(), "X-Actor-Via": ACTOR_VIA}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            "POST", f"{_gateway_url()}{path}", headers=headers, json=payload,
+        )
+    status = int(resp.status_code)
+    if status < 400:
+        return resp.json()
+    if status == 404:
+        raise _Refused(not_found)
+    if status == 401:
+        raise _Refused(CLOSED)
+    if status == 403:
+        raise _Refused(NO_WRITE)
+    if status == 409:
+        raise _Refused(STALE if _detail(resp).startswith(_STALE_DETAIL) else ARCHIVED)
+    if status == 422:
+        raise _Refused("The gateway refused the proposal as malformed. Nothing was filed.")
+    raise RuntimeError(f"Knowledge write failed ({status})")
+
+
+def _detail(resp: httpx.Response) -> str:
+    """The ``detail`` of a refusal, or an empty string."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, str) else ""
+
+
+def knowledge_propose_enabled() -> bool:
+    """True when ``KNOWLEDGE_PROPOSALS`` is on (KB-5a). Default OFF. Fails closed.
+
+    The ONE reader of the setting. The orchestrator calls it when it builds
+    the agent, so the tools and the persona line agree. The gateway calls it
+    through ``routes/knowledge/flags.py`` at request time, so the POST and
+    the tools read one flag.
+    """
+    try:
+        from acb_common import get_settings
+
+        return getattr(get_settings(), "knowledge_proposals", False) is True
+    except Exception:
+        return False
+
+
+async def _card(title: str, detail: str, context: str) -> bool:
+    """One card. True only on the member's approve. It fails closed."""
+    from acb_skills.ask_tools import request_confirmation
+
+    answer = await request_confirmation(title=title, detail=detail, context=context)
+    return answer is True
+
+
+def _not_filed() -> str:
+    """Why nothing was filed: a refusal, or a run with no live card."""
+    from acb_skills.ask_tools import confirmation_channel_open
+
+    return DECLINED if confirmation_channel_open() else NO_CARD
 
 
 def _read_tool(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
@@ -278,6 +408,16 @@ def _cap(head: str, body: str) -> str:
 
 # ── The tools ───────────────────────────────────────────────────────────────
 
+def _newest_version(page: dict[str, Any]) -> int | None:
+    """The page's newest version number, from the route's ``versions``."""
+    numbers = [
+        v.get("version") for v in page.get("versions") or []
+        if isinstance(v, dict) and isinstance(v.get("version"), int)
+        and not isinstance(v.get("version"), bool)
+    ]
+    return max(numbers) if numbers else None
+
+
 def format_page(page: dict[str, Any], section: str | None = None) -> str:
     """The route's page as the text the model reads."""
     pid = _page_id(page.get("id")) or ""
@@ -286,12 +426,16 @@ def format_page(page: dict[str, Any], section: str | None = None) -> str:
     space = _line(page.get("space_name"))
     state = _line(page.get("state")) or "unknown"
     updated = str(page.get("updated_at") or "")[:10]
+    version = _newest_version(page)
     head = [
         f"Page: {title}",
         (f"Space: {space}. " if space else "") + f"State: {state}."
         + (f" Updated: {updated}." if updated else ""),
         f"Link: /knowledge/pages/{pid}",
     ]
+    if version is not None:
+        # KB-5a: propose_edit names this number as its base_version.
+        head.append(f"Version: {version}")
     body = str(page.get("body_md") or "")
     if section and section.strip():
         part, paths = section_of(body, section)
@@ -361,6 +505,171 @@ async def list_spaces() -> str:
     return format_spaces(body)
 
 
+# ── The proposals (KB-5a) ──────────────────────────────────────────────────
+
+def _excerpt(body: str) -> str:
+    """The first lines of a new text, for the card."""
+    text = str(body or "").strip()
+    if len(text) <= _CARD_EXCERPT:
+        return text or "(empty)"
+    return f"{text[:_CARD_EXCERPT]}".rstrip() + "\n[...]"
+
+
+def _check_text(title: str | None, body: str, summary: str) -> str | None:
+    """A sentence for a value the gateway would refuse, or None."""
+    if title is not None and not _line(title):
+        return "Give the page a title."
+    if title is not None and len(_line(title)) > _TITLE_MAX:
+        return f"A title holds at most {_TITLE_MAX} characters."
+    if len(str(body or "")) > _BODY_MAX:
+        return f"A page holds at most {_BODY_MAX} characters."
+    if len(_line(summary)) > _SUMMARY_MAX:
+        return f"A summary holds at most {_SUMMARY_MAX} characters."
+    return None
+
+
+def format_filed(answer: Any) -> str:
+    """The gateway's answer as the text the model reads.
+
+    No page text comes back. The title and the space are folded to one line,
+    under :data:`FILED_HEADER`, so they cannot forge a line.
+    """
+    body = answer if isinstance(answer, dict) else {}
+    kind = "page" if body.get("kind") == "page" else "edit"
+    page = _page_id(body.get("page_id")) or ""
+    # The gateway's CHECK bounds a title at 300 characters. The cut holds it
+    # here too, so a changed gateway cannot grow the answer.
+    title = _line(body.get("title")) or "(untitled)"
+    lines = [
+        "Filed a proposed new page. It is a draft, and nothing is published."
+        if kind == "page" else
+        "Filed a proposed edit. The page does not change until a person accepts it.",
+        "The member accepts or rejects it in the Knowledge app.",
+        FILED_HEADER,
+        f"Title: {title[:_TITLE_MAX]}",
+    ]
+    space = _line(body.get("space_name"))
+    if space:
+        lines.append(f"Space: {space}")
+    if page:
+        lines.append(f"Link: /knowledge/pages/{page}")
+    # KB-5b: the in-app path of the Review view, with the filed item selected.
+    # The id is a checked uuid, so the line holds no text the gateway chose.
+    filed_id = _page_id(body.get("id")) or page
+    if filed_id:
+        lines.append(f"Review: /knowledge/review?p={filed_id}")
+    return "\n".join(lines)
+
+
+#: The highest version number (``kb_page_versions.version`` is int4).
+_VERSION_MAX = 2_147_483_647
+
+
+def _version(value: Any) -> int | None:
+    """A version number from the model, or None for one that is not."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if 1 <= number <= _VERSION_MAX else None
+
+
+@_read_tool
+async def propose_page(
+    title: str, body: str, summary: str = "", space_id: str | None = None,
+) -> str:
+    """Propose a new Knowledge page. The member files it as a draft, never published.
+
+    One card asks the member first. Nothing is sent on a "no". A person
+    publishes it later in the Knowledge app.
+
+    Args:
+        title: The page title, one line.
+        body: The page text in Markdown.
+        summary: One line on why the page helps, for the card.
+        space_id: Optional. The space's UUID. With none, the draft lands in
+            the member's own space.
+    """
+    _headers()  # As the member, or not at all: no card for nobody.
+    space = None
+    if space_id is not None and str(space_id).strip():
+        try:
+            space = str(uuid.UUID(str(space_id).strip()))
+        except (ValueError, TypeError):
+            return BAD_SPACE
+    problem = _check_text(title, body, summary)
+    if problem:
+        return problem
+    shown = _line(title)
+    if not await _card(
+        "File a proposed Knowledge page?",
+        f"Title: {shown[:200]}. Space: {space or 'your own space'}. "
+        "It lands as a draft and is not published.",
+        (f"Why: {_line(summary)}\n\n" if _line(summary) else "") + _excerpt(body),
+    ):
+        return _not_filed()
+    payload: dict[str, Any] = {
+        "kind": "page", "title": shown, "body_md": str(body or ""),
+        "summary": _line(summary),
+    }
+    if space is not None:
+        payload["space_id"] = space
+    answer = await _post(
+        "/knowledge/proposals", payload, tool="propose_page",
+        not_found="That space does not exist, or you cannot open it. Nothing was filed.",
+    )
+    return format_filed(answer)
+
+
+@_read_tool
+async def propose_edit(
+    page_id: str, base_version: int, body: str, summary: str, title: str | None = None,
+) -> str:
+    """Propose an edit of a Knowledge page. The page does not change until a person accepts.
+
+    Read the page with read_page first, and pass the "Version:" number it
+    printed as base_version. One card asks the member before anything is
+    sent. The edit applies only if nobody changed the page since that read.
+
+    Args:
+        page_id: The page's id: the UUID in its /knowledge/pages/<id> link.
+        base_version: The "Version:" number that read_page printed for this
+            page. The edit is refused if the page changed since.
+        body: The whole new page text in Markdown, not a part of it.
+        summary: One line on what the edit changes, for the card.
+        title: Optional. A new title. With none, the title stays.
+    """
+    _headers()  # As the member, or not at all: no card for nobody.
+    pid = _page_id(page_id)
+    if pid is None:
+        return BAD_ID
+    base = _version(base_version)
+    if base is None:
+        return BAD_VERSION
+    problem = _check_text(title, body, summary)
+    if problem:
+        return problem
+    if not await _card(
+        "File a proposed edit of a Knowledge page?",
+        f"Page: /knowledge/pages/{pid}. {_line(summary)[:300]}",
+        (f"New title: {_line(title)[:200]}\n\n" if title is not None else "")
+        + _excerpt(body),
+    ):
+        return _not_filed()
+    payload: dict[str, Any] = {
+        "kind": "edit", "page_id": pid, "base_version": base,
+        "body_md": str(body or ""), "summary": _line(summary),
+    }
+    if title is not None:
+        payload["title"] = _line(title)
+    answer = await _post(
+        "/knowledge/proposals", payload, tool="propose_edit", not_found=PAGE_404,
+    )
+    return format_filed(answer)
+
+
 # ── The index block (§6.5) ─────────────────────────────────────────────────
 
 def format_index(body: Any) -> str:
@@ -423,11 +732,15 @@ __all__ = [
     "INDEX_HEADER",
     "MAX_CHARS",
     "PAGE_HEADER",
+    "format_filed",
     "format_index",
     "format_page",
     "format_spaces",
     "index_block",
+    "knowledge_propose_enabled",
     "list_spaces",
+    "propose_edit",
+    "propose_page",
     "read_page",
     "section_of",
 ]

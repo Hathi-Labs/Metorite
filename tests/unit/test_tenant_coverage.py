@@ -292,13 +292,35 @@ def test_the_fill_rank_table_is_tenant_scoped() -> None:
 @pytest.mark.parametrize(
     "table",
     ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
-     "kb_chunks"],
+     "kb_chunks", "kb_favorites", "kb_page_proposals", "kb_gaps"],
 )
 def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
-    """WS-61 KB-1 and KB-3 (``knowledge_base.md`` §6.1, §12 and §14). The
-    spaces, grants, pages, versions, links and the chunks of the index hold
-    what one organization wrote down. None may be exempt, and the committed
-    policy phase must carry each (R5)."""
+    """WS-61 KB-1, KB-3, KB-2f, KB-5a and KB-9a (``knowledge_base.md`` §6.1,
+    §8.4, §12, §14 and §21.7). The spaces, grants, pages, versions, links, the
+    chunks of the index, the favourites of a member, the proposed edits of
+    the assistant and the questions that Knowledge could not answer hold what
+    one organization wrote down. None may be exempt, and the committed policy phase must carry each
+    (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["email_mailbox_grants", "email_thread_assignments", "email_send_log",
+     "email_mailbox_member_prefs"],
+)
+def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
+    """WS-65 SM-1 (``shared_mailbox.md`` §8.2 step 1). The grants of a shared
+    mailbox, who answers each thread, the log of each send and the All inboxes
+    choices of a member hold what one organization does with its mail. None
+    may be exempt, and the committed policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT

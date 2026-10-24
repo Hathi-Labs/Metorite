@@ -177,6 +177,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # the Files/Artifacts viewers until they happen to run again.  This restores
     # them on startup so their workspace is browsable without a manual pull.
     async def _warm_clone_agents() -> None:
+        # H-363: scrub every clone FIRST. An older loader wrote the token into
+        # each clone's remote URL, and a clone keeps it until it loads again.
+        # This takes it out of every clone before any run starts, and it logs
+        # an error for a config that still holds one. It never logs a value.
+        try:
+            from acb_skills.loader import scrub_clone_credentials
+
+            await _asyncio.to_thread(scrub_clone_credentials, settings)
+        except Exception as exc:
+            _log.warning("gateway.clone_scrub_failed", error=str(exc)[:200])
         try:
             from acb_skills.loader import _install_agent_deps, load_agent
 
@@ -207,6 +217,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 except Exception:
                     continue
                 if _ws is not None:
+                    # H-363: pin the clone's repo from the registry, so a
+                    # push or a credentialed read after this restart goes to
+                    # the agent's own repo.
+                    try:
+                        from gateway.routes.agent import _pin_registry_clone
+
+                        _pin_registry_clone(name, _ws)
+                    except Exception:
+                        pass
                     # Already cloned — ensure its declared deps are installed
                     # into agent-site (WS-49 BH-7; idempotent, a no-op when
                     # unchanged), so its tools work before the next run.
@@ -450,6 +469,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
 
+    # Start the send-later job (routes/email/automation/send_later.py; spec
+    # email_app_master_plan.md §19, H-375). Every 60 s it sends the drafts
+    # that are due. Dark by default: with EMAIL_SEND_LATER off it starts no
+    # task. Fence: test_email_send_later.py.
+    try:
+        from gateway.routes.email.automation.send_later import start_send_later_loop
+        _log.info("gateway.email_send_later_loop", started=await start_send_later_loop())
+    except Exception as exc:
+        _log.warning("gateway.email_send_later_loop_skipped", error=str(exc))
+
     # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
     # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
     # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
@@ -564,6 +593,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.email.memory_purge import stop_purge_loop
         await stop_purge_loop()
+    except Exception:
+        pass
+
+    # Stop the send-later job and wait for a tick in progress.
+    try:
+        from gateway.routes.email.automation.send_later import stop_send_later_loop
+        await stop_send_later_loop()
     except Exception:
         pass
 
@@ -1691,6 +1727,16 @@ try:
     from gateway.routes.chat import router as _chat_router
 
     app.include_router(_chat_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-62 CF-5 — the day's brief as the first turn of a fresh chat on a
+    # phone (`chat_first_surface.md` §4.6). Shares /chat's prefix, in its own
+    # module, as the rooms do.
+    from gateway.routes.chat_brief import router as _chat_brief_router
+
+    app.include_router(_chat_brief_router)
 except Exception:  # pragma: no cover
     pass
 

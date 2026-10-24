@@ -398,7 +398,7 @@ declares a default tier".
 | Agent | Runtime | Default | Anchor |
 |---|---|---|---|
 | projects-assistant | native MAF | `PROJECTS_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-projects/agents.py:93` |
-| email-assistant | native MAF | `EMAIL_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-email-assistant/agents.py:2387` |
+| email-assistant | native MAF | `EMAIL_AGENT_MODEL`, else `tier-powerful` (owner, 2026-10-22) | `apps/agents/agent-email-assistant/agents.py:2387` |
 | crm-assistant | native MAF | `CRM_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-crm/agents.py:1013` |
 | whatsapp-assistant | native MAF | `WHATSAPP_AGENT_MODEL`, else `tier-balanced` | `apps/agents/agent-whatsapp-assistant/agents.py:516` |
 | apis-config | native MAF | `MODEL = "tier-balanced"` | `apps/agents/agent-apis-config/agents.py:54` |
@@ -599,11 +599,40 @@ The question is the kind of the member's message: `chat`, `code`, `plan` or
   of the tools the agent holds. It sends no earlier history.
 - A confidence below the threshold reads as `chat`, so the turn stays on the
   default.
-- The executor waits at most 1.5 s. A timeout reads as `chat`.
+- The executor waits at most 3.0 s. A timeout reads as `chat`. It was 1.5 s
+  until 2026-10-22. Production then measured the answers at 1.1 to 1.5 s,
+  and 41 of 80 questions timed out (51%).
 - The answer sets the tier of every main model request in that turn, unless a
   tool hint raises it.
 - A turn with one short message under 12 words skips the question and reads as
   `chat`. This saves the call on "thanks" and "yes".
+
+### 4.3a The size of the work (owner, 2026-10-22)
+
+The owner asked for fast or balanced on ordinary work, and for powerful on a
+lot of context or a long thread. Three rules do it:
+
+1. **A long turn.** The executor counts the turn before the first request.
+   It counts the message, the earlier messages, `system_context` and
+   `memory_context` (`tier_policy.turn_tokens`, 3 characters a token). A turn
+   of 24,000 tokens or more starts on `tier-powerful`, with reason `context`.
+   The turn keeps ONE model, so the rule of 2026-10-09 holds.
+2. **A judgement turn.** The turn question puts two more cases in
+   `analysis`, which takes `tier-powerful` (§4.1). One is a comparison of
+   offers with a choice. The other is a reply that needs judgement.
+3. **A delegated run** never goes below its own agent's default
+   (`executor._sub_agent_tier`). The email assistant's default is now
+   `tier-powerful`.
+
+The email drafter is outside this policy, and it follows the same idea
+(`draft_budget.tier_for_size`). A mail with files or 12,000 characters takes
+at least `tier-balanced`. A background draft of 60,000 characters takes
+`tier-powerful`. A draft that the member waits for stops at `tier-balanced`,
+because `tier-powerful` can need 20 to 60 s. The window check of `plan_draft`
+still wins. Fence: `tests/unit/test_adaptive_tier.py`.
+
+The cost: the email assistant now runs each turn on `tier-powerful`, short
+turns too. The owner chose that default on 2026-10-22.
 
 ### 4.4 Tool hints
 

@@ -68,7 +68,8 @@ import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
-import { FilterBar } from "./components/FilterBar";
+import { FilterChrome } from "./components/CompactFilterBar";
+import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
@@ -81,7 +82,9 @@ import { CalendarView } from "./components/CalendarView";
 import { MoreTasksBar } from "./components/MoreTasksBar";
 import { SearchPalette } from "./components/SearchPalette";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import DeleteTaskDialog from "./components/DeleteTaskDialog";
 import { deleteTaskCopy, deleteTasksCopy } from "./lib/deleteCopy";
+import { afterDeleteTitle } from "./lib/deleteSubtasks";
 import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
@@ -211,7 +214,9 @@ import {
   spaceOf,
   taskWhere,
 } from "./lib/tree";
-import { forgetFold, markHidden, openFolds, resumeFold } from "./lib/treeFold";
+import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
+import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
+import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
@@ -408,6 +413,30 @@ function ProjectNav({
   onManageTags: (space: ProjectRow) => void;
   onManageLifecycle: (space: ProjectRow) => void;
 }) {
+  // Filed work leaves the live tree and waits in one collapsed section at the
+  // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
+  const split = useMemo(() => splitArchived(roots), [roots]);
+  const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
+  const archivedGen = useMemo(
+    () => new Map(split.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [split.archived],
+  );
+  // `onDelete` is wrapped for the reason the comment below gives in full: it
+  // RAISES A DIALOG, and on a phone this tree is the drawer sheet. Every other
+  // entry writes and closes its own menu.
+  const navActions = actions
+    ? {
+        ...actions,
+        ...(actions.onDelete
+          ? {
+              onDelete: (project: ProjectRow, level: NodeLevel) => {
+                actions.onDelete?.(project, level);
+                onPicked?.();
+              },
+            }
+          : {}),
+      }
+    : undefined;
   return (
     <>
       {/* The app's own destinations, in the main sidebar's grammar (owner
@@ -481,7 +510,7 @@ function ProjectNav({
       </div>
 
       <ProjectTree
-        roots={roots}
+        roots={split.active}
         selectedId={app ? null : selectedId}
         onSelect={(project) => {
           onSelect(project);
@@ -508,21 +537,7 @@ function ProjectNav({
         // `actions` writes and closes its own menu — those are safe as they
         // are, and wrapping them would close the drawer for a state change
         // somebody wants to make twice in a row.
-        actions={
-          actions
-            ? {
-                ...actions,
-                ...(actions.onDelete
-                  ? {
-                      onDelete: (project: ProjectRow, level: NodeLevel) => {
-                        actions.onDelete?.(project, level);
-                        onPicked?.();
-                      },
-                    }
-                  : {}),
-              }
-            : undefined
-        }
+        actions={navActions}
         // Each closes the phone's drawer, like every other row action here —
         // a dialog opening behind an open drawer is a dialog nobody can see.
         onManageStatuses={(space) => {
@@ -542,6 +557,48 @@ function ProjectNav({
           onPicked?.();
         }}
       />
+
+      {/* Archived — its own section, closed until asked for. No section when
+          nothing is filed. The rows are the same tree rows, so Unarchive and
+          Delete are on the row's menu, and a filed project opens to read. */}
+      {split.count > 0 ? (
+        <div className="mt-2 border-t border-border pt-1" data-testid="archived-section">
+          <button
+            type="button"
+            aria-expanded={archivedOpen}
+            aria-controls="projects-archived-list"
+            onClick={() => toggleFold(ARCHIVED_FOLD_ID)}
+            className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+          >
+            <Icon name={archivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+            <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+              Archived
+            </span>
+            <span
+              className="shrink-0 text-xs tabular-nums"
+              title="Archived projects, subprojects and spaces"
+            >
+              {split.count}
+              <span className="sr-only"> archived projects</span>
+            </span>
+          </button>
+          {archivedOpen ? (
+            <div id="projects-archived-list" className="opacity-75">
+              <ProjectTree
+                roots={split.archived.map((entry) => entry.node)}
+                selectedId={app ? null : selectedId}
+                onSelect={(project) => {
+                  onSelect(project);
+                  onPicked?.();
+                }}
+                actions={navActions}
+                rootParentGen={(node) => archivedGen.get(node.id) ?? 0}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -2566,6 +2623,37 @@ function ProjectsWorkspace() {
       return "opened";
     },
   });
+  // WS-46 P11 (G22) — `show_view` changes what this page draws: the canvas,
+  // a saved view, the filters and the grouping. It writes nothing, as the
+  // filter bar writes nothing. `lib/chatView.ts` holds the rules.
+  useFrontendTool({
+    name: "projects.show_view",
+    description: "Change the canvas, filters, grouping or saved view of the Projects page.",
+    dispatched: true,
+    handler: (args) => {
+      const plan = planShowView(args);
+      if (typeof plan === "string") return plan;
+      const row = flatten(visibleRoots).find((e) => e.node.id === plan.projectId);
+      if (!row) return "not visible";
+      setApp(null);
+      setSelected(row.node as ProjectRow);
+      if (plan.mode) setChosenMode(plan.mode);
+      let nextGroup = groupBy;
+      let nextLanes = lanes;
+      if (plan.view) {
+        setFilters(plan.view.filters);
+        setShownFields(plan.view.shownFields);
+        setActiveViewId(plan.view.id);
+        nextGroup = plan.view.groupBy;
+        nextLanes = plan.view.lanes;
+      }
+      if (plan.filters) setFilters(plan.filters);
+      if (plan.groupBy) nextGroup = plan.groupBy;
+      setGroupBy(nextGroup);
+      setLanes(lanesAfter(nextLanes, nextGroup, plan.subGroupBy));
+      return "shown";
+    },
+  });
   useFrontendTool({
     name: "projects.open_app",
     description: "Open a live Projects app (reports).",
@@ -3073,22 +3161,23 @@ function ProjectsWorkspace() {
    *
    * Without `confirmed` this only opens the dialog. Its confirm calls back.
    */
-  async function deleteTaskById(taskId: string, confirmed = false) {
+  async function deleteTaskById(
+    taskId: string,
+    confirmed = false,
+    deleteSubtaskIds: string[] = [],
+    deleteAllSubtasks = false,
+  ) {
     if (!confirmed) {
       setConfirmingDelete({ kind: "one", taskId });
       return;
     }
     try {
-      const done = await projectsApi.deleteTask(taskId);
+      const done = await projectsApi.deleteTask(taskId, { deleteSubtaskIds, deleteAllSubtasks });
       await refreshRef.current();
       setTreeKey((k) => k + 1);
-      const promoted = done.cascaded.subtasks_promoted;
-      toast.show({
-        variant: "success",
-        title: promoted
-          ? `Deleted. ${promoted} subtask${promoted === 1 ? "" : "s"} moved up a level.`
-          : "Task deleted",
-      });
+      // The words come from the route's own counts (D-OP-10), so what the
+      // member was told in the dialog and what happened are one number.
+      toast.show({ variant: "success", title: afterDeleteTitle(done.cascaded) });
     } catch (err) {
       setError(String((err as Error).message));
     }
@@ -3718,6 +3807,14 @@ function ProjectsWorkspace() {
    */
   const canvasKey = `${selected?.id ?? "none"}:${canvasLabel}`;
 
+  // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
+  // filter row, the old strip and the old banner, exactly as before.
+  const compactChrome = compactChromeEnabled();
+  const onAgentFocus = (next: AgentFocus | null) => {
+    setWaitingOnMe(next === "waiting");
+    setAgentFocus(next === "waiting" ? null : next);
+  };
+
   /** Everything between the chrome and the canvas, plus the canvas. */
   /**
    * The member's PLACE, which both chat mounts hand the rail — the node they
@@ -3834,7 +3931,16 @@ function ProjectsWorkspace() {
       {shownError ? renderState("error", shownError) : null}
 
       {selected && !overview ? (
-        <FilterBar
+        <FilterChrome
+          compact={compactChrome}
+          phone={isMobile}
+          modes={MODE_OPTIONS}
+          onMode={(next) => setChosenMode(next)}
+          resultCount={taskTotal}
+          loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
+          agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
+          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
           archivedCount={archivedCount}
@@ -3887,16 +3993,16 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && agentRunsOn ? (
+      {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
+          in the active-filter row of the tool bar above. */}
+      {selected && !overview && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
           focus={waitingOnMe ? "waiting" : agentFocus}
-          onFocus={(next) => {
-            setWaitingOnMe(next === "waiting");
-            setAgentFocus(next === "waiting" ? null : next);
-          }}
+          onFocus={onAgentFocus}
+          hideZero={compactChrome}
         />
       ) : null}
 
@@ -4002,7 +4108,9 @@ function ProjectsWorkspace() {
           over them would be a second way to say one thing (§5), and it would
           disagree, because the two endpoints cap differently. The overview
           counts in SQL and is never short. */}
-      {selected && (mode === "board" || mode === "list" || mode === "table") ? (
+      {selected &&
+      !compactChrome &&
+      (mode === "board" || mode === "list" || mode === "table") ? (
         <MoreTasksBar
           loaded={tasks.length}
           total={taskTotal}
@@ -4116,6 +4224,7 @@ function ProjectsWorkspace() {
           ) : mode === "board" ? (
             <TaskBoard
           personLabels={personLabels}
+              phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}
               subtasks={subtaskMode}
@@ -4192,6 +4301,19 @@ function ProjectsWorkspace() {
               onSelect={(task) => void openWithStatuses(task)}
             />
           )}
+          {/* OP-1: with the compact chrome the load-more row sits at the END of
+            the list, and the count "100 of 219" sits in the tool row. */}
+          {selected &&
+          compactChrome &&
+          (mode === "board" || mode === "list" || mode === "table") ? (
+            <MoreTasksBar
+              atEnd
+              loaded={tasks.length}
+              total={taskTotal}
+              busy={loadingMore}
+              onLoadMore={() => void loadMoreTasks()}
+            />
+          ) : null}
         </LayoutBoundary>
       </div>
     </>
@@ -4433,8 +4555,22 @@ function ProjectsWorkspace() {
 
       {/* One delete confirmation, shared with My Tasks. The words are this
           app's own and true for it: a Projects delete is permanent. */}
+      {confirmingDelete?.kind === "one" ? (
+        <DeleteTaskDialog
+          key={confirmingDelete.taskId}
+          taskId={confirmingDelete.taskId}
+          title={doomedTask?.title ?? null}
+          isMobile={isMobile}
+          onCancel={() => setConfirmingDelete(null)}
+          onConfirm={(ids, all) => {
+            const pending = confirmingDelete;
+            setConfirmingDelete(null);
+            void deleteTaskById(pending.taskId, true, ids, all);
+          }}
+        />
+      ) : null}
       <ConfirmDialog
-        open={Boolean(confirmingDelete)}
+        open={Boolean(confirmingDelete) && confirmingDelete?.kind !== "one"}
         {...deleteCopy}
         onCancel={() => setConfirmingDelete(null)}
         onConfirm={() => {

@@ -38,6 +38,7 @@ then re-evaluate whether five floor modes still earn their place*).
 """
 from __future__ import annotations
 
+import itertools
 import json
 import time
 import uuid
@@ -440,6 +441,9 @@ _PENDING_GUIDANCE: dict[str, list[dict[str, Any]]] = {}
 #: Threads whose run can read no more guidance: it has sent its terminal
 #: event. A steer that arrives now stays in the durable store, and the steer
 #: follow-up answers it (owner, 2026-10-12). The next run start reopens it.
+#: The number of each buffered note (:func:`guidance_marks`).
+_GUIDANCE_SEQ = itertools.count()
+
 _CLOSED: set[str] = set()
 
 
@@ -463,6 +467,9 @@ def buffer_guidance(
         buf.pop(0)
     entry: dict[str, Any] = {
         "note": note, "id": signal_id, "author": who, "text": text.strip(),
+        # A number that is never used twice in this process. A waiting card
+        # compares two reads of these (:func:`guidance_marks`).
+        "seq": next(_GUIDANCE_SEQ),
     }
     # The loop of the owner, so a drain on a worker thread can still drop
     # the durable copy (:func:`decorate_tool_result`).
@@ -508,6 +515,26 @@ def drain_guidance(thread_id: str) -> list[str]:
 
 def has_guidance(thread_id: str) -> bool:
     return bool(_PENDING_GUIDANCE.get(thread_id))
+
+
+def guidance_marks(thread_id: str) -> frozenset[int]:
+    """One mark for each note waiting for *thread_id*, without taking any.
+
+    A card that waits compares two reads of this to see that a NEW steer came
+    (``ask_tools.request_confirmation``). A note that was there before the
+    card is not new, so it never closes the card. The mark is the note's own
+    number, never its address: CPython gives a freed address to a new object,
+    so a new note could look old (review round 1, P3).
+    """
+    return frozenset(int(e.get("seq", -1)) for e in _PENDING_GUIDANCE.get(thread_id or "", []))
+
+
+def guidance_texts(thread_id: str) -> dict[int, str]:
+    """The text of each note waiting for *thread_id*, by its mark, without
+    taking any. A waiting card reads it to see which card a steer is about
+    (``ask_tools._steer_target``)."""
+    return {int(e.get("seq", -1)): str(e.get("text") or "")
+            for e in _PENDING_GUIDANCE.get(thread_id or "", [])}
 
 
 def clear_guidance(thread_id: str) -> None:

@@ -71,15 +71,31 @@ READ_POSTS = {
     "/email/messages/summaries": "sender and subject of each id, no write",
     "/email/rules/generate/preview": "turns a prompt into rule specs, saves nothing",
     "/email/rules/test": "a dry run of the rules on one email",
+    "/email/rules/test/recent": "a dry run of the rules on the newest inbox mail",
+    "/email/voice-profile/sample": "a sample text in the voice, saves nothing",
+    "/email/compose-assist": "the drafter writes a text and saves nothing",
+}
+#: Each POST that writes only a reply draft in the member's OWN Drafts, by
+#: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in
+#: Drafts with no card, and a conversation keeps one draft. Each sends nothing.
+OWN_DRAFT_PATHS = {
+    "/email/reply-card": "EM-CR: the text of the card, as the one draft of "
+                         "the conversation",
+    "/email/reply-card/discard": "the member's Discard trashes the draft that "
+                                 "the card wrote, unless the member edited it",
 }
 #: A POST whose body says it is a dry run.
-DRY_RUN_POSTS = ("/email/cleanup/auto-categorize", "/email/rules/run")
+DRY_RUN_POSTS = ("/email/cleanup/auto-categorize", "/email/rules/run",
+                 # bulk_manage_inbox counts the mail first (owner, 2026-10-20).
+                 "/email/messages/bulk")
 
 
 def _is_write(method: str, path: str, body: Any) -> bool:
     if method not in WRITE_METHODS:
         return False
     if method == "POST" and path in READ_POSTS:
+        return False
+    if method == "POST" and path in OWN_DRAFT_PATHS:
         return False
     if (method == "POST" and path == "/email/draft-reply"
             and isinstance(body, dict) and body.get("create_draft") is False):
@@ -103,6 +119,8 @@ ALL_OFF: dict[str, Any] = {
     "about": "", "signature": "", "personal_instructions": "",
     "writing_style": "", "digest_categories": [], "digest_day_of_week": 1,
     "digest_time_of_day": "08:00",
+    # H-404: the morning brief and the extra organization domains.
+    "morning_brief_enabled": False, "org_domains": [],
 }
 
 
@@ -124,6 +142,7 @@ class Gateway:
         self.calls: list[tuple[str, str, Any]] = []
         self.cards: list[dict[str, Any]] = []
         self.answer = False
+        self.kept_draft = False
         self.channel = True
         self.gets: list[tuple[str, dict[str, Any]]] = []
         self.provider = "gmail"
@@ -174,6 +193,8 @@ class Gateway:
             return {"kind": "one-click", "link": "https://list.test/u"}
         if path == "/email/digest":
             return {"sections": []}
+        if path == "/email/drafts/seal":  # §21 fix round 1 (P1-b)
+            return {"text_digest": "a" * 64, "subject": "Hi", "body_text": "Hi"}
         if path.startswith("/email/messages/"):
             return {"account_id": BOX, "folder": "drafts", "subject": "Hi",
                     "from_address": {"email": "kim@contoso.test"},
@@ -182,6 +203,16 @@ class Gateway:
         return {}
 
     def _answer_write(self, path: str, body: Any) -> Any:
+        if path == "/email/messages/bulk" and isinstance(body, dict) and body.get("dry_run"):
+            return {"matched": 5, "affected": 0}
+        if path == "/email/reply-card":
+            return REPLY_CARD
+        if path == "/email/draft-reply":
+            return {"draft": "Hi", "created": bool((body or {}).get("create_draft")),
+                    "kept_draft": self.kept_draft}
+        if path == "/email/reply-card/act":
+            return {"ok": True, "action": "send", "to": ["kim@contoso.test"], "cc": [],
+                    "mailbox": BOX_TEXT}
         if path == "/email/messages/summaries":
             return {"summaries": [
                 {"id": i, "from": "Kim", "subject": f"Offer {n}"}
@@ -201,6 +232,35 @@ class Gateway:
                 "reversed": [], "messages_synced": 1}
 
 
+#: What ``POST /email/reply-card`` answers (EM-CR).
+REPLY_CARD: dict[str, Any] = {
+    "account_id": BOX, "mailbox": BOX_TEXT, "subject": "Re: Hi",
+    "original": {"from": "Kim <kim@contoso.test>", "subject": "Hi",
+                 "received": "2026-10-19T09:00:00+00:00", "excerpt": "Can you confirm?"},
+    "recipients": {"reply": {"to": ["kim@contoso.test"], "cc": []},
+                   "reply_all": {"to": ["kim@contoso.test"], "cc": []}},
+    "body": "Hi Kim,\n\nConfirmed.",
+    "message_id": MSG, "notices": [],
+}
+
+
+def reply_answer_for(kw: dict[str, Any]) -> Any:
+    """The member's Send on a reply card, as ``request_confirmation`` returns
+    it: the exact text that the browser posted, and its parse."""
+    import json as _json
+
+    from acb_skills.ask_tools import ReplyAnswer
+    from acb_skills.reply_card import parse_reply_answer
+
+    form = kw["reply"]
+    rec = form["recipients"]["reply_all" if form.get("reply_all") else "reply"]
+    text = "APPROVE " + _json.dumps({"reply": {
+        "action": "send", "reply_all": bool(form.get("reply_all")),
+        "body": form.get("body") or "Hi", "to": rec["to"], "cc": rec["cc"],
+        "message_id": form["message_id"]}})
+    return ReplyAnswer("rid-1", text, parse_reply_answer(text), "")
+
+
 def _recording_request(g: Gateway) -> Any:
     async def fake_request(method: str, path: str, **kwargs: Any) -> _Resp:
         body = kwargs.get("json")
@@ -217,8 +277,11 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
 
     fake_request = _recording_request(g)
 
-    async def card(**kw: Any) -> bool:
+    async def card(**kw: Any) -> Any:
         g.cards.append(kw)
+        if kw.get("reply") is not None:
+            # EM-CR: a reply card answers with the member's choice, or None.
+            return reply_answer_for(kw) if g.answer else None
         return g.answer
 
     monkeypatch.setattr(agents, "_request", fake_request)
@@ -242,7 +305,6 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "update_rule": {"account_id": BOX, "rule_id": "r1", "instructions": "bank mail"},
     "create_rules_from_prompt": {"account_id": BOX, "prompt": "label bank mail"},
     "manage_inbox": {"action": "archive", "message_ids": ["m1", "m2", "m3"]},
-    "draft_reply": {"email_id": "m1", "account_id": BOX, "save": True},
     "auto_categorize_inbox": {"account_id": BOX, "apply": True},
     "delete_rule": {"account_id": BOX, "rule_id": "r1"},
     "run_rules": {"account_id": BOX, "dry_run": False},
@@ -258,6 +320,21 @@ WRITE_CASES: dict[str, dict[str, Any]] = {
     "delete_knowledge": {"account_id": BOX, "knowledge_id": "k1"},
     "generate_writing_style": {"account_id": BOX},
     "forget_pattern": {"pattern_id": "p1"},
+    "compose_reply": {"email_id": MSG, "account_id": BOX},
+    # Owner, 2026-10-20: the assistant tools that were missing.
+    "edit_draft": {"account_id": BOX, "draft_id": "d1", "body": "Hi Kim,\n\nNew text."},
+    "snooze_email": {"email_id": MSG, "until": "2099-01-05T09:00:00+05:30"},
+    "bulk_manage_inbox": {"action": "read", "sender_email": "news@list.test"},
+    # H-375: send later.
+    "schedule_send": {"account_id": BOX, "draft_id": "d1",
+                      "send_at": "2099-01-05T09:00:00+05:30"},
+    "cancel_scheduled_send": {"schedule_id": "s1"},
+    # Chat parity wave 1 (owner, 2026-10-23, §22).
+    "copy_rules": {"from_account_id": BOX, "to_account_id": "acc-2"},
+    "rule_guidance": {"account_id": BOX, "action": "add", "guidance": "Never Marketing"},
+    "voice_profile": {"account_id": BOX, "action": "build"},
+    "update_account": {"account_id": BOX, "name": "Work mail"},
+    "apply_settings_to_mailboxes": {"account_ids": [BOX], "auto_run": True},
 }
 REGISTRY = sorted(agents.MAILBOX_WRITE_TOOLS)
 
@@ -317,20 +394,11 @@ async def test_the_no_card_text_names_no_chat(
     monkeypatch.undo()
     monkeypatch.setattr(agents, "_request", _recording_request(gw))
     with ask_tools.refuse_cards():
-        out = await agents.draft_reply("m1", BOX, save=True)
+        out = await agents.draft_reply("m1", BOX)
     note = out.partition("\n\n")[0]
-    assert "Drafts is unchanged" in note, note
     for text in (agents._NO_CARD_CHANNEL, note):
         assert "this chat" not in text.lower(), text
         assert "cancelled" not in text.lower(), text
-
-
-#: The tools that still work with no card channel: they write nothing and
-#: answer the result, not the no-card text (fix round 1, P1-a).
-NO_CHANNEL_FALLBACK = {
-    "draft_reply": "the draft shows in the chat, and the user saves or sends "
-                   "it in the Email app",
-}
 
 
 @pytest.mark.parametrize("refused", [True, False], ids=["no-channel", "scheduled"])
@@ -351,45 +419,55 @@ async def test_a_headless_caller_writes_nothing(
     else:
         out = await getattr(agents, tool)(**WRITE_CASES[tool])
     assert gw.writes == [], tool
-    if tool in NO_CHANNEL_FALLBACK:
-        assert out != NO_CARD_TEXT, tool
-    else:
-        assert out == NO_CARD_TEXT, (tool, out)
+    assert out == NO_CARD_TEXT, (tool, out)
 
 
-async def test_a_draft_with_no_card_channel_saves_nothing(
-    monkeypatch: pytest.MonkeyPatch, gw: Gateway,
+# ── A reply draft in the member's own Drafts (owner, 2026-10-22) ─────────────
+
+def test_draft_reply_is_an_own_draft_save_and_not_a_card_tool() -> None:
+    assert "draft_reply" not in agents.MAILBOX_WRITE_TOOLS
+    assert set(agents.OWN_DRAFT_SAVES) == {"draft_reply"}
+    for tool, reason in agents.OWN_DRAFT_SAVES.items():
+        assert len(reason) > 40, tool
+
+
+@pytest.mark.parametrize("refused", [True, False], ids=["no-channel", "live-chat"])
+async def test_a_chat_draft_saves_to_drafts_with_no_card(
+    monkeypatch: pytest.MonkeyPatch, gw: Gateway, refused: bool,
 ) -> None:
-    """P1-a: drafting works with no card channel. The draft comes back, no
-    card shows, and no provider draft is made. The first line says it is not
-    saved."""
+    """The owner approved the save with no card (2026-10-22). The draft goes
+    to Drafts in a live chat and in a run with no card channel. The first
+    line keeps the "(saved to Drafts)" mark, so the chat card starts saved."""
     from acb_skills import ask_tools
 
-    monkeypatch.undo()
-    monkeypatch.setattr(agents, "_request", _recording_request(gw))
-    with ask_tools.refuse_cards():
-        out = await agents.draft_reply("m1", BOX, save=True)
+    if refused:
+        with ask_tools.refuse_cards():
+            out = await agents.draft_reply("m1", BOX)
+    else:
+        out = await agents.draft_reply("m1", BOX)
+    assert gw.cards == []
     head, _, body = out.partition("\n\n")
     assert head.startswith(f"Draft from {BOX_TEXT} (mailbox {BOX})")
-    assert "Drafts is unchanged" in head and "Email app" in head
-    # Round 2: the note of an unsaved draft shares no text with the note
-    # of a saved one, so no reader takes it for a save.
-    assert "saved to Drafts" not in head
-    assert body == "Hi"
+    assert "(saved to Drafts)" in head and body == "Hi"
     [(method, path, sent)] = [c for c in gw.calls if c[0] != "GET"]
     assert (method, path) == ("POST", "/email/draft-reply")
-    assert sent["create_draft"] is False
-    assert gw.writes == []
-
-
-async def test_a_draft_in_a_live_chat_still_asks_before_it_saves(gw: Gateway) -> None:
-    out = await agents.draft_reply("m1", BOX, save=True)
-    assert len(gw.cards) == 1 and gw.writes == []
-    assert out.startswith("Cancelled")
-    gw.answer = True
-    await agents.draft_reply("m1", BOX, save=True)
-    [(_m, _p, sent)] = gw.writes
     assert sent["create_draft"] is True
+
+
+async def test_a_chat_draft_says_when_the_members_draft_stays(gw: Gateway) -> None:
+    """The chat never writes over a draft of the member. The first line says
+    the member's draft stays, beside the new one."""
+    gw.kept_draft = True
+    out = await agents.draft_reply("m1", BOX)
+    head = out.partition("\n\n")[0]
+    assert "(saved to Drafts)" in head
+    assert "your earlier draft of this email stays in Drafts as it was" in head
+
+
+async def test_save_false_still_writes_nothing(gw: Gateway) -> None:
+    await agents.draft_reply("m1", BOX, save=False)
+    [(_m, _p, sent)] = [c for c in gw.calls if c[0] != "GET"]
+    assert sent["create_draft"] is False and gw.cards == []
 
 
 # ── What needs no card ───────────────────────────────────────────────────────
@@ -438,11 +516,17 @@ NO_CARD_BRANCHES: dict[tuple[str, str, Any], str] = {
 #: The values of each choice that a registry tool reads as text.
 CHOICES: dict[tuple[str, str], list[Any]] = {
     ("manage_inbox", "action"): ["archive", "trash", "read", "unread", "star",
-                                 "unstar", "move", "label"],
-    ("run_rules", "scope"): ["new", "past"],
-    ("set_sender_status", "status"): ["cold", "not_cold", "keep"],
+                                 "unstar", "move", "label", "spam", "flag", "unflag"],
+    ("run_rules", "scope"): ["new", "past", "estimate", "status", "message",
+                             "retry_failed"],
+    ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
+    ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
+    ("voice_profile", "action"): ["view", "preview", "status", "build", "save",
+                                  "delete", "sample", "approve_knowledge"],
+    ("auto_categorize_inbox", "mode"): ["sweep", "status", "uncategorized",
+                                        "backfill", "restore_labels"],
     ("digest", "period"): ["day", "week"],
     # Round 2: each rule action type, the engine set and one outside it.
     ("create_rule", "action_type"): [*sorted(agents._RULE_ENGINE_TYPES), "SEND"],
@@ -452,6 +536,10 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
 _EXTRA = {
     ("manage_inbox", "move"): {"folder": "Archive"},
     ("manage_inbox", "label"): {"add_labels": ["Finance"]},
+    ("run_rules", "message"): {"email_id": "m1"},
+    ("rule_guidance", "delete"): {"guidance_id": "g1"},
+    ("voice_profile", "save"): {"style_guide": "Short."},
+    ("voice_profile", "approve_knowledge"): {"knowledge_id": "k1"},
 }
 
 
@@ -524,6 +612,9 @@ SETTING_ON: dict[str, Any] = {
     "digest_day_of_week": 3, "digest_time_of_day": "09:30",
     "digest_send_to_email": True, "multi_rule_execution": True,
     "sensitive_data_protection": False,
+    # H-404: the brief sends mail to the account address, and org_domains
+    # changes who counts as the organization. Each asks a card.
+    "morning_brief_enabled": True, "org_domains": ["brand.example"],
 }
 #: The settings that ask no card even when they change, and why.
 SETTING_NO_CARD: dict[str, str] = {
@@ -596,6 +687,7 @@ NO_TURN_ON = [
     {"sensitive_data_protection": True},
     {"digest_frequency": "OFF"},
     {"digest_send_to_email": False},
+    {"morning_brief_enabled": False},
     {"follow_up_awaiting_days": 0},
     {"signature": ""},
     {"signature": "Jane"},  # the text of now: no change
@@ -736,7 +828,8 @@ def _gateway_write_tools(source: str) -> set[str]:
 
 def test_each_gateway_write_tool_is_in_the_registry() -> None:
     found = _gateway_write_tools(_AGENT.read_text(encoding="utf-8"))
-    allowed = set(agents.MAILBOX_WRITE_TOOLS) | set(agents.GATEWAY_READ_POSTS)
+    allowed = (set(agents.MAILBOX_WRITE_TOOLS) | set(agents.GATEWAY_READ_POSTS)
+               | set(agents.OWN_DRAFT_SAVES))
     assert found - allowed == set(), (
         "a tool writes through the gateway with no card. Add it to "
         "MAILBOX_WRITE_TOOLS with a card, or to GATEWAY_READ_POSTS with a reason")
@@ -1002,3 +1095,66 @@ def test_the_legacy_names_match_the_route() -> None:
     [node] = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
               and any(isinstance(t, ast.Name) and t.id == "legacy" for t in n.targets)]
     assert ast.literal_eval(node.value) == agents._PRESET_LEGACY
+
+
+# ── H-404: the morning brief and the organization domains ───────────────────
+
+
+async def test_turning_on_the_morning_brief_asks_and_names_the_address(gw: Gateway) -> None:
+    """The brief is mail to the account address. The card says so, as the
+    digest card does. Mutation: drop the brief line of
+    ``_settings_needing_card`` → red."""
+    gw.answer = False
+    out = await agents.update_assistant_settings(BOX, morning_brief_enabled=True)
+    assert out.startswith("Cancelled") and gw.writes == []
+    [card] = gw.cards
+    assert "Morning brief" in card["context"] and "account address" in card["context"]
+
+
+async def test_a_change_of_org_domains_asks_and_lists_each_domain(gw: Gateway) -> None:
+    gw.settings["org_domains"] = ["old.example"]
+    gw.answer = True
+    out = await agents.update_assistant_settings(
+        BOX, org_domains=["Brand.Example", "@second.example"])
+    assert out.startswith("Assistant settings updated")
+    [card] = gw.cards
+    assert "brand.example" in card["context"] and "second.example" in card["context"]
+    assert "old.example" in card["context"]
+    [(_m, _p, body)] = gw.writes
+    assert body["org_domains"] == ["brand.example", "second.example"]
+
+
+async def test_removing_every_org_domain_asks_too(gw: Gateway) -> None:
+    """A removal changes who counts as the organization too, so it asks."""
+    gw.settings["org_domains"] = ["old.example"]
+    gw.answer = False
+    await agents.update_assistant_settings(BOX, org_domains=[])
+    assert len(gw.cards) == 1 and gw.writes == []
+
+
+async def test_the_same_org_domains_ask_nothing(gw: Gateway) -> None:
+    gw.settings["org_domains"] = ["brand.example"]
+    await agents.update_assistant_settings(BOX, org_domains=["BRAND.example"])
+    assert gw.cards == []
+
+
+@pytest.mark.parametrize(("domains", "words"), [
+    (["*.brand.example"], "wildcard"),
+    (["gmail.com"], "public webmail"),
+    (["Outlook.com"], "public webmail"),
+    (["not a domain"], "not a domain"),
+    (["localhost"], "not a domain"),
+    (["10.0.0.1"], "not a domain"),
+    (["br\u0430nd.example"], "not a domain"),
+    (["x" * 300 + ".example"], "not a domain"),
+    ("brand.example", "list"),
+])
+async def test_a_bad_org_domain_changes_nothing(
+    gw: Gateway, domains: Any, words: str,
+) -> None:
+    """Mutation: drop ``_org_domains_problem`` → red (the PUT goes)."""
+    gw.answer = True
+    out = await agents.update_assistant_settings(BOX, org_domains=domains)
+    assert out.startswith("Nothing changed."), out
+    assert words in out
+    assert gw.cards == [] and gw.writes == []

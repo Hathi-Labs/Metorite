@@ -40,11 +40,14 @@
  * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
+import { splitCardEmailText } from "@/lib/cardEmailText";
 import FencedText from "@/components/FencedText";
+import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -52,6 +55,8 @@ import Icon from "@/components/Icon";
 import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
+import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
+import { noRecipientHint, rowMark } from "@/lib/sendCard";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -68,6 +73,8 @@ export const ARM_MS = 400;
 export const CONFIRM_TITLE = "Approval";
 /** The line beside Approve and Reject. */
 export const CONFIRM_HINT = "The assistant waits for your decision.";
+/** The title row of a reply card (EM-CR). Its summary names the sender. */
+export const REPLY_TITLE = "Reply";
 
 export interface CardField {
   /** The key as the tool printed it (`due_at`, `task 1`). */
@@ -252,6 +259,14 @@ interface ConfirmationCardProps {
   fenced?: boolean;
   /** The roll-up's id: stable for the card's life (its queue key). */
   id?: string;
+  /**
+   * EM-CR (`email_app_master_plan.md` §18): the reply form of a reply card.
+   * The card then draws `ReplyCardForm` in place of its body and of Approve
+   * and Reject. `null` is a form the card could not read.
+   */
+  reply?: ReplyForm | null;
+  /** Send or Save to Drafts on a reply card: the whole answer. */
+  onReply?: (answer: ReplyApproval) => void;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -271,6 +286,8 @@ export default function ConfirmationCard({
   position,
   fenced = false,
   id,
+  reply,
+  onReply,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -293,22 +310,24 @@ export default function ConfirmationCard({
   // this draft:"), so it draws above them. Any other note draws after them
   // (the screenshots of follow-up 5 of #766).
   const { leadIn, after: afterNotes } = splitNotes(body);
-  // The text box scrolls at `max-h-40`. A long email card hid its files and
-  // its note below that line with no sign, so a box that scrolls says so.
-  const textRef = useRef<HTMLParagraphElement>(null);
-  const [clipped, setClipped] = useState(false);
-  useEffect(() => {
-    const el = textRef.current;
-    setClipped(!!el && el.scrollHeight > el.clientHeight + 1);
-  }, [body.text]);
+  // The text shows whole, with no box that scrolls inside the card (owner
+  // report, 2026-10-23). The card sits in the thread, and the thread
+  // scrolls. A box inside it hid the end of an email on a phone.
   const many = position && position.total > 1;
   const hasBody =
     hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
   const approve = () => {
     if (armed && approvable) onApprove();
   };
+  const isReply = reply !== undefined;
   return (
-    <RollupCard id={id ?? "confirm"} title={CONFIRM_TITLE} icon="ShieldCheck" header="own" pending>
+    <RollupCard
+      id={id ?? "confirm"}
+      title={isReply ? REPLY_TITLE : CONFIRM_TITLE}
+      icon={isReply ? "Reply" : "ShieldCheck"}
+      header="own"
+      pending
+    >
     <section
       aria-label={fenced ? unfenced(summary) : summary}
       data-confirmation-card=""
@@ -344,6 +363,9 @@ export default function ConfirmationCard({
       </div>
 
       <RollupBody className="space-y-2 pt-1.5">
+        {/* A reply card draws its own summary: who gets the reply NOW, as the
+            member toggles Reply and Reply all (review of #1191). */}
+        {!isReply && (
         <div className="min-w-0">
           <p className="break-words text-xs font-medium leading-relaxed text-foreground">
             <CardText text={summary} fenced={fenced} />
@@ -354,7 +376,18 @@ export default function ConfirmationCard({
             </p>
           )}
         </div>
-      {hasBody && (
+        )}
+      {isReply && (
+        <ReplyCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+        />
+      )}
+      {!isReply && hasBody && (
         <div className="space-y-2">
           {hasRows && (
             <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
@@ -378,7 +411,26 @@ export default function ConfirmationCard({
                       <span className="break-words text-xs text-foreground">
                         <CardText text={r.label} fenced={fenced} />
                       </span>
-                      {r.hint && (
+                      {/* A held send card (§21): the server's class of the
+                          person, as a mark. A new address is the one that
+                          must look different, so it takes the warning tone. */}
+                      {rowMark(r.cls) && (
+                        <span data-send-row-mark={r.cls}>
+                          <Badge tone={r.cls === "new" ? "warning" : "neutral"} size="xs">
+                            {rowMark(r.cls)}
+                          </Badge>
+                        </span>
+                      )}
+                      {r.warning && (
+                        <span
+                          className="flex items-start gap-1 break-words text-[11px] text-warning"
+                          data-send-row-warning=""
+                        >
+                          <Icon name="AlertTriangle" size={12} className="mt-px shrink-0" />
+                          {r.warning}
+                        </span>
+                      )}
+                      {r.hint && r.hint !== rowMark(r.cls) && (
                         <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
                           <CardText text={r.hint} fenced={fenced} />
                         </span>
@@ -419,20 +471,48 @@ export default function ConfirmationCard({
               })}
             </dl>
           )}
-          {body.text && (
-            <p
-              ref={textRef}
-              className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground"
-            >
-              {body.text}
-            </p>
-          )}
-          {body.text && clipped && (
-            <p className="flex items-center gap-1 text-[11px] text-muted-foreground" data-card-more="">
-              <Icon name="ChevronsDown" size={12} />
-              Scroll the text above to read all of it.
-            </p>
-          )}
+          {body.text && (() => {
+            // An email in the card: its rows apart, the mail in a frame of
+            // its own, so no label reads as part of the mail (owner,
+            // 2026-10-24, `lib/cardEmailText.ts`). Any other text draws
+            // whole, as before.
+            const mail = splitCardEmailText(body.text);
+            if (!mail) {
+              return (
+                <p className="whitespace-pre-wrap break-words text-xs text-foreground" data-card-text="">
+                  {body.text}
+                </p>
+              );
+            }
+            return (
+              <div className="space-y-2" data-card-email="">
+                {mail.head.length > 0 && (
+                  <dl className="space-y-1">
+                    {mail.head.map((row, i) => (
+                      <div key={`${row.key}-${i}`} className="flex items-baseline gap-2 text-xs" data-card-email-row={row.key}>
+                        <dt className="shrink-0">
+                          <Badge size="xs">{row.key}</Badge>
+                        </dt>
+                        <dd className="min-w-0 flex-1 break-words font-medium text-foreground">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                <div>
+                  <p className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <Icon name="Mail" size={12} />
+                    The email, as it is sent
+                  </p>
+                  <div
+                    className="whitespace-pre-wrap break-words rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs text-foreground"
+                    data-card-text=""
+                  >
+                    {mail.body}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {[...afterNotes, ...body.trailing].map((note, i) => (
             <p key={i} className="text-[11px] text-muted-foreground">
               <CardText text={note} fenced={fenced} />
@@ -441,6 +521,7 @@ export default function ConfirmationCard({
         </div>
       )}
 
+      {!isReply && (
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -461,8 +542,9 @@ export default function ConfirmationCard({
         >
           Reject
         </Button>
-        <span className="text-[10px] text-muted-foreground">{CONFIRM_HINT}</span>
+        <span className="text-[10px] text-muted-foreground">{noRecipientHint(rows) || CONFIRM_HINT}</span>
       </div>
+      )}
       </RollupBody>
     </section>
     </RollupCard>

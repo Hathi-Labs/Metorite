@@ -109,6 +109,18 @@ def _stream_id_ms(event: dict[str, Any]) -> int | None:
 
 # ── The fold (port of route.ts translateAndPersistStream accumulation) ──────
 
+def is_specialist_tool(name: str, sub_agent_name: str) -> bool:
+    """True for the orchestrator's own tool for the agent *sub_agent_name*.
+
+    The orchestrator names each specialist tool after its agent, with "-" as
+    "_" (``orchestrator/agents.py``). Such a tool is a hand-off as much as
+    ``call_agent`` is, so its sub-run's steps belong on it (§7.1.1 rule 5).
+    The live twin is ``isSpecialistTool`` in ``lib/chatStream.ts``.
+    """
+    agent = str(sub_agent_name or "").strip().lower()
+    return bool(agent) and str(name or "").strip().lower() == agent.replace("-", "_")
+
+
 def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fold one run's AG-UI events into the persisted-message shape.
 
@@ -218,7 +230,8 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             tc_id = str(ev.get("toolCallId") or "")
             name = tool_names.get(tc_id, "tool")
             result = str(ev.get("result") or ev.get("content") or "")
-            is_delegate = "call_agent" in name.lower()
+            is_delegate = "call_agent" in name.lower() or is_specialist_tool(
+                name, sub_agent["name"])
             sub_fields: dict[str, Any] = {}
             if is_delegate and (
                 sub_agent["name"] or sub_agent["text"] or sub_agent["tools"]
@@ -276,6 +289,11 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                 "id": str(ev.get("toolCallId") or ""),
                 "name": str(ev.get("toolCallName") or "tool"),
                 "status": "running",
+                # §7.1.1 rule 5: the step's arguments, so a reload draws the
+                # same email card as the live turn did.
+                "args": parse_tool_args(
+                    ev.get("args") if isinstance(ev.get("args"), str)
+                    else json.dumps(ev.get("args") or {})),
             })
 
         elif t == "SUB_AGENT_TOOL_CALL_RESULT":

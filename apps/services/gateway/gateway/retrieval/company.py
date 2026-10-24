@@ -43,6 +43,14 @@ settings, so a change of the env file needs a restart. With it on:
 
 With it off, the route does not read ``after`` at all, not even its
 length, and the answer is the one of KR-1, byte for byte.
+
+**A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
+§8.4 door 3). When Knowledge answered with zero hits, the route hands the
+words to ``routes/knowledge/gaps.schedule_gap``. That function checks the
+flag, the member and the skip rules, and it adds the write to the route's
+``BackgroundTasks``. So the write runs after the answer, in its own tenant
+session, and it never fails the search. A Knowledge source that failed or
+was skipped writes no gap. The answer itself does not change.
 """
 
 from __future__ import annotations
@@ -54,7 +62,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from gateway.retrieval.sources import REGISTRY, Hit, holds
 
@@ -211,6 +219,23 @@ def _meaning_allowed(user: UserContext) -> bool:
     return flags.knowledge_embed_allowed(user.organization_id)
 
 
+def _note_gap(background: BackgroundTasks | None, user: UserContext, words: str,
+              knowledge_hits: int | None) -> None:
+    """Hand a Knowledge miss to the gap write (KB-9a). It never raises.
+
+    The gap module is read at call time: it lives under ``routes``, and it
+    opens the session, so this package stays free of SQL.
+    """
+    if background is None or knowledge_hits != 0:
+        return
+    try:
+        from gateway.routes.knowledge import gaps
+
+        gaps.schedule_gap(background, user, words, knowledge_hits)
+    except Exception as exc:
+        logger.warning("search.company gap skipped", extra={"error": type(exc).__name__})
+
+
 def _interleave(order: list[str], found: dict[str, list[Hit]]) -> list[Hit]:
     """Every app's first hit, then every app's second, in *order*."""
     out: list[Hit] = []
@@ -232,6 +257,9 @@ async def company_search(
     # A plain default: FastAPI checks nothing on it, so with the flag off no
     # value is refused, and a direct call that leaves it out gets None.
     after: str | None = None,
+    # KB-9a. FastAPI gives the route's own tasks, never a request value. A
+    # direct call that leaves it out gets None and records no gap.
+    background: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Records that match the words, from every app this member holds."""
     if not user.email:
@@ -254,6 +282,9 @@ async def company_search(
 
     found: dict[str, list[Hit]] = {}
     skipped: list[str] = []
+    # KB-9a: the hits Knowledge answered, before `after` filters them. None
+    # when the route did not ask Knowledge, or Knowledge failed.
+    knowledge_hits: int | None = None
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TOTAL_BUDGET_S
     for key in order:
@@ -287,9 +318,13 @@ async def company_search(
             )
             skipped.append(key)
             continue
+        if key == "knowledge":
+            knowledge_hits = len(hits)
         if since is not None:
             hits = [h for h in hits if _kept(h, since)]
         found[key] = list(hits)[:per_app]
+
+    _note_gap(background, user, words, knowledge_hits)
 
     if not recency:
         return {

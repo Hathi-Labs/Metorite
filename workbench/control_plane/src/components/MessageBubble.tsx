@@ -13,6 +13,7 @@ import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
 import { fileCardsOf } from "@/lib/artifactCards";
 import { ArtifactOpenContext, type ArtifactOpeners } from "@/components/ArtifactLink";
 import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
+import { EMAIL_AGENT, delegatedSteps, withEmailSteps } from "@/lib/delegatedSteps";
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
@@ -270,10 +271,26 @@ function MessageBubble({
   // the one map behind all four.
   const accountId = emailContext?.accountId;
   const evidenceFor = useCallback(
-    (e: ToolEvent) =>
-      projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId) ?? crmEvidence(e),
+    (e: ToolEvent) => {
+      const own = projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId) ?? crmEvidence(e);
+      if (own) return own;
+      // A hand-off to email-assistant holds the reads of its sub-run, so
+      // they draw in that step (navigation_shell.md §7.1.1 rule 5).
+      const reads = delegatedSteps([e], EMAIL_AGENT)
+        .map((st) => ({ id: st.id, node: emailEvidence(st, accountId) }))
+        .filter((r) => r.node != null);
+      if (reads.length === 0) return null;
+      return (
+        <div className="space-y-2 min-w-0">
+          {reads.map((r) => <div key={r.id}>{r.node}</div>)}
+        </div>
+      );
+    },
     [accountId],
   );
+  // The steps of a delegated email run, after the turn's own events, so the
+  // draft, thread and rule cards draw in the one assistant (§7.1.1 rule 5).
+  const emailCardEvents = useMemo(() => withEmailSteps(dedupedToolEvents), [dedupedToolEvents]);
 
   // Dismissed tool/artifact cards (persisted) — filter them out of every card
   // surface so closing a card sticks across reloads.
@@ -765,7 +782,7 @@ function MessageBubble({
           Inert unless the message contains email-assistant tool calls, so this
           renders in both the chat app and the email app. */}
       <EmailToolCards
-        toolEvents={dedupedToolEvents}
+        toolEvents={emailCardEvents}
         accountId={emailContext?.accountId}
         emailId={emailContext?.emailId}
       />

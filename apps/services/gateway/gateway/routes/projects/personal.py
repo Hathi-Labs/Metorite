@@ -60,6 +60,7 @@ from gateway.routes.projects.core import (
     diff_changes,
     emit,
     from_jsonb,
+    grant_personal_owner,
     insert_row,
     load_default_status,
     load_visible_task,
@@ -496,7 +497,7 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
         "owns_statuses": True,
     })
     project_id = str(project.id)
-    await _grant_owner(db, project_id, email)
+    await grant_personal_owner(db, project_id, email)
     # Ordered, and the order is the whole answer: a capture lands in the FIRST
     # lane. There is no `is_default` on a status any more (2026-09-06) — see
     # `core.load_default_status` — and "Inbox" leads because it is first.
@@ -506,22 +507,6 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
             "position": (position + 1) * 10,
         })
     return project
-
-
-async def _grant_owner(db: Any, project_id: str, email: str) -> None:
-    """The grant every personal node carries — root and child alike.
-
-    The grant is what the visibility model reads; `personal_owner` is only the
-    fast path to finding it. Both, so neither is load-bearing alone.
-    """
-    await db.execute(
-        text(
-            "INSERT INTO pm_project_grants (project_id, subject, created_by) "
-            "VALUES (CAST(:pid AS uuid), :who, :who) "
-            "ON CONFLICT (project_id, subject) DO NOTHING"
-        ),
-        {"pid": project_id, "who": email},
-    )
 
 
 async def find_personal_child(
@@ -585,7 +570,7 @@ async def mint_personal_child(db: Any, email: str, root: Any, name: str) -> Any:
         "organization_id": getattr(root, "organization_id", None),
         "owns_statuses": False,
     })
-    await _grant_owner(db, str(child.id), email)
+    await grant_personal_owner(db, str(child.id), email)
     return child
 
 
@@ -2789,6 +2774,7 @@ async def _organize(
     db: Any, vis: Any, email: str, task: Any, payload: OrganizeIn,
     moved_subtasks: list[str] | None = None,
     created_steps: list[tuple[str, list[Saved]]] | None = None,
+    *, user: Any,
 ) -> str:
     """Apply one decision to ``task`` inside the caller's transaction.
 
@@ -2839,7 +2825,9 @@ async def _organize(
         include_subtasks=bool(payload.include_subtasks and dest),
     )
     if move.project_id or move.assignees is not None:
-        shifted = await move_task_in(db, vis, task, move, by=email)
+        shifted = await move_task_in(
+            db, vis, task, move, by=email, user=user,
+        )
         if moved_subtasks is not None:
             # D-PM-38 — the caller emits one "moved" event per subtask.
             moved_subtasks.extend(shifted.get("subtask_ids", []))
@@ -2945,7 +2933,7 @@ async def organize_my_task(
         created_steps: list[tuple[str, list[Saved]]] = []
         disposition = await _organize(
             db, vis, email, task, payload, moved_subtasks=moved_subtasks,
-            created_steps=created_steps,
+            created_steps=created_steps, user=user,
         )
         result = await _read_my_task(db, email, task_id)
     # S6g — a decision that changed the project IS a move, and says so the
@@ -3339,6 +3327,18 @@ async def rename_my_area(
     name = _clean_area_name(payload.name)
     async with _tenant_session() as db:
         area = await _load_my_area(db, email, area_id)
+        # The same lookup as create's 409, but not the area itself, so a
+        # change of case on its own name still goes through.
+        root = await _load_personal_project(db, email)
+        twin = (
+            await find_personal_child(db, email, root, name)
+            if root is not None else None
+        )
+        if twin is not None and str(twin.id) != str(area.id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"You already have an area called {name}.",
+            )
         await db.execute(
             text(
                 "UPDATE pm_projects SET name = :name, updated_at = now() "
@@ -3360,7 +3360,8 @@ async def remove_my_area(
 
     Two outcomes, and the row count decides which:
 
-    - **Empty** — the row goes. A category somebody made by accident should
+    - **Empty** — no child node and no task in the whole subtree (any
+      status, archived too): the row goes. A category somebody made by accident should
       not leave a tombstone in their own sidebar.
     - **Holds tasks** — ARCHIVED, never deleted. `pm_tasks.project_id` is what
       a task lives on, so deleting the project would take the work with it, or
@@ -3382,8 +3383,25 @@ async def remove_my_area(
             ),
             {"aid": str(area.id)},
         )).scalar() or 0)
+        # The whole subtree, because `parent_project_id` and
+        # `pm_tasks.project_id` are ON DELETE CASCADE: a hard delete takes
+        # every child node and every task below it, of any status, archived
+        # too. The area is deletable only when the subtree is just itself
+        # and holds no task.
+        below = (await db.execute(
+            text(
+                "WITH RECURSIVE sub AS ( "
+                "  SELECT id FROM pm_projects WHERE id = CAST(:aid AS uuid) "
+                "  UNION ALL "
+                "  SELECT c.id FROM pm_projects c JOIN sub ON c.parent_project_id = sub.id "
+                ") SELECT (SELECT count(*) FROM sub) - 1 AS nodes, "
+                "         (SELECT count(*) FROM pm_tasks t WHERE t.project_id IN "
+                "            (SELECT id FROM sub)) AS tasks"
+            ),
+            {"aid": str(area.id)},
+        )).fetchone()
 
-        if held == 0:
+        if held == 0 and int(below.nodes or 0) == 0 and int(below.tasks or 0) == 0:
             await db.execute(
                 text("DELETE FROM pm_projects WHERE id = CAST(:aid AS uuid)"),
                 {"aid": str(area.id)},

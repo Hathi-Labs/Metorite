@@ -24,6 +24,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.transport.signing import sign_webhook_org, verify_webhook_org
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -232,7 +233,9 @@ async def trigger_sync(
     """
     async with _tenant_session() as db:
         own = (await db.execute(text(
-            "SELECT id FROM email_accounts WHERE id = :id AND user_id = :uid"
+            "SELECT id FROM email_accounts WHERE id = :id AND "
+            # A sync imports mail and spends the storage of the mailbox.
+            + mailbox_predicate(uid="uid", level="send")
         ), {"id": req.account_id, "uid": user.email or "anonymous"})).fetchone()
         if not own:
             raise HTTPException(status_code=404, detail="Account not found")
@@ -305,7 +308,8 @@ async def resync_account(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
         own = (await db.execute(text(
-            "SELECT id FROM email_accounts WHERE id = :id AND user_id = :uid"
+            "SELECT id FROM email_accounts WHERE id = :id AND "
+            + mailbox_predicate(uid="uid", level="manage")
         ), {"id": account_id, "uid": user.email or "anonymous"})).fetchone()
         if not own:
             raise HTTPException(status_code=404, detail="Account not found")
@@ -347,7 +351,7 @@ async def _webhook_sync(account_id: str, organization_id: str) -> None:
         from gateway.routes.email.scheduler_hooks import process_new_mail
         # A sync that runs now fetches the new mail, or the next tick of the
         # loop does. So the webhook skips, and never queues (EM-T4f part 2).
-        res = await _sync_account(account_id, if_busy="skip")
+        res = await _sync_account(account_id, if_busy="skip", background=True)
         if isinstance(res, dict) and res.get("synced", 0):
             await process_new_mail(account_id)
     except Exception as exc:

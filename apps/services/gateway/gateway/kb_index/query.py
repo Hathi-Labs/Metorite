@@ -192,7 +192,11 @@ def _iso(value: Any) -> str | None:
 
 
 def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
-    """One hit. *reviewed* adds ``review_at`` (CX-1). Off, the KB-3 keys."""
+    """One hit. *reviewed* adds ``review_at`` (CX-1). Off, the KB-3 keys.
+
+    A row read through :data:`_COLUMNS` also gives ``icon``, the page icon
+    of KB-2f, or None.
+    """
     page_id = str(row["page_id"])
     hit = {
         "page_id": page_id,
@@ -207,6 +211,13 @@ def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
     }
     if reviewed:
         hit["review_at"] = _iso(row.get("review_at"))
+    if "icon" in row:
+        # KB-2f: the page icon, for `GET /knowledge/search` and its view. The
+        # company retrieval builds its own `Hit` and never reads this key.
+        hit["icon"] = row["icon"]
+    if "author_email" in row:
+        # KB-3d: the page author, for the Creator chip of the Search view.
+        hit["author_email"] = row["author_email"]
     return hit
 
 
@@ -216,7 +227,7 @@ def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
 _COLUMNS = (
     "c.id AS chunk_id, p.id AS page_id, p.space_id, s.name AS space_name, "
     "p.title, c.heading_path, c.raw, c.valid_from, p.updated_at, p.review_at, "
-    "c.source_kind"
+    "c.source_kind, p.icon, p.author_email"
 )
 
 
@@ -231,11 +242,18 @@ async def query(
     vector: list[float] | None = None,
     today: date | None = None,
     reviewed: bool = False,
+    author: str | None = None,
+    updated_after: datetime | None = None,
+    title_only: bool = False,
 ) -> dict[str, Any]:
     """The fused hits for *q* over the member's visible published pages.
 
     *vector* is the result of :func:`embed_query`, made before *db* was
     opened. ``None`` gives the lexical half only, with ``degraded`` true.
+    *author* (lower case), *updated_after* and *title_only* are the filters of
+    KB-3d. They add to the visibility clause and never replace it. With
+    *title_only* the lexical half matches the page title and the semantic
+    half does not run.
     *reviewed* applies the review factor of CX-1 in the fusion. It returns
     ``{"hits": [...], "degraded": bool}``.
     """
@@ -249,24 +267,36 @@ async def query(
     if spaces:
         extra = " AND p.space_id = ANY(CAST(:spaces AS uuid[]))"
         params["spaces"] = [str(s) for s in spaces]
+    if author:
+        extra += " AND lower(p.author_email) = :f_author"
+        params["f_author"] = author
+    if updated_after is not None:
+        extra += " AND p.updated_at >= :f_after"
+        params["f_after"] = updated_after
+    if title_only:
+        match = "to_tsvector('english', p.title) @@ websearch_to_tsquery('english', :q)"
+        rank = "ts_rank_cd(to_tsvector('english', p.title), websearch_to_tsquery('english', :q))"
+    else:
+        match = "c.tsv @@ websearch_to_tsquery('english', :q)"
+        rank = "ts_rank_cd(c.tsv, websearch_to_tsquery('english', :q))"
 
     vis, vparams = core.visible_pages_clause(user, "p")
     lexical = (await db.execute(
         text(f"SELECT {_COLUMNS}, "
-             "ts_rank_cd(c.tsv, websearch_to_tsquery('english', :q)) AS rank "
+             f"{rank} AS rank "
              "FROM kb_chunks c "
              "JOIN kb_pages p ON p.id = c.source_id AND p.state = 'published' "
              "JOIN kb_spaces s ON s.id = p.space_id "
              "AND s.organization_id = p.organization_id "
              "WHERE c.organization_id = CAST(:kb_org AS uuid) "
              f"AND c.source_kind = 'page' AND {vis}{extra} "
-             "AND c.tsv @@ websearch_to_tsquery('english', :q) "
+             f"AND {match} "
              "ORDER BY rank DESC, c.id LIMIT :n"),
         {**vparams, **params},
     )).mappings().all()
 
     semantic: list[Any] = []
-    if vector is not None:
+    if vector is not None and not title_only:
         # RLS and the visibility clause filter AFTER the HNSW scan, which
         # returns about ef_search rows. An iterative scan keeps reading until
         # the LIMIT is met, so a small org keeps its recall (pgvector 0.8,

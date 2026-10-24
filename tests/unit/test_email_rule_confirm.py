@@ -50,6 +50,18 @@ def _open_run() -> None:
     bind_artifact_context(no_egress=False)
 
 
+@pytest.fixture(autouse=True)
+def _public_hosts(monkeypatch) -> None:
+    """H-404: each webhook host of this module reads as public, so these
+    fences test what the card SHOWS, with no DNS. The public-host refusal
+    has its own fences below (``test_h404_*``), on the real test."""
+
+    async def public(_host: str) -> bool:
+        return True
+
+    monkeypatch.setattr(agents, "_webhook_host_public", public)
+
+
 BOX = "acc-1"
 FORWARD_RULE = {
     "id": "r-fwd", "account_id": BOX, "name": "Fwd", "enabled": False,
@@ -260,10 +272,11 @@ async def test_the_card_names_the_address_and_the_url(gw: Gateway) -> None:
     [card] = gw.cards
     assert "out@evil.test" in card["context"]
     assert "https://hook.evil.test/in" in card["context"]
-    # Short targets also fit in the detail. A webhook shows its host there.
+    # Short targets also fit in the detail. A webhook shows its host there,
+    # and since H-404 its path too, so the detail never shows less.
     assert card["detail"] == (
         "Sends to 2 targets: 1 webhook, 1 forward. "
-        "To: hook.evil.test, out@evil.test.")
+        "To: hook.evil.test/in, out@evil.test.")
 
 
 async def test_a_long_url_cannot_hide_a_forward(gw: Gateway) -> None:
@@ -571,7 +584,7 @@ async def test_another_gateway_error_still_raises(gw: Gateway) -> None:
     ("https://hook.evil.test/in", "hook.evil.test"),
     ("https://Hook.Evil.test:8443/in?a=1", "hook.evil.test"),
     ("https://xn--80ak6aa92e.com/in", "xn--80ak6aa92e.com"),
-    ("http://10.0.0.7/in", "10.0.0.7"),
+    ("https://10.0.0.7/in", "10.0.0.7"),  # https since review fix round 1
 ])
 async def test_a_webhook_line_names_its_host_first(
     gw: Gateway, url: str, host: str,
@@ -694,3 +707,87 @@ def test_the_channel_probe_reads_the_run_queue_and_the_relay() -> None:
         assert confirmation_channel_open() is True
     finally:
         executor._stream_relay_thread_id.reset(token)
+
+
+# ── H-404: the public-host test of a webhook, and the loop of a forward ─────
+
+
+@pytest.fixture()
+def real_hosts(monkeypatch):
+    """The REAL ``_webhook_host_public`` over ``acb_common.public_address``,
+    with the resolver answering from a table, so no DNS leaves."""
+    from acb_common import public_address
+
+    table = {"hook.public.test": ["93.184.216.34"], "hook.inside.test": ["10.1.2.3"],
+             "hook.loop.test": ["127.0.0.1"], "hook.link.test": ["169.254.169.254"]}
+
+    def resolve(host: str, port: int) -> list[str]:
+        if host in table:
+            return table[host]
+        try:
+            import ipaddress
+
+            return [str(ipaddress.ip_address(host))]
+        except ValueError:
+            raise OSError("unresolvable") from None
+
+    monkeypatch.setattr(public_address, "resolve", resolve)
+    monkeypatch.setattr(public_address, "is_local_address", lambda _a: False)
+    fresh = _load()
+    monkeypatch.setattr(agents, "_webhook_host_public", fresh._webhook_host_public)
+
+
+@pytest.mark.parametrize("url", [
+    "https://hook.inside.test/in",     # a private address
+    "https://hook.loop.test/in",       # loopback
+    "https://hook.link.test/latest",   # link-local, the cloud metadata host
+    "https://10.0.0.7/in",             # a private literal
+    "https://hook.nowhere.test/in",    # does not resolve
+])
+async def test_h404_a_webhook_to_a_host_that_is_not_public_saves_nothing(
+    gw: Gateway, real_hosts, url: str,
+) -> None:
+    """Mutation: drop ``_target_refusal``'s host test → red (a card shows)."""
+    out = await agents.create_rule(BOX, name="Hook", actions=[
+        {"type": "CALL_WEBHOOK", "url": url}])
+    assert out.startswith("Not saved.") and "not a public address" in out, out
+    assert gw.cards == [] and gw.saves == []
+
+
+async def test_h404_a_webhook_to_a_public_host_asks_its_card(gw: Gateway, real_hosts) -> None:
+    gw.answer = False
+    out = await agents.create_rule(BOX, name="Hook", actions=[
+        {"type": "CALL_WEBHOOK", "url": "https://hook.public.test/in/x?k=1"}])
+    assert out.startswith("Cancelled")
+    [card] = gw.cards
+    assert "hook.public.test/in/x" in card["detail"]
+    assert "url: https://hook.public.test/in/x?k=1" in card["context"]
+    assert gw.saves == []
+
+
+@pytest.mark.parametrize("field", ["to_address", "cc_address", "bcc_address"])
+async def test_h404_a_forward_to_an_own_mailbox_saves_nothing(gw: Gateway, field: str) -> None:
+    """D-EM-29: a forward to an address of a mailbox of the member can loop.
+    Mutation: drop the own-address test → red."""
+    action = {"type": "FORWARD", "to_address": "boss@acme.test", field: "Dana@Fracktal.test"}
+    out = await agents.create_rule(BOX, name="Loop", actions=[action])
+    assert out.startswith("Not saved.") and "loop" in out
+    assert gw.cards == [] and gw.saves == []
+
+
+@pytest.mark.parametrize("path", ["actions", "prompt"])
+async def test_h404_a_chat_webhook_takes_https_only(gw: Gateway, path: str) -> None:
+    """Review fix round 1: the docstrings said https, and ``_url_problem``
+    took http. A webhook that the chat saves is https only. The rules engine
+    and the Rules UI keep http (``outbound_guard._SCHEMES``,
+    ``test_email_webhook_guard.py``). Mutation: drop the scheme check →
+    red."""
+    url = "http://hook.public.test/in"
+    if path == "actions":
+        out = await agents.create_rule(BOX, name="Hook", actions=[
+            {"type": "CALL_WEBHOOK", "url": url}])
+    else:
+        gw.specs = [{"name": "Hook", "actions": [{"type": "CALL_WEBHOOK", "url": url}]}]
+        out = await agents.create_rules_from_prompt(BOX, prompt="hook")
+    assert out.startswith("Not saved.") and "https" in out, out
+    assert gw.cards == [] and gw.saves == []

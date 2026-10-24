@@ -29,6 +29,9 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { replyFromEvent, type ReplyForm } from "@/lib/replyCard";
+import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
+
 /** The event a closed card arrives as. The server owns the name
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
  *  `tests/unit/test_chat_hardening.py` checks the two agree. */
@@ -43,6 +46,12 @@ export interface ConfirmationRow {
   label: string;
   hint?: string;
   checked: boolean;
+  /** A held send card (§21, `sendCard.ts`): what the row is. */
+  kind?: SendRowKind;
+  /** A held send card: how the SERVER classed the person on the row. */
+  cls?: PersonClass;
+  /** A held send card: the server's warning (a lookalike domain). */
+  warning?: string;
 }
 
 export interface PendingConfirmation {
@@ -57,6 +66,11 @@ export interface PendingConfirmation {
   rows?: ConfirmationRow[];
   /** The card's text fences member values in «marks» (`ask_tools` `fenced`). */
   fenced?: boolean;
+  /**
+   * EM-CR: the reply form of a reply card (`lib/replyCard.ts`). `null` is a
+   * form the card could not read: it then offers Discard only.
+   */
+  reply?: ReplyForm | null;
 }
 
 /**
@@ -87,11 +101,17 @@ export function rowsFromEvent(value: unknown): ConfirmationRow[] | undefined {
     const id = typeof r.id === "string" ? r.id : "";
     if (!id || seen.has(id)) return undefined;
     seen.add(id);
+    const kind = kindOf(r.kind);
+    const cls = classOf(r.class);
     rows.push({
       id,
       label: String(r.label ?? id),
       hint: r.hint ? String(r.hint) : undefined,
       checked: r.checked !== false,
+      // A row with none of the three keys of a held send card is as before.
+      ...(kind !== undefined ? { kind } : {}),
+      ...(cls !== undefined ? { cls } : {}),
+      ...(typeof r.warning === "string" && r.warning ? { warning: r.warning } : {}),
     });
   }
   return rows;
@@ -107,7 +127,9 @@ export function rowSummary(title: string, ticked: number, total: number): string
   if (ticked === total) return title;
   const count = new RegExp(`\\b${total}\\b`);
   if (count.test(title)) return title.replace(count, `${ticked} of ${total}`);
-  return `${title} (${ticked} of ${total})`;
+  // "· 1 of 4 ticked", and not "(1 of 4)": beside a stack's "1 of 2" pager,
+  // a bare count read as a second card counter (owner report, 2026-10-24).
+  return `${title} · ${ticked} of ${total} ticked`;
 }
 
 /**
@@ -184,9 +206,12 @@ export function rowsSummary(summary: string, rows?: readonly ConfirmationRow[]):
   return rowSummary(summary, rows.filter((r) => r.checked).length, rows.length);
 }
 
-/** Approve may send: a card with no rows, or a card with a row ticked. */
+/**
+ * Approve may send: a card with no rows, or a card with a row ticked. A held
+ * send card (§21) needs a ticked To row (`sendCard.ts`).
+ */
 export function canApprove(rows?: readonly ConfirmationRow[]): boolean {
-  return rows === undefined || rows.some((r) => r.checked);
+  return sendCanGo(rows);
 }
 
 /**
@@ -214,6 +239,8 @@ export function approvalFor(
   if (card.rows === undefined) return "APPROVE";
   const wanted = new Set(ticked ?? []);
   const ids = card.rows.filter((r) => wanted.has(r.id)).map((r) => r.id);
+  // A held send card (§21) sends nothing with no ticked To row.
+  if (!sendCanGo(card.rows.map((r) => ({ ...r, checked: wanted.has(r.id) })))) return null;
   return ids.length > 0 ? approveRows(ids) : null;
 }
 
@@ -261,6 +288,7 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     // ticked and Approve stays off. A plain APPROVE would be refused anyway.
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
     ...(v.fenced === true ? { fenced: true } : {}),
+    ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply) } : {}),
   };
 }
 
@@ -348,3 +376,7 @@ export function settleAnswer(
   if (outcome === "drop") return { type: "dropped", key: card.key };
   return { type: "answered", key: card.key };
 }
+
+// The stack of waiting cards lives in `lib/cardStack.ts`, shared with every
+// stack of cards in the chat. Re-exported here for the queue's callers.
+export { SWIPE_STEP_PX, stackBanner, stackDepth, swipeStep } from "./cardStack";

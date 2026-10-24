@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import io
-import ipaddress
 import json
 import os
 import re
-import socket
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -24,6 +22,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
+from acb_common.public_address import host_is_public
 from acb_common.tenant_redis import (
     BINARY_POOL_MAX_CONNECTIONS,
     get_tenant_redis,
@@ -42,11 +41,12 @@ from fastapi.responses import StreamingResponse
 from gateway.db import TenantUnbound
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
-    _tenant_session,
     _log,
+    _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -78,26 +78,10 @@ def _binary_redis_gate() -> asyncio.Semaphore:
 def _resolve_is_public(host: str) -> bool:
     """True only if every A/AAAA record for host is a public, routable IP.
 
-    Blocks SSRF to loopback/private/link-local/metadata endpoints.
+    Blocks SSRF to loopback/private/link-local/metadata endpoints. The rules
+    live in ``acb_common.public_address``, the one shared test.
     """
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        ):
-            return False
-    return True
+    return host_is_public(host)
 
 
 @router.get("/image-proxy")
@@ -244,7 +228,8 @@ async def _fetch_owned_attachment(
                FROM email_attachments ea
                JOIN email_messages em ON ea.message_id = em.id
                JOIN email_accounts p ON em.account_id = p.id
-               WHERE ea.id = :aid AND p.user_id = :user_id"""
+               WHERE ea.id = :aid AND """
+            + mailbox_predicate("p", uid="user_id", level="read")
         ),
         {"aid": aid, "user_id": user.email or "anonymous"},
     )
@@ -449,7 +434,9 @@ class AttachmentTextModel(BaseModel):
     (the reader refused the file: a password, a limit, a broken file, no page
     that parsed, or a busy reader). Each answer with no text carries
     ``reason``, a sentence for the member. ``chars`` counts the text that the
-    reader got, before the cut.
+    reader got, before the cut. ``offset`` is the character where ``text``
+    starts, and ``next_offset`` is the one where the next part starts, or
+    ``None`` when ``text`` reaches the end.
     """
 
     filename: str
@@ -459,6 +446,8 @@ class AttachmentTextModel(BaseModel):
     truncated: bool = False
     chars: int = 0
     reason: str | None = None
+    offset: int = 0
+    next_offset: int | None = None
 
 
 def _too_large(limit: int) -> str:
@@ -598,8 +587,37 @@ class _ReadHold:
 
 
 #: The fields of a cached answer. The file name and the type come from the
-#: owned row at each read.
+#: owned row at each read. The cache holds the WHOLE text that the reader got,
+#: so a read at an ``offset`` parses nothing. ``truncated`` in the cache says
+#: only that the reader stopped early. An entry without ``"whole": true`` is
+#: from before ``offset`` (it holds the first part only), and reads as a miss.
 _CACHED_FIELDS = ("kind", "text", "truncated", "chars", "reason")
+
+#: The most characters of one file that the cache holds and that an offset
+#: can reach (review of #1220, P2). A 2,000,000-character entry can take
+#: about 12 MB of Redis after JSON escapes. 200,000 is about 60 pages.
+MAX_CACHED_TEXT_CHARS = 200_000
+
+
+def _text_part(answer: AttachmentTextModel, offset: int) -> AttachmentTextModel:
+    """The part of a whole-text *answer* that starts at character *offset*.
+
+    At most ``MAX_TEXT_OUTPUT_CHARS`` characters. ``truncated`` is true when
+    text follows this part, or when the reader stopped early. An answer with
+    no text comes back as it is. Fence: tests/unit/test_email_attachment_text.py.
+    """
+    full = answer.text
+    if not full:
+        return answer
+    start = min(max(0, int(offset or 0)), len(full))
+    end = start + MAX_TEXT_OUTPUT_CHARS
+    more = end < len(full)
+    return answer.model_copy(update={
+        "text": full[start:end],
+        "truncated": more or answer.truncated,
+        "offset": start,
+        "next_offset": end if more else None,
+    })
 
 
 def _base(row: Any) -> dict[str, str]:
@@ -624,6 +642,8 @@ async def _cached_text(org_id: str | None, row: Any) -> AttachmentTextModel | No
         if not raw:
             return None
         data = json.loads(raw)
+        if data.get("whole") is not True:
+            return None
         return AttachmentTextModel(**_base(row), **{f: data[f] for f in _CACHED_FIELDS})
     except Exception:
         return None
@@ -634,7 +654,8 @@ async def _remember_text(org_id: str | None, row: Any, answer: AttachmentTextMod
     if not org_id:
         return
     try:
-        payload = json.dumps({f: getattr(answer, f) for f in _CACHED_FIELDS})
+        payload = json.dumps(
+            {**{f: getattr(answer, f) for f in _CACHED_FIELDS}, "whole": True})
         with organization_scope(org_id):
             await get_tenant_redis().setex(
                 key("email-att-text", str(row.id)), ATTACHMENT_CACHE_TTL_SECS, payload,
@@ -647,8 +668,14 @@ async def _remember_text(org_id: str | None, row: Any, answer: AttachmentTextMod
 async def attachment_text(
     attachment_id: str,
     user: UserContext = Depends(get_current_user),
+    offset: int = 0,
 ) -> AttachmentTextModel:
     """The text of one attachment of the caller's own mail (WS-17 EM-T11).
+
+    ``offset`` (a query parameter, in characters) picks the part of the text
+    to return, ``MAX_TEXT_OUTPUT_CHARS`` at most. The answer's
+    ``next_offset`` names the next part. The cache holds the whole text, so
+    a read of a later part parses nothing.
 
     The email assistant's ``read_email_attachment`` calls it. The ownership
     check, the cache and the provider fetch are the download route's
@@ -695,7 +722,7 @@ async def attachment_text(
                     status_code=502, detail="The mail provider did not give the file.",
                 ) from None
         if got.stopped:
-            return got.stopped
+            return _text_part(got.stopped, offset)
         row = got.row
         base = _base(row)
         if not got.content:
@@ -718,14 +745,18 @@ async def attachment_text(
             full = parsed.text
             _log.info("attachment_text.read", aid=aid, kind=parsed.kind,
                       size=len(got.content), chars=len(full), stopped=parsed.stopped)
+            # The text goes in the cache, up to MAX_CACHED_TEXT_CHARS.
+            # `truncated` here says that the reader or the cap stopped early,
+            # and `_text_part` cuts the reply.
+            kept = full[:MAX_CACHED_TEXT_CHARS]
             answer = AttachmentTextModel(
                 **base,
                 kind=parsed.kind,
-                text=full[:MAX_TEXT_OUTPUT_CHARS],
-                truncated=len(full) > MAX_TEXT_OUTPUT_CHARS or parsed.stopped,
-                chars=len(full),
+                text=kept,
+                truncated=bool(parsed.stopped) or len(full) > len(kept),
+                chars=len(kept),
             )
         await _remember_text(org_id, row, answer)
-        return answer
+        return _text_part(answer, offset)
     finally:
         hold.release()

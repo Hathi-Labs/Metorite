@@ -454,10 +454,21 @@ def test_the_instructions_carry_the_owners_rule() -> None:
 
 
 def test_the_product_rules_stay_with_their_decisions() -> None:
-    """Kept on purpose: these are decisions, the same for every member."""
+    """Kept on purpose: these are decisions, the same for every member.
+
+    D-PM-35 (archive only) was superseded by the owner on 2026-10-22. The
+    chat deletes behind one card, and asks archive or delete when vague.
+    D-PM-40 (no grant writes) was superseded by D-OP-9 on 2026-10-23.
+    """
     text = _md_text(INSTRUCTIONS)
-    assert "Archive is the remove verb (D-PM-35)." in text
-    assert "The chat does not change who may see a project (D-PM-40)." in text
+    assert "Archive is the remove verb" not in text
+    assert "ask whether they mean archive or delete" in " ".join(text.split())
+    # WS-64 OP-6b: D-OP-9 reverses D-PM-40. The chat writes a grant behind a
+    # card, the card is not authority, and the server decides (D-OP-11).
+    assert "The chat does not change who may see a project" not in text
+    assert "The chat changes who can see a project (D-OP-9, which reverses D-PM-40)." in text
+    assert "The card is a brake on a mistake. It is not authority." in text
+    assert "The server decides if the member may change the grants." in text
 
 
 # ── grants-r8: the real routes on a private ladder database ─────────────────

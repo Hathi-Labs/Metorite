@@ -517,6 +517,16 @@ async def remove_member_rows(
         ),
         {"uid": member["id"]},
     )
+    # H-375: a send that they scheduled would go out in their name after they
+    # left. The job also refuses a member who is not active, so this is the
+    # second of two locks (review of #1209, P1).
+    await db.execute(
+        text(
+            "UPDATE email_scheduled_sends SET status = 'cancelled', updated_at = now() "
+            " WHERE lower(owner_email) = lower(:email) AND status = 'queued'"
+        ),
+        {"email": member["email"]},
+    )
     # D63 (H-49) — the SECOND door, and it reaches the same seal.
     #
     # ⚠️ The remove route's own docstring records why: it "used to hold its
@@ -640,15 +650,20 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     # (`crm_auto_lead_cursors` joined in migration 163: the auto-lead epoch
     # cursor is per-mailbox state and goes with the mailbox. `email_insights`
     # joined in migration 231: the Insights facts of the mailbox, EM-T14a).
+    # WS-65 SM-1 adds the four tables of a shared mailbox. A member purge
+    # reaches a shared row only while its user_id is the leaver, until SM-8
+    # leaves a shared row out of the member scope (shared_mailbox.md §4.2).
     "email_accounts": (
         "crm_auto_lead_cursors",
         "email_actions", "email_ai_drafts", "email_assistant_settings",
         "email_attachments", "email_cold_senders", "email_contacts",
         "email_embeddings", "email_executed_rules", "email_folders",
-        "email_insights", "email_knowledge", "email_learned_patterns", "email_messages",
+        "email_insights", "email_knowledge", "email_learned_patterns",
+        "email_mailbox_grants", "email_mailbox_member_prefs", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
-        "email_rules", "email_senders", "email_sync_log",
-        "email_thread_status", "email_voice_profiles",
+        "email_rules", "email_scheduled_sends", "email_send_log", "email_senders",
+        "email_sync_log", "email_thread_assignments", "email_thread_status",
+        "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
     # (`wa_media` and `wa_message_embeddings` hang off `wa_messages`).
@@ -697,6 +712,17 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # standing authorization to act as them, so it goes with the credentials.
     _PersonRows("app_tool_grants", "app_tool_grants",
                 "lower(user_email) = :email"),
+    # A send that they scheduled (H-375). It would go out in their name after
+    # they left, so it goes before the mailbox, and the count is real.
+    _PersonRows("scheduled_sends", "email_scheduled_sends",
+                "lower(owner_email) = :email"),
+    # The leaver's own grants on a shared mailbox (WS-65, D-SM-8). Only the
+    # rows whose subject is the address: an `org` or a `group:` grant needs
+    # no change, and the shared mailbox itself stays (MEMBER_MAILBOXES_WHERE).
+    _PersonRows("mailbox_grants", "email_mailbox_grants", "lower(subject) = :email"),
+    # Their own choices for each shared mailbox (sign-off line and the
+    # like). The rows are the leaver's alone, and the mailbox stays.
+    _PersonRows("mailbox_member_prefs", "email_mailbox_member_prefs", "lower(member_email) = :email"),
     # Credentials.
     # The clause is the teardown's own (EM-G11f1b), so the plans, the purge
     # rows and this delete name one set of mailboxes.
@@ -721,6 +747,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # stays, and `purge_crm_member` takes the address off it.
     _PersonRows("crm_member_rules", "crm_business_rules",
                 "scope = 'member' AND lower(member_email) = :email"),
+    # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
+    # member's own shortcut, so it goes with the member. The page stays.
+    _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
@@ -752,6 +781,13 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     _PersonRows("apps", "apps", "lower(owner_email) = :email"),
     _PersonRows("workflows", "workflows", "lower(owner_email) = :email"),
     _PersonRows("meetings", "meeting", "lower(owner_email) = :email"),
+    # WS-61 KB-5a: the edits that the assistant proposed for the member. A
+    # proposal is authored work about a company page, as the member's pages
+    # are, and a decided one is the record of who proposed and who accepted.
+    # A pending one stays for a writer of the space to decide. KB-5c expires
+    # it after 14 days. Kept whole, so the table is on one side only.
+    _PersonRows("knowledge_proposals", "kb_page_proposals",
+                "lower(proposer_email) = :email"),
 )
 
 
@@ -904,6 +940,15 @@ async def purge_crm_member(db: Any, org_id: str, email: str) -> None:
     await crm_questions.forget_member_keys(str(org_id), email)
 
 
+async def purge_knowledge_member(db: Any, org_id: str, email: str) -> None:
+    """The Knowledge half of a purge (WS-61 KB-9a). The address leaves the
+    ``askers`` and the ``dismissed_by`` of each gap (``gaps.scrub_member``).
+    The gap and its count stay. The SQL runs in the caller's transaction."""
+    from gateway.routes.knowledge import gaps as kb_gaps
+
+    await kb_gaps.scrub_member(db, str(org_id), email)
+
+
 async def purge_member_rows(
     db: Any,
     org_id: str,
@@ -977,6 +1022,8 @@ async def purge_member_rows(
     # WS-53 CRM-Q33: the member's address in the CRM state that no delete
     # above reaches, in this transaction, and the member's CRM keys.
     await purge_crm_member(db, org_id, addr)
+    # WS-61 KB-9a: the member's address in the Knowledge gaps.
+    await purge_knowledge_member(db, org_id, addr)
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.

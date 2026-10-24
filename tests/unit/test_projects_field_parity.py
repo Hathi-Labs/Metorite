@@ -292,6 +292,13 @@ _BASE: dict[str, dict[str, Any]] = {
     "bulk_update": {"task_ids": f"{UUID},{OTHER}", "status": "done"},
     "calendar": {"start": "2026-09-22", "end": "2026-09-29"},
     "capture_intake": {"title": "Vendor called"},
+    # WS-64 OP-6c: the file is in the fake upload (tw.UPLOAD).
+    "attach_to_task": {"task_id": UUID, "file_name": "brief.pdf"},
+    # WS-64 OP-6b: one grant, for the whole organization.
+    "grant_access": {"project_id": UUID},
+    # WS-64 OP-6d: the report is the one of the write fence.
+    "add_report_recipient": {"report_id": UUID},
+    "set_report_schedule": {"report_id": UUID},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
     "complete": {"task_id": UUID},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
@@ -309,6 +316,7 @@ _BASE: dict[str, dict[str, Any]] = {
     "defer": {"task_id": UUID, "until": "2026-10-06"},
     "delete_status": {"project_id": UUID, "status": "to do", "move_to": "done"},
     "edit_comment": {"task_id": UUID, "comment_id": tw.LINK, "body": "Waiting on finance."},
+    "export_tasks": {},
     "find_conflicts": {},
     "find_tasks": {"query": "extruder"},
     "fit_for_task": {"title": "Weld the frame"},
@@ -329,6 +337,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "rebalance": {},
     "render_report": {"template": "team pulse"},
     "render_timeline": {"task_id": UUID},
+    # WS-64 OP-6a: the area is in the fake gateway's list (tw.AREAS)
+    "rename_area": {"area": "Home", "new_name": "House"},
     "report_save": {"name": "Weekly", "sections": "finished"},
     "save_view": {"project_id": UUID, "name": "Mine"},
     "set_my_overlay": {"task_id": UUID, "disposition": "someday"},
@@ -346,6 +356,9 @@ _BASE: dict[str, dict[str, Any]] = {
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    "subject": "org",
+    "recipient": "priya@x.io",
+    "enabled": True,
     "assignee": "priya@x.io",
     "assignees": "priya@x.io",
     "assignees_add": "Priya",
@@ -433,6 +446,9 @@ _SAMPLE: dict[str, Any] = {
     "block_start": "2026-10-07 14:00",
     "block_end": "2026-10-07 15:00",
     "flexible": "yes",
+    # WS-64 OP-6c
+    "file_name": "brief.pdf",
+    "shown_fields": "status,tags",
     "hard_date": "yes",
     "actual_start": "2026-10-07 14:05",
     "actual_end": "2026-10-07 14:50",
@@ -447,6 +463,16 @@ _SAMPLE: dict[str, Any] = {
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    ("DELETE", "/projects/tasks/{task_id}", "delete_subtask_ids"): {
+        "task_id": tw.LIVE,
+        "subtasks_to_delete": "all",
+    },
+    # The same tool, a tree above the 200-id cap: "all" sends the flag.
+    ("DELETE", "/projects/tasks/{task_id}", "delete_all_subtasks"): {
+        "task_id": tw.LIVE,
+        "subtasks_to_delete": "all",
+    },
     # WS-47 WAC-4b: a capture's block needs its start, as the Calendar reads
     # a block by its start.
     ("POST", "/projects/my/tasks", "scheduled_end"): {
@@ -606,15 +632,33 @@ def _responder(call: dict) -> Any:
     return tw.responder(call)
 
 
+def _wide_responder(call: dict) -> Any:
+    """``_responder``, with a subtree of 250 rows (above the 200-id cap)."""
+    if call["method"] == "GET" and call["path"].endswith("/subtree"):
+        rows = [
+            tw._sub(f"{i:08x}-d9cb-469f-a165-70867728950e", tw.LIVE, f"t{i}")
+            for i in range(1, 251)
+        ]
+        return {"task_id": tw.LIVE, "subtasks": rows, "hidden": 0}
+    return _responder(call)
+
+
 def _carries(call: dict, name: str, where: str) -> bool:
     if where == "query":
         return name in (call["params"] or {})
     if where == "header":
         return name.lower() in {h.lower() for h in (call["headers"] or {})}
+    if where == "body" and call.get("files") and name in call["files"]:
+        return True
     body = call["json"]
     if name == "payload":
         return isinstance(body, dict) and bool(body)
     return isinstance(body, dict) and name in body
+
+
+@pytest.fixture(autouse=True)
+def _a_chat_upload(monkeypatch) -> None:
+    tw.stub_chat_upload(monkeypatch)
 
 
 @pytest.fixture
@@ -636,7 +680,9 @@ async def test_every_sends_claim_is_true_on_the_wire(
 ) -> None:
     approve(monkeypatch)
     form_stub(monkeypatch, tw.FORM_ANSWERS)
-    calls = fake_gateway(monkeypatch, _responder)
+    calls = fake_gateway(
+        monkeypatch, _wide_responder if name == "delete_all_subtasks" else _responder
+    )
     kwargs = _call_for(key, name, tool, arg)
     out = await getattr(skill_projects, tool)(**kwargs)
     where = route_fields()[key][name]

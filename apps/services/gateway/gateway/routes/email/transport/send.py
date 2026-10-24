@@ -3,7 +3,11 @@ automation layer via a deferred import)."""
 
 from __future__ import annotations
 
+import smtplib
+import ssl
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -12,9 +16,31 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
-from pydantic import BaseModel
+from gateway.routes.email.mailbox_access import mailbox_predicate
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+#: The words of a send that the member's own mail server (IMAP/SMTP) did not
+#: take. The provider's own text names the host and the reason, never the
+#: password, so it shows as it is (review of the IMAP connect branch, P3).
+MAIL_SERVER_REFUSED_PREFIX = "The mail server did not send this mail. "
+
+
+@contextmanager
+def _mail_server_refused(provider: object) -> Iterator[None]:
+    """Answer 502 with words when an IMAP mailbox's SMTP send fails.
+
+    Before this, a refused address, a bad certificate or the 60 s deadline
+    reached the member as a bare 500. Only the IMAP provider is mapped: the
+    Gmail and Microsoft errors keep their own paths."""
+    try:
+        yield
+    except (OSError, ssl.SSLError, smtplib.SMTPException) as exc:
+        if type(provider).__name__ != "IMAPProvider":
+            raise
+        reason = str(exc).strip() or type(exc).__name__
+        raise HTTPException(
+            status_code=502, detail=MAIL_SERVER_REFUSED_PREFIX + reason[:300]) from None
 
 class SendAttachment(BaseModel):
     filename: str
@@ -47,6 +73,20 @@ class SendEmailRequest(BaseModel):
     attachments: list[SendAttachment] | None = None
     # Workspace artifacts to attach (resolved to bytes server-side).
     artifacts: list[ArtifactAttachment] | None = None
+    # H-392: Metorite files that the member can see, each with the digest
+    # that its card showed (``metorite_files.resolve_metorite_files``).
+    metorite_files: list[MetoriteFileRef] | None = None
+
+
+class MetoriteFileRef(BaseModel):
+    """One Metorite file of a send: its reference and the SHA-256 of the bytes
+    that the card named. A file that changed since then sends nothing."""
+
+    ref: str = Field(max_length=600)
+    digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+SendEmailRequest.model_rebuild()
 
 
 def load_artifact_attachments(
@@ -153,6 +193,20 @@ async def send_email(
             artifact_atts = load_artifact_attachments(req.artifacts, user.email)
             if artifact_atts:
                 attachments = (attachments or []) + artifact_atts
+            # H-392: each Metorite file resolves again as the member, and it
+            # goes only while its bytes are the bytes that the card named.
+            if req.metorite_files:
+                from gateway.routes.email.transport.metorite_files import (
+                    check_digests,
+                    resolve_metorite_files,
+                )
+
+                files = await resolve_metorite_files(
+                    user, [m.ref for m in req.metorite_files])
+                check_digests(files, {m.ref: m.digest for m in req.metorite_files})
+                attachments = (attachments or []) + [
+                    {"filename": f.name, "content": f.content, "mime_type": f.mime}
+                    for f in files]
 
             # Append the account's HTML signature once, here at the single send
             # choke point (with a plain-text fallback), so every reply / new
@@ -177,7 +231,7 @@ async def send_email(
             from gateway.routes.email.automation.drafting import (
                 _mail_too_large,
             )
-            with _mail_too_large():
+            with _mail_too_large(), _mail_server_refused(sess.provider):
                 msg_id = await sess.provider.send_message(
                     to=req.to,
                     subject=req.subject,
@@ -281,7 +335,8 @@ async def _reply_target(
     row = (await db.execute(text(
         "SELECT em.provider_message_id, em.thread_id FROM email_messages em "
         "JOIN email_accounts ea ON ea.id = em.account_id "
-        "WHERE em.account_id = CAST(:aid AS uuid) AND ea.user_id = :uid "
+        "WHERE em.account_id = CAST(:aid AS uuid) AND "
+        + mailbox_predicate("ea", uid="uid", level="send") + " "
         f"AND {match} "
         "ORDER BY (em.provider_message_id = :rid) DESC LIMIT 1"
     ), params)).fetchone()

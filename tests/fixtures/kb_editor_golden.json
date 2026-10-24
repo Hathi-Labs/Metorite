@@ -1,5 +1,5 @@
 {
-  "_about": "WS-61 KB-2b golden set (knowledge_base.md §21.5, §21.6). Each `md` is a stored body. `saved` is what the block editor writes for it: parse and write once. Vitest (src/app/knowledge/lib/editor/editorMarkdown.test.ts) holds the editor to `saved`, to the fixed point, and to the same meaning under a CommonMark and GFM reader (`gfmShape.ts`). `gfmDiffers` names a shape the editor normalises on purpose, with the reason. Pytest (tests/unit/test_kb_editor_golden.py) runs the chunker on `saved`. `nodes` and `marks` are the blocks and marks that both bodies keep.",
+  "_about": "WS-61 KB-2b golden set (knowledge_base.md §21.5, §21.6), with the table and footnote cases of KB-2i (§21.7). Each `md` is a stored body. `saved` is what the block editor writes for it: parse and write once. Vitest (src/app/knowledge/lib/editor/editorMarkdown.test.ts) holds the editor to `saved`, to the fixed point, and to the same meaning under a CommonMark and GFM reader (`gfmShape.ts`). `gfmDiffers` names a shape the editor normalises on purpose, with the reason. Pytest (tests/unit/test_kb_editor_golden.py) runs the chunker on `saved`. `nodes` and `marks` are the blocks and marks that both bodies keep.",
   "cases": [
     {
       "name": "headings-and-marks",
@@ -219,8 +219,8 @@
       "saved": "Text[^1].\n\n[^1]: The note.",
       "nodes": [
         "doc",
-        "htmlBlock",
-        "htmlInline",
+        "footnoteDefinition",
+        "footnoteReference",
         "paragraph",
         "text"
       ],
@@ -1720,6 +1720,510 @@
       "nodes": [
         "doc",
         "heading",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "footnote-named-multi",
+      "md": "A[^note] and B[^2].\n\n[^note]: First line\n    second line\n\n    Para two.\n\n[^2]: x\n",
+      "saved": "A[^note] and B[^2].\n\n[^note]: First line\n    second line\n\n    Para two.\n\n[^2]: x",
+      "nodes": [
+        "doc",
+        "footnoteDefinition",
+        "footnoteReference",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "footnote-repeat-list",
+      "md": "A[^1] again[^1].\n\n[^1]: - one\n    - two",
+      "saved": "A[^1] again[^1].\n\n[^1]: - one\n    - two",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "footnoteDefinition",
+        "footnoteReference",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "footnote-middle",
+      "md": "Para one[^a].\n\n[^a]: Note *a*.\n\nPara two.",
+      "saved": "Para one[^a].\n\n[^a]: Note *a*.\n\nPara two.",
+      "nodes": [
+        "doc",
+        "footnoteDefinition",
+        "footnoteReference",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "italic"
+      ]
+    },
+    {
+      "name": "footnote-empty",
+      "md": "Text[^1].\n\n[^1]:",
+      "saved": "Text[^1].\n\n[^1]:",
+      "nodes": [
+        "doc",
+        "footnoteDefinition",
+        "footnoteReference",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "footnote-in-table-and-list",
+      "md": "- item[^1]\n\n| a | b[^2] |\n| --- | --- |\n| 1 | 2 |\n\n[^1]: One.\n[^2]: Two.",
+      "saved": "- item[^1]\n\n| a | b[^2] |\n| --- | --- |\n| 1 | 2 |\n\n[^1]: One.\n\n[^2]: Two.",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "footnoteDefinition",
+        "footnoteReference",
+        "listItem",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-align-three",
+      "md": "| a | b | c |\n|:-:|:--|--:|\n| 1 | 2 | 3 |",
+      "saved": "| a | b | c |\n| :---: | :--- | ---: |\n| 1 | 2 | 3 |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-header-off",
+      "md": "|  |  |\n| --- | ---: |\n| 1 | 2 |\n| 3 | 4 |",
+      "saved": "|  |  |\n| --- | ---: |\n| 1 | 2 |\n| 3 | 4 |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-header-off-only-row",
+      "md": "|  |  |\n| --- | --- |",
+      "saved": "|  |  |\n| --- | --- |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableHeader",
+        "tableRow"
+      ],
+      "marks": []
+    },
+    {
+      "name": "table-align-mixed-default",
+      "md": "| a | b | c | d |\n| --- | :---: | --- | ---: |\n| 1 | 2 | 3 | 4 |",
+      "saved": "| a | b | c | d |\n| --- | :---: | --- | ---: |\n| 1 | 2 | 3 | 4 |",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-text-color",
+      "md": "A <span data-color=\"blue\">blue **bold**</span> word, and <span data-color=\"gray\">gray</span>.",
+      "saved": "A <span data-color=\"blue\">blue **bold**</span> word, and <span data-color=\"gray\">gray</span>.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "textColor"
+      ]
+    },
+    {
+      "name": "kb2p-text-color-hex",
+      "md": "<span data-color=\"#2563eb\">Blue from a hex</span> and <span data-color=\"#E00\">red</span>.",
+      "saved": "<span data-color=\"#2563eb\">Blue from a hex</span> and <span data-color=\"#E00\">red</span>.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "textColor"
+      ]
+    },
+    {
+      "name": "kb2p-highlight",
+      "md": "A <mark data-color=\"yellow\">marked *word*</mark> here.",
+      "saved": "A <mark data-color=\"yellow\">marked *word*</mark> here.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "highlight",
+        "italic"
+      ]
+    },
+    {
+      "name": "kb2p-highlight-hex",
+      "md": "A <mark data-color=\"#fde68a\">hex highlight</mark> here.",
+      "saved": "A <mark data-color=\"#fde68a\">hex highlight</mark> here.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "highlight"
+      ]
+    },
+    {
+      "name": "kb2p-sup-sub",
+      "md": "E = mc<sup>2</sup> and H<sub>2</sub>O, see note[<sup>1</sup>](#n1).",
+      "saved": "E = mc<sup>2</sup> and H<sub>2</sub>O, see note[<sup>1</sup>](#n1).",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "link",
+        "subscript",
+        "superscript"
+      ]
+    },
+    {
+      "name": "kb2p-marks-nested",
+      "md": "<span data-color=\"red\">red <mark data-color=\"green\">and green</mark></span> end\n\n- item <sup>1</sup>\n- <span data-color=\"teal\">teal item</span>\n\n> [!TIP]\n> a <mark data-color=\"pink\">pink</mark> tip",
+      "saved": "<span data-color=\"red\">red <mark data-color=\"green\">and green</mark></span> end\n\n- item <sup>1</sup>\n- <span data-color=\"teal\">teal item</span>\n\n> [!TIP]\n> a <mark data-color=\"pink\">pink</mark> tip",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "highlight",
+        "superscript",
+        "textColor"
+      ]
+    },
+    {
+      "name": "kb2p-marks-raw-shapes",
+      "md": "<span data-color=\"url(x)\">not a colour</span>, <mark>bare</mark>, <span class=\"c\">raw</span> and <sup class=\"x\">raw</sup>.",
+      "saved": "<span data-color=\"url(x)\">not a colour</span>, <mark>bare</mark>, <span class=\"c\">raw</span> and <sup class=\"x\">raw</sup>.",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-align-paragraph",
+      "md": "<p data-align=\"center\">A centred line with **bold** and a [link](https://example.com).</p>\n\n<p data-align=\"right\">Right.</p>\n\n<p data-align=\"justify\">Justified text.</p>\n\nPlain left text.",
+      "saved": "<p data-align=\"center\">A centred line with **bold** and a [link](https://example.com).</p>\n\n<p data-align=\"right\">Right.</p>\n\n<p data-align=\"justify\">Justified text.</p>\n\nPlain left text.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold",
+        "link"
+      ]
+    },
+    {
+      "name": "kb2p-align-heading",
+      "md": "<h2 data-align=\"right\">Right heading</h2>\n\n<h1 data-align=\"center\">Centred *title*</h1>\n\nText under it.",
+      "saved": "<h2 data-align=\"right\">Right heading</h2>\n\n<h1 data-align=\"center\">Centred *title*</h1>\n\nText under it.",
+      "nodes": [
+        "doc",
+        "heading",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "italic"
+      ]
+    },
+    {
+      "name": "kb2p-align-nested",
+      "md": "- <p data-align=\"center\">centred item</p>\n- plain item\n\n> [!NOTE]\n> <p data-align=\"right\">right in a note</p>",
+      "saved": "- <p data-align=\"center\">centred item</p>\n- plain item\n\n> [!NOTE]\n> <p data-align=\"right\">right in a note</p>",
+      "nodes": [
+        "bulletList",
+        "callout",
+        "doc",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-align-raw-shapes",
+      "md": "<p data-align=\"left\">left is no stored form</p>\n\n<p align=\"center\">old align</p>\n\n<p data-align=\"center\" class=\"x\">extra</p>",
+      "saved": "<p data-align=\"left\">left is no stored form</p>\n\n<p align=\"center\">old align</p>\n\n<p data-align=\"center\" class=\"x\">extra</p>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-status",
+      "md": "State: <span data-type=\"status\" data-color=\"green\">Done</span>, then <span data-type=\"status\" data-color=\"yellow\">In review</span>.",
+      "saved": "State: <span data-type=\"status\" data-color=\"green\">Done</span>, then <span data-type=\"status\" data-color=\"yellow\">In review</span>.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "status",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-status-escaped",
+      "md": "<span data-type=\"status\" data-color=\"red\">\\*Blocked\\* &lt;now></span> and <span data-type=\"status\" data-color=\"gray\"></span>",
+      "saved": "<span data-type=\"status\" data-color=\"red\">\\*Blocked\\* &lt;now></span> and <span data-type=\"status\" data-color=\"gray\"></span>",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "status",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-date",
+      "md": "Due <time data-type=\"date\" datetime=\"2026-10-19\">19 Oct 2026</time>, kept as <time data-type=\"date\" datetime=\"2026-01-05\">5th January</time>.",
+      "saved": "Due <time data-type=\"date\" datetime=\"2026-10-19\">19 Oct 2026</time>, kept as <time data-type=\"date\" datetime=\"2026-01-05\">5th January</time>.",
+      "nodes": [
+        "doc",
+        "kbDate",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-inline-raw-shapes",
+      "md": "<span data-type=\"status\" data-color=\"teal\">X</span> and <time data-type=\"date\" datetime=\"2026-02-30\">bad</time>.\n\nA <time datetime=\"2026-10-19\">time with no type</time>.",
+      "saved": "<span data-type=\"status\" data-color=\"teal\">X</span> and <time data-type=\"date\" datetime=\"2026-02-30\">bad</time>.\n\nA <time datetime=\"2026-10-19\">time with no type</time>.",
+      "nodes": [
+        "doc",
+        "htmlInline",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-inline-nested",
+      "md": "- [ ] ship <span data-type=\"status\" data-color=\"blue\">Doing</span> by <time data-type=\"date\" datetime=\"2026-11-01\">1 Nov 2026</time>\n\n> [!WARNING]\n> <span data-type=\"status\" data-color=\"purple\">Draft</span> only",
+      "saved": "- [ ] ship <span data-type=\"status\" data-color=\"blue\">Doing</span> by <time data-type=\"date\" datetime=\"2026-11-01\">1 Nov 2026</time>\n\n> [!WARNING]\n> <span data-type=\"status\" data-color=\"purple\">Draft</span> only",
+      "nodes": [
+        "callout",
+        "doc",
+        "kbDate",
+        "paragraph",
+        "status",
+        "taskItem",
+        "taskList",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-page-break",
+      "md": "Page one.\n\n<div data-type=\"page-break\"></div>\n\nPage two.",
+      "saved": "Page one.\n\n<div data-type=\"page-break\"></div>\n\nPage two.",
+      "nodes": [
+        "doc",
+        "pageBreak",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-subpages",
+      "md": "<div data-type=\"subpages\" data-order=\"manual\"></div>\n\n<div data-type=\"subpages\" data-order=\"title\"></div>\n\n<div data-type=\"subpages\" data-order=\"recent\"></div>",
+      "saved": "<div data-type=\"subpages\" data-order=\"manual\"></div>\n\n<div data-type=\"subpages\" data-order=\"title\"></div>\n\n<div data-type=\"subpages\" data-order=\"recent\"></div>",
+      "nodes": [
+        "doc",
+        "subpages"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-columns",
+      "md": "<div data-type=\"columns\" data-count=\"2\">\n\n<div data-type=\"column\">\n\n## Left\n\nLeft text with **bold**.\n\n</div>\n\n<div data-type=\"column\">\n\n- one\n- two\n\n</div>\n\n</div>\n\nAfter.",
+      "saved": "<div data-type=\"columns\" data-count=\"2\">\n\n<div data-type=\"column\">\n\n## Left\n\nLeft text with **bold**.\n\n</div>\n\n<div data-type=\"column\">\n\n- one\n- two\n\n</div>\n\n</div>\n\nAfter.",
+      "nodes": [
+        "bulletList",
+        "column",
+        "columns",
+        "doc",
+        "heading",
+        "listItem",
+        "paragraph",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "kb2p-columns-five",
+      "md": "<div data-type=\"columns\" data-count=\"5\">\n\n<div data-type=\"column\">\n\nA\n\n</div>\n\n<div data-type=\"column\">\n\nB\n\n</div>\n\n<div data-type=\"column\">\n\n</div>\n\n<div data-type=\"column\">\n\n```js\n</div>\n```\n\n</div>\n\n<div data-type=\"column\">\n\n<div align=\"center\">\nraw\n</div>\n\n</div>\n\n</div>",
+      "saved": "<div data-type=\"columns\" data-count=\"5\">\n\n<div data-type=\"column\">\n\nA\n\n</div>\n\n<div data-type=\"column\">\n\nB\n\n</div>\n\n<div data-type=\"column\">\n\n</div>\n\n<div data-type=\"column\">\n\n```js\n</div>\n```\n\n</div>\n\n<div data-type=\"column\">\n\n<div align=\"center\">\nraw\n</div>\n\n</div>\n\n</div>",
+      "nodes": [
+        "codeBlock",
+        "column",
+        "columns",
+        "doc",
+        "htmlBlock",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-columns-in-callout",
+      "md": "> [!NOTE]\n> <div data-type=\"columns\" data-count=\"2\">\n>\n> <div data-type=\"column\">\n>\n> Left\n>\n> </div>\n>\n> <div data-type=\"column\">\n>\n> Right\n>\n> </div>\n>\n> </div>",
+      "saved": "> [!NOTE]\n> <div data-type=\"columns\" data-count=\"2\">\n>\n> <div data-type=\"column\">\n>\n> Left\n>\n> </div>\n>\n> <div data-type=\"column\">\n>\n> Right\n>\n> </div>\n>\n> </div>",
+      "nodes": [
+        "callout",
+        "column",
+        "columns",
+        "doc",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-block-raw-shapes",
+      "md": "<div data-type=\"columns\" data-count=\"3\">\n\n<div data-type=\"column\">\n\nOnly one\n\n</div>\n\n</div>\n\n<div data-type=\"subpages\" data-order=\"newest\"></div>\n\n<div data-type=\"page-break\" class=\"x\"></div>",
+      "saved": "<div data-type=\"columns\" data-count=\"3\">\n\n<div data-type=\"column\">\n\nOnly one\n\n</div>\n\n</div>\n\n<div data-type=\"subpages\" data-order=\"newest\"></div>\n\n<div data-type=\"page-break\" class=\"x\"></div>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "paragraph",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-merged",
+      "md": "<table>\n<tr>\n<th colspan=\"2\">\n\nQuarter\n\n</th>\n</tr>\n<tr>\n<td>\n\nQ1\n\n</td>\n<td rowspan=\"2\">\n\n**Ten** units\n\n</td>\n</tr>\n<tr>\n<td>\n\nQ2\n\n</td>\n</tr>\n</table>\n\nAfter.",
+      "saved": "<table>\n<tr>\n<th colspan=\"2\">\n\nQuarter\n\n</th>\n</tr>\n<tr>\n<td>\n\nQ1\n\n</td>\n<td rowspan=\"2\">\n\n**Ten** units\n\n</td>\n</tr>\n<tr>\n<td>\n\nQ2\n\n</td>\n</tr>\n</table>\n\nAfter.",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": [
+        "bold"
+      ]
+    },
+    {
+      "name": "kb2p-table-header-column",
+      "md": "<table>\n<tr>\n<th>\n\nName\n\n</th>\n<th>\n\nRole\n\n</th>\n</tr>\n<tr>\n<th>\n\nAsha\n\n</th>\n<td data-align=\"right\">\n\nLead\n\n</td>\n</tr>\n<tr>\n<th></th>\n<td></td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr>\n<th>\n\nName\n\n</th>\n<th>\n\nRole\n\n</th>\n</tr>\n<tr>\n<th>\n\nAsha\n\n</th>\n<td data-align=\"right\">\n\nLead\n\n</td>\n</tr>\n<tr>\n<th></th>\n<td></td>\n</tr>\n</table>",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-cell-color",
+      "md": "<table>\n<tr>\n<th data-color=\"yellow\">\n\nState\n\n</th>\n<th>\n\nNote\n\n</th>\n</tr>\n<tr>\n<td data-color=\"#fde68a\">\n\nOpen\n\n</td>\n<td>\n\n- one\n- two\n\n</td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr>\n<th data-color=\"yellow\">\n\nState\n\n</th>\n<th>\n\nNote\n\n</th>\n</tr>\n<tr>\n<td data-color=\"#fde68a\">\n\nOpen\n\n</td>\n<td>\n\n- one\n- two\n\n</td>\n</tr>\n</table>",
+      "nodes": [
+        "bulletList",
+        "doc",
+        "listItem",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableHeader",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-aligned-block",
+      "md": "<table>\n<tr>\n<td>\n\n<p data-align=\"center\">Centred</p>\n\n</td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr>\n<td>\n\n<p data-align=\"center\">Centred</p>\n\n</td>\n</tr>\n</table>",
+      "nodes": [
+        "doc",
+        "paragraph",
+        "table",
+        "tableCell",
+        "tableRow",
+        "text"
+      ],
+      "marks": []
+    },
+    {
+      "name": "kb2p-table-raw-shapes",
+      "md": "<table>\n<tr><td>one line</td></tr>\n</table>\n\n<table>\n<tr>\n<td style=\"color:red\">\n\nx\n\n</td>\n</tr>\n</table>",
+      "saved": "<table>\n<tr><td>one line</td></tr>\n</table>\n\n<table>\n<tr>\n<td style=\"color:red\">\n\nx\n\n</td>\n</tr>\n</table>",
+      "nodes": [
+        "doc",
+        "htmlBlock",
+        "paragraph",
         "text"
       ],
       "marks": []

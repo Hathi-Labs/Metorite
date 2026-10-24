@@ -12,15 +12,18 @@ This file walks the REAL ``gateway.routes.knowledge.router`` and holds
 2. a manifest row that names a route the router does not serve fails,
    because a stale tool is a lie the agent will tell.
 
-Then the manifest is held to the tools: each built tool is in the manifest
-with class A and a read-only annotation, each write has no tool yet, and the
-client refuses a route the manifest does not give to the tool.
+Then the manifest is held to the tools: each read tool is in the manifest
+with class A and a read-only annotation, the only write with a tool is
+``POST /knowledge/proposals`` (KB-5a), and the client refuses a route the
+manifest does not give to the tool.
 
 Mutations this file catches (R7):
 
 * a new route in the router and not in the manifest -> the first test;
 * a manifest row for a route that is gone -> the second test;
-* a write route that gets a tool before KB-5 -> ``test_no_write_has_a_tool``;
+* a write route other than the proposals that gets a tool ->
+  ``test_no_write_has_a_tool``, and a publish, accept, reject, restore or
+  archive route with a tool -> ``test_kb_proposals.py``;
 * the client sends a route that the manifest does not map to the tool ->
   ``test_the_client_refuses_an_unmapped_route`` in ``test_knowledge_tools.py``.
 """
@@ -75,19 +78,29 @@ def test_the_router_is_not_empty_and_has_no_duplicate_rows() -> None:
     assert len(seen) == len(set(seen))
 
 
-def test_the_two_tools_map_to_their_reads() -> None:
+#: The reads of KB-4a and the two proposals of KB-5a.
+READ_TOOLS = {"list_spaces", "read_page"}
+PROPOSE_TOOLS = {"propose_page", "propose_edit"}
+
+
+def test_the_tools_map_to_their_routes() -> None:
     assert m.route_for("GET", "/knowledge/spaces").tool == "list_spaces"
     row = m.route_for("GET", "/knowledge/pages/0f8fad5b-d9cb-469f-a165-70867728950e")
     assert row is not None and row.tool == "read_page" and row.cls == "A"
-    assert m.tools() == {"list_spaces", "read_page"}
+    propose = m.route_for("POST", "/knowledge/proposals")
+    assert propose is not None and propose.cls == "B"
+    assert {propose.tool, *propose.also} == PROPOSE_TOOLS
+    assert m.tools() == READ_TOOLS | PROPOSE_TOOLS
 
 
 def test_no_write_has_a_tool() -> None:
-    """KB-4a builds reads only. Each write waits for its slice (§8.1)."""
+    """KB-4a builds reads. KB-5a gives one write route to the proposals."""
     for row in m.MANIFEST:
         if row.method != "GET":
             assert row.cls in ("B", "C", "X"), (row.method, row.path)
-            assert not row.tool, f"{row.method} {row.path} has a tool before KB-5"
+            if (row.method, row.path) == ("POST", "/knowledge/proposals"):
+                continue
+            assert not row.tool and not row.also, f"{row.method} {row.path} has a tool"
             assert row.planned or row.reason, (row.method, row.path)
 
 
@@ -96,14 +109,20 @@ def test_the_grants_route_is_never_on_chat() -> None:
     assert row is not None and row.cls == "X" and "D-PM-40" in row.reason
 
 
-def test_each_built_tool_is_exported_and_read_only() -> None:
+def test_each_built_tool_is_exported_with_its_risk() -> None:
     from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
     for name in m.tools():
         assert name in kt.__all__, name
+    for name in READ_TOOLS:
         assert m.tool_class(name) == "A"
         assert TOOL_ANNOTATIONS[name] == {
             "read_only": True, "destructive": False, "idempotent": True, "open_world": False,
+        }
+    for name in PROPOSE_TOOLS:
+        assert m.tool_class(name) == "B"
+        assert TOOL_ANNOTATIONS[name] == {
+            "read_only": False, "destructive": False, "idempotent": False, "open_world": False,
         }
 
 

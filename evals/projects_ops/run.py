@@ -151,11 +151,26 @@ async def _drive(harness: OpsHarness, session: Session, spec: TaskSpec, run: _Ru
         coding._finish(run.stream)
 
 
+def stage_uploads(harness: OpsHarness, spec: TaskSpec, thread_id: str) -> None:
+    """Put each file the member uploaded in the upload folder of this thread, where the
+    upload route puts it (``agent_paths.upload_dir_rel``, H-227). A run reads only its
+    own thread's folder, so a file in any other place is not found."""
+    from acb_skills.agent_paths import ensure_state_dir, tenant_instance, upload_dir_rel
+
+    instance = tenant_instance(harness.org)
+    workspace = ensure_state_dir(AGENT, instance)
+    for name, content in spec.uploads:
+        path = workspace / upload_dir_rel(instance, thread_id) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
 async def run_session(
     harness: OpsHarness, spec: TaskSpec, steps: list[tuple[Any, ...]] | None,
 ) -> tuple[Session, _Run, coding.ModelTap, float]:
     """One session: a new thread, the task's prompt, the real executor."""
     session = Session(member=MEMBER, thread_id=str(uuid.uuid4()), prompt=spec.prompt)
+    stage_uploads(harness, spec, session.thread_id)
     run = _Run(stream=coding._Stream(session))
     tap = coding.ModelTap()
     coding._set_wire(harness, tap, steps)
@@ -189,6 +204,10 @@ def _reset_stub(harness: OpsHarness) -> None:
     ops = harness.ops
     ops.requests.clear()
     ops.tasks, ops.rules, ops.nodes = fresh.tasks, fresh.rules, fresh.nodes
+    ops.attachments, ops.nudges = fresh.attachments, fresh.nudges
+    ops.grants = fresh.grants
+    ops.reports, ops.recipients = fresh.reports, fresh.recipients
+    ops.agent_runs = fresh.agent_runs
 
 
 async def run_task(

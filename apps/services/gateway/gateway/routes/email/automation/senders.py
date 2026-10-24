@@ -21,8 +21,8 @@ from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
     _host_is_public,
     _is_safe_external_url,
 )
-from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     CONVERSATION_LABELS_LOWER,
@@ -30,17 +30,17 @@ from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     _account_scope,
     _assert_account_owner,
-    _owned_accounts_sql,
-    _tenant_session,
     _llm_json,
     _log,
+    _owned_accounts_sql,
     _savepoint,
+    _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 # Folders whose mail is already disposed of (or was never received). The Email
 # Cleaner and its uncategorized sweep both exclude these, so a sender is never
@@ -113,8 +113,8 @@ async def list_senders(
         # (EM-T8g-1, D-EM-30). The three "never list the user" subqueries
         # below keep EVERY mailbox of the member: a separate mailbox is still
         # the member (D-EM-27).
-        scope = _account_scope(account_id, params, pooled_only=True)
-        owned = _owned_accounts_sql(account_id, params, pooled_only=True)
+        scope = _account_scope(account_id, params, pooled_only=True, level="read")
+        owned = _owned_accounts_sql(account_id, params, pooled_only=True, level="read")
         # Already-disposed mail never counts toward "how noisy is this sender".
         folder_sql = f" AND {_NOT_DISPOSED}"
         if not include_archived:
@@ -148,6 +148,8 @@ async def list_senders(
         # meant different things on different rows.
         in_folder_sql = "COUNT(*) FILTER (WHERE LOWER(folder) = 'inbox')"
         rows = (await db.execute(text(
+            # "Never list the user" reads "self": private_predicate, the
+            # member's private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT LOWER(from_address->>'email') AS email,
                        MAX(from_address->>'name') AS name,
                        COUNT(*) AS count,
@@ -163,7 +165,7 @@ async def list_senders(
                   -- + self-CC'd mail is all from-self).
                   AND LOWER(from_address->>'email') NOT IN (
                     SELECT LOWER(email_address) FROM email_accounts
-                    WHERE user_id = :uid)
+                    WHERE {private_predicate(uid="uid")})
                 GROUP BY LOWER(from_address->>'email')
                 -- Tie-break on the address so paging is stable: without a
                 -- deterministic order, senders with equal volume could shuffle
@@ -177,20 +179,22 @@ async def list_senders(
         # hides the tail is worse than useless — the user believes they've dealt
         # with everything.
         total_row = (await db.execute(text(
+            # "Never list the user" reads "self": private_predicate, the
+            # member's private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT COUNT(DISTINCT LOWER(from_address->>'email')) AS c
                 FROM email_messages em
                 WHERE {scope}{folder_sql}
                   AND COALESCE(from_address->>'email','') <> ''
                   AND LOWER(from_address->>'email') NOT IN (
                     SELECT LOWER(email_address) FROM email_accounts
-                    WHERE user_id = :uid)"""
+                    WHERE {private_predicate(uid="uid")})"""
         ), params)).fetchone()
 
         # Merge newsletter disposition (APPROVED/UNSUBSCRIBED/AUTO_ARCHIVED).
         nl_params: dict[str, Any] = {"uid": user.email or "anonymous"}
         nl_scope = (
             "account_id IN ("
-            + _owned_accounts_sql(account_id, nl_params, pooled_only=True)
+            + _owned_accounts_sql(account_id, nl_params, pooled_only=True, level="read")
             + ")"
         )
         nl_rows = (await db.execute(text(
@@ -222,9 +226,11 @@ async def list_senders(
         # trims, so an exact-case comparison here silently dropped every label
         # whose rule name differed by case or stray whitespace — the sender then
         # rendered as uncategorized despite its mail being labelled.
+        # "Never list the user" reads "self": private_predicate, the
+        # member's private mailboxes only (D-SM-5, WS-65 SM-2).
         not_self = (" AND LOWER(em.from_address->>'email') NOT IN ("
                     "SELECT LOWER(email_address) FROM email_accounts "
-                    "WHERE user_id = :uid)")
+                    "WHERE " + private_predicate(uid="uid") + ")")
         msgcat_rows = (await db.execute(text(
             _LABEL_TALLY_SQL.format(scope=scope, extra=folder_sql + not_self)
         ), {**params, "labels": _KNOWN_LABELS_LOWER})).fetchall()
@@ -343,6 +349,9 @@ class BulkActionRequest(BaseModel):
     folder: str | None = None
     older_than_days: int | None = None
     only_read: bool | None = None
+    #: Count the mail that the act would change, and change nothing. The
+    #: chat's ``bulk_manage_inbox`` shows the count on its card first.
+    dry_run: bool = False
 
 
 _BULK_DB_UPDATE = {
@@ -413,7 +422,7 @@ async def bulk_action(
     async with _tenant_session() as db:
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
         scope = _account_scope(
-            req.account_id, params, pooled_only=not req.message_ids)
+            req.account_id, params, pooled_only=not req.message_ids, level="send")
         clauses = [scope]
         if req.message_ids:
             clauses.append("em.id::text = ANY(:ids)")
@@ -440,6 +449,11 @@ async def bulk_action(
         if req.action == "archive":
             clauses.append(_NOT_DISPOSED)
         where_sql = " AND ".join(clauses)
+        if req.dry_run:
+            matched = (await db.execute(text(
+                f"SELECT COUNT(*) FROM email_messages em WHERE {where_sql}"
+            ), params)).scalar()
+            return {"matched": int(matched or 0), "affected": 0}
 
         # One set-based UPDATE, RETURNING the provider ids we need to reconcile.
         # Doing it in a single statement (rather than SELECT-then-UPDATE-by-id)
@@ -624,7 +638,7 @@ async def list_newsletters(
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous")
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
-        scope = "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+        scope = "account_id IN (" + mailbox_ids_sql(uid="uid", level="read")
         if account_id:
             scope += " AND id = :aid"
             params["aid"] = account_id
@@ -933,7 +947,7 @@ async def unsubscribe_target(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         link = await _stored_unsubscribe_link(db, account_id, email)
     kind = _unsubscribe_kind(link)
     host: str | None = None
@@ -970,7 +984,7 @@ async def unsubscribe_sender(
     sender's existing inbox mail is archived. Returns what was actually done so
     the UI can tell the user (unsubscribed vs blocked)."""
     async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
 
         # Use the link the UI passed; otherwise recover the best one we stored.
         link = req.unsubscribe_link
@@ -1264,7 +1278,7 @@ async def sender_categories(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """SELECT category, COUNT(*) AS c FROM email_senders
                WHERE account_id = :aid AND category IS NOT NULL
@@ -1554,7 +1568,7 @@ async def list_cold_senders(
     async with _tenant_session() as db:
         account_id = await resolve_account_filter(
             db, account_id, user.email or "anonymous", required=True)
-        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         rows = (await db.execute(text(
             """SELECT from_email, status, reason, updated_at
                FROM email_cold_senders WHERE account_id = :aid
