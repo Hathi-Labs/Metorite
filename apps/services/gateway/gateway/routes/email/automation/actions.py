@@ -417,8 +417,15 @@ async def _move_folder_action(
     from email_ingestion.providers.base import (
         canonical_folder,
         local_folder_after_move,
+        move_refusal,
     )
     dest = label.strip()
+    # H-395: a rule saved before the save-time refusal may still hold a move
+    # into Sent or Drafts. The run skips that action with one plain sentence,
+    # and History shows it as the issue of the rule.
+    refusal = move_refusal(dest)
+    if refusal:
+        raise ValueError(refusal)
     canon = canonical_folder(dest)
     folder = local_folder_after_move(provider, dest)
     if folder is None:

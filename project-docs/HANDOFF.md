@@ -6217,21 +6217,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
 - **Added:** 2026-10-23 · Projects chat parity session
 
-### H-389 · Finish the email chat polish branch · [AGENT]
-- **Check:** `git log origin/main --oneline | grep -i "spam action"` prints a
-  line. If it does, delete this entry.
-- **Why:** the branch `email-chat-polish` (728061816) holds three changes
-  that nobody verified or reviewed. They are a `spam` action in
-  `manage_inbox`, one retry of a read on a 503, and a plain sentence for a bare
-  403 or 404. Its builder stopped. The branch is cut from main before #1237,
-  so `agents.py` conflicts.
-- **Do this:** rebase it onto main, and fix the conflicts. Run the tests of
-  the changed code, then the verifier. Open a PR. Report the database pool
-  setting and the background jobs that share it (see H-390). Report what an
-  email write over WhatsApp needs (see H-391).
-- **Authority:** the audit of 2026-10-22 in this session's PRs (#1237 body)
-- **Added:** 2026-10-23 · email chat session
-
 ### H-390 · Email reads answer 503 when the gateway's database pool is full · [AGENT]
 - **Check:** `ssh metorite "sudo journalctl -u acb-gateway --since -24h -o cat
   | grep -c 'QueuePool limit'"` prints 0. If it does for a week, delete this
@@ -6243,6 +6228,12 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** measure which jobs hold the connections. Then raise the pool
   size, or cap the jobs' concurrency. Check the Postgres connection limit
   first.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** the pooler has no
+  spare slot, so there is no second pool. A task marked background (the
+  mailbox sync loop, and each post-sync job through `as_mailbox_owner`) holds
+  at most `DB_BACKGROUND_MAX` (default 4) of the 9 connections. Members keep
+  5. Fence: `tests/unit/test_db_background_lane.py`. Not measured on
+  production. Keep this entry until the Check holds for a week.
 - **Authority:** `engineering_practice.md` §1
 - **Added:** 2026-10-23 · email chat session
 
@@ -6272,18 +6263,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
-### H-394 · Three tests are red on main for a reason in the test setup · [AGENT]
-- **Check:** `uv run pytest -q tests/unit/test_delegation_no_egress.py
-  tests/unit/test_customer_console_router.py` passes on main. If it does,
-  delete this entry.
-- **Why:** two tests in `test_delegation_no_egress.py` fail, because the
-  openai client's platform probe starts a subprocess that the test refuses.
-  `test_the_customer_never_sees_the_provider_secret` also fails on main.
-  Each review this week had to prove that the red was not new.
-- **Do this:** fix the test setup, or stub the probe. Do not weaken the
-  subprocess guard.
-- **Added:** 2026-10-23 · email chat session
-
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]
 - **Check:** a query of `email_rules` for a MOVE_FOLDER action to a Sent or
   Drafts folder returns no row. If it does, delete this entry.
@@ -6291,6 +6270,17 @@ line — never reclaim a number by deleting the other entry.
   held chat could use that move to fake a `sent` contact. An Outlook or IMAP
   rule that moved mail there now fails at run time.
 - **Do this:** find such rules. Tell each owner, or change the rule.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** a rule save
+  (create, update, batch, generate) now answers 422 with a plain sentence
+  for a move into Sent or Drafts. A run skips an old rule's move and History
+  shows the same sentence as the issue. Fence:
+  `tests/unit/test_email_rule_move_into_sent.py`. Still to do: run the query
+  below on the database, and tell each owner. The query is also in that
+  test's docstring:
+  `SELECT r.id, r.account_id, r.name, a.label FROM email_rules r JOIN
+  email_actions a ON a.rule_id = r.id WHERE UPPER(a.type) = 'MOVE_FOLDER' AND
+  LOWER(BTRIM(a.label)) IN ('sent','sentitems','sent items','sent mail',
+  'drafts','draft');`
 - **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 

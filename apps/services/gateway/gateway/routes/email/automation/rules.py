@@ -635,12 +635,31 @@ async def _insert_rule(db: Any, req: RuleModel) -> str:
     return rule_id
 
 
+def refuse_move_into_sent(actions: Any) -> None:
+    """422 when an action moves mail into Sent or Drafts (H-395).
+
+    Called by every rule SAVE (create, update, batch, generate). It is not in
+    ``_replace_actions``, because the Reply toggle also calls that function
+    on a rule saved before this check, and the toggle must keep working.
+    """
+    from email_ingestion.providers.base import move_refusal
+
+    for a in actions or []:
+        get = a.get if isinstance(a, dict) else (lambda k, _a=a: getattr(_a, k, None))
+        if (get("type") or "").upper() != "MOVE_FOLDER":
+            continue
+        refusal = move_refusal(get("label"))
+        if refusal:
+            raise HTTPException(status_code=422, detail=refusal)
+
+
 @router.post("/rules")
 async def create_rule(
     req: RuleModel,
     user: UserContext = Depends(get_current_user),
 ):
     """Create an assistant rule with its actions."""
+    refuse_move_into_sent(req.actions)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         rule_id = await _insert_rule(db, req)
@@ -903,6 +922,7 @@ async def _insert_specs(
     caller's one session makes the list all or nothing."""
     created_ids: list[str] = []
     for spec in specs:
+        refuse_move_into_sent(spec.get("actions"))
         model = RuleModel(
             account_id=account_id,
             name=spec["name"],
@@ -991,6 +1011,7 @@ async def update_rule(
     user: UserContext = Depends(get_current_user),
 ):
     """Update a rule and replace its actions."""
+    refuse_move_into_sent(req.actions)
     async with _tenant_session() as db:
         owner = (await db.execute(text(
             """SELECT er.account_id FROM email_rules er
