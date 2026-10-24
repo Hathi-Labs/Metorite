@@ -61,8 +61,20 @@ write refuses with ``not_your_words``.
 primary fence).** A value that holds one (``assistant_profile.needs_confirm``),
 and each alias with an address, never writes from the chat at once. On the
 web it asks once, through ``ask_tools.request_confirmation``, with the exact
-value that it saves, and writes only on Approve. On WhatsApp there is no
-button yet (D-PZ-20), so it refuses with ``needs_confirm``.
+value that it saves, and writes only on Approve.
+
+**PZ-6b (§13.3 items 6 and 9, D111).** ``profile_remember(replaces=<id>)``
+replaces a saved fact: a fresh read checks the id, and one card asks
+"Replace «old» with «new»?". Approve PATCHes it, and the gateway keeps the
+last change, so Undo puts the old text back. A sensitive fact
+(``assistant_profile.is_sensitive``, or ``sensitive=True`` from the model)
+asks too (D-PZ-16). One card names every reason that applies. On WhatsApp
+(D-PZ-20) the card gate parks the call as an act of
+``whatsapp_acts.PROFILE_ACTS``, and the Confirm and Cancel buttons settle
+it. At Confirm, ``whatsapp_channel/acts.py`` runs the stored call with no
+model, inside :func:`whatsapp_confirm_scope`. The typed-words rule is
+skipped only there, and the card gate writes only when the card that the
+call builds again equals the card that the member saw.
 
 ADVISORY, not fenced (R7): a member who types the sentence of an attacker
 in their own words. The docstrings and the orchestrator prompt say "save

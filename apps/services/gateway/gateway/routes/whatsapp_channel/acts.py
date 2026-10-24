@@ -45,6 +45,12 @@ settles the act with the member's NEXT message, before any run.
   rename, a status edit) gets "no": nothing is written, and the act closes
   ``void``.
 
+* **WS-63 PZ-6b, a profile write** (``whatsapp_acts.PROFILE_ACTS``,
+  D-PZ-20). A fact with an address, a sensitive fact, a replace and an
+  alias park and settle exactly as a WAC-4 act. The stored call runs inside
+  ``profile_tools.whatsapp_confirm_scope`` (:func:`_act_scope`), and the
+  member reads the tool's text with no machine line.
+
 * **WAC-P4, one egress call after an untrusted answer** (spec §17.3). Its
   act name starts with ``whatsapp_acts.EGRESS_ACT_PREFIX``. Its Confirm
   passes every check above, then :func:`settle` gives :class:`Approved` and
