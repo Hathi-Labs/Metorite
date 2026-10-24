@@ -250,6 +250,21 @@ async def test_compose_reply_cc_puts_every_person_on_one_card(monkeypatch) -> No
     assert cards[0]["reply"]["marks"] == {ANANDA: "on Dr Sagar's original email"}
 
 
+def test_the_card_form_keeps_the_marks_of_its_own_people_only() -> None:
+    from acb_skills.ask_tools import clean_reply_form
+
+    agents = F.load_email_agent("ea_recipient_marks")
+    form = agents._reply_form({
+        "message_id": MAIL, "body": "Hi",
+        "recipients": {"reply": {"to": [SAGAR], "cc": []},
+                       "reply_all": {"to": [SAGAR], "cc": [ANANDA]}},
+        "marks": {ANANDA.upper(): "on Dr Sagar's original email"}}, True)
+    assert clean_reply_form(form)["marks"] == {ANANDA: "on Dr Sagar's original email"}
+    form["marks"] = {"spy@evil.example": "x"}
+    with pytest.raises(ValueError):
+        clean_reply_form(form)
+
+
 async def test_a_held_chat_with_the_switch_off_refuses_cc(monkeypatch) -> None:
     agents = F.load_email_agent("ea_recipient_intent_off")
     monkeypatch.setattr(agents, "_egress_held", lambda: True)
