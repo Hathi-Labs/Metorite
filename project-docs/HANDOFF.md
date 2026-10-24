@@ -6332,15 +6332,14 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-23 · Knowledge session
 
 ### H-399 · Build the next Knowledge AI slices of §22 · [AGENT]
-- **Check:** `grep -nE "KB-5c|KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Check:** `grep -nE "KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
 - **Why:** §22 of `knowledge_base.md` is the AI roadmap of 2026-10-22. It ranks the slices by value and names the tier of each.
 - **Do this, in order:**
-  1. KB-5c: the 14-day expiry of pending proposals (no model).
-  2. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
-  3. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
-  4. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
-  5. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
-  6. KB-4b citation chips, then KB-10 `kb:read` on MCP.
+  1. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
+  2. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
+  3. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
+  4. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
+  5. KB-4b citation chips, then KB-10 `kb:read` on MCP.
   Each paid pass has its own flag, default off, which the owner turns on.
 - **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
 - **Added:** 2026-10-23 · Knowledge session
