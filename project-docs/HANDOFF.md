@@ -6395,7 +6395,7 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** after the release that carries 297, run this SQL once on production, as a role that bypasses RLS. It prints 0. Then delete this entry.
   `WITH RECURSIVE tree AS (SELECT id, personal_owner AS owner FROM pm_projects WHERE parent_project_id IS NULL AND personal_owner IS NOT NULL UNION ALL SELECT c.id, t.owner FROM pm_projects c JOIN tree t ON c.parent_project_id = t.id WHERE c.personal_owner IS NOT NULL OR NOT EXISTS (SELECT 1 FROM pm_project_grants g WHERE g.project_id = c.id AND lower(g.subject) <> lower(t.owner))) SELECT count(*) FROM pm_projects p JOIN tree ON p.id = tree.id WHERE p.personal_owner IS NULL;`
 - **Why:** R6 applies 297 before the services restart. In that window the old `create_node` can still write a child with no `personal_owner` under a private tree. The SQL uses the walk of 297, so it does not count a team node that 297 kept on purpose.
-- **Do this:** if the count is not 0, run the `DO` block of `infra/postgres/297_personal_owner_stamp_backfill.sql` again by hand. It is idempotent. Read its NOTICE lines too. Each one names a team node under a private tree, and the owner or a Projects lead moves it out to a team space.
+- **Do this:** if the count is not 0, run the `DO` block of `infra/postgres/297_personal_owner_stamp_backfill.sql` again by hand. It is idempotent. Read its NOTICE lines too. Each one names a team node T under a private tree. A lead of T or a Projects admin moves T out to a team space, because `move_node` asks `assert_may_move_project` for that right.
 - **Authority:** `specs/one_projects_app.md` OP-3, the precondition of task #304
 - **Added:** 2026-10-24 · WS-64 task #304 fix round 1
 

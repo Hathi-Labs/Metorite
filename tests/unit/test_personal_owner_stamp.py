@@ -466,3 +466,82 @@ async def test_d_the_migration_keeps_an_owner_that_is_already_set(live):
     _run_migration(live.app_url)
     assert _owner_of(live, same) == OWNER_P
     assert _owner_of(live, odd) == other
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (e) Fix round 2: the gateway reads the stop rule of 297
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# T is a team node (an `org` grant) under a stamped node of a private tree.
+# 297 keeps T and its subtree as team work, so each door of the gateway must
+# read them as team work too: the stamp, the move guard and the grant writes.
+
+
+def _tree_text(world, who: str) -> Any:
+    return d._person(world, who, "GET", "/projects/tree")
+
+
+async def test_e_a_team_member_files_a_node_under_a_kept_team_node(live):
+    t, _ = _team_root_under(live, live.root, "Team E1")
+    r = await _make(live, w.MEMBER, t, "a team child of T")
+    assert r.status_code == 201, r.text
+    kid = r.json()["id"]
+    assert _owner_of(live, kid) is None
+    r = await _tree_text(live, w.MEMBER)
+    assert r.status_code == 200, r.text
+    assert kid in r.text
+
+
+async def test_e_the_tree_owner_files_an_unstamped_node_under_t(live):
+    t, _ = _team_root_under(live, live.root, "Team E2")
+    r = await _make(live, OWNER_P, t, "the owner's child of T")
+    assert r.status_code == 201, r.text
+    kid = r.json()["id"]
+    assert _owner_of(live, kid) is None
+    # No owner grant either: it is team work, not a personal node.
+    assert _one(live, "SELECT count(*) FROM pm_project_grants WHERE project_id ="
+                " CAST(:p AS uuid) AND subject = :s", p=kid, s=OWNER_P) == 0
+
+
+async def test_e_a_reorder_under_t_and_a_move_into_t_go(live):
+    t, t_kid = _team_root_under(live, live.root, "Team E3")
+    r = await d._person(live, OWNER_P, "POST", f"/projects/nodes/{t_kid}/move",
+                        {"parent_project_id": t, "position": 5.0})
+    assert r.status_code == 200, r.text
+    r = await _make(live, OWNER_P, live.team, "a team project for T")
+    assert r.status_code == 201, r.text
+    team_node = r.json()["id"]
+    r = await d._person(live, OWNER_P, "POST", f"/projects/nodes/{team_node}/move",
+                        {"parent_project_id": t})
+    assert r.status_code == 200, r.text
+    assert _one(live, "SELECT parent_project_id FROM pm_projects WHERE id ="
+                " CAST(:c AS uuid)", c=team_node) == t
+
+
+async def test_e_a_lead_of_t_writes_a_grant_on_t(live):
+    t, _ = _team_root_under(live, live.root, "Team E4")
+    live.seeder.one("UPDATE pm_projects SET lead = :m WHERE id = CAST(:t AS uuid)"
+                    " RETURNING id", m=w.MEMBER, t=t)
+    r = await d._person(live, w.MEMBER, "POST", f"/projects/nodes/{t}/grants",
+                        {"subject": READER})
+    assert r.status_code == 201, r.text
+    assert _one(live, "SELECT subject FROM pm_project_grants WHERE project_id ="
+                " CAST(:p AS uuid) AND subject = :s", p=t, s=READER) == READER
+
+
+async def test_e_the_tree_owner_cannot_revoke_the_team_grant_of_t(live):
+    from gateway.routes.projects.authority import GRANT_WRITE_REFUSED
+
+    # The tree owner here is NOT a Projects admin, and not a lead of T.
+    r = await d._person(live, w.MEMBER, "POST", "/projects/my/areas", {"name": "Mine"})
+    assert r.status_code == 201, r.text
+    root = _one(live, "SELECT id FROM pm_projects WHERE parent_project_id IS NULL"
+                " AND lower(personal_owner) = :o", o=w.MEMBER)
+    t, _ = _team_root_under(live, root, "Team E5")
+    gid = _one(live, "SELECT id FROM pm_project_grants WHERE project_id ="
+               " CAST(:p AS uuid) AND subject = 'org'", p=t)
+    r = await d._person(live, w.MEMBER, "DELETE", f"/projects/nodes/{t}/grants/{gid}")
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == GRANT_WRITE_REFUSED
+    assert _one(live, "SELECT count(*) FROM pm_project_grants WHERE id ="
+                " CAST(:g AS uuid)", g=gid) == 1

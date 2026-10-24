@@ -1610,9 +1610,11 @@ async def assert_project_move_keeps_privacy(
     # a lead must be able to move that node OUT to a team space, so it is not
     # "personal" here even though its ancestor is.
     #
-    # The DESTINATION side walks up (`personal_tree_owner`). A parent that is
-    # any node of a private tree, stamped or not, is a personal destination.
-    # The direct column alone let a team root sit under an unstamped legacy
+    # The DESTINATION side walks up (`personal_tree_owner`, the one walk). A
+    # parent that is any node of a private tree, stamped or not, is a
+    # personal destination. The walk stops at a team node as 297 does, so a
+    # node of the team subtree that 297 kept is a team destination. The
+    # direct column alone let a team root sit under an unstamped legacy
     # child, which is the shape that 297 must then skip.
     #
     # ⚠️ Added lines only: `test_github_merge_r8.py::test_d11_core_py_has_no_diff`
@@ -1659,35 +1661,53 @@ async def grant_personal_owner(db: Any, project_id: str, email: str) -> None:
     )
 
 
+#: THE walk of a private tree (WS-64, task #304, fix round 2). The node and
+#: each ancestor, nearest first, up to and with the nearest stamped node. The
+#: climb stops there, because that node names the tree owner. The owner counts
+#: ONLY when no UNSTAMPED node below it on the path carries a grant to a
+#: subject other than that owner. Such a node is a team node, which
+#: migration 297 leaves unstamped on purpose, so it and its subtree are team
+#: work. `depth < 64` ends a cycle.
+PERSONAL_TREE_OWNER_SQL = (
+    "WITH RECURSIVE anc AS ("
+    "  SELECT id, parent_project_id, personal_owner, 0 AS depth"
+    "    FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id, p.personal_owner, a.depth + 1"
+    "    FROM pm_projects p JOIN anc a ON p.id = a.parent_project_id"
+    "   WHERE a.depth < 64 AND a.personal_owner IS NULL"
+    "), top AS ("
+    "  SELECT personal_owner, depth FROM anc"
+    "   WHERE personal_owner IS NOT NULL ORDER BY depth LIMIT 1"
+    ") SELECT top.personal_owner FROM top"
+    " WHERE NOT EXISTS ("
+    "   SELECT 1 FROM anc a JOIN pm_project_grants g ON g.project_id = a.id"
+    "    WHERE a.depth < top.depth"
+    "      AND lower(g.subject) <> lower(top.personal_owner))"
+)
+
+
 async def personal_tree_owner(db: Any, node_id: str) -> str | None:
-    """The owner of the private tree that holds *node_id*, or None.
+    """The lower-case owner of the private tree that holds *node_id*, or None.
 
-    WS-64, task #304. The node itself and each ancestor are read, and the
-    nearest ``personal_owner`` wins. A personal root always carries it, so a
-    child that was minted without the stamp still answers with its owner.
+    WS-64, task #304. THE one walk of a private tree, with the stop rule of
+    migration 297 (:data:`PERSONAL_TREE_OWNER_SQL`). A node that carries
+    ``personal_owner`` answers with it. Else the nearest stamped ancestor
+    names the owner, unless a team node (an unstamped node with a grant to
+    another subject) sits between them. Then the answer is None: team work.
 
-    ⚠️ This walk serves a WRITE: the stamp on a new child, and the
-    destination side of ``assert_project_move_keeps_privacy``. Every read
-    (``tree.py``, ``_AGENT_NOT_PERSONAL_SQL``) reads the node's OWN column.
-    So the invariant is "each node of a private tree carries the owner", and
-    each path that inserts a child must keep it.
+    Every door that asks "is this node in a private tree" calls this, and no
+    door has a copy: ``tree.create_node`` (the stamp on a new child), the
+    destination side of :func:`assert_project_move_keeps_privacy`, and
+    ``authority.in_personal_tree`` and ``authority.personal_tree_owner``
+    (the grant writes and the revoke). It lives here and not in
+    ``authority.py`` because ``authority`` imports this module.
     """
     row = (await db.execute(
-        text(
-            "WITH RECURSIVE anc AS ("
-            "  SELECT id, parent_project_id, personal_owner, 0 AS depth"
-            "    FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-            "  UNION ALL"
-            "  SELECT p.id, p.parent_project_id, p.personal_owner, a.depth + 1"
-            "    FROM pm_projects p JOIN anc a ON p.id = a.parent_project_id"
-            "   WHERE a.depth < 64"
-            ") SELECT personal_owner FROM anc"
-            "   WHERE personal_owner IS NOT NULL ORDER BY depth LIMIT 1"
-        ),
-        {"pid": str(node_id)},
+        text(PERSONAL_TREE_OWNER_SQL), {"pid": str(node_id)},
     )).fetchone()
     owner = getattr(row, "personal_owner", None) if row is not None else None
-    return (owner or "").lower() or None
+    return (owner or "").strip().lower() or None
 
 
 async def assert_move_keeps_privacy(

@@ -30,8 +30,11 @@
 --   grant to any subject other than the root's owner is not stamped, and the
 --   walk does not go below it. T and its subtree stay as they are. A RAISE
 --   NOTICE names the count of skipped nodes per tenant, and their ids when
---   there are 20 or fewer, so the deploy log shows them. The owner or a
---   Projects lead then moves T out to a team space, which the guard allows.
+--   there are 20 or fewer, so the deploy log shows them. A lead of T or a
+--   Projects admin then moves T out to a team space. The privacy guard
+--   allows it, and `move_node` asks `assert_may_move_project` for the right.
+--   The gateway reads the same stop rule (`core.personal_tree_owner`), so it
+--   treats T and its subtree as team work.
 --
 -- Idempotent: a second run finds no NULL inside a private tree, and so
 --   updates no row. Old code meets this schema as before: it never reads the
