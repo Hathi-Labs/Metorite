@@ -165,6 +165,13 @@ export interface ProjectRow {
    */
   can_delete?: boolean;
   /**
+   * WS-64 OP-10 (D-OP-16). True when this member may turn this FOLDER into a
+   * project. `/tree` and `/nodes/{id}` carry it, from `authority.py`. A
+   * project row reads false. The menu offers "Convert to project" only on
+   * an explicit `true`.
+   */
+  can_convert?: boolean;
+  /**
    * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
    * tasks live at or under it, how many were delivered, and how many were
    * abandoned.
@@ -2053,6 +2060,18 @@ export const projectsApi = {
    */
   deleteProject: (projectId: string) =>
     call<DeleteProjectResult>(`nodes/${projectId}`, { method: "DELETE" }),
+
+  /**
+   * WS-64 OP-10 (D-OP-16). A folder becomes a project, and the projects in it
+   * become its subprojects. Callers go through `ConvertFolderDialog`, which
+   * says so before the click. The server refuses a folder whose projects have
+   * subprojects of their own, and names them.
+   */
+  convertFolder: (projectId: string) =>
+    call<ProjectRow>(`nodes/${projectId}/convert`, {
+      method: "POST",
+      body: JSON.stringify({ to: "project" }),
+    }),
 
   /**
    * The directory-backed assignee picker (WS-28e, people_center_app.md §6.1).

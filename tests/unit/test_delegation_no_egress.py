@@ -789,6 +789,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: remove_report_recipient and set_report_schedule (one card each) joined. None sends mail.
 #: 2026-10-24 (WS-64 OP-6e, D-OP-13): waiting_agent_requests (a read) joined. It lists, links the
 #: task card and answers nothing.
+#: 2026-10-24 (WS-64 OP-10, D-OP-16): convert_folder_to_project joined. It writes only through
+#: the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -811,7 +813,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "find_conflicts", "find_tasks", "fit_for_task",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
-    "move_project",
+    "move_project", "convert_folder_to_project",
     "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
     "notifications", "open_in_app", "package_artifacts", "people_for", "project_access", "show_view",
     "project_summary", "project_views", "projects_tree", "propose_plan",
