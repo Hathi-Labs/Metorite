@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from gateway.routes.email.automation import (
     actions,
+    always_copy,  # noqa: F401 -- imported only so that its routes register
     analytics,
     assistant,
     cleanup,

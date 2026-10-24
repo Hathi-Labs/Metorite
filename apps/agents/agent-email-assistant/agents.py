@@ -3581,6 +3581,10 @@ async def get_rules_and_settings(account_id: str) -> str:
         f"cold-blocker={settings_obj.get('cold_email_blocker')}, "
         f"about set={'yes' if settings_obj.get('about') else 'no'}."
     )
+    # §21.15: the always-copy rules, which update_assistant_settings takes whole.
+    copy = (await _get("/email/assistant/always-copy", {"account_id": account_id})
+            or {}).get("rules") or []
+    lines.append(f"Always copy: {_copy_rules_text(copy)}.")
     return "\n".join(lines)
 
 
@@ -4358,6 +4362,15 @@ def _settings_needing_card(
                     "address, and on the dashboard. It costs a model call each day."))
     # H-404: the extra domains decide whose mail counts as the organization.
     # Each change asks, a removal too, and the card lists the old and the new set.
+    # §21.15: the always-copy rules add colleagues to each later card that
+    # matches. Each change asks, a removal too, and the card lists both sets.
+    copy = wanted.get("always_copy")
+    if copy is not None and _copy_rules_text(copy) != _copy_rules_text(cur.get("always_copy")):
+        out.append(("the always-copy rules",
+                    "Always copy: each colleague goes, ticked, on your reply and new-mail "
+                    "cards for that domain or address. Nothing sends on its own. Now: "
+                    + _copy_rules_text(cur.get("always_copy")) + ". After: "
+                    + _copy_rules_text(copy) + "."))
     domains = wanted.get("org_domains")
     if domains is not None:
         old = _clean_domains(cur.get("org_domains") or [])
@@ -4422,6 +4435,44 @@ def _org_domains_problem(value: Any) -> tuple[list[str], str]:
     return domains, ""
 
 
+#: §21.15: the most always-copy rules of one mailbox, and the most
+#: colleagues of one rule (``always_copy.MAX_RULES``, ``MAX_CC``).
+_COPY_RULES_MAX = 20
+_COPY_CC_MAX = 5
+
+
+def _copy_rules_text(rules: Any) -> str:
+    """The rules in one line for a card: "jain.ac.in → kiran@…, veena@…"."""
+    parts = []
+    for r in rules if isinstance(rules, list) else []:
+        if isinstance(r, dict):
+            cc = ", ".join(_card_text(a, _TARGET_LIMIT) for a in r.get("cc") or [])
+            parts.append(f"{_card_text(r.get('match'), 120)} → {cc}")
+    return "; ".join(parts) or "(none)"
+
+
+def _copy_rules_problem(value: Any) -> tuple[list[dict[str, Any]], str]:
+    """``(rules, "")`` for a valid ``always_copy`` list, else ``([], why)``.
+
+    The shape only. The gateway checks that each colleague is a person of the
+    organization, or a person the member wrote to before, and refuses any
+    other (``always_copy.put_always_copy``)."""
+    why = ("Nothing changed. always_copy is the WHOLE list of rules, such as "
+           "[{\"match\": \"university.edu\", \"cc\": [\"kiran@brand.com\"]}].")
+    if not isinstance(value, list) or len(value) > _COPY_RULES_MAX:
+        return [], why
+    rules: list[dict[str, Any]] = []
+    for r in value:
+        if not isinstance(r, dict) or set(r) - {"match", "cc"}:
+            return [], why
+        match = str(r.get("match") or "").strip().lower().lstrip("@")
+        cc = [str(a).strip().lower() for a in r.get("cc") or [] if str(a or "").strip()]
+        if not match or not cc or len(cc) > _COPY_CC_MAX or any("@" not in a for a in cc):
+            return [], why
+        rules.append({"match": match, "cc": cc})
+    return rules, ""
+
+
 # §21.6: ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND is off. With
 # the switch on, a held run keeps this tool, and it changes only the closed
 # keys behind a card (:func:`_held_settings`).
@@ -4448,6 +4499,7 @@ async def update_assistant_settings(
     sensitive_data_protection: bool | None = None,
     morning_brief_enabled: bool | None = None,
     org_domains: list[str] | None = None,
+    always_copy: list[dict[str, Any]] | None = None,
 ) -> str:
     """Update assistant settings. Only the fields you pass change; every other
     setting is preserved.
@@ -4481,6 +4533,13 @@ async def update_assistant_settings(
             organization, e.g. ["brand.com"]. The mailbox's own domain always
             counts. No wildcard and no public webmail domain. Read the list
             with get_rules_and_settings first, and pass it whole.
+        always_copy: the WHOLE list of "always copy" rules, e.g.
+            [{"match": "university.edu", "cc": ["kiran@brand.com"]}]. Each
+            rule puts its colleagues, ticked, on the member's reply and
+            new-mail cards for mail to or from that domain or address. It
+            never sends on its own. Only a colleague or a person the member
+            wrote to before can be in ``cc``. Read the list with
+            get_rules_and_settings first, and pass it whole. [] removes each.
 
     No model or tier is a setting. The platform picks it (D-EM-7, D-EM-61).
 
@@ -4504,7 +4563,12 @@ async def update_assistant_settings(
             "sensitive_data_protection": sensitive_data_protection,
             "morning_brief_enabled": morning_brief_enabled,
             "org_domains": org_domains,
+            "always_copy": always_copy,
         })
+    if always_copy is not None:
+        always_copy, bad = _copy_rules_problem(always_copy)
+        if bad:
+            return bad
     if org_domains is not None:
         org_domains, bad = _org_domains_problem(org_domains)
         if bad:
@@ -4515,6 +4579,10 @@ async def update_assistant_settings(
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
+    if always_copy is not None:
+        # §21.15: the rules live apart from the settings body.
+        cur = {**(cur or {}), "always_copy": (await _get(
+            "/email/assistant/always-copy", {"account_id": account_id}) or {}).get("rules") or []}
     # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
     # A change that turns one off, or any other setting, asks nothing.
     turned_on = _settings_needing_card(cur, {
@@ -4530,6 +4598,7 @@ async def update_assistant_settings(
         "follow_up_needs_reply_days": follow_up_needs_reply_days,
         "morning_brief_enabled": morning_brief_enabled,
         "org_domains": org_domains,
+        "always_copy": always_copy,
     })
     if turned_on:
         box = await _named(account_id)
@@ -4572,8 +4641,28 @@ async def update_assistant_settings(
     setif("sensitive_data_protection", sensitive_data_protection)
     setif("morning_brief_enabled", morning_brief_enabled)
     setif("org_domains", org_domains)
+    body.pop("always_copy", None)
+    if always_copy is not None:
+        try:
+            await _put("/email/assistant/always-copy",
+                       {"account_id": account_id, "rules": always_copy})
+        except GatewayError as exc:
+            if exc.status in (404, 422):
+                return str(getattr(exc, "detail", "") or exc)
+            raise
+        if not _other_settings(locals()):
+            return f"Always-copy rules updated for {await _named(account_id)}."
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
+
+
+def _other_settings(scope: dict[str, Any]) -> bool:
+    """True when ``update_assistant_settings`` changes a setting other than
+    ``always_copy`` (§21.15), so the settings body is written too."""
+    import inspect
+
+    names = set(inspect.signature(update_assistant_settings).parameters)
+    return any(scope.get(k) is not None for k in names - {"account_id", "always_copy"})
 
 
 #: The settings that ``apply_settings_to_mailboxes`` changes in several
@@ -4720,7 +4809,7 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
         held = [k for k in refused if HELD_SETTING_DECISIONS.get(k) == SETTING_REFUSED]
         return ("Nothing changed. This chat read email from outside senders, so it cannot "
                 f"change {', '.join(held or refused)}: free text, the organization domains, "
-                "or a send that a later run acts on. Tell the member in one sentence, and change the other settings "
+                "the always-copy rules, or a send that a later run acts on. Tell the member in one sentence, and change the other settings "
                 "without it.")
     if not given:
         return "Nothing changed. Name one setting to change."
@@ -5849,6 +5938,11 @@ async def send_email(
         usual = await _usual_mailbox_note(account_id, to[0])
         if usual:
             reply_notices.append(usual)
+    if not reply_to_email_id:
+        # §21.15: the member's own always-copy rules add colleagues to the Cc
+        # of a new mail. The card names each one and its rule.
+        cc, ruled = await _always_copy_cc(account_id, to, cc, bcc)
+        reply_notices.extend(ruled)
     # H-393 (§21.13): a held run never reaches this path (it goes through the
     # held card, which refuses). So the card warns about a look-alike word.
     refusal, warning = _lookalike_check({"subject": subject, "text": body})
@@ -5934,6 +6028,31 @@ async def send_email(
     tail = f" {usual}" if usual else ""
     return (f"{lead} {', '.join(to)} from {sender}{note} "
             f"(id={res.get('id', '')}).{tail}")
+
+
+async def _always_copy_cc(
+    account_id: str, to: list[str], cc: list[str], bcc: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """``(cc, lines)``: *cc* with the colleagues of the member's always-copy
+    rules for the people of a new mail, and one card line for each (§21.15).
+    The gateway checks that each one is a colleague or a person the member
+    wrote to before. A fault adds nobody."""
+    people = [*to, *cc, *(bcc or [])]
+    try:
+        found = (await _get("/email/assistant/always-copy/match",
+                            {"account_id": account_id, "people": people}) or {})
+    except Exception:  # the card shows the people the mail names
+        return cc, []
+    have = {a.lower() for a in people}
+    out, lines = list(cc), []
+    for p in found.get("people") or [] if isinstance(found, dict) else []:
+        addr = str((p or {}).get("address") or "").strip()
+        if addr and addr.lower() not in have:
+            have.add(addr.lower())
+            out.append(addr)
+            lines.append(f"Cc {_card_text(addr, _TARGET_LIMIT)} — your rule: always copy on "
+                         f"{_card_text((p or {}).get('match'), 120)}.")
+    return out, lines
 
 
 #: The answer of a reply through ``send_email`` in a held run (§21.3, the New row).

@@ -21163,10 +21163,8 @@ card resets the Cc" left the revise text, because the new card keeps the Cc.
 **Not built.**
 
 - A Bcc on the reply card. **Built later, in 21.14.**
-- An "always Cc" rule for a domain (item 7b). It needs a new rule action
-  that only adds people to the member's draft. The rule tools now count a
-  `cc_address` as an outward act. So the new type needs its own decision in
-  `_is_outward_action`, in the held refusal and in the engine.
+- An "always Cc" rule for a domain (item 7b). **Built later, in 21.15**, as a
+  setting of the mailbox and not as a mail rule.
 
 **Fences.** `tests/unit/test_recipient_intent.py`,
 `tests/unit/test_email_recipient_intent_r8.py` (R8),
@@ -21285,6 +21283,65 @@ only, which is the rule of 21.10, open question 5.
 `tests/unit/test_email_chat_reply.py`, `tests/unit/test_recipient_intent.py`,
 `workbench/control_plane/src/lib/replyCard.test.ts` and
 `workbench/control_plane/e2e/email-chat-reply.spec.ts`.
+
+### 21.15 Always copy (item 7b, 2026-10-24)
+
+**Status: BUILT on the branch `email-single-mailbox-a`, not merged.** One
+expand-only migration, 298. No switch.
+
+**What the member gets.** "Always copy Kiran and Veena on mail to
+jainuniversity.ac.in." A rule names a domain or an address (`match`) and
+the colleagues to copy (`cc`). It adds those colleagues to the member's own
+cards as rows that start ticked. The member can untick each one. A rule
+never sends and never acts on its own.
+
+**Why a setting and not a mail rule.** A mail rule runs on incoming mail.
+The rule tools count a `cc_address` as an outward act. So the list is a
+setting of the mailbox, the column `email_assistant_settings.always_copy`.
+
+**The three rules.**
+
+1. **Only a known colleague.** `PUT /email/assistant/always-copy` takes a
+   `cc` person only when THE classifier says `org` or `sent`. It refuses a
+   stranger, a person of another tenant and the member's own address, and
+   the refusal names the person. So no chat can put a stranger on the list.
+2. **Checked again on use.** `always_copy.always_copy_people` classes each
+   person again when a card reads the list. A colleague who left the
+   organization drops off.
+3. **A held chat never changes the list.** It changes the people of each
+   later card. `held_card.HELD_SETTING_DECISIONS` refuses `always_copy`.
+
+**Where it shows.**
+
+| Card | What the rule does |
+|---|---|
+| The reply card | Each colleague is an added Cc, ticked, with the mark "your rule: always copy on <match>". A match is the sender or any To or Cc of the mail, by address, by domain or by a subdomain |
+| The held new-mail card | Each colleague is a Cc row, ticked, with the same mark (`held_card._always_copy_rows`) |
+| The new-mail card of `send_email` | The tool adds each colleague to Cc. The card names each one and its rule |
+
+**The chat.** `update_assistant_settings(always_copy=[...])` takes the WHOLE
+list. Each change asks a card that names the rules now and after.
+`get_rules_and_settings` names the rules.
+
+**The Email app.** Settings, the Advanced section, holds the card "Always
+copy", before the domains card. The member adds and removes a rule there.
+The card uses the controls of its neighbour, the domains card.
+
+**The pin change.**
+
+| Pin | Change | Reason |
+|---|---|---|
+| `HELD_CARD_SEND_TOOLS["update_assistant_settings"]` | adds `always_copy` | The row in `HELD_SETTING_DECISIONS` refuses it in a held run. The gateway takes only an `org` or a `sent` colleague in any chat |
+
+**The fence changes.** `test_the_h404_pin_changes_are_named` now expects 22
+keys and names `always_copy`. `SETTING_ON` of
+`test_email_agent_write_cards.py` adds `always_copy`, which asks a card.
+
+**Fences.** `tests/unit/test_email_always_copy.py`,
+`tests/unit/test_email_always_copy_r8.py` (R8),
+`tests/unit/test_egress_card_bound_pin.py`,
+`tests/unit/test_email_agent_write_cards.py` and
+`workbench/control_plane/src/app/email/lib/alwaysCopy.test.ts`.
 
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 
