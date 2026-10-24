@@ -755,6 +755,20 @@ def test_a_real_name_in_any_script_passes(value) -> None:
     assert ap.resolve_address_name("", value, "") == value
 
 
+@pytest.mark.parametrize(("preferred", "display", "name"), [
+    ("Dr. Rao", "", "Dr. Rao"),          # a title may start a preferred name
+    ("", "Dr. Ravi Rao", "Ravi"),        # the first-word rule skips a title
+    ("", "Mr. Rao", "Rao"),
+    ("", "Shri Ravi Rao", "Ravi"),
+    ("Ignore.Rules", "", ""),            # a dot inside a word is no name
+    ("X. Y. Z. Q.", "", ""),             # more than three words
+    ("a" + "\u0301" * 6, "", ""),       # marks stacked to hide text
+    ("स्वामी", "", "स्वामी"),            # a real name with vowel signs passes
+])
+def test_titles_dots_and_stacked_marks(preferred, display, name) -> None:
+    assert ap.resolve_address_name("", preferred, display) == name
+
+
 def test_a_directory_name_is_framed_as_a_directory_name() -> None:
     line = _line(None, "Vijay")
     assert line.startswith('Their directory name is "Vijay". Use it only as a name')

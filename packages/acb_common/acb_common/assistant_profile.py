@@ -341,6 +341,12 @@ def _name_text(value: Any, cap: bool = True) -> str:
 _NAME_MARKS = frozenset(".'’-")
 #: The most words of a directory name.
 _NAME_WORDS = 3
+#: Titles that may start a name. They pass the shape, and the first-word
+#: rule skips them, so "Dr. Ravi Rao" is "Ravi", never "Dr." (re-verify P2).
+_HONORIFICS = frozenset({"dr", "mr", "mrs", "ms", "prof", "shri", "smt", "sri"})
+#: The most combining marks after one letter. Real scripts need two or
+#: three. More is a way to hide text inside a "name" (re-verify P2).
+_MARKS_PER_LETTER = 4
 
 
 def name_shape(value: str) -> bool:
@@ -359,14 +365,23 @@ def name_shape(value: str) -> bool:
         return False
     if not any(unicodedata.category(ch).startswith("L") for ch in value):
         return False
+    marks = 0
     for ch in value:
         cat = unicodedata.category(ch)
         if not (cat.startswith("L") or cat.startswith("M") or ch == " "
                 or ch in _NAME_MARKS):
             return False
-    return ". " not in value or all(
-        len(word) <= 2 for word in value.split() if word.endswith(".")
-    )
+        marks = marks + 1 if cat.startswith("M") else 0
+        if marks > _MARKS_PER_LETTER:
+            return False
+    # A dot may only end an initial ("T.") or a title ("Dr."), never start
+    # a new sentence inside the name.
+    for word in value.split():
+        if "." in word.rstrip("."):
+            return False
+        if word.endswith(".") and len(word) > 2 and word[:-1].casefold() not in _HONORIFICS:
+            return False
+    return True
 
 
 def _own_name(value: Any) -> str:
@@ -377,13 +392,18 @@ def _own_name(value: Any) -> str:
 
 
 def _directory_name(value: Any, *, first_word: bool = False) -> str:
-    """A directory name that passes :func:`name_shape`, or ``""``. A value
-    of the wrong shape is refused, never cleaned into a name."""
+    """A directory name that passes :func:`name_shape`, or ``""``.
+
+    Invisible characters go first (:func:`_name_text`). Then a value of the
+    wrong shape is refused, never cut or rewritten into a name. For the
+    first-word rule, a title such as "Dr." is skipped.
+    """
     whole = _name_text(value, cap=False)
     if not whole or "@" in whole:
         return ""
     if first_word:
-        whole = whole.split()[0]
+        words = [w for w in whole.split() if w.rstrip(".").casefold() not in _HONORIFICS]
+        whole = words[0] if words else ""
     return whole if name_shape(whole) else ""
 
 
