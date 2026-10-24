@@ -304,6 +304,8 @@ export interface Target {
  */
 export type ViewKey =
   | "inbox"
+  /** WS-64 OP-2 — My work in Projects: my Next Actions dated today or before (`today.ts`). */
+  | "today"
   | "next"
   | "priority"
   | "waiting"

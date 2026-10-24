@@ -70,6 +70,9 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
+import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled } from "./lib/myWork";
+import MyWorkHost from "./components/MyWorkHost";
+import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
@@ -258,6 +261,8 @@ const CHAT_LIVE = chatEnabled() && !ONE_ASSISTANT;
  * Read once, at module scope, for the same reason as the chat flag.
  */
 const IMPORT_LIVE = importEnabled();
+/** WS-64 OP-2 — the My work section (`NEXT_PUBLIC_PROJECTS_MY_WORK`, default off). */
+const MY_WORK_LIVE = myWorkEnabled();
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -379,12 +384,15 @@ function ProjectNav({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  counts,
 }: {
   roots: ProjectRow[];
   selectedId: string | null;
   /** The app-level destination, or null when a space/project is selected. */
   app: ProjectAppId | null;
   onApp: (id: ProjectAppId) => void;
+  /** WS-64 OP-2 — the count beside each My work entry (`lib/myWork.ts`). */
+  counts?: Partial<Record<ProjectAppId, number>>;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
@@ -460,7 +468,14 @@ function ProjectNav({
                   type="button"
                   aria-pressed={active}
                   disabled={preview}
-                  title={preview ? `${item.label} — not built yet` : item.note}
+                  // The full label on hover, because the row truncates it (#132).
+                  title={
+                    preview
+                      ? `${item.label} — not built yet`
+                      : item.note
+                        ? `${item.label} — ${item.note}`
+                        : item.label
+                  }
                   onClick={() => {
                     if (preview) return;
                     onApp(item.id);
@@ -476,6 +491,11 @@ function ProjectNav({
                 >
                   <Icon name={item.icon} className="h-4 w-4 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {counts?.[item.id] ? (
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {counts[item.id]}
+                    </span>
+                  ) : null}
                   {/* `preview` is "not built", never "hidden by permission"
                       — so it says so rather than disappearing. */}
                   {preview ? (
@@ -810,6 +830,16 @@ function ProjectsWorkspace() {
     if (id === "settings") setSettingsSeed({});
     setApp(id);
   }, []);
+  // WS-64 OP-2 — the My work counts are the ones `/tasks` draws (`myWorkCounts`).
+  // They read the task store, which loads when a My work view opens, so a
+  // count shows once the store holds rows.
+  const myWorkItems = useTaskStore((s) => s.items);
+  const myWorkFrom = useTaskStore((s) => s.fromProjectIds);
+  const myWorkToday = useTaskStore((s) => s.myToday);
+  const myWorkNavCounts = useMemo(
+    () => (MY_WORK_LIVE ? myWorkCounts(myWorkItems, myWorkFrom, myWorkToday) : undefined),
+    [myWorkItems, myWorkFrom, myWorkToday],
+  );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
   const [moving, setMoving] = useState(false);
@@ -1442,7 +1472,11 @@ function ProjectsWorkspace() {
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
   const noProjectChrome =
-    dashboardOnly || app === "reports" || app === "ai-chat" || app === "settings";
+    dashboardOnly ||
+    app === "reports" ||
+    app === "ai-chat" ||
+    app === "settings" ||
+    isMyWorkId(app);
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1569,6 +1603,7 @@ function ProjectsWorkspace() {
             roots={visibleRoots}
             selectedId={selected?.id ?? null}
             app={app}
+            counts={myWorkNavCounts}
             onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
@@ -2581,6 +2616,24 @@ function ProjectsWorkspace() {
   // Reports. Consumed after the open, like `?task=`, so the same link works
   // twice.
   const appLink = searchParams.get("app");
+  // WS-64 OP-2 (§8 answer 2) — with the flag on, `/projects` with no
+  // `?project=`, `?task=` or `?app=` opens Today. Decided once, at the first
+  // render of the page, from the URL the member arrived on. It sets `app`, which
+  // the main pane obeys over the `selected = visibleRoots[0]` default, so the
+  // two cannot fight. A later click on a project clears `app` as it always did.
+  const landed = useRef(false);
+  useEffect(() => {
+    if (landed.current) return;
+    landed.current = true;
+    const to = landingApp(MY_WORK_LIVE, {
+      project: searchParams.get("project"),
+      task: searchParams.get("task"),
+      app: searchParams.get("app"),
+    });
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (to) setApp(to);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (!appLink) return;
     const live = resolveAppLink(appLink, PROJECT_APP_SECTIONS);
@@ -3840,7 +3893,10 @@ function ProjectsWorkspace() {
     scopeRoots: visibleRoots,
   };
 
-  const workArea = app === "settings" ? (
+  const workArea = isMyWorkId(app) ? (
+    // WS-64 OP-2 — a My work view: the task store's views, mounted once.
+    <MyWorkHost app={app} />
+  ) : app === "settings" ? (
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
@@ -4800,6 +4856,7 @@ function ProjectsWorkspace() {
               roots={visibleRoots}
               selectedId={selected?.id ?? null}
               app={app}
+              counts={myWorkNavCounts}
               onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
@@ -4844,7 +4901,7 @@ function ProjectsWorkspace() {
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
             <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2">
-              <h2 className="min-w-0 truncate text-sm font-medium text-foreground">
+              <h2 className="min-w-0 truncate text-sm font-medium text-foreground" title={title}>
                 {title}
               </h2>
               {subtitle ? (

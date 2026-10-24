@@ -77,6 +77,7 @@ export function ItemList() {
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const view = useTaskStore((s) => s.selectedView);
+  const myToday = useTaskStore((s) => s.myToday);
   const context = useTaskStore((s) => s.selectedContext);
   const filters = useTaskStore((s) => s.filters);
   const sort = useTaskStore((s) => s.sort);
@@ -139,8 +140,8 @@ export function ItemList() {
   // BEFORE the toolbar so its context/assignee dropdowns only offer what the
   // Area holds. `itemsInArea` says why membership is `projectId` alone.
   const inView = useMemo(
-    () => itemsInArea(itemsForView(items, view, context), selectedAreaId),
-    [items, view, context, selectedAreaId],
+    () => itemsInArea(itemsForView(items, view, context, "all", myToday), selectedAreaId),
+    [items, view, context, selectedAreaId, myToday],
   );
   // The legacy Priority view (no longer a sidebar entry, but still reachable in
   // code) forces the priority sort so its sections read rank-ordered; every

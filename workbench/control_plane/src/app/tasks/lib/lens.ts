@@ -507,6 +507,15 @@ export async function lensFetchNext(limit = 20): Promise<MyTask[]> {
   return res.rows.map(mapLensItem);
 }
 
+/**
+ * My date and my zone, as `GET /projects/my/today` answers them. The Today
+ * rule (`today.ts`) reads this date, because the gateway computes it from
+ * `user_settings.timezone`, the zone the member stores.
+ */
+export async function lensFetchToday(): Promise<{ today: string; timezone: string }> {
+  return projectsCall<{ today: string; timezone: string }>("my/today");
+}
+
 /** A project I lead, as `/projects/my/led` answers it. */
 export interface LensLedProject {
   id: string;

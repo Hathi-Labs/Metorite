@@ -19,7 +19,9 @@
  * does nothing is worse than no entry.
  */
 
-export type ProjectAppId = "reports" | "ai-chat" | "settings";
+import { MY_WORK_VIEWS, myWorkEnabled, type MyWorkId } from "./myWork";
+
+export type ProjectAppId = "reports" | "ai-chat" | "settings" | MyWorkId;
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -116,12 +118,32 @@ export function projectAppSections(
   env?: Record<string, string | undefined>,
 ): ProjectAppSection[] {
   const chat = chatEnabled(env);
-  return PROJECT_APP_SECTIONS.map((section) => ({
+  const sections = PROJECT_APP_SECTIONS.map((section) => ({
     ...section,
     items: section.items.map((item) =>
-      item.id === "ai-chat" && chat ? { ...item, launch: "live" } : item,
+      item.id === "ai-chat" && chat ? { ...item, launch: "live" as const } : item,
     ),
   }));
+  // WS-64 OP-2 — the My work section sits first, and only when its flag is on.
+  return myWorkEnabled(env) ? [myWorkSection(), ...sections] : sections;
+}
+
+/** The heading of the section in `one_projects_app.md` §4.1 (D-OP-3). */
+export const MY_WORK_SECTION_LABEL = "My work";
+
+/** The My work section: six views, all live. */
+function myWorkSection(): ProjectAppSection {
+  return {
+    id: "my-work",
+    label: MY_WORK_SECTION_LABEL,
+    items: MY_WORK_VIEWS.map((v) => ({
+      id: v.id,
+      label: v.label,
+      icon: v.icon,
+      note: v.note,
+      launch: "live" as const,
+    })),
+  };
 }
 
 /**

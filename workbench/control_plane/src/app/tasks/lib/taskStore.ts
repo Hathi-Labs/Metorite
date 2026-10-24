@@ -17,6 +17,7 @@ import {
   type LensLane,
   type LensLedProject,
   type LensMoveRequest,
+  lensFetchToday,
   lensGetItem,
   lensSetStatusId,
 } from "./lens";
@@ -65,7 +66,8 @@ import {
   MOCK_PROJECTS,
   type ConnectedProvider,
 } from "./mockData";
-import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
+import { isInToday } from "./today";
+import { browserTimeZone, isCalendarItem, isTickled, localDate } from "./utils";
 import {
   clarifyChangesSharedTask,
   clarifyQueue,
@@ -885,6 +887,10 @@ interface TaskState {
   providers: ConnectedProvider[];
 
   selectedView: ViewKey;
+  /** The member's date ("YYYY-MM-DD") from `GET /projects/my/today`, which the
+   *  Today view reads (`today.ts`). Null until `loadMyToday` answers. */
+  myToday: string | null;
+  loadMyToday: () => Promise<void>;
   /** when drilled into a single @context under Next Actions */
   selectedContext: string | null;
   selectedItemId: string | null;
@@ -1506,6 +1512,21 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectedLedProjectId: null,
 
   selectedView: "inbox",
+  myToday: null,
+  loadMyToday: async () => {
+    try {
+      const res = await lensFetchToday();
+      if (res.today) {
+        set({ myToday: res.today });
+        return;
+      }
+    } catch {
+      /* fall through to the stored zone below */
+    }
+    // The gateway is out of reach: read the date in the zone the store holds,
+    // which is the zone the gateway would have used.
+    set({ myToday: localDate(Date.now(), get().settings.timezone) });
+  },
   selectedContext: null,
   focusedItemId: null,
   openFocus: (id) => set({ focusedItemId: id, selectedItemId: id }),
@@ -3959,6 +3980,7 @@ export function itemsForView(
   view: ViewKey,
   context: string | null,
   source: "all" | "local" | "synced" = "all",
+  today: string | null = null,
 ): MyTask[] {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
@@ -3968,6 +3990,9 @@ export function itemsForView(
   switch (view) {
     case "inbox":
       return items.filter((i) => i.disposition === "INBOX");
+    case "today":
+      // WS-64 OP-2 — one rule (`today.ts`). No date yet means no rows.
+      return today ? items.filter((i) => isInToday(i, today)) : [];
     case "next":
       // "My Next Actions" = only tasks assigned to ME (isMine). This excludes
       // unassigned "team pool" tasks (synced as NEXT but is_mine=false) and, of
@@ -4036,11 +4061,12 @@ export function itemsForView(
 export function viewCounts(
   items: MyTask[],
   source: "all" | "local" | "synced" = "all",
+  today: string | null = null,
 ): Record<ViewKey, number> {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
   const c = {
-    inbox: 0, next: 0, priority: 0, waiting: 0, calendar: 0, projects: 0,
+    inbox: 0, today: 0, next: 0, priority: 0, waiting: 0, calendar: 0, projects: 0,
     someday: 0, reference: 0, done: 0, engage: 0, archive: 0,
   } as Record<ViewKey, number>;
   for (const i of items) {
@@ -4058,6 +4084,7 @@ export function viewCounts(
       c.priority++;
     if (i.disposition === "NEXT" && i.isMine) c.engage++;
     if (isCalendarItem(i)) c.calendar++;
+    if (today && isInToday(i, today)) c.today++;
   }
   return c;
 }
