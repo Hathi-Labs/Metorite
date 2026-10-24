@@ -25,7 +25,9 @@ Run (a private ladder database, one R8 suite at a time)::
 
 * R1. ``agent_runs.py`` ``list_my_agent_runs``: drop the ``r.member_email = :me`` clause.
   ``test_r8_a_member_sees_their_own_request_and_not_another_members``.
-* R2. ``agent_runs.py`` ``list_my_agent_runs``: drop the ``r.status = :status`` clause.
+* R2. ``agent_runs.py`` ``list_my_agent_runs``: drop the ``r.status = :status`` clause, AND
+  ``reads.py``: keep every row, not only the ``awaiting`` ones. The tool and the route each
+  hold the filter, so ONE of them removed leaves the test green on purpose.
   ``test_r8_a_finished_run_and_a_working_run_do_not_show``.
 * R3. ``reads.py`` ``waiting_agent_requests``: reverse the rows.
   ``test_r8_the_list_is_newest_first``.
