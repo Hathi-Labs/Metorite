@@ -1581,6 +1581,31 @@ class TestWhatsAppConfirm:
         assert _run(_wa_answer("Confirm")) == acts.REPLY_CHANGED
         assert wa.writes() == []
 
+    def test_a_stored_alias_remove_writes_nothing_at_confirm(self, wa) -> None:
+        """Verify P1 (PZ-6b repair 1): a remove never parks a card, so a
+        Confirm that holds remove arguments (a tampered or foreign row)
+        writes nothing."""
+        from gateway.routes.whatsapp_channel import acts
+
+        _out, parked = _run(_wa_ask(pt.profile_alias, "Sam is sam@alpha.example",
+                                    alias="Sam", email="sam@alpha.example"))
+        wa.table["row"] = _row(parked, arguments={"alias": "Raj", "email": ""})
+        _run(_wa_answer("Confirm"))
+        assert wa.writes() == []
+        assert wa.table["closed"] and wa.table["closed"][-1][1] != "done"
+
+    def test_a_refusal_after_the_card_closes_the_act_failed(self) -> None:
+        """Review P2: a profile write that the gateway refused after the
+        matched card answers "Nothing saved", and the act is failed."""
+        from gateway.routes.whatsapp_channel import acts
+
+        refused = 'profile: {"v":1,"status":"refused","reason":"invalid"}\nNothing saved.'
+        saved = 'undo: {"v":1,"op":"delete","path":"facts/f1"}\nSaved.'
+        assert acts._profile_refused(refused) is True
+        assert acts._profile_refused(saved) is False
+        assert acts._profile_refused("Done.") is False
+        assert acts._profile_refused(None) is False
+
     def test_the_confirm_scope_alone_grounds_as_before(self, wa) -> None:
         """Only the Confirm of a stored act skips the typed words. The scope
         with no ``confirming`` grounds against "", and refuses."""
@@ -1656,3 +1681,33 @@ class TestWhatsAppConfirm:
         assert acts.act_function("profile_forget") is None
         assert acts.act_function("profile_undo") is None
         assert wacts.act_module("create_task") == "skill_projects.writes"
+
+
+
+# ── 23. PZ-6b repair 1: the word list and the spoken "@" ─────────────────
+
+
+@pytest.mark.parametrize("text", [
+    "I see a counsellor weekly", "I am on antidepressants", "I fast during Navratri",
+    "I have a heart condition", "I earn 50k a month", "I am a sugar patient",
+    "I have high BP", "I am on my periods", "I am SC/ST", "I support AAP",
+    "I have a home loan",
+])
+def test_a_personal_sensitive_fact_asks(text) -> None:
+    assert ap.is_sensitive(text)
+
+
+@pytest.mark.parametrize("text", [
+    "I handle the tax team", "I lead the loan origination product",
+    "I work on health tech", "conservative estimates please",
+    "I take the vote at standups", "I work on the trans-shipment desk",
+    "I work in the finance team", "I take public transport",
+])
+def test_a_work_fact_does_not_ask(text) -> None:
+    assert not ap.is_sensitive(text)
+
+
+def test_the_indian_spoken_at_asks() -> None:
+    assert ap.needs_confirm("vijay at the rate hathilabs dot com")
+    assert ap.needs_confirm("vijay at rate hathilabs dot com")
+    assert not ap.needs_confirm("meet at the rate card review")

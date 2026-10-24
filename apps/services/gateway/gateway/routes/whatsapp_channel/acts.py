@@ -755,7 +755,27 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
         await _close(act_id, "running", "failed", "no_card")
         _log.info("whatsapp_channel.act.failed", act_id=act_id, tool=tool, code="no_card")
         return _member_text(out or "", tool) or REPLY_FAILED
+    if _profile_refused(out):
+        # A profile write that the gateway refused after the matched card
+        # answers "Nothing saved". The act is failed, not done (PZ-6b review P2).
+        await _close(act_id, "running", "failed", "refused")
+        _log.info("whatsapp_channel.act.failed", act_id=act_id, tool=tool, code="refused")
+        return _member_text(out or "", tool) or REPLY_FAILED
     await _close(act_id, "running", "done", None)
     _log.info("whatsapp_channel.act.done", act_id=act_id, tool=tool,
               organization_id=req.organization_id)
     return _member_text(out or "", tool) or REPLY_FAILED
+
+
+def _profile_refused(out: Any) -> bool:
+    """True when *out* is a profile tool's refusal: its first line is the
+    ``profile: {"status": "refused"…}`` machine line. Any other text is not."""
+    first = str(out or "").split("\n", 1)[0]
+    if not first.startswith("profile: "):
+        return False
+    try:
+        import json
+
+        return json.loads(first[len("profile: "):]).get("status") == "refused"
+    except (ValueError, AttributeError):
+        return False

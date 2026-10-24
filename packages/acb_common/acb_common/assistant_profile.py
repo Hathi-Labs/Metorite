@@ -484,7 +484,8 @@ _BRACKET_AT_DOT = re.compile(r"[\[({]\s*(?:at|dot)\s*[\])}]")
 #: "x at y dot z": a word, " at ", a word, then " dot " or "." and a top
 #: level of letters.
 _SPOKEN_ADDRESS = re.compile(
-    r"[\w.+\-]+\s+at\s+[\w\-]+(?:(?:\s+dot\s+|\.)[\w\-]+)*(?:\s+dot\s+|\.)[^\W\d_]{2,24}"
+    r"[\w.+\-]+\s+at(?:\s+the)?(?:\s+rate)?\s+[\w\-]+(?:(?:\s+dot\s+|\.)[\w\-]+)*"
+    r"(?:\s+dot\s+|\.)[^\W\d_]{2,24}"
     r"(?![\w\-])")
 #: The full stops of other scripts that a domain can hide behind. NFKD makes
 #: U+FF0E a "." and U+FF61 a U+3002 already.
@@ -553,14 +554,19 @@ def needs_confirm(value: Any) -> bool:
 #: stores a sensitive fact in silence. The model may add ``sensitive=True``
 #: for a fact that holds none of them, and can never take the ask away.
 SENSITIVE_WORDS: frozenset[str] = frozenset({
-    # Health
-    "health", "illness", "disease", "diagnosis", "diagnosed", "diabetes",
-    "diabetic", "cancer", "chemo", "chemotherapy", "hiv", "pregnant",
-    "pregnancy", "miscarriage", "ivf", "therapy", "therapist", "counselling",
-    "counseling", "psychiatrist", "depression", "depressed", "anxiety", "adhd",
+    # Health. A bare "health" names a team or a sector too, so only its
+    # personal phrases are here (PZ-6b review P2).
+    "my health", "health issue", "health issues", "health condition",
+    "health problem", "illness", "disease", "diagnosis", "diagnosed",
+    "diabetes", "diabetic", "sugar patient", "blood sugar", "cancer",
+    "chemo", "chemotherapy", "hiv", "pregnant", "pregnancy", "miscarriage",
+    "ivf", "periods", "therapy", "therapist", "counselling", "counseling",
+    "counsellor", "counselor", "psychiatrist", "antidepressant",
+    "antidepressants", "depression", "depressed", "anxiety", "adhd",
     "autism", "autistic", "bipolar", "schizophrenia", "ocd", "ptsd",
     "mental health", "medication", "medicines", "insulin", "asthma",
-    "thyroid", "blood pressure", "hypertension", "cholesterol", "epilepsy",
+    "thyroid", "blood pressure", "high bp", "low bp", "hypertension",
+    "cholesterol", "heart condition", "heart disease", "epilepsy",
     "disability", "disabled", "surgery", "rehab", "addiction", "alcoholic",
     "menopause", "pcos", "pcod",
     # Religion
@@ -568,23 +574,29 @@ SENSITIVE_WORDS: frozenset[str] = frozenset({
     "buddhist", "jewish", "parsi", "zoroastrian", "atheist", "agnostic",
     "islam", "islamic", "church", "mosque", "temple", "gurudwara", "namaz",
     "ramadan", "ramzan", "roza", "puja", "pooja", "pray", "prayer",
+    "navratri", "fasting",
     # Caste
     "caste", "dalit", "brahmin", "kshatriya", "vaishya", "shudra", "obc",
-    "scheduled caste", "scheduled tribe", "adivasi", "reservation quota",
-    # Politics
-    "politics", "political", "bjp", "congress", "cpi", "cpm", "tmc",
-    "dmk", "aiadmk", "shiv sena", "aam aadmi", "rss", "vote", "voted",
-    "voter", "election", "leftist", "rightwing", "right wing", "liberal",
-    "conservative", "communist", "socialist",
-    # Sexuality
+    "sc st", "sc/st", "scheduled caste", "scheduled tribe", "adivasi",
+    "reservation quota", "caste reservation",
+    # Politics. A bare "vote", "liberal" or "conservative" names a work
+    # habit too, so only the personal phrases are here.
+    "politics", "political", "bjp", "congress", "cpi", "cpm", "tmc", "aap",
+    "dmk", "aiadmk", "shiv sena", "aam aadmi", "rss", "i vote", "voted for",
+    "vote for", "my vote", "election", "leftist", "rightwing", "right wing",
+    "communist", "socialist",
+    # Sexuality. A bare "trans" names shipping too ("trans-shipment").
     "sexuality", "sexual", "gay", "lesbian", "bisexual", "queer",
-    "transgender", "trans", "lgbt", "lgbtq", "lgbtqia", "homosexual",
-    "asexual", "non binary", "nonbinary", "sexual orientation",
-    # Finance
-    "salary", "income", "ctc", "payslip", "loan", "loans", "debt", "debts",
-    "emi", "emis", "mortgage", "credit score", "cibil", "bank balance",
-    "net worth", "savings", "bankrupt", "bankruptcy", "overdraft",
-    "credit card debt", "tax", "taxes", "investments",
+    "transgender", "trans woman", "trans man", "trans person", "lgbt",
+    "lgbtq", "lgbtqia", "homosexual", "asexual", "non binary", "nonbinary",
+    "sexual orientation",
+    # Finance. A bare "tax" or "loan" names a team or a product too.
+    "salary", "income", "ctc", "payslip", "my loan", "home loan",
+    "personal loan", "debt", "debts", "emi", "emis", "mortgage",
+    "credit score", "cibil", "bank balance", "net worth", "savings",
+    "bankrupt", "bankruptcy", "overdraft", "credit card debt",
+    "income tax", "my taxes", "investments", "i earn", "my earnings",
+    "take home",
 })
 
 #: :data:`SENSITIVE_WORDS` as one pattern of whole words. A space in a term

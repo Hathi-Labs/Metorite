@@ -879,6 +879,10 @@ async def profile_alias(alias: str, email: str = "") -> str:
         # is where the assistant sends the member's mail.
         await _confirm(f"{name} = {addr}")
         return await _alias_put(headers, name, addr, existing)
+    if _confirming():
+        # A remove never parks a card, so a Confirm that reaches here holds a
+        # row that differs from what the member saw (PZ-6b verify P1).
+        raise _Refused("That change is not the one you confirmed. Nothing changed.", "invalid")
     if existing is None:
         raise _Refused(f"No alias «{clean(name)}» is saved. Nothing changed.")
     aid, before = str(existing.get("id") or ""), str(existing.get("email") or "")
