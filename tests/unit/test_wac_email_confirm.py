@@ -655,3 +655,19 @@ async def test_five_wrong_codes_close_the_act(table) -> None:
     assert table.row["state"] == "void" and table.closed[-1][2] == "wrong_codes"
     # The right code no longer approves anything.
     assert await acts.settle(_req(), "YES 7K3Q") == acts.REPLY_NO_ACT
+
+
+def test_the_code_hash_is_keyed_with_the_server_secret(monkeypatch) -> None:
+    """Review P3: a plain SHA-256 of 4 symbols is reversed by a table of
+    923 521 rows. The hash is an HMAC under the server's session secret."""
+    import hashlib
+    import hmac as _hmac
+
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "key-one")
+    keyed = _hmac.new(b"key-one", b"whatsapp-act-code:7K3Q", hashlib.sha256).hexdigest()
+    assert acts.code_hash("7k3q") == keyed
+    assert acts.code_hash("7K3Q") != hashlib.sha256(b"7K3Q").hexdigest()
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "key-two")
+    assert acts.code_hash("7K3Q") != keyed

@@ -6,7 +6,7 @@
 --       email write from WhatsApp (an archive, a label, a move, a reply, a
 --       send, a schedule, a forward or a new mail) parks as a pending act,
 --       as a WAC-4 act does. Its summary ends with a short code, and the
---       member approves it with "YES <code>". The column holds the SHA-256
+--       member approves it with "YES <code>". The column holds the HMAC-SHA256
 --       of that code in hex, never the code. NULL is every act that the
 --       Confirm button answers (a Projects act and a WAC-P4 act), so each
 --       older row and each older code path is exactly as before.
@@ -56,7 +56,7 @@ END
 $code$;
 
 COMMENT ON COLUMN whatsapp_pending_acts.confirm_code_hash IS
-    'H-391: the SHA-256 (hex) of the reply code of an email act. NULL: the '
+    'H-391: the HMAC-SHA256 (hex) of the reply code of an email act. NULL: the '
     'Confirm button answers the act. whatsapp_assistant_channel.md §18.';
 
 COMMENT ON COLUMN whatsapp_pending_acts.wrong_codes IS

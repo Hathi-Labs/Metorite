@@ -342,9 +342,22 @@ def new_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
 
+#: The domain of the code hash, so the key signs nothing else with it.
+_CODE_DOMAIN = b"whatsapp-act-code:"
+
+
 def code_hash(code: str) -> str:
-    """The SHA-256 of *code* in upper case, in hex. The only form stored."""
-    return hashlib.sha256(str(code).strip().upper().encode("ascii", "replace")).hexdigest()
+    """The HMAC-SHA256 of *code* in upper case, in hex. The only form stored.
+
+    The key is ``gateway_session_secret``, read through the settings seam.
+    A plain hash of 4 symbols is reversed by a table of 923 521 rows, so the
+    record alone never gives the code (review P3). A rotated key ends each
+    live code, which lives 15 minutes at most."""
+    from acb_common import get_settings
+
+    key = str(get_settings().gateway_session_secret or "").encode("utf-8")
+    msg = _CODE_DOMAIN + str(code).strip().upper().encode("ascii", "replace")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
 def _code_matches(stored: Any, code: str) -> bool:
