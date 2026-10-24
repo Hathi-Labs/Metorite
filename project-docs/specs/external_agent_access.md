@@ -1483,6 +1483,7 @@ The result holds `task` (the shape of `get_task`), `ancestors` (root first, each
 2. The agent-runs list twice, each filtered by `client_via` = the caller's stamp. Once with `needs_agent=true`, for the runs that wait. Once with no state filter, from which the edge keeps the open runs (`created`, `in_progress`, `awaiting`, `stopping`), for the tasks this client holds.
 3. The task list with `assignee` = the email and `status_category=backlog,todo,in_progress`. `triage`, `done` and `cancelled` are left out, because the claim refuses them.
 4. The relations route of the first ten task rows, for the blocker test.
+5. To fill a row, two more bounded reads. The task route for each run whose task is not in the member's list, at most `limit` reads. The statuses of each project in the result, at most ten, for the status names, as `list_tasks` does. A run whose task cannot be read keeps its row, with null task fields.
 
 It returns rows in this order:
 
@@ -1490,7 +1491,7 @@ It returns rows in this order:
 2. **Tasks this client holds.** The task of each open run of this client, whether or not the member is an assignee. A task that is already in the first group is not listed twice.
 3. **Tasks to start.** Tasks assigned to the member, with no live holder. The edge drops a task that an open `blocks` link still waits on. It checks the first ten only. The rest keep the list order of the task route.
 
-Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `reason` (`run_queued`, `run_answered`, `run_stopping`, `held_by_you` or `assigned`), `run_id` when a run is the reason, and `held_by`.
+Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version`, `reason` (`run_queued`, `run_answered`, `run_stopping`, `held_by_you` or `assigned`), `run_id` when a run is the reason, and `held_by`. `version` is there because `claim_task` needs it as `expected_version`, so step 2 of the protocol works from the row alone.
 
 **When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
 
