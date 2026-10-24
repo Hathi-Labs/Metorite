@@ -1,10 +1,11 @@
 # Knowledge curation — company files in, and a brain that keeps itself current
 
-**Status: PROPOSED, 2026-10-25.** Owner directive of 2026-10-25, in chat.
-No decision is taken yet, and nothing in this spec is built.
+**Status: ACTIVE, 2026-10-25 (D112).** Owner directive of 2026-10-25, in
+chat. The owner accepted every decision of §20 and the default of every
+question of §21 the same day, as the spec recommends them. `work_plan.md` §3 records them once, as **D112**.
 
-§20 holds the proposed decisions **D-KC-1** to **D-KC-9**, and §21 holds the
-owner questions, each with a default. Board row **WS-61** (no new row).
+§20 holds the decisions **D-KC-1** to **D-KC-9**, and §21 holds the owner
+questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
 
 The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
@@ -859,10 +860,9 @@ a fixed fake model. The scored half runs on demand, through the Router.
 
 ---
 
-## 20. Proposed decisions — D-KC-1 to D-KC-9
+## 20. Decisions — D-KC-1 to D-KC-9, accepted as D112 on 2026-10-25
 
-The owner must accept these before KC-1 dispatches. A default is given for
-each. None reopens D104 to D107. D-KC-3, D-KC-4 and D-KC-6 amend parts of
+The owner accepted all nine on 2026-10-25. None reopens D104 to D107. D-KC-3, D-KC-4 and D-KC-6 amend parts of
 D104, and each says which part.
 
 - **D-KC-1 — Four layers: source, document, fact, page.** Facts are Postgres
@@ -889,9 +889,9 @@ D104, and each says which part.
 
 ---
 
-## 21. Owner questions — each with its default
+## 21. Owner questions — each answered by its default on 2026-10-25 (D112)
 
-| # | Question | Default if unanswered |
+| # | Question | The answer (the default) |
 |---|---|---|
 | Q1 | **File Google's restricted-scope verification for `drive.readonly` now?** It takes weeks and a security assessment. Without it, Drive serves 100 test users | **File it now**, because Drive is now first (D-KC-6). Serve Hathi Labs and Fracktal as test users meanwhile |
 | Q2 | **A Workspace domain install** (Marketplace, domain-wide reach) in v1, or member and org sources only? | Member and org sources in v1. The domain install after the first customer asks |
