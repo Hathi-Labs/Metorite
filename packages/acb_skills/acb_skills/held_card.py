@@ -33,6 +33,7 @@ _log = get_logger("acb_skills.held_card")
 
 __all__ = [
     "ADDRESS_MAX",
+    "ARTIFACT_REF",
     "ATTACHMENT_REF",
     "CLASSES",
     "CLASS_NEW",
@@ -42,10 +43,13 @@ __all__ = [
     "DEFAULT_TICKED",
     "HELD_SETTING_DECISIONS",
     "HELD_TEXT_MAX",
+    "HELD_WORKSPACE_AGENT",
+    "HELD_WORKSPACE_REFUSED",
     "KIND_BCC",
     "KIND_CC",
     "KIND_FILE",
     "KIND_TO",
+    "KNOWLEDGE_REF",
     "METORITE_FILE_REF",
     "METORITE_FILE_REFUSED",
     "NEW_MARK",
@@ -54,6 +58,7 @@ __all__ = [
     "SETTING_CLOSED",
     "SETTING_MAILBOX",
     "SETTING_REFUSED",
+    "TASK_FILE_REF",
     "THREAD_MARK",
     "WORKSPACE_FILE_REFUSED",
     "address_problem",
@@ -62,6 +67,7 @@ __all__ = [
     "domain_of",
     "file_label",
     "held_card_send_enabled",
+    "is_metorite_file_ref",
     "lookalike_of",
     "lookalike_warning",
     "parse_file_ref",
@@ -145,48 +151,88 @@ ROW_KINDS: frozenset[str] = frozenset({*RECIPIENT_KINDS, KIND_FILE})
 # ── The files rule (§21.1 item 3, §21.3 the Attach row) ──────────────────────
 #
 # A file of a held send comes from data, never from the model (§21.2 rule 4).
-# The model names an id. The server resolves it. In this build one source
-# can be a row: a file of a mail of the member's own mailbox, named as
-# ``attachment:<id>``. A workspace path is refused, because the run itself
-# wrote the file, from data that it read. A Metorite file (``file:<id>``) is
-# refused too, until the spec names the store that owns such a file.
+# The model names an id. The server resolves it, as the member, through the
+# store and the visibility check that the app uses. Four sources:
+#
+# * ``attachment:<id>`` — a file of a mail of the member's own mailbox;
+# * ``artifact:<agent>:<path>`` — a file of the member's own workspace of
+#   that agent, as the Artifacts app shows it (H-392, owner 2026-10-24);
+# * ``knowledge:<page id>`` — a Knowledge page that the member can read, as
+#   its Markdown (H-392);
+# * ``task-file:<attachment id>`` — a file on a task that the member can see
+#   (H-392).
+#
+# A bare workspace path is refused. So is a file of the ``email-assistant``
+# workspace in a held chat, because the held run itself can write there,
+# from data that it read (:data:`HELD_WORKSPACE_AGENT`).
 
 #: The head of a reference to a file of a mail of the member's own mailbox.
 ATTACHMENT_REF = "attachment:"
-#: The head of a reference to a Metorite file.
+#: H-392: the heads of the three Metorite file references.
+ARTIFACT_REF = "artifact:"
+KNOWLEDGE_REF = "knowledge:"
+TASK_FILE_REF = "task-file:"
+#: The head of an old, unscoped Metorite file reference. It names no store.
 METORITE_FILE_REF = "file:"
-#: The refusal of a workspace path in a held chat.
+#: The agent whose workspace a held run can write. Its files are refused in a
+#: held chat, because an injection could have the run write member data there.
+HELD_WORKSPACE_AGENT = "email-assistant"
+#: The forms that the refusals name.
+_FILE_FORMS = (
+    "attachment:<id> from read_email, artifact:<agent>:<path> from the "
+    "Artifacts app, knowledge:<page id>, or task-file:<attachment id>")
+#: The refusal of a workspace path, or of any reference of no known form.
 WORKSPACE_FILE_REFUSED = (
-    "A chat that read outside mail cannot attach a file of the workspace, so "
-    "nothing was sent. Attach a file of the member's own mailbox, named as "
-    "attachment:<id> from read_email.")
-#: The refusal of a Metorite file in a held chat (a decision that §21 does
-#: not record yet: which store owns such a file).
+    "A bare workspace path, or a reference that names no store, cannot be "
+    "attached, so nothing was sent. Name a file as " + _FILE_FORMS + ".")
+#: The refusal of an unscoped ``file:<id>``.
 METORITE_FILE_REFUSED = (
-    "A chat that read outside mail cannot attach a Metorite file yet, so "
-    "nothing was sent. Attach a file of the member's own mailbox, named as "
-    "attachment:<id> from read_email.")
+    "A file:<id> reference names no store, so nothing was sent. Name a file as "
+    + _FILE_FORMS + ".")
+#: The refusal of a file of the held run's own workspace in a held chat.
+HELD_WORKSPACE_REFUSED = (
+    "A chat that read outside mail cannot attach a file of the email "
+    "assistant's own workspace, because this chat can write there. Nothing "
+    "was sent. Attach a file of the member's mailbox, of another workspace, "
+    "of Knowledge or of a task.")
 
 
 def parse_file_ref(ref: Any) -> tuple[str, str]:
-    """``(source, id)`` of one file reference of a held send.
+    """``(source, id)`` of one file reference of a chat send.
 
-    ``("attachment", <uuid>)`` for ``attachment:<uuid>``. Anything else
-    raises ``ValueError`` with the refusal that the member reads: a
-    ``file:<id>`` with :data:`METORITE_FILE_REFUSED`, and a workspace path or
-    any other text with :data:`WORKSPACE_FILE_REFUSED`."""
+    ``("attachment", <uuid>)``, ``("knowledge", <uuid>)`` and
+    ``("task-file", <uuid>)`` carry a canonical id. ``("artifact",
+    "<agent>:<path>")`` carries the agent and the path. Anything else raises
+    ``ValueError`` with the refusal that the member reads: a ``file:<id>``
+    with :data:`METORITE_FILE_REFUSED`, and a workspace path or any other
+    text with :data:`WORKSPACE_FILE_REFUSED`. The server checks that the
+    member can see each file."""
     import uuid
 
     text = str(ref or "").strip()
-    if text.lower().startswith(ATTACHMENT_REF):
-        raw = text[len(ATTACHMENT_REF):].strip()
-        try:
-            return "attachment", str(uuid.UUID(raw))
-        except ValueError:
-            raise ValueError(WORKSPACE_FILE_REFUSED) from None
-    if text.lower().startswith(METORITE_FILE_REF):
+    low = text.lower()
+    for head, source in ((ATTACHMENT_REF, "attachment"), (KNOWLEDGE_REF, "knowledge"),
+                         (TASK_FILE_REF, "task-file")):
+        if low.startswith(head):
+            try:
+                return source, str(uuid.UUID(text[len(head):].strip()))
+            except ValueError:
+                raise ValueError(WORKSPACE_FILE_REFUSED) from None
+    if low.startswith(ARTIFACT_REF):
+        agent, _, path = text[len(ARTIFACT_REF):].partition(":")
+        agent, path = agent.strip(), path.strip()
+        if not agent or not path or any(ch.isspace() for ch in agent):
+            raise ValueError(WORKSPACE_FILE_REFUSED)
+        return "artifact", f"{agent}:{path}"
+    if low.startswith(METORITE_FILE_REF):
         raise ValueError(METORITE_FILE_REFUSED)
     raise ValueError(WORKSPACE_FILE_REFUSED)
+
+
+def is_metorite_file_ref(ref: Any) -> bool:
+    """True for a reference of one of the three Metorite stores (H-392)."""
+    low = str(ref or "").strip().lower()
+    return low.startswith((ARTIFACT_REF, KNOWLEDGE_REF, TASK_FILE_REF))
 
 
 def file_label(name: str, size: str) -> str:

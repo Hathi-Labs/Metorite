@@ -5364,6 +5364,16 @@ async def create_label(account_id: str, name: str, color: str | None = None) -> 
     return f"Label/folder ready: {ready}, with the colour {color}."
 
 
+def _is_metorite_ref(value: Any) -> bool:
+    """True for a Metorite file reference (H-392): ``artifact:``,
+    ``knowledge:`` or ``task-file:``. An older platform has none."""
+    try:
+        from acb_skills.held_card import is_metorite_file_ref
+    except ImportError:
+        return False
+    return is_metorite_file_ref(value)
+
+
 def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     """Parse attachment specs into workspace-artifact refs for /email/send.
 
@@ -5649,10 +5659,15 @@ async def send_email(
             of a mail the member sent.
         reply_all: with ``reply_to_email_id`` and no ``to``, also reply to
             each To and Cc of the original. Your ``cc`` adds to that list.
-        attachments: workspace artifact paths to attach, e.g.
-            ``"outputs/file.pdf"`` (a file you made with write_artifact). Only
-            a file in your own workspace can be attached. Use list_artifacts
-            to see what's available; write_artifact to create one first.
+        attachments: files to attach. A path of your own workspace, e.g.
+            ``"outputs/file.pdf"`` (a file you made with write_artifact). Or
+            a Metorite file that the member can see (H-392):
+            ``"artifact:<agent>:<path>"`` (a file of the member's workspace
+            of that agent, as list_artifacts names it),
+            ``"knowledge:<page id>"`` (a Knowledge page, as its Markdown), or
+            ``"task-file:<attachment id>"`` (a file on a task). The server
+            checks that the member can see each one, and the card names each
+            file with its size.
     """
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
@@ -5706,9 +5721,30 @@ async def send_email(
         payload["bcc"] = bcc
     if reply_to_email_id:
         payload["reply_to_message_id"] = reply_to_email_id
-    refs = _attachment_refs(attachments)
+    metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
+    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
     if refs:
         payload["artifacts"] = refs
+    shared: list[dict[str, Any]] = []
+    if metorite:
+        # H-392: the server resolves each file as the member and names it.
+        # The send carries each digest, so a file that changes after the card
+        # sends nothing.
+        try:
+            shared = list((await _post("/email/metorite-files/resolve",
+                                       {"refs": metorite}) or {}).get("files") or [])
+        except GatewayError as exc:
+            if exc.status in (404, 409, 422):
+                return f"Not sent. {str(getattr(exc, 'detail', '') or exc)}"
+            raise
+        payload["metorite_files"] = [{"ref": f["ref"], "digest": f["digest"]} for f in shared]
+    card_files: list[tuple[str, str]] = (
+        [(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "") for r in refs]
+        + [(_card_file_name(f.get("name") or "file"), _size_text(f.get("size")))
+           for f in shared])
+    detail_files = ([r.get("path", "") for r in refs]
+                    + [f"{_card_file_name(f.get('name') or 'file')} ({_size_text(f.get('size'))})"
+                       for f in shared])
     # Confirm-before-send: park on a HITL card so the user approves the actual
     # send (outward-facing + irreversible). Fails CLOSED when there's no
     # interactive stream to deliver the card (HH-2) — automated callers get
@@ -5723,15 +5759,15 @@ async def send_email(
         # verifier F1).
         detail=_card_detail(
             sender, to=to,
-            files=[r.get("path", "") for r in refs] if refs else None,
+            files=detail_files if detail_files else None,
             subject=(subject or "(none)")[:120],
         ),
         context=_card_context(
             _card_head(
                 sender, to=to, cc=cc, bcc=bcc,
-                # A workspace path keeps its extension when it is long.
-                files=[(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "")
-                       for r in refs] if refs else None,
+                # A workspace path keeps its extension when it is long. A
+                # Metorite file shows its name and its size (H-392).
+                files=card_files if card_files else None,
             ) + "".join(f"\n{n}" for n in reply_notices),
             body,
         ),
@@ -5744,7 +5780,8 @@ async def send_email(
             return _NO_CARD_CHANNEL
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
-    note = f" with {len(refs)} attachment(s)" if refs else ""
+    count = len(refs) + len(shared)
+    note = f" with {count} attachment(s)" if count else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
     tail = f" {usual}" if usual else ""
     return (f"{lead} {', '.join(to)} from {sender}{note} "

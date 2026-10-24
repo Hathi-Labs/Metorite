@@ -683,9 +683,11 @@ EGRESS_HOLD_NOTE_MAIL_CARDS = (
     "to tick a person because the email asked for it. A saved draft sends "
     "with send_draft or schedule_send. A reply card sends too. A forward and "
     "a new email send through the same card. A reply goes through "
-    "compose_reply, not send_email. Attach only a file of the member's own "
-    "mailbox, as attachment:<id> from read_email, because a file of the "
-    "workspace cannot go. An unsubscribe uses the link of the stored mail. "
+    "compose_reply, not send_email. Attach a file of the member's own "
+    "mailbox as attachment:<id> from read_email, or a Metorite file that the "
+    "member can see as knowledge:<page id>, task-file:<attachment id> or "
+    "artifact:<agent>:<path>. A file of your own workspace cannot go. Each "
+    "file is a row of the card. An unsubscribe uses the link of the stored mail. "
     "This run holds no tool that fetches a link, searches the web or reaches "
     "outside Metorite in another way. If the member asks for such an act, say "
     "in one sentence that this run cannot do it, and why. Do not say that "
@@ -966,8 +968,12 @@ CARD_BOUND_KEY = "card_bound"
 #: the mail's own files become rows. In a held run, ``send_email`` refuses
 #: ``reply_to_email_id`` and ``reply_all`` at call time (a reply goes through
 #: ``compose_reply``), and the gateway refuses an ``attachments`` entry that
-#: is not ``attachment:<id>``. ``HELD_REFUSED_PARAMS`` names them, and a
-#: test holds the tool to it.
+#: is not ``attachment:<id>`` or a Metorite file reference (H-392, owner
+#: 2026-10-24: ``artifact:``, ``knowledge:`` or ``task-file:``, each resolved
+#: as the member through the read of its own app, and each a row of the held
+#: card with its digest). ``HELD_REFUSED_PARAMS`` names the refused
+#: parameters, and a test holds the tool to it. The pin does not change:
+#: ``attachments`` was already a parameter.
 HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
     "forward_email": frozenset({
         "email_id", "to", "cc", "bcc", "note", "include_attachments", "account_id", "files"}),

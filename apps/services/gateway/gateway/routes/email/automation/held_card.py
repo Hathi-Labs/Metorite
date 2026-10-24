@@ -405,6 +405,39 @@ def ticked_file_ids(rows: Sequence[dict[str, Any]], ids: frozenset[str]) -> list
             if r["kind"] == "file" and r["id"] in ids and r.get("attachment_id")]
 
 
+def metorite_file_rows(files: Sequence[Any], start: int, mail_bytes: int) -> list[dict[str, Any]]:
+    """The recorded rows of the Metorite files of a held send (H-392).
+
+    Each row names the file, its size and its store, and records the
+    reference and the digest of the bytes. The act resolves the file again
+    and sends it only while the digest is the same. The bytes of the mail's
+    files and of these files together are capped."""
+    from acb_skills.held_card import KIND_FILE, file_label
+    from gateway.routes.email.transport.metorite_files import SOURCE_TEXT
+
+    if mail_bytes + sum(int(f.size) for f in files) > MAX_FILES_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"The files are larger than {MAX_FILES_BYTES // (1024 * 1024)} MB "
+                    "together, so nothing was sent."))
+    return [{
+        "id": f"file-{start + i}",
+        "kind": KIND_FILE,
+        "metorite_ref": f.ref,
+        "digest": f.digest,
+        "label": file_label(f.name, _size_text(f.size)),
+        "hint": f"From {SOURCE_TEXT.get(f.source, 'Metorite')}, a file that you can see.",
+        "checked": True,
+    } for i, f in enumerate(files)]
+
+
+def ticked_metorite_files(rows: Sequence[dict[str, Any]], ids: frozenset[str]
+                          ) -> dict[str, str]:
+    """``{reference: digest}`` of the ticked RECORDED Metorite file rows."""
+    return {str(r["metorite_ref"]): str(r["digest"]) for r in rows
+            if r["kind"] == "file" and r["id"] in ids and r.get("metorite_ref")}
+
+
 async def file_payloads(user: UserContext, attachment_ids: Sequence[str]) -> list[dict[str, Any]]:
     """The bytes of each ticked file, through the ONE owned fetch of a file
     (``attachments._fetch_owned_attachment``), as attachments of a new mail.
@@ -1101,15 +1134,26 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     if not body:
         raise HTTPException(status_code=422, detail="The email has no text, so nothing was sent.")
     subject = _clean_subject(req.subject)
+    from acb_skills.held_card import is_metorite_file_ref
+    from gateway.routes.email.transport.metorite_files import resolve_metorite_files
+
+    # H-392: a Metorite file resolves as the member, through the read of its
+    # own app. A file of the held run's own workspace is refused.
+    metorite = [r for r in req.files if is_metorite_file_ref(r)]
+    mail_refs = [r for r in req.files if not is_metorite_file_ref(r)]
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, owner)
         classes = await classify_addresses(db, owner, [a for v in lists.values() for a in v])
         known = await known_domains(db, owner)
-        files = await resolve_file_refs(db, owner, req.account_id, req.files)
+        files = await resolve_file_refs(db, owner, req.account_id, mail_refs)
         me = await resolve_self(db, req.account_id)
+    shared = await resolve_metorite_files(user, metorite, held=True) if metorite else []
     rows = recipient_rows(lists, classes, known)
     _refuse_new_bcc(rows)
-    rows += file_rows(files)
+    mail_rows = file_rows(files)
+    rows += mail_rows
+    rows += metorite_file_rows(
+        shared, len(mail_rows), sum(int(getattr(f, "size_bytes", 0) or 0) for f in files))
     if len(rows) > MAX_ROWS:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
     context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
@@ -1163,14 +1207,30 @@ async def _act_new(
         send_email,
     )
 
+    import base64
+
+    from gateway.routes.email.transport.metorite_files import (
+        check_digests,
+        resolve_metorite_files,
+    )
+
     attachments = [SendAttachment(**f) for f in await file_payloads(user, files)]
+    # H-392: each ticked Metorite file resolves again, as the member, and it
+    # goes only while its bytes are the bytes that the card named.
+    expect = ticked_metorite_files(rec.get("rows") or [], frozenset(rec.get("_ticked") or ()))
+    if expect:
+        shared = await resolve_metorite_files(user, list(expect), held=True)
+        check_digests(shared, expect)
+        attachments += [SendAttachment(filename=f.name, mime_type=f.mime,
+                                       content_b64=base64.b64encode(f.content).decode("ascii"))
+                        for f in shared]
     res = await send_email(SendEmailRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
         bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",
         body_text=rec["body"], attachments=attachments or None,
     ), background, user)
     return {"ok": True, "action": "send", "id": (res or {}).get("id"),
-            "files": len(files), **ticked}
+            "files": len(files) + len(expect), **ticked}
 
 
 @router.post("/held-card")
@@ -1344,7 +1404,9 @@ async def held_card_act(
     if rec.get("kind") == "forward":
         out = await _act_forward(rec, ticked, files, user)
     elif rec.get("kind") == "new":
-        out = await _act_new(rec, ticked, files, background, user)
+        # The ticked ids travel with the record into the act, never from a
+        # request field: they are the ids that ``ticked_rows`` checked.
+        out = await _act_new({**rec, "_ticked": sorted(ids)}, ticked, files, background, user)
     else:
         out = await _act_draft(rec, ticked, background, user)
     _audit(req.card_id, str(rec["kind"]), rows, ids)
