@@ -528,6 +528,42 @@ async def test_a_cc_that_edit_draft_added_stays_on_the_next_card(monkeypatch) ->
     assert w.sent[0].to == [SAGAR] and w.sent[0].cc == [KIRAN]
 
 
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_person_of_the_mail_in_the_draft_stays_ticked_on_card_two(
+    monkeypatch, held: bool,
+) -> None:
+    """Final check P1. Card 1 opens Reply all with Ananda (a Cc of the mail)
+    ticked, and item 9 writes Ananda into the draft's Cc. The member revises,
+    and card 2 opens. Ananda is a person of the mail, not a carried person:
+    still ticked, and still "on Dr Sagar's original email". Mutation: count
+    every draft address as carried → Ananda unticked → red."""
+    w = _World(monkeypatch)
+    if held:
+        F.flag_on(monkeypatch)
+    else:
+        F.flag_off(monkeypatch)
+    one = await w.card(untick_new=held)
+    assert ANANDA in one["ticked"]["reply_all"]["cc"]
+    assert w.drafts[-1] == ([SAGAR], [ANANDA])
+    w.db.draft = {"cc_addresses": json.dumps([{"email": ANANDA}]), "bcc_addresses": "[]"}
+    two = await w.card(untick_new=held)
+    assert two["ticked"]["reply_all"] == {"to": [SAGAR], "cc": [ANANDA]}
+    assert two["marks"][ANANDA] == "on Dr Sagar's original email"
+    assert w.drafts[-1] == ([SAGAR], [ANANDA])
+
+
+async def test_the_inbound_smtp_path_takes_the_arrival_time() -> None:
+    """Final check P3: ``trusted_thread_senders`` trusts the first received
+    mail, so a Date header must not set ``received_at``. Mutation: parse the
+    Date header again → red."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[2] / "apps" / "services" / "email_ingestion"
+           / "email_ingestion" / "inbound.py").read_text(encoding="utf-8")
+    assert 'received_at = _parse_date(str(parsed.get("Date", "")))' not in src
+    assert "received_at = datetime.now(timezone.utc)" in src
+
+
 async def test_a_carried_stranger_starts_unticked_in_any_chat(monkeypatch) -> None:
     """Review P2-a. A held run's edit_draft can put a stranger on the draft.
     A later card, held or not, shows that person unticked unless ``org`` or

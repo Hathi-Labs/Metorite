@@ -21094,6 +21094,13 @@ mail that the draft answers, because the draft row holds no link to it. A
 later sender is `thread` only when `org` or `sent`. A sender in junk or spam
 never is. So a stranger who sends a mail into the thread is `new`.
 
+The SMTP inbound path sets `received_at` to the server arrival time, never to
+the Date header, because a sender writes that header.
+
+A draft address that is a person of the mail, or the member, is not
+"carried". Item 9 writes the people of the mail into the draft, so a second
+card keeps them ticked, with the words of the original email.
+
 One carve-out stays. A person on a look-alike domain is `new`, unticked and
 flagged. The guard reads the domain of EVERY sender of the thread, and each
 organization domain (`held_card.lookalike_of`, review P2-b). A Reply-To that

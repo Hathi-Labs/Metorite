@@ -482,6 +482,10 @@ async def reply_card(
     # card (the owner's report of 2026-10-24, item 10): a new card used to
     # derive from the mail alone, so its Send dropped them.
     carried, draft_bcc = await _draft_people(mail)
+    # Final check P1: item 9 writes the people of the mail into the draft. A
+    # person of the mail, or the member, is never "carried". Only a genuinely
+    # extra address of the draft is.
+    carried = [a for a in carried if a.strip().lower() not in on_mail | own]
     usual = await _usual_candidates(owner, mail, [*all_to, *all_cc], skip=on_mail | own)
     candidates = _unique([*asked, *carried, *usual], set(on_mail | own))[:MAX_ADDED]
     held_on = held_card_send_enabled()
@@ -497,6 +501,9 @@ async def reply_card(
             primary=[mail.sender] if mail.sender else [],
             people=_mail_people(mail), account_id=mail.account_id,
             thread_id=mail.thread_id)
+    # A carried address that a trusted thread mail names is a thread person,
+    # not a carried one (final check P1).
+    carried = [a for a in carried if (classes or {}).get(a.lower()) != "thread"]
     # Item 7: only a colleague of the organization is pre-added from Sent.
     usual_added = [a for a in usual if (classes or {}).get(a.lower()) == "org"]
     added = [a for a in candidates if a in asked or a in carried or a in usual_added]
