@@ -1585,14 +1585,23 @@ class TestWhatsAppConfirm:
         """Verify P1 (PZ-6b repair 1): a remove never parks a card, so a
         Confirm that holds remove arguments (a tampered or foreign row)
         writes nothing."""
-        from gateway.routes.whatsapp_channel import acts
-
         _out, parked = _run(_wa_ask(pt.profile_alias, "Sam is sam@alpha.example",
                                     alias="Sam", email="sam@alpha.example"))
         wa.table["row"] = _row(parked, arguments={"alias": "Raj", "email": ""})
         _run(_wa_answer("Confirm"))
         assert wa.writes() == []
         assert wa.table["closed"] and wa.table["closed"][-1][1] != "done"
+
+    def test_a_gateway_refusal_after_confirm_closes_the_act_failed(self, wa, own_chat) -> None:
+        """Re-verify P2 (R7): the wiring of _profile_refused in acts._run. The
+        matched card is confirmed, the gateway then refuses (a full profile),
+        and the act closes failed, not done."""
+        _out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                    text="I have diabetes", kind="about"))
+        wa.table["row"] = _row(parked)
+        own_chat.force = (422, {"detail": "at most 40 facts"})
+        _run(_wa_answer("Confirm"))
+        assert wa.table["closed"][-1][1:] == ("failed", "refused")
 
     def test_a_refusal_after_the_card_closes_the_act_failed(self) -> None:
         """Review P2: a profile write that the gateway refused after the
@@ -1691,7 +1700,9 @@ class TestWhatsAppConfirm:
     "I see a counsellor weekly", "I am on antidepressants", "I fast during Navratri",
     "I have a heart condition", "I earn 50k a month", "I am a sugar patient",
     "I have high BP", "I am on my periods", "I am SC/ST", "I support AAP",
-    "I have a home loan",
+    "I have a home loan", "I have a loan to repay", "I have a car loan", "I am trans",
+    "I voted", "I had a stroke", "I have migraines", "I owe money to my brother",
+    "my PF balance is low",
 ])
 def test_a_personal_sensitive_fact_asks(text) -> None:
     assert ap.is_sensitive(text)
@@ -1711,3 +1722,5 @@ def test_the_indian_spoken_at_asks() -> None:
     assert ap.needs_confirm("vijay at the rate hathilabs dot com")
     assert ap.needs_confirm("vijay at rate hathilabs dot com")
     assert not ap.needs_confirm("meet at the rate card review")
+    # "the" alone does not make a spoken address (re-verify P2).
+    assert not ap.needs_confirm("I sit at the front dot desk")

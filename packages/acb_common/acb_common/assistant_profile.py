@@ -484,7 +484,7 @@ _BRACKET_AT_DOT = re.compile(r"[\[({]\s*(?:at|dot)\s*[\])}]")
 #: "x at y dot z": a word, " at ", a word, then " dot " or "." and a top
 #: level of letters.
 _SPOKEN_ADDRESS = re.compile(
-    r"[\w.+\-]+\s+at(?:\s+the)?(?:\s+rate)?\s+[\w\-]+(?:(?:\s+dot\s+|\.)[\w\-]+)*"
+    r"[\w.+\-]+\s+at(?:\s+the\s+rate|\s+rate)?\s+[\w\-]+(?:(?:\s+dot\s+|\.)[\w\-]+)*"
     r"(?:\s+dot\s+|\.)[^\W\d_]{2,24}"
     r"(?![\w\-])")
 #: The full stops of other scripts that a domain can hide behind. NFKD makes
@@ -566,7 +566,8 @@ SENSITIVE_WORDS: frozenset[str] = frozenset({
     "autism", "autistic", "bipolar", "schizophrenia", "ocd", "ptsd",
     "mental health", "medication", "medicines", "insulin", "asthma",
     "thyroid", "blood pressure", "high bp", "low bp", "hypertension",
-    "cholesterol", "heart condition", "heart disease", "epilepsy",
+    "cholesterol", "heart condition", "heart disease", "stroke",
+    "migraine", "migraines", "epilepsy",
     "disability", "disabled", "surgery", "rehab", "addiction", "alcoholic",
     "menopause", "pcos", "pcod",
     # Religion
@@ -582,17 +583,20 @@ SENSITIVE_WORDS: frozenset[str] = frozenset({
     # Politics. A bare "vote", "liberal" or "conservative" names a work
     # habit too, so only the personal phrases are here.
     "politics", "political", "bjp", "congress", "cpi", "cpm", "tmc", "aap",
-    "dmk", "aiadmk", "shiv sena", "aam aadmi", "rss", "i vote", "voted for",
+    "dmk", "aiadmk", "shiv sena", "aam aadmi", "rss", "i vote", "i voted",
+    "voted for",
     "vote for", "my vote", "election", "leftist", "rightwing", "right wing",
     "communist", "socialist",
     # Sexuality. A bare "trans" names shipping too ("trans-shipment").
     "sexuality", "sexual", "gay", "lesbian", "bisexual", "queer",
-    "transgender", "trans woman", "trans man", "trans person", "lgbt",
+    "transgender", "i am trans", "i'm trans", "trans woman", "trans man",
+    "trans person", "lgbt",
     "lgbtq", "lgbtqia", "homosexual", "asexual", "non binary", "nonbinary",
     "sexual orientation",
     # Finance. A bare "tax" or "loan" names a team or a product too.
     "salary", "income", "ctc", "payslip", "my loan", "home loan",
-    "personal loan", "debt", "debts", "emi", "emis", "mortgage",
+    "personal loan", "car loan", "loan to repay", "i owe", "pf balance",
+    "debt", "debts", "emi", "emis", "mortgage",
     "credit score", "cibil", "bank balance", "net worth", "savings",
     "bankrupt", "bankruptcy", "overdraft", "credit card debt",
     "income tax", "my taxes", "investments", "i earn", "my earnings",
