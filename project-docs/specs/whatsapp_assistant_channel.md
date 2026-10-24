@@ -2144,6 +2144,9 @@ with no text does not park.
    card, for example when the draft changed. That card parks with a new code.
 4. **The thread keeps the summary.** No model runs while the act waits,
    because any other message voids the act first.
+5. **A card that the gate cuts does not park.** `request_confirmation` cuts
+   a long title, detail or context. Such a card would show less than the act
+   sends, so it does not park, and the tool answers `EMAIL_TOO_LONG_TEXT`.
 
 ### 18.7 Acceptance and fences (H-391)
 
