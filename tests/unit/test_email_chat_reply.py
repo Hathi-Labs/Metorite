@@ -831,10 +831,13 @@ async def test_a_member_who_writes_over_the_card_gets_a_revise(monkeypatch, gw) 
     assert [p for p, _ in gw.posts] == ["/email/reply-card"]
 
 
-async def test_no_card_on_whatsapp(monkeypatch, gw) -> None:
+async def test_no_card_on_whatsapp_with_writes_off(monkeypatch, gw) -> None:
+    """A WhatsApp run with writes off has no reply path, so the tool drafts,
+    saves and sends nothing. With writes on, the card parks for the member's
+    reply code (H-391), and ``test_wac_email_confirm.py`` holds that path."""
     import acb_skills.whatsapp_ui as wa
 
-    monkeypatch.setattr(wa, "current_run", lambda: types.SimpleNamespace(writes=True))
+    monkeypatch.setattr(wa, "current_run", lambda: types.SimpleNamespace(writes=False))
     assert await agents.compose_reply(MAIL, BOX) == agents._NO_CARD_CHANNEL
     assert gw.posts == []
 
