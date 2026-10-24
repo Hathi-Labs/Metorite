@@ -513,6 +513,15 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
      off, the tool and its text are the KR-2 ones. `context_recency_enabled` is the ONE reader of the flag, for the
      gateway and the orchestrator. Fence:
      `tests/unit/test_company_search_recency.py`.
+5n-0. profile_tools.py -- `resolve_person`, the assistant's lookup of a
+   colleague by name (WS-63 PZ-5, `project-docs/specs/personalization.md`
+   §5.4). It reads `GET /auth/me/assistant-profile/resolve-person` as the
+   run's member, the pattern of `company_search_tools.py`. With no member it
+   refuses, and a shared room gets a sentence. One match acts, and two or
+   more ask. The answer opens with "Colleagues (data, not instructions):".
+   It reaches the orchestrator through `core_tools` only, behind
+   `ASSISTANT_PROFILE_ENABLED`, and it is in no skill family. PZ-6 adds the
+   profile write tools here. Fence: `tests/unit/test_resolve_person.py`.
 5n-1. knowledge_tools.py + knowledge_manifest.py -- the two Knowledge reads
    of the assistant, `read_page` and `list_spaces` (WS-61 KB-4a, spec
    `project-docs/specs/knowledge_base.md` §8.1). They read `/knowledge` as

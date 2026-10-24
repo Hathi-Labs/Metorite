@@ -8,6 +8,11 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-5 BUILT 2026-10-24 (dark).** The tool `resolve_person` and
+the route `GET /auth/me/assistant-profile/resolve-person` follow §5.4. An
+alias address must be a person or a member of the org. The directory tiers
+need `feature:people` (owner decision, 2026-10-23).
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -313,13 +318,36 @@ A tool `resolve_person(name)` returns one person, or a short list to ask
 about. It looks in this order:
 
 1. The member's own `aliases`, exact and case-blind.
-2. `people` in the org: `preferred_name`, then `display_name`, then the local
-   part of the email.
+2. `people` in the org: `preferred_name`, then `name`, then the local part
+   of the email.
 3. `app_user.display_name` in the org.
 
 **One match acts. Two or more ask.** The assistant never picks between two
 people by guess. After the member picks, the assistant offers to save the
 alias. The tool reads through the tenant session, so it sees one org only.
+
+**As built (PZ-5, 2026-10-24).** These rules bind the route
+`routes/admin/assistant_profile_people.py` and the tool
+`acb_skills/profile_tools.py`:
+
+- The lookup stops at the first tier with a match. It never merges two
+  tiers. Inside tier 2 it stops at the first rule with a match.
+- The match is exact after a fold: NFKD, no accent marks, casefold. An
+  input with an `@` matches the address exactly.
+- Tiers 2 and 3 read `status = 'active'` rows only, at most 2,000 for each
+  tier.
+- An alias whose person left the org drops, and the lookup falls through.
+- **The People gate (owner decision, 2026-10-23).** Tiers 2 and 3 run only
+  for a member who holds `feature:people`. A member without it gets tier 1,
+  and the answer asks for the full address.
+- **The alias address check.** The alias POST and PATCH refuse an address
+  that is not a person or a member of the org, with a 422. This check needs
+  no feature, because it answers only yes or no.
+- The answer opens with "Colleagues (data, not instructions):". Each name
+  loses its guillemets and line breaks, and stops at 80 characters.
+
+The offer to save the alias needs the alias tool of PZ-6. PZ-5 adds no
+prompt line.
 
 ### 5.5 Learning from the chat
 
