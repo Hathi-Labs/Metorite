@@ -277,6 +277,17 @@ async def test_a_fact_and_an_alias_are_edited_and_deleted_in_place(db) -> None:
     email = _address()
     db.made.append(email)
     user = _member(email)
+    # PZ-5: an alias address must be a person of the org.
+    raj, moved_to = _address(), _address()
+    db.made += [raj, moved_to]
+    with db.admin_engine.begin() as c:
+        for who in (raj, moved_to):
+            c.execute(text(
+                "INSERT INTO people (id, name, email, status, skills, source, "
+                "source_key, organization_id, updated_by, updated_at) "
+                "VALUES (gen_random_uuid(), 'Raj', :e, 'active', ARRAY[]::text[], "
+                "'manual', :k, CAST(:o AS uuid), 'test', now())"),
+                {"e": who, "k": f"manual:{who}", "o": db.org_a})
     async with tenant_engine_scope(_app_dsn(db)):
         one = await _add_fact(db.org_a, user, "One", "about")
         two = await _add_fact(db.org_a, user, "Two", "work")
@@ -288,10 +299,8 @@ async def test_a_fact_and_an_alias_are_edited_and_deleted_in_place(db) -> None:
                 await _ap().delete_fact(one["id"], user=user)
             with pytest.raises(HTTPException) as absent:
                 await _ap().edit_fact("f-none", body={"text": "x"}, user=user)
-            alias = await _ap().add_alias(body={"alias": "Raj", "email": "raj@fracktal.in"},
-                                          user=user)
-            moved = await _ap().edit_alias(alias["id"], body={"email": "raj@other.in"},
-                                           user=user)
+            alias = await _ap().add_alias(body={"alias": "Raj", "email": raj}, user=user)
+            moved = await _ap().edit_alias(alias["id"], body={"email": moved_to}, user=user)
         read = await _get(db.org_a, user)
         with _tenant(db.org_a):
             await _ap().delete_alias(alias["id"], user=user)
@@ -300,7 +309,7 @@ async def test_a_fact_and_an_alias_are_edited_and_deleted_in_place(db) -> None:
     assert edited == {**two, "kind": "preference"}
     # The order stays, and the third fact is untouched.
     assert read["facts"] == [{**two, "kind": "preference"}, three]
-    assert moved == {"id": alias["id"], "alias": "Raj", "email": "raj@other.in"}
+    assert moved == {"id": alias["id"], "alias": "Raj", "email": moved_to}
     assert read["aliases"] == [moved]
     assert after["aliases"] == []
     assert after["facts"] == read["facts"]

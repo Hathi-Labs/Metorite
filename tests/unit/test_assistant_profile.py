@@ -15,7 +15,10 @@ holds what a fake can prove honestly:
   an org;
 - a per-item edit or delete is ONE ``UPDATE`` statement, never a read and a
   second write;
-- a missing session address is a 401, and a failed read or write is a 503.
+- a missing session address is a 401, and a failed read or write is a 503;
+- an alias address outside the org is a 422 and writes nothing (PZ-5). The
+  check is ONE statement in the write's session, and it runs for a member
+  with no feature at all.
 """
 from __future__ import annotations
 
@@ -54,6 +57,9 @@ class _FakeDB:
         self.fail = False
         self.sql: list[tuple[str, dict[str, Any]]] = []
         self.rolled_back = 0
+        #: The addresses in the org, for the alias check (PZ-5). ``None``
+        #: answers yes for every address.
+        self.in_org: set[str] | None = None
 
     def _base(self) -> dict[str, Any]:
         return copy.deepcopy(self.row) if isinstance(self.row, dict) else {}
@@ -63,6 +69,10 @@ class _FakeDB:
             raise RuntimeError("database away")
         sql, p = str(stmt), dict(params or {})
         self.sql.append((sql, p))
+        if sql.startswith("SELECT 1 WHERE EXISTS"):
+            # The alias check of PZ-5 (`email_in_org`).
+            ok = self.in_org is None or p["email"] in self.in_org
+            return _Result((1,) if ok else None)
         if sql.startswith("SELECT assistant_profile"):
             return _Result(None if self.row is _NO_ROW else (self.row,))
         if sql.startswith("INSERT INTO user_settings"):
@@ -432,6 +442,35 @@ class TestTheAliases:
         assert _client().delete(f"{_URL}/aliases/a1").status_code == 204
         assert fake.row["aliases"] == []
 
+    def test_an_address_outside_the_org_is_refused_and_writes_nothing(
+            self, fake: _FakeDB) -> None:
+        """PZ-5: the add and the email of an edit need an address in the org."""
+        fake.in_org = {"mo@alpha.example"}
+        before = copy.deepcopy(fake.row)
+        res = _client().post(f"{_URL}/aliases", json={"alias": "Ed", "email": "Ed@Beta.example"})
+        assert res.status_code == 422
+        assert res.json()["detail"] == ap.OUTSIDE_ORG
+        res = _client().patch(f"{_URL}/aliases/a1", json={"email": "ed@beta.example"})
+        assert res.status_code == 422
+        assert res.json()["detail"] == ap.OUTSIDE_ORG
+        assert fake.row == before
+        assert _writes(fake) == []
+        # The check reads the address in lower case, in one statement.
+        checks = [p for sql, p in fake.sql if sql.startswith("SELECT 1 WHERE EXISTS")]
+        assert checks == [{"email": "ed@beta.example"}, {"email": "ed@beta.example"}]
+        # An address in the org passes, and a patch of the alias alone needs no check.
+        assert _client().post(f"{_URL}/aliases",
+                              json={"alias": "Mo", "email": "mo@alpha.example"}).status_code == 201
+        assert _client().patch(f"{_URL}/aliases/a1", json={"alias": "R"}).status_code == 200
+        assert len([s for s, _ in fake.sql if s.startswith("SELECT 1 WHERE EXISTS")]) == 3
+
+    def test_the_check_names_the_bound_tenant_in_both_tables(self) -> None:
+        from gateway.routes.admin import assistant_profile_people as app_
+
+        sql = app_.EMAIL_IN_ORG_SQL
+        assert sql.count("current_setting('app.tenant_id', true)") == 2
+        assert "FROM people" in sql and "FROM app_user" in sql
+
 
 # ── Forget everything ──────────────────────────────────────────────────────
 
@@ -532,7 +571,11 @@ class TestTheMember:
         _call(_user("bo@alpha.example"), method, url, body)
         assert fake.sql
         for sql, params in fake.sql:
-            assert params["uid"] == "bo@alpha.example"
+            # The alias check of PZ-5 takes the typed address, never a member.
+            if sql.startswith("SELECT 1 WHERE EXISTS"):
+                assert set(params) == {"email"}
+            else:
+                assert params["uid"] == "bo@alpha.example"
             assert not any("org" in k for k in params), params
             assert "current_setting('app.tenant_id', true)" in sql
 
