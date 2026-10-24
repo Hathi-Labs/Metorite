@@ -95,3 +95,21 @@ async def test_the_run_skips_the_move_with_a_plain_sentence() -> None:
     provider.move_to_folder.assert_not_called()
     assert errors == [
         {"type": "MOVE_FOLDER", "error": MOVE_REFUSED_SENTENCE[:160]}]
+
+
+@pytest.mark.parametrize("label", [
+    "[Gmail]/Sent Mail", "INBOX.Sent", "Sent Messages", "INBOX.Drafts",
+    "[Gmail]/Drafts", "INBOX/Sent"])
+def test_imap_and_gmail_paths_are_refused_at_save_and_run(label: str) -> None:
+    from email_ingestion.providers.base import move_refusal
+
+    assert move_refusal(label) == MOVE_REFUSED_SENTENCE
+    with pytest.raises(HTTPException):
+        _rules.refuse_move_into_sent(_req(label).actions)
+
+
+def test_path_names_of_other_folders_are_allowed() -> None:
+    from email_ingestion.providers.base import move_refusal
+
+    for label in ("INBOX.Receipts", "[Gmail]/Spam", "Sentinel"):
+        assert move_refusal(label) is None

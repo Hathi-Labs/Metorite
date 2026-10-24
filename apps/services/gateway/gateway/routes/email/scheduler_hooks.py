@@ -348,7 +348,7 @@ def register_email_post_sync_hooks() -> None:
         classify_threads=as_mailbox_owner(_classify_threads),
         send_digest=as_mailbox_owner(_maybe_send_digest),
         send_follow_up_reminders=as_mailbox_owner(_follow_up),
-        ensure_subscription=_ensure_subscription,
+        ensure_subscription=as_mailbox_owner(_ensure_subscription),
         learn_label_changes=learn_label_changes,
     )
     _log.info("email.post_sync_hooks_registered")

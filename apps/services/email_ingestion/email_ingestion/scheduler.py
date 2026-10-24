@@ -1172,7 +1172,7 @@ async def _sync_account(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
     if_busy: str = "wait", purge: bool = False, reset_cursor: bool = False,
-    from_loop: bool = False,
+    from_loop: bool = False, background: bool = False,
 ) -> dict[str, Any]:
     """Run one sync cycle of a mailbox, and never two at once (EM-T4f part 2).
 
@@ -1232,7 +1232,9 @@ async def _sync_account(
             _sync_rerun.discard(key)
             # H-390: the loop's cycle (fetch, write, embed) is background
             # work. It holds a bounded share of the pool.
-            bg = mark_background() if from_loop else None
+            # The webhook passes ``background``; "Sync now" from a member
+            # route passes neither and stays member work.
+            bg = mark_background() if (from_loop or background) else None
             try:
                 result = await _sync_cycle(
                     account_id, organization_id=organization_id,
@@ -1240,7 +1242,14 @@ async def _sync_account(
                     reset_cursor=reset_cursor, from_loop=from_loop)
             finally:
                 release_background(bg)
-            return await _rerun_once(key, account_id, organization_id, result)
+            # The rerun is automated catch-up for whoever skipped, so it is
+            # background work whatever started the first cycle.
+            bg2 = mark_background()
+            try:
+                return await _rerun_once(
+                    key, account_id, organization_id, result)
+            finally:
+                release_background(bg2)
         finally:
             lock.release()
     finally:

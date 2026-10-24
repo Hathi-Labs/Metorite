@@ -116,12 +116,13 @@ class Settings(BaseSettings):
     db_max_overflow: int = 2
 
     # H-390: how many of the connections above BACKGROUND work may hold at one
-    # time (acb_common.db.background_db). Sync, rule, classify and embed jobs
+    # time (acb_common.db.mark_background). Sync, rule, classify and embed jobs
     # share the ONE pool with member reads. On 2026-10-22 they filled it
     # ("QueuePool limit of size 7 overflow 2") and a member read answered 503.
     # The pooler budget is full, so a second pool is not possible. This cap
     # keeps (pool + overflow - cap) connections for members: 9 - 4 = 5.
-    # Fence: tests/unit/test_db_background_lane.py.
+    # The cap counts tasks that hold a slot, not connections: one task may
+    # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
     db_background_max: int = 4
 
     # The pool of the sync `acb_graph` engine. It counts against the SAME

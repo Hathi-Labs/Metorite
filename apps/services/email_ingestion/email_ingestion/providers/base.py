@@ -236,6 +236,9 @@ MOVE_REFUSED_SENTENCE = (
     "there itself. Choose another folder.")
 
 
+_SENT_DRAFT_ALIASES = {"sent messages": "sent"}
+
+
 def move_refusal(name: str | None) -> str | None:
     """The plain sentence when a move to ``name`` is refused, else ``None``.
 
@@ -243,7 +246,15 @@ def move_refusal(name: str | None) -> str | None:
     rule run, so a new rule cannot hold the move and an old one fails with
     the same words (H-395, ``email_app_master_plan.md`` §21.10).
     """
-    if name and canonical_folder(name) in MOVE_REFUSED_FOLDERS:
+    if not name:
+        return None
+    key = canonical_folder(name)
+    if key not in MOVE_REFUSED_FOLDERS:
+        # IMAP and Gmail spell the folder with a path: "[Gmail]/Sent Mail",
+        # "INBOX.Sent", "Sent Messages". Compare the last segment too.
+        last = re.split(r"[/.\\]", name.strip())[-1]
+        key = canonical_folder(_SENT_DRAFT_ALIASES.get(last.strip().lower(), last))
+    if key in MOVE_REFUSED_FOLDERS:
         return MOVE_REFUSED_SENTENCE
     return None
 

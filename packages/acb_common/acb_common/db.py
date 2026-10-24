@@ -153,7 +153,9 @@ def engine_connect_args() -> dict[str, Any]:
 # cannot deadlock against its own kind.
 
 _BACKGROUND: ContextVar[bool] = ContextVar("acb_db_background", default=False)
-_BACKGROUND_HELD: ContextVar[bool] = ContextVar("acb_db_background_held", default=False)
+#: The task that holds a background slot, or None. A copied context (a child
+#: task) sees the holder, but it is NOT the holder, so it takes its own slot.
+_BACKGROUND_HELD: ContextVar[Any] = ContextVar("acb_db_background_held", default=None)
 _GATES: dict[Any, Any] = {}
 
 
@@ -192,21 +194,33 @@ def _background_gate() -> Any:
 @asynccontextmanager
 async def _background_slot() -> AsyncIterator[None]:
     """Hold one background slot for a ``tenant_session``, if the task is background."""
-    if not _BACKGROUND.get() or _BACKGROUND_HELD.get():
+    import asyncio
+
+    if not _BACKGROUND.get():
         yield
         return
-    import asyncio
+    task = asyncio.current_task()
+    if _BACKGROUND_HELD.get() is task and task is not None:
+        # Same task, nested session: no second wait, so a job cannot
+        # deadlock on its own kind.
+        yield
+        return
 
     gate = _background_gate()
     # Waiting here costs nothing from the pool. The wait is bounded like the
     # pool's own, so a stuck job fails instead of waiting for ever.
     await asyncio.wait_for(gate.acquire(), timeout=get_settings().db_pool_timeout * 3)
-    token = _BACKGROUND_HELD.set(True)
+    token = _BACKGROUND_HELD.set(task)
     try:
         yield
     finally:
-        _BACKGROUND_HELD.reset(token)
+        # Release the slot FIRST. A reset in a foreign Context raises
+        # ValueError, and the slot must not leak when it does.
         gate.release()
+        try:
+            _BACKGROUND_HELD.reset(token)
+        except ValueError:
+            pass
 
 
 def get_engine() -> Any:

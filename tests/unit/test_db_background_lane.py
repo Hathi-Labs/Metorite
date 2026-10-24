@@ -143,4 +143,69 @@ def test_the_email_job_seams_mark_background() -> None:
     sched = (ROOT / "apps/services/email_ingestion/email_ingestion/scheduler.py"
              ).read_text(encoding="utf-8")
     assert "mark_background()" in hooks and "release_background(bg)" in hooks
-    assert "mark_background() if from_loop" in sched
+    assert "mark_background() if (from_loop or background)" in sched
+
+
+async def test_a_child_task_of_a_job_takes_its_own_slot(pool: _Pool) -> None:
+    """A child task copies the context, but it is not the slot holder."""
+    hold = asyncio.Event()
+    slots = dbmod.background_slots()
+
+    async def child() -> None:
+        async with dbmod.tenant_session("org-1"):
+            await hold.wait()
+
+    async def parent() -> None:
+        token = dbmod.mark_background()
+        try:
+            await asyncio.gather(*(child() for _ in range(1)))
+        finally:
+            dbmod.release_background(token)
+
+    async def parent_with_children() -> None:
+        token = dbmod.mark_background()
+        try:
+            kids = [asyncio.create_task(child()) for _ in range(slots * 4)]
+            await asyncio.gather(*kids)
+        finally:
+            dbmod.release_background(token)
+
+    run = asyncio.create_task(parent_with_children())
+    await asyncio.sleep(0.05)
+    assert pool.in_use == slots
+    hold.set()
+    await run
+
+
+async def test_the_slot_is_released_when_the_context_is_foreign(pool: _Pool) -> None:
+    """A finalize in another context makes the reset raise. The gate still frees."""
+    import contextvars
+
+    gate_before = None
+    token = dbmod.mark_background()
+    try:
+        cm = dbmod.tenant_session("org-1")
+        await cm.__aenter__()
+        gate_before = dbmod._background_gate()._value
+        ctx = contextvars.copy_context()
+        # Close in a different task, so a different Context.
+        await asyncio.create_task(cm.__aexit__(None, None, None), context=ctx)
+    except Exception:
+        pass
+    finally:
+        dbmod.release_background(token)
+    assert gate_before == dbmod.background_slots() - 1
+    assert dbmod._background_gate()._value == dbmod.background_slots()
+
+
+def test_webhook_and_rerun_and_subscription_are_background() -> None:
+    sched = (ROOT / "apps/services/email_ingestion/email_ingestion/scheduler.py"
+             ).read_text(encoding="utf-8")
+    sync = (ROOT / "apps/services/gateway/gateway/routes/email/transport/sync.py"
+            ).read_text(encoding="utf-8")
+    hooks = (ROOT / "apps/services/gateway/gateway/routes/email/scheduler_hooks.py"
+             ).read_text(encoding="utf-8")
+    assert 'if_busy="skip", background=True' in sync
+    assert "mark_background() if (from_loop or background)" in sched
+    assert "bg2 = mark_background()" in sched
+    assert "as_mailbox_owner(_ensure_subscription)" in hooks
