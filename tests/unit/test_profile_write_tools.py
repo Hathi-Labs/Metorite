@@ -49,8 +49,13 @@ from typing import Any
 import httpx
 import pytest
 from acb_common import assistant_profile as ap
+from acb_skills import ask_tools as _ask_tools
 from acb_skills import egress
 from acb_skills import profile_tools as pt
+
+#: The real card gate, kept before any fixture patches it (PZ-6b).
+_REAL_CONFIRM = _ask_tools.request_confirmation
+_REAL_CHANNEL = _ask_tools.confirmation_channel_open
 
 ROOT = Path(__file__).resolve().parents[2]
 MEMBER = "ana@alpha.example"
@@ -1003,13 +1008,18 @@ class TestConfirmRule:
         assert own_chat.cards[0]["context"] == f"work: {PASTED_VALUE}"
         assert _undo_of(out)["op"] == "delete"
 
-    def test_whatsapp_refuses_before_any_card(self, own_chat) -> None:
-        with ap.member_typed(PASTED), ap.profile_channel("whatsapp", writes=True):
+    def test_whatsapp_with_no_native_run_refuses(self, own_chat, monkeypatch) -> None:
+        """PZ-6b: a WhatsApp run that cannot hold the act for the Confirm
+        button (no native profile) refuses, and writes nothing. The native
+        run parks instead (``TestWhatsAppConfirm``)."""
+        _real_cards(monkeypatch)
+        with ap.member_typed(PASTED), ap.profile_channel("whatsapp", writes=True), \
+                _cards_refused():
             out = _run(pt.profile_remember(PASTED_VALUE, "work"))
         assert out.splitlines()[0] == (
             'profile: {"reason":"needs_confirm","status":"refused","v":1}')
         assert _text(out) == pt.NEEDS_CONFIRM_WHATSAPP
-        assert own_chat.cards == [] and own_chat.writes() == []
+        assert own_chat.writes() == []
 
     def test_a_run_with_no_card_refuses(self, own_chat) -> None:
         own_chat.approve, own_chat.card_channel = False, False
@@ -1050,8 +1060,10 @@ class TestConfirmRule:
         assert _status_of(_run(call()))["reason"] == "declined"
         assert len(own_chat.cards) == 1 and own_chat.writes() == []
 
-    def test_an_alias_on_whatsapp_refuses(self, own_chat) -> None:
-        with ap.profile_channel("whatsapp", writes=True):
+    def test_an_alias_on_whatsapp_with_no_native_run_refuses(self, own_chat,
+                                                             monkeypatch) -> None:
+        _real_cards(monkeypatch)
+        with ap.profile_channel("whatsapp", writes=True), _cards_refused():
             out = _run(pt.profile_alias("Sam", "sam@alpha.example"))
         assert _refused(out, "needs_confirm") == pt.NEEDS_CONFIRM_WHATSAPP
         assert own_chat.writes() == []
@@ -1072,12 +1084,27 @@ class TestConfirmRule:
         ("see acme-pay.io", True),
         ("www.example.org", True),
         ("https://x.example", True),
-        ("Invoices go to billing at acmepay dot io", False),
+        # PZ-6b (re-verify P2-1): an address written out in words asks.
+        ("Invoices go to billing at acmepay dot io", True),
         ("e.g. green tea", False),
         ("", False),
     ])
     def test_the_confirm_rule(self, value, asks) -> None:
         assert ap.needs_confirm(value) is asks
+
+
+def _real_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real card gate, in place of the fixture's fake card (PZ-6b)."""
+    from acb_skills import ask_tools
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _REAL_CONFIRM)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", _REAL_CHANNEL)
+
+
+def _cards_refused() -> Any:
+    from acb_skills import ask_tools
+
+    return ask_tools.refuse_cards()
 
 
 # ── 15. Fix round 2: only the member's TYPED words ground a write (P1-a) ────
@@ -1204,3 +1231,414 @@ def test_a_closed_run_that_never_read_keeps_the_own_chat_reason(monkeypatch) -> 
         assert ap.writes_closed_by_read() is False
     finally:
         ap.release_writes(token)
+
+
+# ── 18. PZ-6b: a conflict is a proposal (§13.3 item 6a) ─────────────────────
+#
+# Mutations this section catches (R7): ``replaces`` writes with no card, a
+# missing id writes a new fact, a deny writes, the PATCH goes to another id,
+# or the Undo line of a replace carries the new text.
+
+MUMBAI = "I work from Mumbai now"
+
+
+class TestReplace:
+    def test_a_missing_id_refuses_and_writes_nothing(self, own_chat) -> None:
+        out = _run(pt.profile_remember(MUMBAI, "work", replaces="f9999"))
+        assert _refused(out, "invalid") == pt.NO_FACT_TO_REPLACE
+        assert own_chat.cards == [] and own_chat.writes() == []
+
+    def test_a_bad_id_refuses_before_any_call(self, own_chat) -> None:
+        out = _run(pt.profile_remember(MUMBAI, "work", replaces="../facts"))
+        assert _refused(out, "invalid") == pt.NO_FACT_TO_REPLACE
+        assert own_chat.requests == []
+
+    def test_an_approve_patches_and_the_undo_restores_the_old_text(self, own_chat) -> None:
+        out = _run(pt.profile_remember(MUMBAI, "work", replaces="f0001"))
+        (card,) = own_chat.cards
+        assert card["title"] == pt.REPLACE_TITLE
+        assert card["context"] == f"Replace «I work from Pune» with «{MUMBAI}»? (work)"
+        assert card["detail"] == f"{pt.ASK_REPLACES} {pt.CONFIRM_CHECK}"
+        (patch,) = own_chat.writes()
+        assert (patch.method, patch.url.path) == (
+            "PATCH", "/auth/me/assistant-profile/facts/f0001")
+        assert json.loads(patch.content) == {"text": MUMBAI, "kind": "work"}
+        assert [f["text"] for f in own_chat.profile["facts"]] == [MUMBAI]
+        undo = _undo_of(out)
+        assert undo == {"v": 1, "op": "patch", "path": "facts/f0001",
+                        "body": {"text": "I work from Pune", "kind": "work"}}
+        assert "Replaced «I work from Pune» with «I work from Mumbai now»." in out
+        _play(own_chat, undo)
+        assert own_chat.profile["facts"] == [
+            {"id": "f0001", "text": "I work from Pune", "kind": "work"}]
+
+    def test_a_deny_writes_nothing(self, own_chat) -> None:
+        own_chat.approve = False
+        out = _run(pt.profile_remember(MUMBAI, "work", replaces="f0001"))
+        assert _refused(out, "declined") == pt.DECLINED_TEXT
+        assert own_chat.writes() == []
+        assert own_chat.profile["facts"][0]["text"] == "I work from Pune"
+
+    def test_one_card_names_every_reason(self, own_chat) -> None:
+        said = "remember I have diabetes and work from billing at acme dot io"
+        with ap.member_typed(said):
+            _run(pt.profile_remember("I have diabetes, billing at acme dot io", "work",
+                                     replaces="f0001"))
+        (card,) = own_chat.cards
+        assert card["detail"] == " ".join(
+            [pt.ASK_ADDRESS, pt.ASK_SENSITIVE, pt.ASK_REPLACES, pt.CONFIRM_CHECK])
+
+    def test_the_new_text_is_still_grounded(self, own_chat) -> None:
+        out = _run(pt.profile_remember("I work from Delhi", "work", replaces="f0001"))
+        assert _status_of(out)["reason"] == "not_your_words"
+        assert own_chat.cards == [] and own_chat.writes() == []
+
+    def test_the_prompt_asks_for_replaces(self) -> None:
+        line = _orchestrator_module()._PROFILE_SWAP[1]
+        assert "pass that fact's id\n  as replaces" in line
+        assert "offer to save that name with profile_alias" in line
+        assert "sensitive=true" in line
+
+
+# ── 19. PZ-6b: a sensitive fact needs a second yes (D-PZ-16) ───────────────
+
+
+class TestSensitive:
+    def test_a_keyword_fact_asks_and_a_deny_writes_nothing(self, own_chat) -> None:
+        own_chat.approve = False
+        with ap.member_typed("remember that I have diabetes"):
+            out = _run(pt.profile_remember("I have diabetes", "about"))
+        assert _refused(out, "declined") == pt.DECLINED_TEXT
+        (card,) = own_chat.cards
+        assert card["detail"] == f"{pt.ASK_SENSITIVE} {pt.CONFIRM_CHECK}"
+        assert card["context"] == "about: I have diabetes"
+        assert own_chat.writes() == []
+
+    def test_an_approve_writes_the_fact(self, own_chat) -> None:
+        with ap.member_typed("remember that I have diabetes"):
+            out = _run(pt.profile_remember("I have diabetes", "about"))
+        assert len(own_chat.cards) == 1
+        (post,) = own_chat.writes()
+        assert json.loads(post.content) == {"text": "I have diabetes", "kind": "about"}
+        assert _undo_of(out)["op"] == "delete"
+
+    def test_the_model_flag_asks_with_no_keyword(self, own_chat) -> None:
+        own_chat.approve = False
+        out = _run(pt.profile_remember("I like tea", "preference", sensitive=True))
+        assert _status_of(out)["reason"] == "declined"
+        assert own_chat.cards[0]["detail"] == f"{pt.ASK_SENSITIVE} {pt.CONFIRM_CHECK}"
+        assert own_chat.writes() == []
+
+    @pytest.mark.parametrize("flag", [False, "false", 0, None])
+    def test_the_model_can_never_take_the_ask_away(self, own_chat, flag) -> None:
+        own_chat.approve = False
+        with ap.member_typed("remember I vote BJP"):
+            _run(pt.profile_remember("I vote BJP", "about", sensitive=flag))
+        assert len(own_chat.cards) == 1 and own_chat.writes() == []
+
+    def test_a_plain_fact_does_not_ask(self, own_chat) -> None:
+        _run(pt.profile_remember("I like tea", "preference"))
+        assert own_chat.cards == []
+        assert len(own_chat.writes()) == 1
+
+    def test_a_sensitive_style_note_asks(self, own_chat) -> None:
+        own_chat.approve = False
+        with ap.member_typed("add a note: I am in therapy on Fridays"):
+            out = _run(pt.profile_set("style", {"notes": ["I am in therapy on Fridays"]}))
+        assert _status_of(out)["reason"] == "declined"
+        assert own_chat.cards[0]["detail"] == f"{pt.ASK_SENSITIVE} {pt.CONFIRM_CHECK}"
+        assert own_chat.writes() == []
+
+    @pytest.mark.parametrize("value,sensitive", [
+        ("I have diabetes", True),
+        ("She is pregnant", True),
+        ("I see a therapist", True),
+        ("I fight depression", True),
+        ("I am Hindu", True),
+        ("I am a MUSLIM", True),
+        ("I am a Christian", True),
+        ("I am Dalit", True),
+        ("I am a Brahmin", True),
+        ("I vote BJP", True),
+        ("I support Congress", True),
+        ("I am gay", True),
+        ("I am lesbian", True),
+        ("My salary is 20 lakh", True),
+        ("I have a home loan", True),
+        ("I am in debt", True),
+        ("My credit score is low", True),
+        ("my credit-score is low", True),
+        ("Check my bank balance", True),
+        ("I like tea", False),
+        ("I take public transport", False),
+        ("A bi-weekly sync", False),
+        ("I work from Pune", False),
+        ("", False),
+    ])
+    def test_the_sensitive_words(self, value, sensitive) -> None:
+        assert ap.is_sensitive(value) is sensitive
+
+
+# ── 20. PZ-6b: the written-out addresses (re-verify P2-1) ──────────────────
+
+
+@pytest.mark.parametrize("value", [
+    "billing at acmepay dot io",
+    "billing [at] acmepay [dot] io",
+    "billing (at) acmepay (dot) io",
+    "billing {at} acmepay",
+    "acme\u3002io",
+    "acme\uff0eio",
+    "acme\uff61io",
+    "acme . io",
+    "пример.рф",
+    "call nine eight four five oh one",
+    "zero one two three four five six",
+])
+def test_each_written_out_address_asks(value) -> None:
+    assert ap.needs_confirm(value) is True
+
+
+@pytest.mark.parametrize("value", [
+    "I am at home. Then I sleep",
+    "one two three four five",
+    "I work at home",
+    "e.g. green tea",
+])
+def test_a_plain_sentence_does_not_ask(value) -> None:
+    assert ap.needs_confirm(value) is False
+
+
+def test_a_written_out_address_asks_in_the_tool(own_chat) -> None:
+    own_chat.approve = False
+    said = "remember invoices go to billing at acmepay dot io"
+    with ap.member_typed(said):
+        out = _run(pt.profile_remember("Invoices go to billing at acmepay dot io", "work"))
+    assert _status_of(out)["reason"] == "declined"
+    assert own_chat.cards[0]["detail"] == pt.CONFIRM_DETAIL
+    assert own_chat.writes() == []
+
+
+# ── 21. PZ-6b: style.language is a short tag with no number (P3) ───────────
+
+
+@pytest.mark.parametrize("tag,ok", [
+    ("en", True), ("en-IN", True), ("zh-Hant", True), ("hi-Latn-IN", True),
+    ("en-12", True), ("en-123", False), ("x-9845012", False), ("en-IN-55501", False),
+])
+def test_a_language_tag_with_a_digit_run_is_refused(tag, ok) -> None:
+    if ok:
+        assert ap._clean_style({"language": tag}) == {"language": tag}
+    else:
+        with pytest.raises(ValueError, match="BCP 47"):
+            ap._clean_style({"language": tag})
+
+
+# ── 22. PZ-6b: WhatsApp asks with the Confirm and Cancel buttons (D-PZ-20) ──
+#
+# Mutations this section catches (R7): the profile act is not parked, the
+# Confirm runs the model's text again, the Confirm grounds the stored value
+# against "Confirm" (and so never writes), a Cancel or a stale tap writes,
+# or the stored arguments write without the card that the member saw.
+
+from types import SimpleNamespace  # noqa: E402
+
+from acb_skills import whatsapp_acts as wacts  # noqa: E402
+from acb_skills import whatsapp_ui as wui  # noqa: E402
+
+REQ = SimpleNamespace(member_email=MEMBER, wa_id="919800000001", chat_session_id="s-1",
+                      message_id="m-1", organization_id="org-1")
+BUTTONS = "wamid.buttons"
+
+
+async def _wa_ask(fn: Any, said: str, **kwargs: Any) -> tuple[str, Any]:
+    """One WhatsApp turn: the model calls *fn* with *kwargs*."""
+    with _cards_refused(), ap.profile_channel("whatsapp", writes=True), \
+            ap.member_typed(said), wui.whatsapp_run("orchestrator", writes=True) as run, \
+            wacts.tool_call(fn, (), kwargs):
+        out = await fn(**kwargs)
+    return out, run.parked
+
+
+@pytest.fixture()
+def wa(own_chat, monkeypatch):
+    """The member's WhatsApp, with the real card gate and the act table."""
+    from gateway.routes.whatsapp_channel import acts
+
+    _real_cards(monkeypatch)
+    table: dict[str, Any] = {"row": None, "closed": []}
+
+    async def _live(req: Any) -> Any:
+        return table["row"]
+
+    async def _close(act_id: str, frm: str, to: str, code: Any) -> bool:
+        table["closed"].append((frm, to, code))
+        return True
+
+    async def _link(wa_id: str, email: str) -> str:
+        return "link-1"
+
+    async def _claim(act_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(acts, "_live_act", _live)
+    monkeypatch.setattr(acts, "_close", _close)
+    monkeypatch.setattr(acts, "_current_link_id", _link)
+    monkeypatch.setattr(acts, "_claim", _claim)
+    own_chat.table = table
+    return own_chat
+
+
+def _row(parked: Any, *, arguments: Any = None, tap_of: str = BUTTONS) -> dict[str, Any]:
+    return {"id": "act-1", "member_email": MEMBER, "link_id": "link-1",
+            "tool_name": parked.tool,
+            "arguments": json.dumps(parked.arguments if arguments is None else arguments),
+            "card_text": parked.card, "live": True, "offered": True,
+            "offered_wamid": BUTTONS, "confirm_code_hash": None, "tap_of": tap_of,
+            "after_offer": True}
+
+
+async def _wa_answer(message: str) -> Any:
+    """The member's next message: no typed words, and the outer run's writes
+    closed, so only the Confirm scope can open them."""
+    from gateway.routes.whatsapp_channel import acts
+
+    token = ap.bind_writes(False)
+    try:
+        with ap.member_typed(""):
+            return await acts.settle(REQ, message)
+    finally:
+        ap.release_writes(token)
+
+
+DIABETES = "remember that I have diabetes"
+
+
+class TestWhatsAppConfirm:
+    def test_a_sensitive_fact_parks_and_writes_nothing(self, wa) -> None:
+        out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                   text="I have diabetes", kind="about"))
+        assert out.splitlines()[0] == (
+            'profile: {"reason":"needs_confirm","status":"pending","v":1}')
+        assert _text(out) == wacts.PARKED_TEXT
+        assert parked.tool == "profile_remember"
+        assert parked.arguments == {"text": "I have diabetes", "kind": "about"}
+        assert "about: I have diabetes" in wacts.summary(parked)
+        assert pt.ASK_SENSITIVE in wacts.summary(parked)
+        assert wa.writes() == []
+
+    def test_confirm_writes_exactly_the_shown_value(self, wa) -> None:
+        _out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                    text="I have diabetes", kind="about"))
+        wa.table["row"] = _row(parked)
+        reply = _run(_wa_answer("Confirm"))
+        (post,) = wa.writes()
+        assert json.loads(post.content) == {"text": "I have diabetes", "kind": "about"}
+        assert post.headers["X-Profile-Via"] == "whatsapp"
+        assert reply == 'Saved: «I have diabetes». Say "undo that" to undo it.'
+        assert wa.table["closed"] == [("running", "done", None)]
+
+    def test_cancel_writes_nothing(self, wa) -> None:
+        from gateway.routes.whatsapp_channel import acts
+
+        _out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                    text="I have diabetes", kind="about"))
+        wa.table["row"] = _row(parked)
+        assert _run(_wa_answer("Cancel")) == acts.REPLY_CANCELLED
+        assert wa.writes() == []
+
+    def test_a_stale_tap_writes_nothing(self, wa) -> None:
+        from gateway.routes.whatsapp_channel import acts
+
+        _out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                    text="I have diabetes", kind="about"))
+        wa.table["row"] = _row(parked, tap_of="wamid.older")
+        assert _run(_wa_answer("Confirm")) == acts.REPLY_STALE
+        assert wa.writes() == []
+
+    def test_other_arguments_than_the_card_write_nothing(self, wa) -> None:
+        """A stored card of one value with the arguments of another (a
+        foreign or tampered act): the card gate says no."""
+        from gateway.routes.whatsapp_channel import acts
+
+        _out, parked = _run(_wa_ask(pt.profile_remember, DIABETES,
+                                    text="I have diabetes", kind="about"))
+        wa.table["row"] = _row(parked, arguments={"text": "I have cancer", "kind": "about"})
+        assert _run(_wa_answer("Confirm")) == acts.REPLY_CHANGED
+        assert wa.writes() == []
+
+    def test_the_confirm_scope_alone_grounds_as_before(self, wa) -> None:
+        """Only the Confirm of a stored act skips the typed words. The scope
+        with no ``confirming`` grounds against "", and refuses."""
+        async def _call_in_scope() -> str:
+            with pt.whatsapp_confirm_scope():
+                return await pt.profile_remember("I have diabetes", "about")
+
+        out = _run(_call_in_scope())
+        assert _status_of(out)["reason"] == "not_your_words"
+        assert wa.writes() == []
+
+    def test_a_pasted_address_parks_instead_of_refusing(self, wa) -> None:
+        out, parked = _run(_wa_ask(pt.profile_remember, PASTED,
+                                   text=PASTED_VALUE, kind="work"))
+        assert _status_of(out)["status"] == "pending"
+        assert parked is not None and parked.context == f"work: {PASTED_VALUE}"
+        wa.table["row"] = _row(parked)
+        _run(_wa_answer("Confirm"))
+        (post,) = wa.writes()
+        assert json.loads(post.content) == {"text": PASTED_VALUE, "kind": "work"}
+
+    def test_an_alias_parks_and_confirm_saves_it(self, wa) -> None:
+        out, parked = _run(_wa_ask(pt.profile_alias, WORDS,
+                                   alias="Sam", email="sam@alpha.example"))
+        assert _status_of(out)["status"] == "pending" and wa.writes() == []
+        wa.table["row"] = _row(parked)
+        reply = _run(_wa_answer("Confirm"))
+        (post,) = wa.writes()
+        assert json.loads(post.content) == {"alias": "Sam", "email": "sam@alpha.example"}
+        assert "profile_" not in reply and "undo:" not in reply
+
+    def test_a_replace_parks_and_confirm_patches(self, wa) -> None:
+        _out, parked = _run(_wa_ask(pt.profile_remember, WORDS, text=MUMBAI, kind="work",
+                                    replaces="f0001"))
+        assert parked.title == pt.REPLACE_TITLE
+        wa.table["row"] = _row(parked)
+        _run(_wa_answer("Confirm"))
+        (patch,) = wa.writes()
+        assert patch.method == "PATCH" and patch.url.path.endswith("/facts/f0001")
+        assert json.loads(patch.content) == {"text": MUMBAI, "kind": "work"}
+
+    def test_a_fact_changed_before_confirm_writes_nothing(self, wa) -> None:
+        from gateway.routes.whatsapp_channel import acts
+
+        _out, parked = _run(_wa_ask(pt.profile_remember, WORDS, text=MUMBAI, kind="work",
+                                    replaces="f0001"))
+        wa.profile["facts"][0]["text"] = "I work from Chennai"
+        wa.table["row"] = _row(parked)
+        assert _run(_wa_answer("Confirm")) == acts.REPLY_CHANGED
+        assert wa.writes() == []
+
+    def test_a_second_act_in_one_run_refuses(self, wa) -> None:
+        async def _two() -> tuple[str, str]:
+            with _cards_refused(), ap.profile_channel("whatsapp", writes=True), \
+                    ap.member_typed(WORDS), wui.whatsapp_run("orchestrator", writes=True):
+                with wacts.tool_call(pt.profile_alias, (), {"alias": "Sam",
+                                                             "email": "sam@alpha.example"}):
+                    one = await pt.profile_alias(alias="Sam", email="sam@alpha.example")
+                with wacts.tool_call(pt.profile_alias, (), {"alias": "raj",
+                                                             "email": "raj.k@alpha.example"}):
+                    two = await pt.profile_alias(alias="raj", email="raj.k@alpha.example")
+            return one, two
+
+        one, two = _run(_two())
+        assert _status_of(one)["status"] == "pending"
+        assert _refused(two, "needs_confirm") == pt.NEEDS_CONFIRM_WHATSAPP
+
+    def test_only_the_three_asking_writes_can_park(self) -> None:
+        from gateway.routes.whatsapp_channel import acts
+
+        assert set(wacts.PROFILE_ACTS) == {"profile_remember", "profile_set", "profile_alias"}
+        assert acts.act_function("profile_remember") is pt.profile_remember
+        assert acts.act_function("profile_forget") is None
+        assert acts.act_function("profile_undo") is None
+        assert wacts.act_module("create_task") == "skill_projects.writes"

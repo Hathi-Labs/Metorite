@@ -263,8 +263,8 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  When a new fact contradicts a saved fact that you see, pass that fact's id\n"
     "  as replaces. Pass sensitive=true for a fact about health, religion, caste,\n"
     "  politics, sexuality or money. Such a change asks the member once first.\n"
-    "  When resolve_person lists several people and the member picks one, offer to\n"
-    "  save that name with profile_alias.\n",
+    "  When a colleague lookup lists several people and the member picks one,\n"
+    "  offer to save that name with profile_alias.\n",
 )
 
 
