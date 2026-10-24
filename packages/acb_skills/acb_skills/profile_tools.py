@@ -137,7 +137,8 @@ def clean(value: Any, cap: int = NAME_CAP) -> str:
     )
     for mark in ("«", "»", "<", ">"):
         text = text.replace(mark, "")
-    return " ".join(text.split())[:cap].strip()
+    # One name, cut as text. Not a list of rows (test_read_tool_paging.py).
+    return " ".join(text.split()).strip()[:cap].rstrip()
 
 
 def format_answer(body: Any, asked: str) -> str:
@@ -160,7 +161,9 @@ def format_answer(body: Any, asked: str) -> str:
         lines.append(f"Match: «{name}» <{email}> (source: {source})")
         return "\n".join(lines)
     lines.append(f"Several people match «{clean(asked)}». Ask which, never guess:")
-    lines += [f"- «{n}» <{e}>" for n, e in people[:LIST_CAP]]
+    # At most five names. The line after them says how many more there are,
+    # so no person drops in silence.
+    lines += [f"- «{n}» <{e}>" for i, (n, e) in enumerate(people) if i < LIST_CAP]
     if total > LIST_CAP:
         lines.append(f"and {total - LIST_CAP} more")
     return "\n".join(lines)
