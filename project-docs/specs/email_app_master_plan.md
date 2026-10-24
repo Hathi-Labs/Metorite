@@ -20954,8 +20954,7 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
   `send_email` refuses `reply_to_email_id` and `reply_all` at call time
   (`egress.HELD_REFUSED_PARAMS`). A file of a new mail is an `attachments` entry of the
   form `attachment:<id>`.
-- This build refuses a Metorite file (21.3, the Attach row). The section does not
-  name the store that owns such a file, so the owner must decide it.
+- A Metorite file is a row since 2026-10-24. Section 21.11 names the three stores.
 - `digest_categories` is a list of free names, so the build refuses it as free text.
 - An unticked recipient of a saved draft leaves the draft first, through the draft save of
   `edit_draft`. The send then checks `expect` against the ticked set.
@@ -21006,6 +21005,44 @@ a Latin a, shows on a card as the letter it imitates. The same gap is on `main`.
 The lookalike flag covers the domain of a new address only. A body or a subject
 with such a letter still sends.
 
+### 21.11 Metorite files and the reply ticks (2026-10-24)
+
+**Status: BUILT on the branch `email-outward-acts`, not merged.** The owner decided
+H-392 on 2026-10-24.
+
+**The stores of a Metorite file.** A chat attaches a file that the member can
+already see. Three stores own such a file. Each reference names its store.
+
+| Reference | Store | The read, as the member |
+|---|---|---|
+| `artifact:<agent>:<path>` | The member's own workspace of that agent, as the Artifacts app shows it | `send.load_artifact_attachments` |
+| `knowledge:<page id>` | A Knowledge page, sent as its Markdown | `knowledge.core.load_page`, behind `KNOWLEDGE_ENABLED` and `feature:knowledge` |
+| `task-file:<attachment id>` | A file on a task | `projects.attachments.visible_task_attachment`, behind `feature:projects` |
+
+- The resolver is `gateway/routes/email/transport/metorite_files.py`. It adds no
+  access path. A file that the member cannot see answers 404.
+- No export route makes a PDF of a page, so a page goes as Markdown.
+- The card names each file and its size. The send carries the SHA-256 of the
+  bytes that the card named. A file that changed after the card answers 409.
+- The files of one send keep the cap of a held send, 20 MB together.
+- A held chat sends a Metorite file only as a row of the recorded held card. The act
+  reads the file again and checks the digest.
+- A held chat refuses a file of the `email-assistant` workspace, because the
+  held run can write there.
+
+**The tick boxes of the reply card.** Each To and Cc on the reply card has a
+tick box. The gateway stays the only source of the lists.
+
+- `POST /email/reply-card/act` takes only a subset of the list of the chosen
+  choice. An added address, or an address named twice, answers 409.
+- The mail goes to exactly the ticked people. The draft in Drafts holds the
+  same people.
+- In a held chat with `EMAIL_HELD_CARD_SEND` on, the card opens on Reply all
+  (22.6). Each `new` address starts unticked. This replaces the answer to open
+  question 1, which opened the card on Reply.
+- With the switch off, a held chat keeps Reply, as before. Outside a held chat,
+  each person starts ticked. The card shows the count, such as "Sends to 3 of 5".
+
 **The fences.**
 
 | Rule | Fence |
@@ -21026,11 +21063,14 @@ with such a letter still sends.
 | The seal of the text | `tests/unit/test_held_text_seal.py` |
 | Hidden text in a draft | `tests/unit/test_held_hidden_text.py` |
 | A card never shows less than the send | `tests/unit/test_held_card_shows_less.py` |
+| A Metorite file, as the member (21.11) | `tests/unit/test_email_metorite_files.py` |
+| The tick boxes of the reply card (21.11) | `tests/unit/test_email_chat_reply.py`, `workbench/control_plane/src/lib/replyCard.test.ts`, `workbench/control_plane/e2e/email-chat-reply.spec.ts` |
 
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 
-**Status: BUILT on the branch `email-chat-parity-w1`, not merged.** No migration, no flag,
-and no new route. The agent tools call the routes that the Email app already uses.
+**Status: wave 1 BUILT on the branch `email-chat-parity-w1`. Wave 2 BUILT on the branch
+`email-outward-acts`, not merged (22.7).** Wave 1 adds no migration, no flag and no new
+route. The agent tools call the routes that the Email app already uses.
 
 **Origin:** owner, 2026-10-23. The member must control each part of the email app from the
 chat, the rules and the cleaner included. Wave 1 keeps all mail inside the member's own
@@ -21137,7 +21177,44 @@ member is on the mail. Else it is Reply.
 - Fence: `tests/unit/test_email_chat_reply.py`, `test_auto_reply_all_*` and the card route
   tests.
 
-**Not built: the held chat.** A held reply card still opens on Reply when Reply all adds a
-new address (section 21). The reply card has no tick boxes. It only marks a new address.
-So the plan to let unticked boxes carry the safety does not hold for this card. The owner
-must decide whether to add tick boxes to the reply card first.
+**The held chat.** The owner added tick boxes to the reply card on 2026-10-24 (21.11). A
+held reply card with the switch on opens on Reply all, and each new address starts
+unticked.
+
+### 22.7 Wave 2: the acts that send out (2026-10-24)
+
+**Status: BUILT on the branch `email-outward-acts`, not merged.** It closes H-404. Each act
+changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
+
+| Act | Tool | The check |
+|---|---|---|
+| A rule that forwards, replies to an address or calls a webhook | `create_rule`, `update_rule` (`actions`) | The outward card names each address and the whole URL. Its detail names the host and the path |
+| Cc and Bcc on a rule action | `cc_address`, `bcc_address` | `_address_problem`. The engine now puts each one on the draft |
+| A webhook host | `url` | `_url_problem`, then `acb_common.public_address`. A private, loopback, link-local or unknown host saves nothing |
+| A forward to an own mailbox | `to_address`, `cc_address`, `bcc_address` | Refused, as the rule copy refuses it (D-EM-29) |
+| Unsubscribe from several senders | `unsubscribe_sender` (`emails`) | One card lists each sender and the host or the address of its link |
+| The morning brief | `update_assistant_settings` (`morning_brief_enabled`) | The settings card |
+| The organization domains | `update_assistant_settings` (`org_domains`) | The settings card. A wildcard, a public webmail domain and a non-domain are refused |
+
+**The held chat.**
+
+- Each outward rule act is refused, as before (`_held_in_no_egress`).
+- An unsubscribe of several senders goes through one held card. The gateway records the
+  sender, the host and the hash of each link. It checks each ticked sender before the first
+  request goes.
+- `org_domains` is refused always. It decides who counts as the organization.
+- `morning_brief_enabled` is a closed key behind the held card while the switch is on. The
+  brief goes only to the member's own address, which the server picks. With the switch off,
+  a held chat does not hold the tool. `digest_send_to_email` stays refused, as 21.6 says.
+
+**The pin changes.**
+
+| Pin | Change | Reason |
+|---|---|---|
+| `HELD_CARD_SEND_TOOLS["unsubscribe_sender"]` | adds `emails` | Several senders, one row each, with the same three checks |
+| `HELD_CARD_SEND_TOOLS["update_assistant_settings"]` | adds `morning_brief_enabled`, `org_domains` | Each has a row in `held_card.HELD_SETTING_DECISIONS` |
+
+**The fences.** `tests/unit/test_email_chat_parity.py`, `tests/unit/test_email_rule_confirm.py`,
+`tests/unit/test_email_rules_engine.py`, `tests/unit/test_email_send_cards.py`,
+`tests/unit/test_held_unsubscribe.py`, `tests/unit/test_held_settings.py`,
+`tests/unit/test_email_agent_write_cards.py` and `tests/unit/test_egress_card_bound_pin.py`.
