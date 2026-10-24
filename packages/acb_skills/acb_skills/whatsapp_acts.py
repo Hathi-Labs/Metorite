@@ -105,6 +105,8 @@ class ToolCall:
     #: Arguments that the Confirm run takes in place of the model's own
     #: (:func:`pin_arguments`): the text that the card showed, for example.
     pins: dict[str, Any] | None = None
+    #: Why an email card of this call did not park (H-391), or "".
+    refused_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -551,15 +553,29 @@ EMAIL_WAITING_TEXT = (
 )
 
 
+#: What an email tool tells the model when its card is too long to show
+#: whole on WhatsApp. A summary never shows less than the act sends.
+EMAIL_TOO_LONG_TEXT = (
+    "Nothing was sent or changed. The card of this act is too long to show "
+    "whole on WhatsApp, and a summary never shows less than the act sends. "
+    "Offer to shorten the text, and show the act again."
+)
+
+
 def waiting_line() -> str | None:
-    """:data:`EMAIL_WAITING_TEXT` for an email act of a WhatsApp run with
-    writes on, when another act of the run already waits. Else None."""
+    """Why the email card of this call did not park, or None.
+
+    :data:`EMAIL_TOO_LONG_TEXT` for a card that the gate had to cut, and
+    :data:`EMAIL_WAITING_TEXT` when another act of the run already waits.
+    Only for an email act of a WhatsApp run with writes on."""
     run = current_run()
     call = _CALL.get()
-    if (run is None or not run.writes or run.parked is None or call is None
-            or call.parked or call.name not in EMAIL_ACTS or call.agent != EMAIL_AGENT):
+    if (run is None or not run.writes or call is None or call.parked
+            or call.name not in EMAIL_ACTS or call.agent != EMAIL_AGENT):
         return None
-    return EMAIL_WAITING_TEXT
+    if call.refused_text:
+        return call.refused_text
+    return EMAIL_WAITING_TEXT if run.parked is not None else None
 
 
 def pin_arguments(**pins: Any) -> None:
@@ -933,7 +949,8 @@ def _not_yet(rows: Any, reply: Any, with_answer: bool) -> Any:
 async def answer_email_card(title: str, detail: str, context: str,
                             rows: list[dict[str, Any]] | None,
                             reply: dict[str, Any] | None,
-                            request_id: str | None, with_answer: bool) -> Any:
+                            request_id: str | None, with_answer: bool,
+                            cut: bool = False) -> Any:
     """The WhatsApp answer to an email card, or :data:`NOT_EMAIL`.
 
     * Inside :func:`approving_email`: the yes for the FIRST card whose text
@@ -942,6 +959,10 @@ async def answer_email_card(title: str, detail: str, context: str,
       the email assistant calls: park the card (one act a run) and give no
       approval.
     * Else :data:`NOT_EMAIL`, and the card gate goes on as before.
+
+    *cut* is True when the gate cut the title, the detail or the context of
+    the card. Such a card never parks, because its summary would show less
+    than the act sends (:data:`EMAIL_TOO_LONG_TEXT`).
     """
     call = _CALL.get()
     facts = call.facts if call is not None else None
@@ -959,6 +980,9 @@ async def answer_email_card(title: str, detail: str, context: str,
     if reply is not None and not str(reply.get("body") or "").strip():
         # A reply with no text has nothing to approve: no summary, no code.
         return NOT_EMAIL
+    if cut:
+        call.refused_text = EMAIL_TOO_LONG_TEXT
+        return _not_yet(rows, reply, with_answer)
     arguments = _stored_arguments({**call.arguments, **(call.pins or {})})
     if arguments is None:
         return NOT_EMAIL
