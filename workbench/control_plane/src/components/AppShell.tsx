@@ -84,7 +84,7 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 import { LiveDock } from "@/app/notes/components/LiveDock";
 import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
 import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
-import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
+import { projectsMenuEvent, projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
@@ -759,7 +759,12 @@ function MobileBottomNavInner({
     <>
     <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
         <button
-          onClick={() => { open(menuContent); }}
+          onClick={() => {
+            // WS-64 OP-4: with My work live, Menu on /projects opens the tree.
+            const menuEvent = isProjectsPage ? projectsMenuEvent(myWorkEnabled()) : null;
+            if (menuEvent) dispatchNav(menuEvent);
+            else open(menuContent);
+          }}
           className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
             isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
           }`}

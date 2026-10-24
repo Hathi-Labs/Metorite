@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { projectsPhoneTabs } from "./phoneTabs";
+import { projectsMenuEvent, projectsPhoneTabs } from "./phoneTabs";
 import { tasksLink, tasksRedirectTarget } from "./tasksRedirect";
 
 describe("tasksRedirectTarget, flag on", () => {
@@ -65,16 +65,17 @@ describe("tasksLink", () => {
 });
 
 describe("projectsPhoneTabs", () => {
-  it("flag off: the bar is Projects, Views, Search", () => {
+  it("flag off: Projects, Views, Search, and Menu opens the drawer", () => {
     expect(projectsPhoneTabs(false).map((t) => [t.label, t.event])).toEqual([
       ["Projects", "projects-tree"],
       ["Views", "projects-views"],
       ["Search", "projects-search"],
     ]);
+    expect(projectsMenuEvent(false)).toBeNull();
   });
-  it("flag on: Menu, My work, Capture, Search (Ask is the shell's)", () => {
+  it("flag on: Menu fires the tree, then My work, Capture, Search (Ask is the shell's)", () => {
+    expect(projectsMenuEvent(true)).toBe("projects-tree");
     expect(projectsPhoneTabs(true).map((t) => [t.label, t.event])).toEqual([
-      ["Menu", "projects-tree"],
       ["My work", "projects-mywork"],
       ["Capture", "projects-capture"],
       ["Search", "projects-search"],
@@ -87,6 +88,7 @@ describe("projectsPhoneTabs", () => {
       for (const tab of projectsPhoneTabs(flag)) {
         expect(page, tab.event).toContain(`"${tab.event}"`);
       }
+      expect(page).toContain(`"${projectsMenuEvent(true)}"`);
     }
     const shell = fs.readFileSync(path.join(root, "components", "AppShell.tsx"), "utf-8");
     expect(shell).toContain("projectsPhoneTabs(myWorkEnabled())");

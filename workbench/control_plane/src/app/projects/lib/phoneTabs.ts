@@ -1,11 +1,15 @@
 /**
- * The tabs of the phone bar on `/projects`, before the Ask tab that the shell
- * adds at the right end (WS-64 OP-4, `one_projects_app.md` §9 OP-4 item 1).
+ * The tabs of the phone bar on `/projects` (WS-64 OP-4,
+ * `one_projects_app.md` §9 OP-4 item 1).
  *
- * Flag off: Projects, Views, Search, exactly as before. Flag on: Menu, My work,
- * Capture, Search. Each `event` is the detail of a `cc-mobile-nav` event that
- * `app/projects/page.tsx` answers. The first entry is always the tree.
- * Fence: `phoneTabs.test.ts`.
+ * The shell draws the first tab of every bar, "Menu", and the Ask tab at the
+ * right end. This list is what the Projects branch draws between them.
+ *
+ * Flag off: Projects, Views, Search, exactly as before, and "Menu" opens the
+ * shell drawer. Flag on: My work, Capture, Search, and "Menu" fires
+ * `projects-tree` (`projectsMenuEvent`), so the bar reads Menu, My work,
+ * Capture, Search, Ask. Each `event` is the detail of a `cc-mobile-nav` event
+ * that `app/projects/page.tsx` answers. Fence: `tasksRedirect.test.ts`.
  */
 
 export interface ProjectsPhoneTab {
@@ -14,6 +18,11 @@ export interface ProjectsPhoneTab {
   icon: string;
   /** Drawn in the primary colour, like Capture on `/tasks`. */
   accent?: boolean;
+}
+
+/** The event the shell's own "Menu" tab fires on `/projects`, or null for the drawer. */
+export function projectsMenuEvent(myWork: boolean): string | null {
+  return myWork ? "projects-tree" : null;
 }
 
 export function projectsPhoneTabs(myWork: boolean): ProjectsPhoneTab[] {
@@ -25,7 +34,6 @@ export function projectsPhoneTabs(myWork: boolean): ProjectsPhoneTab[] {
     ];
   }
   return [
-    { event: "projects-tree", label: "Menu", icon: "FolderKanban" },
     { event: "projects-mywork", label: "My work", icon: "CalendarDays" },
     { event: "projects-capture", label: "Capture", icon: "Plus", accent: true },
     { event: "projects-search", label: "Search", icon: "Search" },

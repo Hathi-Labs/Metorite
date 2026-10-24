@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-4 and OP-5 are not built. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`).
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag. The nav flip of OP-4 is NOT done, and it is the owner's PR. OP-5 is not built. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`).
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -662,6 +662,19 @@ is not in `/projects/tree`. Its URL and My Tasks still reach it. OP-3 shows
 the Personal space, and that closes the gap.
 
 ### OP-4 — capture, the tab bar, and the redirect · MEDIUM · OWNER-GATE for the nav
+
+**Status: BUILT 2026-10-24 (task #298, branch `ws64-op4-tabbar-redirect-mt-b20534fd`), dark behind `NEXT_PUBLIC_PROJECTS_MY_WORK`. The nav flip is NOT done. It is the owner's PR.**
+Done: the tab bar (`phoneTabs.ts`), the page listeners for `projects-mywork` and
+`projects-capture`, the `?do=capture` read once, the client redirect in
+`app/tasks/page.tsx` (`tasksRedirectTarget`), and the repointed links
+(`email/page.tsx`, `TaskCaptureModal.tsx`, `TaskToolCards.tsx`, `commands.ts`,
+`centers.ts`, `runActivity.ts`). Not done: the `nav.ts` entry, `nav.test.ts` and
+`launch_surface.md` §2. Two points the build settled. The shell draws the first
+tab of every bar, "Menu", so with the flag on that tab fires `projects-tree` on
+`/projects` and the Projects branch draws My work, Capture and Search. Capture
+opens the Inbox and sets the store's capture flag, so no second capture host
+exists. `shell/search.py` keeps its `/tasks` scope key, because it is a scope
+token and not a link. Any other `?do=` (the `open-chat` job) stays on `/tasks`.
 
 **Scope.** Builds after OP-2, dark behind the same flag.
 
