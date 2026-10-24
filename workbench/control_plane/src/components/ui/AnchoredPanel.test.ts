@@ -53,6 +53,29 @@ describe("panelBox / panelStyle", () => {
     expect(above.top).toBe(8);
   });
 
+  // Metorite #412 (2026-10-25). The CANCELLED ⓘ at the bottom of the
+  // Statuses dialog opened its 120px tip at the TOP of the dialog: a flipped
+  // panel took its `top` from the most it MAY be (`InfoTip`'s 480), not its
+  // real height. A flipped panel now hangs from its bottom edge, 2px above
+  // the anchor, whatever its height turns out to be.
+  it("a flipped panel hangs from its bottom edge, right on the anchor", () => {
+    const icon = { ...rect, top: 790, bottom: 806 };
+    for (const maxHeight of [120, 480]) {
+      const box = panelBox(icon, viewport, maxHeight);
+      expect(box.bottom).toBe(900 - 790 + 2);
+      const style = panelStyle(box, "start", maxHeight);
+      expect(style.bottom).toBe(900 - 790 + 2);
+      expect(style).not.toHaveProperty("top");
+      expect(style.maxHeight).toBe(maxHeight);
+    }
+  });
+
+  it("a panel that opens below has no bottom", () => {
+    const box = panelBox(rect, viewport, 256);
+    expect(box.bottom).toBeNull();
+    expect(panelStyle(box, "start", 256)).not.toHaveProperty("bottom");
+  });
+
   it("the component's own default is start", () => {
     const src = readFileSync(resolve(__dirname, "AnchoredPanel.tsx"), "utf-8");
     expect(src).toMatch(/align = "start",/);
