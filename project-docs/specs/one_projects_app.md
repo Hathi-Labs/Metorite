@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-2 to OP-5, OP-6d and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-2 to OP-5 and OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -320,14 +320,14 @@ authority: the route still checks the member's own access.
 | Nudge | `POST /projects/tasks/{id}/nudge` | One tool behind a card, because it reaches a colleague. **BUILT in OP-6c** as `nudge_task` |
 | Export | `GET /projects/export/tasks.csv` | One tool. The file comes back as a chat document (S8). **BUILT in OP-6c** as `export_tasks` |
 | Attachments | `POST /projects/tasks/{id}/attachments` | One tool that attaches a file the member uploaded to the chat (H-229). **BUILT in OP-6c** as `attach_to_task` |
-| Report delivery | recipients and schedule | Tools behind a card. The send switch `PROJECT_REPORT_EMAIL_ENABLED` stays the owner's (§3a rule 3) |
+| Report delivery | recipients and schedule | Four tools: `report_recipients` (a read) and three writes behind a card. **BUILT in OP-6d.** The send switch stays the owner's (§3a rule 3), and no tool reads it or sets it |
 | Agent runs | the eight `PLANNED` tools | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
 | Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
 | Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
 
 `tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 27
-routes that stay class X, and it names the 4 routes that OP-6d still owes.
+routes that stay class X. Its list of pending routes is empty since OP-6d.
 
 ---
 
@@ -677,12 +677,39 @@ Invert the D-PM-40 sentence in `agent-projects/instructions.md` and its pin in
 - Fences: `test_projects_nudge_attach_tools.py`, `test_projects_nudge_attach_r8.py`,
   `test_projects_chat_x_pin.py` and eval cases PO-15 to PO-17.
 
-#### OP-6d — report recipients and schedule · HIGH-adjacent
+#### OP-6d — report recipients and schedule · HIGH-adjacent · BUILT 2026-10-24
 
 Tools for the four recipient and schedule routes, each behind a class C card.
 They never touch `PROJECT_REPORT_EMAIL_ENABLED`, which stays the owner's
 (§3a rule 3). A recipient is a person outside the chat, so the card names the
 address.
+
+**What was built.**
+
+- `report_recipients` is class A in `reads.py`. It lists each address with the
+  directory name, the schedule, and a line that says the member may not change
+  the list where `can_edit` is false.
+- `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`
+  are class C in `guarded.py`, one card each. The add card names the address,
+  the name, the report and its schedule. The schedule card names the report,
+  "every week" and the people on the list. A tool refuses before its card where
+  `GET /projects/reports/{id}` says `can_edit` false, in the words of
+  `reports.CHANGE_REFUSED`. That flag existed (WS-27bn R5d), so no gateway
+  change was needed. The route still decides, and its 403 and 422 come back as
+  text (the author or an admin, and a known directory member only).
+- The tools read the report and the list before the card, so a person already on
+  the list, a stranger, a schedule already in the state asked, and a schedule with
+  nobody on the list each get one sentence and no card.
+- **Delivery.** No read of the deployment switch exists before the write, so
+  every card says "Delivery may be switched off". The schedule receipt reads
+  `delivery_armed_on_this_deployment`, which the schedule route answers and the
+  Reports app shows. It says "Reports are not emailed yet: delivery is switched
+  off." when that field is false. No file of the skill, the agent or its
+  instructions names the switch.
+- Fences: `test_projects_report_delivery_tools.py` (the unit half and the grep
+  fence on the switch), `test_projects_report_delivery_r8.py` (the real routes,
+  with the SMTP door shut), `test_projects_chat_x_pin.py` (the four routes left
+  class X, and `PENDING_OP6` is empty), and eval cases PO-21 to PO-25.
 
 #### OP-6e — agent runs in the chat · MEDIUM
 

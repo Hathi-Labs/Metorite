@@ -75,6 +75,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   rebalance: { icon: "Scale", label: "Rebalance" },
   find_conflicts: { icon: "TriangleAlert", label: "Conflicts" },
   report_list: { icon: "FileText", label: "Reports" },
+  report_recipients: { icon: "Users", label: "Report recipients" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
   // The overlay line is the point of this read, and a list card drops it.
@@ -117,6 +118,7 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
   team_capacity: { app: "reports", label: "Open Reports" },
   find_conflicts: { app: "reports", label: "Open Reports" },
   report_list: { app: "reports", label: "Open Reports" },
+  report_recipients: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },
   status_report: { app: "reports", label: "Open Reports" },
@@ -188,6 +190,9 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   attach_to_task: { icon: "Paperclip", label: "File attached" },
   grant_access: { icon: "UserPlus", label: "Access given" },
   revoke_access: { icon: "UserMinus", label: "Access removed" },
+  add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
+  remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
+  set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
   delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
@@ -288,6 +293,9 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "add_report_recipient",
+  "remove_report_recipient",
+  "set_report_schedule",
 ]);
 
 /**

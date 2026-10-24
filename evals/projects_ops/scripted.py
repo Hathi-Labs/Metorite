@@ -236,6 +236,55 @@ def _po20(ds: Dataset) -> list[Step]:
     ]
 
 
+def _weekly() -> str:
+    return ds_mod.ident("report", ds_mod.REPORT_WEEKLY)
+
+
+def _po21(_ds: Dataset) -> list[Step]:
+    return [
+        tool("report_list"),
+        tool("report_recipients", report_id=_weekly()),
+        ("text", "Only Asha Iyer receives «Weekly delivery» now."),
+    ]
+
+
+def _po22(_ds: Dataset) -> list[Step]:
+    return [
+        tool("report_recipients", report_id=_weekly()),
+        tool("add_report_recipient", report_id=_weekly(), recipient="Priya Menon"),
+        ("text", "Priya Menon is on the list of «Weekly delivery». Delivery may be "
+                 "switched off, so nothing is emailed yet."),
+    ]
+
+
+def _po23(_ds: Dataset) -> list[Step]:
+    return [
+        tool("report_recipients", report_id=_weekly()),
+        tool("remove_report_recipient", report_id=_weekly(), recipient=ds_mod.MEMBER.email),
+        ("text", "You are off the list of «Weekly delivery»."),
+    ]
+
+
+def _po24(_ds: Dataset) -> list[Step]:
+    return [
+        tool("report_recipients", report_id=_weekly()),
+        tool("set_report_schedule", report_id=_weekly(), enabled=True),
+        ("text", "The schedule of «Weekly delivery» is on. Reports are not emailed yet: "
+                 "delivery is switched off, and the owner decides when."),
+    ]
+
+
+def _po25(_ds: Dataset) -> list[Step]:
+    from gateway.routes.projects.reports import CHANGE_REFUSED
+
+    return [
+        tool("report_list"),
+        tool("set_report_schedule", report_id=ds_mod.ident("report", ds_mod.REPORT_BOARD),
+             enabled=True),
+        ("text", f"I did not change «Board pack». The server said: {CHANGE_REFUSED}"),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -256,6 +305,11 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-18": _po18,
     "PO-19": _po19,
     "PO-20": _po20,
+    "PO-21": _po21,
+    "PO-22": _po22,
+    "PO-23": _po23,
+    "PO-24": _po24,
+    "PO-25": _po25,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

@@ -296,6 +296,9 @@ _BASE: dict[str, dict[str, Any]] = {
     "attach_to_task": {"task_id": UUID, "file_name": "brief.pdf"},
     # WS-64 OP-6b: one grant, for the whole organization.
     "grant_access": {"project_id": UUID},
+    # WS-64 OP-6d: the report is the one of the write fence.
+    "add_report_recipient": {"report_id": UUID},
+    "set_report_schedule": {"report_id": UUID},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
     "complete": {"task_id": UUID},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
@@ -354,6 +357,8 @@ _BASE: dict[str, dict[str, Any]] = {
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
     "subject": "org",
+    "recipient": "priya@x.io",
+    "enabled": True,
     "assignee": "priya@x.io",
     "assignees": "priya@x.io",
     "assignees_add": "Priya",
