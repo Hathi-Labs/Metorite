@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader in the gateway of the six settings below.
+This module is the ONE reader in the gateway of the eight settings below.
 Nothing else in the gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
@@ -25,6 +25,14 @@ Nothing else in the gateway reads them.
   ``search_company`` reads with no Knowledge hit write a ``kb_gaps`` row, in
   the grammar of ``KNOWLEDGE_ORGS``. Empty, the default, means no
   organization. It also opens the gap routes and the ``kb_gap`` card.
+* ``KNOWLEDGE_SOURCES`` (KC-1a, ``knowledge_curation.md`` §17) — the
+  organization ids that may connect a company file source, in the same
+  grammar. Empty, the default, means no organization: every
+  ``/knowledge/sources`` route answers 404.
+* ``KNOWLEDGE_SOURCE_GOOGLE`` (KC-1a) — the organization ids that may connect
+  Google Drive, in the same grammar. It needs ``KNOWLEDGE_SOURCES`` too.
+  Empty, the default, means no organization: the Drive connect and callback
+  answer 404.
 
 :func:`require_knowledge_enabled` is the first router dependency in
 ``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
@@ -153,6 +161,52 @@ async def require_knowledge_gaps(
     ``user.organization_id`` and nothing else from the request.
     """
     if not knowledge_gaps_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _named(raw: object, organization_id: str | None) -> bool:
+    """True when Knowledge serves the org AND the list *raw* names it or ``*``."""
+    if not knowledge_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = _parse_orgs(str(raw or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def knowledge_sources_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SOURCES`` names the organization (KC-1a).
+
+    False means a 404 on each ``/knowledge/sources`` route. No organization is
+    false, also with ``*``.
+    """
+    return _named(get_settings().knowledge_sources, organization_id)
+
+
+def knowledge_source_google_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SOURCES`` AND ``KNOWLEDGE_SOURCE_GOOGLE`` name the org.
+
+    False means a 404 on the Google Drive connect and callback.
+    """
+    return knowledge_sources_allowed(organization_id) and _named(
+        get_settings().knowledge_source_google, organization_id)
+
+
+async def require_knowledge_sources(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless ``KNOWLEDGE_SOURCES`` names the caller's organization (KC-1a).
+
+    It reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not knowledge_sources_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_knowledge_source_google(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless both source flags name the caller's organization (KC-1a)."""
+    if not knowledge_source_google_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail="Not Found")
 
 

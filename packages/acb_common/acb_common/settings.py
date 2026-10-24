@@ -470,6 +470,20 @@ class Settings(BaseSettings):
     # org is the owner's, gate `enforcement-flip`.
     # Fence: tests/unit/test_kb_gaps.py.
     knowledge_gaps: str = ""
+    # WS-61 KC-1a (knowledge_curation.md §17). The organization ids that may
+    # connect a company file source, in the grammar of `knowledge_orgs`. `*`
+    # is each org. Empty, the default, means no organization: every
+    # `/knowledge/sources` route answers 404. The one reader is
+    # `gateway.routes.knowledge.flags`. A flip on production is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_sources: str = ""
+    # WS-61 KC-1a (knowledge_curation.md §17 and §21 Q1). The organization
+    # ids that may connect Google Drive, in the same grammar. It needs
+    # `knowledge_sources` too. Empty, the default, means no organization: the
+    # Drive connect and callback answer 404. `drive.readonly` is a restricted
+    # Google scope, so outside the test users a flip waits for the Google
+    # verification. A flip is the owner's. Fence: tests/unit/test_kb_flags.py.
+    knowledge_source_google: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""

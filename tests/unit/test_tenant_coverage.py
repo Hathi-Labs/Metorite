@@ -292,13 +292,16 @@ def test_the_fill_rank_table_is_tenant_scoped() -> None:
 @pytest.mark.parametrize(
     "table",
     ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
-     "kb_chunks", "kb_favorites", "kb_page_proposals", "kb_gaps"],
+     "kb_chunks", "kb_favorites", "kb_page_proposals", "kb_gaps",
+     "kb_sources", "kb_source_nodes"],
 )
 def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
-    """WS-61 KB-1, KB-3, KB-2f, KB-5a and KB-9a (``knowledge_base.md`` §6.1,
-    §8.4, §12, §14 and §21.7). The spaces, grants, pages, versions, links, the
-    chunks of the index, the favourites of a member, the proposed edits of
-    the assistant and the questions that Knowledge could not answer hold what
+    """WS-61 KB-1, KB-3, KB-2f, KB-5a, KB-9a and KC-1a (``knowledge_base.md``
+    §6.1, §8.4, §12, §14 and §21.7, ``knowledge_curation.md`` §16). The spaces,
+    grants, pages, versions, links, the chunks of the index, the favourites of
+    a member, the proposed edits of the assistant, the questions that
+    Knowledge could not answer, and the connected file sources with their
+    folder trees hold what
     one organization wrote down. None may be exempt, and the committed policy phase must carry each
     (R5)."""
     gen = _generator()
