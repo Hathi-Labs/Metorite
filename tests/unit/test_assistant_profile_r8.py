@@ -406,3 +406,87 @@ def test_the_column_is_nullable_jsonb_with_no_default(db) -> None:
             "WHERE table_name = 'user_settings' AND column_name = 'assistant_profile'"
         )).one()
     assert tuple(row) == ("jsonb", "YES", None)
+
+
+# ── A write from the chat (PZ-6a, X-Profile-Via) ───────────────────────────
+
+
+def _person(db, email: str) -> None:
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (id, name, email, status, skills, source, "
+            "source_key, organization_id, updated_by, updated_at) "
+            "VALUES (gen_random_uuid(), 'Raj', :e, 'active', ARRAY[]::text[], "
+            "'manual', :k, CAST(:o AS uuid), 'test', now())"),
+            {"e": email, "k": f"manual:{email}", "o": db.org_a})
+
+
+async def test_a_chat_write_refuses_with_learning_off_and_a_settings_write_works(db) -> None:
+    """The header can only restrict: with ``learning`` off every chat write
+    is a 409 and the stored profile does not move. Settings (no header)
+    still writes, and labels its fact ``settings``."""
+    email, raj = _address(), _address()
+    db.made += [email, raj]
+    _person(db, raj)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        kept = await _add_fact(db.org_a, user, "Kept", "about")
+        with _tenant(db.org_a):
+            alias = await _ap().add_alias(body={"alias": "Raj", "email": raj}, user=user)
+        await _put(db.org_a, user, "learning", False)
+        before = _stored(db, email)
+        ap = _ap()
+        refused: list[int] = []
+        with _tenant(db.org_a):
+            for call in (
+                lambda: ap.add_fact(body={"text": "New", "kind": "about"}, user=user,
+                                    x_profile_via="chat"),
+                lambda: ap.edit_fact(kept["id"], body={"text": "x"}, user=user,
+                                     x_profile_via="chat"),
+                lambda: ap.delete_fact(kept["id"], user=user, x_profile_via="whatsapp"),
+                lambda: ap.put_assistant_profile(
+                    body={"key": "style", "value": {"length": "short"}}, user=user,
+                    x_profile_via="chat"),
+                lambda: ap.add_alias(body={"alias": "Sam", "email": raj}, user=user,
+                                     x_profile_via="chat"),
+                lambda: ap.edit_alias(alias["id"], body={"alias": "R"}, user=user,
+                                      x_profile_via="chat"),
+                lambda: ap.delete_alias(alias["id"], user=user, x_profile_via="chat"),
+                lambda: ap.delete_assistant_profile(user=user, x_profile_via="chat"),
+            ):
+                with pytest.raises(HTTPException) as exc:
+                    await call()
+                refused.append(exc.value.status_code)
+                assert exc.value.detail == "learning_off"
+        assert _stored(db, email) == before
+        settings = await _add_fact(db.org_a, user, "From Settings", "work")
+    assert refused == [409] * 8
+    assert settings["source"] == "settings"
+    assert _stored_learning(db, email) is False
+
+
+def _stored_learning(db, email: str) -> object:
+    ((_org, stored),) = _stored(db, email)
+    return stored.get("learning")
+
+
+async def test_a_chat_fact_takes_its_channel_as_source(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        with _tenant(db.org_a):
+            chat = await _ap().add_fact(body={"text": "A", "kind": "about"}, user=user,
+                                        x_profile_via="chat")
+            wa = await _ap().add_fact(body={"text": "B", "kind": "about"}, user=user,
+                                      x_profile_via="whatsapp")
+            with pytest.raises(HTTPException) as bad:
+                await _ap().add_fact(body={"text": "C", "kind": "about"}, user=user,
+                                     x_profile_via="settings")
+            with pytest.raises(HTTPException) as switch:
+                await _ap().put_assistant_profile(body={"key": "learning", "value": True},
+                                                  user=user, x_profile_via="chat")
+        read = await _get(db.org_a, user)
+    assert (chat["source"], wa["source"]) == ("chat", "whatsapp")
+    assert (bad.value.status_code, switch.value.status_code) == (422, 422)
+    assert [f["text"] for f in read["facts"]] == ["A", "B"]
