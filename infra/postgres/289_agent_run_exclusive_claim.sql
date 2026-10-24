@@ -22,10 +22,12 @@
 -- new statuses. The new index is the one change old code can meet: old code
 -- may insert a second open run on a task for another member, and the insert
 -- then fails with a unique violation until the new gateway runs. The deploy
--- applies migrations before it restarts services (R6), and production holds
--- 0 rows of this table at the time of writing, so the window is empty.
+-- applies migrations before it restarts services (R6), so that window lasts
+-- one restart. Agent runs have been live in production since 2026-10-16, so
+-- duplicates may exist. Each run this file abandons gets the same server
+-- line that a takeover writes, so its member sees why the run ended.
 -- Idempotent: DROP IF EXISTS before ADD, CREATE INDEX IF NOT EXISTS, and an
--- UPDATE that matches nothing on the second run.
+-- UPDATE that matches nothing on the second run, so no second line either.
 -- Tenant-scoped (R5): no new table. The UPDATE names no organization, and it
 -- joins on `organization_id` so a task never counts a run of another tenant.
 -- The migration role sees every row, as in 288 and the other backfills.
@@ -47,7 +49,10 @@ ALTER TABLE pm_agent_runs
 
 -- Close the duplicates FIRST. For each task, the newest open run stays, and
 -- every older open run becomes `abandoned`. The order is (created_at, id), so
--- a tie on the time still picks one run.
+-- a tie on the time still picks one run. The INSERT writes the line of
+-- `_system_activity` in routes/projects/agent_runs.py: one `response` row,
+-- marked `system`, with no comment and no notification.
+WITH closed AS (
 UPDATE pm_agent_runs r
    SET status = 'abandoned',
        ended_at = now()
@@ -58,7 +63,18 @@ UPDATE pm_agent_runs r
            AND n.task_id = r.task_id
            AND n.status IN ('created', 'in_progress', 'awaiting', 'stopping')
            AND (n.created_at, n.id) > (r.created_at, r.id)
-   );
+   )
+RETURNING r.id, r.organization_id, r.task_id, r.member_email
+)
+INSERT INTO pm_agent_run_activities
+       (organization_id, run_id, task_id, type, content, ephemeral, actor)
+SELECT c.organization_id, c.id, c.task_id, 'response',
+       jsonb_build_object(
+           'body', 'Closed when Metorite allowed one AI session for each task. '
+                   'A newer session held this task.',
+           'system', true),
+       false, c.member_email
+  FROM closed c;
 
 CREATE UNIQUE INDEX IF NOT EXISTS pm_agent_runs_one_open_per_task
     ON pm_agent_runs (organization_id, task_id)

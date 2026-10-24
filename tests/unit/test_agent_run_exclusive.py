@@ -790,6 +790,16 @@ class TestOneAiForEachTask:
         assert [r.status for r in _rows(
             w.p, "SELECT status FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)", t=other)
         ] == ["in_progress"]
+        # Each abandoned run carries ONE server line that says why, though the
+        # file ran twice. The run that stays carries none.
+        lines = {r.member_email + ":" + r.client_via: r.n for r in _rows(
+            w.p, "SELECT r.member_email, r.client_via, count(a.id) AS n "
+                 "FROM pm_agent_runs r LEFT JOIN pm_agent_run_activities a "
+                 "  ON a.run_id = r.id AND a.type = 'response' "
+                 " AND (a.content->>'system')::boolean "
+                 "WHERE r.task_id = CAST(:t AS uuid) AND r.status <> 'completed' "
+                 "GROUP BY r.member_email, r.client_via", t=task)}
+        assert lines == {f"{ALICE}:{VIA}": 1, f"{BOB}:{VIA}": 1, f"{ALICE}:{VIA_CURSOR}": 0}
         assert _count(w.p, "SELECT count(*) FROM pg_indexes WHERE indexname = "
                            "'pm_agent_runs_one_open_per_task'") == 1
         # The index now refuses a second open run on the task.

@@ -5925,6 +5925,16 @@ line — never reclaim a number by deleting the other entry.
   3. Add `organization_id` to `_HOLDER_SQL`, `_RUN_SELECT` and
      `unheld_clause` (R5). Add a cross-org test for `held_by`. Decide whether
      a released or abandoned run counts as "agent worked" in `agent_worked.py`.
+  4. **A delete ignores the hold, and it can deadlock** (review of the landing,
+     2026-10-25, P2). `agent_delete_task` (`routes/projects/tasks.py`, about
+     L1475) reads no run. Another session can delete a task that a live run
+     holds, and the cascade removes the run. The delete also locks the task
+     row first and the runs second, through the cascade. A holder's activity
+     takes the run first and the task row second. The two can deadlock, and
+     that was on main before EA-14a. Fix both doors (`DELETE` and
+     `agent-delete`): lock the task's open runs `FOR UPDATE` before
+     `lock_task`, and answer 409 `task_held` when another member or client
+     holds a fresh run. Or write in §12.3 that a delete overrides a hold.
 - **Authority:** `specs/external_agent_access.md` §12.3
 - **Added:** 2026-10-20 · PR #1192 review, P2 and P3
 
