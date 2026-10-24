@@ -6263,18 +6263,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
-### H-394 · Three tests are red on main for a reason in the test setup · [AGENT]
-- **Check:** `uv run pytest -q tests/unit/test_delegation_no_egress.py
-  tests/unit/test_customer_console_router.py` passes on main. If it does,
-  delete this entry.
-- **Why:** two tests in `test_delegation_no_egress.py` fail, because the
-  openai client's platform probe starts a subprocess that the test refuses.
-  `test_the_customer_never_sees_the_provider_secret` also fails on main.
-  Each review this week had to prove that the red was not new.
-- **Do this:** fix the test setup, or stub the probe. Do not weaken the
-  subprocess guard.
-- **Added:** 2026-10-23 · email chat session
-
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]
 - **Check:** a query of `email_rules` for a MOVE_FOLDER action to a Sent or
   Drafts folder returns no row. If it does, delete this entry.
