@@ -127,3 +127,20 @@ export function landingApp(
 export function projectsUndoScope(app: string | null | undefined, projectId: string | null | undefined): string {
   return isMyWorkId(app) ? "projects:my-work" : `projects:${projectId ?? "none"}`;
 }
+
+/**
+ * The open rule of OP-2b (§4.3). The task store raises `focusedItemId` for a
+ * row click, Enter on a row and the undo toast. In My work that opens the ONE
+ * Projects panel and not the My Tasks focus modal: the store focus is closed,
+ * and the panel opener is called. Returns true when it opened one.
+ */
+export function openFromFocus(
+  focusedItemId: string | null,
+  closeFocus: () => void,
+  openPanel: (taskId: string) => void,
+): boolean {
+  if (!focusedItemId) return false;
+  closeFocus();
+  openPanel(focusedItemId);
+  return true;
+}

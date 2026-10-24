@@ -2502,15 +2502,21 @@ function ProjectsWorkspace() {
   // Opening a task always resolves ITS project's statuses. From the board that
   // is the set already loaded; from a deep link it may be any project the
   // member can reach, so it is fetched.
+  // OP-2b — set by a My work row, read once by `openWithStatuses`: the panel
+  // opens OVER the My work view and does not leave it. A link or a bell still
+  // leaves the destination for the task's board.
+  const stayInMyWork = useRef(false);
   const openWithStatuses = useCallback(
     async (task: TaskRow) => {
+      const staying = stayInMyWork.current && isMyWorkId(app);
+      stayInMyWork.current = false;
       // Opened from one of the app's own destinations — the AI chat slot, most
       // often, where a card's "Open task" landed the panel beside a full-width
       // chat and never showed the project (owner report, 2026-09-23). Leave
       // the destination, select the task's project so its board shows, and
       // carry the conversation into the dock, where it comes back beside the
       // board when the task closes.
-      if (app !== null) {
+      if (app !== null && !staying) {
         const home = flatten(visibleRoots).find((e) => e.node.id === task.project_id);
         if (home) setSelected(home.node as ProjectRow);
         // Only where a dock can draw. Below 80rem, or on a phone, the dock is
@@ -3898,7 +3904,13 @@ function ProjectsWorkspace() {
 
   const workArea = isMyWorkId(app) ? (
     // WS-64 OP-2 — a My work view: the task store's views, mounted once.
-    <MyWorkHost app={app} />
+    <MyWorkHost
+      app={app}
+      onOpenTask={(id) => {
+        stayInMyWork.current = true;
+        void openTaskById(id);
+      }}
+    />
   ) : app === "settings" ? (
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
@@ -4421,6 +4433,7 @@ function ProjectsWorkspace() {
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
       where={openWhere(openTask)}
+      myWork={isMyWorkId(app)}
       personLabels={personLabels}
       me={me}
       /**
@@ -4446,12 +4459,18 @@ function ProjectsWorkspace() {
       onMode={isMobile ? undefined : setPanelMode}
       // WS-27p — opening a subtask or a linked task resolves ITS project's
       // statuses, which the panel has no tree to do.
-      onOpenTask={(id) => void openTaskById(id)}
+      onOpenTask={(id) => {
+        stayInMyWork.current = isMyWorkId(app);
+        void openTaskById(id);
+      }}
       onClose={() => setOpenTask(null)}
       onTaskAdded={() => {
         if (selected) void loadProject(selected);
       }}
       onChanged={(fresh) => {
+        // OP-2b — the My work list reads the task store, so a change in the
+        // panel (status, fields) is read back into it. One source, no loop.
+        if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
         setOpenTask(fresh);
         setTasks((current) =>
           current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))

@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 to OP-5 are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-2b is BUILT 2026-10-24 and meets §4.3. OP-3 to OP-5 are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -549,7 +549,7 @@ reads only settled counts, and a My work view shows its name once, because
 `ItemList` and `InboxView` take an `embedded` prop. One source,
 `tasks/lib/viewTitles.ts`, names the six views for `/tasks` and for My work.
 §4.3 is NOT met by OP-2. A row
-click in a My work view still opens `TaskFocusModal`. OP-2b owes it.
+click in a My work view still opens `TaskFocusModal`. OP-2b met it (below).
 
 ### OP-2b — the task panel in My work · MEDIUM · AGENT-SAFE
 
@@ -561,6 +561,23 @@ defer), and not `TaskFocusModal`.
 
 **Done when.** A vitest test on the open rule passes, and an e2e spec opens
 `TaskPanel` from a My work row.
+
+**Status: BUILT 2026-10-24** (branch `ws64-op2b-taskpanel`), dark behind the
+same flag. `MyWorkHost` mounts no `TaskFocusModal`. It takes an `onOpenTask`
+prop. It calls the prop through `openFromFocus` (`lib/myWork.ts`) when the
+store raises `focusedItemId`. A row click, Enter and the undo toast all open
+the Projects panel. `/tasks` keeps its modal.
+
+The panel opens over the My work view and does not leave it. `TaskPanel` takes
+`myWork` and draws `MyWorkStrip` above the fields. The strip holds disposition,
+context, energy and defer. The shared body keeps the estimate (D77).
+`ItemDetail.tsx` exports `PlanningRows`, and both apps use it.
+
+A change in the panel goes back into the task store with `refreshItem`.
+Fences: `lib/myWorkPanel.test.tsx`, and the e2e case in
+`e2e/projects-my-work.spec.ts` (written, not run). Gap: in a company view the
+strip shows only when the task store holds the task. The store loads only in
+My work.
 
 ### OP-3 — the Personal space · AGENT-SAFE · R8
 
