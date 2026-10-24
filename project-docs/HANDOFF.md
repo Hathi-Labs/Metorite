@@ -6400,6 +6400,13 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/one_projects_app.md` OP-3, the precondition of task #304
 - **Added:** 2026-10-24 · WS-64 task #304 fix round 1
 
+### H-406 · The Knowledge index block trusts a client email to decide that a room is solo · [AGENT] · security
+- **Check:** `grep -n "_payload_user\|_memory_user_id" apps/services/orchestrator/orchestrator/executor.py` shows that `_kb_index_key` no longer compares the memory id with the verified member, and reads the `_RUN_SOLO_ROOM` bit of WS-63 PZ-2 instead. If it holds, delete this entry.
+- **Why:** `_kb_index_key` (`executor.py`, WS-61 KB-4a) treats "memory id differs from the verified member" as a shared room. `_bind_run_identity` rebinds the memory id from `_payload_user(event_payload)`, which is `payload.user_email`, a client field. A member in a shared room can send their own email and get the solo Knowledge index there. Found by the PZ-2 audit on 2026-10-23.
+- **Do this:** read the `_RUN_SOLO_ROOM` ContextVar that PZ-2 adds (it fails closed) in `_kb_index_key`, in place of the memory-id compare. Add a test where a shared-room run with `payload.user_email` set to the member gets no solo index.
+- **Authority:** `specs/knowledge_base.md` §6.5 (KB-4a) · `specs/personalization.md` §5.1
+- **Added:** 2026-10-24 · WS-63 PZ-2 session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
