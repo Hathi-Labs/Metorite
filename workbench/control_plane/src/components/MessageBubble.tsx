@@ -16,6 +16,7 @@ import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards
 import { EMAIL_AGENT, delegatedSteps, withEmailSteps } from "@/lib/delegatedSteps";
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
+import ProfileToolCards from "@/components/profile/ProfileToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
@@ -795,6 +796,9 @@ function MessageBubble({
           calls, so this renders in both the chat app and the Projects app's
           AI chat (WS-27bm). */}
       <ProjectToolCards toolEvents={dedupedToolEvents} />
+      {/* The receipts of the assistant profile writes, each with Undo (WS-63
+          PZ-6a). Inert unless the message holds a profile_* tool call. */}
+      <ProfileToolCards toolEvents={dedupedToolEvents} />
       <GenerativeUIPanel
         agentState={message.agentState}
         customEvents={message.customEvents}

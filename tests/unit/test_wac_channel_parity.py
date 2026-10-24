@@ -67,10 +67,18 @@ class _Orchestrator:
         async def remember(query: str) -> str: ...
         # WS-63 PZ-5: an own tool of the orchestrator, behind its flag.
         async def resolve_person(name: str) -> str: ...
+        # WS-63 PZ-6a: the four profile writes, own tools on the same flag.
+        async def profile_remember(text: str, kind: str) -> str: ...
+        async def profile_forget(id: str) -> str: ...
+        async def profile_set(key: str, value: dict[str, Any]) -> str: ...
+        async def profile_alias(alias: str, email: str = "") -> str: ...
+        async def profile_undo() -> str: ...
 
         self.name = "orchestrator"
         self.default_options: dict[str, Any] = {
-            "tools": [search_company, remember, resolve_person], "instructions": "Persona."}
+            "tools": [search_company, remember, resolve_person, profile_remember,
+                      profile_forget, profile_set, profile_alias, profile_undo],
+            "instructions": "Persona."}
 
 
 def _names(agent: _Orchestrator) -> set[str]:
@@ -101,7 +109,7 @@ def crm_org(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return rows
 
 
-async def _assemble(channel: str) -> tuple[set[str], str]:
+async def _assemble(channel: str, *, writes: bool = False) -> tuple[set[str], str]:
     """The orchestrator of one run on *channel*, as the executor assembles
     it: the injection, then the CRM facts block. The holder of the run's CRM
     questions is the one each channel opens (the stream path's card holder,
@@ -114,7 +122,7 @@ async def _assemble(channel: str) -> tuple[set[str], str]:
     else:
         token = crm_tools.open_text_asks("whatsapp")
         release = crm_tools.release_text_asks
-        ctx = wui.whatsapp_run("orchestrator")
+        ctx = wui.whatsapp_run("orchestrator", writes=writes)
     try:
         with ctx:
             held = ti._inject_agent_tools(
@@ -138,19 +146,38 @@ async def test_a_whatsapp_run_differs_from_a_web_run_only_by_delivery_tools(
     crm_org: list[dict[str, Any]],
 ) -> None:
     web, _ = await _assemble("web")
-    wa, _ = await _assemble("whatsapp")
+    wa, _ = await _assemble("whatsapp", writes=True)
     only_web = web - wa
     assert only_web <= set(wui.WHATSAPP_FORMS), sorted(only_web - set(wui.WHATSAPP_FORMS))
     assert wa - web == {"whatsapp_ui"}, sorted(wa - web)
 
 
+async def test_whatsapp_with_writes_off_holds_no_profile_write(
+    crm_org: list[dict[str, Any]],
+) -> None:
+    """WS-63 PZ-6a fix round 1 (P2). With the org's WhatsApp writes off, the
+    scope rule says that the run cannot change data from WhatsApp, and the
+    tools agree: the five profile writes leave, and ``resolve_person``
+    stays. This is the one gap of function, and the owner's slice asked
+    for it. With writes on, the run differs only by delivery (above)."""
+    from acb_common.assistant_profile import WRITE_TOOL_NAMES
+
+    web, _ = await _assemble("web")
+    off, _ = await _assemble("whatsapp", writes=False)
+    assert web >= WRITE_TOOL_NAMES
+    assert not off & WRITE_TOOL_NAMES
+    assert "resolve_person" in off
+    assert web - off <= set(wui.WHATSAPP_FORMS) | WRITE_TOOL_NAMES
+
+
 async def test_a_whatsapp_run_of_a_crm_member_holds_the_crm_reads_and_org_facts(
     crm_org: list[dict[str, Any]],
 ) -> None:
-    wa, _ = await _assemble("whatsapp")
+    wa, _ = await _assemble("whatsapp", writes=True)
     assert {"crm_aggregate", "crm_list_modules", "crm_list_module_records",
             "crm_get_module_record", "org_facts", "crm_answer_question",
-            "search_company", "resolve_person"} <= wa
+            "search_company", "resolve_person", "profile_remember", "profile_forget",
+            "profile_set", "profile_alias", "profile_undo"} <= wa
     # Every CRM tool that the orchestrator's scope names, none withheld.
     scoped = {n for n in _orchestrator_scope() if n.startswith("crm_") or n == "org_facts"}
     assert scoped <= wa, sorted(scoped - wa)
