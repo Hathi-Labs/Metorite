@@ -5,10 +5,11 @@ chat. The owner accepted every decision of §20 and the default of every
 question of §21 the same day, as the spec recommends them. `work_plan.md` §3 records them once, as **D112**.
 
 **KC-1a BUILT 2026-10-25, dark** (branch `kc-1a-drive`, migration 300). It
-is the backend half of KC-1: the store lift, the adapter protocol, the
-Google Drive adapter, `kb_sources` and `kb_source_nodes`, discovery at
-connect, the source routes and the Google grant rule. Both flags default to
-empty. Nobody tested it against live Google. The owner must first register
+is the backend half of KC-1. It holds the store lift, the adapter protocol
+and the Google Drive adapter. It also holds `kb_sources`, `kb_source_nodes`,
+discovery at connect, the source routes and the Google grant rule.
+
+Both flags of KC-1a default to empty. Nobody tested it against live Google. The owner must first register
 the redirect URI and the `drive.readonly` scope. KC-1b, the Sources view, is
 open.
 
