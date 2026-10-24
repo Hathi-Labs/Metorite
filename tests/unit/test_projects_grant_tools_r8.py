@@ -238,19 +238,19 @@ async def test_r8_a_subject_outside_the_grammar_is_refused(live, monkeypatch) ->
 ORG_ADMIN = "orgadmin@mcpwrites.test"
 
 
-def _org_admin(world: Any) -> str:
-    with world.admin.begin() as c:
+def _org_admin(wld: Any) -> str:
+    with wld.admin.begin() as c:
         known = c.execute(text("SELECT 1 FROM app_user WHERE email = :e"),
                           {"e": ORG_ADMIN}).first()
     if known is None:
-        world.seeder.member(
+        wld.seeder.member(
             ORG_ADMIN, ["feature:projects", "projects:settings:write", "data:org:read"])
     return ORG_ADMIN
 
 
-async def _personal_root(world: Any, who: str) -> str:
+async def _personal_root(wld: Any, who: str) -> str:
     """The personal root of *who*, minted by the real route (the bootstrap)."""
-    r = await _as(world, who, "POST", "/projects/my/project")
+    r = await _as(wld, who, "POST", "/projects/my/project")
     assert r.status_code in (200, 201), r.text
     return r.json()["id"]
 
@@ -315,12 +315,12 @@ async def test_r8_a_team_node_under_a_personal_root_is_personal_too(live) -> Non
     assert "org" not in _grants(live, child)
 
 
-def _group(world: Any, slug: str, name: str) -> None:
-    world.seeder.one(
+def _group(wld: Any, slug: str, name: str) -> None:
+    wld.seeder.one(
         "INSERT INTO org_group (organization_id, slug, display_name) VALUES"
         " (CAST(:o AS uuid), :s, :n) ON CONFLICT (organization_id, slug)"
         " DO UPDATE SET display_name = EXCLUDED.display_name RETURNING id",
-        o=world.org, s=slug, n=name)
+        o=wld.org, s=slug, n=name)
 
 
 async def test_r8_a_group_that_does_not_exist_is_refused_at_the_tool_and_the_route(
