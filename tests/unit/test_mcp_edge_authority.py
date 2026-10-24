@@ -108,9 +108,14 @@ _GRANTED = (
     "    WHERE p.organization_id = CAST(:vis_org AS uuid)\n"
     "      AND p.sealed_at IS NULL\n)\nSELECT id FROM granted\n"
 )
+#: ⚠️ WS-64 OP-9 changed this ON PURPOSE (D-OP-15). The tenant set leaves
+#: out every other member's personal node, so `data:org:read` reads no
+#: personal task of somebody else. The four unrestricted digests changed
+#: with it. Fence of the rule: `test_personal_privacy_r8.py`.
 _TENANT_ONLY = (
     "\nSELECT id FROM pm_projects\nWHERE organization_id = CAST(:vis_org AS uuid)\n"
     "  AND sealed_at IS NULL\n"
+    "  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)\n"
 )
 
 
@@ -132,10 +137,10 @@ GOLDEN: dict[str, tuple[str, str]] = {
         "ecd969e75b9fd54e88baec240b7c430877d723fa7f41baa6ae3f312493364859"),
     "unrestricted.project_clause()": (
         f"id IN ({_TENANT_ONLY})",
-        "34f2ac865083391bda3ac3d3136083b710ad4fdabda6e79c72f5f4f789a99497"),
+        "726ab86a486c93b214eed1e3b206aca5f55373758c3be6f8dcfecfb618f2bcfe"),
     "unrestricted.project_clause('p.id')": (
         f"p.id IN ({_TENANT_ONLY})",
-        "a9bbbdea0760ab66d3143bb3420a659132cf8abc8b1348639b93d8a714b3bd78"),
+        "7d8ed5c36e49bea85b17030f54f0ac9343270c1fe899c826ddf5e34d78d752a5"),
     "task_visibility_clause(restricted)": (
         f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_GRANTED})"
         + _assignee("t"),
@@ -150,11 +155,11 @@ GOLDEN: dict[str, tuple[str, str]] = {
     "task_visibility_clause(unrestricted)": (
         f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_TENANT_ONLY})"
         + _assignee("t"),
-        "bbf499b5a640c6de7e3ec2c8f344620f29223a9e000b7962646653b703561ec1"),
+        "f392c5f5a2def108db16be227deee2210da4846851ba8e57665b564a0dd1314f"),
     "task_visibility_clause(unrestricted, 'x')": (
         f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_TENANT_ONLY})"
         + _assignee("x"),
-        "ef6e9fc8a6643692f405b9a218bc030cfa2f2c54e303c1d7b8b2a74591c7f60f"),
+        "ab90b01dfd32fb0192080b070de3fbcfe2f714454b40003ab67386303abf9b9a"),
 }
 
 
