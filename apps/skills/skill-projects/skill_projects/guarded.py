@@ -397,6 +397,20 @@ def convert_refusal(row: dict[str, Any], name: Any) -> str:
     return "\n".join(lines)
 
 
+#: How many child names the convert card lists before it says "and N more".
+#: The same number as ``CONVERT_LIST_LIMIT`` in the app's
+#: ``projects/lib/projectConvert.ts``, and
+#: ``test_projects_folder_convert.py`` fails if the two differ.
+CONVERT_LIST_LIMIT = 8
+
+
+def _convert_list(names: list[str]) -> str:
+    """The names, capped at :data:`CONVERT_LIST_LIMIT`, as the dialog says them."""
+    shown = names[:CONVERT_LIST_LIMIT]
+    more = len(names) - len(shown)
+    return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def convert_folder_to_project(project_id: str) -> str:
     """Turn a folder into a project. ONE folder per call. The projects inside
@@ -424,7 +438,7 @@ async def convert_folder_to_project(project_id: str) -> str:
     )
     rest: dict[str, Any] = {
         "folder": name,
-        "subprojects": ", ".join(data(c.get("name")) for c in kids) or "none",
+        "subprojects": _convert_list([data(c.get("name")) for c in kids]) or "none",
         "undo": "none; a project does not turn back into a folder",
     }
     if not await _confirm(

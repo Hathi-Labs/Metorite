@@ -1241,15 +1241,17 @@ async def move_node(
 _CHILD_DEPTHS_SQL = (
     "WITH RECURSIVE sub AS ("
     "  SELECT id, id AS branch, name AS branch_name,"
+    "         personal_owner IS NULL AS branch_team,"
     "         CASE WHEN coalesce(kind, 'project') = 'project'"
     "           THEN 1 ELSE 0 END AS d"
     "    FROM pm_projects WHERE parent_project_id = CAST(:pid AS uuid)"
     "  UNION ALL"
-    "  SELECT p.id, s.branch, s.branch_name,"
+    "  SELECT p.id, s.branch, s.branch_name, s.branch_team,"
     "         s.d + CASE WHEN coalesce(p.kind, 'project') = 'project'"
     "           THEN 1 ELSE 0 END"
     "    FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id"
-    ") SELECT branch, branch_name, max(d) AS depth FROM sub"
+    ") SELECT branch, branch_name, bool_and(branch_team) AS branch_team,"
+    "   max(d) AS depth FROM sub"
     "   GROUP BY branch, branch_name"
 )
 
@@ -1325,6 +1327,12 @@ async def convert_node(
                 if parent_id is not None else 0
             ),
             children=[(str(c.branch_name), int(c.depth or 0)) for c in children],
+            # A team child that migration 297 kept under a personal tree.
+            # The owner cannot move it, so the 422 says who can.
+            kept=frozenset(
+                str(c.branch_name) for c in children
+                if getattr(node, "personal_owner", None) and c.branch_team
+            ),
         )
 
         values: dict[str, Any] = {"kind": "project"}

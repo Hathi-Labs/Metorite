@@ -351,6 +351,56 @@ async def test_a_page_of_folders_costs_one_query_and_no_walk() -> None:
     assert [r["can_convert"] for r in rows] == [False] * 6 + [True]
 
 
+def test_a_team_child_kept_in_a_personal_tree_names_who_can_move_it() -> None:
+    detail = _refused(
+        parent_kind="project", parent_generation=1,
+        children=[("Mine", 2), ("Team work", 2)], kept=frozenset({"Team work"}),
+    )
+    assert "Move 'Mine' out of the folder first." in detail
+    assert ("'Team work' is team work. A lead of 'Team work' or a Projects admin "
+            "can move it.") in detail
+    assert "Move 'Team work'" not in detail and "'Mine', 'Team work'" in detail
+    # Inside a project, the same split.
+    detail = _refused(
+        parent_kind="project", parent_generation=2,
+        children=[("Team work", 1)], kept=frozenset({"Team work"}),
+    )
+    assert "Move 'Team work'" not in detail
+    assert "A lead of 'Team work' or a Projects admin can move it." in detail
+
+
+def test_the_card_caps_its_list_as_the_dialog_does() -> None:
+    import pathlib
+    import re
+
+    from skill_projects import guarded
+
+    ts = (pathlib.Path(__file__).resolve().parents[2] / "workbench" / "control_plane"
+          / "src" / "app" / "projects" / "lib" / "projectConvert.ts").read_text(
+              encoding="utf-8")
+    [limit] = re.findall(r"export const CONVERT_LIST_LIMIT = (\d+);", ts)
+    assert guarded.CONVERT_LIST_LIMIT == int(limit)
+
+
+async def test_the_chat_card_says_and_n_more(monkeypatch) -> None:
+    from skill_projects import guarded
+
+    from tests.unit._projects_agent_fakes import approve
+
+    fid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    n = guarded.CONVERT_LIST_LIMIT + 3
+    _chat_gateway(monkeypatch, {"id": fid, "name": "Clients", "kind": "folder",
+                                "can_convert": True},
+                  [{"id": f"k{i}", "name": f"P{i}"} for i in range(n)])
+    asked = approve(monkeypatch)
+    await guarded.convert_folder_to_project(fid)
+    [card] = asked
+    last = guarded.CONVERT_LIST_LIMIT - 1
+    assert f"«P{last}» and 3 more" in card["context"], card["context"]
+    assert f"«P{last + 1}»" not in card["context"]
+    assert f"{n} projects you can see" in card["context"]
+
+
 class TestFixRound1:
     pytestmark = _DB_GATE
 
@@ -454,3 +504,30 @@ class TestFixRound1:
             assert str(c.execute(text(
                 "SELECT parent_project_id FROM pm_projects WHERE id = CAST(:p AS uuid)"),
                 {"p": mover}).scalar()) == live.team
+
+    async def test_the_422_says_who_can_move_a_kept_team_child(self, live):
+        owner = LEAD
+        root = str(live.seeder.one(
+            "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+            " timezone, owns_statuses, personal_owner) VALUES ('op10 kept mine', 'active',"
+            " 'manual', :m, CAST(:o AS uuid), 'Asia/Kolkata', true, :m) RETURNING id",
+            m=owner, o=live.org))
+        live.seeder.status(root, "To do", "todo", 0)
+        wa.d._grant(live.seeder, root, owner)
+        folder = _node(live, "op10 kept folder", root, kind="folder",
+                       maker=owner, owner=owner)
+        wa.d._grant(live.seeder, folder, owner)
+        # A team node that migration 297 kept unstamped under the private tree,
+        # with a subproject, beside one of the owner's own.
+        team = _node(live, "op10 kept team", folder)
+        _node(live, "op10 kept team sub", team)
+        own = _node(live, "op10 kept own", folder, maker=owner, owner=owner)
+        _node(live, "op10 kept own sub", own, maker=owner, owner=owner)
+        r = await _convert(live, owner, folder)
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert "Move 'op10 kept own' out of the folder first." in detail, detail
+        assert ("A lead of 'op10 kept team' or a Projects admin can move it."
+                in detail), detail
+        assert "Move 'op10 kept team'" not in detail
+        assert _row(live, folder).kind == "folder"

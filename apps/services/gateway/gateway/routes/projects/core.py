@@ -533,6 +533,7 @@ def assert_folder_converts(
     parent_kind: str | None,
     parent_generation: int,
     children: list[tuple[str, int]],
+    kept: frozenset[str] = frozenset(),
 ) -> None:
     """May a folder become a project where it sits? (WS-64 OP-10, D-OP-16.)
 
@@ -546,6 +547,10 @@ def assert_folder_converts(
     deepest child. This function adds only the words. When the grammar
     refuses, the 422 names each child project that is too deep, so the
     member knows what to move. Pure, so the hermetic suite tests each case.
+
+    ``kept`` holds the names of the children that are team nodes, which
+    migration 297 kept under a personal tree. The owner of the tree cannot
+    move one, so the 422 says who can (OP-10 fix round 1).
     """
     depth = 1 + max((d for _, d in children), default=0)
     try:
@@ -562,6 +567,26 @@ def assert_folder_converts(
         if not blockers:
             raise
         names = ", ".join(f"'{n}'" for n in blockers)
+        team = [n for n in blockers if n in kept]
+        if team:
+            mine = ", ".join(f"'{n}'" for n in blockers if n not in kept)
+            head = (
+                "This folder is inside a project, so as a project it would "
+                "be a subproject, and a subproject cannot hold projects."
+                if room <= 0 else
+                f"{names} have sub-projects of their own, and those would go "
+                f"below the lowest level."
+            )
+            parts = [head]
+            if mine:
+                parts.append(f"Move {mine} out of the folder first.")
+            parts.extend(
+                f"'{n}' is team work. A lead of '{n}' or a Projects admin "
+                f"can move it." for n in team
+            )
+            raise HTTPException(
+                status_code=422, detail=" ".join(parts),
+            ) from refused
         if room <= 0:
             detail = (
                 f"This folder is inside a project, so as a project it would "
