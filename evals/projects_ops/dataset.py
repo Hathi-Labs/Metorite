@@ -29,6 +29,8 @@ The facts that the tasks lean on:
   #7. A third run finished (PO-26 and PO-27, WS-64 OP-6e).
 * The member leads Launch and not Ops. Launch has one grant, to Priya (PO-18
   to PO-20, WS-64 OP-6b).
+* The space holds the folder Clients, with the projects Acme rollout and Globex
+  pilot inside it. The member may convert it to a project (PO-28, WS-64 OP-10).
 
 Today is the member's own date in :data:`TIMEZONE`. Since WS-46 P7 the tools
 take today from ``GET /projects/my/today``, which the stub answers with this
@@ -194,6 +196,10 @@ REPORT_BOARD = "Board pack"
 AGENT_ARCHIVE = 12
 AGENT_QUESTION = 7
 AGENT_NAME = "Claude Code"
+
+#: WS-64 OP-10 (D-OP-16). A folder in the space, and the projects inside it (PO-28).
+FOLDER = "Clients"
+FOLDER_PROJECTS = ("Acme rollout", "Globex pilot")
 
 MEMBER = Member("asha.iyer@eval.example", "Asha Iyer")
 #: A second member. PO-3's email comes from her.
