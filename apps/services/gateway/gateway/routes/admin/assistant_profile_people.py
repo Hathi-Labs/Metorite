@@ -16,9 +16,13 @@ hit and never merges two tiers:
    hit's address must still be in the org (:func:`email_in_org`). An alias
    of a person who left drops, and the lookup falls through.
 2. ``people``: the directory, ``status = 'active'``, by ``preferred_name``,
-   then ``name``, then the local part of the email. The first sub-rule with
-   a hit wins.
-3. ``member``: ``app_user.display_name``, ``status = 'active'``.
+   then ``name``, then the local part of the email, then (for a one-word
+   name only) the FIRST word of the preferred name or the name. The first
+   sub-rule with a hit wins, so "Priya" finds "Priya Sharma" only when
+   nobody is called exactly "Priya", and two "Priya …" make the assistant
+   ask.
+3. ``member``: ``app_user.display_name``, ``status = 'active'``: the whole
+   name first, then the first word for a one-word name.
 
 An input with an ``@`` matches ``lower(email)`` exactly, in each tier.
 Within a tier, two rows with one address are one person.
@@ -115,6 +119,12 @@ def _is_email(value: str) -> bool:
     return "@" in value
 
 
+def _first(value: str) -> str:
+    """The folded first word of *value*, or ``""``. People say first names."""
+    words = fold(value).split()
+    return words[0] if words else ""
+
+
 async def email_in_org(db: Any, email: str) -> bool:
     """True when *email* is a person or a member of the bound org.
 
@@ -162,11 +172,14 @@ async def _people_tier(db: Any, wanted: str) -> list[dict[str, str]]:
     people = [(str(r.name or ""), str(r.preferred_name or ""), str(r.email)) for r in rows]
     if _is_email(wanted):
         return _one_each([(n or p or e, e) for n, p, e in people if e.lower() == wanted])
-    # The first sub-rule with a hit wins: preferred name, name, local part.
+    # The first sub-rule with a hit wins: preferred name, name, local part,
+    # then the first word of either name, for a one-word query only.
+    one_word = " " not in wanted
     rules = (
         lambda n, p, e: p and fold(p) == wanted,
         lambda n, p, e: n and fold(n) == wanted,
         lambda n, p, e: fold(e.split("@", 1)[0]) == wanted,
+        lambda n, p, e: one_word and wanted in {_first(p), _first(n)},
     )
     for rule in rules:
         hits = [(p or n or e, e) for n, p, e in people if rule(n, p, e)]
@@ -182,7 +195,10 @@ async def _member_tier(db: Any, wanted: str) -> list[dict[str, str]]:
     members = [(str(r.display_name), str(r.email)) for r in rows]
     if _is_email(wanted):
         return _one_each([(d, e) for d, e in members if e.lower() == wanted])
-    return _one_each([(d, e) for d, e in members if fold(d) == wanted])
+    whole = _one_each([(d, e) for d, e in members if fold(d) == wanted])
+    if whole or " " in wanted:
+        return whole
+    return _one_each([(d, e) for d, e in members if _first(d) == wanted])
 
 
 def _name(value: str) -> str:

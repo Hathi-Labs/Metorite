@@ -152,6 +152,34 @@ class TestTheTiers:
                        {"name": "VJ", "email": "other@alpha.example"}]
         assert _emails(_resolve("vj")) == ["vj@alpha.example"]
 
+    def test_a_first_name_finds_the_full_name(self, fake: _FakeDB) -> None:
+        # People say first names: "Priya" finds "Priya Sharma".
+        fake.people = [{"name": "Priya Sharma", "email": "priya.s@alpha.example"}]
+        assert _emails(_resolve("priya")) == ["priya.s@alpha.example"]
+        fake.people = [{"name": "Venkata Jagan", "preferred_name": "Venky Rao",
+                        "email": "vr@alpha.example"}]
+        assert _emails(_resolve("Venky")) == ["vr@alpha.example"]
+
+    def test_two_with_one_first_name_ask(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Priya Sharma", "email": "priya.s@alpha.example"},
+                       {"name": "Priya Kumar", "email": "priya.k@alpha.example"}]
+        assert _resolve("Priya")["total"] == 2
+
+    def test_an_exact_name_beats_a_first_name(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Priya", "email": "priya@alpha.example"},
+                       {"name": "Priya Kumar", "email": "priya.k@alpha.example"}]
+        assert _emails(_resolve("priya")) == ["priya@alpha.example"]
+
+    def test_a_two_word_name_never_matches_by_first_word(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "Priya Sharma", "email": "priya.s@alpha.example"}]
+        assert _resolve("Priya Kumar")["total"] == 0
+
+    def test_a_member_first_name_is_tier_three(self, fake: _FakeDB) -> None:
+        fake.people = [{"name": "T. Rao", "email": "t.rao@alpha.example"}]
+        fake.members = [{"display_name": "Tara Rao", "email": "t.rao@alpha.example"}]
+        out = _resolve("tara")
+        assert (out["source"], _emails(out)) == ("member", ["t.rao@alpha.example"])
+
     def test_the_local_part_is_the_third_rule(self, fake: _FakeDB) -> None:
         fake.people = [{"name": "Kiran Rao", "email": "kiran.r@alpha.example"}]
         assert _emails(_resolve("Kiran.R")) == ["kiran.r@alpha.example"]

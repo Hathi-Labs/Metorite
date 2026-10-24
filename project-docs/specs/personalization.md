@@ -334,6 +334,11 @@ alias. The tool reads through the tenant session, so it sees one org only.
   tiers. Inside tier 2 it stops at the first rule with a match.
 - The match is exact after a fold: NFKD, no accent marks, casefold. An
   input with an `@` matches the address exactly.
+- **A first name finds a full name.** People say first names. For a
+  one-word input, the last rule of tier 2 and of tier 3 matches the first
+  word of the name. It runs only when no exact rule matched. So "Priya"
+  finds "Priya Sharma", and two people named "Priya …" make the assistant
+  ask.
 - Tiers 2 and 3 read `status = 'active'` rows only, at most 2,000 for each
   tier.
 - An alias whose person left the org drops, and the lookup falls through.
