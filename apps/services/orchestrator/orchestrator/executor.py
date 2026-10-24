@@ -700,6 +700,87 @@ MEMBER_NO_NAME_LINE = (
 )
 
 
+# ── The member's own assistant profile (WS-63 PZ-2) ─────────────────────────
+
+#: The one agent whose per-turn context carries the profile block. The
+#: WhatsApp run uses it too (personalization.md §5.1, point 2).
+_PROFILE_AGENT = "orchestrator"
+#: The rendered block by ``(org, member)``, with the time it was read and the
+#: member's write count (``assistant_profile.generation``). A miss is cached
+#: too, so a member with no profile costs one read a minute. A write in this
+#: process moves the count, so the next turn reads again.
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str]] = {}
+_PROFILE_TTL_SECONDS = 60.0
+_PROFILE_CACHE_MAX = 4096
+
+
+def _read_member_profile(org: str, member: str) -> Any:
+    """The stored ``user_settings.assistant_profile`` of *member* in *org*,
+    or ``None``. One read, and it never raises.
+
+    *org* is the run's tenant and *member* the run's verified member, both
+    from the run boundary and never from the payload (R5). With
+    ``ACB_GRAPH_TENANT_BIND`` off the opener binds no tenant, so FORCE RLS
+    gives no row and the block is empty, as the name read is
+    (:func:`_read_member_display_name`).
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return None
+    try:
+        from acb_common.assistant_profile import READ_SQL
+        from sqlalchemy import text
+
+        with opener() as session:
+            row = session.execute(text(READ_SQL), {"org": org, "m": member}).first()
+    except Exception:
+        return None
+    return row[0] if row else None
+
+
+def _member_profile_block(agent_name: str) -> str:
+    """The member's profile block for this turn, or ``""``.
+
+    ``personalization.md`` §5.1. The block reaches a run only when all hold:
+    ``ASSISTANT_PROFILE_ENABLED`` is on, the agent is ``orchestrator``, the
+    run has a verified member (:func:`_verified_run_member`), the run
+    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`), and the run has
+    an org. Each check comes before the read, so a run that fails one reads
+    nothing. The block is cached per ``(org, member)`` for
+    ``_PROFILE_TTL_SECONDS``, and a profile write in this process ends the
+    entry early (``assistant_profile.mark_changed``). No exception escapes. Fence:
+    ``tests/unit/test_executor_profile_block.py``.
+    """
+    import time
+
+    from acb_common import assistant_profile
+
+    if agent_name != _PROFILE_AGENT or not assistant_profile.enabled():
+        return ""
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return ""
+    org = _current_run_org()
+    if not org:
+        return ""
+    key = (str(org), member)
+    now = time.monotonic()
+    gen = assistant_profile.generation(member)
+    hit = _PROFILE_CACHE.get(key)
+    if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
+        return hit[2]
+    try:
+        raw = _read_member_profile(str(org), member)
+        block = assistant_profile.render_block(raw) if raw is not None else ""
+    except Exception:
+        block = ""
+    _PROFILE_CACHE.pop(key, None)
+    _PROFILE_CACHE[key] = (now, gen, block)
+    while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
+        _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
+    return block
+
+
 def _member_name_line(agent_name: str) -> str:
     """The per-turn line that names the member, or ``""``.
 
@@ -1063,6 +1144,40 @@ _stream_relay_thread_id: contextvars.ContextVar[str | None] = (
 _active_run_model: contextvars.ContextVar[str | None] = (
     contextvars.ContextVar("_active_run_model", default=None)
 )
+
+# WS-63 PZ-2 (personalization.md §5.1, point 4): True only when the RUN
+# BOUNDARY says this run is the member's own, not a shared room. The web chat
+# route passes ``solo_room=room_is_solo(room)`` (``gateway/rooms.py``) and the
+# WhatsApp run passes ``solo_room=not shared``. Every other caller passes nothing, so the default
+# is False and the run gets no profile block (fail closed). A run that passes
+# ``None`` keeps its parent's value, so a delegated run cannot widen it. It is
+# never read from the payload, which is client input (R5).
+_RUN_SOLO_ROOM: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("_run_solo_room", default=False)
+)
+
+
+def _bind_solo_room(solo_room: bool | None) -> contextvars.Token[bool] | None:
+    """Set :data:`_RUN_SOLO_ROOM` for this run, or keep the parent's value
+    when *solo_room* is ``None``. Hand the token to :func:`_release_solo_room`."""
+    if solo_room is None:
+        return None
+    return _RUN_SOLO_ROOM.set(solo_room is True)
+
+
+def _release_solo_room(token: contextvars.Token[bool] | None) -> None:
+    """Close a :func:`_bind_solo_room` scope. Never raises.
+
+    ``Token.reset`` demands the context it was made in, and a stream's
+    teardown does not always run there (see ``_unbind_memory_user_id``). A
+    failed reset sets False, so it fails closed and never open.
+    """
+    if token is None:
+        return
+    try:
+        _RUN_SOLO_ROOM.reset(token)
+    except (ValueError, RuntimeError):
+        _RUN_SOLO_ROOM.set(False)
 
 
 #: The card events (``orchestrator.pending_ask.KIND_BY_EVENT``), as they
@@ -3895,6 +4010,7 @@ async def run_agent(
     model: str | None = None,
     organization_id: str | None = None,
     session_user: str | None = None,
+    solo_room: bool | None = None,
 ) -> dict[str, Any]:
     """Dynamically load and execute a named agent.
 
@@ -3917,6 +4033,9 @@ async def run_agent(
                        ``_run_sub_agent_streaming``); the workflow / schedule
                        callers resolve their own org in slice 6c and pass
                        ``None`` until then (operator-org fallback / skip).
+        solo_room:     True when the run boundary knows this run is the
+                       member's own, not a shared room (WS-63 PZ-2,
+                       :data:`_RUN_SOLO_ROOM`). ``None`` keeps the parent's.
 
         The final MAF agent result dict.
 
@@ -3924,6 +4043,8 @@ async def run_agent(
         :class:`AgentRunError` on failure (includes mutation PR URL if one was opened).
     """
     _identity = _bind_run_identity(event_payload, agent_name)
+    # WS-63 PZ-2: closed in the same finally as the identity.
+    _solo_token = _bind_solo_room(solo_room)
     try:
         # 🔴 **The batch path bound no run context at all**, so a model call
         # made here reached the Router with no member, no app and no run, and
@@ -3945,6 +4066,7 @@ async def run_agent(
                 # still names its run data. A no-op when no sandbox ran.
                 await _end_sandbox_run()
     finally:
+        _release_solo_room(_solo_token)
         _unbind_run_identity(_identity)
 
 
@@ -4869,6 +4991,9 @@ async def run_agent_stream(
     #: True only when the caller's client DRAWS a card (a CUSTOM
     #: ``confirmation_requested`` event). See below.
     shows_cards: bool = False,
+    #: WS-63 PZ-2: True when the caller's run boundary knows the room is the
+    #: member's own. ``None`` keeps the parent's value. See `_RUN_SOLO_ROOM`.
+    solo_room: bool | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -5081,6 +5206,8 @@ async def run_agent_stream(
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
+    # WS-63 PZ-2: the run boundary's solo-room bit. Released in the same finally.
+    _solo_token = _bind_solo_room(solo_room)
     # WS-45 S2: the run's tier policy. Set after the load, for a covered
     # agent only. None everywhere else.
     _tier_run: Any = None
@@ -7208,6 +7335,7 @@ async def run_agent_stream(
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
             _active_run_model.reset(_model_token)
+            _release_solo_room(_solo_token)
             # H-201: the run's workspace, tenant key and session end with it.
             reset_artifact_context(_artifact_token)
             # Same reason, for the thing that says WHO this run was: an acting user
@@ -8705,6 +8833,7 @@ def _context_preamble_parts(
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
     ``memory_context``, then ``system_context`` (which carries the persona),
     then the member's name line (:func:`_member_name_line`), the member's
+    profile block (:func:`_member_profile_block`, WS-63 PZ-2), the member's
     number-system line (:func:`run_number_system`), and last today's date
     (``acb_common.today.today_line``). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
@@ -8765,6 +8894,14 @@ def _context_preamble_parts(
     member_line = _member_name_line(agent_name)
     if member_line:
         parts.append(member_line)
+
+    # WS-63 PZ-2 (personalization.md §5.1): the member's own profile, for
+    # the orchestrator in a solo run with a verified member, behind
+    # ASSISTANT_PROFILE_ENABLED. From the run boundary, never the payload
+    # (R5). After the name line, so every block above keeps its place.
+    profile_block = _member_profile_block(agent_name)
+    if profile_block:
+        parts.append(profile_block)
 
     # The member's number system, one line (owner, 2026-10-19): lakh and
     # crore by default. From the run boundary, never from the payload (R5).

@@ -49,8 +49,10 @@ calendar seed (``_seed_from_work_schedule``), exactly as ``prefs.py`` does.
 
 The member comes from the session and the tenant from the bound session,
 never from the body (R5, R11). Each body forbids an extra field. The routes
-need no feature, as ``/auth/me/shell`` needs none. No flag: nothing reads the
-profile before PZ-2, and PZ-2 adds the flag. Fences:
+need no feature, as ``/auth/me/shell`` needs none. The routes take no flag.
+The per-turn block of PZ-2 reads the profile behind
+``ASSISTANT_PROFILE_ENABLED``. The shape, the caps and the lenient read are
+``acb_common.assistant_profile``, the one parser. Fences:
 ``tests/unit/test_assistant_profile.py`` and
 ``tests/unit/test_assistant_profile_r8.py`` (R8).
 """
@@ -59,13 +61,49 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-import unicodedata
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
+
+# The shape, the caps and the lenient read live in ONE parser, which the
+# executor's per-turn block reads too (WS-63 PZ-2). This module keeps the
+# models, the write SQL and the routes.
+from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
+    ALIAS_MAX,
+    ALIASES_MAX,
+    EMAIL_MAX,
+    FACT_KINDS,
+    FACT_MAX,
+    FACT_SOURCES,
+    FACTS_MAX,
+    FORMALITY,
+    GREETING,
+    LANGUAGE_MAX,
+    LENGTH,
+    NAME_MAX,
+    NOTE_MAX,
+    NOTES_MAX,
+    PROFILE_MAX,
+    PROFILE_VERSION,
+    PUT_KEYS,
+    _as_dict,
+    _choice,
+    _clean_address,
+    _clean_style,
+    _email,
+    _lenient,
+    _object,
+    _stored_alias,
+    _stored_fact,
+    _stored_keys,
+    _text,
+    empty_profile,
+    mark_changed,
+    profile_size,
+    stored_profile,
+)
 from fastapi import Body, Depends, HTTPException, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
@@ -73,127 +111,16 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, mo
 
 logger = logging.getLogger(__name__)
 
-#: The version of the shape. The first write sets it.
-PROFILE_VERSION = 1
-#: The most characters of the whole profile, as compact JSON (§4.2 budget).
-PROFILE_MAX = 6_000
-#: ``address.name``.
-NAME_MAX = 40
-#: ``style.language``, a BCP 47 tag.
-LANGUAGE_MAX = 16
-#: ``style.notes``: the most items, and the longest item.
-NOTES_MAX = 5
-NOTE_MAX = 200
-#: ``facts``: the most items, and the longest text.
-FACTS_MAX = 40
-FACT_MAX = 300
-#: ``aliases``: the most items, and the longest alias.
-ALIASES_MAX = 50
-ALIAS_MAX = 60
-#: The longest address that an alias takes (RFC 5321).
-EMAIL_MAX = 254
-
-PUT_KEYS: tuple[str, ...] = ("learning", "address", "style")
-FORMALITY: tuple[str, ...] = ("casual", "neutral", "formal")
-GREETING: tuple[str, ...] = ("none", "brief", "warm")
-LENGTH: tuple[str, ...] = ("short", "default", "detailed")
-FACT_KINDS: tuple[str, ...] = ("about", "routine", "preference", "work", "relationship")
-FACT_SOURCES: tuple[str, ...] = ("chat", "whatsapp", "settings")
-
 FactKind = Literal["about", "routine", "preference", "work", "relationship"]
-
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_LANGUAGE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
-
-
-def empty_profile() -> dict[str, Any]:
-    """The profile of a member who set nothing (§4.2 defaults)."""
-    return {"v": PROFILE_VERSION, "learning": True, "address": {}, "style": {},
-            "aliases": [], "facts": []}
 
 
 # ── Strict cleaning (the write) ────────────────────────────────────────────
-
-
-def _text(value: Any, cap: int, what: str) -> str:
-    """One line of free text: a string, trimmed, not empty, at most ``cap``
-    characters, with no control character and no lone surrogate."""
-    if not isinstance(value, str):
-        raise ValueError(f"{what} is text")
-    out = value.strip()
-    if not out:
-        raise ValueError(f"{what} is empty")
-    if len(out) > cap:
-        raise ValueError(f"{what} is longer than {cap} characters")
-    # The text goes into a prompt. Postgres stores no NUL, and jsonb refuses
-    # a lone surrogate (a JS `slice()` through an emoji), which is a 503 and
-    # not a 422 unless the route refuses it first.
-    if any(unicodedata.category(ch) in ("Cc", "Cs") for ch in out):
-        raise ValueError(f"{what} holds a control character or a lone surrogate")
-    return out
-
-
-def _choice(value: Any, choices: tuple[str, ...], what: str) -> str:
-    if value not in choices:
-        raise ValueError(f"{what} is one of {', '.join(choices)}")
-    return str(value)
-
-
-def _email(value: Any) -> str:
-    out = _text(value, EMAIL_MAX, "the email")
-    if not _EMAIL.match(out):
-        raise ValueError("the email is not an address")
-    return out
-
-
-def _object(value: Any, keys: tuple[str, ...], what: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{what} is an object")
-    unknown = [k for k in value if k not in keys]
-    if unknown:
-        # The message names the known keys, never the member's. A key with a
-        # lone surrogate cannot be encoded, and it made this a 500 (PZ-1
-        # review, P2).
-        raise ValueError(f"{what} has an unknown key. Known keys: {', '.join(keys)}")
-    return value
 
 
 def _clean_learning(value: Any) -> bool:
     if not isinstance(value, bool):
         raise ValueError("learning is true or false")
     return value
-
-
-def _clean_address(value: Any) -> dict[str, Any]:
-    raw = _object(value, ("name", "formality", "greeting"), "the address")
-    out: dict[str, Any] = {}
-    if "name" in raw:
-        out["name"] = _text(raw["name"], NAME_MAX, "address.name")
-    if "formality" in raw:
-        out["formality"] = _choice(raw["formality"], FORMALITY, "address.formality")
-    if "greeting" in raw:
-        out["greeting"] = _choice(raw["greeting"], GREETING, "address.greeting")
-    return out
-
-
-def _clean_style(value: Any) -> dict[str, Any]:
-    raw = _object(value, ("length", "language", "notes"), "the style")
-    out: dict[str, Any] = {}
-    if "length" in raw:
-        out["length"] = _choice(raw["length"], LENGTH, "style.length")
-    if "language" in raw:
-        lang = _text(raw["language"], LANGUAGE_MAX, "style.language")
-        if not _LANGUAGE.match(lang):
-            raise ValueError("style.language is a BCP 47 tag")
-        out["language"] = lang
-    if "notes" in raw:
-        notes = raw["notes"]
-        if not isinstance(notes, list):
-            raise ValueError("style.notes is a list of lines")
-        if len(notes) > NOTES_MAX:
-            raise ValueError(f"style.notes holds at most {NOTES_MAX} lines")
-        out["notes"] = [_text(n, NOTE_MAX, "a style note") for n in notes]
-    return out
 
 
 _CLEAN = {"learning": _clean_learning, "address": _clean_address, "style": _clean_style}
@@ -283,90 +210,6 @@ class AliasPatch(BaseModel):
                 getattr(self, k) is None for k in self.model_fields_set):
             raise ValueError("a change names the alias or the email")
         return self
-
-
-# ── Lenient reading (the answer) ───────────────────────────────────────────
-
-
-def _lenient(clean: Any, value: Any) -> Any:
-    try:
-        return clean(value)
-    except ValueError:
-        return None
-
-
-def _stored_fact(item: Any) -> dict[str, Any] | None:
-    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-        return None
-    text = _lenient(lambda v: _text(v, FACT_MAX, "a fact"), item.get("text"))
-    if text is None:
-        return None
-    # A kind this build does not know (a later slice may add one) reads as
-    # ``about``. The fact still counts against the caps, so the member must
-    # see it to delete it (PZ-1 verify, finding 2).
-    kind = item.get("kind") if item.get("kind") in FACT_KINDS else "about"
-    out: dict[str, Any] = {"id": item["id"], "text": text, "kind": kind}
-    if item.get("source") in FACT_SOURCES:
-        out["source"] = item["source"]
-    if isinstance(item.get("at"), str):
-        out["at"] = item["at"]
-    return out
-
-
-def _stored_alias(item: Any) -> dict[str, Any] | None:
-    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-        return None
-    alias = _lenient(lambda v: _text(v, ALIAS_MAX, "an alias"), item.get("alias"))
-    email = _lenient(_email, item.get("email"))
-    if alias is None or email is None:
-        return None
-    return {"id": item["id"], "alias": alias, "email": email}
-
-
-def _stored_keys(raw: Any, clean: Any) -> dict[str, Any]:
-    """The keys of ``address`` or ``style`` that pass their own check."""
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[str, Any] = {}
-    for k, v in raw.items():
-        one = _lenient(clean, {k: v})
-        if one:
-            out.update(one)
-    return out
-
-
-def _as_dict(raw: Any) -> Any:
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except ValueError:
-            return None
-    return raw
-
-
-def stored_profile(raw: Any) -> dict[str, Any]:
-    """A stored value, as the routes answer it. Lenient on purpose: a key or
-    an item of the wrong shape drops from the answer rather than fail the
-    read. A key that is absent takes its §4.2 default."""
-    raw = _as_dict(raw)
-    out = empty_profile()
-    if not isinstance(raw, dict):
-        return out
-    if isinstance(raw.get("learning"), bool):
-        out["learning"] = raw["learning"]
-    out["address"] = _stored_keys(raw.get("address"), _clean_address)
-    out["style"] = _stored_keys(raw.get("style"), _clean_style)
-    for key, one, cap in (("facts", _stored_fact, FACTS_MAX),
-                          ("aliases", _stored_alias, ALIASES_MAX)):
-        items = raw.get(key)
-        if isinstance(items, list):
-            out[key] = [x for x in map(one, items) if x is not None][:cap]
-    return out
-
-
-def profile_size(profile: Any) -> int:
-    """The characters of a profile, as compact JSON. The §4.2 budget."""
-    return len(json.dumps(profile, ensure_ascii=False, separators=(",", ":")))
 
 
 # ── SQL ────────────────────────────────────────────────────────────────────
@@ -527,16 +370,24 @@ def _validate(model: type[BaseModel], body: Any) -> Any:
 
 async def _write(uid: str, op: str, fn: Any) -> Any:
     """Run ``fn(db)`` in one tenant session. A 4xx passes through, and any
-    other fault is a 503 with no detail."""
+    other fault is a 503 with no detail.
+
+    Every write route goes through here. After the session commits, the
+    write moves the member's change count (``mark_changed``), so the
+    executor's cached block of this member is read again on the next turn
+    (PZ-2, ``personalization.md`` §5.1). A 4xx or a 503 moves nothing.
+    """
     try:
         async with _tenant_session() as db:
-            return await fn(db)
+            result = await fn(db)
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("auth.assistant_profile.%s_failed", op,
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
+    mark_changed(uid)
+    return result
 
 
 def _new_id(prefix: str) -> str:

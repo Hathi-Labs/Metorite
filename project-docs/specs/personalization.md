@@ -2,7 +2,15 @@
 
 **Status: PROPOSED, 2026-10-23. PZ-1 BUILT 2026-10-23** (migration 294,
 the routes of §4.3 in `routes/admin/assistant_profile.py`, and the fix of
-§2.1). No flag yet, and nothing reads the profile until PZ-2.
+§2.1). **PZ-2 BUILT 2026-10-23 (dark, ASSISTANT_PROFILE_ENABLED off).** The
+executor adds the block of §5.1, and `acb_common/assistant_profile.py` is the
+one parser of the profile. Repair round 1 (2026-10-24): only a private room
+of one is solo, and a detached run is never solo. A profile write ends the
+cached block.
+
+**PZ-7 BUILT 2026-10-23**, dark: the route `/settings/assistant`, behind
+`NEXT_PUBLIC_ASSISTANT_PROFILE` (off). A link row on Appearance is the way in.
+The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
 
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
@@ -232,11 +240,27 @@ The block reaches a run only when all four hold:
 2. The agent is `orchestrator`. The WhatsApp run uses that agent too.
 3. The run has a verified member (`_verified_run_member`), from the run
    boundary and never from the payload.
-4. The run is not in a shared room. The run boundary carries the same
-   `shared` bit that `memory_preread` reads.
+4. The run is in a solo room. `run_agent` and `run_agent_stream` take a
+   `solo_room` keyword from the run boundary. The payload never sets it.
+   - The web chat route passes `room_is_solo(room)` from
+     `gateway/rooms.py`. Only a private room of one is solo. A room of one
+     with visibility `org` or `people` is not solo, because other members
+     can read it.
+   - The WhatsApp run passes `not shared`.
+   - A run that passes nothing keeps the value of its parent run. A
+     sub-agent that answers into the same chat inherits it. A run that no
+     run starts has the default, which is not solo.
+   - A detached run passes `False`, because `asyncio.create_task` copies
+     the parent's value and its output does not go to the member's solo
+     chat. The three are the workflow agent node, the background sub-task
+     and the task dispatch of an assigned agent.
 
 The read follows `_run_member_display_name`: one read, a cache per
-`(org, member)` with a 60-second life, and no exception escapes. The block is
+`(org, member)` with a 60-second life, and no exception escapes. Each
+committed write of the profile routes moves a change count of the member in
+that process (`assistant_profile.mark_changed`). The executor reads again on
+the next turn when the count moved. The gateway runs the executor in the
+same process, so an edit shows on the next turn. The block is
 byte-stable between writes, so it sits well in the cached prefix
 (`llm_caching_memory.md`).
 
@@ -350,6 +374,7 @@ conversation (WS-47). That org's profile applies.
    member asks, or says yes. It never extracts a fact from a chat in silence.
 2. **The member sees everything.** Settings → Assistant shows every key and
    every fact, with its source and date. Each fact has Edit and Delete.
+   An alias carries only `{id, alias, email}`, so it shows no source or date.
 3. **One switch.** "Let the assistant remember what I tell it." Off stops
    every write. The assistant still reads the profile. The member can delete
    it.
@@ -393,12 +418,12 @@ Each slice is one PR. Each lands dark. The risk tier follows
 |---|---|---|---|---|
 | **PZ-0** | #243, #244, #245, #246 | This spec, the INDEX row and the board row | The spec merges | AGENT-SAFE · LOW |
 | **PZ-1** | #247 | The migration, the API of §4.3, and the fix of §2.1 | The tests of §10 pass against a real database. `save_memory` with Mem0 off answers that memory is off | AGENT-SAFE · **HIGH** (migration, tenancy) |
-| **PZ-2** | #256 | `_member_profile_block` in the preamble, behind the flag, with the four conditions of §5.1 | A unit test shows the block for a solo run, and no block for a shared room, for a run with no member, and with the flag off. A test shows that no block above it moves | AGENT-SAFE · MEDIUM |
+| **PZ-2** | #256 | `_member_profile_block` in the preamble, behind the flag, with the four conditions of §5.1 | A unit test shows the block for a solo run, and no block for a shared room, for a run with no member, and with the flag off. A test shows that no block above it moves | AGENT-SAFE · **HIGH** (a privacy boundary and the run identity) |
 | **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | The eval of PZ-10 shows `short` answers shorter than `default` on the same prompts | AGENT-SAFE · MEDIUM |
 | **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order. My Day shows the profile name | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value | AGENT-SAFE · MEDIUM |
-| **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density | AGENT-SAFE · LOW |
+| **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all, the switch, and the purge when access ends | A real-database test for each. A removed member leaves no profile | AGENT-SAFE · **HIGH** (a member write) |
 | **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text | AGENT-SAFE · LOW |
@@ -421,10 +446,12 @@ Run from the repository root. R8 needs a database first:
 uv run pytest tests/unit/test_assistant_profile.py tests/unit/test_assistant_profile_r8.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_memory_tools_dark.py -q
 # PZ-2 to PZ-6
-uv run pytest tests/unit/test_executor_profile_block.py tests/unit/test_profile_tools.py -q
+uv run pytest tests/unit/test_executor_profile_block.py tests/unit/test_executor_profile_block_r8.py -q
+uv run pytest tests/unit/test_profile_tools.py -q
 uv run pytest tests/unit/test_resolve_person_r8.py -q
 # PZ-7
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/settings
+cd workbench/control_plane && npx tsc --noEmit
+cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/assistantProfileFlag.test.ts src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
 # PZ-10
 uv run python -m evals.personalization --offline
 ```

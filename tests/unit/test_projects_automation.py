@@ -613,8 +613,10 @@ def test_the_run_is_handed_a_dict_payload_and_the_tenant_as_a_keyword(
     assert isinstance(payload, dict), f"run_agent was handed {type(payload).__name__}"
     assert "Ship the thing" in payload["message"]
     assert payload["source"] == agent_dispatch.RUN_SOURCE
-    # The tenant is a keyword. The payload is agent-visible (R5, R11).
-    assert kwargs == {"organization_id": DEFAULT_ORGANIZATION}
+    # The tenant is a keyword. The payload is agent-visible (R5, R11). The
+    # run is never solo: its reply goes on the task timeline (WS-63 PZ-2,
+    # personalization.md §5.1).
+    assert kwargs == {"organization_id": DEFAULT_ORGANIZATION, "solo_room": False}
     assert "organization_id" not in payload
 
 

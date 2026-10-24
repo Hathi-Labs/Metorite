@@ -1679,6 +1679,9 @@ async def _model_answer(req: RunRequest, message: str,
                     organization_id=req.organization_id,
                     # H-73: the member who pays is the link's member.
                     session_user=req.member_email,
+                    # WS-63 PZ-2: the link's thread is the member's own. A
+                    # room is refused before the run, and `shared` says so.
+                    solo_room=not shared,
                 ),
                 timeout=RUN_TIMEOUT_S,
             ))

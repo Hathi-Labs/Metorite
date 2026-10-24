@@ -124,6 +124,14 @@ and streams chat responses as AG-UI events.
    - A Copilot tool runs in its own copy of the run context (`carry_run_context`). The copy points at the same object, so the limit of 2 cards holds across the calls of one run.
    - Never give the ContextVar a mutable default. Fences: `tests/unit/test_crm_questions_chat.py` and `tests/unit/test_crm_agent.py`.
 
+24. **The orchestrator's per-turn context carries the member's own profile block** (WS-63 PZ-2, `project-docs/specs/personalization.md` §5.1).
+   - `_member_profile_block` sits in `_context_preamble_parts` after the name line and before the number-system line. Only the agent `orchestrator` gets it.
+   - It needs `ASSISTANT_PROFILE_ENABLED`, a verified member (`_verified_run_member`), an org (`_current_run_org`) and `_RUN_SOLO_ROOM` True. A run that fails one reads nothing.
+   - `_RUN_SOLO_ROOM` defaults to False. `run_agent` and `run_agent_stream` take `solo_room`. The web chat route passes `not _room_is_shared`, and the WhatsApp run passes `not shared`.
+   - `None` keeps the parent's value, so a delegated run cannot widen it. Never read it from the payload, and never copy `_kb_index_key`, whose memory id comes from the payload.
+   - `_PROFILE_CACHE` keeps the block per org and member for 60 s, and caches a miss. `acb_common.assistant_profile` renders it, at most 6,000 characters.
+   - Fences: `tests/unit/test_executor_profile_block.py` and `tests/unit/test_executor_profile_block_r8.py` (R8).
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature
