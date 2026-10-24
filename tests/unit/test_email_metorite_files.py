@@ -125,7 +125,7 @@ async def test_a_page_goes_as_its_markdown_with_a_safe_name(stores) -> None:
     [f] = await mf.resolve_metorite_files(_user(), [f"knowledge:{PAGE}"])
     assert f.name == "Price list 2026.md" and f.mime == "text/markdown"
     assert f.content == b"# Prices\n\nA: 10" and f.size == len(f.content)
-    assert f.digest == hashlib.sha256(f.content).hexdigest()
+    assert f.digest == mf.file_digest(f.name, f.content)
     assert stores["reads"] == [("page", F.MEMBER, PAGE)]
 
 
@@ -353,3 +353,61 @@ async def test_a_file_the_member_cannot_see_asks_no_card(monkeypatch) -> None:
                                   attachments=[f"task-file:{TASK_FILE}"])
     assert out.startswith("Not sent.") and mf.FILE_NOT_VISIBLE in out
     assert cards == []
+
+
+# ── Review fix round 1 (P1): the held workspace by any spelling ─────────────
+
+
+@pytest.mark.parametrize("agent", ["email-assistant", "agent-email-assistant",
+                                   "Agent-Email-Assistant", "EMAIL-ASSISTANT"])
+async def test_p1_a_held_chat_refuses_its_own_workspace_by_any_name(
+    stores, agent: str,
+) -> None:
+    """The workspace resolver adds and strips ``agent-``. Mutation: compare
+    the raw name only → red."""
+    stores["artifacts"][f"{agent}:outputs/run.pdf"] = b"%PDF-run"
+    with pytest.raises(HTTPException) as e:
+        await mf.resolve_metorite_files(_user(), [f"artifact:{agent}:outputs/run.pdf"],
+                                        held=True)
+    assert e.value.status_code == 422 and e.value.detail == H.HELD_WORKSPACE_REFUSED
+    assert not [r for r in stores["reads"] if r[0] == "artifact"]
+
+
+async def test_p1_a_path_that_climbs_is_refused_in_a_held_chat(stores) -> None:
+    ref = "artifact:projects-assistant:../email-assistant/outputs/run.pdf"
+    with pytest.raises(HTTPException) as e:
+        await mf.resolve_metorite_files(_user(), [ref], held=True)
+    assert e.value.status_code == 422
+
+
+async def test_p1_the_resolved_workspace_decides(stores, monkeypatch, tmp_path) -> None:
+    """Two names that resolve to ONE workspace are one workspace. Mutation:
+    drop the resolved-path compare → red."""
+    from gateway.routes import workspace
+
+    held_dir = tmp_path / "state" / "agent-email-assistant"
+    monkeypatch.setattr(workspace, "_member_agent_workspace",
+                        lambda agent, email: held_dir if "mail" in agent else tmp_path / "x")
+    stores["artifacts"]["mailbox-helper:outputs/run.pdf"] = b"%PDF-run"
+    with pytest.raises(HTTPException):
+        await mf.resolve_metorite_files(
+            _user(), ["artifact:mailbox-helper:outputs/run.pdf"], held=True)
+
+
+# ── Review fix round 1 (P3): the digest covers the name ─────────────────────
+
+
+async def test_p3_a_rename_after_the_card_sends_nothing(stores) -> None:
+    [f] = await mf.resolve_metorite_files(_user(), [f"knowledge:{PAGE}"])
+    stores["pages"][PAGE].title = "Something else"
+    [again] = await mf.resolve_metorite_files(_user(), [f"knowledge:{PAGE}"])
+    assert again.content == f.content
+    with pytest.raises(HTTPException) as e:
+        mf.check_digests([again], {f.ref: f.digest})
+    assert e.value.status_code == 409
+
+
+async def test_p3_the_digest_names_the_name_and_the_bytes(stores) -> None:
+    [f] = await mf.resolve_metorite_files(_user(), [f"knowledge:{PAGE}"])
+    assert f.digest == mf.file_digest(f.name, f.content)
+    assert f.digest != hashlib.sha256(f.content).hexdigest()

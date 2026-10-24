@@ -22,7 +22,7 @@ So no new access path exists: each file resolves as the member, through the
 read that the app itself uses, and a file the member cannot see is a 404.
 The bytes of one send are capped as a held send caps them
 (``automation.held_card.MAX_FILES_BYTES``). Each file carries the SHA-256 of
-its bytes, so a send acts only when the file is still the file that the
+its name and its bytes (``file_digest``), so a send acts only when the file is still the file that the
 card named (409 else). Fence: ``tests/unit/test_email_metorite_files.py``.
 """
 from __future__ import annotations
@@ -85,6 +85,45 @@ def _not_visible() -> HTTPException:
     return HTTPException(status_code=404, detail=FILE_NOT_VISIBLE)
 
 
+def _bare_agent(name: str) -> str:
+    """An agent name as the workspace resolver reads it: lower case, with
+    no ``agent-`` head (``workspace._agent_clone_dir`` adds and strips it)."""
+    n = name.strip().lower()
+    return n[len("agent-"):] if n.startswith("agent-") else n
+
+
+def _is_held_workspace(agent: str, path: str, email: str | None) -> bool:
+    """True when the file may lie in the held run's own workspace (review
+    fix round 1, P1). It fails closed: the name in any spelling, a path that
+    climbs (``..``), and a name whose RESOLVED workspace is the held one."""
+    from acb_skills.held_card import HELD_WORKSPACE_AGENT
+
+    if _bare_agent(agent) == _bare_agent(HELD_WORKSPACE_AGENT):
+        return True
+    if ".." in path.replace("\\", "/").split("/"):
+        return True
+    try:
+        from gateway.routes.workspace import _member_agent_workspace
+
+        mine = _member_agent_workspace(agent, email)
+        held = _member_agent_workspace(HELD_WORKSPACE_AGENT, email)
+    except Exception:  # an unknown answer refuses
+        return True
+    if mine is None or held is None:
+        return False  # the read below finds no file, and refuses it
+    return Path(mine).resolve() == Path(held).resolve()
+
+
+def file_digest(name: str, content: bytes) -> str:
+    """The SHA-256 of the name as the card shows it and of the bytes (review
+    fix round 1, P3). A rename after the card changes it, so nothing goes."""
+    h = hashlib.sha256()
+    h.update(name.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(content)
+    return h.hexdigest()
+
+
 async def _artifact(user: UserContext, spec: str, *, held: bool) -> tuple[str, bytes, str]:
     from acb_skills.held_card import HELD_WORKSPACE_AGENT, HELD_WORKSPACE_REFUSED
     from gateway.routes.email.transport.send import (
@@ -93,7 +132,7 @@ async def _artifact(user: UserContext, spec: str, *, held: bool) -> tuple[str, b
     )
 
     agent, _, path = spec.partition(":")
-    if held and agent.strip().lower() == HELD_WORKSPACE_AGENT:
+    if held and _is_held_workspace(agent, path, user.email):
         raise HTTPException(status_code=422, detail=HELD_WORKSPACE_REFUSED)
     [got] = load_artifact_attachments(
         [ArtifactAttachment(path=path, agent=agent)], user.email)
@@ -174,7 +213,7 @@ async def resolve_metorite_files(
                 "so nothing was sent."))
         out.append(MetoriteFile(ref=key, source=source, name=name, size=len(content),
                                 mime=mime, content=content,
-                                digest=hashlib.sha256(content).hexdigest()))
+                                digest=file_digest(name, content)))
     return out
 
 
