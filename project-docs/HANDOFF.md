@@ -6228,6 +6228,12 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** measure which jobs hold the connections. Then raise the pool
   size, or cap the jobs' concurrency. Check the Postgres connection limit
   first.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** the pooler has no
+  spare slot, so there is no second pool. A task marked background (the
+  mailbox sync loop, and each post-sync job through `as_mailbox_owner`) holds
+  at most `DB_BACKGROUND_MAX` (default 4) of the 9 connections. Members keep
+  5. Fence: `tests/unit/test_db_background_lane.py`. Not measured on
+  production. Keep this entry until the Check holds for a week.
 - **Authority:** `engineering_practice.md` §1
 - **Added:** 2026-10-23 · email chat session
 

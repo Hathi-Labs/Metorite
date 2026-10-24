@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
+from acb_common.db import mark_background, release_background
 from email_ingestion.post_sync import register_post_sync_hooks
 from gateway.db import current_tenant
 from gateway.routes.email.core import _get_db, _log, _tenant_session
@@ -75,12 +76,18 @@ def as_mailbox_owner(fn: Any) -> Any:
         from acb_common import job_member_scope
         from email_ingestion.llm_cap import automation_scope
 
-        owner = await mailbox_owner(account_id)
-        with (
-            job_member_scope(owner, app="email", agent="email.automation"),
-            automation_scope(account_id),
-        ):
-            return await fn(account_id, *args, **kwargs)
+        # H-390: a job holds a bounded share of the pool, so a member read
+        # keeps its headroom. The mark covers the owner read below too.
+        bg = mark_background()
+        try:
+            owner = await mailbox_owner(account_id)
+            with (
+                job_member_scope(owner, app="email", agent="email.automation"),
+                automation_scope(account_id),
+            ):
+                return await fn(account_id, *args, **kwargs)
+        finally:
+            release_background(bg)
 
     return _wrapped
 

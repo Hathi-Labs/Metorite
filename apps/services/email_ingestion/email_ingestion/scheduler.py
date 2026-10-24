@@ -47,6 +47,8 @@ from acb_common.db import (
     bind_tenant,
     current_tenant,
     get_db,
+    mark_background,
+    release_background,
     release_tenant,
     tenant_session,
 )
@@ -1228,10 +1230,16 @@ async def _sync_account(
         try:
             # This cycle fetches after each skip made before it starts.
             _sync_rerun.discard(key)
-            result = await _sync_cycle(
-                account_id, organization_id=organization_id,
-                deep=deep, since=since, purge=purge, reset_cursor=reset_cursor,
-                from_loop=from_loop)
+            # H-390: the loop's cycle (fetch, write, embed) is background
+            # work. It holds a bounded share of the pool.
+            bg = mark_background() if from_loop else None
+            try:
+                result = await _sync_cycle(
+                    account_id, organization_id=organization_id,
+                    deep=deep, since=since, purge=purge,
+                    reset_cursor=reset_cursor, from_loop=from_loop)
+            finally:
+                release_background(bg)
             return await _rerun_once(key, account_id, organization_id, result)
         finally:
             lock.release()
