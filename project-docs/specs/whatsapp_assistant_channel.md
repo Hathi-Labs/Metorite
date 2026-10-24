@@ -1,6 +1,13 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-P2, WAC-P3 and WAC-P4 built (2026-10-19, owner directive).
+**Status:** H-391 built on the branch `email-whatsapp-confirm`, not merged
+(2026-10-24, owner directive). The email writes of the chat work from
+WhatsApp: archive, label, move, reply, send a draft, schedule, forward and
+new mail. Each one parks, and the member approves it with a reply code. It is
+dark behind `WHATSAPP_ASSISTANT_WRITES`, which the owner turns on per org
+(§18).
+
+WAC-P2, WAC-P3 and WAC-P4 built (2026-10-19, owner directive).
 A WhatsApp run now reads the member's memory and gets the org's MCP servers,
 as a web run does. After an email assistant answer, an egress call asks for
 the member's Confirm button, and it is not refused. WAC-P5, a file that is
@@ -1405,7 +1412,7 @@ buttons, as on any chat. `whatsapp_ui` refuses the titles "Confirm" and
 - **Still refused:** a card with rows, a form, `ask_questions`,
   `move_task`, and every card tool outside Projects (email, CRM and any other
   caller of `request_confirmation`). Each one stays under `refuse_cards`,
-  until a later slice names it.
+  until a later slice names it. §18 names six email tools (H-391, 2026-10-24).
 
 This is D-WAC-4 as a rule of this spec: no class C or class X act runs from
 WhatsApp. A stolen phone can create or edit a task, which the web app can
@@ -2004,3 +2011,155 @@ no.
 | Each org reads its own module names | `tests/unit/test_org_facts.py` |
 | A mixed-case settings row reads and saves in place (R8) | `tests/unit/test_number_system_r8.py` |
 | The stat tile groups by the member's system | `numberFormat.test.ts`, `reportView.test.ts` |
+
+## 18. Amendment of 2026-10-24: email writes from WhatsApp, approved with a reply code (H-391)
+
+**The owner's rule.** A channel changes delivery, never function (2026-10-10).
+Before this change, each email write on WhatsApp answered "ask in the app".
+The cause was `_NO_CARD_CHANNEL` in `agent-email-assistant/agents.py`. The
+owner wants every email job to work from the chat (HANDOFF H-391).
+
+This section amends §14.4. §14.4 kept every email card refused. Now the email
+acts of 18.1 park, and a reply code approves them. Every other card stays as
+§14.4 says.
+
+### 18.1 Which acts
+
+The email assistant's card of one of six tools parks
+(`whatsapp_acts.EMAIL_ACTS`):
+
+| Tool | The act |
+|---|---|
+| `manage_inbox` | Archive, label, move, read, star, trash or spam |
+| `compose_reply` | A reply, with its reply form (§18 of the email plan) |
+| `send_draft` | A send of a draft |
+| `schedule_send` | A send of a draft at a later time |
+| `forward_email` | A forward, with its files |
+| `send_email` | A new mail |
+
+A card parks only when the email assistant itself calls the tool. The agent
+name comes from the run binding, never from input. Reads stay as they are.
+Every other email card keeps `_NO_CARD_CHANNEL`, and so does a WhatsApp run
+with writes off. That run has no reply path.
+
+### 18.2 The design: park, summary, code
+
+1. **Ask.** With writes on (§14.6), the card parks as a WAC-4 act does. Unlike
+   §14.4, a card with tick-box rows parks, and so does a reply form. The
+   stored card text holds each row and each field that the send uses
+   (`whatsapp_acts.email_card_text`).
+2. **The record.** One row in `whatsapp_pending_acts`, as §14.3 item 2 says.
+   Migration 298 adds `confirm_code_hash` and `wrong_codes`. The first holds
+   an HMAC-SHA256 of the code, keyed with `gateway_session_secret`, and never
+   the code. NULL is a Confirm-button act, so §14 does not change.
+3. **The summary.** `bot_run` sends one text with no buttons. It holds all
+   that the card shows: the act, the mailbox and each person with a number.
+   Each person has its class mark and its look-alike warning, if any. It also
+   holds the subject and the whole text.
+4. **Never cut.** A text longer than 4096 characters goes over parts, and
+   each part shows "(2/3)". The split drops no character
+   (`whatsapp_acts.code_summary_parts`). The code is in the last part only.
+   That part names the act, so the code counts once Meta took it.
+5. **The code.** Four symbols from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, from
+   `secrets`. It works once, for 15 minutes after the summary went out.
+
+### 18.3 The member's reply
+
+`whatsapp_acts.parse_code_answer` reads the reply, and `acts._settle_code`
+settles it before any run:
+
+| Reply | Result |
+|---|---|
+| `YES 7K3Q` | Metorite approves the act with the lines that start ticked |
+| `YES 7K3Q WITHOUT 2` | Metorite leaves out line 2 |
+| `YES 7K3Q WITH 3` | Metorite adds line 3. A new address starts unticked, so it needs this |
+| `NO` | The act closes as `cancelled` |
+| A wrong code | Nothing. The act stays, and the reply says why. The fifth wrong code closes the act as `void` |
+| `YES` with no code | Nothing. The act stays, and the reply says why |
+| A quoted reply | Nothing. The act stays, and the reply says why |
+| Extra words after `YES` | Nothing. The act stays, and the reply says why |
+| A text that holds the code, such as a pasted summary | Nothing. The act stays |
+| A forwarded message with a code | `inbound` refuses it before any run |
+| A code after the expiry | The act closes as `expired` |
+| A code from another phone | Nothing. No act waits for that phone |
+| A reused code | Nothing. The claim moved the act from `pending` |
+| Any other message | The act closes as `void`, and the message runs as normal |
+
+**Only the member's phone.** `_live_act` reads the act of the sender's
+`wa_id`, which Meta's signed webhook names. The message body names no phone.
+The link row must still be current, as §14.5 says.
+
+**The numbers.** A number must name a line of the summary. No number may be
+in both lists, and the act must keep one To line. A card with no list takes
+no number. The reply then says to approve the card as shown, or to ask for
+the change.
+
+### 18.4 The approval
+
+`settle` claims the act and gives `Approved` of kind `email`, with the
+numbers. `bot_run` runs the model again inside `whatsapp_acts.approving_email`.
+The turn names the tool and its stored arguments. The member's text is not in
+it, because code already applied the numbers.
+
+1. **One call gets the yes.** The FIRST email call that matches gets it.
+   The email assistant must make it, with the stored tool and exactly the
+   stored arguments. Its card text must also equal the stored text. The text
+   alone does not bind the call, because a card shows 20 messages and a
+   count (review P1). Any other call parks again, so the member sees its own
+   summary and a new code.
+2. **A plain card** gets True, and the tool acts as it does on the web.
+3. **A held send card** (§21 of the email plan) gets a `RowsAnswer`. It holds
+   the rows that start ticked, minus WITHOUT, plus WITH.
+4. **A reply form** gets a `ReplyAnswer` with the people that the member kept.
+5. **The record.** For items 3 and 4, the approval records the answer with
+   `reply_card.record_reply_answer`, as respond-input does for a web card. The
+   key holds the thread, the card id and the member of the link row. The act
+   route then takes it once and sends exactly the recorded rows.
+6. **A failed record is no approval.** Nothing is sent.
+
+**The reply text stays the same.** Before its card, `compose_reply` pins its
+text and its Reply or Reply all choice (`whatsapp_acts.pin_arguments`). The
+approval run then sends that text, and the server writes no new one. A reply
+with no text does not park.
+
+**One act at a time.** A second email card in the same run gets
+`EMAIL_WAITING_TEXT`, and the tool writes nothing.
+
+### 18.5 What did not change
+
+- `WHATSAPP_ASSISTANT_WRITES` still turns this on, per org (§14.6). It is
+  default OFF. Turning it on for an org is the owner's act (WAC-9).
+- `EMAIL_HELD_CARD_SEND` still decides whether a held chat gets the held send
+  card. The owner flips it (§21.8 of the email plan).
+- §21 holds in a held chat. A new address starts unticked. The gateway refuses a Bcc to a new
+  address when it builds the card, and it flags a look-alike.
+- The Projects acts of §14 keep their Confirm and Cancel buttons.
+
+### 18.6 Known limits
+
+1. **A plain send card has no list.** In a chat that read no outside mail,
+   `send_email`, `forward_email`, `send_draft` and `schedule_send` show a plain
+   card. Its people are in the text, with no numbers. The member approves it
+   as shown, or replies NO and asks for the change.
+2. **The approval runs the model again.** The model can make another call, or
+   none. Then no card gets the yes, and the act closes as `void` with `unused`.
+   The WAC-P4 Confirm has the same limit.
+3. **A card that changed asks again.** An approval run can build another
+   card, for example when the draft changed. That card parks with a new code.
+4. **The thread keeps the summary.** No model runs while the act waits,
+   because any other message voids the act first.
+5. **A card that the gate cuts does not park.** `request_confirmation` cuts
+   a long title, detail or context. Such a card would show less than the act
+   sends, so it does not park, and the tool answers `EMAIL_TOO_LONG_TEXT`.
+
+### 18.7 Acceptance and fences (H-391)
+
+| # | Check | Fence |
+|---|---|---|
+| E1 | An archive, a reply and a held send park, and write nothing | `tests/unit/test_wac_email_confirm.py` |
+| E2 | The summary holds each person with a number and a mark, the subject and the whole text. A long text splits and is never cut. The code is in the last part only | the same file, `h391-summary-whole` |
+| E3 | The right code from this phone approves. A wrong, expired or reused code, a quoted reply, a pasted summary and another phone do nothing | the same file, `h391-code-bound` |
+| E4 | WITHOUT drops a line. A new address gets nothing unless WITH names it | the same file, `h391-drop-and-include` |
+| E5 | An approval sends exactly the recorded rows, through the act route of the web card | the same file, `h391-sends-the-record` |
+| E6 | The code record holds on the real table under FORCE RLS. The migration runs twice with no change (R8) | `tests/unit/test_wac_email_confirm_r8.py` |
+| E7 | The recorded answer is the answer that the act route takes, once, on a real Redis (R8) | the same file |

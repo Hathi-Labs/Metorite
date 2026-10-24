@@ -75,6 +75,12 @@ Cancel buttons. The phone's next message in the thread is settled before any
 run (``acts.settle``): Confirm runs the stored call once with no model, Cancel
 closes the act, and any other message voids it and runs as normal.
 
+**An email act (H-391, §18).** With writes on, the card of an email write of
+the email assistant parks too, with its tick-box rows or its reply form. The
+run stores it with the hash of a reply code (``acts.park_code``) and sends the
+whole card as text, the code last, with no buttons. "YES <code>" approves it,
+and the model runs again inside ``whatsapp_acts.approving_email``.
+
 **The WhatsApp profile (WAC-10a, §12).** With ``WHATSAPP_ASSISTANT_NATIVE_UI``
 on, the run opens ``acb_skills.whatsapp_ui.whatsapp_run`` as well. The
 injection seam then drops the web-only tools and the web prompt blocks, and
@@ -237,8 +243,16 @@ SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
     "for their Confirm, add no buttons, and never say that it is done. One "
     "change waits at a time. When the member asks for several, prepare the "
     "first, and say that you do the next one when they ask after their "
-    "Confirm. For any other change, tell the member to make it in the "
-    "Metorite web app, and add a link button.\n"
+    "Confirm.\n"
+    "You can also make the member's email changes from WhatsApp, through the "
+    "Email assistant: archive, label, move, reply, send a draft, schedule a "
+    "send, forward and a new mail. Ask the Email assistant to do it, as in "
+    "the web chat. Nothing is sent or changed until the member replies with "
+    "the code that Metorite sends them with the whole summary. So say in one "
+    "line that it waits for their code, never write a code or the summary "
+    "yourself, and never say that it is done. "
+    "For any other change, tell the member to make it in the Metorite web "
+    "app, and add a link button.\n"
 ))
 
 #: What a run with documents on adds to its scope rule (WAC-12, §15).
@@ -1683,7 +1697,6 @@ async def _model_answer(req: RunRequest, message: str,
     """
     from acb_common.assistant_profile import member_typed, profile_channel
     from acb_skills.ask_tools import refuse_cards
-    from acb_skills.whatsapp_acts import approving
     from acb_skills.whatsapp_ui import whatsapp_run
     from gateway.routes.whatsapp_channel import acts, views
 
@@ -1707,9 +1720,7 @@ async def _model_answer(req: RunRequest, message: str,
         # the run holds no profile write tool (SCOPE_RULE says the same).
         typed = "" if approved is not None or forwarded else message
         with refuse_cards(), profile_channel("whatsapp", writes=writes), \
-                member_typed(typed), (
-                approving(approved.card) if approved is not None
-                              else contextlib.nullcontext()) as yes, (whatsapp_run(
+                member_typed(typed), _approval(req, approved) as yes, (whatsapp_run(
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
                 notify=_notifier(req), writes=writes,
@@ -1786,6 +1797,25 @@ async def _model_answer(req: RunRequest, message: str,
     return reply, ui
 
 
+def _approval(req: RunRequest, approved: Any) -> Any:
+    """The yes of a run at a Confirm, or a context that holds none.
+
+    WAC-P4: ``whatsapp_acts.approving`` for ONE egress call. H-391: an email
+    act that a code approved gets ``approving_email``, with the lines that
+    the member left out or added, and the org, the member and the thread of
+    the link row (R5). Each one closes with the run."""
+    from acb_skills.whatsapp_acts import approving, approving_email
+
+    if approved is None:
+        return contextlib.nullcontext()
+    if getattr(approved, "kind", "egress") == "email":
+        return approving_email(approved.card, tool=approved.tool,
+                               arguments=approved.arguments, without=approved.without,
+                               include=approved.include, org=req.organization_id,
+                               member=req.member_email, thread=req.chat_session_id)
+    return approving(approved.card)
+
+
 async def _native_parts(req: RunRequest, wa_run: Any,
                         reply: str) -> tuple[str, list[Any]]:
     """The reply and the elements of a run with the WhatsApp profile.
@@ -1821,10 +1851,21 @@ async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
     code builds them. When the act cannot be stored, nothing waits for a
     Confirm, and the member gets a line that sends the change to the web app.
     """
-    from acb_skills.whatsapp_acts import confirm_buttons, summary
+    from acb_skills.whatsapp_acts import code_summary_parts, confirm_buttons, summary
     from acb_skills.whatsapp_ui import OutMessage
     from gateway.routes.whatsapp_channel import acts
 
+    if getattr(act, "kind", "button") == "code":
+        # H-391: the whole card as text, the reply code last, and no buttons.
+        # The LAST part names the act, so the code counts only once Meta took
+        # the part that holds it.
+        parked = await acts.park_code(req, act)
+        if parked is None:
+            return acts.REPLY_NOT_HELD
+        act_id, code = parked
+        parts = code_summary_parts(act, code, MAX_CHARS)
+        return [OutMessage("text", part, act_id=act_id if i == len(parts) - 1 else None)
+                for i, part in enumerate(parts)]
     act_id = await acts.park(req, act)
     if act_id is None:
         return acts.REPLY_NOT_HELD

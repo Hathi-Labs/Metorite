@@ -119,6 +119,11 @@ class FakeDb:
             KNOWN: (False, True), COLLEAGUE: (True, False)}
         self.domains = ["contoso.test", "acme.test"]
         self.senders: list[str] = [KNOWN]
+        #: Each To and Cc of a received mail of the thread (open question 1).
+        self.participants: list[str] = []
+        self.org_domains: list[str] = ["acme.test"]
+        #: A reply of the thread that went out in the last day (item 6).
+        self.recent: list[Any] = []
         self.files: list[Any] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         #: The seal of the draft's text NOW (``held_card.seal_of``). A test
@@ -152,6 +157,21 @@ class FakeDb:
             return _Result([types.SimpleNamespace(d=d) for d in self.domains])
         if q == hc.THREAD_SENDERS_SQL:
             return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
+        if getattr(hc, "THREAD_SENDER_ROWS_SQL", None) == q:
+            # The senders in received order, the first mail first.
+            return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
+        if q == hc.THREAD_PARTICIPANTS_SQL:
+            # Each row names its mail's sender. A bare address stands for a
+            # mail from KNOWN, a person the member wrote to.
+            return _Result([types.SimpleNamespace(addr=a, sender=KNOWN) if isinstance(a, str)
+                            else types.SimpleNamespace(addr=a[0], sender=a[1])
+                            for a in self.participants])
+        if q == hc.ORG_DOMAINS_SQL:
+            return _Result([types.SimpleNamespace(d=d) for d in self.org_domains])
+        from gateway.routes.email.automation import reply_card as rc
+
+        if q == rc.RECENT_REPLY_SQL:
+            return _Result(list(self.recent))
         if q == hc.DRAFT_FILES_SQL:
             return _Result(self.files)
         if q == hc.FORWARD_MAIL_SQL:

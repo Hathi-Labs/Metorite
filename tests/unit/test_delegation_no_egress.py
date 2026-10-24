@@ -183,6 +183,21 @@ def _no_process(monkeypatch) -> list[str]:
     """Every process start raises, and the self-mutation container never
     starts, so a mutation of the control can never reach a real process."""
     import os
+    import platform
+
+    # H-394: the openai client reads the platform on its first request
+    # (``get_platform``), and that read can start a process. Read it here,
+    # BEFORE the guard goes on, so the answer is cached. The guard is not
+    # weakened: any other process start still raises.
+    platform.platform()
+    platform.machine()
+    try:
+        from openai import _base_client as _oai
+
+        _oai.get_platform()
+        _oai.get_architecture()
+    except ImportError:
+        pass
 
     seen: list[str] = []
 

@@ -6217,21 +6217,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
 - **Added:** 2026-10-23 · Projects chat parity session
 
-### H-389 · Finish the email chat polish branch · [AGENT]
-- **Check:** `git log origin/main --oneline | grep -i "spam action"` prints a
-  line. If it does, delete this entry.
-- **Why:** the branch `email-chat-polish` (728061816) holds three changes
-  that nobody verified or reviewed. They are a `spam` action in
-  `manage_inbox`, one retry of a read on a 503, and a plain sentence for a bare
-  403 or 404. Its builder stopped. The branch is cut from main before #1237,
-  so `agents.py` conflicts.
-- **Do this:** rebase it onto main, and fix the conflicts. Run the tests of
-  the changed code, then the verifier. Open a PR. Report the database pool
-  setting and the background jobs that share it (see H-390). Report what an
-  email write over WhatsApp needs (see H-391).
-- **Authority:** the audit of 2026-10-22 in this session's PRs (#1237 body)
-- **Added:** 2026-10-23 · email chat session
-
 ### H-390 · Email reads answer 503 when the gateway's database pool is full · [AGENT]
 - **Check:** `ssh metorite "sudo journalctl -u acb-gateway --since -24h -o cat
   | grep -c 'QueuePool limit'"` prints 0. If it does for a week, delete this
@@ -6243,20 +6228,28 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** measure which jobs hold the connections. Then raise the pool
   size, or cap the jobs' concurrency. Check the Postgres connection limit
   first.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** the pooler has no
+  spare slot, so there is no second pool. A task marked background (the
+  mailbox sync loop, and each post-sync job through `as_mailbox_owner`) holds
+  at most `DB_BACKGROUND_MAX` (default 4) of the 9 connections. Members keep
+  5. Fence: `tests/unit/test_db_background_lane.py`. Not measured on
+  production. Keep this entry until the Check holds for a week.
 - **Authority:** `engineering_practice.md` §1
 - **Added:** 2026-10-23 · email chat session
 
 ### H-391 · An email write over WhatsApp says "ask in the app" · [AGENT]
 - **Check:** in a WhatsApp chat, ask the assistant to archive one mail. If it
   does so after a confirm, delete this entry.
-- **Why:** WhatsApp has no card channel. So each email write answers
-  `_NO_CARD_CHANNEL` in `agent-email-assistant/agents.py`. The owner wants
-  every email job to work from the chat.
-- **Do this:** find whether a confirm-by-reply flow exists for WhatsApp
-  (grep `wac_untrusted_confirm`). Write a spec slice for email writes over
-  WhatsApp, with the same server checks as the chat cards.
-- **Authority:** `email_app_master_plan.md` §21 · the owner rule "a channel
-  changes delivery, not function"
+- **Why:** WhatsApp had no card channel, so each email write answered
+  `_NO_CARD_CHANNEL`. The branch `email-whatsapp-confirm` builds the reply
+  code flow (`whatsapp_assistant_channel.md` §18). It is dark behind
+  `WHATSAPP_ASSISTANT_WRITES`.
+- **Do this:** after the merge, check that migration 298 is in the ledger.
+  Then the owner turns on `WHATSAPP_ASSISTANT_WRITES` for one org (WAC-9).
+  Run the Check from a linked phone, and reply with the code.
+- **Authority:** `whatsapp_assistant_channel.md` §18 ·
+  `email_app_master_plan.md` §21.13 · the owner rule "a channel changes
+  delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
 ### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
@@ -6272,18 +6265,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
-### H-394 · Three tests are red on main for a reason in the test setup · [AGENT]
-- **Check:** `uv run pytest -q tests/unit/test_delegation_no_egress.py
-  tests/unit/test_customer_console_router.py` passes on main. If it does,
-  delete this entry.
-- **Why:** two tests in `test_delegation_no_egress.py` fail, because the
-  openai client's platform probe starts a subprocess that the test refuses.
-  `test_the_customer_never_sees_the_provider_secret` also fails on main.
-  Each review this week had to prove that the red was not new.
-- **Do this:** fix the test setup, or stub the probe. Do not weaken the
-  subprocess guard.
-- **Added:** 2026-10-23 · email chat session
-
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]
 - **Check:** a query of `email_rules` for a MOVE_FOLDER action to a Sent or
   Drafts folder returns no row. If it does, delete this entry.
@@ -6291,6 +6272,17 @@ line — never reclaim a number by deleting the other entry.
   held chat could use that move to fake a `sent` contact. An Outlook or IMAP
   rule that moved mail there now fails at run time.
 - **Do this:** find such rules. Tell each owner, or change the rule.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** a rule save
+  (create, update, batch, generate) now answers 422 with a plain sentence
+  for a move into Sent or Drafts. A run skips an old rule's move and History
+  shows the same sentence as the issue. Fence:
+  `tests/unit/test_email_rule_move_into_sent.py`. Still to do: run the query
+  below on the database, and tell each owner. The query is also in that
+  test's docstring:
+  `SELECT r.id, r.account_id, r.name, a.label FROM email_rules r JOIN
+  email_actions a ON a.rule_id = r.id WHERE UPPER(a.type) = 'MOVE_FOLDER' AND
+  LOWER(BTRIM(a.label)) IN ('sent','sentitems','sent items','sent mail',
+  'drafts','draft');`
 - **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
@@ -6389,6 +6381,19 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
+
+### H-408 · Stray grants on personal nodes in production, for the owner to review · [AGENT] · privacy
+- **Check:** run this query on production. If it prints 0, delete this entry.
+
+      SELECT count(*) FROM pm_project_grants g
+        JOIN pm_projects p ON p.id = g.project_id
+       WHERE p.personal_owner IS NOT NULL
+         AND lower(g.subject) <> lower(p.personal_owner);
+
+- **Why:** WS-64 OP-9 (D-OP-15) makes a grant on a personal node inert. Such a grant shows the tree to nobody but its owner. A grant from before OP-6b still sits in the table. It is noise, and a later change could make it live again.
+- **Do this:** if the count is not 0, list each row for the owner to review. Give the project, the owner, the subject and `created_at`. Do not delete or change a row without the owner's word.
+- **Authority:** `specs/one_projects_app.md` §8 D-OP-15 and §9 OP-9
+- **Added:** 2026-10-24 · WS-64 OP-9 fix round 1
 
 # DONE — deleted, not archived
 

@@ -81,6 +81,67 @@ REPLY_ROW_SQL = (
 #: The 404 of a mail that is not the caller's.
 REPLY_CARD_NOT_FOUND = "Message not found"
 
+#: The most people that one reply card adds to the people of the mail.
+MAX_ADDED = 20
+#: The Redis namespace of the record of a reply card's added people.
+REPLY_RECORD_NAMESPACE = "reply-card"
+#: The record lives a little longer than the card waits (``held_card``).
+REPLY_RECORD_TTL_S = 3700
+
+#: The notice of a card where the member was only on Bcc (item 11). A Reply
+#: all would show the other people that the member got the mail.
+BCC_ONLY_NOTICE = "You were Bcc'd, so only the sender is ticked."
+#: The notice when the record of the added people failed: the card shows no
+#: added person, because the act could not check one.
+ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the draft in "
+                      "Drafts was left as it was. Ask again in a moment.")
+#: The notice when the thread's draft holds a Bcc: the reply card sends no Bcc.
+DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc. This card sends no "
+                    "Bcc. To keep it, send that draft with send_draft.")
+
+#: The colleagues that the member copies on mail of this thread, or on mail
+#: to these domains: each Cc of the newest 500 Sent mails of the member's own
+#: mailboxes, where the mail is of this thread, or goes To a person at one of
+#: the domains. A Sent mail counts only when its From is the mailbox's own
+#: address (§21 fix round 1, P1-a). The caller keeps an address with two
+#: mails or more, or with one mail of this thread, and then only an ``org``
+#: one. R8: ``tests/unit/test_email_recipient_intent_r8.py``.
+USUAL_CC_SQL = """
+WITH sent AS (
+    SELECT em.id, em.thread_id, em.account_id, em.to_addresses, em.cc_addresses
+      FROM email_messages em
+      JOIN email_accounts ea ON ea.id = em.account_id AND ea.user_id = :uid
+     WHERE LOWER(COALESCE(em.folder, '')) = 'sent'
+       AND LOWER(em.from_address->>'email') = LOWER(ea.email_address)
+     ORDER BY em.received_at DESC NULLS LAST
+     LIMIT 500
+), hit AS (
+    SELECT s.id, (s.thread_id = CAST(:tid AS text)
+                  AND s.account_id = CAST(:aid AS uuid)) AS in_thread, s.cc_addresses
+      FROM sent s
+     WHERE (s.thread_id = CAST(:tid AS text) AND s.account_id = CAST(:aid AS uuid))
+        OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(COALESCE(s.to_addresses, '[]'::jsonb)) t
+             WHERE SPLIT_PART(LOWER(t->>'email'), '@', 2) = ANY(CAST(:domains AS text[])))
+)
+SELECT LOWER(c->>'email') AS addr, COUNT(DISTINCT h.id) AS n,
+       BOOL_OR(COALESCE(h.in_thread, false)) AS in_thread
+  FROM hit h
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(h.cc_addresses, '[]'::jsonb)) AS c
+ WHERE c->>'email' IS NOT NULL
+ GROUP BY 1
+"""
+
+#: The newest reply draft of the thread (``drafting._THREAD_DRAFT_SQL``): the
+#: people that ``edit_draft`` put on it go on the next card of the thread.
+THREAD_DRAFT_PEOPLE_SQL = (
+    "SELECT cc_addresses, bcc_addresses FROM email_messages"
+    " WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid"
+    " AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
+    " AND has_attachments IS NOT TRUE"
+    " AND LOWER(COALESCE(subject, '')) NOT LIKE 'fw%'"
+    " ORDER BY received_at DESC NULLS LAST, id DESC LIMIT 1")
+
 
 class ReplyCardRequest(BaseModel):
     """The mail to answer. No recipient: the server derives it (EM-CR).
@@ -107,6 +168,11 @@ class ReplyCardRequest(BaseModel):
     #: ``new`` starts unticked, and the draft in Drafts leaves it out, so the
     #: draft holds what the card sends. It only takes people OFF the card.
     untick_new: bool = False
+    #: People that the member asked to copy (owner, 2026-10-24, item 2). The
+    #: server classes each one with THE classifier and records the list, so
+    #: the act takes only a subset of what this card showed. One card
+    #: replaces the reply card, the edit_draft card and the send_draft card.
+    cc: list[str] = Field(default_factory=list, max_length=MAX_ADDED)
 
 
 class ReplyCardDiscardRequest(BaseModel):
@@ -278,6 +344,20 @@ class _Mail:
         self.excerpt = " ".join(body.split())[:EXCERPT_CHARS]
         self.provider = str(getattr(row, "provider", "") or "")
         self.signature = str(getattr(row, "signature", "") or "")
+        self.folder = str(getattr(row, "folder", "") or "").lower()
+
+    def was_received(self) -> bool:
+        """True for a mail that the member got, not one the member wrote."""
+        return self.folder not in ("sent", "drafts", "draft") and (
+            self.sender.lower() not in self.own)
+
+    def bcc_only(self) -> bool:
+        """True when the member got this mail on Bcc only: no own address is
+        a To or a Cc of it (item 11, owner 2026-10-24). A Reply all would
+        then show the other people that the member got it."""
+        if not self.was_received():
+            return False
+        return not any(a.lower() in self.own for a in [*self.to, *self.cc])
 
     def notices(self) -> list[str]:
         """What the card must say and never hide (review of #1191, P2 and P1d):
@@ -395,35 +475,95 @@ async def reply_card(
         strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
     from acb_skills.held_card import held_card_send_enabled
 
+    asked = _asked_cc(req.cc)
+    own = {a.lower() for a in getattr(mail, "own", set()) or set()}
+    on_mail = {a.strip().lower() for a in [*all_to, *all_cc, *reply_to, *reply_cc]}
+    # The people of the thread's draft that ``edit_draft`` added stay on the
+    # card (the owner's report of 2026-10-24, item 10): a new card used to
+    # derive from the mail alone, so its Send dropped them.
+    carried, draft_bcc = await _draft_people(mail)
+    # Final check P1: item 9 writes the people of the mail into the draft. A
+    # person of the mail, or the member, is never "carried". Only a genuinely
+    # extra address of the draft is.
+    carried = [a for a in carried if a.strip().lower() not in on_mail | own]
+    usual = await _usual_candidates(owner, mail, [*all_to, *all_cc], skip=on_mail | own)
+    candidates = _unique([*asked, *carried, *usual], set(on_mail | own))[:MAX_ADDED]
+    held_on = held_card_send_enabled()
     classes: dict[str, str] | None = None
-    if held_card_send_enabled():
-        # §21: the server classes each person of both choices. Only the From
-        # sender of the mail is ``thread``, unless the member knows them (fix
-        # round 1, P2-a). A Reply-To that is not the sender is classed on its
-        # own merits, because a phishing mail names a stranger there.
+    if held_on or candidates:
+        # §21 and item 1 (owner, 2026-10-24): the server classes each person.
+        # The sender of a received mail of the thread, and each To and Cc of
+        # one, is ``thread``, unless the domain is a look-alike. A Reply-To
+        # that is not the sender is classed on its own merits (fix round 1,
+        # P2-a), because a phishing mail names a stranger there.
         classes = await _reply_classes(
-            owner, [*reply_to, *reply_cc, *all_to, *all_cc],
-            primary=[mail.sender] if mail.sender else [])
-    # The tick boxes (owner, 2026-10-24): what each choice starts with. Each
-    # person starts ticked, except a ``new`` one in a held chat with the
-    # switch on. The draft in Drafts takes the ticked people of the choice.
-    if req.untick_new and classes is not None:
-        ticked = {"reply": _unticked_new((reply_to, reply_cc), classes),
-                  "reply_all": _unticked_new((all_to, all_cc), classes)}
+            owner, [*reply_to, *reply_cc, *all_to, *all_cc, *candidates],
+            primary=[mail.sender] if mail.sender else [],
+            people=_mail_people(mail), account_id=mail.account_id,
+            thread_id=mail.thread_id)
+    # A carried address that a trusted thread mail names is a thread person:
+    # it stays on the card and on the draft (a later check found that taking
+    # it out of ``carried`` dropped it from both), it may start ticked, and
+    # its mark says where it comes from rather than "added".
+    carried_extra = [a for a in carried if (classes or {}).get(a.lower()) != "thread"]
+    # Item 7: only a colleague of the organization is pre-added from Sent.
+    usual_added = [a for a in usual if (classes or {}).get(a.lower()) == "org"]
+    added = [a for a in candidates if a in asked or a in carried or a in usual_added]
+    notices: list[str] = []
+    card_id = ""
+    record_failed = False
+    if added:
+        card_id = await _write_reply_record(user, str(_as_uuid(req.message_id)), added)
+        if not card_id:
+            # Review P3-a: the card adds nobody, and the draft stays as it
+            # was below, so a Cc that edit_draft put there is not lost.
+            added, usual_added, carried = [], [], []
+            record_failed = True
+            notices.append(ADDED_NOT_RECORDED)
+    if draft_bcc:
+        notices.append(DRAFT_BCC_NOTICE)
+    bcc_only = bool(getattr(mail, "bcc_only", lambda: False)())
+    # Item 11 (owner, 2026-10-24): ONE list, every person of the mail and
+    # each added person, and each starts ticked. Only the sender starts
+    # ticked when the member was on Bcc only, or when the tool asked for the
+    # sender alone (``reply_all`` false). In a held chat with the switch on,
+    # a ``new`` person starts unticked.
+    everyone_to, everyone_cc = list(all_to), [*all_cc, *added]
+    if bcc_only or req.reply_all is False:
+        keep = {a.lower() for a in [*reply_to, *added]}
     else:
-        ticked = {"reply": {"to": list(reply_to), "cc": list(reply_cc)},
-                  "reply_all": {"to": list(all_to), "cc": list(all_cc)}}
+        keep = {a.lower() for a in [*everyone_to, *everyone_cc]}
+    if req.untick_new and classes is not None:
+        keep = {a for a in keep if classes.get(a, "new") != "new"}
+    # Review P2-a: a held run's edit_draft can put a stranger on the draft.
+    # A carried person starts unticked unless ``org`` or ``sent``, in any chat.
+    keep -= {a.lower() for a in carried
+             if (classes or {}).get(a.lower()) not in ("org", "sent", "thread")}
+    ticked = {
+        "reply": {"to": [a for a in reply_to if a.lower() in keep],
+                  "cc": [a for a in added if a.lower() in keep]},
+        "reply_all": {"to": [a for a in everyone_to if a.lower() in keep],
+                      "cc": [a for a in everyone_cc if a.lower() in keep]},
+    }
+    if bcc_only:
+        notices.append(BCC_ONLY_NOTICE)
+    if usual_added:
+        notices.append(_usual_note(usual_added, mail))
     draft_id, kept_draft = "", False
-    start = ticked["reply_all" if reply_all else "reply"]
-    if body.strip() and start["to"]:
+    # Item 9: the draft in Drafts names exactly the people that start ticked.
+    start = ticked["reply_all"]
+    if body.strip() and start["to"] and not record_failed:
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior)
+    marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
+                          [*everyone_to, *everyone_cc], held=req.untick_new)
     out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
         # reply against it (``draft_files``).
-        "notices": [*mail.notices(), *[str(n) for n in (drafted or {}).get("notices") or []]],
+        "notices": [*mail.notices(), *notices,
+                    *[str(n) for n in (drafted or {}).get("notices") or []]],
         "account_id": mail.account_id,
         "mailbox": mail.mailbox,
         "subject": _reply_subject(mail.subject),
@@ -435,11 +575,24 @@ async def reply_card(
             "excerpt": mail.excerpt,
         },
         "recipients": {
-            "reply": {"to": reply_to, "cc": reply_cc},
-            "reply_all": {"to": all_to, "cc": all_cc},
+            # "reply" is the shortcut "Only the sender" of the card. It is a
+            # subset of "reply_all", so it never names a hidden person.
+            "reply": {"to": reply_to, "cc": added},
+            "reply_all": {"to": everyone_to, "cc": everyone_cc},
         },
-        "reply_all": reply_all,
+        # The card shows the one list (item 11). The field stays for an
+        # older client, and it names the choice that the start ticks match.
+        "reply_all": reply_all and not bcc_only,
         "ticked": ticked,
+        # The words of each person on the card (item 8), by lower case.
+        "marks": marks,
+        # The id of the record of the added people. The tool passes it as the
+        # card's ``request_id``, so the act reads the same record.
+        "card_id": card_id,
+        # Item 9: the people that the draft in Drafts names.
+        "draft_recipients": start if draft_id else {"to": [], "cc": []},
+        # Item 6: a reply of this thread that went out in the last day.
+        "recent_reply": await _recent_reply(mail),
         "body": body,
         "skipped": (drafted or {}).get("skipped"),
         "draft_id": draft_id,
@@ -453,23 +606,292 @@ async def reply_card(
 
 async def _reply_classes(
     owner: str, addresses: list[str], *, primary: list[str],
+    people: Sequence[str] = (), account_id: str | None = None,
+    thread_id: str | None = None,
 ) -> dict[str, str]:
     """The class of each address of a reply card (§21.3, the Reply row).
 
-    Only the From sender of the mail can be ``thread`` (*primary*), never a
-    Reply-To that differs from it (fix round 1, P2-a). Open question 1
-    took the safer choice: a person that only Reply all adds, and that the
-    member does not know, is ``new``. A fault fails closed: each address is
-    ``new``, so the card opens on Reply and marks each one."""
+    The From sender of the mail is ``thread`` (*primary*), never a Reply-To
+    that differs from it (fix round 1, P2-a). The owner answered open
+    question 1 on 2026-10-24, "everyone on the original email": each To and
+    Cc of the mail being answered is ``thread`` (*people*). A To or Cc of
+    another mail of the thread is ``thread`` only when that mail's sender is
+    ``org`` or ``sent`` (review P1-a). An address on a look-alike domain of
+    ANY sender of the thread, or of an organization domain, stays ``new``
+    (review P2-b). A fault fails closed: each address is ``new``."""
     from acb_skills.held_card import CLASS_NEW
-    from gateway.routes.email.automation.held_card import classify_addresses
+    from gateway.routes.email.automation.held_card import (
+        classify_addresses,
+        org_domains,
+        thread_senders,
+        trusted_thread_participants,
+    )
 
     try:
         async with _tenant_session() as db:
-            return await classify_addresses(db, owner, addresses, thread_senders=primary)
+            everyone = list(people)
+            senders: list[str] = []
+            if account_id and thread_id:
+                everyone += await trusted_thread_participants(
+                    db, owner, account_id, thread_id)
+                senders = await thread_senders(db, account_id, thread_id)
+            doms = await org_domains(db, owner) if everyone else frozenset()
+            return await classify_addresses(
+                db, owner, addresses, thread_senders=primary, thread_people=everyone,
+                org_domains=doms, guard_senders=senders)
     except Exception as exc:  # each address reads as new
         _log.warning("email.reply_card_classes_failed", error=type(exc).__name__)
         return {a.strip().lower(): CLASS_NEW for a in addresses if a and a.strip()}
+
+
+#: The newest mail of the thread that the mailbox itself sent in the last 24
+#: hours (item 6). A request to add people then forwards THAT mail, and the
+#: reply does not go to the first people a second time.
+RECENT_REPLY_SQL = (
+    "SELECT em.id::text AS id, em.received_at FROM email_messages em"
+    " JOIN email_accounts ea ON ea.id = em.account_id"
+    " WHERE em.account_id = CAST(:aid AS uuid) AND em.thread_id = :tid"
+    " AND LOWER(COALESCE(em.folder, '')) = 'sent'"
+    " AND LOWER(em.from_address->>'email') = LOWER(ea.email_address)"
+    " AND em.received_at > now() - interval '24 hours'"
+    " ORDER BY em.received_at DESC LIMIT 1")
+
+
+async def recent_thread_reply(db: Any, account_id: str, thread_id: str | None) -> dict[str, str]:
+    """``{message_id, sent_at}`` of :data:`RECENT_REPLY_SQL`, or ``{}``."""
+    if not thread_id:
+        return {}
+    row = (await db.execute(text(RECENT_REPLY_SQL),
+                            {"aid": account_id, "tid": thread_id})).fetchone()
+    if row is None:
+        return {}
+    when = row.received_at.isoformat() if getattr(row.received_at, "isoformat", None) else ""
+    return {"message_id": str(row.id), "sent_at": when}
+
+
+@router.get("/recent-reply")
+async def recent_reply_route(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """The recent reply of the thread of one draft of the member (item 6),
+    for the send card of ``send_draft``. A read: it writes nothing."""
+    did = _as_uuid(draft_id)
+    if did is None:
+        return {}
+    async with _tenant_session() as db:
+        row = (await db.execute(text(
+            "SELECT em.account_id::text AS account_id, em.thread_id FROM email_messages em"
+            " JOIN email_accounts ea ON ea.id = em.account_id"
+            " WHERE em.id = CAST(:id AS uuid) AND ea.user_id = :uid"), {
+            "id": did, "uid": user.email or "anonymous"})).fetchone()
+        if row is None:
+            return {}
+        return await recent_thread_reply(db, row.account_id, row.thread_id)
+
+
+async def _recent_reply(mail: Any) -> dict[str, str]:
+    """The recent reply of the mail's thread. A fault reads as none."""
+    try:
+        async with _tenant_session() as db:
+            return await recent_thread_reply(db, mail.account_id,
+                                             getattr(mail, "thread_id", None))
+    except Exception as exc:
+        _log.warning("email.reply_card_recent_failed", error=type(exc).__name__)
+        return {}
+
+
+def _mail_people(mail: Any) -> list[str]:
+    """Each To and Cc of the mail, when the member received it (item 1)."""
+    received = getattr(mail, "was_received", None)
+    if not callable(received) or not received():
+        return []
+    return [*getattr(mail, "to", []), *getattr(mail, "cc", [])]
+
+
+def _asked_cc(cc: Sequence[str]) -> list[str]:
+    """The people that the member asked to copy, each a whole address. An
+    address that a card cannot show as it is answers 422, never cleaned."""
+    from acb_skills.held_card import address_problem
+
+    out: list[str] = []
+    for a in cc:
+        addr = parseaddr(str(a or ""))[1] or str(a or "")
+        why = address_problem(addr.strip())
+        if why:
+            raise HTTPException(status_code=422, detail=f"A Cc address {why}.")
+        out.append(addr.strip())
+    return out
+
+
+async def _draft_people(mail: Any) -> tuple[list[str], list[str]]:
+    """The Cc and the Bcc of the thread's newest reply draft, or none.
+
+    ``edit_draft`` puts a Cc on that draft. A later card of the thread shows
+    it as an added person, so its Send carries it (item 10). A fault reads
+    as none."""
+    thread_id = getattr(mail, "thread_id", None)
+    if not thread_id:
+        return [], []
+    try:
+        async with _tenant_session() as db:
+            row = (await db.execute(text(THREAD_DRAFT_PEOPLE_SQL), {
+                "aid": mail.account_id, "tid": thread_id})).fetchone()
+    except Exception as exc:  # the card shows the people of the mail
+        _log.warning("email.reply_card_draft_people_failed", error=type(exc).__name__)
+        return [], []
+    if row is None:
+        return [], []
+    return _addresses(row.cc_addresses), _addresses(row.bcc_addresses)
+
+
+#: The fewest Sent mails with the same Cc that make the colleague usual.
+USUAL_MIN = 2
+
+
+async def _usual_candidates(
+    owner: str, mail: Any, people: Sequence[str], *, skip: set[str],
+) -> list[str]:
+    """The people that the member copies on mail of this thread, or on mail
+    to the domains of *people* (item 7a): two Sent mails or more, or one of
+    this thread. The caller keeps only an ``org`` one. A fault reads as none."""
+    from gateway.routes.email.automation.held_card import org_domains
+
+    try:
+        async with _tenant_session() as db:
+            mine = await org_domains(db, owner)
+            domains = sorted({a.rpartition("@")[2].lower() for a in people if "@" in a}
+                             - set(mine))
+            rows = (await db.execute(text(USUAL_CC_SQL), {
+                "uid": owner, "tid": getattr(mail, "thread_id", None) or "",
+                "aid": mail.account_id, "domains": domains})).fetchall()
+    except Exception as exc:
+        _log.warning("email.reply_card_usual_failed", error=type(exc).__name__)
+        return []
+    out = [str(r.addr) for r in rows
+           if r.addr and (int(r.n or 0) >= USUAL_MIN or bool(r.in_thread))
+           and str(r.addr).lower() not in skip]
+    return sorted(out)
+
+
+def _usual_note(added: Sequence[str], mail: Any) -> str:
+    """"Added kiran@…, veena@… — you copy them on mail to jain.ac.in"."""
+    domain = str(getattr(mail, "sender", "") or "").rpartition("@")[2]
+    where = f"on mail to {domain}" if domain else "on this thread"
+    return f"Added {', '.join(added)}. You copy them {where}."
+
+
+#: The mark of a person that a trusted mail of the thread names, and that the
+#: answered mail does not (a Cc of a colleague's earlier mail).
+IN_THREAD_MARK = "in this email thread"
+
+
+def _person_marks(
+    mail: Any, classes: dict[str, str] | None, asked: Sequence[str],
+    carried: Sequence[str], usual: Sequence[str], shown: Sequence[str],
+    *, held: bool = False,
+) -> dict[str, str]:
+    """The words of each person on the card (item 8), by lower case.
+
+    Review P1-b: the server cannot know that the member named a person, so
+    an added person never reads "you asked". In a held run it reads "the
+    assistant added them", else "added to this reply"."""
+    from acb_skills.held_card import (
+        ADDED_MARK,
+        ASSISTANT_ADDED_MARK,
+        NEW_MARK,
+        USUAL_COPY_MARK,
+        thread_mark,
+    )
+
+    ASKED_MARK = ASSISTANT_ADDED_MARK if held else ADDED_MARK  # noqa: N806
+
+    sender = str(getattr(mail, "sender", "") or "").lower()
+    who = str(getattr(mail, "sender_name", "") or "") or sender
+    on_mail = {a.lower() for a in _mail_people(mail)}
+    asked_l = {a.lower() for a in [*asked, *carried]}
+    usual_l = {a.lower() for a in usual}
+    out: dict[str, str] = {}
+    for a in shown:
+        low = a.lower()
+        cls = (classes or {}).get(low)
+        if low in usual_l:
+            words = USUAL_COPY_MARK
+        elif low in asked_l:
+            words = ASKED_MARK
+        elif low in on_mail and low != sender:
+            words = thread_mark(who)
+        elif cls == "thread" and low != sender:
+            words = IN_THREAD_MARK
+        else:
+            words = ""
+        if cls == "new":
+            words = f"{NEW_MARK} · {words}" if words else NEW_MARK
+        if words:
+            out[low] = words
+    return out
+
+
+def _reply_record_key(card_id: str) -> Any:
+    from acb_common.tenant_redis import key
+
+    return key(REPLY_RECORD_NAMESPACE, str(card_id))
+
+
+async def _write_reply_record(user: UserContext, message_id: str, added: list[str]) -> str:
+    """Record the added people of one card under a card id that this server
+    mints. Returns the id, or "" on a fault, and then the card adds nobody."""
+    import uuid
+
+    from acb_common.tenant_redis import organization_scope
+    from gateway.routes.email.automation import held_card as hc
+
+    org = str(getattr(user, "organization_id", None) or "")
+    if not org:
+        return ""
+    card_id = uuid.uuid4().hex
+    rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
+           "added": list(added)}
+    try:
+        with organization_scope(org):
+            done = await hc._tenant_redis().set(
+                _reply_record_key(card_id), json.dumps(rec), nx=True,
+                ex=REPLY_RECORD_TTL_S)
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_record_write_failed", error=type(exc).__name__)
+        return ""
+    return card_id if done else ""
+
+
+async def _take_reply_record(user: UserContext, card_id: str, message_id: str) -> list[str]:
+    """The added people of the card *card_id*, read once (``GETDEL``). None
+    of another member, another mail, or a fault: the act then takes only the
+    people of the mail."""
+    from acb_common.tenant_redis import organization_scope
+    from gateway.routes.email.automation import held_card as hc
+
+    org = str(getattr(user, "organization_id", None) or "")
+    if not org or not card_id:
+        return []
+    try:
+        with organization_scope(org):
+            raw = await hc._tenant_redis().getdel(_reply_record_key(card_id))
+    except Exception as exc:
+        _log.warning("email.reply_card_record_take_failed", error=type(exc).__name__)
+        return []
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        rec = json.loads(raw) if isinstance(raw, str) and raw else None
+    except ValueError:
+        return []
+    if not isinstance(rec, dict):
+        return []
+    if str(rec.get("owner") or "") != (user.email or "").strip().lower():
+        return []
+    if _as_uuid(str(rec.get("message_id") or "")) != _as_uuid(message_id):
+        return []
+    return [str(a) for a in rec.get("added") or [] if a]
 
 
 def ticked_subset(derived: Sequence[str], ticked: Sequence[str]) -> list[str] | None:
@@ -545,10 +967,17 @@ async def reply_card_act(
     if not body:
         raise HTTPException(status_code=422, detail="The reply text is empty.")
     mail = await _load_mail(req.message_id, user.email or owner)
-    derived_to, derived_cc = mail.recipients(choice.reply_all)
+    # Item 11 (owner, 2026-10-24): the card shows ONE list, each person of the
+    # mail and each person that the card added. So the act derives Reply all
+    # always, whatever ``reply_all`` the answer names, and the member's ticks
+    # pick from it. The added people come from the server's record of THIS
+    # card, read once, never from a request field.
+    derived_to, derived_cc = mail.recipients(True)
+    added = await _take_reply_record(user, req.card_request_id, req.message_id)
+    derived_cc = _unique([*derived_cc, *added], {a.lower() for a in derived_to})
     # The tick boxes (owner, 2026-10-24): the answer names the people that the
-    # member TICKED. Each must be on the server's list of the choice. An
-    # added address, or a list that changed after the card, sends nothing.
+    # member TICKED. Each must be on the server's list. A person that is not
+    # on the list, or a list that changed after the card, sends nothing.
     to = ticked_subset(derived_to, choice.to) if derived_to else None
     cc = ticked_subset(derived_cc, choice.cc)
     if not to or cc is None:
@@ -608,7 +1037,10 @@ async def _write_draft(
                 db, sess.provider, mail.account_id, thread_id=mail.thread_id,
                 reply_to_provider_id=mail.provider_message_id,
                 owner_email=mail.address, to=to, cc=cc, subject=subject,
-                body=body, exact_to=True, prior=prior, exact_cc=not chat_wrote,
+                # Item 9 (owner, 2026-10-24): the draft names exactly the
+                # people that the card starts ticked. The card carries the Cc
+                # of the thread's draft as added people, so no Cc is lost.
+                body=body, exact_to=True, prior=prior, exact_cc=True,
             )
         if chat_wrote and mail.thread_id:
             await _store_ai_draft(db, mail.account_id, mail.thread_id, body,

@@ -70,6 +70,12 @@ REPLY_UNKNOWN = (
 REPLY_FAILED = (
     "That link code did not work. Open My Profile in Metorite and get a new link."
 )
+#: H-391: a forwarded message that holds an answer to a reply code. Only the
+#: member's own typed reply approves an email act, so a forward does nothing.
+REPLY_FORWARDED = (
+    "A forwarded message cannot approve a request, so nothing was sent or "
+    "changed. Type YES and the code as a new message."
+)
 REPLY_OTHER_PERSON = (
     "This phone is already linked to another Metorite account. Unlink it "
     "there first."
@@ -99,6 +105,14 @@ _NO_ACTION_TYPES = frozenset({
 
 #: The longest tap text kept. A real title is at most 24 + 72 characters.
 _TAP_MAX = 200
+
+
+def is_forwarded(raw: Any) -> bool:
+    """True when Meta marks the message as forwarded (``context.forwarded`` or
+    ``context.frequently_forwarded``)."""
+    context = (raw or {}).get("context") if isinstance(raw, dict) else None
+    return isinstance(context, dict) and bool(
+        context.get("forwarded") or context.get("frequently_forwarded"))
 
 
 def tap_text(raw: Any) -> str | None:
@@ -499,6 +513,14 @@ async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
         _log.info("whatsapp_channel.bot.linked_no_action",
                   phone_hint=wa_id[-4:], type=mtype[:20])
         return None
+    # H-391: a forwarded answer to a reply code approves nothing. It runs no
+    # model either: the member hears why, once.
+    from acb_skills.whatsapp_acts import parse_code_answer
+
+    answer = parse_code_answer(body) if is_forwarded(msg.raw) else None
+    if answer is not None and answer.code:
+        _log.info("whatsapp_channel.bot.forwarded_answer", phone_hint=wa_id[-4:])
+        return Reply(wa_id, REPLY_FORWARDED, "forwarded")
     # WAC-4: the message that a tap or a swipe reply answers. A Confirm
     # counts only for the card that it names.
     context = str(msg.quoted_wa_message_id or "").strip() or None

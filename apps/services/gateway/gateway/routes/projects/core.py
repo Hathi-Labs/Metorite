@@ -1116,10 +1116,22 @@ WHERE lower(au.email) = :email AND au.status = 'active'
 #: allows is owner-only and LOGGED. An unrestricted clause that skipped this
 #: filter would be exactly the invisible act — `data:org:read` is the widest
 #: grant in the product, and the People Center holds it.
+#:
+#: ⚠️ **A member's personal space binds the reader too** (WS-64 OP-9,
+#: D-OP-15). A task in a personal tree is shown to its owner only. The
+#: ``personal_owner`` line keeps every other member's personal node out of
+#: this set, so ``data:org:read`` reads no personal task of somebody else.
+#: Migration 297 and ``tree.create_node`` stamp ``personal_owner`` on every
+#: node of a personal tree, and leave a TEAM node under it unstamped, so the
+#: node's own column is the whole test and a team node stays in. The owner's
+#: own nodes stay in, so the owner's reads do not change. Every read that
+#: ``project_clause`` or ``task_visibility_clause`` builds takes this line.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _TENANT_PROJECTS_SQL = """
 SELECT id FROM pm_projects
 WHERE organization_id = CAST(:vis_org AS uuid)
   AND sealed_at IS NULL
+  AND (personal_owner IS NULL OR lower(personal_owner) = :vis_email)
 """
 
 #: Projects the caller may see: those carrying a matching grant, plus everything
@@ -1154,6 +1166,16 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 #: Filtering the recursive step as well is not redundant. It stops the closure
 #: descending THROUGH a sealed Area into anything beneath it, and it means a
 #: subtree can be sealed without sealing its parent.
+#:
+#: ⚠️ **A personal node is its owner's only, on BOTH arms too** (WS-64 OP-9,
+#: D-OP-15). A stray ``org``, ``group:`` or email grant on a personal tree,
+#: written before OP-6b, shows the tree to nobody but its owner. The seed
+#: drops such a grant, and the recursive step stops at any personal node of
+#: somebody else. A team node under a personal root carries no
+#: ``personal_owner``, so its own grant still seeds it. The seed's line sits
+#: AFTER the subject bracket, so nothing but ``AND`` stands between the
+#: tenant and that bracket (``test_projects_tenancy.py``).
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _VISIBLE_PROJECTS_SQL = """
 WITH RECURSIVE granted AS (
     SELECT DISTINCT g.project_id AS id
@@ -1164,12 +1186,14 @@ WITH RECURSIVE granted AS (
       AND (g.subject = 'org'
            OR lower(g.subject) = :vis_email
            OR g.subject = ANY(:vis_groups))
+      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)
     UNION
     SELECT p.id
     FROM pm_projects p
     JOIN granted a ON p.parent_project_id = a.id
     WHERE p.organization_id = CAST(:vis_org AS uuid)
       AND p.sealed_at IS NULL
+      AND (p.personal_owner IS NULL OR lower(p.personal_owner) = :vis_email)
 )
 SELECT id FROM granted
 """

@@ -357,7 +357,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders | Accept |
 | **D-OP-3** | The name of the section is **My work** | Accept. Other names: "My tasks", "Me" |
 | **D-OP-4** | `feature:tasks` gates My work and Personal. `feature:projects` gates the company tree | Accept |
-| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so eleven panes are live | Accept, in OP-4 |
+| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4 |
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
@@ -366,7 +366,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
 | **D-OP-14** | A move changes who sees a row, so a view of the row is not enough to move it. A re-parent of a project needs the grant authority of D-OP-11 on the moved project. A move of a task to another project needs the delete authority of D-OP-12 on the task where it is now. A reorder under the same parent, and a status move inside one project, need only a view. The 403 names who may move it. A subtask that a move carries follows the check on the task the member names, as a delete does | Supervisor decision, OP-8 fix round 1, 2026-10-23. Review finding: a member who leads a space of their own could move another member's project or task into it, and then delete it |
 | **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
-| **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change | Owner, 2026-10-24, in chat ("go ahead with your recommendation") |
+| **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change. A grant on a personal node shows it to nobody but the owner, so a stray `org`, `group:` or email grant written before OP-6b is inert. Three exceptions are accepted. (a) The assignee arm: a task that a member explicitly handed to another member (D63, H-304) shows to that assignee. `assert_assignable_here` refuses a new assignment into another member's personal tree. (b) `people/core.py compute_load` counts the open tasks assigned to a person, their own personal tasks too, as a number with no title. (c) `projects/vocabulary.py` counts the tasks that use each tag, field and type on the admin vocabulary page, org-wide and personal tasks too, as a number with no title | Owner, 2026-10-24, in chat ("go ahead with your recommendation"). The grant arm and the three exceptions: supervisor decision, OP-9 fix round 1, 2026-10-24 |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -472,18 +472,65 @@ changes of §5.3. No change to the tab bar (that is OP-4).
 5. The visual-review skill passes in light mode, compact density and a
    changed accent, at 390, 768 and 1280 px.
 
-### OP-2 — My work in the Projects sidebar · AGENT-SAFE
+### OP-2 — My work in the Projects sidebar · MEDIUM · AGENT-SAFE
 
-**Scope.** The My work section of §4.1. Each entry mounts the existing view
-component of `app/tasks/components` inside the Projects work area. The task
-panel is `TaskPanel.tsx` with the overlay strip.
+Re-audited 2026-10-24 against `main` (after OP-1, OP-6 to OP-9 and task #304).
+The four gaps that audit found are closed here.
+
+**Scope.** The My work section of §4.1, dark behind
+`NEXT_PUBLIC_PROJECTS_MY_WORK`.
+
+1. **The flag.** A new `app/projects/lib/myWork.ts` exports
+   `myWorkEnabled(env?)`. It reads the literal
+   `process.env.NEXT_PUBLIC_PROJECTS_MY_WORK` in the idiom of
+   `compactChrome.ts`. Add the flag to `src/lib/publicFlags.test.ts`.
+2. **The view keys.** `ProjectAppId` in `projectApps.ts` gains `my-inbox`,
+   `my-today`, `my-next`, `my-waiting`, `my-someday` and `my-done`.
+   `projectAppSections()` returns a "My work" section with those six items
+   only when the flag is on, as it does for `chatEnabled`. A deep link
+   `?app=my-today` (and each other key) opens the view through
+   `resolveAppLink`. `?task=<id>` still opens the task panel over any view.
+3. **Today.** Today is a client rule over the hydrated lens, because no
+   server filter exists. A task is in Today when it is open, its disposition
+   is Next (stated, or derived by D53), it is not deferred past today, and
+   its `due_at` or `start_date` is on or before the member's today. "Today"
+   is the date of `GET /projects/my/today` in the member's zone. Overdue
+   tasks are in Today. Put the rule in one pure function in
+   `app/tasks/lib/` with a vitest test, so My Tasks can use it too.
+4. **The mount.** A new `MyWorkHost` component mounts, once, the hosts that
+   `app/tasks/page.tsx` owns today: the hydrate call, QuickCapture,
+   ClarifyModal, UndoToast, PromoteHost, StagePromptHost and
+   DeleteConfirmModal. `useTaskStore.hydrate()` runs only when a My work view
+   opens. Each view (`InboxView`, `EngageView`, `ItemList`,
+   `WaitingForView`) is imported by path from `app/tasks/components`. Nothing
+   imports `app/tasks/page.tsx`.
+5. **The landing view (§8 answer 2).** With the flag on, `/projects` with no
+   `?project=`, `?task=` or `?app=` opens `my-today`. This must win over the
+   effect that selects `visibleRoots[0]` today (`page.tsx`, the
+   `selected` effect).
+6. **The gate.** D-OP-4 is scoped out. The one seat (`core`) holds both
+   `feature:tasks` and `feature:projects`, and `access.ts` maps `/projects`
+   to `feature:projects`. A member with only `feature:tasks` keeps `/tasks`
+   until OP-4. If the seat ever splits, a gate spec comes first.
 
 **Done when.**
-1. With the flag on, My work shows Inbox, Today, Next actions, Waiting for,
-   Someday / Maybe and Done, each with the count that `/tasks` shows today.
-   Fence: vitest on the section, and an e2e that compares the counts.
-2. No file under `app/projects` copies a component of `app/tasks`. Fence:
+1. With the flag on, the section shows the six entries, and each count
+   equals the count that `/tasks` shows for the same member. Fence: vitest
+   on the section and the Today rule, and
+   `e2e/projects-my-work.spec.ts` that compares the counts.
+2. `?app=my-today` and each other key open their view. `/projects` with
+   nothing opens Today. With the flag off, `/projects` behaves exactly as
+   before. Fence: vitest on `resolveAppLink` and the landing rule.
+3. No file under `app/projects` has the basename of a file in
+   `app/tasks/components`, and nothing imports `app/tasks/page.tsx`. Fence:
    a source test.
+4. The visual review at 390 and 1280 px, in light mode, compact density and
+   a changed accent, with the flag on.
+
+**Verify.** In `workbench/control_plane`: `npx tsc --noEmit`,
+`npx vitest run src/app/projects src/app/tasks src/lib/nav.test.ts
+src/lib/publicFlags.test.ts`, then
+`NEXT_PUBLIC_PROJECTS_MY_WORK=1 npx playwright test e2e/projects-my-work.spec.ts`.
 
 ### OP-3 — the Personal space · AGENT-SAFE · R8
 
@@ -491,13 +538,36 @@ panel is `TaskPanel.tsx` with the overlay strip.
 Areas as a space, marked `personal: true`. No other member's root returns.
 The sidebar draws it with a lock. The Areas routes stay as they are.
 
+**How (re-audited 2026-10-24).** Do not change `_visible_projects`
+(`tree.py`): `GET /nodes`, the chat and the agent reads call it, and it must
+keep leaving personal nodes out. `get_tree` adds a separate read of the
+caller's own tree only: `lower(personal_owner) = :vis_email`. It never uses
+`vis.project_clause`, so a `data:org:read` holder and a Projects admin get
+nothing. Since task #304 every node of the tree is stamped, so one query
+returns the root, its Areas and every deeper node. OP-3 nests the whole
+tree, not only the Areas, and that closes the gap below.
+
+The response keeps `rows` as it is and adds a separate `personal` key with
+the caller's tree, so an old client sees no change (R6). Task counts come
+from the existing progress query. A personal node offers no "New space", no
+share or grant action and no move out of the tree. The sidebar draw is a
+second step, after OP-2 lands, because both edit the Projects page and nav.
+
 **Done when.**
-1. Member A sees their personal root. Member B, with every grant, does not.
-   Fence: `tests/unit/test_personal_tree.py` and
-   `live_ws39_personal_tree.sql`, on a real database.
+1. Member A sees their personal root and a node two levels under it.
+   B with `data:org:read`, B as a Projects admin, and C with a stray `org`,
+   `group:` or email grant see none of it, in `/tree`, `/nodes` and
+   `/nodes/{id}`. Fence: R8 in `tests/unit/test_personal_tree.py` and
+   `test_personal_privacy_r8.py`, red first under a named mutation (drop the
+   `lower(personal_owner) = :vis_email` line).
 2. A move of the personal space, or of a folder in it, under a team node
    fails. Fence: the existing `assert_move_keeps_privacy` test, with the new
    shape.
+
+**Verify.** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`,
+then `uv run pytest tests/unit/test_personal_tree.py
+tests/unit/test_personal_owner_stamp.py tests/unit/test_personal_privacy_r8.py`.
+A new R8 suite carries `pytestmark = _DB_GATE`.
 
 **A precondition, BUILT 2026-10-24 (task #304).** Each node of a private tree
 carries `personal_owner`, at every depth. `POST /projects/nodes` under a
@@ -531,20 +601,48 @@ So the team of a node that 297 kept files, moves and shares work under it.
 is not in `/projects/tree`. Its URL and My Tasks still reach it. OP-3 shows
 the Personal space, and that closes the gap.
 
-### OP-4 — capture, the tab bar, and the redirect · OWNER-GATE for the nav
+### OP-4 — capture, the tab bar, and the redirect · MEDIUM · OWNER-GATE for the nav
 
-**Scope.** The capture button and §5.2 item 9. `/tasks` and each of its deep
-links redirect into My work. The nav entry change of D-OP-5.
+**Scope.** Builds after OP-2, dark behind the same flag.
+
+1. **The phone tab bar** (`components/AppShell.tsx`, the `isProjectsPage`
+   branch). With the flag on it reads Menu, My work, Capture, Search, Ask.
+   Menu fires `projects-tree`. My work fires a new `projects-mywork`, which
+   opens `my-today`. Capture fires a new `projects-capture`, which opens the
+   quick capture of `MyWorkHost`. Ask keeps the D99 `data-ask-tab`. With the
+   flag off the bar is exactly as before.
+2. **The redirect.** `/tasks` is one route with a query and fragment
+   grammar. With the flag on it redirects on the client:
+
+   | From | To |
+   |---|---|
+   | `/tasks` | `/projects?app=my-today` |
+   | `/tasks#today` | `/projects?app=my-today` |
+   | `/tasks?do=capture` | `/projects?app=my-inbox` with capture open |
+   | `/tasks?task=<id>` or `?item=<id>` | `/projects?task=<id>` |
+
+   Do not use `next.config` redirects. Repoint the in-app links that name
+   `/tasks` when the flag is on: `email/page.tsx`, `TaskCaptureModal.tsx`,
+   `TaskToolCards.tsx`, `projects/lib/commands.ts` (key "t"), `centers.ts`,
+   `runActivity.ts` (`CHAT_IN_APP`) and `shell/search.py`. `access.ts` keeps
+   its `/tasks` row.
+3. **The e2e specs** that open `/tasks` (shell bar, presets, row counts,
+   My Day and others) run with the flag off and stay green.
 
 **Gate.** Building it is AGENT-SAFE, dark. Taking "My Tasks" out of the nav
-changes the live surface for every org, so the flip is the owner's, after
-the answers of §8.
+changes the live surface for every org, so the flip is the owner's. The flip
+PR, not the dark PR, sets the flag in the build, marks the `nav.ts` entry
+`preview` and takes `nav.test.ts` and `launch_surface.md` §2 from FIFTEEN
+live panes to FOURTEEN. A flag-dependent nav entry would fail `nav.test.ts`,
+so these edits cannot ship dark.
 
 **Done when.**
-1. Each route under `app/tasks` redirects to its My work view. Fence: a
-   redirect test.
-2. `nav.test.ts` and `launch_surface.md` §2 agree on eleven live panes after
-   the flip.
+1. A vitest test covers each row of the redirect table.
+2. With the flag on, at 390 and 1280 px: the tab bar reads Menu, My work,
+   Capture, Search, Ask. A capture writes to the Inbox.
+   `/tasks?do=capture` lands on capture. Fence: Playwright.
+3. In the flip PR only: `nav.test.ts` and `launch_surface.md` §2 agree on
+   fourteen live panes.
 
 ### OP-6 — every act from the chat · AGENT-SAFE · split into OP-6a to OP-6e
 
@@ -905,17 +1003,40 @@ a Projects admin, red first under a named mutation:
 4. The counts of reports and analytics leave out personal tasks for the org
    reader.
 
+**Status: BUILT 2026-10-24 on branch `ws64-op9-personal-privacy`, with fix
+round 1. Not yet merged.** There is one line on each arm of the visibility
+seam in `routes/projects/core.py`. Each arm keeps out every personal node
+whose owner is not the reader. The bell, the file read, the People reads and
+the item lens scope on `t.project_id`, so a team task stays visible. Fence `tests/unit/test_personal_privacy_r8.py`.
 
-### OP-5 — one filter component, and the old shell retires · AGENT-SAFE
 
-**Scope.** §5.4. One filter component with facet sets. `TaskToolbar.tsx`,
-`app/tasks/page.tsx` and the My Tasks phone tabs retire. The views move from
-`app/tasks/components` to `app/projects/components/my-work/`.
+### OP-5 — one filter component, and the old shell retires · MEDIUM · AGENT-SAFE
 
-**Done when.** No import of `app/tasks/components` is left outside the moved
-folder, and the e2e of OP-2 still passes.
+**When.** After the OP-4 flip has been live for one release.
 
----
+**Scope (re-audited 2026-10-24).** Several surfaces outside My Tasks import
+`app/tasks/components` and `app/tasks/lib` today: the Calendar page
+(TaskFocusModal, SchedulePopup, DeleteConfirmModal, UndoToast), `AppShell.tsx`
+(FocusSession, SubtaskPromptHost), and `projects/components/TaskBody.tsx` and
+`MyFocusRow.tsx` (PriorityControls). The Calendar, Notes and Projects read
+`app/tasks/lib` (the store, the lens and the API). So:
+
+1. `app/tasks/lib` stays where it is. It is the client of the one task store.
+2. Each component that another app imports moves to `src/components/tasks/`.
+3. Each component that only My work uses moves to
+   `app/projects/components/my-work/`.
+4. `app/tasks/page.tsx`, `TaskToolbar.tsx` and the My Tasks phone tabs
+   retire. `/tasks` stays as the redirect of OP-4.
+5. **One filter component.** The tool row and sheets of OP-1
+   (`CompactFilterBar`, `FilterSheet`, `ViewSheet`) take a facet set. The
+   company set is today's. The My work set adds context, energy and source
+   (All, Mine, From Projects), from `TaskToolbar.tsx`.
+
+**Done when.**
+1. A vitest source test lists the allowed importers of each moved folder,
+   and fails on any other importer.
+2. The OP-2 and OP-4 e2e specs still pass.
+3. The visual review at 390, 768 and 1280 px.
 
 ## 10. Verification
 

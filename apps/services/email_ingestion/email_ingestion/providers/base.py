@@ -230,6 +230,35 @@ _CANONICAL_FOLDERS: dict[str, str] = {
 MOVE_REFUSED_FOLDERS: frozenset[str] = frozenset({"sent", "drafts"})
 
 
+#: What a member reads when a rule asks for a move into Sent or Drafts (H-395).
+MOVE_REFUSED_SENTENCE = (
+    "A rule cannot move mail into Sent or Drafts. Your mailbox files mail "
+    "there itself. Choose another folder.")
+
+
+_SENT_DRAFT_ALIASES = {"sent messages": "sent"}
+
+
+def move_refusal(name: str | None) -> str | None:
+    """The plain sentence when a move to ``name`` is refused, else ``None``.
+
+    The one check for the rule save (create, update, batch, generate) and the
+    rule run, so a new rule cannot hold the move and an old one fails with
+    the same words (H-395, ``email_app_master_plan.md`` §21.10).
+    """
+    if not name:
+        return None
+    key = canonical_folder(name)
+    if key not in MOVE_REFUSED_FOLDERS:
+        # IMAP and Gmail spell the folder with a path: "[Gmail]/Sent Mail",
+        # "INBOX.Sent", "Sent Messages". Compare the last segment too.
+        last = re.split(r"[/.\\]", name.strip())[-1]
+        key = canonical_folder(_SENT_DRAFT_ALIASES.get(last.strip().lower(), last))
+    if key in MOVE_REFUSED_FOLDERS:
+        return MOVE_REFUSED_SENTENCE
+    return None
+
+
 def canonical_folder(name: str | None) -> str:
     """Normalize a provider folder name/ID to a canonical lowercase key.
 

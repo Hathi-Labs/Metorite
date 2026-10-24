@@ -101,7 +101,14 @@ SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
   which mailbox before a write.
 - When the member asks for a reply, a Cc and a send in one message, give
   email_assistant ONE task that holds all of them, with each Cc address.
-  Never split one request into two tasks.
+  Never split one request into two tasks. "X and Y" means ONE mail with
+  both people on it. Ask for one mail for each person only when the member
+  says "each" or "individually".
+- Forward the people of an email_assistant reply WORD FOR WORD, the Cc of
+  the email included. Never drop a person from your summary.
+- When the member says "send it" or "send it out", hand it to
+  email_assistant at once. Its card IS the confirmation, so never ask for a
+  confirmation in text first.
 - Email work happens here, through email_assistant. Never tell the member to
   open the Email app to do it. Only a mailbox that needs reconnecting needs
   the Email app, because the sign-in needs a browser.

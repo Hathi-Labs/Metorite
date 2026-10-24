@@ -444,6 +444,12 @@ def test_the_act_request_takes_no_recipient_body_or_file(field: str) -> None:
     with pytest.raises(ValidationError):
         rc.ReplyCardActRequest(message_id=MAIL, card_request_id="r", card_thread_id="t",
                                answer="x", **{field: ["spy@evil.test"]})
+    if field == "cc":
+        # Item 2 (owner, 2026-10-24): the CARD request takes ``cc``. The server
+        # classes and records each one, and the act takes a subset of the
+        # record only (``test_recipient_intent.py``). The ACT request still
+        # takes no cc, above.
+        return
     with pytest.raises(ValidationError):
         rc.ReplyCardRequest(message_id=MAIL, **{field: ["spy@evil.test"]})
 
@@ -510,7 +516,9 @@ async def test_a_card_with_no_text_writes_no_draft(monkeypatch, card_drafts) -> 
 
 def test_the_parameter_fence_pins_compose_reply() -> None:
     params = list(inspect.signature(agents.compose_reply).parameters)
-    assert params == ["email_id", "account_id", "reply_all", "draft", "instruction"]
+    # Item 2 (owner, 2026-10-24): ``cc`` joins the pin. The gateway classes
+    # and records each added person (``test_recipient_intent.py``).
+    assert params == ["email_id", "account_id", "reply_all", "draft", "instruction", "cc"]
     assert frozenset(params) == eg.CARD_BOUND_SEND_TOOLS["compose_reply"]
     assert agents.compose_reply.__tool_risk__ == {
         "read_only": False, "destructive": True, "idempotent": False,
@@ -521,14 +529,15 @@ def _variant(extra: str) -> Any:
     """``compose_reply`` with one more parameter, as a careless change adds."""
     ns: dict[str, Any] = {}
     exec(  # noqa: S102 - a fixed test source
-        f"async def compose_reply(email_id, account_id, reply_all=False, draft='', instruction='', {extra}=None):\n"
+        "async def compose_reply(email_id, account_id, reply_all=False, draft='', "
+        f"instruction='', cc=None, {extra}=None):\n"
         "    return ''\n", ns)
     fn = ns["compose_reply"]
     fn.__tool_risk__ = dict(agents.compose_reply.__tool_risk__)
     return fn
 
 
-@pytest.mark.parametrize("extra", ["to", "cc", "bcc", "recipients", "attachments", "body",
+@pytest.mark.parametrize("extra", ["to", "cc_list", "bcc", "recipients", "attachments", "body",
                                    "forward_to"])
 def test_the_parameter_fence_fails_when_a_parameter_is_added(extra: str) -> None:
     assert eg.is_card_bound_send(agents.compose_reply) is True
@@ -822,10 +831,13 @@ async def test_a_member_who_writes_over_the_card_gets_a_revise(monkeypatch, gw) 
     assert [p for p, _ in gw.posts] == ["/email/reply-card"]
 
 
-async def test_no_card_on_whatsapp(monkeypatch, gw) -> None:
+async def test_no_card_on_whatsapp_with_writes_off(monkeypatch, gw) -> None:
+    """A WhatsApp run with writes off has no reply path, so the tool drafts,
+    saves and sends nothing. With writes on, the card parks for the member's
+    reply code (H-391), and ``test_wac_email_confirm.py`` holds that path."""
     import acb_skills.whatsapp_ui as wa
 
-    monkeypatch.setattr(wa, "current_run", lambda: types.SimpleNamespace(writes=True))
+    monkeypatch.setattr(wa, "current_run", lambda: types.SimpleNamespace(writes=False))
     assert await agents.compose_reply(MAIL, BOX) == agents._NO_CARD_CHANNEL
     assert gw.posts == []
 
@@ -1404,7 +1416,12 @@ def test_a_revised_card_adds_a_cc_in_the_chat():
     card's draft with edit_draft, in the chat (R7 fence)."""
     text = agents._CARD_REVISED
     assert "find_contact" in text and "edit_draft" in text
-    assert "a new card resets the Cc" in text
+    # Item 2 (owner, 2026-10-24): the Cc goes on ONE new reply card through
+    # ``cc``, and the card keeps the Cc of the email. A new card no longer
+    # resets the Cc, so the old line about it went.
+    assert "compose_reply" in text and "in cc, in ONE call" in text
+    assert "Cc of the email" in text and "never drop one" in text
+    assert "\"X and Y\" means one mail to both" in text
     assert "Never send the member to the Email app" in text
 
 async def test_a_revised_card_names_its_draft_id(monkeypatch, gw) -> None:
@@ -1558,7 +1575,7 @@ async def test_untick_new_leaves_each_new_person_off_the_card_and_the_draft(
     async def load_mail(message_id: str, owner: str) -> Any:
         return _mail()
 
-    async def classes(owner: str, addresses: list[str], *, primary: list[str]) -> dict:
+    async def classes(owner: str, addresses: list[str], *, primary: list[str], **_kw) -> dict:
         return {"kim@contoso.test": "thread", "lee@contoso.test": "new",
                 "ops@contoso.test": "org"}
 

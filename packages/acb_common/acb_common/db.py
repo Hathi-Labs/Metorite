@@ -141,6 +141,91 @@ def engine_connect_args() -> dict[str, Any]:
     return args
 
 
+# ── The background lane (H-390) ─────────────────────────────────────────────
+#
+# Sync, rule, classify and embed jobs share the ONE pool with member reads. A
+# burst of jobs filled it (``QueuePool limit of size 7 overflow 2``) and a
+# member read answered 503. The pooler in front has no spare slot for a second
+# pool, so the jobs are BOUNDED instead: a task marked as background holds at
+# most ``db_background_max`` connections at once, and the rest of the pool stays
+# free for members. A task that already holds a slot passes through a nested
+# ``tenant_session`` with no second wait, so a job that opens two sessions
+# cannot deadlock against its own kind.
+
+_BACKGROUND: ContextVar[bool] = ContextVar("acb_db_background", default=False)
+#: The task that holds a background slot, or None. A copied context (a child
+#: task started inside a held session) sees the holder and shares its slot:
+#: it never waits on the gate, because its parent may be waiting on it, and a
+#: child that needed its own slot could hang the job until the timeout. So
+#: the cap counts JOBS, not connections; no email job fans out today.
+_BACKGROUND_HELD: ContextVar[Any] = ContextVar("acb_db_background_held", default=None)
+_GATES: dict[Any, Any] = {}
+
+
+def mark_background() -> Token[bool]:
+    """Mark the current task (and the tasks it starts) as background work.
+
+    Pass the token to :func:`release_background`. A loop calls it once at the
+    top. A job wrapper calls it around the job.
+    """
+    return _BACKGROUND.set(True)
+
+
+def release_background(token: Token[bool] | None) -> None:
+    if token is not None:
+        _BACKGROUND.reset(token)
+
+
+def background_slots() -> int:
+    """How many connections background work may hold at once."""
+    settings = get_settings()
+    total = settings.db_pool_size + settings.db_max_overflow
+    return max(1, min(settings.db_background_max, total - 1))
+
+
+def _background_gate() -> Any:
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    gate = _GATES.get(loop)
+    if gate is None:
+        _GATES.clear()  # a loop that ended (tests) never returns
+        gate = _GATES[loop] = asyncio.Semaphore(background_slots())
+    return gate
+
+
+@asynccontextmanager
+async def _background_slot() -> AsyncIterator[None]:
+    """Hold one background slot for a ``tenant_session``, if the task is background."""
+    import asyncio
+
+    if not _BACKGROUND.get():
+        yield
+        return
+    task = asyncio.current_task()
+    if _BACKGROUND_HELD.get() is not None:
+        # A nested session of the holder, or a child task it started: no
+        # second wait, so a job can never deadlock on its own kind.
+        yield
+        return
+
+    gate = _background_gate()
+    # Waiting here costs nothing from the pool. The wait is bounded like the
+    # pool's own, so a stuck job fails instead of waiting for ever.
+    await asyncio.wait_for(gate.acquire(), timeout=get_settings().db_pool_timeout * 3)
+    token = _BACKGROUND_HELD.set(task)
+    try:
+        yield
+    finally:
+        # Release the slot FIRST. A reset in a foreign Context raises
+        # ValueError, and the slot must not leak when it does.
+        gate.release()
+        try:
+            _BACKGROUND_HELD.reset(token)
+        except ValueError:
+            pass
+
+
 def get_engine() -> Any:
     """The shared pooled async engine, created on first use."""
     global _ENGINE
@@ -281,27 +366,28 @@ async def tenant_session(organization_id: str | None = None) -> AsyncIterator[An
             "explicitly (saas_multitenancy.md §0.1 / MT-1c)"
         )
 
-    session = get_session_factory()()
-    try:
-        await session.begin()
-        # ``set_config(..., is_local := true)`` IS ``SET LOCAL`` — same
-        # transaction-scoped reset on commit/rollback — but it is a function
-        # call, so the tenant can be a BOUND parameter. The literal
-        # ``SET LOCAL app.tenant_id = :tenant`` form is a Postgres syntax
-        # error through the extended protocol (``SET`` takes no bind
-        # parameters), which every hermetic test missed because a Python fake
-        # does not parse SQL; the first live run found it (2026-08-10, the
-        # same lesson as WS-27r's CAST). Interpolating the id into the
-        # statement instead would be the injection seam this module exists to
-        # avoid handing out.
-        await session.execute(
-            text("SELECT set_config('app.tenant_id', :tenant, true)"),
-            {"tenant": str(tenant)},
-        )
-        yield session
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    async with _background_slot():
+        session = get_session_factory()()
+        try:
+            await session.begin()
+            # ``set_config(..., is_local := true)`` IS ``SET LOCAL`` — same
+            # transaction-scoped reset on commit/rollback — but it is a function
+            # call, so the tenant can be a BOUND parameter. The literal
+            # ``SET LOCAL app.tenant_id = :tenant`` form is a Postgres syntax
+            # error through the extended protocol (``SET`` takes no bind
+            # parameters), which every hermetic test missed because a Python fake
+            # does not parse SQL; the first live run found it (2026-08-10, the
+            # same lesson as WS-27r's CAST). Interpolating the id into the
+            # statement instead would be the injection seam this module exists to
+            # avoid handing out.
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :tenant, true)"),
+                {"tenant": str(tenant)},
+            )
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
