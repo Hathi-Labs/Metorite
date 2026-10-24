@@ -5908,6 +5908,36 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
 - **Added:** 2026-10-20 · PR #1184 review, P3
 
+### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
+- **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
+  near `unheld_clause`. When the clause, `_HOLDER_SQL` and `_RUN_SELECT` all
+  carry the org predicate, item 3 is done. Read items 1 and 2 against the code.
+- **Why.** The review of PR #1192 found no blocker. It left four items. The
+  landing of #1192 fixed a fifth, the reopen race (two prompts at once gave
+  a 500), with `test_x13b`.
+- **Do this:**
+  1. A task that goes to done, cancelled or archived keeps its open run until
+     the lease ends. End the run on that status change, or let a closed task
+     not hold. Metorite task SW-10 (#341) covers the same ground.
+  2. The Release button uses `access.is_admin`. The server uses
+     `admin:members:read`. Make them the same rule, and ask whether a read
+     permission should release another member's run.
+  3. Add `organization_id` to `_HOLDER_SQL`, `_RUN_SELECT` and
+     `unheld_clause` (R5). Add a cross-org test for `held_by`. Decide whether
+     a released or abandoned run counts as "agent worked" in `agent_worked.py`.
+  4. **A delete ignores the hold, and it can deadlock** (review of the landing,
+     2026-10-25, P2). `agent_delete_task` (`routes/projects/tasks.py`, about
+     L1475) reads no run. Another session can delete a task that a live run
+     holds, and the cascade removes the run. The delete also locks the task
+     row first and the runs second, through the cascade. A holder's activity
+     takes the run first and the task row second. The two can deadlock, and
+     that was on main before EA-14a. Fix both doors (`DELETE` and
+     `agent-delete`): lock the task's open runs `FOR UPDATE` before
+     `lock_task`, and answer 409 `task_held` when another member or client
+     holds a fresh run. Or write in §12.3 that a delete overrides a hold.
+- **Authority:** `specs/external_agent_access.md` §12.3
+- **Added:** 2026-10-20 · PR #1192 review, P2 and P3
+
 ### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
   Did it rotate that key after 2026-10-18? Then count the rows that still
@@ -6252,17 +6282,6 @@ line — never reclaim a number by deleting the other entry.
   delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
-### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
-- **Check:** a fence refuses a word that mixes scripts, for example a
-  Cyrillic letter in a Latin word, at a chat send. If one exists, delete
-  this entry.
-- **Why:** the #1237 review rated this P2. It carries about one bit for each
-  letter, and the letters are visible. `compose_reply` on main has the same
-  gap.
-- **Do this:** add a mixed-script check for each word to
-  `reply_card.has_hidden_text`. Keep Hindi, Bengali and other single-script
-  text working. Add a fence.
-- **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]

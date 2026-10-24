@@ -103,7 +103,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     adds the three POST pairs of the agent runs (§12.1, EA12-9). EA-6c adds
     the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34). EA-6g
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
-    (EA3-51)."""
+    (EA3-51). EA-14a adds the release (§12.3)."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
@@ -113,6 +113,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-runs"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
+        ("POST", "/projects/agent-runs/{run_id}/release"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
     }

@@ -68,8 +68,13 @@ import {
   archiveExpired,
   archiveRequestOf,
   archiveWaitingText,
+  canReleaseRun,
   cardQuestion,
   clientName,
+  heldByLine,
+  RELEASE_COPY,
+  releaseBody,
+  STALE_HOLD_TEXT,
   runIdentity,
   isOpenRun,
   isRunMember,
@@ -119,7 +124,8 @@ interface Props {
 }
 
 export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }: Props) {
-  const me = useAccess().access.email;
+  const { access } = useAccess();
+  const me = access.email;
   /** `null` until the first read. `false` when the routes are off. */
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [run, setRun] = useState<AgentRun | null>(null);
@@ -132,6 +138,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmRelease, setConfirmRelease] = useState(false);
   /** The caller has an open run on this task that the panel does not show. */
   const [otherOpenMine, setOtherOpenMine] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -296,6 +303,14 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   // An expired request is stale: the server takes a reply, and a decline.
   const archiveStale = archiveRequest !== null && archiveExpired(archiveRequest);
   const canStop = STOPPABLE.has(run.status);
+  // EA-14a: one AI for each task. The card says who holds the task, and the
+  // run's member, an assignee or an admin may release it.
+  const holding = isOpenRun(run);
+  const canRelease = canReleaseRun(run, {
+    me,
+    isAdmin: access.is_admin,
+    assignees: task.assignees,
+  });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
 
   /** One member write: `send` posts it. The panel guesses the state first. */
@@ -390,6 +405,15 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     if (ok) setReply("");
   }
 
+  async function release() {
+    const ok = await write(
+      () => agentRunsApi.release(shownRunId),
+      "stale",
+      RELEASE_COPY.failure,
+    );
+    if (ok) setConfirmRelease(false);
+  }
+
   async function stop() {
     const ok = await write(
       () => agentRunsApi.post(shownRunId, stopPayload()),
@@ -445,6 +469,37 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           </Button>
         ) : null}
       </div>
+
+      {/* EA-14a: who holds the task, and the Release control. */}
+      {holding ? (
+        <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
+          <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
+            {heldByLine(run, personLabels)}
+            {run.lease_expired ? (
+              <span
+                className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"
+                data-agent-held-stale=""
+                title="No activity for a long time. The next claim can take this task."
+              >
+                {STALE_HOLD_TEXT}
+              </span>
+            ) : null}
+          </p>
+          {canRelease ? (
+            <Button
+              className="shrink-0"
+              variant="ghost"
+              size="sm"
+              icon="LogOut"
+              data-agent-release=""
+              disabled={busy}
+              onClick={() => setConfirmRelease(true)}
+            >
+              {RELEASE_COPY.button}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* The second line: the newest thought, and the session link. */}
       {(ephemeral && run.status !== "failed") || host ? (
@@ -580,6 +635,17 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
 
       {askButton ? <div className="flex items-center">{askButton}</div> : null}
       {askDialog}
+
+      <ConfirmDialog
+        open={confirmRelease}
+        title={RELEASE_COPY.title}
+        body={releaseBody(client)}
+        confirmLabel={RELEASE_COPY.confirm}
+        icon="LogOut"
+        busy={busy}
+        onConfirm={() => void release()}
+        onCancel={() => setConfirmRelease(false)}
+      />
 
       <ConfirmDialog
         open={confirmStop}

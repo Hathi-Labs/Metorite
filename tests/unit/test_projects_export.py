@@ -277,6 +277,10 @@ NOT_ON_THE_EXPORT = {
     # a second would make the file's row order depend on who last dragged a
     # card. Excluded rather than added, deliberately.
     "view_id",
+    # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
+    # no other AI session holds. The board never sends it, and a file of
+    # "tasks no agent holds" is a snapshot that is stale on download.
+    "unheld",
 }
 
 

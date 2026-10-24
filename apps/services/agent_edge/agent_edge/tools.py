@@ -205,6 +205,15 @@ TEXT_ARCHIVE_CONFLICT = (
     "Your agent run on this task cannot take an archive request now. Call"
     " list_agent_runs with this task_id, then read the run with get_agent_run.")
 
+#: A 409 ``task_held`` of a claim or a start (EA-14a): another AI session holds
+#: the task. The agent picks another task, and never tries this one again.
+TEXT_TASK_HELD = (
+    "Another AI session holds this task. Pick another task. Do not claim or"
+    " start this task again. Call list_tasks with unheld true to find a free task.")
+#: A 403 of ``release_task``: the run belongs to another client or member.
+TEXT_RELEASE_FORBIDDEN = "You can release only your own agent run."
+#: The code of the gateway's 409 for a held task (``agent_runs.TASK_HELD``).
+TASK_HELD_CODE = "task_held"
 #: The fixed texts of ``delete_task`` (EA-6h, EA3-51).
 TEXT_DELETE_OFF = (
     "The member has not let agents delete tasks. The member can turn this on"
@@ -405,6 +414,13 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
     detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
     if details and isinstance(detail, str) and (answer.status, detail) in details:
         raise ToolError(details[(answer.status, detail)])
+    if (answer.status == 409 and isinstance(detail, dict)
+            and detail.get("error") == TASK_HELD_CODE):
+        # EA-14a: one text for every write that opens a run. It goes before
+        # `texts`, so no per-tool 409 text hides it. The gateway's message
+        # and the name of the holder never reach the agent. get_task shows
+        # `held_by`, as (U) text.
+        raise ToolError(TEXT_TASK_HELD)
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
     if coded and answer.status == 422:
@@ -879,12 +895,53 @@ _ASSIGNEES_SCHEMA: dict[str, Any] = {
     "type": "array", "items": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]}}
 
 
+# ── held_by (EA-14a) ────────────────────────────────────────────────────────
+
+#: Who holds a task: the open agent run. ``stale`` is true when the run has
+#: no activity for longer than the lease, so the next claim may take over.
+_HELD_BY_PROPERTIES: dict[str, Any] = {
+    "member": _SHAPED_OR_NULL,
+    "member_name": _UNTRUSTED_OR_NULL,
+    "client_via": _NULLABLE_STRING,
+    "client_name": _NULLABLE_STRING,
+    "since": _NULLABLE_STRING,
+    "last_activity_at": _NULLABLE_STRING,
+    "stale": {"type": "boolean"},
+}
+_HELD_BY_SCHEMA: dict[str, Any] = {"anyOf": [
+    {"type": "object", "properties": _HELD_BY_PROPERTIES,
+     "required": list(_HELD_BY_PROPERTIES), "additionalProperties": False},
+    {"type": "null"},
+]}
+
+
+def _held_by(value: Any) -> dict[str, Any] | None:
+    """The ``held_by`` of a task row, or ``None`` for a free task. The member
+    name is free text, so (U). The client name comes from the curated map of
+    the stamp, never from a name that the client declared."""
+    if not isinstance(value, dict):
+        return None
+    via = value.get("client_via")
+    stamp = via if isinstance(via, str) and agent_oauth.ACTOR_VIA_PATTERN.fullmatch(via) else None
+    member = value.get("member")
+    name = value.get("member_name")
+    return {
+        "member": assignee(member) if isinstance(member, str) else None,
+        "member_name": untrusted(name) if isinstance(name, str) else None,
+        "client_via": stamp,
+        "client_name": agent_oauth.client_label(stamp) if stamp is not None else None,
+        "since": _str_or_none(value.get("since")),
+        "last_activity_at": _str_or_none(value.get("last_activity_at")),
+        "stale": value.get("stale") is True,
+    }
+
+
 # ── list_tasks ──────────────────────────────────────────────────────────────
 
-#: The keys of one ``list_tasks`` row (§9.1).
+#: The keys of one ``list_tasks`` row (§9.1), and ``held_by`` (EA-14a).
 LIST_TASK_KEYS: tuple[str, ...] = (
     "id", "task_number", "title", "project_id", "status", "assignees",
-    "due_at", "version",
+    "due_at", "version", "held_by",
 )
 
 LIST_TASKS_ROUTE = "/projects/tasks"
@@ -905,6 +962,9 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
                      "description": "Only tasks assigned to this address."},
         "text": {"type": "string", "minLength": 1, "maxLength": 200,
                  "description": "Only tasks whose title or description holds every word."},
+        "unheld": {"type": "boolean",
+                   "description": "True: only tasks that no AI session holds now."
+                                  " A task whose holder is stale counts as free."},
         "limit": {"type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
                   "default": LIST_LIMIT_DEFAULT,
                   "description": "Rows on one page. Ignored when a cursor is sent."},
@@ -930,6 +990,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
                     "assignees": _ASSIGNEES_SCHEMA,
                     "due_at": _NULLABLE_STRING,
                     "version": _NULLABLE_STRING,
+                    "held_by": _HELD_BY_SCHEMA,
                 },
                 "required": list(LIST_TASK_KEYS),
                 "additionalProperties": False,
@@ -949,6 +1010,7 @@ _LIST_TASKS_PARAMS: dict[str, str] = {
     "tag": "tags",
     "assignee": "assignee",
     "text": "q",
+    "unheld": "unheld",
     "limit": "page_size",
     "cursor": "page",
 }
@@ -1024,6 +1086,7 @@ def _list_task_row(
         "assignees": _assignees(assignees),
         "due_at": row.get("due_at"),
         "version": row.get("updated_at"),
+        "held_by": _held_by(row.get("held_by")),
     }
 
 
@@ -1034,6 +1097,8 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     for name in ("project_id", "status_id", "tag", "assignee", "text"):
         if name in args:
             query.append((_LIST_TASKS_PARAMS[name], str(args[name])))
+    if args.get("unheld") is True:
+        query.append((_LIST_TASKS_PARAMS["unheld"], "true"))
     query += [("page", str(page)), ("page_size", str(size))]
 
     body = await _get(ctx, LIST_TASKS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query)
@@ -1056,9 +1121,12 @@ LIST_TASKS = Tool(
     title="List tasks",
     description=(
         "List the tasks this member can see, newest first, one page at a time."
-        " Filter by project, status, tag, assignee or text. Each row has the"
-        " task id, number, title, project, status, assignees, due date and"
-        " version. Send nextCursor back as cursor to read the next page. The"
+        " Filter by project, status, tag, assignee or text. Send unheld true to"
+        " see only tasks that no AI session holds. Each row has the"
+        " task id, number, title, project, status, assignees, due date,"
+        " version and held_by. held_by is null for a free task. Never claim a"
+        " task that has held_by, unless held_by.stale is true. Send"
+        " nextCursor back as cursor to read the next page. The"
         " pages are offsets, so a task that changes between two calls can be"
         " skipped or shown twice." + _UNTRUSTED_NOTE
     ),
@@ -1552,14 +1620,16 @@ MY_RUNS_ROUTE = "/projects/agent-runs"
 RUN_ROUTE = "/projects/agent-runs/{run_id}"
 RUN_ACTIVITIES_ROUTE = "/projects/agent-runs/{run_id}/activities"
 RUN_FINISH_ROUTE = "/projects/agent-runs/{run_id}/finish"
+RUN_RELEASE_ROUTE = "/projects/agent-runs/{run_id}/release"
 #: EA-6g (EA3-40). The agent ASKS to archive here. The approval route of the
 #: member is not in ``MCP_ROUTES``, and the edge never names it.
 ARCHIVE_REQUEST_ROUTE = "/projects/tasks/{task_id}/archive-request"
 
-#: The eight statuses of a run (§12.1). The gateway's CHECK holds the same.
+#: The statuses of a run (§12.1), and `abandoned` and `released` of EA-14a.
+#: The gateway's CHECK holds the same.
 RUN_STATUSES: tuple[str, ...] = (
     "created", "in_progress", "awaiting", "completed",
-    "stopping", "stopped", "failed", "stale",
+    "stopping", "stopped", "failed", "stale", "abandoned", "released",
 )
 #: A run is open in these statuses (EA12-6).
 OPEN_RUN_STATUSES: frozenset[str] = frozenset(
@@ -1799,6 +1869,8 @@ GET_TASK_KEYS: tuple[str, ...] = (
     # EA-13f (EA3-46): what the agent writes into a pull request, so that
     # GitHub links the pull request to the task (`github_integration.md` §10).
     "url", "short_id",
+    # EA-14a: who holds the task now, or null.
+    "held_by",
 )
 SUBTASK_KEYS: tuple[str, ...] = (
     "id", "task_number", "title", "status_id", "status_name", "category", "due_at",
@@ -1833,6 +1905,7 @@ _TASK_SCHEMA = _object({
     "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
     "archived_at": _NULLABLE_STRING, "version": _NULLABLE_STRING,
     "url": {"type": "string"}, "short_id": {"type": "string"},
+    "held_by": _HELD_BY_SCHEMA,
 })
 _SUBTASK_SCHEMA = _object({
     "id": {"type": "string"}, "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
@@ -1973,6 +2046,7 @@ def _task(row: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, Any]:
         "version": _str_or_none(row.get("updated_at")),
         "url": task_url(str(row.get("id"))),
         "short_id": task_short_id(str(row.get("id"))),
+        "held_by": _held_by(row.get("held_by")),
     }
 
 
@@ -3134,7 +3208,10 @@ CLAIM_TASK = Tool(
         " refuses, and you read the task again. A second claim changes"
         " nothing. Returns the task with its new version, and agent_run_id:"
         " the agent run that the claim opened or found, or null when agent"
-        " runs are off." + _UNTRUSTED_NOTE
+        " runs are off. Only one AI session may hold a task. When another"
+        " session holds it, the tool refuses: pick another task, and do not"
+        " claim this one again. A holder with no activity for 2 hours loses"
+        " the task to the next claim." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_CLAIM_INPUT,
@@ -3275,7 +3352,9 @@ START_AGENT_RUN = Tool(
         "Start an agent run on a task this member can see, when you begin work"
         " on that task. The task then shows people that an agent works on it."
         " If this member already has an open run on the task from this client,"
-        " you get that run back, and created is false. While you work, send a"
+        " you get that run back, and created is false. Only one AI session may"
+        " hold a task. When another session holds it, the tool refuses: pick"
+        " another task, and do not start this one again. While you work, send a"
         " thought with post_agent_activity at least once a minute. After 5"
         " minutes with no activity, the task shows the run as idle. When you"
         " need a decision from a person, use ask_on_task. When the work is"
@@ -3866,6 +3945,51 @@ FINISH_AGENT_RUN = Tool(
 )
 
 
+# ── release_task (EA-14a) ───────────────────────────────────────────────────
+
+_RELEASE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"run_id": _RUN_ID_INPUT},
+    "required": ["run_id"],
+    "additionalProperties": False,
+}
+_RELEASE_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "released": {"type": "boolean"}})
+
+
+async def _release_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the release. A second call on a released run answers the same."""
+    _, body = await _write(
+        ctx, "POST", RUN_RELEASE_ROUTE, TEXT_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body={},
+        texts={409: TEXT_RUN_CONFLICT},
+        details={(403, "You may not release this agent run."): TEXT_RELEASE_FORBIDDEN})
+    return {"run": agent_run(_run_body(body)), "released": True}
+
+
+RELEASE_TASK = Tool(
+    name="release_task",
+    title="Release a task",
+    description=(
+        "Give a task up without finishing it. Call it when you stop work on a"
+        " task that you claimed and you will not finish it. Send the run_id"
+        " from claim_task or start_agent_run. The run becomes released. The"
+        " task keeps its status and its assignees, and another AI session may"
+        " claim it. Use finish_agent_run when the work is done. You can"
+        " release only your own run." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_RELEASE_INPUT,
+    output_schema=_RELEASE_OUTPUT,
+    route=RUN_RELEASE_ROUTE,
+    params={"run_id": "run_id"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_release_task,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The write
@@ -3879,7 +4003,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
-    ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, DELETE_TASK,
+    ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RELEASE_TASK,
+    DELETE_TASK,
 )}
 
 
@@ -4021,6 +4146,7 @@ __all__ = [
     "PROJECT_ROW_KEYS",
     "READ_ANNOTATIONS",
     "REF_KEYS",
+    "RELEASE_TASK",
     "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
@@ -4063,11 +4189,13 @@ __all__ = [
     "TEXT_QUESTION_WAITS",
     "TEXT_REF_BAD_URL",
     "TEXT_REF_RETRY",
+    "TEXT_RELEASE_FORBIDDEN",
     "TEXT_RUNS_OFF",
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
     "TEXT_STALE",
     "TEXT_SUBTASK_NOT_BELOW",
+    "TEXT_TASK_HELD",
     "TEXT_TASK_NOT_FOUND",
     "TEXT_UPDATE_EMPTY",
     "TEXT_WRITES_OFF",
