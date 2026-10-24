@@ -197,11 +197,13 @@ async def test_revoke_finds_the_grant_by_id_or_subject(monkeypatch) -> None:
 
 
 async def test_revoke_of_a_grant_that_is_not_there_shows_no_card(monkeypatch) -> None:
-    calls = _gateway(monkeypatch, LAUNCH)
     asked = approve(monkeypatch)
-    out = await skill_projects.revoke_access(PID, "org")
-    assert "has no grant like that" in out
-    assert asked == [] and writes(calls) == []
+    for grant in ("org", str(uuid.uuid4()), "not a subject"):
+        calls = _gateway(monkeypatch, LAUNCH)
+        out = await skill_projects.revoke_access(PID, grant)
+        assert "has no grant like that" in out, (grant, out)
+        assert writes(calls) == []
+    assert asked == []
 
 
 async def test_a_declined_card_writes_nothing(monkeypatch) -> None:

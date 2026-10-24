@@ -2024,10 +2024,12 @@ async def revoke_access(project_id: str, grant: str) -> str:
     wanted = str(grant or "").strip()
     row = next((g for g in rows if str(g.get("id") or "").lower() == wanted.lower()), None)
     if row is None:
-        clean, bad = _subject_or_refusal("revoke_access", wanted)
-        if bad:
-            return bad
-        row = next((g for g in rows if str(g.get("subject") or "").lower() == clean), None)
+        # Not a grant_id of this project, so read it as a subject. A value that
+        # is neither finds no grant, and the answer below says so.
+        clean, _bad = _subject_or_refusal("revoke_access", wanted)
+        row = next(
+            (g for g in rows if clean and str(g.get("subject") or "").lower() == clean), None
+        )
     if row is None:
         return (
             f"{data(node.get('name'))} has no grant like that. project_access lists "
