@@ -239,5 +239,5 @@ def test_the_whole_block_names_the_preferred_name(db, bound, monkeypatch) -> Non
     finally:
         ex._RUN_SOLO_ROOM.reset(token)
         ex._PROFILE_CACHE.clear()
-    assert block.split("\n")[1].startswith('Address them as "Viju".')
+    assert block.split("\n")[1].startswith('Their directory name is "Viju".')
     assert (zone, greeting) == ("Asia/Kolkata", "brief")
