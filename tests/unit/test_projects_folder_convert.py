@@ -49,6 +49,16 @@ Fix round 1:
   ``test_the_422_says_who_can_move_a_kept_team_child``.
 * C10. ``skill_projects/guarded.py`` ``_convert_list``: no cap.
   ``test_the_chat_card_says_and_n_more``.
+
+Fix round 2:
+
+* C11. ``G/tree.py`` ``move_node``: the kind from the unlocked read, and no
+  ``FOR UPDATE`` on the moved row.
+  ``test_a_move_of_the_folder_waits_for_its_convert_and_is_refused``.
+* C12. ``G/tree.py`` ``convert_node``: no ``_lock_ancestor_chain``.
+  ``test_a_convert_waits_for_a_move_of_an_ancestor_and_is_refused``.
+* C13. ``G/tree.py`` ``_tree_race_as_409``: re-raise every error.
+  ``test_a_deadlock_or_a_lock_timeout_answers_409``.
 """
 
 from __future__ import annotations
@@ -232,6 +242,76 @@ def _find(rows: list[dict[str, Any]], node: str) -> dict[str, Any] | None:
         if found is not None:
             return found
     return None
+
+
+def _hold(w: Any, node: str):
+    """An open transaction that holds *node* ``FOR UPDATE``, and its pid.
+
+    The pid lets ``_waits_on_a_lock`` count only the sessions that this
+    holder blocks, and not a session of some other test in the database.
+    """
+    conn = w.admin.connect()
+    trans = conn.begin()
+    pid = conn.execute(text("SELECT pg_backend_pid()")).scalar()
+    conn.execute(text("SELECT kind FROM pm_projects WHERE id = CAST(:p AS uuid)"
+                      " FOR UPDATE"), {"p": node})
+    return conn, trans, pid
+
+
+def _sees_lock_waits(w: Any) -> bool:
+    """Can ``w.admin`` see the lock waits of the app role's sessions?
+
+    A superuser or a member of ``pg_read_all_stats`` sees them. Any other
+    role reads every wait as nothing, and a race test would then pass
+    for the wrong reason.
+    """
+    with w.admin.connect() as c:
+        return bool(c.execute(text(
+            "SELECT rolsuper OR pg_has_role(current_user, 'pg_read_all_stats',"
+            " 'member') FROM pg_roles WHERE rolname = current_user")).scalar())
+
+
+async def _waits_on_a_lock(w: Any, holder: int, task: Any,
+                           seconds: float = 15.0) -> bool:
+    """True when a session waits on a lock that *holder* holds."""
+    import asyncio
+
+    if not _sees_lock_waits(w):
+        pytest.skip("the ladder admin role cannot read other roles' lock waits"
+                    " (it needs superuser or pg_read_all_stats)")
+    for _ in range(int(seconds / 0.05)):
+        if task.done():
+            return False
+        with w.admin.connect() as c:
+            waiting = c.execute(text(
+                "SELECT count(*) FROM pg_stat_activity"
+                " WHERE pid <> pg_backend_pid() AND wait_event_type = 'Lock'"
+                " AND CAST(:h AS int) = ANY(pg_blocking_pids(pid))"), {"h": holder}).scalar()
+        if waiting:
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def _race_held(w: Any, node: str, sql: str, params: dict[str, Any],
+                     act: Any) -> tuple[Any, bool]:
+    """Hold *node*, start *act*, see it wait, write *sql*, commit, read its answer.
+
+    The held transaction plays the other member's request. It locks the
+    row that the real route locks first, and it commits the change that
+    the real route would make.
+    """
+    import asyncio
+
+    conn, trans, pid = _hold(w, node)
+    try:
+        task = asyncio.ensure_future(act())
+        blocked = await _waits_on_a_lock(w, pid, task)
+        conn.execute(text(sql), params)
+        trans.commit()
+    finally:
+        conn.close()
+    return await task, blocked
 
 
 class TestTheConversion:
@@ -451,44 +531,13 @@ class TestFixRound1:
         assert _find(tree["rows"], live.team)["can_convert"] is False
         assert _find(tree["personal"], mine)["can_convert"] is True
 
-    async def _hold_folder(self, live, folder: str):
-        """An open transaction that holds the folder as ``convert_node`` does."""
-        conn = live.admin.connect()
-        trans = conn.begin()
-        conn.execute(text("SELECT kind FROM pm_projects WHERE id = CAST(:p AS uuid)"
-                          " FOR UPDATE"), {"p": folder})
-        return conn, trans
-
-    async def _waits_on_a_lock(self, live, task) -> bool:
-        import asyncio
-        for _ in range(60):
-            if task.done():
-                return False
-            with live.admin.connect() as c:
-                waiting = c.execute(text(
-                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
-                    " AND datname = current_database()")).scalar()
-            if waiting:
-                return True
-            await asyncio.sleep(0.05)
-        return False
-
     async def _race(self, live, act) -> Any:
         """Hold the folder, start *act*, see it wait, convert, then read its answer."""
-        import asyncio
-
         folder = _node(live, "op10 race folder", live.team, kind="folder")
         child = _node(live, "op10 race child", folder)
-        conn, trans = await self._hold_folder(live, folder)
-        try:
-            task = asyncio.ensure_future(act(child))
-            blocked = await self._waits_on_a_lock(live, task)
-            conn.execute(text("UPDATE pm_projects SET kind = 'project'"
-                              " WHERE id = CAST(:p AS uuid)"), {"p": folder})
-            trans.commit()
-        finally:
-            conn.close()
-        r = await task
+        r, blocked = await _race_held(
+            live, folder, "UPDATE pm_projects SET kind = 'project'"
+            " WHERE id = CAST(:p AS uuid)", {"p": folder}, lambda: act(child))
         assert blocked, f"the write did not wait for the convert: {r.status_code} {r.text}"
         return r, child
 
@@ -543,4 +592,136 @@ class TestFixRound1:
         assert ("A lead of 'op10 kept team' or a Projects admin can move it."
                 in detail), detail
         assert "Move 'op10 kept team'" not in detail
+        assert _row(live, folder).kind == "folder"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 2. A move of the folder, or of an ancestor, against a convert.
+# And a deadlock or a lock timeout answers 409, not 500.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _Transient(Exception):
+    """A driver error that carries a SQLSTATE, as psycopg's does."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.sqlstate = code
+
+
+def _route_calls() -> list[tuple[str, Any]]:
+    from gateway.routes.projects import tree
+    from gateway.routes.projects.core import ProjectIn
+
+    user = object()
+    return [
+        ("create", lambda: tree.create_node(ProjectIn(name="x"), user=user)),
+        ("move", lambda: tree.move_node(
+            "n", tree.MoveProject(parent_project_id=None), user=user)),
+        ("convert", lambda: tree.convert_node(
+            "n", tree.ConvertNode(to="project"), user=user)),
+    ]
+
+
+@pytest.mark.parametrize("code", ["40P01", "55P03"])
+@pytest.mark.parametrize("route", ["create", "move", "convert"])
+async def test_a_deadlock_or_a_lock_timeout_answers_409(monkeypatch, code, route) -> None:
+    import contextlib
+
+    from gateway.routes.projects import tree
+    from sqlalchemy.exc import OperationalError
+
+    @contextlib.asynccontextmanager
+    async def refused():
+        raise OperationalError("SELECT 1", {}, _Transient(code))
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(tree, "_tenant_session", refused)
+    call = dict(_route_calls())[route]
+    with pytest.raises(HTTPException) as caught:
+        await call()
+    assert caught.value.status_code == 409
+    assert caught.value.detail == (
+        "Someone else changed this part of the tree at the same moment. Try again.")
+
+
+async def test_any_other_database_error_still_raises(monkeypatch) -> None:
+    import contextlib
+
+    from gateway.routes.projects import tree
+    from sqlalchemy.exc import OperationalError
+
+    @contextlib.asynccontextmanager
+    async def broken():
+        raise OperationalError("SELECT 1", {}, _Transient("08006"))
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(tree, "_tenant_session", broken)
+    with pytest.raises(OperationalError):
+        await dict(_route_calls())["move"]()
+
+
+class TestFixRound2:
+    pytestmark = _DB_GATE
+
+    def _world(self, live, tag: str) -> tuple[str, str, str]:
+        """``Team → P2`` beside ``Team → F (folder) → C``.
+
+        Each move or convert alone is legal. Together they put a project
+        below a subproject.
+        """
+        p2 = _node(live, f"op10 r2 {tag} p2", live.team)
+        folder = _node(live, f"op10 r2 {tag} folder", live.team, kind="folder")
+        child = _node(live, f"op10 r2 {tag} child", folder)
+        return p2, folder, child
+
+    def _parent(self, live, node: str) -> str:
+        with live.admin.begin() as c:
+            return str(c.execute(text(
+                "SELECT parent_project_id FROM pm_projects WHERE id = CAST(:p AS uuid)"),
+                {"p": node}).scalar())
+
+    async def test_a_move_of_the_folder_waits_for_its_convert_and_is_refused(self, live):
+        p2, folder, _child = self._world(live, "a1")
+
+        async def move() -> Any:
+            return await wa._as(live, ADMIN, "POST", f"/projects/nodes/{folder}/move",
+                                {"parent_project_id": p2})
+
+        # Member 2 converts F, and member 1 moves F under P2.
+        r, blocked = await _race_held(
+            live, folder, "UPDATE pm_projects SET kind = 'project'"
+            " WHERE id = CAST(:p AS uuid)", {"p": folder}, move)
+        assert blocked, f"the move did not wait for the convert: {r.status_code} {r.text}"
+        assert r.status_code == 422, r.text
+        assert self._parent(live, folder) == live.team
+        assert _row(live, folder).kind == "project"
+
+    async def test_a_convert_of_the_folder_waits_for_its_move_and_is_refused(self, live):
+        p2, folder, _child = self._world(live, "a2")
+
+        # Member 1 moves F under P2, and member 2 converts F.
+        r, blocked = await _race_held(
+            live, folder, "UPDATE pm_projects SET parent_project_id = CAST(:to AS uuid)"
+            " WHERE id = CAST(:p AS uuid)", {"p": folder, "to": p2},
+            lambda: _convert(live, ADMIN, folder))
+        assert blocked, f"the convert did not wait for the move: {r.status_code} {r.text}"
+        assert r.status_code == 422, r.text
+        assert self._parent(live, folder) == p2
+        assert _row(live, folder).kind == "folder"
+
+    async def test_a_convert_waits_for_a_move_of_an_ancestor_and_is_refused(self, live):
+        # Team → P1 → F (an empty folder), beside Team → P2. A convert of F
+        # alone is legal, and so is a move of P1 under P2. Together F is a
+        # project below a subproject.
+        p1 = _node(live, "op10 r2 b p1", live.team)
+        p2 = _node(live, "op10 r2 b p2", live.team)
+        folder = _node(live, "op10 r2 b folder", p1, kind="folder")
+
+        r, blocked = await _race_held(
+            live, p1, "UPDATE pm_projects SET parent_project_id = CAST(:to AS uuid)"
+            " WHERE id = CAST(:p AS uuid)", {"p": p1, "to": p2},
+            lambda: _convert(live, ADMIN, folder))
+        assert blocked, f"the convert did not wait for the move: {r.status_code} {r.text}"
+        assert r.status_code == 422, r.text
         assert _row(live, folder).kind == "folder"
