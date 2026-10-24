@@ -2915,6 +2915,7 @@ async def run_agent_stream_endpoint(
     # in shared rooms"). Agent and org memory are unaffected: they were never
     # one person's. A room of one takes neither branch.
     _room_is_shared = room is not None and room.is_shared
+    from gateway.rooms import room_is_solo  # noqa: PLC0415
 
     # Which compartments this run may read, and the one it may write. Solo
     # resolves to exactly the three scopes and the write target it always had.
@@ -3176,9 +3177,10 @@ async def run_agent_stream_endpoint(
         # `confirmationQueue.ts` read the CUSTOM card events of this stream).
         shows_cards=True,
         # WS-63 PZ-2 (personalization.md §5.1): the member's own profile
-        # block goes only into a solo run. The same room bit that
-        # memory_preread reads, from the server's room, never the body.
-        solo_room=not _room_is_shared,
+        # block goes only into a solo run. Solo is a private room of one,
+        # from the server's room and never the body. A room of one that
+        # other members can read (visibility org or people) is not solo.
+        solo_room=room_is_solo(room),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a

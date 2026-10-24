@@ -245,6 +245,40 @@ def enabled() -> bool:
         return False
 
 
+# ── The change counter (PZ-2) ──────────────────────────────────────────────
+
+#: The most members that :data:`_GENERATIONS` holds. The oldest goes first.
+GENERATIONS_MAX = 4096
+#: A count of the profile writes in THIS process, by lower-case member. The
+#: gateway runs the executor in the same process, so a write moves the count
+#: and the executor's cached block for that member becomes a miss. Another
+#: process keeps its cache until the TTL ends.
+_GENERATIONS: dict[str, int] = {}
+
+
+def _member_key(member: str) -> str:
+    return (member or "").strip().lower()
+
+
+def mark_changed(member: str) -> None:
+    """Record one committed write of *member*'s profile. Never raises."""
+    try:
+        key = _member_key(member)
+        if not key:
+            return
+        count = _GENERATIONS.pop(key, 0) + 1
+        _GENERATIONS[key] = count
+        while len(_GENERATIONS) > GENERATIONS_MAX:
+            _GENERATIONS.pop(next(iter(_GENERATIONS)))
+    except Exception:
+        return
+
+
+def generation(member: str) -> int:
+    """The write count of *member* in this process. ``0`` when none."""
+    return _GENERATIONS.get(_member_key(member), 0)
+
+
 # ── The read of the run (PZ-2) ─────────────────────────────────────────────
 
 #: The member's stored profile in the bound org. ``:org`` is the tenant of

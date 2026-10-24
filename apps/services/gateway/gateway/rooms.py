@@ -138,6 +138,22 @@ class RoomAccess:
         )
 
 
+def room_is_solo(room: RoomAccess | None) -> bool:
+    """True when only the member can read what a run in this room writes.
+
+    ``personalization.md`` §5.1 and §7 (D-PZ-3): the member's own profile
+    block goes only into a solo room. ``is_shared`` counts participants, and
+    that is not enough. A room of one with visibility ``org`` or ``people``
+    is readable by other members (:func:`_capabilities`), so it is not solo.
+    An empty visibility counts as ``private``. ``None`` is no room at all
+    (no thread, no email), which is the member's own ephemeral chat. Fence:
+    ``tests/unit/test_executor_profile_block.py``.
+    """
+    if room is None:
+        return True
+    return not room.is_shared and (room.visibility or "private") == "private"
+
+
 def _capabilities(role: str | None, *, visibility: str) -> tuple[bool, bool, bool, bool, bool]:
     """(read, send, cancel, invite, manage) for a resolved room role."""
     if role == "owner":

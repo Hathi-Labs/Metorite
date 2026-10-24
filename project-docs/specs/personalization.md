@@ -4,7 +4,9 @@
 the routes of §4.3 in `routes/admin/assistant_profile.py`, and the fix of
 §2.1). **PZ-2 BUILT 2026-10-23 (dark, ASSISTANT_PROFILE_ENABLED off).** The
 executor adds the block of §5.1, and `acb_common/assistant_profile.py` is the
-one parser of the profile.
+one parser of the profile. Repair round 1 (2026-10-24): only a private room
+of one is solo, and a detached run is never solo. A profile write ends the
+cached block.
 
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
@@ -234,15 +236,27 @@ The block reaches a run only when all four hold:
 2. The agent is `orchestrator`. The WhatsApp run uses that agent too.
 3. The run has a verified member (`_verified_run_member`), from the run
    boundary and never from the payload.
-4. The run is not in a shared room. `run_agent` and `run_agent_stream`
-   take a `solo_room` keyword from the run boundary. The web chat route
-   passes `not _room_is_shared`, which is the bit that `memory_preread`
-   reads. The WhatsApp run passes `not shared`. Each other caller passes
-   nothing, so the run gets no block. A run that passes nothing keeps the
-   value of its parent run. The payload never sets it.
+4. The run is in a solo room. `run_agent` and `run_agent_stream` take a
+   `solo_room` keyword from the run boundary. The payload never sets it.
+   - The web chat route passes `room_is_solo(room)` from
+     `gateway/rooms.py`. Only a private room of one is solo. A room of one
+     with visibility `org` or `people` is not solo, because other members
+     can read it.
+   - The WhatsApp run passes `not shared`.
+   - A run that passes nothing keeps the value of its parent run. A
+     sub-agent that answers into the same chat inherits it. A run that no
+     run starts has the default, which is not solo.
+   - A detached run passes `False`, because `asyncio.create_task` copies
+     the parent's value and its output does not go to the member's solo
+     chat. The three are the workflow agent node, the background sub-task
+     and the task dispatch of an assigned agent.
 
 The read follows `_run_member_display_name`: one read, a cache per
-`(org, member)` with a 60-second life, and no exception escapes. The block is
+`(org, member)` with a 60-second life, and no exception escapes. Each
+committed write of the profile routes moves a change count of the member in
+that process (`assistant_profile.mark_changed`). The executor reads again on
+the next turn when the count moved. The gateway runs the executor in the
+same process, so an edit shows on the next turn. The block is
 byte-stable between writes, so it sits well in the cached prefix
 (`llm_caching_memory.md`).
 

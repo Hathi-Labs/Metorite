@@ -8,8 +8,10 @@ Spec: ``project-docs/specs/personalization.md`` §5.1. R7 fences named here:
 * ``profile-block-order``: the block sits after the name line and before
   the number-system line, and no other block moves.
 * ``profile-block-solo-plumbing``: the web chat route passes
-  ``solo_room=not _room_is_shared``, the WhatsApp run passes it, and a run
-  that passes ``None`` keeps its parent's value.
+  ``solo_room=room_is_solo(room)``, so only a private room of one is solo.
+  The WhatsApp run passes it, and a run that passes ``None`` keeps its
+  parent's value. A detached run (a workflow agent node, a background
+  sub-task, a task dispatch) passes ``False``.
 * ``profile-block-render``: the §5.1 shape, the 6,000-character cap, and the
   order in which the cap sheds.
 
@@ -233,6 +235,22 @@ def test_one_read_a_minute_for_each_member(run, monkeypatch) -> None:
     assert run["reads"][-1] == (ORG, "bo@alpha.example")
 
 
+def test_a_profile_write_ends_the_cached_block(run, monkeypatch) -> None:
+    """The gateway runs the executor in its own process. A write there moves
+    the member's count, so the next turn reads again inside the minute."""
+    now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: now["t"])
+    assert _blocks(_parts()) == [GOLDEN]
+    assert len(run["reads"]) == 1
+    run["raw"] = None
+    ap.mark_changed(MEMBER.upper())
+    now["t"] += 1.0
+    assert _blocks(_parts()) == []
+    assert len(run["reads"]) == 2
+    _parts()
+    assert len(run["reads"]) == 2
+
+
 def test_a_miss_is_cached_too(run, monkeypatch) -> None:
     now = {"t": 5.0}
     monkeypatch.setattr(time, "monotonic", lambda: now["t"])
@@ -318,9 +336,42 @@ def test_the_web_chat_route_passes_the_room_bit() -> None:
     (call,) = _calls(path, "run_agent_stream")
     value = _kw(call, "solo_room")
     assert value is not None, "the web chat run gives no solo_room"
-    assert ast.unparse(value) == "not _room_is_shared"
+    assert ast.unparse(value) == "room_is_solo(room)"
     src = path.read_text(encoding="utf-8")
-    assert "_room_is_shared = room is not None and room.is_shared" in src
+    assert "from gateway.rooms import room_is_solo" in src
+
+
+def _room(members: list[str], visibility: Any) -> Any:
+    from gateway.rooms import RoomAccess
+
+    return RoomAccess(
+        session_id="s1", email=MEMBER, role="owner", can_read=True,
+        can_send=True, can_cancel=True, can_invite=True, can_manage=True,
+        is_shared=len(members) > 1, members=members, visibility=visibility,
+    )
+
+
+@pytest.mark.parametrize(("members", "visibility", "solo"), [
+    ([MEMBER], "private", True),
+    ([MEMBER, "bo@alpha.example"], "private", False),
+    ([MEMBER], "org", False),
+    ([MEMBER], "people", False),
+    ([MEMBER, "bo@alpha.example"], "org", False),
+    ([MEMBER], None, True),
+    ([MEMBER], "", True),
+])
+def test_only_a_private_room_of_one_is_solo(members, visibility, solo) -> None:
+    """§5.1, §7 (D-PZ-3): a room of one that other members can read is not
+    solo. An empty visibility counts as private."""
+    from gateway.rooms import room_is_solo
+
+    assert room_is_solo(_room(members, visibility)) is solo
+
+
+def test_no_room_is_solo() -> None:
+    from gateway.rooms import room_is_solo
+
+    assert room_is_solo(None) is True
 
 
 def test_the_whatsapp_run_passes_the_room_bit() -> None:
@@ -425,6 +476,85 @@ def test_the_stream_run_binds_and_a_nested_run_inherits(monkeypatch) -> None:
     after = contextvars.Context().run(asyncio.run, go())
     assert seen == [False, True, True, False]
     assert after == [False, True]
+
+
+def _inner_records_solo(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bool]]:
+    """Stub the batch run's body. The REAL ``run_agent`` binds the bit, and
+    the stub records what the run sees."""
+    seen: list[tuple[str, bool]] = []
+
+    async def inner(agent_name: str, payload: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        seen.append((agent_name, ex._RUN_SOLO_ROOM.get()))
+        return {"result": "ok"}
+
+    monkeypatch.setattr(ex, "_run_agent_inner", inner)
+    return seen
+
+
+def _in_a_solo_chat(coro_fn: Any) -> Any:
+    """Run *coro_fn* in a fresh context whose parent run is solo."""
+    import contextvars
+
+    async def go() -> Any:
+        ex._RUN_SOLO_ROOM.set(True)
+        return await coro_fn()
+
+    return contextvars.Context().run(asyncio.run, go())
+
+
+def test_a_workflow_agent_node_started_from_a_solo_chat_is_not_solo(monkeypatch) -> None:
+    """A workflow copies the context that started it. Its output is not the
+    member's solo chat, so its agent node passes ``solo_room=False``."""
+    from gateway.routes.workflows import service
+
+    seen = _inner_records_solo(monkeypatch)
+
+    async def member(workflow_id: str) -> str:
+        return MEMBER
+
+    monkeypatch.setattr(service, "_workflow_billing_member", member)
+    out = _in_a_solo_chat(lambda: service._agent_runner("wf")("orchestrator", "m", None))
+    assert out == "ok"
+    assert seen == [("orchestrator", False)]
+
+
+def test_a_background_sub_task_of_a_solo_chat_is_not_solo(monkeypatch) -> None:
+    """``asyncio.create_task`` copies the solo bit. The background sub-task
+    answers into the inbox, so it passes ``solo_room=False``."""
+    from acb_skills import agent_tools
+
+    seen = _inner_records_solo(monkeypatch)
+
+    async def unmarked() -> bool:
+        return False
+
+    monkeypatch.setattr(agent_tools, "_session_marked", unmarked)
+
+    async def go() -> str:
+        out = await agent_tools.call_agent_background("orchestrator", "do it")
+        others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*others)
+        assert ex._RUN_SOLO_ROOM.get() is True
+        return out
+
+    out = _in_a_solo_chat(go)
+    assert "Dispatched sub-task" in out
+    assert seen == [("orchestrator", False)]
+
+
+def test_a_task_dispatch_from_a_solo_context_is_not_solo(monkeypatch) -> None:
+    """An assigned agent replies on the task timeline, which other members
+    read. The dispatch passes ``solo_room=False``."""
+    from gateway.routes.projects import agent_dispatch
+
+    seen = _inner_records_solo(monkeypatch)
+
+    async def record(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(agent_dispatch, "_record_outcome", record)
+    _in_a_solo_chat(lambda: agent_dispatch._run_and_record("orchestrator", "do it", "t1", ORG))
+    assert seen == [("orchestrator", False)]
 
 
 # ── profile-block-render ───────────────────────────────────────────────────

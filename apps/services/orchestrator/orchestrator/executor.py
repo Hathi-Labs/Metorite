@@ -705,9 +705,11 @@ MEMBER_NO_NAME_LINE = (
 #: The one agent whose per-turn context carries the profile block. The
 #: WhatsApp run uses it too (personalization.md §5.1, point 2).
 _PROFILE_AGENT = "orchestrator"
-#: The rendered block by ``(org, member)``, with the time it was read. A
-#: miss is cached too, so a member with no profile costs one read a minute.
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+#: The rendered block by ``(org, member)``, with the time it was read and the
+#: member's write count (``assistant_profile.generation``). A miss is cached
+#: too, so a member with no profile costs one read a minute. A write in this
+#: process moves the count, so the next turn reads again.
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
 
@@ -745,7 +747,8 @@ def _member_profile_block(agent_name: str) -> str:
     boundary says the room is solo (:data:`_RUN_SOLO_ROOM`), and the run has
     an org. Each check comes before the read, so a run that fails one reads
     nothing. The block is cached per ``(org, member)`` for
-    ``_PROFILE_TTL_SECONDS``. No exception escapes. Fence:
+    ``_PROFILE_TTL_SECONDS``, and a profile write in this process ends the
+    entry early (``assistant_profile.mark_changed``). No exception escapes. Fence:
     ``tests/unit/test_executor_profile_block.py``.
     """
     import time
@@ -762,16 +765,17 @@ def _member_profile_block(agent_name: str) -> str:
         return ""
     key = (str(org), member)
     now = time.monotonic()
+    gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
-    if hit and now - hit[0] < _PROFILE_TTL_SECONDS:
-        return hit[1]
+    if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
+        return hit[2]
     try:
         raw = _read_member_profile(str(org), member)
         block = assistant_profile.render_block(raw) if raw is not None else ""
     except Exception:
         block = ""
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, block)
+    _PROFILE_CACHE[key] = (now, gen, block)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
     return block

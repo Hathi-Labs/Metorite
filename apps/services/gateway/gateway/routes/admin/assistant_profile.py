@@ -100,6 +100,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _stored_keys,
     _text,
     empty_profile,
+    mark_changed,
     profile_size,
     stored_profile,
 )
@@ -369,16 +370,24 @@ def _validate(model: type[BaseModel], body: Any) -> Any:
 
 async def _write(uid: str, op: str, fn: Any) -> Any:
     """Run ``fn(db)`` in one tenant session. A 4xx passes through, and any
-    other fault is a 503 with no detail."""
+    other fault is a 503 with no detail.
+
+    Every write route goes through here. After the session commits, the
+    write moves the member's change count (``mark_changed``), so the
+    executor's cached block of this member is read again on the next turn
+    (PZ-2, ``personalization.md`` §5.1). A 4xx or a 503 moves nothing.
+    """
     try:
         async with _tenant_session() as db:
-            return await fn(db)
+            result = await fn(db)
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("auth.assistant_profile.%s_failed", op,
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
+    mark_changed(uid)
+    return result
 
 
 def _new_id(prefix: str) -> str:
