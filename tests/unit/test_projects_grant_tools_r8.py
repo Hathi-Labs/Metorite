@@ -39,6 +39,17 @@ Run (a private ladder database, one R8 suite at a time)::
   ``test_r8_a_declined_card_writes_nothing``.
 * R5. ``guarded.py`` ``revoke_access``: send the DELETE for the first grant in
   the list. ``test_r8_an_admin_revokes_and_the_member_loses_sight``.
+
+Fix round 1 (adversarial review). Each one turned the named test red.
+
+* R6. ``authority.py`` ``grant_write_refusal``: no ``in_personal_tree`` check.
+  ``test_r8_nobody_changes_the_grants_of_a_personal_space``.
+* R7. ``authority.py`` ``_PERSONAL_TREE_SQL``: the node only, no walk up.
+  ``test_r8_a_team_node_under_a_personal_root_is_personal_too``.
+* R8. ``tree.py`` ``create_grant``: no ``assert_grant_group_exists``.
+  ``test_r8_a_group_that_does_not_exist_is_refused_at_the_tool_and_the_route``.
+* R9. ``tree.py`` ``list_grants``: ``yours`` always false.
+  ``test_r8_a_lead_who_revokes_their_own_grant_is_warned_first``.
 """
 
 from __future__ import annotations
@@ -217,3 +228,140 @@ async def test_r8_a_subject_outside_the_grammar_is_refused(live, monkeypatch) ->
     r = await _as(live, LEAD, "POST", f"/projects/nodes/{pid}/grants", {"subject": "everybody"})
     assert r.status_code == 422 and "Unknown grant subject" in r.json()["detail"], r.text
     assert _grant_rows(live, pid) == before
+
+
+# ── Fix round 1 ──────────────────────────────────────────────────────────────
+
+#: A member who sees every project of the organization (``data:org:read``)
+#: and is a Projects admin. Only such a member reaches another member's
+#: personal tree, through ``_TENANT_PROJECTS_SQL``.
+ORG_ADMIN = "orgadmin@mcpwrites.test"
+
+
+def _org_admin(world: Any) -> str:
+    with world.admin.begin() as c:
+        known = c.execute(text("SELECT 1 FROM app_user WHERE email = :e"),
+                          {"e": ORG_ADMIN}).first()
+    if known is None:
+        world.seeder.member(
+            ORG_ADMIN, ["feature:projects", "projects:settings:write", "data:org:read"])
+    return ORG_ADMIN
+
+
+async def _personal_root(world: Any, who: str) -> str:
+    """The personal root of *who*, minted by the real route (the bootstrap)."""
+    r = await _as(world, who, "POST", "/projects/my/project")
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+async def test_r8_nobody_changes_the_grants_of_a_personal_space(live, monkeypatch) -> None:
+    from gateway.routes.projects.authority import PERSONAL_GRANT_REFUSED
+    from skill_projects import guarded
+
+    admin = _org_admin(live)
+    root = await _personal_root(live, VIEWER)
+    # The bootstrap wrote the owner's grant directly, not through the route.
+    before = _grant_rows(live, root)
+    [owner_grant] = [gid for gid, subject in before if subject == VIEWER]
+    r = await _as(live, VIEWER, "POST", "/projects/my/areas", {"name": f"Home {uuid.uuid4().hex[:4]}"})
+    assert r.status_code == 201, r.text
+    area = r.json()["id"]
+    assert [s for _g, s in _grant_rows(live, area)] == [VIEWER]
+
+    # The org admin sees the tree, and the flag says no, with the sentence.
+    got = (await _as(live, admin, "GET", f"/projects/nodes/{root}")).json()
+    assert got["can_write_grants"] is False, got
+    assert got["grant_refusal"] == PERSONAL_GRANT_REFUSED
+
+    for node in (root, area):
+        # An admin grants org: 403, no row.
+        r = await _as(live, admin, "POST", f"/projects/nodes/{node}/grants", {"subject": "org"})
+        assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+        # The member themself cannot share their own space either.
+        r = await _as(live, VIEWER, "POST", f"/projects/nodes/{node}/grants",
+                      {"subject": "org"})
+        assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+    # An admin revokes the owner's grant: 403, the row stays.
+    r = await _as(live, admin, "DELETE", f"/projects/nodes/{root}/grants/{owner_grant}")
+    assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+    assert _grant_rows(live, root) == before
+
+    # The chat refuses before its card, with the same sentence.
+    asked = approve(monkeypatch)
+    for act in (lambda: guarded.grant_access(root, "org"),
+                lambda: guarded.revoke_access(root, owner_grant)):
+        out = await _chat(live, monkeypatch, admin, act)
+        assert out.startswith("Refused:") and PERSONAL_GRANT_REFUSED in out, out
+    assert asked == []
+    assert _grant_rows(live, root) == before
+    assert not await _sees(live, OUTSIDER, root)
+
+
+async def test_r8_a_team_node_under_a_personal_root_is_personal_too(live) -> None:
+    """A node without ``personal_owner`` that sits under a personal root is
+    still in the private tree. The walk up finds it."""
+    from gateway.routes.projects.authority import PERSONAL_GRANT_REFUSED
+
+    admin = _org_admin(live)
+    root = await _personal_root(live, VIEWER)
+    child = str(live.seeder.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, parent_project_id) VALUES (:n, 'active', 'manual', :c,"
+        " CAST(:o AS uuid), 'Asia/Kolkata', CAST(:p AS uuid)) RETURNING id",
+        n=f"unstamped {uuid.uuid4().hex[:6]}", c=VIEWER, o=live.org, p=root))
+    r = await _as(live, admin, "POST", f"/projects/nodes/{child}/grants", {"subject": "org"})
+    assert r.status_code == 403 and r.json()["detail"] == PERSONAL_GRANT_REFUSED, r.text
+    assert "org" not in _grants(live, child)
+
+
+def _group(world: Any, slug: str, name: str) -> None:
+    world.seeder.one(
+        "INSERT INTO org_group (organization_id, slug, display_name) VALUES"
+        " (CAST(:o AS uuid), :s, :n) ON CONFLICT (organization_id, slug)"
+        " DO UPDATE SET display_name = EXCLUDED.display_name RETURNING id",
+        o=world.org, s=slug, n=name)
+
+
+async def test_r8_a_group_that_does_not_exist_is_refused_at_the_tool_and_the_route(
+    live, monkeypatch,
+) -> None:
+    from skill_projects import guarded
+
+    _group(live, "design", "Design")
+    pid = _private(live, f"op6b group {uuid.uuid4().hex[:6]}")
+    before = _grant_rows(live, pid)
+    asked = approve(monkeypatch)
+    out = await _chat(live, monkeypatch, LEAD, lambda: guarded.grant_access(pid, "group:desing"))
+    assert out.startswith("Refused: There is no group called «desing»"), out
+    assert "«Design» («group:design»)" in out, out
+    assert asked == []
+    # The route says the same, with the groups in the sentence.
+    r = await _as(live, LEAD, "POST", f"/projects/nodes/{pid}/grants", {"subject": "group:desing"})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"].startswith("There is no group called desing. The groups are: ")
+    assert "Design (group:design)" in r.json()["detail"], r.text
+    assert _grant_rows(live, pid) == before
+    # A group that exists is granted.
+    out = await _chat(live, monkeypatch, LEAD, lambda: guarded.grant_access(pid, "group:design"))
+    assert len(asked) == 1 and "can now see" in out, out
+    assert "group:design" in _grants(live, pid)
+
+
+async def test_r8_a_lead_who_revokes_their_own_grant_is_warned_first(
+    live, monkeypatch,
+) -> None:
+    from skill_projects import guarded
+
+    pid = _private(live, f"op6b self {uuid.uuid4().hex[:6]}")
+    got = (await _as(live, LEAD, "GET", f"/projects/nodes/{pid}/grants")).json()
+    assert {r["subject"]: r["yours"] for r in got["rows"]} == {
+        CREATOR: False, LEAD: True, ADMIN: False, VIEWER: False}, got
+    assert got["you_see_all"] is False
+    asked = approve(monkeypatch)
+    out = await _chat(live, monkeypatch, LEAD, lambda: guarded.revoke_access(pid, LEAD))
+    [impact] = [x for x in asked[0]["context"].splitlines() if x.startswith("impact: ")]
+    assert impact.startswith(f"impact: {guarded.LOSE_SIGHT_CLAUSE} access narrows"), impact
+    assert guarded.LAST_GRANT_CLAUSE not in impact
+    assert out.startswith("Removed the grant"), out
+    assert not await _sees(live, LEAD, pid)

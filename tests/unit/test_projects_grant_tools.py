@@ -28,6 +28,15 @@ The R8 half is ``test_projects_grant_tools_r8.py``.
   ``test_a_subject_outside_the_grammar_makes_no_call``.
 * G3. ``authority.py`` ``attach_can_write_grants``: no ``grant_refusal`` key.
   ``test_the_flag_comes_from_the_one_rule_with_the_403_words``.
+
+Fix round 1 (adversarial review):
+
+* G4. ``authority.py`` ``grant_write_refusal``: no ``in_personal_tree`` check.
+  ``test_a_personal_tree_is_refused_for_an_admin_too``.
+* G5. ``guarded.py`` ``grant_access``: no ``_unknown_group`` call.
+  ``test_a_group_that_does_not_exist_shows_no_card_and_lists_the_groups``.
+* G6. ``guarded.py`` ``_revoke_warnings``: returns ``[]``.
+  ``test_the_revoke_card_warns_first_on_the_last_grant_and_on_lost_sight``.
 """
 
 from __future__ import annotations
@@ -110,17 +119,20 @@ def test_a_row_without_the_flag_goes_on_and_the_route_decides() -> None:
 async def test_the_flag_comes_from_the_one_rule_with_the_403_words() -> None:
     from gateway.routes.projects import authority as a
 
-    class NoDb:
-        async def execute(self, *_a, **_k):
-            raise AssertionError("an admin is answered without a query")
+    class NotPersonal:
+        """Answers only the personal-tree walk. An admin needs no lead query."""
+
+        async def execute(self, statement, *_a, **_k):
+            assert "personal_owner" in str(statement), "an admin needs no lead query"
+            return SimpleNamespace(first=lambda: None)
 
     admin = SimpleNamespace(email="boss@x.test", has_permission=lambda p: p == "projects:settings:write")
-    row = await a.attach_can_write_grants(NoDb(), admin, {"id": PID})
+    row = await a.attach_can_write_grants(NotPersonal(), admin, {"id": PID})
     assert row["can_write_grants"] is True and "grant_refusal" not in row
 
     class NoLeads:
         async def execute(self, *_a, **_k):
-            return SimpleNamespace(fetchall=lambda: [])
+            return SimpleNamespace(fetchall=lambda: [], first=lambda: None)
 
     viewer = SimpleNamespace(email="v@x.test", has_permission=lambda _p: False)
     row = await a.attach_can_write_grants(NoLeads(), viewer, {"id": PID})
@@ -213,3 +225,114 @@ async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     calls += _gateway(monkeypatch, LAUNCH)
     assert await skill_projects.revoke_access(PID, GRANT) == W.CANCELLED
     assert writes(calls) == []
+
+
+# ── Fix round 1 ──────────────────────────────────────────────────────────────
+
+
+async def test_a_personal_tree_is_refused_for_an_admin_too() -> None:
+    """D-OP-2, §8 Q4: a personal space is not shared. An admin who passes
+    ``may_write_grant`` still gets the personal sentence, and so does a row
+    that carries ``personal_owner`` itself, with no query."""
+    from gateway.routes.projects import authority as a
+
+    class Personal:
+        async def execute(self, *_a, **_k):
+            return SimpleNamespace(first=lambda: (1,))
+
+    class NoDb:
+        async def execute(self, *_a, **_k):
+            raise AssertionError("a row with personal_owner needs no query")
+
+    admin = SimpleNamespace(email="boss@x.test", has_permission=lambda p: p == "projects:settings:write")
+    row = await a.attach_can_write_grants(Personal(), admin, {"id": PID})
+    assert row == {"id": PID, "can_write_grants": False,
+                   "grant_refusal": a.PERSONAL_GRANT_REFUSED}
+    own = await a.grant_write_refusal(NoDb(), admin, {"id": PID, "personal_owner": "me@x.test"})
+    assert own == a.PERSONAL_GRANT_REFUSED
+
+
+GROUPS = [{"slug": "design", "display_name": "Design"}, {"slug": "ops", "display_name": "Ops"}]
+
+
+def _grants_gateway(monkeypatch, node, payload):
+    def answer(call: dict) -> Any:
+        path, method = call["path"], call["method"]
+        if path == f"/projects/nodes/{PID}" and method == "GET":
+            return node
+        if path == f"/projects/nodes/{PARENT}" and method == "GET":
+            return {"id": PARENT, "name": "Product", "parent_project_id": None}
+        if path == f"/projects/nodes/{PID}/grants" and method == "GET":
+            return payload
+        if method == "POST":
+            return {"id": str(uuid.uuid4()), "subject": call["json"]["subject"]}
+        if method == "DELETE":
+            return {"deleted": path.rsplit("/", 1)[-1]}
+        return {"rows": [], "total": 0}
+
+    return fake_gateway(monkeypatch, answer)
+
+
+async def test_a_group_that_does_not_exist_shows_no_card_and_lists_the_groups(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = _grants_gateway(monkeypatch, LAUNCH, {"rows": [], "total": 0, "groups": GROUPS})
+    out = await skill_projects.grant_access(PID, "group:desing")
+    assert out.startswith("Refused: There is no group called «desing»"), out
+    assert "«Design» («group:design»), «Ops» («group:ops»)" in out, out
+    assert asked == [] and writes(calls) == []
+
+    calls = _grants_gateway(monkeypatch, LAUNCH, {"rows": [], "total": 0, "groups": []})
+    out = await skill_projects.grant_access(PID, "group:design")
+    assert "This organization has no groups." in out, out
+    assert asked == [] and writes(calls) == []
+
+    # A group that exists goes on to the card.
+    calls = _grants_gateway(monkeypatch, LAUNCH, {"rows": [], "total": 0, "groups": GROUPS})
+    await skill_projects.grant_access(PID, "group:Design")
+    assert len(asked) == 1 and len(writes(calls)) == 1
+
+
+def _impact(card: dict) -> str:
+    [line] = [x for x in card["context"].splitlines() if x.startswith("impact: ")]
+    return line
+
+
+async def test_the_revoke_card_warns_first_on_the_last_grant_and_on_lost_sight(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    top = {**LAUNCH, "parent_project_id": None}
+    mine = {"id": GRANT, "subject": "org", "yours": True}
+
+    # The last grant on a top project, and the one that lets the member see it.
+    _grants_gateway(monkeypatch, top, {"rows": [mine], "you_see_all": False})
+    await skill_projects.revoke_access(PID, GRANT)
+    assert _impact(asked[-1]).startswith(
+        f"impact: {guarded.LAST_GRANT_CLAUSE} {guarded.LOSE_SIGHT_CLAUSE} access narrows"
+    ), asked[-1]
+
+    # Another grant names the member, so only the last-grant clause is gone.
+    other = {"id": str(uuid.uuid4()), "subject": "me@x.test", "yours": True}
+    _grants_gateway(monkeypatch, top, {"rows": [mine, other], "you_see_all": False})
+    await skill_projects.revoke_access(PID, GRANT)
+    assert _impact(asked[-1]).startswith("impact: access narrows"), asked[-1]
+
+    # A grant of somebody else, with another left: no clause.
+    theirs = {"id": GRANT, "subject": "riya@acme.test", "yours": False}
+    _grants_gateway(monkeypatch, top, {"rows": [theirs, other], "you_see_all": False})
+    await skill_projects.revoke_access(PID, GRANT)
+    assert _impact(asked[-1]).startswith("impact: access narrows"), asked[-1]
+
+    # A sub-project whose parent the member sees: the parent's grants still
+    # cover it, so neither clause applies.
+    _grants_gateway(monkeypatch, LAUNCH, {"rows": [mine], "you_see_all": False})
+    await skill_projects.revoke_access(PID, GRANT)
+    assert _impact(asked[-1]).startswith("impact: access narrows"), asked[-1]
+
+    # A member who sees every project keeps sight.
+    _grants_gateway(monkeypatch, top, {"rows": [mine], "you_see_all": True})
+    await skill_projects.revoke_access(PID, GRANT)
+    assert _impact(asked[-1]).startswith(
+        f"impact: {guarded.LAST_GRANT_CLAUSE} access narrows"), asked[-1]

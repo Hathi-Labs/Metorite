@@ -1943,6 +1943,87 @@ def _subject_or_refusal(tool: str, subject: str) -> tuple[str, str]:
         )
 
 
+def _unknown_group(subject: str, grants: dict[str, Any]) -> str:
+    """A refusal when *subject* is ``group:<slug>`` and no such group exists.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``groups`` come from
+    the gateway (``core.org_groups``), the list that ``POST`` checks too, so
+    the tool holds no copy of the directory. A payload without ``groups``
+    lets the tool go on, and the route decides.
+    """
+    groups = grants.get("groups")
+    if not subject.startswith("group:") or not isinstance(groups, list):
+        return ""
+    slug = subject.split(":", 1)[1]
+    if any(str(g.get("slug") or "").lower() == slug for g in groups):
+        return ""
+    lines = [f"{REFUSED} There is no group called {data(slug)}, so nothing was done."]
+    if groups:
+        listed = ", ".join(
+            f"{data(g.get('display_name'))} ({data('group:' + str(g.get('slug') or ''))})"
+            for g in groups
+        )
+        lines.append(f"The groups are: {listed}.")
+        lines.append(
+            "Next: Ask the member which group they mean. Then call the tool once "
+            "more with its group:<slug>."
+        )
+    else:
+        lines.append("This organization has no groups.")
+        lines.append(
+            "Next: Tell the member. Pass org or one member's email address, or ask "
+            "an admin to make the group first."
+        )
+    return "\n".join(lines)
+
+
+async def _sees_parent(node: dict[str, Any]) -> bool:
+    """Can the member see the parent of *node*? A grant covers the subtree, so a
+    member who sees the parent also sees *node* without a grant on it."""
+    parent = node.get("parent_project_id")
+    if not parent:
+        return False
+    try:
+        await get(f"/projects/nodes/{uuid_of(str(parent), 'parent_project_id')}")
+    except GatewayRefusal:
+        return False
+    return True
+
+
+#: The impact clauses of a revoke that removes the last way in (OP-6b, fix
+#: round 1). They come first on the card.
+LAST_GRANT_CLAUSE = (
+    "This is the last grant. Afterwards only a member who can see every "
+    "project will see this project."
+)
+LOSE_SIGHT_CLAUSE = "You will lose sight of this project."
+
+
+async def _revoke_warnings(
+    node: dict[str, Any], row: dict[str, Any], grants: dict[str, Any],
+) -> list[str]:
+    """The clauses that go first on a revoke card, or ``[]``.
+
+    *grants* is ``GET /projects/nodes/{id}/grants``. Its ``yours`` and
+    ``you_see_all`` come from the gateway's own visibility. A sub-project
+    stays in sight of each member who sees its parent, so the last-grant
+    clause is for a top project only.
+    """
+    rows = grants.get("rows") or []
+    others = [g for g in rows if str(g.get("id")) != str(row.get("id"))]
+    clauses = []
+    if not others and not node.get("parent_project_id"):
+        clauses.append(LAST_GRANT_CLAUSE)
+    if (
+        row.get("yours") is True
+        and not grants.get("you_see_all")
+        and not any(g.get("yours") is True for g in others)
+        and not await _sees_parent(node)
+    ):
+        clauses.append(LOSE_SIGHT_CLAUSE)
+    return clauses
+
+
 async def _project_path(node: dict[str, Any]) -> str:
     """``«Space» / «Team» / «Project»``: the node and the parents the member
     can see, walked up through ``parent_project_id``. Capped, because a cycle
@@ -1978,7 +2059,11 @@ async def grant_access(project_id: str, subject: str) -> str:
     refused = grant_refusal(node)
     if refused:
         return refused
-    held = ((await get(f"/projects/nodes/{pid}/grants")) or {}).get("rows") or []
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    refused = _unknown_group(clean, grants)
+    if refused:
+        return refused
+    held = grants.get("rows") or []
     if any(str(g.get("subject") or "").lower() == clean for g in held):
         return (
             f"{subject_words(clean)} can already see {data(node.get('name'))} through a "
@@ -2013,14 +2098,18 @@ async def revoke_access(project_id: str, grant: str) -> str:
     project_access, or the grant's subject (org, group:<slug> or an email
     address). ONE grant per call. The card names the project path and whose
     access goes. A person with another way in, such as another grant, keeps
-    it. The server decides if the member may change who can see the project."""
+    it. To change the audience, grant the new one with grant_access first, and
+    then revoke the old one. The card warns when this is the last grant, or
+    when the member loses sight of the project. The server decides if the
+    member may change who can see the project."""
     if _many(grant) or _many(project_id):
         return f"revoke_access {ONE_ACT.replace('id', 'grant')}"
     pid, node = await _node(project_id)
     refused = grant_refusal(node)
     if refused:
         return refused
-    rows = ((await get(f"/projects/nodes/{pid}/grants")) or {}).get("rows") or []
+    grants = (await get(f"/projects/nodes/{pid}/grants")) or {}
+    rows = grants.get("rows") or []
     wanted = str(grant or "").strip()
     row = next((g for g in rows if str(g.get("id") or "").lower() == wanted.lower()), None)
     if row is None:
@@ -2038,10 +2127,11 @@ async def revoke_access(project_id: str, grant: str) -> str:
     gid = uuid_of(str(row.get("id")), "grant")
     path = await _project_path(node)
     who = subject_words(str(row.get("subject") or ""))
-    impact = (
+    warnings = await _revoke_warnings(node, row, grants)
+    impact = " ".join([*warnings, (
         f"access narrows: {who} loses the access this grant gives to {path} and every "
         "sub-project under it. Another grant can still let some of them see it"
-    )
+    )])
     if not await _confirm(
         title="Change who can see this project?",
         detail=f"{path} · remove {who}",

@@ -464,6 +464,18 @@ The card is a brake on a mistake. It is not authority. The server decides
 if the member may change the grants. When the tool gives a refusal, tell
 the member the gateway's words, and do not try again.
 
+To change who can see a project, grant the new audience first. Then revoke
+the old grant. If you revoke first, the project can have no grant for a
+time, and the member can lose sight of it. The revoke card warns when the
+grant is the last one, or when the member loses sight of the project.
+
+A `group:<slug>` must name a group that exists. When the tool says that the
+group does not exist, show the member the groups that it lists, and ask
+which one they mean.
+
+The grants of a personal space do not change. When the server refuses a
+grant there, tell the member to move the work to a team project first.
+
 ## Rules
 
 - **A refusal starts with "Refused:".** Read its "Next:" line. Fix the one

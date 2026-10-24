@@ -47,6 +47,7 @@ from gateway.routes.projects.core import (
     ProjectModel,
     _tenant_session,
     actor,
+    assert_grant_group_exists,
     assert_no_project_cycle,
     assert_node_grammar,
     assert_project_move_keeps_privacy,
@@ -59,6 +60,7 @@ from gateway.routes.projects.core import (
     load_visible_project,
     node_kind,
     node_level,
+    org_groups,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -1321,9 +1323,17 @@ async def unarchive_node(
 async def list_grants(
     project_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
+    """The grants on one project, and what the chat needs before a grant card.
+
+    WS-64 OP-6b, fix round 1. Each row carries ``yours``: the grant names the
+    caller, ``org``, or a group of the caller. ``you_see_all`` is true for a
+    caller who sees every project (``data:org:read``). ``groups`` lists the
+    groups of the organization, so the chat refuses an unknown group before
+    its card. The routes decide, and these fields only describe.
+    """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        node = await load_visible_project(db, vis, project_id)
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_project_grants "
@@ -1331,8 +1341,16 @@ async def list_grants(
             ),
             {"pid": project_id},
         )).fetchall()
+        mine = {"org", (vis.email or "").lower(), *(g.lower() for g in vis.groups)}
+        out = []
+        for r in rows:
+            item = row_to_dict(r, GrantModel)
+            item["yours"] = str(item.get("subject") or "").lower() in mine
+            out.append(item)
         return {
-            "rows": [row_to_dict(r, GrantModel) for r in rows], "total": len(rows),
+            "rows": out, "total": len(rows),
+            "you_see_all": bool(vis.unrestricted),
+            "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
 
 
@@ -1353,7 +1371,12 @@ async def create_grant(
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
         # WS-64 OP-8 (D-OP-11). A lead or a Projects admin, nobody else.
+        # OP-6b fix round 1: never on a personal tree, for anyone.
         await assert_may_write_grant(db, user, node)
+        # OP-6b fix round 1: a group that does not exist lets nobody in.
+        await assert_grant_group_exists(
+            db, getattr(node, "organization_id", None), subject,
+        )
         row = (await db.execute(
             text(
                 "INSERT INTO pm_project_grants (project_id, subject, created_by) "
@@ -1378,7 +1401,8 @@ async def delete_grant(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
-        # WS-64 OP-8 (D-OP-11). The rule of `create_grant`.
+        # WS-64 OP-8 (D-OP-11). The rule of `create_grant`, so the owner's
+        # grant on a personal tree cannot be revoked here (OP-6b fix round 1).
         await assert_may_write_grant(db, user, node)
         row = (await db.execute(
             text(

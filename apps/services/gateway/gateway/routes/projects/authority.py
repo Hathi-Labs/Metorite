@@ -26,6 +26,11 @@ owner's rule is about what the member deletes.
 **Grants (D-OP-11).** Only a lead of the project, or of an ancestor, and a
 ``can_manage_settings`` member write a grant.
 
+**A personal tree (WS-64 OP-6b, fix round 1).** No grant on a node of a
+member's personal tree changes by a grant route, for anyone. The owner, a
+lead and a Projects admin all get :data:`PERSONAL_GRANT_REFUSED`. See
+:func:`grant_write_refusal`.
+
 **The lead (D-OP-11, fix round 1).** The ``lead`` column IS the authority
 above, so a write to it is a grant write. A change of ``lead`` on a project
 needs :func:`may_write_grant` on that project. A new project that names a
@@ -75,6 +80,16 @@ GRANT_WRITE_REFUSED = (
     "Only the project lead or a Projects admin can change who can see this project."
 )
 
+#: The 403 of a grant write on a personal tree (WS-64 OP-6b, fix round 1).
+#: D-OP-2 and §8 Q4: a personal space is not shared, so its grants do not
+#: change by the grant routes. The bootstraps of the tree write the owner's
+#: grant directly (``personal._grant_owner``, ``item_lens``), not through a
+#: route, so this rule does not touch them.
+PERSONAL_GRANT_REFUSED = (
+    "Access to a personal space cannot be changed. Move the work to a team "
+    "project to share it."
+)
+
 #: The 403 of a change of ``lead``.
 LEAD_WRITE_REFUSED = (
     "Only the project lead or a Projects admin can change who leads this project."
@@ -108,6 +123,21 @@ _LED_SUBTREE_SQL = (
     "  UNION"
     "  SELECT p.id FROM pm_projects p JOIN led ON p.parent_project_id = led.id"
     ") SELECT id FROM led"
+)
+
+
+#: One row when the project, or any project above it, is in a personal tree.
+#: ``personal_owner`` is stamped on every node that the personal seam mints,
+#: and the walk up also finds a node that ``POST /nodes`` put under a personal
+#: parent without the stamp. ``UNION``, so a cycle in the tree ends the walk.
+_PERSONAL_TREE_SQL = (
+    "WITH RECURSIVE up AS ("
+    "  SELECT id, parent_project_id, personal_owner FROM pm_projects"
+    "   WHERE id = CAST(:pid AS uuid)"
+    "  UNION"
+    "  SELECT p.id, p.parent_project_id, p.personal_owner FROM pm_projects p"
+    "   JOIN up ON p.id = up.parent_project_id"
+    ") SELECT 1 FROM up WHERE personal_owner IS NOT NULL LIMIT 1"
 )
 
 
@@ -178,6 +208,36 @@ async def may_write_grant(
     if can_manage_settings(user):
         return True
     return await _leads(db, user, _field(project, "id"), led)
+
+
+async def in_personal_tree(db: Any, project: Any) -> bool:
+    """Is *project* a node of a member's personal tree? (WS-64 OP-6b.)
+
+    The same line that ``core.assert_move_keeps_privacy`` holds for a move:
+    a personal tree is private, whoever acts. A row that carries
+    ``personal_owner`` answers without a query.
+    """
+    if str(_field(project, "personal_owner") or "").strip():
+        return True
+    pid = _field(project, "id")
+    if not pid:
+        return False
+    found = await db.execute(text(_PERSONAL_TREE_SQL), {"pid": str(pid)})
+    return found.first() is not None
+
+
+async def grant_write_refusal(db: Any, user: Any, project: Any) -> str:
+    """The 403 words of a grant write on *project*, or ``""`` when it may go.
+
+    THE one answer for both grant routes and for the ``can_write_grants``
+    flag. A personal tree is refused first and for everyone, the owner and a
+    Projects admin too. Then :func:`may_write_grant` decides.
+    """
+    if await in_personal_tree(db, project):
+        return PERSONAL_GRANT_REFUSED
+    if not await may_write_grant(db, user, project):
+        return GRANT_WRITE_REFUSED
+    return ""
 
 
 #: D-OP-14. The rule of a task move IS the rule of a task delete, so the
@@ -252,9 +312,11 @@ async def assert_may_delete_project(db: Any, user: Any, project: Any) -> None:
 
 
 async def assert_may_write_grant(db: Any, user: Any, project: Any) -> None:
-    """403 with :data:`GRANT_WRITE_REFUSED`, or return."""
-    if not await may_write_grant(db, user, project):
-        raise HTTPException(status_code=403, detail=GRANT_WRITE_REFUSED)
+    """403 with :data:`PERSONAL_GRANT_REFUSED` on a personal tree, or with
+    :data:`GRANT_WRITE_REFUSED`, or return. (:func:`grant_write_refusal`.)"""
+    refused = await grant_write_refusal(db, user, project)
+    if refused:
+        raise HTTPException(status_code=403, detail=refused)
 
 
 async def attach_can_write_grants(db: Any, user: Any, row: dict[str, Any]) -> dict[str, Any]:
@@ -265,9 +327,10 @@ async def attach_can_write_grants(db: Any, user: Any, row: dict[str, Any]) -> di
     false also carries ``grant_refusal``, the words of the 403, which the chat
     quotes. The chat holds no copy of the rule, and the route still decides.
     """
-    row["can_write_grants"] = await may_write_grant(db, user, row)
-    if not row["can_write_grants"]:
-        row["grant_refusal"] = GRANT_WRITE_REFUSED
+    refused = await grant_write_refusal(db, user, row)
+    row["can_write_grants"] = not refused
+    if refused:
+        row["grant_refusal"] = refused
     return row
 
 
