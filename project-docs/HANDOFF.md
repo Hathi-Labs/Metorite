@@ -5908,7 +5908,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
 - **Added:** 2026-10-20 · PR #1184 review, P3
 
-### H-368 · Harden EA-14a: a reopen race, a task that closes, and two small gaps · [AGENT]
+### H-409 · Harden EA-14a: a reopen race, a task that closes, and two small gaps · [AGENT]
 - **Check:** `grep -n "IntegrityError" apps/services/gateway/gateway/routes/projects/agent_runs.py`.
   When the reopen UPDATE in `_move_run` catches the index error and answers
   409 `task_held`, and a test drives two concurrent prompts, do the first item.
