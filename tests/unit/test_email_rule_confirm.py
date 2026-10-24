@@ -584,7 +584,7 @@ async def test_another_gateway_error_still_raises(gw: Gateway) -> None:
     ("https://hook.evil.test/in", "hook.evil.test"),
     ("https://Hook.Evil.test:8443/in?a=1", "hook.evil.test"),
     ("https://xn--80ak6aa92e.com/in", "xn--80ak6aa92e.com"),
-    ("http://10.0.0.7/in", "10.0.0.7"),
+    ("https://10.0.0.7/in", "10.0.0.7"),  # https since review fix round 1
 ])
 async def test_a_webhook_line_names_its_host_first(
     gw: Gateway, url: str, host: str,
@@ -741,7 +741,7 @@ def real_hosts(monkeypatch):
     "https://hook.inside.test/in",     # a private address
     "https://hook.loop.test/in",       # loopback
     "https://hook.link.test/latest",   # link-local, the cloud metadata host
-    "http://10.0.0.7/in",              # a private literal
+    "https://10.0.0.7/in",             # a private literal
     "https://hook.nowhere.test/in",    # does not resolve
 ])
 async def test_h404_a_webhook_to_a_host_that_is_not_public_saves_nothing(
@@ -772,4 +772,22 @@ async def test_h404_a_forward_to_an_own_mailbox_saves_nothing(gw: Gateway, field
     action = {"type": "FORWARD", "to_address": "boss@acme.test", field: "Dana@Fracktal.test"}
     out = await agents.create_rule(BOX, name="Loop", actions=[action])
     assert out.startswith("Not saved.") and "loop" in out
+    assert gw.cards == [] and gw.saves == []
+
+
+@pytest.mark.parametrize("path", ["actions", "prompt"])
+async def test_h404_a_chat_webhook_takes_https_only(gw: Gateway, path: str) -> None:
+    """Review fix round 1: the docstrings said https, and ``_url_problem``
+    took http. A webhook that the chat saves is https only. The rules engine
+    and the Rules UI keep http (``outbound_guard._SCHEMES``,
+    ``test_email_webhook_guard.py``). Mutation: drop the scheme check →
+    red."""
+    url = "http://hook.public.test/in"
+    if path == "actions":
+        out = await agents.create_rule(BOX, name="Hook", actions=[
+            {"type": "CALL_WEBHOOK", "url": url}])
+    else:
+        gw.specs = [{"name": "Hook", "actions": [{"type": "CALL_WEBHOOK", "url": url}]}]
+        out = await agents.create_rules_from_prompt(BOX, prompt="hook")
+    assert out.startswith("Not saved.") and "https" in out, out
     assert gw.cards == [] and gw.saves == []

@@ -2898,7 +2898,9 @@ def _url_problem(value: Any) -> tuple[str, str]:
     """``(host, "")`` for a web URL that the card can show plainly. Else
     ``("", reason)``.
 
-    The URL takes ``http`` or ``https`` and a host. It has no user name and no
+    The URL takes ``http`` or ``https`` and a host, because a stored
+    unsubscribe link and a rule of the Rules UI can be http. A webhook that
+    the chat saves must be https (:func:`_target_refusal`). It has no user name and no
     password, because ``https://good.test@evil.test/`` reaches ``evil.test``.
     It has no backslash and no whitespace, and its host is ASCII. The host is
     the one that ``httpx`` reaches, because the rule engine posts with
@@ -3052,6 +3054,12 @@ async def _target_refusal(
                 host, problem = _url_problem(url)
                 if problem:
                     return f"Not saved. The webhook url {problem}."
+                # Review fix round 1: a webhook that the chat saves is https
+                # only. The engine and the Rules UI keep http, and a saved
+                # rule's own URL is not checked again (``known_urls``).
+                if urlsplit(str(url)).scheme != "https":
+                    return ("Not saved. A webhook from the chat must be an https "
+                            "address, so the data travels encrypted.")
                 if not await _webhook_host_public(host):
                     return (f"Not saved. The webhook host {host} is not a public address, "
                             "such as a private, a loopback or a link-local one, or it does "
