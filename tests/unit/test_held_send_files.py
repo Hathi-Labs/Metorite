@@ -135,3 +135,16 @@ async def test_the_bytes_come_through_the_one_owned_fetch(monkeypatch) -> None:
     assert fetched == [FILE_A]
     assert out == [{"filename": "quote.pdf", "mime_type": "application/pdf",
                     "content_b64": "JVBERg=="}]
+
+
+@pytest.mark.parametrize("ref", ["artifact:projects-assistant:outputs/a.pdf",
+                                 "knowledge:0a0a0a0a-1111-4000-8000-00000000000a",
+                                 "task-file:0b0b0b0b-2222-4000-8000-00000000000b"])
+async def test_a_metorite_ref_is_not_a_mail_file_and_asks_no_query(ref: str) -> None:
+    """Review fix round 1: ``resolve_file_refs`` reads the source, so a
+    Metorite ref is a 422 here and never a uuid cast. Mutation: drop the
+    source check → red (a query runs)."""
+    db = _Db([FILE_A])
+    with pytest.raises(HTTPException) as e:
+        await hc.resolve_file_refs(db, F.MEMBER, F.BOX, [ref])
+    assert e.value.status_code == 422 and db.queries == []

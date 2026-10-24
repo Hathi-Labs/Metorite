@@ -52,7 +52,7 @@ const RESULTS: Record<string, string> = {
   REJECT: "Reply discarded and cancelled. Nothing was sent.",
 };
 
-async function install(page: Page) {
+async function install(page: Page, form: Record<string, unknown> = REPLY_FORM) {
   await page.addInitScript(
     ({ rid, form, description, results }) => {
       window.localStorage.clear();
@@ -140,7 +140,7 @@ async function install(page: Page) {
         return orig(input, init);
       };
     },
-    { rid: RID, form: REPLY_FORM, description: DESCRIPTION, results: RESULTS },
+    { rid: RID, form, description: DESCRIPTION, results: RESULTS },
   );
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
@@ -148,9 +148,9 @@ async function install(page: Page) {
   await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
 }
 
-async function ask(page: Page) {
+async function ask(page: Page, form: Record<string, unknown> = REPLY_FORM) {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await install(page);
+  await install(page, form);
   await page.goto("/chat");
   const picker = page.getByText("New session", { exact: true });
   const box = page.getByRole("textbox", { name: /^Message / });
@@ -197,8 +197,11 @@ test.describe("the reply card in the main chat", () => {
     // Reply all: the server's second list, in full.
     await card.locator('[data-reply-mode="reply-all"]').click();
     await expect(summary).toHaveText("Reply to kim@contoso.test, lee@contoso.test");
-    await expect(to).toContainText("kim@contoso.test, lee@contoso.test");
+    await expect(to).toContainText("kim@contoso.test");
+    await expect(to).toContainText("lee@contoso.test");
     await expect(card.locator('[data-reply-recipients="cc"]')).toContainText("ops@contoso.test");
+    // Each person has a tick box, and each starts ticked outside a held chat.
+    await expect(card.locator("[data-reply-count]")).toContainText("Sends to 3 of 3");
     const box = card.getByRole("textbox", { name: "Reply text" });
     await expect(box).toHaveValue(REPLY_FORM.body);
     await box.fill("Hi all,\n\nConfirmed for June.\n\nJane");
@@ -224,6 +227,53 @@ test.describe("the reply card in the main chat", () => {
     // No Email app opened, and the page reached no email route itself.
     expect(new URL(page.url()).pathname).toBe("/chat");
     expect(await emailCalls(page)).toEqual([]);
+  });
+
+  test("a tick box takes a person off: the answer names only the ticked people", async ({ page }) => {
+    await ask(page);
+    const card = page.locator("[data-reply-card]");
+    await card.locator('[data-reply-mode="reply-all"]').click();
+    const count = card.locator("[data-reply-count]");
+    await expect(count).toContainText("Sends to 3 of 3");
+    await card.getByRole("checkbox", { name: "Send to lee@contoso.test" }).uncheck();
+    await expect(count).toContainText("Sends to 2 of 3");
+    await expect(card.locator("[data-reply-summary]")).toHaveText("Reply to kim@contoso.test");
+    await page.screenshot({ path: "test-results/reply-ticks-light.png" });
+    // No ticked To: nothing can go.
+    await card.getByRole("checkbox", { name: "Send to kim@contoso.test" }).uncheck();
+    await expect(card.locator("[data-reply-send]")).toBeDisabled();
+    await card.getByRole("checkbox", { name: "Send to kim@contoso.test" }).check();
+    await card.locator("[data-reply-send]").click();
+    await expect.poll(() => answers(page)).toHaveLength(1);
+    const reply = parsed((await answers(page))[0].answer);
+    expect(reply.to).toEqual(["kim@contoso.test"]);
+    expect(reply.cc).toEqual(["ops@contoso.test"]);
+    expect(reply.reply_all).toBe(true);
+  });
+
+  test("a held card opens on Reply all with the new address unticked", async ({ page }) => {
+    const held = {
+      ...REPLY_FORM,
+      reply_all: true,
+      classes: { "kim@contoso.test": "thread", "lee@contoso.test": "new", "ops@contoso.test": "org" },
+      ticked: {
+        reply: { to: ["kim@contoso.test"], cc: [] },
+        reply_all: { to: ["kim@contoso.test"], cc: ["ops@contoso.test"] },
+      },
+    };
+    await ask(page, held);
+    const card = page.locator("[data-reply-card]");
+    await expect(card.locator('[data-reply-mode="reply-all"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(card.getByRole("checkbox", { name: "Send to lee@contoso.test" })).not.toBeChecked();
+    await expect(card.getByRole("checkbox", { name: "Send to kim@contoso.test" })).toBeChecked();
+    await expect(card.locator('[data-reply-mark="new"]')).toBeVisible();
+    await expect(card.locator("[data-reply-count]")).toContainText("Sends to 2 of 3");
+    await page.screenshot({ path: "test-results/reply-ticks-held.png" });
+    await card.locator("[data-reply-save]").click();
+    await expect.poll(() => answers(page)).toHaveLength(1);
+    const reply = parsed((await answers(page))[0].answer);
+    expect(reply.to).toEqual(["kim@contoso.test"]);
+    expect(reply.cc).toEqual(["ops@contoso.test"]);
   });
 
   test("Save to Drafts answers save, with the Reply list", async ({ page }) => {

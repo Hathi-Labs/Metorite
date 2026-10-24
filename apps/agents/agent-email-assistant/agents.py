@@ -2327,16 +2327,26 @@ def _draft_line(draft_id: Any, subject: Any) -> str:
 
 
 def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
-    """The card's reply form, from the gateway's ``/email/reply-card``."""
+    """The card's reply form, from the gateway's ``/email/reply-card``.
+
+    ``ticked`` (owner, 2026-10-24) is the gateway's start of the tick box of
+    each person, for each choice. An older gateway sends none, and then each
+    person starts ticked."""
     rec = prep.get("recipients") or {}
     body = str(prep.get("body") or "")
+    lists = {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}}
+    given = prep.get("ticked") if isinstance(prep.get("ticked"), dict) else {}
+    ticked = {k: {"to": list((given.get(k) or v).get("to") or []),
+                  "cc": list((given.get(k) or v).get("cc") or [])}
+              for k, v in lists.items()}
     return {
         "message_id": prep.get("message_id") or "",
         "notices": list(prep.get("notices") or []),
         "mailbox": prep.get("mailbox") or "",
         "subject": prep.get("subject") or "",
         "original": prep.get("original") or {},
-        "recipients": {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}},
+        "recipients": lists,
+        "ticked": ticked,
         "reply_all": bool(reply_all),
         "body": body,
         # The draft that this card wrote. The member's Discard trashes it.
@@ -2349,35 +2359,38 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
 #: The longest card title that ``request_confirmation`` keeps whole.
 _REPLY_TITLE_MAX = 120
 
-#: The notice of a held reply card whose Reply all adds a new address (§21,
-#: open question 1, the safer choice).
-_REPLY_ALL_NEW_NOTICE = (
-    "Reply all adds an address that you do not know, so the card opens on "
-    "Reply. Each new address is marked. Press Reply all to add them.")
+#: The notice of a held reply card with a new address (§21, the tick boxes
+#: of 2026-10-24). The card opens on the server's choice (§22.6), and each
+#: new address starts unticked.
+_REPLY_NEW_UNTICKED_NOTICE = (
+    "An address that you do not know is on this mail. It is marked, and it "
+    "starts unticked, so it gets nothing unless you tick it.")
 
 
 def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
     """Put the server's classes on a reply form of a held run (§21).
 
-    A person that Reply all adds, and that the member does not know, starts
-    out: the card opens on Reply, and the member must press Reply all. An
-    address with no class reads as new, so a fault fails closed."""
+    The tick boxes (owner, 2026-10-24): the card opens on the server's
+    choice, Reply all by §22.6, and each person that the member does not
+    know starts UNTICKED. The ticks come from the gateway (``untick_new``).
+    A person with no class reads as new and starts unticked, so a fault
+    fails closed."""
     classes = {str(k).strip().lower(): str(v)
                for k, v in (prep.get("classes") or {}).items() if k}
     rec = form["recipients"]
-    shown = {a.strip().lower() for key in ("to", "cc")
-             for a in (rec.get("reply") or {}).get(key) or []}
-    added = [a for key in ("to", "cc") for a in (rec.get("reply_all") or {}).get(key) or []
-             if a.strip().lower() not in shown]
     every = {a.strip().lower() for choice in ("reply", "reply_all") for key in ("to", "cc")
              for a in (rec.get(choice) or {}).get(key) or []}
     form["classes"] = {a: classes.get(a, "new") for a in every}
-    if form["reply_all"] and any(classes.get(a.strip().lower(), "new") == "new" for a in added):
-        form["reply_all"] = False
+    for choice in ("reply", "reply_all"):
+        for key in ("to", "cc"):
+            form["ticked"][choice][key] = [
+                a for a in form["ticked"][choice][key]
+                if form["classes"].get(a.strip().lower(), "new") != "new"]
+    if any(c == "new" for c in form["classes"].values()):
         if len(form["notices"]) < 4:
-            form["notices"].append(_REPLY_ALL_NEW_NOTICE)
+            form["notices"].append(_REPLY_NEW_UNTICKED_NOTICE)
         else:
-            form["note"] = f"{_REPLY_ALL_NEW_NOTICE} {form['note']}".strip()
+            form["note"] = f"{_REPLY_NEW_UNTICKED_NOTICE} {form['note']}".strip()
 
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
@@ -2431,8 +2444,9 @@ async def compose_reply(
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
-    The card adds no Cc or Bcc. When the member asks for one, do it in the
-    chat: find each person with find_contact. The card saved the reply to
+    Each To and Cc on the card has a tick box, and the reply goes only to
+    the people that the member leaves ticked. The card adds no Cc or Bcc.
+    When the member asks for one, do it in the chat: find each person with find_contact. The card saved the reply to
     Drafts, and the answer names its draft_id. Add the people with
     edit_draft, and offer send_draft. Never tell the member to open the
     Email app for it."""
@@ -2448,18 +2462,24 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
-    if reply_all is None and _egress_held():
-        # A held chat does not let the server choose Reply all. The card may
-        # open on Reply (§21), and the draft in Drafts must name the same
-        # people as the card (review of §22.6, P2).
+    held_cards = _held_card_mode()
+    if reply_all is None and _egress_held() and not held_cards:
+        # A held chat with EMAIL_HELD_CARD_SEND off has no class and no
+        # unticked start, so it does not let the server choose Reply all
+        # (review of §22.6, P2). With the switch on, the card opens on the
+        # server's choice, and each new address starts unticked.
         reply_all = False
     if reply_all is not None:
         # The draft in Drafts takes the recipients that the card opens with.
         # Left out, the server chooses (§22.6).
         steer["reply_all"] = bool(reply_all)
+    if held_cards:
+        # The tick boxes: the server starts each new address unticked, and the
+        # draft in Drafts leaves it out, so the draft holds what the card sends.
+        steer["untick_new"] = True
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
-    if _held_card_mode():
+    if held_cards:
         _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     answer = await ask_tools.request_confirmation(
@@ -2878,7 +2898,9 @@ def _url_problem(value: Any) -> tuple[str, str]:
     """``(host, "")`` for a web URL that the card can show plainly. Else
     ``("", reason)``.
 
-    The URL takes ``http`` or ``https`` and a host. It has no user name and no
+    The URL takes ``http`` or ``https`` and a host, because a stored
+    unsubscribe link and a rule of the Rules UI can be http. A webhook that
+    the chat saves must be https (:func:`_target_refusal`). It has no user name and no
     password, because ``https://good.test@evil.test/`` reaches ``evil.test``.
     It has no backslash and no whitespace, and its host is ASCII. The host is
     the one that ``httpx`` reaches, because the rule engine posts with
@@ -2953,7 +2975,10 @@ def _rule_targets(
                         f'Not saved. The rule "{name}" has a url that '
                         f"{problem}: '{_card_text(value, 120)}'."
                     )
-                rows.append((kind, f"host: {host}, url: {value}", host, name))
+                # H-404: the detail names the host AND the path, and the
+                # list names the whole URL, so the card never shows less.
+                path = urlsplit(value).path or "/"
+                rows.append((kind, f"host: {host}, url: {value}", f"{host}{path}", name))
                 found = True
             if not found:
                 rows.append((kind, "(no address)", "(no address)", name))
@@ -2984,8 +3009,79 @@ def _outward_card(rows: list[tuple[str, str, str, str]]) -> tuple[str, str]:
     return detail, context
 
 
+def _rule_urls(actions: Any) -> frozenset[str]:
+    """Each webhook URL of a list of actions."""
+    return frozenset(str(a.get("url")) for a in actions or []
+                     if isinstance(a, dict) and a.get("url"))
+
+
+async def _webhook_host_public(host: str) -> bool:
+    """True when each address of *host* is public: THE shared test
+    (``acb_common.public_address``), in a worker thread because it resolves
+    the name. A seam, so a test answers without the network."""
+    from acb_common.public_address import host_is_public
+
+    return await asyncio.to_thread(host_is_public, host)
+
+
+async def _own_mailbox_addresses() -> set[str] | None:
+    """The lower-case address of each mailbox of the member, or None when
+    the list cannot be read."""
+    try:
+        return {str(a.get("email_address") or "").strip().lower()
+                for a in await _accounts() if a.get("email_address")}
+    except Exception:  # the caller saves nothing
+        return None
+
+
+async def _target_refusal(
+    rules: list[dict[str, Any]], known_urls: frozenset[str],
+) -> str:
+    """H-404: why a target of an outward rule may not be saved, or "".
+
+    A webhook URL whose host is not public is refused: a private, a
+    loopback, a link-local or an unresolvable host. A URL that the saved rule
+    already holds is not tested again. A FORWARD to an address of a mailbox
+    of the member is refused, as ``rule_copy`` leaves it out (D-EM-29): the
+    mail could go round in a loop."""
+    forwards: list[str] = []
+    for rule in rules:
+        for a in rule.get("actions") or []:
+            if not isinstance(a, dict):
+                continue
+            url = a.get("url")
+            if url and str(url) not in known_urls:
+                host, problem = _url_problem(url)
+                if problem:
+                    return f"Not saved. The webhook url {problem}."
+                # Review fix round 1: a webhook that the chat saves is https
+                # only. The engine and the Rules UI keep http, and a saved
+                # rule's own URL is not checked again (``known_urls``).
+                if urlsplit(str(url)).scheme != "https":
+                    return ("Not saved. A webhook from the chat must be an https "
+                            "address, so the data travels encrypted.")
+                if not await _webhook_host_public(host):
+                    return (f"Not saved. The webhook host {host} is not a public address, "
+                            "such as a private, a loopback or a link-local one, or it does "
+                            "not resolve. A rule calls a public https address only.")
+            if a.get("type") == "FORWARD":
+                forwards += [str(a.get(f)) for f in _ADDRESS_FIELDS if a.get(f)]
+    if forwards:
+        own = await _own_mailbox_addresses()
+        if own is None:
+            return ("Not saved. I could not read your mailboxes, so I could not check "
+                    "that the forward does not go to one of them. Try again.")
+        loop = [f for f in forwards if f.strip().lower() in own]
+        if loop:
+            return (f"Not saved. The rule forwards to {loop[0]}, an address of one of "
+                    "your own mailboxes, and such a forward can send mail round in a "
+                    "loop. Use a label or a move instead.")
+    return ""
+
+
 async def _outward_rule_refusal(
     title: str, rules: list[dict[str, Any]], cancelled: str,
+    *, known_urls: frozenset[str] = frozenset(),
 ) -> str | None:
     """None when the save may go on. Else the text that the tool answers.
 
@@ -3004,6 +3100,9 @@ async def _outward_rule_refusal(
     if not outward:
         return None
     rows, bad = _rule_targets(outward)
+    if bad:
+        return bad
+    bad = await _target_refusal(outward, known_urls)
     if bad:
         return bad
     detail, context = _outward_card(rows)
@@ -3158,24 +3257,70 @@ def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
     return enabled is False and not widens and not _egress_held()
 
 
-#: Chat parity wave 1 (owner, 2026-10-23): the action types that the
-#: ``actions`` list of ``create_rule`` and ``update_rule`` may hold. Each one
-#: stays in the mailbox. A forward or a webhook keeps its own path
-#: (``forward_to`` on ``create_rule``), so the list adds no outward act.
-_LIST_ACTION_TYPES = _RULE_ENGINE_TYPES - _OUTWARD_RULE_TYPES
-#: The keys of one item of that list. An address, a URL, a subject, a body
-#: or a file is refused, so the list names no target and writes no text.
-_LIST_ACTION_KEYS = frozenset({"type", "label", "delay_minutes", "label_ai"})
+#: The action types that the ``actions`` list of ``create_rule`` and
+#: ``update_rule`` may hold. Chat parity wave 1 (2026-10-23) took the acts
+#: that stay in the mailbox. H-404 (owner, 2026-10-24) adds the outward acts:
+#: a FORWARD, a REPLY or DRAFT_EMAIL to an address that the rule names, and a
+#: CALL_WEBHOOK. Each outward act asks the outward card, which names each
+#: address and each URL in full (:func:`_outward_rule_refusal`), and a held
+#: run refuses each one (:func:`_held_in_no_egress`).
+_LIST_ACTION_TYPES = _RULE_ENGINE_TYPES
+#: The keys of one item of that list. A subject, a body or a file is
+#: refused, so the list writes no text of the model.
+_LIST_ACTION_KEYS = frozenset({"type", "label", "delay_minutes", "label_ai",
+                               *_ADDRESS_FIELDS, "url"})
+#: H-404: the action types that may name an address, and the ones that must.
+_ADDRESS_ACTION_TYPES = frozenset({"FORWARD", "REPLY", "DRAFT_EMAIL"})
 #: The longest delay of an action: 30 days, in minutes.
 _MAX_DELAY_MINUTES = 43200
+
+
+# H-404: _clean_actions takes to_address, cc_address, bcc_address and a CALL_WEBHOOK url.
+def _list_action_targets(a_type: str, item: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """The address and URL fields of one ``actions`` item (H-404), checked.
+
+    An empty text clears a field that the saved action has
+    (:func:`_carry_over`), so it stays as ``""``."""
+    out: dict[str, Any] = {}
+    for field in (*_ADDRESS_FIELDS, "url"):
+        if field not in item or item[field] is None:
+            continue
+        value = item[field]
+        if field == "url" and a_type != "CALL_WEBHOOK":
+            return {}, "Not saved. Only a CALL_WEBHOOK action takes a url."
+        if field != "url" and a_type not in _ADDRESS_ACTION_TYPES:
+            return {}, (f"Not saved. Only a FORWARD, a REPLY or a DRAFT_EMAIL action "
+                        f"takes {field}.")
+        if isinstance(value, str) and not value.strip():
+            out[field] = ""
+            continue
+        if field == "url":
+            _host, problem = _url_problem(value)
+            if problem:
+                return {}, f"Not saved. The webhook url {problem}: '{_card_text(value, 120)}'."
+        else:
+            problem = _address_problem(value)
+            if problem:
+                return {}, (f"Not saved. The {field} {problem}: '{_card_text(value, 120)}'. "
+                            "Give one address, with no name and no list.")
+        out[field] = value
+    if a_type == "FORWARD" and not out.get("to_address"):
+        return {}, "Not saved. A FORWARD action needs to_address, the person who gets the mail."
+    if a_type == "CALL_WEBHOOK" and not out.get("url"):
+        return {}, "Not saved. A CALL_WEBHOOK action needs url, the https address to call."
+    return out, ""
 
 
 def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
     """``(actions, "")`` for a valid ``actions`` list, else ``([], refusal)``.
 
-    Each item is ``{type, label?, delay_minutes?, label_ai?}``. The type is an
-    act that stays in the mailbox (:data:`_LIST_ACTION_TYPES`). Any other key
-    is refused, so this list never adds a recipient, a URL or a text."""
+    Each item is ``{type, label?, delay_minutes?, label_ai?}``, and H-404 adds
+    ``to_address``, ``cc_address`` and ``bcc_address`` on a FORWARD, a REPLY
+    or a DRAFT_EMAIL, and ``url`` on a CALL_WEBHOOK. A FORWARD needs
+    ``to_address``, and a CALL_WEBHOOK needs ``url``. Each address passes
+    :func:`_address_problem`, and each URL passes :func:`_url_problem`. The
+    public-host test of a URL runs before the card (:func:`_outward_rule_refusal`).
+    Any other key, a subject and a body among them, is refused."""
     if not isinstance(raw, list) or not raw:
         return [], "Not saved. `actions` must be a list with one action at least."
     out: list[dict[str, Any]] = []
@@ -3186,14 +3331,18 @@ def _clean_actions(raw: Any) -> tuple[list[dict[str, Any]], str]:
         if extra:
             return [], (
                 f"Not saved. An action in `actions` cannot hold {', '.join(extra)}. "
-                "Each item takes only type, label, delay_minutes and label_ai. A "
-                "forward goes through create_rule with forward_to.")
+                "Each item takes only type, label, delay_minutes, label_ai, the "
+                "addresses to_address, cc_address and bcc_address, and url.")
         a_type = str(item.get("type") or "").strip().upper()
         if a_type not in _LIST_ACTION_TYPES:
             return [], (
                 f"Not saved. The action type '{_card_name(a_type)}' is not allowed in "
                 f"`actions`. Use one of: {', '.join(sorted(_LIST_ACTION_TYPES))}.")
         action: dict[str, Any] = {"type": a_type}
+        targets, bad = _list_action_targets(a_type, item)
+        if bad:
+            return [], bad
+        action.update(targets)
         label = item.get("label")
         if label is not None and str(label).strip():
             if len(str(label)) > 200:
@@ -3348,9 +3497,13 @@ async def create_rule(
             an AI label. Each item is {type, label?, delay_minutes?,
             label_ai?}. delay_minutes waits before the action acts.
             label_ai=true reads the label as a prompt, and the AI picks the
-            label for each email. FORWARD and CALL_WEBHOOK are not allowed
-            here. Do not combine it with action_type, forward_to or the draft
-            fields.
+            label for each email. An outward act takes its target in the
+            item: FORWARD {to_address, cc_address?, bcc_address?}, REPLY or
+            DRAFT_EMAIL {to_address?, cc_address?, bcc_address?}, and
+            CALL_WEBHOOK {url}. Each address is one plain address. The url is
+            an https address of a public host. An outward act shows its own
+            card that names each address and the whole url. Do not combine it
+            with action_type, forward_to or the draft fields.
         automated: true = apply automatically; false = propose for approval.
 
     Mailbox: leave ``account_id`` out when the user named no mailbox. One
@@ -3759,9 +3912,10 @@ async def update_rule(
         actions: the WHOLE new action list, which replaces every action. Each
             item is {type, label?, delay_minutes?, label_ai?}. Use it to change
             a label, to add a delay, or to turn on an AI label (LABEL only).
-            FORWARD and CALL_WEBHOOK are not allowed here, and a rule that
-            forwards or calls a webhook refuses the list: change it with
-            remove_action_types and add_action_type. An item of a type that
+            An outward act takes its target in the item, as in create_rule:
+            FORWARD {to_address, cc_address?, bcc_address?}, REPLY or
+            DRAFT_EMAIL {to_address?, cc_address?, bcc_address?}, CALL_WEBHOOK
+            {url}. Pass "" to clear a Cc or a Bcc. An item of a type that
             the rule has keeps that action's other fields, such as a draft
             text or a NOTIFY_ME level. Read the rule first with
             get_rules_and_settings. The card names each removed or changed
@@ -3794,12 +3948,9 @@ async def update_rule(
     was_outward = _has_outward_action(rule.get("actions"))
     first_read = _rule_fingerprint(rule)
     old_actions = [dict(a) for a in rule.get("actions") or [] if isinstance(a, dict)]
-    if actions is not None and was_outward:
-        # Review fix round 1 (P2-3): the list cannot hold a forward or a
-        # webhook, so it would drop the one that the rule has.
-        return ("Nothing changed. This rule sends mail out, and `actions` cannot "
-                "hold that action. Use remove_action_types and add_action_type "
-                "instead.")
+    # H-404: the list can hold a forward and a webhook now, so a rule that
+    # sends mail out takes a list too. The outward card names each target of
+    # the new list in full.
     # Chat parity wave 1: each change that can make the rule act on more mail,
     # or do more, widens it. A rename, a removal, a narrower operator, a
     # proposal instead of an act, or a pause does not.
@@ -3849,6 +4000,10 @@ async def update_rule(
             action["label"] = add_action_label
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
+    if actions is not None and _has_outward_action(rule.get("actions")):
+        # H-404: a new list with an outward act asks the outward card, which
+        # names each address and URL. The inward card does not show them.
+        added_outward = True
     now_outward = _has_outward_action(rule.get("actions"))
     # EM-G11c1: each change asks a card, except a pause of the rule, which
     # turns a write off. One call shows one card. Security review of #1173,
@@ -3862,6 +4017,7 @@ async def update_rule(
     if now_outward and (added_outward or (was_outward and widens)):
         refusal = await _outward_rule_refusal(
             "Change a rule that sends mail out of the mailbox?", [rule], cancelled,
+            known_urls=_rule_urls(old_actions),
         )
         if refusal:
             return refusal
@@ -4060,7 +4216,77 @@ def _settings_needing_card(
         out.append(("the email digest",
                     f"Digest: an email to the account address, "
                     f"{_card_name(freq_new).lower()}."))
+    # H-404: the brief is a line of the digest, and the digest is mail to the
+    # account address. It asks when it goes from off to on, as a switch does.
+    if wanted.get("morning_brief_enabled") is True and cur.get("morning_brief_enabled") is not True:
+        out.append(("the morning brief",
+                    "Morning brief: one line by the AI about what needs you today. "
+                    "It goes in the digest, which is an email to the account "
+                    "address, and on the dashboard. It costs a model call each day."))
+    # H-404: the extra domains decide whose mail counts as the organization.
+    # Each change asks, a removal too, and the card lists the old and the new set.
+    domains = wanted.get("org_domains")
+    if domains is not None:
+        old = _clean_domains(cur.get("org_domains") or [])
+        if sorted(domains) != sorted(old):
+            out.append(("the organization domains",
+                        "Organization domains: mail from these domains counts as "
+                        "your organization. Now: " + (", ".join(old) or "(none)")
+                        + ". After: " + (", ".join(domains) or "(none)") + "."))
     return out
+
+
+#: H-404: the most extra organization domains that one call sets.
+_ORG_DOMAINS_MAX = 50
+#: A domain as the settings take it: ASCII labels, and a top level of letters.
+_ORG_DOMAIN = re.compile(r"(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
+
+
+def _public_mail_domains() -> frozenset[str]:
+    """THE list of the domains that nobody can own (``acb_auth.access``)."""
+    try:
+        from acb_auth.access import _PUBLIC_MAIL_DOMAINS
+    except ImportError:  # an older platform: the common ones
+        return frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
+                          "live.com", "yahoo.com", "icloud.com", "aol.com"})
+    return _PUBLIC_MAIL_DOMAINS
+
+
+def _clean_domains(values: Any) -> list[str]:
+    """Each domain in lower case, with no ``@`` in front, in order, once."""
+    out: list[str] = []
+    for v in values or []:
+        d = str(v or "").strip().lower().lstrip("@")
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def _org_domains_problem(value: Any) -> tuple[list[str], str]:
+    """``(domains, "")`` for a valid ``org_domains`` list, else ``([], why)``.
+
+    H-404. Each item is a real domain: ASCII, a dot, a top level of letters.
+    No wildcard, no address, no IP, and no public webmail domain, because
+    then each stranger on that service would count as the organization."""
+    if not isinstance(value, list):
+        return [], "Nothing changed. org_domains is a list of domains, such as [\"brand.com\"]."
+    if len(value) > _ORG_DOMAINS_MAX:
+        return [], f"Nothing changed. Name at most {_ORG_DOMAINS_MAX} domains."
+    domains = _clean_domains(value)
+    public = _public_mail_domains()
+    for d in domains:
+        shown = _card_text(d, 80)
+        if "*" in d:
+            return [], (f"Nothing changed. {shown} holds a wildcard. Name each domain "
+                        "in full, such as brand.com.")
+        if d in public:
+            return [], (f"Nothing changed. {shown} is a public webmail domain, so each "
+                        "stranger on it would count as your organization. Name your "
+                        "own domain.")
+        if not _ORG_DOMAIN.fullmatch(d) or _is_ip(d):
+            return [], (f"Nothing changed. {shown} is not a domain. Name a domain such "
+                        "as brand.com, in plain ASCII.")
+    return domains, ""
 
 
 # §21.6: ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND is off. With
@@ -4087,6 +4313,8 @@ async def update_assistant_settings(
     digest_send_to_email: bool | None = None,
     multi_rule_execution: bool | None = None,
     sensitive_data_protection: bool | None = None,
+    morning_brief_enabled: bool | None = None,
+    org_domains: list[str] | None = None,
 ) -> str:
     """Update assistant settings. Only the fields you pass change; every other
     setting is preserved.
@@ -4114,6 +4342,12 @@ async def update_assistant_settings(
         digest_send_to_email: email the digest to the account address.
         multi_rule_execution: allow more than one rule per email.
         sensitive_data_protection: skip auto-drafting on sensitive-looking mail.
+        morning_brief_enabled: one AI line about what needs the member today,
+            in the digest mail to the account address and on the dashboard.
+        org_domains: the WHOLE list of extra domains whose mail counts as the
+            organization, e.g. ["brand.com"]. The mailbox's own domain always
+            counts. No wildcard and no public webmail domain. Read the list
+            with get_rules_and_settings first, and pass it whole.
 
     No model or tier is a setting. The platform picks it (D-EM-7, D-EM-61).
 
@@ -4135,7 +4369,13 @@ async def update_assistant_settings(
             "digest_send_to_email": digest_send_to_email,
             "multi_rule_execution": multi_rule_execution,
             "sensitive_data_protection": sensitive_data_protection,
+            "morning_brief_enabled": morning_brief_enabled,
+            "org_domains": org_domains,
         })
+    if org_domains is not None:
+        org_domains, bad = _org_domains_problem(org_domains)
+        if bad:
+            return bad
     account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
     if ask:
         return ask
@@ -4155,6 +4395,8 @@ async def update_assistant_settings(
         "digest_send_to_email": digest_send_to_email,
         "follow_up_awaiting_days": follow_up_awaiting_days,
         "follow_up_needs_reply_days": follow_up_needs_reply_days,
+        "morning_brief_enabled": morning_brief_enabled,
+        "org_domains": org_domains,
     })
     if turned_on:
         box = await _named(account_id)
@@ -4195,6 +4437,8 @@ async def update_assistant_settings(
     setif("digest_send_to_email", digest_send_to_email)
     setif("multi_rule_execution", multi_rule_execution)
     setif("sensitive_data_protection", sensitive_data_protection)
+    setif("morning_brief_enabled", morning_brief_enabled)
+    setif("org_domains", org_domains)
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
 
@@ -4342,8 +4586,8 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
     if refused:
         held = [k for k in refused if HELD_SETTING_DECISIONS.get(k) == SETTING_REFUSED]
         return ("Nothing changed. This chat read email from outside senders, so it cannot "
-                f"change {', '.join(held or refused)}: free text or a send that a later run "
-                "acts on. Tell the member in one sentence, and change the other settings "
+                f"change {', '.join(held or refused)}: free text, the organization domains, "
+                "or a send that a later run acts on. Tell the member in one sentence, and change the other settings "
                 "without it.")
     if not given:
         return "Nothing changed. Name one setting to change."
@@ -5128,6 +5372,16 @@ async def create_label(account_id: str, name: str, color: str | None = None) -> 
     return f"Label/folder ready: {ready}, with the colour {color}."
 
 
+def _is_metorite_ref(value: Any) -> bool:
+    """True for a Metorite file reference (H-392): ``artifact:``,
+    ``knowledge:`` or ``task-file:``. An older platform has none."""
+    try:
+        from acb_skills.held_card import is_metorite_file_ref
+    except ImportError:
+        return False
+    return is_metorite_file_ref(value)
+
+
 def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     """Parse attachment specs into workspace-artifact refs for /email/send.
 
@@ -5413,10 +5667,15 @@ async def send_email(
             of a mail the member sent.
         reply_all: with ``reply_to_email_id`` and no ``to``, also reply to
             each To and Cc of the original. Your ``cc`` adds to that list.
-        attachments: workspace artifact paths to attach, e.g.
-            ``"outputs/file.pdf"`` (a file you made with write_artifact). Only
-            a file in your own workspace can be attached. Use list_artifacts
-            to see what's available; write_artifact to create one first.
+        attachments: files to attach. A path of your own workspace, e.g.
+            ``"outputs/file.pdf"`` (a file you made with write_artifact). Or
+            a Metorite file that the member can see (H-392):
+            ``"artifact:<agent>:<path>"`` (a file of the member's workspace
+            of that agent, as list_artifacts names it),
+            ``"knowledge:<page id>"`` (a Knowledge page, as its Markdown), or
+            ``"task-file:<attachment id>"`` (a file on a task). The server
+            checks that the member can see each one, and the card names each
+            file with its size.
     """
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
@@ -5470,9 +5729,30 @@ async def send_email(
         payload["bcc"] = bcc
     if reply_to_email_id:
         payload["reply_to_message_id"] = reply_to_email_id
-    refs = _attachment_refs(attachments)
+    metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
+    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
     if refs:
         payload["artifacts"] = refs
+    shared: list[dict[str, Any]] = []
+    if metorite:
+        # H-392: the server resolves each file as the member and names it.
+        # The send carries each digest, so a file that changes after the card
+        # sends nothing.
+        try:
+            shared = list((await _post("/email/metorite-files/resolve",
+                                       {"refs": metorite}) or {}).get("files") or [])
+        except GatewayError as exc:
+            if exc.status in (404, 409, 422):
+                return f"Not sent. {str(getattr(exc, 'detail', '') or exc)}"
+            raise
+        payload["metorite_files"] = [{"ref": f["ref"], "digest": f["digest"]} for f in shared]
+    card_files: list[tuple[str, str]] = (
+        [(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "") for r in refs]
+        + [(_card_file_name(f.get("name") or "file"), _size_text(f.get("size")))
+           for f in shared])
+    detail_files = ([r.get("path", "") for r in refs]
+                    + [f"{_card_file_name(f.get('name') or 'file')} ({_size_text(f.get('size'))})"
+                       for f in shared])
     # Confirm-before-send: park on a HITL card so the user approves the actual
     # send (outward-facing + irreversible). Fails CLOSED when there's no
     # interactive stream to deliver the card (HH-2) — automated callers get
@@ -5487,15 +5767,15 @@ async def send_email(
         # verifier F1).
         detail=_card_detail(
             sender, to=to,
-            files=[r.get("path", "") for r in refs] if refs else None,
+            files=detail_files if detail_files else None,
             subject=(subject or "(none)")[:120],
         ),
         context=_card_context(
             _card_head(
                 sender, to=to, cc=cc, bcc=bcc,
-                # A workspace path keeps its extension when it is long.
-                files=[(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "")
-                       for r in refs] if refs else None,
+                # A workspace path keeps its extension when it is long. A
+                # Metorite file shows its name and its size (H-392).
+                files=card_files if card_files else None,
             ) + "".join(f"\n{n}" for n in reply_notices),
             body,
         ),
@@ -5508,7 +5788,8 @@ async def send_email(
             return _NO_CARD_CHANNEL
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
-    note = f" with {len(refs)} attachment(s)" if refs else ""
+    count = len(refs) + len(shared)
+    note = f" with {count} attachment(s)" if count else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
     tail = f" {usual}" if usual else ""
     return (f"{lead} {', '.join(to)} from {sender}{note} "
@@ -7063,11 +7344,121 @@ def _unsubscribe_card(
 # run keeps this tool, and it goes through the held card: the gateway reads
 # the link from the stored header and acts only when its host and its hash
 # still match the card.
+#: The most senders of one ``unsubscribe_sender`` call (H-404), the same
+#: bound as the held card of the gateway (``held_card.MAX_SENDERS``).
+_UNSUBSCRIBE_MAX = 20
+
+
+def _unsubscribe_line(sender: str, target: dict[str, Any]) -> tuple[str, str]:
+    """``(line, refusal)``: the card line of one sender of several, in full."""
+    shown = _card_text(sender, 200)
+    kind = target.get("kind")
+    if kind == "one-click":
+        host, problem = _url_problem(target.get("link"))
+        if problem or len(host) > _TARGET_LIMIT:
+            return "", f"the stored unsubscribe link {problem or 'is too long'}"
+        return f"- {shown}: one-click, host: {host}", ""
+    if kind == "mailto":
+        address = target.get("address")
+        problem = _address_problem(address)
+        if problem or len(str(address)) > _TARGET_LIMIT:
+            return "", (f"the address of the stored unsubscribe link "
+                        f"{problem or 'is too long'}")
+        subject, body = target.get("subject"), target.get("body")
+        problem = (_mailto_text_problem("subject", subject)
+                   or _mailto_text_problem("body", body))
+        if problem:
+            return "", f"the stored unsubscribe link {problem}"
+        return (f"- {shown}: mail to: {address}, subject: "
+                f"{_card_text(subject, _MAILTO_TEXT_LIMIT)}, body: "
+                f"{_card_text(body, _MAILTO_TEXT_LIMIT)}"), ""
+    if kind == "block":
+        return f"- {shown}: no unsubscribe link, so a block in the mailbox", ""
+    return "", "the server named no known unsubscribe target"
+
+
+async def _unsubscribe_many(account_id: str, emails: list[str], name: str | None) -> str:
+    """H-404 (b): several senders behind ONE card. The card lists each
+    sender with the host of its stored link, or its mailto address with the
+    subject and the body. One bad target asks no card and sends nothing."""
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts and ask the user which mailbox to use.")
+    targets: list[tuple[str, dict[str, Any]]] = []
+    lines: list[str] = []
+    for email in emails:
+        target = await _unsubscribe_target(account_id, email)
+        if target is None:
+            return _UNSUBSCRIBE_NOT_READY
+        line, refusal = _unsubscribe_line(email, target)
+        if refusal:
+            return (f"Nothing changed. For {_card_text(email, 200)}, {refusal}, so "
+                    "nothing was sent for any sender. Offer to mark that sender cold "
+                    "with set_sender_status instead.")
+        targets.append((email, target))
+        lines.append(line)
+    context = (f"From the mailbox {sender}. Each sender, and the target of its "
+               "stored unsubscribe link:\n" + "\n".join(lines)
+               + "\n\nA sender whose request fails is blocked, and their mail in "
+               "the inbox is archived.")
+    if len(context) > _CARD_CONTEXT_LIMIT:
+        return ("Nothing changed. These senders do not fit on one card. Ask the user "
+                "for fewer senders at a time.")
+    if not await _confirm_destructive(
+        title=f"Unsubscribe from {len(targets)} senders?",
+        detail=(f"Unsubscribes from {len(targets)} senders. Each sender, and the host "
+                "or the address that its request goes to, is in the list below."),
+        context=context,
+    ):
+        if _channel_open():
+            return f"Cancelled — still subscribed to all {len(targets)} senders."
+        return _NO_CARD_CHANNEL
+    done: list[str] = []
+    for email, target in targets:
+        shown = _card_text(email, 200)
+        if target.get("kind") == "block":
+            res = await _post("/email/newsletters", {
+                "account_id": account_id, "email": email, "name": name,
+                "status": "AUTO_ARCHIVED"})
+            done.append(f"- {shown}: blocked, {res.get('archived', 0)} message(s) archived")
+            continue
+        res = await _post("/email/unsubscribe", {
+            "account_id": account_id, "email": email, "name": name,
+            "unsubscribe_link": target.get("link")})
+        verb = "unsubscribed" if res.get("ok") else "no unsubscribe worked, so blocked"
+        done.append(f"- {shown}: {verb}, {res.get('archived', 0)} message(s) archived")
+    return f"Done for {len(targets)} senders:\n" + "\n".join(done)
+
+
+async def _held_unsubscribe_many(account_id: str, emails: list[str]) -> str:
+    """H-404 (b) in a held run: ONE held card that the gateway records, with
+    each sender, the host of its stored link and the hash of the link."""
+    res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
+                            "emails": emails},
+                           "Nothing changed", "Cancelled — still subscribed to each sender.")
+    if isinstance(res, str):
+        return res
+    lines = []
+    for r in res.get("results") or []:
+        shown = _card_text(r.get("sender"), 200)
+        if r.get("action") == "block":
+            lines.append(f"- {shown}: blocked inside the mailbox, no request left Metorite")
+        elif r.get("unsubscribed"):
+            lines.append(f"- {shown}: unsubscribed through host {r.get('host')}")
+        else:
+            lines.append(f"- {shown}: the request to {r.get('host')} failed, so blocked")
+    left = int(res.get("left_out") or 0)
+    tail = f"\n{left} sender(s) were not ticked, so nothing changed for them." if left else ""
+    return "Done:\n" + "\n".join(lines) + tail
+
+
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def unsubscribe_sender(
     account_id: str,
-    email: str,
+    email: str | None = None,
     name: str | None = None,
+    emails: list[str] | None = None,
 ) -> str:
     """Actually unsubscribe from a sender and archive its existing mail.
 
@@ -7078,7 +7469,24 @@ async def unsubscribe_sender(
     suggest_unsubscribes once the user confirms.
 
     The tool uses the link that the mailbox stored for the sender, and the
-    card names its host or its address. You cannot pass a link."""
+    card names its host or its address. You cannot pass a link.
+
+    For several senders at once, pass ``emails`` (a list of sender
+    addresses, at most 20) and leave ``email`` out. ONE card then lists each
+    sender with its own target."""
+    wanted = [str(e).strip() for e in (emails or []) if str(e or "").strip()]
+    if wanted and (email or "").strip():
+        return "Nothing changed. Pass `email` for one sender or `emails` for several, not both."
+    if len(wanted) > _UNSUBSCRIBE_MAX:
+        return f"Nothing changed. Name at most {_UNSUBSCRIBE_MAX} senders at a time."
+    wanted = list(dict.fromkeys(wanted))
+    if wanted:
+        if _held_card_mode():
+            return await _held_unsubscribe_many(account_id, wanted)
+        return await _unsubscribe_many(account_id, wanted, name)
+    if not (email or "").strip():
+        return "Nothing changed. Name the sender in `email`, or several in `emails`."
+    email = str(email)
     shown = _card_text(email, 200)
     if _held_card_mode():
         res = await _held_card({"kind": "unsubscribe", "account_id": account_id,

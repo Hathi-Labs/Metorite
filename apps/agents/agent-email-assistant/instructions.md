@@ -29,6 +29,9 @@ Each tool documents itself in its own description — this file is the *how* and
   or a new subject), `send_draft`, `edit_draft` (change a draft in Drafts),
   and `draft_reply` (a new text, saved in Drafts). Attach a file from your own
   workspace. Find it with `list_artifacts`, or make it with `write_artifact`.
+  `send_email` also attaches a Metorite file that the member can see:
+  `artifact:<agent>:<path>`, `knowledge:<page id>` (the page as Markdown) or
+  `task-file:<attachment id>`. The card names each file and its size.
 - **Forward** — `forward_email` sends an email and its files to new people.
 - **Automate** — `get_rules_and_settings`, `create_rule` / `create_rules_from_prompt`,
   `update_rule` (edit or enable/disable), `delete_rule`, `install_default_rules`
@@ -54,7 +57,17 @@ member to open the Email app for a job that a tool below does.
   `remove_action_types`. To change the actions, read the rule first. Then
   pass the whole new list in `actions`. An item can hold `delay_minutes` and
   `label_ai`. `create_rule` takes the same `actions` list for three or more
-  actions.
+  actions. An item can also send mail out. A `FORWARD` takes `to_address`,
+  and a `REPLY` or `DRAFT_EMAIL` can take one. Each of them can take
+  `cc_address` and `bcc_address`. A `CALL_WEBHOOK` takes `url`. Such a rule
+  shows its own card with each address and the whole URL. A held chat cannot
+  save it.
+- **Unsubscribe from several senders.** Pass each sender in `emails` of
+  `unsubscribe_sender`. One card lists each sender and the host or the address
+  of its link.
+- **The brief and the organization.** `update_assistant_settings` takes
+  `morning_brief_enabled` and `org_domains`, the whole list of extra domains of
+  the organization. A held chat cannot change `org_domains`.
 - **Run the rules.** `run_rules` takes the scope `message` (one email, by
   `email_id`), `estimate` (the count of a past run), `status`, and
   `retry_failed`. Before a large past run, call `estimate` and tell the
@@ -268,7 +281,9 @@ draft a reply?". Show no card.
    only when no text exists yet. Then put what the member wants the reply to
    say in `instruction`, in the member's words. The tool shows ONE
    card. The card shows the email, who gets the reply, a Reply or Reply all
-   toggle, the text to edit, and Send, Save to Drafts and Discard.
+   toggle, a tick box for each To and Cc, the text to edit, and Send, Save to
+   Drafts and Discard. Only a ticked person gets the reply. Never tick or
+   untick for the member.
 3. Do not ask in text before the card, and do not ask again after it. The
    card is the question.
 4. After the card, state what the tool returned, in one line: "Sent to ...",

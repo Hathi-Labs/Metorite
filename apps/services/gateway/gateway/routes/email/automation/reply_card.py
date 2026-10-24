@@ -102,6 +102,11 @@ class ReplyCardRequest(BaseModel):
     #: ``None`` lets the server choose (§22.6): Reply all when anyone besides
     #: the sender and the member is on the mail, else Reply.
     reply_all: bool | None = None
+    #: Tick boxes (owner, 2026-10-24). True in a held chat with
+    #: ``EMAIL_HELD_CARD_SEND`` on: each address that the server classes
+    #: ``new`` starts unticked, and the draft in Drafts leaves it out, so the
+    #: draft holds what the card sends. It only takes people OFF the card.
+    untick_new: bool = False
 
 
 class ReplyCardDiscardRequest(BaseModel):
@@ -388,11 +393,32 @@ async def reply_card(
     # the card, so the card shows each character that the send can carry.
     body = agreed if agreed.strip() else clean_reply_body(
         strip_placeholder_lines(str((drafted or {}).get("draft") or "")))
+    from acb_skills.held_card import held_card_send_enabled
+
+    classes: dict[str, str] | None = None
+    if held_card_send_enabled():
+        # §21: the server classes each person of both choices. Only the From
+        # sender of the mail is ``thread``, unless the member knows them (fix
+        # round 1, P2-a). A Reply-To that is not the sender is classed on its
+        # own merits, because a phishing mail names a stranger there.
+        classes = await _reply_classes(
+            owner, [*reply_to, *reply_cc, *all_to, *all_cc],
+            primary=[mail.sender] if mail.sender else [])
+    # The tick boxes (owner, 2026-10-24): what each choice starts with. Each
+    # person starts ticked, except a ``new`` one in a held chat with the
+    # switch on. The draft in Drafts takes the ticked people of the choice.
+    if req.untick_new and classes is not None:
+        ticked = {"reply": _unticked_new((reply_to, reply_cc), classes),
+                  "reply_all": _unticked_new((all_to, all_cc), classes)}
+    else:
+        ticked = {"reply": {"to": list(reply_to), "cc": list(reply_cc)},
+                  "reply_all": {"to": list(all_to), "cc": list(all_cc)}}
     draft_id, kept_draft = "", False
-    if body.strip():
-        to, cc = (all_to, all_cc) if reply_all else (reply_to, reply_cc)
+    start = ticked["reply_all" if reply_all else "reply"]
+    if body.strip() and start["to"]:
         draft_id, kept_draft = await _keep_card_draft(
-            mail, owner, to, cc, _reply_subject(mail.subject), body, prior=prior)
+            mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
+            prior=prior)
     out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
@@ -413,22 +439,15 @@ async def reply_card(
             "reply_all": {"to": all_to, "cc": all_cc},
         },
         "reply_all": reply_all,
+        "ticked": ticked,
         "body": body,
         "skipped": (drafted or {}).get("skipped"),
         "draft_id": draft_id,
         # A draft of the member stays in Drafts, beside the card's draft.
         "kept_draft": kept_draft,
     }
-    from acb_skills.held_card import held_card_send_enabled
-
-    if held_card_send_enabled():
-        # §21: the server classes each person of both choices. Only the From
-        # sender of the mail is ``thread``, unless the member knows them (fix
-        # round 1, P2-a). A Reply-To that is not the sender is classed on its
-        # own merits, because a phishing mail names a stranger there.
-        out["classes"] = await _reply_classes(
-            owner, [*reply_to, *reply_cc, *all_to, *all_cc],
-            primary=[mail.sender] if mail.sender else [])
+    if classes is not None:
+        out["classes"] = classes
     return out
 
 
@@ -453,8 +472,32 @@ async def _reply_classes(
         return {a.strip().lower(): CLASS_NEW for a in addresses if a and a.strip()}
 
 
-def _same(a: Sequence[str], b: Sequence[str]) -> bool:
-    return [x.strip().lower() for x in a] == [x.strip().lower() for x in b]
+def ticked_subset(derived: Sequence[str], ticked: Sequence[str]) -> list[str] | None:
+    """The addresses of *derived* that the member ticked, in the derived order,
+    or None when *ticked* names an address that *derived* does not hold.
+
+    THE check of the tick boxes (owner, 2026-10-24). The card shows the
+    server's lists, and the member may only take people off them. An added
+    address, and an address named twice, send nothing."""
+    want = [t.strip().lower() for t in ticked]
+    if len(set(want)) != len(want):
+        return None
+    have = {d.strip().lower() for d in derived}
+    if any(t not in have for t in want):
+        return None
+    chosen = set(want)
+    return [d for d in derived if d.strip().lower() in chosen]
+
+
+def _unticked_new(lists: tuple[list[str], list[str]], classes: dict[str, str]
+                  ) -> dict[str, list[str]]:
+    """The ticked start of one choice: each address that is not ``new``."""
+    from acb_skills.held_card import CLASS_NEW
+
+    to, cc = lists
+    keep = [a for a in to if classes.get(a.strip().lower(), CLASS_NEW) != CLASS_NEW]
+    return {"to": keep, "cc": [a for a in cc
+                               if classes.get(a.strip().lower(), CLASS_NEW) != CLASS_NEW]}
 
 
 @router.post("/reply-card/act")
@@ -502,13 +545,18 @@ async def reply_card_act(
     if not body:
         raise HTTPException(status_code=422, detail="The reply text is empty.")
     mail = await _load_mail(req.message_id, user.email or owner)
-    to, cc = mail.recipients(choice.reply_all)
-    if not to or not _same(to, choice.to) or not _same(cc, choice.cc):
+    derived_to, derived_cc = mail.recipients(choice.reply_all)
+    # The tick boxes (owner, 2026-10-24): the answer names the people that the
+    # member TICKED. Each must be on the server's list of the choice. An
+    # added address, or a list that changed after the card, sends nothing.
+    to = ticked_subset(derived_to, choice.to) if derived_to else None
+    cc = ticked_subset(derived_cc, choice.cc)
+    if not to or cc is None:
         _log.warning("email.reply_card_answer_refused", reason="recipients_changed")
         raise HTTPException(
             status_code=409,
-            detail=("The recipients of this mail changed after the card showed them, "
-                    "so nothing was sent or saved. Ask for the reply again."),
+            detail=("The card names a person that is not on this mail now, so nothing "
+                    "was sent or saved. Ask for the reply again."),
         )
     subject = _reply_subject(mail.subject)
     if choice.action == "send":
@@ -519,7 +567,8 @@ async def reply_card_act(
             ),
             background, user,
         )
-        _log.info("email.reply_card_sent", reply_all=choice.reply_all)
+        _log.info("email.reply_card_sent", reply_all=choice.reply_all,
+                  left_out=len(derived_to) + len(derived_cc) - len(to) - len(cc))
         return {"ok": True, "action": "send", "to": to, "cc": cc, "mailbox": mail.mailbox,
                 "id": (res or {}).get("id")}
     draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body)

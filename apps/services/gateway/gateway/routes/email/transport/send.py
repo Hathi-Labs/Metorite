@@ -17,7 +17,7 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.mailbox_access import mailbox_predicate
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 #: The words of a send that the member's own mail server (IMAP/SMTP) did not
@@ -73,6 +73,20 @@ class SendEmailRequest(BaseModel):
     attachments: list[SendAttachment] | None = None
     # Workspace artifacts to attach (resolved to bytes server-side).
     artifacts: list[ArtifactAttachment] | None = None
+    # H-392: Metorite files that the member can see, each with the digest
+    # that its card showed (``metorite_files.resolve_metorite_files``).
+    metorite_files: list[MetoriteFileRef] | None = None
+
+
+class MetoriteFileRef(BaseModel):
+    """One Metorite file of a send: its reference and the SHA-256 of the bytes
+    that the card named. A file that changed since then sends nothing."""
+
+    ref: str = Field(max_length=600)
+    digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+SendEmailRequest.model_rebuild()
 
 
 def load_artifact_attachments(
@@ -179,6 +193,20 @@ async def send_email(
             artifact_atts = load_artifact_attachments(req.artifacts, user.email)
             if artifact_atts:
                 attachments = (attachments or []) + artifact_atts
+            # H-392: each Metorite file resolves again as the member, and it
+            # goes only while its bytes are the bytes that the card named.
+            if req.metorite_files:
+                from gateway.routes.email.transport.metorite_files import (
+                    check_digests,
+                    resolve_metorite_files,
+                )
+
+                files = await resolve_metorite_files(
+                    user, [m.ref for m in req.metorite_files])
+                check_digests(files, {m.ref: m.digest for m in req.metorite_files})
+                attachments = (attachments or []) + [
+                    {"filename": f.name, "content": f.content, "mime_type": f.mime}
+                    for f in files]
 
             # Append the account's HTML signature once, here at the single send
             # choke point (with a plain-text fallback), so every reply / new
