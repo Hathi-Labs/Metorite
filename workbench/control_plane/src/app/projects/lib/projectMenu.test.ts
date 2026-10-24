@@ -94,6 +94,20 @@ describe("projectMenuItems", () => {
     );
   });
 
+  it("drops Delete where the server says this member may not delete (OP-8)", () => {
+    // WS-64 OP-8 (D-OP-12). `can_delete` comes from the server's one rule.
+    // Only an explicit `false` drops the entry, so a row without the flag
+    // still offers it and the server decides.
+    const withHandler = { ...handlers(), onDelete: vi.fn() };
+    expect(labels(projectMenuItems(project({ can_delete: false }), withHandler))).not.toContain(
+      "Delete"
+    );
+    expect(labels(projectMenuItems(project({ can_delete: true }), withHandler))).toContain(
+      "Delete"
+    );
+    expect(labels(projectMenuItems(project(), withHandler))).toContain("Delete");
+  });
+
   it("offers Delete LAST, and behind a separator", () => {
     // The ranking IS the design (spec §9.8.4): archive is the default
     // affordance and delete is the harder one to reach. An entry that drifted

@@ -82,7 +82,13 @@ from acb_skills.attachment_text import (
 )
 from acb_skills.write_artifact import artifact_context
 
-__all__ = ["MAX_OUTPUT_CHARS", "MAX_PARSES", "parse_bounded", "read_attachment"]
+__all__ = [
+    "MAX_OUTPUT_CHARS",
+    "MAX_PARSES",
+    "parse_bounded",
+    "read_attachment",
+    "read_attachment_bytes",
+]
 
 _log = get_logger("acb_skills.attachment_tools")
 
@@ -368,6 +374,35 @@ async def read_attachment(name: str, offset: int = 0) -> str:
     return _render(where.name, got, offset)
 
 
+async def read_attachment_bytes(name: str) -> tuple[str, bytes] | str:
+    """The name and the bytes of a file the member attached in THIS chat, or
+    one sentence that says why there are none.
+
+    The second caller of the thread-private folder (H-227, H-229), for a tool
+    that hands the file on whole: ``attach_to_task`` of the Projects
+    assistant (WS-64 OP-6c). It takes the same run context, the same safe
+    opener, the same history check for an older flat upload and the same
+    size cap as :func:`read_attachment`. It parses nothing, so it also reads
+    kinds that ``read_attachment`` refuses. The model passes a file NAME
+    only, and the tool keeps the last part of it.
+    """
+    where = _where(name, readable=False)
+    if isinstance(where, str):
+        return where
+    found = await _find(where)
+    if isinstance(found, str):
+        return found
+    if found is None:
+        names = await _on_the_dir(_listing, where.root, where.folder)
+        held = ", ".join(names) if names else "none"
+        return (
+            f"No file named {where.name} was attached in this chat. "
+            f"Files attached here: {held}."
+        )
+    _log.info("attachment.handed_on", kind=where.suffix, size=len(found.data), legacy=found.legacy)
+    return where.name, found.data
+
+
 @dataclass(frozen=True)
 class _Where:
     """Where this run's attachments live. Every field but ``name`` is the run's."""
@@ -381,7 +416,7 @@ class _Where:
     suffix: str
 
 
-def _where(name: object) -> _Where | str:
+def _where(name: object, *, readable: bool = True) -> _Where | str:
     """This thread's attachment folder and the asked name, or why there is none.
 
     The workspace, the session and the store key come from the run's
@@ -398,9 +433,11 @@ def _where(name: object) -> _Where | str:
     if clean is None:
         return "Give the name of a file that the member attached, for example brief.docx."
     suffix = Path(clean).suffix.lower()
-    if suffix in LEGACY_OFFICE:
+    # `readable=False` is the bytes accessor: a file that a tool hands on
+    # whole needs no parser, so the list of readable kinds does not bind it.
+    if readable and suffix in LEGACY_OFFICE:
         return f"I cannot read {clean}. {unsupported_sentence(suffix)}"
-    if suffix not in SUPPORTED_SUFFIXES:
+    if readable and suffix not in SUPPORTED_SUFFIXES:
         return f"I cannot read {clean}. {SUPPORTED_SENTENCE} Ask the member for one of those."
     agent, instance = _store_key(Path(str(root)), ctx.get("instance"))
     try:

@@ -59,6 +59,7 @@ from gateway.routes.projects.personal import (
     create_personal_task,
     ensure_personal_project,
 )
+from acb_auth.roles import UserContext, UserRole
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -67,6 +68,8 @@ DSN = os.environ.get("LIVE_DSN") or os.environ["TENANT_LADDER_DATABASE_URL"].rep
 )
 TAG = uuid.uuid4().hex[:8]
 WHO = f"alice-{TAG}@fracktal.in"
+#: The member who acts. `_organize` checks who may move a task (OP-8, D-OP-14).
+ME = UserContext(email=WHO, role=UserRole.EMPLOYEE)
 OTHER = f"bob-{TAG}@fracktal.in"
 
 results: list[tuple[str, bool, str]] = []
@@ -150,7 +153,7 @@ async def main() -> None:
         bare = await capture(db, root, "Order the rollers")
         try:
             async with db.begin_nested():
-                await _organize(db, vis, WHO, await task_row(db, bare.id), OrganizeIn(
+                await _organize(user=ME, db=db, vis=vis, email=WHO, task=await task_row(db, bare.id), payload=OrganizeIn(
                     kind="next", next_action="Order them", project_id=str(board),
                 ))
             check("1 organize without the required field is refused", False, "ACCEPTED")
@@ -170,7 +173,7 @@ async def main() -> None:
 
         # ── 2. with the answer: the promote lands, and it stays mine ────────
         task = await capture(db, root, "Fix the jam")
-        await _organize(db, vis, WHO, await task_row(db, task.id), OrganizeIn(
+        await _organize(user=ME, db=db, vis=vis, email=WHO, task=await task_row(db, task.id), payload=OrganizeIn(
             kind="next", next_action="Fix the jam", project_id=str(board),
             custom_fields={"customer_po": "PO-77"},
         ))

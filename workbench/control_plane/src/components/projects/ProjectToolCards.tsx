@@ -184,6 +184,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   report_delete: { icon: "Trash2", label: "Report deleted" },
   delete_attachment: { icon: "Paperclip", label: "File detached" },
   rename_area: { icon: "Layers", label: "Area renamed" },
+  nudge_task: { icon: "Bell", label: "Person nudged" },
+  attach_to_task: { icon: "Paperclip", label: "File attached" },
   delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
@@ -280,6 +282,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "delete_attachment",
   "rename_area",
   "delete_area",
+  "nudge_task",
+  "attach_to_task",
 ]);
 
 /**

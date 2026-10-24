@@ -6138,19 +6138,6 @@ line — never reclaim a number by deleting the other entry.
   `email_send_later`
 - **Added:** 2026-10-21 · email chat collaboration session
 
-### H-380 · The Projects chat cannot attach a file to a task (WS-46 P10, G21) · [AGENT]
-- **Check:** `grep -n "attachments\", \"\", \"X\"" apps/skills/skill-projects/skill_projects/manifest.py`.
-  A hit means the upload route is still class X, so the gap is open.
-- **Why:** the owner wants the chat to do all that the Projects screens do
-  (2026-10-22). The manifest reason "The chat has no file input" has been
-  false since H-229.
-- **Do this:** build slice P10 of `projects_agent_parity.md` §12. Add a class B
-  tool that sends a file of this thread to `POST /projects/tasks/{id}/attachments`.
-  Add a multipart request to `client.py`. Move the route from X to B, and
-  remove `attachmentsApi.upload` from `UI_PLANNED`.
-- **Authority:** `projects_agent_parity.md` §3.3 G21, §12 P10
-- **Added:** 2026-10-23 · Projects chat parity session
-
 ### H-381 · A chat plan cannot make subprojects or repeat rules (WS-46 P8, G19, G20) · [AGENT]
 - **Check:** `uv run python -m evals.projects_ops.run --scripted`. PO-3 reads
   `xfail` while P8 and P9 are open.

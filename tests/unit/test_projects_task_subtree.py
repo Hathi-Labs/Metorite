@@ -77,7 +77,8 @@ async def test_delete_route_maps_the_all_flag_to_delete_all(monkeypatch) -> None
         return SimpleNamespace(params={})
 
     async def load_visible_task(db, vis, task_id):
-        return SimpleNamespace(id=task_id)
+        # WS-64 OP-8: the caller created the task, so it may delete it.
+        return SimpleNamespace(id=task_id, created_by="maker@subtree.test", project_id=None)
 
     async def delete_task_in(db, doomed, *, vis=None, delete_ids=frozenset(), delete_all=False):
         seen.update(delete_ids=delete_ids, delete_all=delete_all)
@@ -94,12 +95,13 @@ async def test_delete_route_maps_the_all_flag_to_delete_all(monkeypatch) -> None
     monkeypatch.setattr(tasks, "delete_task_in", delete_task_in)
     monkeypatch.setattr(tasks, "emit", emit)
     tid = str(uuid.uuid4())
-    await tasks.delete_task(tid, user=SimpleNamespace(), delete_subtask_ids=[],
+    maker = SimpleNamespace(email="maker@subtree.test", has_permission=lambda _p: False)
+    await tasks.delete_task(tid, user=maker, delete_subtask_ids=[],
                             delete_all_subtasks=True)
     assert seen == {"delete_ids": frozenset(), "delete_all": True}
     with pytest.raises(HTTPException) as bad:
         await tasks.delete_task(
-            tid, user=SimpleNamespace(),
+            tid, user=maker,
             delete_subtask_ids=[str(uuid.uuid4()) for _ in range(201)],
             delete_all_subtasks=False)
     assert bad.value.status_code == 422

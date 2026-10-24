@@ -752,6 +752,87 @@ def check_po14(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-15 to PO-17: a nudge, an export and an attached file (WS-64 OP-6c) ──
+
+
+def _task_path(ev: Evidence, number: int, tail: str) -> str:
+    return f"/projects/tasks/{ev.dataset.task(number).id}{tail}"
+
+
+def check_po15(ev: Evidence) -> list[Rule]:
+    path = _task_path(ev, ds_mod.DELEGATED, "/nudge")
+    nudges = ev.writes_to("POST", path)
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_person_and_task", "«Priya Menon»" in card and "#4" in card,
+              "the card names Priya Menon and task #4",
+              "the card does not name both the person and the task"),
+        _rule("one_nudge", len(nudges) == 1 and nudges[0].status < 400,
+              "one POST …/nudge on #4", f"{len(nudges)} nudges on #4"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the nudge is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_priya_and_no_email",
+              "priya" in ev.answer.lower() and not re.search(
+                  r"\b(emailed|sent (her |him |them )?an? email|e-mailed)\b", ev.answer, re.I),
+              "the answer names Priya and claims no email",
+              "the answer does not name Priya, or it claims an email"),
+    ]
+
+
+def check_po16(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch").id
+    want = len([t for t in ds_mod.overdue(ev.dataset) if t.project == "Launch"])
+    gets = [r for r in ev.requests if r.method == "GET" and r.path == "/projects/export/tasks.csv"]
+    query = gets[0].query if len(gets) == 1 else {}
+    exports = [c for c in ev.calls if c.name == "export_tasks"]
+    result = exports[0].result if len(exports) == 1 else ""
+    return [
+        _rule("no_card", not ev.cards, "a read takes no card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("one_export_of_launch_overdue",
+              len(gets) == 1 and gets[0].status < 400 and query.get("project_id") == launch
+              and query.get("overdue") in ("True", "true", "1"),
+              "one GET …/export/tasks.csv for Launch, overdue only",
+              f"{len(gets)} exports, with the query {query}"),
+        _rule("nothing_written", not ev.writes(), "the export wrote nothing to Projects",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("file_saved_in_the_chat",
+              result.startswith(f"Exported {want} task") and ".csv" in result,
+              f"the tool saved a CSV of {want} tasks as a chat document",
+              f"the export result was {result[:160]!r}"),
+        _rule("answer_says_the_count", str(want) in ev.answer and "csv" in ev.answer.lower(),
+              f"the answer says {want} tasks and a CSV file",
+              "the answer does not say the count and the file"),
+    ]
+
+
+def check_po17(ev: Evidence) -> list[Rule]:
+    path = _task_path(ev, 6, "/attachments")
+    posts = ev.writes_to("POST", path)
+    sent = ((posts[0].body or {}).get("file") or {}) if len(posts) == 1 else {}
+    card = ev.cards[0].text() if ev.cards else ""
+    return [
+        _one_approved_card(ev),
+        _rule("card_names_file_size_and_task",
+              f"«{ds_mod.UPLOAD_NAME}»" in card and "#6" in card and "MB" in card,
+              "the card names the file, its size and task #6",
+              "the card does not name the file, its size and the task"),
+        _rule("one_upload_of_the_file",
+              len(posts) == 1 and posts[0].status < 400
+              and sent.get("name") == ds_mod.UPLOAD_NAME
+              and sent.get("size") == len(ds_mod.UPLOAD_BYTES),
+              f"one multipart POST on #6 with {ds_mod.UPLOAD_NAME} and its real size",
+              f"{len(posts)} uploads on #6, with the file part {sent}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the upload is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_file", ds_mod.UPLOAD_NAME in ev.answer,
+              "the answer names the file", "the answer does not name the file"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -769,6 +850,9 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-12": check_po12,
     "PO-13": check_po13,
     "PO-14": check_po14,
+    "PO-15": check_po15,
+    "PO-16": check_po16,
+    "PO-17": check_po17,
 }
 
 

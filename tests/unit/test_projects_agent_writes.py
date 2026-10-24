@@ -92,6 +92,8 @@ def _sub(rid: str, parent: str, title: str, archived: bool = False) -> dict[str,
         "archived": archived,
     }
 SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
+#: WS-64 OP-6c. A task the member waits on a colleague for (nudge_task).
+WAITER = "ab8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
     "title": "Fix the extruder",
@@ -146,7 +148,7 @@ def _s3_reads(call: dict) -> Any:
     if path.endswith("/views") and method == "GET":
         return {"rows": [{"id": VIEW_ID, "name": "Board", "view_type": "board"}]}
     if path.endswith("/attachments") and method == "GET":
-        return {"rows": [{"id": FILE, "name": "quote.pdf"}], "total": 1}
+        return {"rows": [{"attachment_id": FILE, "name": "quote.pdf"}], "total": 1}
     if path.endswith("/status-set/preview"):
         return {
             "lanes": [{"name": "Inbox"}, {"name": "Done"}],
@@ -362,6 +364,45 @@ def _area_answers(call: dict) -> Any:
     return None
 
 
+#: WS-64 OP-6c. What the member uploaded to the chat, as the accessor returns it.
+UPLOAD = ("brief.pdf", b"%PDF-1.4 a brief of 40 bytes, more or less")
+
+
+def stub_chat_upload(monkeypatch: Any, upload: Any = UPLOAD) -> None:
+    """The file the member attached to THIS chat, in place of the thread folder."""
+    from acb_skills import attachment_tools
+
+    async def _bytes(name: str) -> Any:
+        if str(name).strip() == upload[0]:
+            return upload
+        return f"No file named {name} was attached in this chat. Files attached here: {upload[0]}."
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
+
+
+def _op6c_answers(call: dict) -> Any:
+    """WS-64 OP-6c: the nudge, and the upload onto a task."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/tasks/{WAITER}" and method == "GET":
+        return {**TASK, "id": WAITER, "archived_at": None}
+    if path == f"/projects/my/tasks/{WAITER}" and method == "GET":
+        return {
+            "id": WAITER,
+            "disposition": "WAITING",
+            "waiting_on": {"name": "Priya", "email": "priya@x.io"},
+            "last_nudged_at": None,
+        }
+    if path == f"/projects/tasks/{WAITER}/nudge" and method == "POST":
+        return {
+            "notified": ["priya@x.io"],
+            "skipped": [],
+            "last_nudged_at": "2026-10-23T10:00:00+00:00",
+        }
+    if path == f"/projects/tasks/{UUID}/attachments" and method == "POST":
+        return {"attachment_id": FILE, "name": UPLOAD[0], "size": len(UPLOAD[1]), "kind": "file"}
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
@@ -372,8 +413,9 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers,
-                         _subtree_answers, _area_answers)
+    # `_op6c_answers` first: its task answers a `/my/tasks/` read that `_s2b_answers` also claims.
+    answered = _answered(call, _op6c_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+                         _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -573,6 +615,9 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "delete_area": [{"area": "Home"}, {"area": SALES}],
     "rename_area": [{"area": "Home", "new_name": "House"}],
     "delete_attachment": [{"task_id": UUID, "attachment_id": FILE}],
+    # WS-64 OP-6c — a nudge to the person the member waits on, a file from the chat
+    "nudge_task": [{"task_id": WAITER}],
+    "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
     # WS-64 OP-6a — a new area of the member's own
     "create_area": [{"name": "Garden"}],
     # S4 — the forms: an editable card, then the class B card
@@ -654,6 +699,8 @@ _ONE_ID: dict[str, str] = {
     "delete_attachment": "attachment_id",
     "delete_area": "area",
     "rename_area": "area",
+    "nudge_task": "task_id",
+    "attach_to_task": "task_id",
 }
 
 
@@ -686,6 +733,11 @@ def test_the_tools_are_annotated_as_writes_not_reads() -> None:
 @pytest.fixture(autouse=True)
 def _forms_answered(monkeypatch) -> None:
     form_stub(monkeypatch, FORM_ANSWERS)
+
+
+@pytest.fixture(autouse=True)
+def _a_chat_upload(monkeypatch) -> None:
+    stub_chat_upload(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
