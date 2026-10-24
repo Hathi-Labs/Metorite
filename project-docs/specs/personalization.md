@@ -29,6 +29,8 @@ and puts the machine line first. Fix round 2 (2026-10-24) asks a confirm for
 an address, a link or a long number. Only the typed words ground a write.
 §5.5 "As built" holds the detail.
 
+**PZ-6b BUILT 2026-10-24, dark.**
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -531,6 +533,52 @@ routes as the member, with the internal bearer and `X-User-Email`.
 - **Left as is.** `profile_set` reads, merges and writes in two calls. A
   Settings edit of the same key in between can be lost.
 
+**As built (PZ-6b, 2026-10-24, dark).** PZ-6b adds the two rules of §13.3
+item 6, the WhatsApp buttons of D-PZ-20 and two fixes of the re-verify.
+
+- **A conflict is a proposal.** `profile_remember` takes `replaces`, the id
+  of a saved fact. A fresh read checks the id, and a missing id refuses.
+  The server does no fuzzy match. The model sees the facts of the same
+  kind, and it chooses. One card asks "Replace «old» with «new»?".
+  Approve sends a `PATCH` of the text and the kind. The gateway records
+  the last change, so Undo puts the old text back. Deny writes nothing.
+  The receipt reads "Replaced in your profile".
+- **A sensitive fact needs a second yes (D-PZ-16).**
+  `assistant_profile.is_sensitive` matches whole words of
+  `SENSITIVE_WORDS`. The list holds health, religion, caste, politics,
+  sexuality and money words, with Indian-English terms. A tool also takes
+  `sensitive=True` from the model. The model can add the ask, and it can
+  never remove it. The rule covers a fact and a style note.
+- **One card for each write.** The card names each reason that applies:
+  an address, a sensitive fact and a replace. The member says yes once.
+  The typed-words rule still applies to the new text.
+- **WhatsApp asks with the buttons (D-PZ-20).** `whatsapp_acts.PROFILE_ACTS`
+  holds `profile_remember`, `profile_set` and `profile_alias`. The card gate
+  parks such a call, and the member gets the summary and the Confirm and
+  Cancel buttons. The settle of WAC-4 runs the stored call with no model.
+  It opens `profile_tools.whatsapp_confirm_scope` for that one call. Only
+  there is the typed-words rule skipped. At Confirm the card always asks,
+  and the write runs only when the card equals the card that the member
+  saw. A Cancel, a stale tap and changed arguments write nothing.
+- **The alias offer.** A "Several people match" answer ends with one line
+  for the model. After the member picks one, the model offers to save it
+  as an alias. The prompt line says the same.
+- **Written-out addresses.** `needs_confirm` also asks for an address in
+  words, such as "x at y dot z", "(at)" and "[dot]". It asks for a domain
+  behind a fullwidth or an ideographic full stop, or a spaced dot. It asks
+  for a domain in any script. It asks for 6 or more digit words in a row.
+- **`style.language`.** A tag with a run of 3 digits or more is a 422.
+  This also refuses a real tag such as `es-419`.
+- **Departures.** The buttons read Confirm and Cancel, as the WAC-4 acts
+  do. They do not read Yes and No. `ALLOWED_ACTS` keeps its three class B
+  acts, and `PROFILE_ACTS` sits beside it. `whatsapp_acts.act_module`
+  reads both.
+
+Fences: `tests/unit/test_profile_write_tools.py`,
+`tests/unit/test_resolve_person.py`,
+`tests/unit/test_assistant_profile_r8.py` and
+`src/components/profile/ProfileToolCards.test.ts`.
+
 ---
 
 ## 6. Identity across channels
@@ -605,7 +653,7 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | A unit test pins the line of each length and the language, and the overlay line. The eval of PZ-10 does not exist yet. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order and the rule of no placeholder. An R8 test shows that no person of another org answers. A test shows the part-of-day line only with a greeting. My Day shows the fetched name. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
-| **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value **PZ-6a BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
+| **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value **PZ-6a BUILT 2026-10-24, dark** **PZ-6b BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all, the switch, and the purge when access ends | A real-database test for each. A removed member leaves no profile | AGENT-SAFE · **HIGH** (a member write) |
