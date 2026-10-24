@@ -7,6 +7,9 @@ No decision is taken yet, and nothing in this spec is built.
 owner questions, each with a default. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
 
+The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
+epics, #361 to #366, and one task for each slice, #368 to #411 (§23).
+
 **This spec extends two ACTIVE specs and replaces neither.**
 
 - `knowledge_base.md` (D104, D105, D107) owns the Knowledge app: spaces,
@@ -963,8 +966,12 @@ KB-4b and KB-10.
 
 ## 23. How this maps onto the existing tasks
 
-The Hathi Labs task list (Metorite MCP, 2026-10-25) holds no Knowledge task.
-These existing tasks touch the same ground:
+Before 2026-10-25 the Hathi Labs task list held no Knowledge task. The
+project "Knowledge" now holds the plan. Phase 0 is #361 (decisions and the
+flags that are built but off). Phases 1 to 4 are #362 to #365. The open work
+of `knowledge_base.md` and `company_context.md` is #366.
+
+These tasks in other projects touch the same ground:
 
 | Task | What it asks | Where it goes |
 |---|---|---|
