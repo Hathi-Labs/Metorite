@@ -914,6 +914,11 @@ class EmailApproval:
     org: str
     member: str
     thread: str
+    #: The stored tool and its stored arguments (review P1). The yes needs
+    #: the same call, not only the same card text: a card shows 20 messages
+    #: and a count, so the text alone cannot bind the call.
+    tool: str = ""
+    arguments: dict[str, Any] | None = None
     used: bool = False
     closed: bool = False
 
@@ -923,14 +928,17 @@ _EMAIL_APPROVING: ContextVar[EmailApproval | None] = ContextVar(
 
 
 @contextlib.contextmanager
-def approving_email(card: str, *, without: frozenset[int] = frozenset(),
+def approving_email(card: str, *, tool: str, arguments: dict[str, Any],
+                    without: frozenset[int] = frozenset(),
                     include: frozenset[int] = frozenset(), org: str,
                     member: str, thread: str) -> Iterator[EmailApproval]:
-    """Approve ONE email card whose text is *card*, with the people that the
-    member kept. The yes closes on the way out."""
+    """Approve ONE call of *tool* with exactly *arguments* whose card text is
+    *card*, with the people that the member kept. The yes closes on the way
+    out."""
     state = EmailApproval(card=card, without=frozenset(without),
                           include=frozenset(include), org=str(org),
-                          member=str(member).strip().lower(), thread=str(thread))
+                          member=str(member).strip().lower(), thread=str(thread),
+                          tool=str(tool), arguments=_stored_arguments(dict(arguments)))
     token = _EMAIL_APPROVING.set(state)
     try:
         yield state
@@ -968,7 +976,8 @@ async def answer_email_card(title: str, detail: str, context: str,
     facts = call.facts if call is not None else None
     text = email_card_text(title, detail, context, rows, reply, facts)
     state = _EMAIL_APPROVING.get()
-    if state is not None and not state.used and not state.closed and text == state.card:
+    if state is not None and not state.used and not state.closed and _same_call(
+            state, call) and text == state.card:
         state.used = True
         return await _email_yes(state, rows, reply, request_id, with_answer)
     run = current_run()
@@ -992,6 +1001,16 @@ async def answer_email_card(title: str, detail: str, context: str,
     call.parked = True
     call.parked_text = EMAIL_PARKED_TEXT
     return _not_yet(rows, reply, with_answer)
+
+
+def _same_call(state: EmailApproval, call: ToolCall | None) -> bool:
+    """True when *call* is the stored call: the email assistant, the stored
+    tool and exactly the stored arguments, pins included (review P1). It is
+    checked BEFORE the card text, and any miss gives no yes."""
+    if (call is None or call.arguments is None or call.agent != EMAIL_AGENT
+            or not state.tool or call.name != state.tool or state.arguments is None):
+        return False
+    return _stored_arguments({**call.arguments, **(call.pins or {})}) == state.arguments
 
 
 async def _record(state: EmailApproval, request_id: str, answer: str) -> bool:

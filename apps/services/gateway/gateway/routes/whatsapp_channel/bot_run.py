@@ -1764,7 +1764,8 @@ def _approval(req: RunRequest, approved: Any) -> Any:
     if approved is None:
         return contextlib.nullcontext()
     if getattr(approved, "kind", "egress") == "email":
-        return approving_email(approved.card, without=approved.without,
+        return approving_email(approved.card, tool=approved.tool,
+                               arguments=approved.arguments, without=approved.without,
                                include=approved.include, org=req.organization_id,
                                member=req.member_email, thread=req.chat_session_id)
     return approving(approved.card)

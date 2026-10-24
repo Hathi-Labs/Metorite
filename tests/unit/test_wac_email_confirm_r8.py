@@ -199,7 +199,8 @@ async def test_the_recorded_answer_is_the_answer_the_act_route_takes(monkeypatch
     org, member, thread = str(uuid.uuid4()), "jane@acme.test", "wa-th-r8"
     rid = uuid.uuid4().hex
     act = _act()
-    state = wacts.EmailApproval(card=act.card, without=frozenset(),
+    state = wacts.EmailApproval(card=act.card, tool=act.tool, arguments=act.arguments,
+                                without=frozenset(),
                                 include=frozenset({2}), org=org, member=member,
                                 thread=thread)
     answer = await wacts._email_yes(state, act.rows, None, rid, True)
@@ -208,7 +209,8 @@ async def test_the_recorded_answer_is_the_answer_the_act_route_takes(monkeypatch
     assert not await rcard.take_reply_answer(org, rid, "eve@acme.test", answer.answer,
                                              thread, wait_s=0)
     answer = await wacts._email_yes(
-        wacts.EmailApproval(card=act.card, without=frozenset(), include=frozenset({2}),
+        wacts.EmailApproval(card=act.card, tool=act.tool, arguments=act.arguments,
+                                without=frozenset(), include=frozenset({2}),
                             org=org, member=member, thread=thread),
         act.rows, None, uuid.uuid4().hex, True)
     assert await rcard.take_reply_answer(org, answer.request_id, member, answer.answer,
