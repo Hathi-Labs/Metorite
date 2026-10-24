@@ -1244,6 +1244,10 @@ class TestEachChildIsEmptyAfterADisconnect:
         seeded.update({table: seeder.fill(table)
                        for table in tables if table in _SHARED_ONLY})
         with p.admin_engine.begin() as c:
+            # The unshare trigger of 296 deletes those rows, so the superuser
+            # turns triggers off for this one write. The fence needs a row of
+            # each child on a mailbox that each delete path reaches.
+            c.execute(text("SET LOCAL session_replication_role = replica"))
             c.execute(text("UPDATE email_accounts SET shared_since = NULL "
                            "WHERE id = CAST(:a AS uuid)"), {"a": acc})
         seeded["email_messages"] = {"id": msg}
