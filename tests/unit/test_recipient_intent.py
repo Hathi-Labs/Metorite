@@ -552,6 +552,31 @@ async def test_a_person_of_the_mail_in_the_draft_stays_ticked_on_card_two(
     assert w.drafts[-1] == ([SAGAR], [ANANDA])
 
 
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_trusted_thread_person_in_the_draft_stays_on_card_two(
+    monkeypatch, held: bool,
+) -> None:
+    """A later check: Kiran (org) sent an earlier mail of the thread with Cc
+    Priya, and edit_draft put Priya on the draft. The answered mail does not
+    name her. She is a thread person, so card 2 keeps her, ticked, with "in
+    this email thread", and the draft keeps her. Mutation: take a thread
+    person out of the carried list → Priya leaves the card and the draft →
+    red."""
+    priya = "priya@fracktal.in"
+    w = _World(monkeypatch)
+    if held:
+        F.flag_on(monkeypatch)
+    else:
+        F.flag_off(monkeypatch)
+    w.db.participants += [(priya, KIRAN)]
+    w.db.draft = {"cc_addresses": json.dumps([{"email": ANANDA}, {"email": priya}]),
+                  "bcc_addresses": "[]"}
+    two = await w.card(untick_new=held)
+    assert priya in two["ticked"]["reply_all"]["cc"]
+    assert two["marks"][priya] == rc.IN_THREAD_MARK
+    assert priya in w.drafts[-1][1]
+
+
 async def test_the_inbound_smtp_path_takes_the_arrival_time() -> None:
     """Final check P3: ``trusted_thread_senders`` trusts the first received
     mail, so a Date header must not set ``received_at``. Mutation: parse the

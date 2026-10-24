@@ -501,9 +501,11 @@ async def reply_card(
             primary=[mail.sender] if mail.sender else [],
             people=_mail_people(mail), account_id=mail.account_id,
             thread_id=mail.thread_id)
-    # A carried address that a trusted thread mail names is a thread person,
-    # not a carried one (final check P1).
-    carried = [a for a in carried if (classes or {}).get(a.lower()) != "thread"]
+    # A carried address that a trusted thread mail names is a thread person:
+    # it stays on the card and on the draft (a later check found that taking
+    # it out of ``carried`` dropped it from both), it may start ticked, and
+    # its mark says where it comes from rather than "added".
+    carried_extra = [a for a in carried if (classes or {}).get(a.lower()) != "thread"]
     # Item 7: only a colleague of the organization is pre-added from Sent.
     usual_added = [a for a in usual if (classes or {}).get(a.lower()) == "org"]
     added = [a for a in candidates if a in asked or a in carried or a in usual_added]
@@ -536,7 +538,7 @@ async def reply_card(
     # Review P2-a: a held run's edit_draft can put a stranger on the draft.
     # A carried person starts unticked unless ``org`` or ``sent``, in any chat.
     keep -= {a.lower() for a in carried
-             if (classes or {}).get(a.lower()) not in ("org", "sent")}
+             if (classes or {}).get(a.lower()) not in ("org", "sent", "thread")}
     ticked = {
         "reply": {"to": [a for a in reply_to if a.lower() in keep],
                   "cc": [a for a in added if a.lower() in keep]},
@@ -554,7 +556,7 @@ async def reply_card(
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior)
-    marks = _person_marks(mail, classes, asked, carried, usual_added,
+    marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
@@ -779,6 +781,11 @@ def _usual_note(added: Sequence[str], mail: Any) -> str:
     return f"Added {', '.join(added)}. You copy them {where}."
 
 
+#: The mark of a person that a trusted mail of the thread names, and that the
+#: answered mail does not (a Cc of a colleague's earlier mail).
+IN_THREAD_MARK = "in this email thread"
+
+
 def _person_marks(
     mail: Any, classes: dict[str, str] | None, asked: Sequence[str],
     carried: Sequence[str], usual: Sequence[str], shown: Sequence[str],
@@ -814,6 +821,8 @@ def _person_marks(
             words = ASKED_MARK
         elif low in on_mail and low != sender:
             words = thread_mark(who)
+        elif cls == "thread" and low != sender:
+            words = IN_THREAD_MARK
         else:
             words = ""
         if cls == "new":
