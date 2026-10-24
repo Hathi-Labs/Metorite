@@ -288,7 +288,7 @@ async def test_schedule_on_names_the_report_the_week_and_the_people(monkeypatch)
     ("armed", "words"),
     [
         (False, "Reports are not emailed yet: delivery is switched off."),
-        (True, "Delivery is switched on, so the report is emailed on its schedule."),
+        (True, "Delivery is switched on for this deployment."),
         (None, "Delivery may be switched off."),
     ],
 )

@@ -1669,7 +1669,9 @@ DELIVERY_MAY_BE_OFF = (
     "owner has switched delivery on for the deployment."
 )
 DELIVERY_OFF = "Reports are not emailed yet: delivery is switched off."
-DELIVERY_ON = "Delivery is switched on, so the report is emailed on its schedule."
+#: Says only what the deployment says. No job sends a report yet (the send
+#: path ``reportEmail.ts`` has no caller), so the receipt claims no email.
+DELIVERY_ON = "Delivery is switched on for this deployment."
 
 #: The words of the schedule in the card. ``reports.SCHEDULES`` holds one: weekly.
 SCHEDULE_WORDS = {"weekly": "every week"}

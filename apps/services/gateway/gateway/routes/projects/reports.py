@@ -1327,14 +1327,10 @@ async def preview_report(
 async def _known_member(db: Any, email: str) -> bool:
     """Is this address one the directory already knows?
 
-    ⚠️ The tenant bound is RLS on `pm_reports`, not this lookup. `app_user`
-    is the login directory and its `email` is globally unique, so a match here
-    means "somebody signs in with this address", not "somebody in YOUR
-    organization does". The recipient row is written against a report that RLS
-    has already scoped, and the send renders with the recipient's own grants —
-    so a cross-tenant address would receive an empty report rather than
-    somebody else's numbers. Refusing it here is still right: a report that
-    mails a stranger is a mistake even when the mistake is empty.
+    `app_user` is under FORCE RLS (`app_user_tenant_isolation`), and this
+    runs in the tenant session, so a match means "somebody in THIS
+    organization signs in with this address". An outside address, or a user
+    of another organization, gets no row and the route answers 422.
     """
     row = (await db.execute(
         text("SELECT 1 FROM app_user WHERE lower(email) = :e LIMIT 1"),
