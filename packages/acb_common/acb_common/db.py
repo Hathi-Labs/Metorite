@@ -154,7 +154,10 @@ def engine_connect_args() -> dict[str, Any]:
 
 _BACKGROUND: ContextVar[bool] = ContextVar("acb_db_background", default=False)
 #: The task that holds a background slot, or None. A copied context (a child
-#: task) sees the holder, but it is NOT the holder, so it takes its own slot.
+#: task started inside a held session) sees the holder and shares its slot:
+#: it never waits on the gate, because its parent may be waiting on it, and a
+#: child that needed its own slot could hang the job until the timeout. So
+#: the cap counts JOBS, not connections; no email job fans out today.
 _BACKGROUND_HELD: ContextVar[Any] = ContextVar("acb_db_background_held", default=None)
 _GATES: dict[Any, Any] = {}
 
@@ -200,9 +203,9 @@ async def _background_slot() -> AsyncIterator[None]:
         yield
         return
     task = asyncio.current_task()
-    if _BACKGROUND_HELD.get() is task and task is not None:
-        # Same task, nested session: no second wait, so a job cannot
-        # deadlock on its own kind.
+    if _BACKGROUND_HELD.get() is not None:
+        # A nested session of the holder, or a child task it started: no
+        # second wait, so a job can never deadlock on its own kind.
         yield
         return
 

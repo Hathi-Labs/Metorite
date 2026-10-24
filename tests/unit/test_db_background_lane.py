@@ -177,6 +177,28 @@ async def test_a_child_task_of_a_job_takes_its_own_slot(pool: _Pool) -> None:
     await run
 
 
+async def test_children_of_slot_holders_never_hang(pool: _Pool) -> None:
+    """Every slot is held by a parent that waits on its children's sessions.
+    The children share their parent's slot, so nothing waits on the gate and
+    the jobs finish. Mutation: make a child take its own slot → the parents
+    wait on children that wait on the gate → timeout → red."""
+    slots = dbmod.background_slots()
+
+    async def child() -> None:
+        async with dbmod.tenant_session("org-1"):
+            await asyncio.sleep(0)
+
+    async def parent() -> None:
+        token = dbmod.mark_background()
+        try:
+            async with dbmod.tenant_session("org-1"):
+                await asyncio.gather(*(asyncio.create_task(child()) for _ in range(3)))
+        finally:
+            dbmod.release_background(token)
+
+    await asyncio.wait_for(asyncio.gather(*(parent() for _ in range(slots))), timeout=5)
+
+
 async def test_the_slot_is_released_when_the_context_is_foreign(pool: _Pool) -> None:
     """A finalize in another context makes the reset raise. The gate still frees."""
     import contextvars
