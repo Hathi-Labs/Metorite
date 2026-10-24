@@ -823,6 +823,10 @@ async def create_node(
         # an org reader too, gets the same 404 as an unseen parent: a node
         # filed in another member's private tree is a taking act, and a
         # different answer would confirm that the tree exists.
+        #
+        # Fix round 2. `personal_tree_owner` is the one walk, with the stop
+        # rule of migration 297. A team node that 297 kept under a private
+        # tree answers None, so its team files nodes under it as team work.
         tree_owner = (
             await personal_tree_owner(db, str(parent_id)) if parent_id else None
         )

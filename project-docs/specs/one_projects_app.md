@@ -520,6 +520,12 @@ new parent. A team node cannot move under any node of a private tree. A node
 with its own `personal_owner` cannot leave. A team node that 297 left under a
 private tree can move out to a team space.
 
+**Fix round 2 of task #304, one walk.** `core.personal_tree_owner` is the
+one walk of a private tree, with the stop rule of 297. The nearest stamped
+ancestor names the owner. A team node between them makes the answer "team".
+The stamp of `create_node`, the move guard and the grant writes all call it.
+So the team of a node that 297 kept files, moves and shares work under it.
+
 **A known gap until OP-3.** After 297, a node two levels under a personal root
 is not in `/projects/tree`. Its URL and My Tasks still reach it. OP-3 shows
 the Personal space, and that closes the gap.

@@ -24,7 +24,7 @@ uses too). Only the tree owner may file a node there. Anyone else gets the
 its own (FORCE RLS). The real gateway app, signed agent calls through the EA
 fixtures. Run::
 
-    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/stamp_fix2 \\
+    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/<your_db> \\
         uv run pytest tests/unit/test_personal_owner_stamp.py -v -rs
 
 **The mutations (R7).** Each one turned the named tests red. ``G`` is
@@ -53,6 +53,21 @@ Fix round 1 (the adversarial review). Each one turned the named tests red.
   ``test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree``.
 * M9. The same guard: the moved side walks up too.
   ``test_d_a_team_node_left_under_my_tree_can_be_moved_out``.
+
+Fix round 2 (the second review). ``core.personal_tree_owner`` is now the ONE
+walk, with the stop rule of 297, and ``authority.in_personal_tree``,
+``authority.personal_tree_owner`` and ``assert_may_revoke_grant`` call it.
+Each one turned the named tests red.
+
+* M10. ``G/core.py`` ``PERSONAL_TREE_OWNER_SQL``: ``WHERE NOT EXISTS`` becomes
+  ``WHERE true OR NOT EXISTS``, the walk of round 1 with no stop rule. All
+  five ``test_e_*``, with the five symptoms of the review: 404, a stamp,
+  422, ``PERSONAL_GRANT_REFUSED`` and a revoke that went through.
+* M11. The same SQL: the climb ``AND a.personal_owner IS NULL`` becomes
+  ``AND false``, so it reads the node only.
+  ``test_a_a_node_under_a_legacy_unstamped_child_is_stamped``,
+  ``test_c_a_team_node_cannot_go_under_an_unstamped_node_of_my_tree`` and
+  ``test_projects_grant_tools_r8.py::test_r8_a_team_node_under_a_personal_root_is_personal_too``.
 """
 
 from __future__ import annotations
