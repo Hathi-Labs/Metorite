@@ -35,6 +35,13 @@ def _room(visibility: str, members: list[str]) -> Any:
     ("org", [_ALICE], False),
     ("people", [_ALICE], False),
     ("private", [_ALICE, "bo@steer.test"], False),
+    # Repair round 2 (P1): a group or the org as the only participant row
+    # counts as one member, and its members read the room.
+    ("private", ["group:eng"], False),
+    ("private", ["org"], False),
+    ("private", ["bo@steer.test"], False),
+    ("private", [], False),
+    ("private", [_ALICE.upper()], True),
 ])
 def test_the_route_gives_the_run_the_room_bit(
     world, monkeypatch, visibility, members, solo,  # noqa: F811

@@ -1147,8 +1147,8 @@ _active_run_model: contextvars.ContextVar[str | None] = (
 
 # WS-63 PZ-2 (personalization.md §5.1, point 4): True only when the RUN
 # BOUNDARY says this run is the member's own, not a shared room. The web chat
-# route passes ``solo_room=not _room_is_shared`` and the WhatsApp run passes
-# ``solo_room=not shared``. Every other caller passes nothing, so the default
+# route passes ``solo_room=room_is_solo(room)`` (``gateway/rooms.py``) and the
+# WhatsApp run passes ``solo_room=not shared``. Every other caller passes nothing, so the default
 # is False and the run gets no profile block (fail closed). A run that passes
 # ``None`` keeps its parent's value, so a delegated run cannot widen it. It is
 # never read from the payload, which is client input (R5).

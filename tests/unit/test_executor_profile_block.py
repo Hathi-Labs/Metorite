@@ -359,6 +359,13 @@ def _room(members: list[str], visibility: Any) -> Any:
     ([MEMBER, "bo@alpha.example"], "org", False),
     ([MEMBER], None, True),
     ([MEMBER], "", True),
+    # Repair round 2 (P1): the one member must be the actor, and a group or
+    # the org is never one person.
+    (["group:eng"], "private", False),
+    (["org"], "private", False),
+    (["bo@alpha.example"], "private", False),
+    ([], "private", False),
+    ([MEMBER.upper()], "private", True),
 ])
 def test_only_a_private_room_of_one_is_solo(members, visibility, solo) -> None:
     """§5.1, §7 (D-PZ-3): a room of one that other members can read is not
