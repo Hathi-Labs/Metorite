@@ -1,5 +1,5 @@
 -- ============================================================================
--- 298_email_always_copy.sql — the member's "always copy" list of a mailbox.
+-- 299_email_always_copy.sql — the member's "always copy" list of a mailbox.
 --
 -- What: one column on `email_assistant_settings`, `always_copy`, a JSON list
 --       of rules. Each rule is `{"match": <domain or address>, "cc": [<address>,
