@@ -96,7 +96,8 @@ _INSTRUCTIONS = (
 #: The routine of §12 (EA-6e, EA3-39). It shows on the same test as the
 #: prompt ``work_on_task``: the writes flag and ``projects:write``.
 _ROUTINE_INSTRUCTIONS = (
-    " To work on a task, read it with get_task and call claim_task. Report"
+    " To work on a task that you already know, read it with get_task and call"
+    " claim_task. Report"
     " progress with add_comment, and call add_task_reference for each branch"
     " and each pull request. Put the url that get_task gives in the"
     " description of each pull request, and put the short_id in the branch"
@@ -106,16 +107,52 @@ _ROUTINE_INSTRUCTIONS = (
     " GitHub already did. The prompt work_on_task gives the full steps."
 )
 
+#: The protocol of EA-15c (§12.4): one order of steps for each session. The
+#: prompt ``work_on_task`` gives the same steps (``prompts.py``). With the
+#: runs flag off, the steps name no agent-run tool, because those tools do
+#: not show. Fence: ``test_mcp_edge_prompts.py`` ``TestTheProtocol``.
+_PROTOCOL_RUNS_ON = (
+    " Follow these steps in each session."
+    " 1. At the start of a session, call my_work."
+    " 2. Take the top row. For run_stopping, call finish_agent_run at once,"
+    " with no activity before it, and take the next row. For a waiting run"
+    " (reason run_queued or run_answered), read it with get_agent_run. Then"
+    " call claim_task with the task_id and the version of the row."
+    " 3. A 409 task_held means that another session holds the task. Do not try"
+    " it again. Take the next row. Two sessions of one client share one stamp,"
+    " and Metorite does not tell them apart (SW-7). So a claim does not refuse"
+    " a task that another session of your own client holds. Take only a row"
+    " that my_work lists."
+    " 4. Call get_task_context, then call start_agent_run when the claim"
+    " opened no run."
+    " 5. Post a thought with post_agent_activity at least once a minute."
+    " 6. End with exactly one disposition: the task moves to review or done,"
+    " or a question waits on a named member (ask_on_task), or release_task"
+    " gives the task back. A comment is evidence, never a disposition."
+)
+_PROTOCOL_RUNS_OFF = (
+    " Follow these steps in each session."
+    " 1. At the start of a session, call my_work."
+    " 2. Take the top row, and call claim_task with the task_id and the"
+    " version of the row."
+    " 3. A 409 task_held means that another session holds the task. Do not try"
+    " it again. Take the next row. Take only a row that my_work lists."
+    " 4. Call get_task_context."
+    " 5. Report progress with add_comment."
+    " 6. End with exactly one disposition: the task moves to review or done."
+    " A comment is evidence, never a disposition."
+)
+
 #: The agent-run part (WS-55 EA-12, §12.1). It shows only while
 #: ``agent_runs_enabled`` is on, as the six tools do. Fence:
 #: ``test_mcp_edge_agent_runs.py`` ``TestTheInstructions``.
 _RUN_INSTRUCTIONS = (
-    " At the start of every session, call list_agent_runs with needs_agent"
-    " true, and continue each run it gives. Only one AI session may hold a"
-    " task. Pick a task that has no held_by, or use list_tasks with unheld"
-    " true. Never work on a held task. Call claim_task first. When you begin"
-    " work on a task, call start_agent_run. While you work, send a thought"
-    " with post_agent_activity at least once a minute, because that is the"
+    " Only one AI session may hold a task. Never work on a held task: a task"
+    " whose held_by is not stale. The one exception is a my_work row with the"
+    " reason held_by_you, because its run is your own client's and its session"
+    " went quiet. Outside my_work, use list_tasks with unheld true. Call"
+    " claim_task first. While you work,"
+    " the thought that you send at least once a minute is the"
     " heartbeat of your hold. If you stop and will not finish, call"
     " release_task. To ask the member, call"
     " ask_on_task, then call get_agent_run with wait_seconds 20 until the"
@@ -133,14 +170,16 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     when ``prompts/list`` shows ``work_on_task``: the writes flag and
     ``projects:write`` on the connection. So a read-only connection names no
     write tool. The agent-run part shows only when ``tools/list`` shows the
-    run writes: the runs flag too.
+    run writes: the runs flag too. The protocol of EA-15c (§12.4) comes first
+    in the routine, in its form for the runs flag.
     """
     held = frozenset(scopes)
     text = _INSTRUCTIONS + prompts.BRIEF_RULE
     if not prompts.offered(held):
         return text
-    text += _ROUTINE_INSTRUCTIONS
-    if agent_oauth.runs_enabled():
+    runs = agent_oauth.runs_enabled()
+    text += (_PROTOCOL_RUNS_ON if runs else _PROTOCOL_RUNS_OFF) + _ROUTINE_INSTRUCTIONS
+    if runs:
         text += _RUN_INSTRUCTIONS
     return text
 

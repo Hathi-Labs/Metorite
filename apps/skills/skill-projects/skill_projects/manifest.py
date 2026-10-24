@@ -1385,6 +1385,8 @@ UI_ACTIONS: dict[str, str] = {
     # EA-13e: the strip's five counts. The chat reads the same route through a
     # tool after EA-12e (`PLANNED`).
     "agentRunsApi.summary": "agent_summary",
+    # WS-55 EA-14a: a person releases a run from the card (`release_agent_run`, PLANNED for EA-12e).
+    "agentRunsApi.release": "release_agent_run",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────
