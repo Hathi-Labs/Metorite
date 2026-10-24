@@ -2915,11 +2915,12 @@ async def run_agent_stream_endpoint(
     # in shared rooms"). Agent and org memory are unaffected: they were never
     # one person's. A room of one takes neither branch.
     _room_is_shared = room is not None and room.is_shared
-    from gateway.rooms import room_is_solo  # noqa: PLC0415
 
     # Which compartments this run may read, and the one it may write. Solo
     # resolves to exactly the three scopes and the write target it always had.
+    # `room_is_solo` is the profile block's bit (personalization.md §5.1).
     from acb_memory import resolve_clearance
+    from gateway.rooms import room_is_solo
     _clearance = resolve_clearance(
         actor=user_id if user_id != "anonymous" else "",
         agent_name=agent_name,
