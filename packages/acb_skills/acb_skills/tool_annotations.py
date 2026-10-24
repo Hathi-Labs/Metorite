@@ -165,6 +165,14 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # `GET /auth/me/assistant-profile/resolve-person` as the member, and
     # nothing leaves the platform.
     "resolve_person":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-63 PZ-6a: the four profile writes (`profile_tools.py`). Each changes
+    # the member's own profile through `/auth/me/assistant-profile` as the
+    # member, offers Undo, and sends nothing outside the platform. Each
+    # refuses outside the member's own chat (`WRITES_OPEN`).
+    "profile_remember":      {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "profile_forget":        {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    "profile_set":           {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    "profile_alias":         {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
     # WS-61 KB-4a: the two Knowledge reads (`knowledge_tools.py`). Each reads
     # a `/knowledge` route as the member, and nothing leaves the platform.
     "read_page":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -239,6 +247,12 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # holds it, behind ASSISTANT_PROFILE_ENABLED. So every risk block stays
     # byte-identical.
     "resolve_person",
+    # WS-63 PZ-6a: the four profile writes, on the same terms. Only the
+    # orchestrator holds them, behind ASSISTANT_PROFILE_ENABLED.
+    "profile_remember",
+    "profile_forget",
+    "profile_set",
+    "profile_alias",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They

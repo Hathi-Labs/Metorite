@@ -51,6 +51,14 @@ typed the address and the answer is only yes or no.
 **A member with no settings row.** The first write makes the row with the
 calendar seed (``_seed_from_work_schedule``), exactly as ``prefs.py`` does.
 
+**A write from the chat** (PZ-6a, §5.5). The four profile tools of
+``acb_skills.profile_tools`` send ``X-Profile-Via: chat`` or ``whatsapp``.
+The header can only restrict or label, and never widen. With it, a write
+refuses with 409 ``learning_off`` when the stored ``learning`` is false, a
+PUT of ``learning`` itself is a 422, and a new fact takes the header as its
+``source``. Without it, a write is a Settings write and ignores ``learning``.
+Any other value of the header is a 422. The web relay does not forward it.
+
 The member comes from the session and the tenant from the bound session,
 never from the body (R5, R11). Each body forbids an extra field. The routes
 need no feature, as ``/auth/me/shell`` needs none. The routes take no flag.
@@ -108,7 +116,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     profile_size,
     stored_profile,
 )
-from fastapi import Body, Depends, HTTPException, Response
+from fastapi import Body, Depends, Header, HTTPException, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
@@ -335,6 +343,39 @@ def _refuse(detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail=detail)
 
 
+#: The values of ``X-Profile-Via``, the channel of a chat write (PZ-6a).
+VIA_VALUES: tuple[str, ...] = ("chat", "whatsapp")
+
+#: The 409 detail of a chat write while the member's switch is off (§7.3).
+LEARNING_OFF = "learning_off"
+
+#: The row of this member, locked, so a concurrent switch waits (PZ-6a).
+_READ_LOCKED_SQL = _READ_SQL + " FOR UPDATE"
+
+
+def _via(value: str | None) -> str | None:
+    """The channel of a chat write, or ``None`` for a Settings write. The
+    header can only restrict or label, so an unknown value is a 422 and
+    never a Settings write."""
+    # FastAPI gives a string or None. A direct call (a test) that passes no
+    # header gets the ``Header`` default object, which is no header.
+    if not isinstance(value, str):
+        return None
+    if value not in VIA_VALUES:
+        raise _refuse(f"X-Profile-Via is one of {', '.join(VIA_VALUES)}")
+    return value
+
+
+async def _learning_gate(db: Any, uid: str, via: str | None) -> None:
+    """Refuse a chat write while the member's switch is off (§7.3, D-PZ-2).
+    A Settings write (*via* ``None``) passes, because the member acts there."""
+    if via is None:
+        return
+    row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
+    if stored_profile(row[0] if row is not None else None)["learning"] is False:
+        raise HTTPException(status_code=409, detail=LEARNING_OFF)
+
+
 def _check_caps(stored: Any) -> None:
     """The caps that only the stored value can show. Raise inside the
     session, so ``tenant_session`` rolls the write back."""
@@ -469,13 +510,19 @@ async def get_assistant_profile_address(
 async def put_assistant_profile(
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Save one key. Every other key of the column stays."""
+    """Save one key. Every other key of the column stays. A chat write
+    cannot set ``learning``, which only the member sets in Settings."""
     uid = _member(user)
+    via = _via(x_profile_via)
     put = _validate(ProfilePut, body)
+    if via is not None and put.key == "learning":
+        raise _refuse("learning is set in Settings, not from the chat")
     params = {"pkey": put.key, "pval": json.dumps(put.value)}
 
     async def _run(db: Any) -> Any:
+        await _learning_gate(db, uid, via)
         stored = await _upsert(db, uid, _NEW_KEY, _MERGE_KEY, params)
         _check_caps(stored)
         return stored
@@ -485,11 +532,16 @@ async def put_assistant_profile(
 
 @me_router.delete("/me/assistant-profile", status_code=204, response_class=Response,
                   summary="Forget the whole assistant profile (PZ-1)")
-async def delete_assistant_profile(user: UserContext = Depends(get_current_user)) -> Response:
+async def delete_assistant_profile(
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
     """The column becomes NULL. The settings row and its other columns stay."""
     uid = _member(user)
+    via = _via(x_profile_via)
 
     async def _run(db: Any) -> None:
+        await _learning_gate(db, uid, via)
         await db.execute(_sql(_FORGET_SQL), {"uid": uid})
 
     await _write(uid, "forget", _run)
@@ -511,10 +563,12 @@ async def _in_org(db: Any, email: str | None) -> None:
         raise _refuse(OUTSIDE_ORG)
 
 
-async def _add(uid: str, key: str, item: dict[str, Any]) -> dict[str, Any]:
+async def _add(uid: str, key: str, item: dict[str, Any],
+               via: str | None = None) -> dict[str, Any]:
     params = {"lkey": key, "item": json.dumps(item)}
 
     async def _run(db: Any) -> Any:
+        await _learning_gate(db, uid, via)
         if key == "aliases":
             await _in_org(db, item["email"])
         stored = await _upsert(db, uid, _NEW_ITEM, _APPEND_ITEM, params)
@@ -524,10 +578,12 @@ async def _add(uid: str, key: str, item: dict[str, Any]) -> dict[str, Any]:
     return _item(await _write(uid, "add", _run), key, item["id"])
 
 
-async def _patch(uid: str, key: str, item_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+async def _patch(uid: str, key: str, item_id: str, patch: dict[str, Any],
+                 via: str | None = None) -> dict[str, Any]:
     params = {"uid": uid, "lkey": key, "iid": item_id, "patch": json.dumps(patch)}
 
     async def _run(db: Any) -> Any:
+        await _learning_gate(db, uid, via)
         if key == "aliases":
             await _in_org(db, patch.get("email"))
         row = (await db.execute(_sql(_PATCH_ITEM_SQL), params)).first()
@@ -540,10 +596,11 @@ async def _patch(uid: str, key: str, item_id: str, patch: dict[str, Any]) -> dic
     return _item(await _write(uid, "edit", _run), key, item_id)
 
 
-async def _remove(uid: str, key: str, item_id: str) -> Response:
+async def _remove(uid: str, key: str, item_id: str, via: str | None = None) -> Response:
     params = {"uid": uid, "lkey": key, "iid": item_id}
 
     async def _run(db: Any) -> None:
+        await _learning_gate(db, uid, via)
         row = (await db.execute(_sql(_DELETE_ITEM_SQL), params)).first()
         if row is None:
             raise HTTPException(status_code=404, detail="Not found")
@@ -557,13 +614,17 @@ async def _remove(uid: str, key: str, item_id: str) -> Response:
 async def add_fact(
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Add one fact. The server sets ``id``, ``source`` and ``at``."""
+    """Add one fact. The server sets ``id``, ``source`` and ``at``. The
+    source is the chat channel of ``X-Profile-Via``, else ``settings``."""
     uid = _member(user)
+    via = _via(x_profile_via)
     fact = _validate(FactIn, body)
-    item = {"id": _new_id("f"), "text": fact.text, "kind": fact.kind, "source": "settings",
+    item = {"id": _new_id("f"), "text": fact.text, "kind": fact.kind,
+            "source": via or "settings",
             "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
-    return await _add(uid, "facts", item)
+    return await _add(uid, "facts", item, via)
 
 
 @me_router.patch("/me/assistant-profile/facts/{fact_id}",
@@ -572,19 +633,26 @@ async def edit_fact(
     fact_id: str,
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Change the text or the kind. 404 when the member has no such fact."""
     uid = _member(user)
+    via = _via(x_profile_via)
     patch = _validate(FactPatch, body)
-    return await _patch(uid, "facts", fact_id, patch.model_dump(exclude_unset=True))
+    return await _patch(uid, "facts", fact_id, patch.model_dump(exclude_unset=True), via)
 
 
 @me_router.delete("/me/assistant-profile/facts/{fact_id}", status_code=204,
                   response_class=Response,
                   summary="Forget one fact of the assistant profile (PZ-1)")
-async def delete_fact(fact_id: str, user: UserContext = Depends(get_current_user)) -> Response:
+async def delete_fact(
+    fact_id: str,
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
     """Forget one fact. 404 when the member has no such fact."""
-    return await _remove(_member(user), "facts", fact_id)
+    uid = _member(user)
+    return await _remove(uid, "facts", fact_id, _via(x_profile_via))
 
 
 @me_router.post("/me/assistant-profile/aliases", status_code=201,
@@ -592,13 +660,16 @@ async def delete_fact(fact_id: str, user: UserContext = Depends(get_current_user
 async def add_alias(
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Add one alias. 422 when the address is not a person or a member of
     the org (PZ-5)."""
     uid = _member(user)
+    via = _via(x_profile_via)
     alias = _validate(AliasIn, body)
     return await _add(uid, "aliases",
-                      {"id": _new_id("a"), "alias": alias.alias, "email": alias.email})
+                      {"id": _new_id("a"), "alias": alias.alias, "email": alias.email},
+                      via)
 
 
 @me_router.patch("/me/assistant-profile/aliases/{alias_id}",
@@ -607,17 +678,24 @@ async def edit_alias(
     alias_id: str,
     body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Change the alias or the email. A new email gets the check of the add.
     404 when the member has no such alias."""
     uid = _member(user)
+    via = _via(x_profile_via)
     patch = _validate(AliasPatch, body)
-    return await _patch(uid, "aliases", alias_id, patch.model_dump(exclude_unset=True))
+    return await _patch(uid, "aliases", alias_id, patch.model_dump(exclude_unset=True), via)
 
 
 @me_router.delete("/me/assistant-profile/aliases/{alias_id}", status_code=204,
                   response_class=Response,
                   summary="Forget one alias of the assistant profile (PZ-1)")
-async def delete_alias(alias_id: str, user: UserContext = Depends(get_current_user)) -> Response:
+async def delete_alias(
+    alias_id: str,
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
     """Forget one alias. 404 when the member has no such alias."""
-    return await _remove(_member(user), "aliases", alias_id)
+    uid = _member(user)
+    return await _remove(uid, "aliases", alias_id, _via(x_profile_via))

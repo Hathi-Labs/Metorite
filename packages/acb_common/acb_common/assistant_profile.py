@@ -29,6 +29,7 @@ Fences: ``tests/unit/test_assistant_profile.py`` and
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
@@ -247,6 +248,47 @@ def enabled() -> bool:
         return getattr(get_settings(), "assistant_profile_enabled", False) is True
     except Exception:
         return False
+
+
+# ── The write-origin fence (PZ-6a) ─────────────────────────────────────────
+
+#: True only in a run where the member can change their own profile from the
+#: chat: the run boundary bound a solo room, the member is verified, and the
+#: run is not ``no_egress``. The executor sets it at the boundary and resets
+#: it with the run (``orchestrator.executor``). The default is False, so a
+#: background, delegated, scheduled, workflow or shared-room run can write
+#: nothing (personalization.md §5.5). It is never read from a payload (R5).
+#: The four write tools of ``acb_skills.profile_tools`` refuse when it is
+#: False. Fence: ``tests/unit/test_profile_write_tools.py``.
+WRITES_OPEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "assistant_profile_writes_open", default=False)
+
+
+def writes_open() -> bool:
+    """True when this run may write the member's profile from the chat."""
+    return WRITES_OPEN.get() is True
+
+
+def bind_writes(open_: bool) -> contextvars.Token[bool]:
+    """Set :data:`WRITES_OPEN` for one run. Only ``True`` itself opens it.
+    Hand the token to :func:`release_writes`."""
+    return WRITES_OPEN.set(open_ is True)
+
+
+def close_writes() -> None:
+    """Close :data:`WRITES_OPEN` for the rest of this run. It never opens."""
+    WRITES_OPEN.set(False)
+
+
+def release_writes(token: contextvars.Token[bool] | None) -> None:
+    """Close a :func:`bind_writes` scope. Never raises. A failed reset sets
+    False, so it fails closed and never open."""
+    if token is None:
+        return
+    try:
+        WRITES_OPEN.reset(token)
+    except (ValueError, RuntimeError):
+        WRITES_OPEN.set(False)
 
 
 # ── The change counter (PZ-2) ──────────────────────────────────────────────

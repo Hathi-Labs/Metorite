@@ -1211,6 +1211,29 @@ def _release_solo_room(token: contextvars.Token[bool] | None) -> None:
         _RUN_SOLO_ROOM.set(False)
 
 
+def _bind_profile_writes(open_: bool) -> Any:
+    """WS-63 PZ-6a: open or close the profile writes of this run
+    (``acb_common.assistant_profile.WRITES_OPEN``). Only a run whose
+    boundary bound ``solo_room=True`` passes True, and only with a verified
+    member and no ``no_egress``. Every other run, a delegated one too, binds
+    False, so it never inherits its parent's True. Hand the token to
+    :func:`_release_profile_writes`. Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    from acb_common.assistant_profile import bind_writes
+
+    return bind_writes(open_ is True)
+
+
+def _release_profile_writes(token: Any) -> None:
+    """Close a :func:`_bind_profile_writes` scope. Never raises."""
+    try:
+        from acb_common.assistant_profile import release_writes
+
+        release_writes(token)
+    except Exception:
+        pass
+
+
 #: The card events (``orchestrator.pending_ask.KIND_BY_EVENT``), as they
 #: appear in an SSE line. A plain substring test, so a token delta costs no
 #: JSON parse.
@@ -1874,6 +1897,8 @@ async def _run_sub_agent_streaming(
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # WS-63 PZ-6a: a delegated run never writes the member's profile.
+    _sub_writes_token = _bind_profile_writes(False)
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
@@ -2322,6 +2347,7 @@ async def _run_sub_agent_streaming(
         await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
         reset_artifact_context(_artifact_token)
+        _release_profile_writes(_sub_writes_token)
 
 
 def _custom_apps_root() -> Path:
@@ -4076,6 +4102,9 @@ async def run_agent(
     _identity = _bind_run_identity(event_payload, agent_name)
     # WS-63 PZ-2: closed in the same finally as the identity.
     _solo_token = _bind_solo_room(solo_room)
+    # WS-63 PZ-6a: True only for a solo run. ``_run_agent_inner`` closes it
+    # again for a run with no verified member or with no_egress.
+    _writes_token = _bind_profile_writes(solo_room is True)
     try:
         # 🔴 **The batch path bound no run context at all**, so a model call
         # made here reached the Router with no member, no app and no run, and
@@ -4097,6 +4126,7 @@ async def run_agent(
                 # still names its run data. A no-op when no sandbox ran.
                 await _end_sandbox_run()
     finally:
+        _release_profile_writes(_writes_token)
         _release_solo_room(_solo_token)
         _unbind_run_identity(_identity)
 
@@ -4198,6 +4228,12 @@ async def _run_agent_inner(
         )
     except Exception:
         pass
+    # WS-63 PZ-6a: the profile writes stay open only for a verified member
+    # in a run with no no_egress. ``run_agent`` restores the parent's value.
+    if _no_egress or not _verified_run_member():
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
 
     # ── Tenant binding for this batch run's writes (WS-29 acb_graph slice 6a) ──
     # The batch path now HONOURS the ``organization_id`` its callers pass, exactly
@@ -5239,6 +5275,11 @@ async def run_agent_stream(
     _model_token = _active_run_model.set((model or "").strip() or None)
     # WS-63 PZ-2: the run boundary's solo-room bit. Released in the same finally.
     _solo_token = _bind_solo_room(solo_room)
+    # WS-63 PZ-6a: the profile writes open only for a solo room, a verified
+    # member and a run with no no_egress. A delegated run passes no
+    # solo_room, so it binds False. Released in the same finally.
+    _writes_token = _bind_profile_writes(
+        solo_room is True and bool(_verified_run_member()) and not _stream_no_egress)
     # WS-45 S2: the run's tier policy. Set after the load, for a covered
     # agent only. None everywhere else.
     _tier_run: Any = None
@@ -7366,6 +7407,7 @@ async def run_agent_stream(
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
             _active_run_model.reset(_model_token)
+            _release_profile_writes(_writes_token)
             _release_solo_room(_solo_token)
             # H-201: the run's workspace, tenant key and session end with it.
             reset_artifact_context(_artifact_token)
