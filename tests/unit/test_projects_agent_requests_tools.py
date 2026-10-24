@@ -141,6 +141,19 @@ async def test_a_task_that_cannot_be_read_still_shows_its_link(monkeypatch) -> N
     assert f"link: /projects?task={T1}" in out
 
 
+async def test_agent_runs_switched_off_get_a_plain_answer(monkeypatch) -> None:
+    """``require_agent_runs`` answers 404 while agent runs are off. The member
+    reads that plainly, not as a refusal with no next step (OP-6e review P2).
+    Mutation: drop the 404 branch, and the tool raises a refusal."""
+    from skill_projects.reads import AGENT_RUNS_OFF
+    from tests.unit._projects_agent_fakes import FakeResponse
+
+    calls = fake_gateway(
+        monkeypatch, lambda call: FakeResponse({"detail": "Not Found"}, status_code=404))
+    assert await skill_projects.waiting_agent_requests() == AGENT_RUNS_OFF
+    assert writes(calls) == []
+
+
 # ── the fence: no chat tool answers a request ───────────────────────────────
 
 #: A route that answers a request: the approval, and every route under a run (the

@@ -612,6 +612,11 @@ IDENTITY_HEADERS: frozenset[str] = frozenset(
 #: argument, for example ``create_tasks.tasks.due``. The fence checks each
 #: witness of the tuple on the wire.
 SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
+    # ── agent runs (WS-64 OP-6e) ─────────────────────────────────────────
+    ("GET", "/projects/agent-runs"): {
+        "status": "waiting_agent_requests",
+        "limit": "waiting_agent_requests",
+    },
     # ── tasks ────────────────────────────────────────────────────────────
     ("GET", "/projects/tasks"): {
         "project_id": "list_tasks.project_id",
@@ -1220,9 +1225,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/nodes"): {"source": "G10"},
     # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
     # EA-12e. Today an outside agent reaches them over MCP.
+    # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
     ("GET", "/projects/agent-runs"): {
-        "status": "G23", "needs_agent": "G23", "task_id": "G23",
-        "client_via": "G23", "limit": "G23", "cursor": "G23",
+        "needs_agent": "G23", "task_id": "G23",
+        "client_via": "G23", "cursor": "G23",
     },
     ("GET", "/projects/agent-runs/{run_id}"): {"after": "G23", "wait_s": "G23"},
     ("POST", "/projects/tasks/{task_id}/agent-runs"): {

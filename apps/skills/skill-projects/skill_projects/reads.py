@@ -1760,6 +1760,13 @@ async def _task_of_run(task_id: Any) -> dict[str, Any]:
     return (await get(f"/projects/tasks/{tid}")) or {}
 
 
+#: The answer of ``waiting_agent_requests`` while agent runs are switched off.
+AGENT_RUNS_OFF = (
+    "Agent runs are switched off in this organization, so no agent request "
+    "waits for you."
+)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def waiting_agent_requests() -> str:
     """The questions and requests that agents have put to the member and that
@@ -1767,7 +1774,13 @@ async def waiting_agent_requests() -> str:
     the request in plain words, its age and the link to the task card. Only
     the member answers, on that card. No chat tool approves, declines or
     answers one, so send the member to the link."""
-    page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
+    try:
+        page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
+    except GatewayRefusal as exc:
+        # `require_agent_runs` answers 404 while agent runs are switched off.
+        if exc.status == 404:
+            return AGENT_RUNS_OFF
+        raise
     runs = [r for r in page.get("rows") or [] if r.get("status") == "awaiting"]
     tasks = await asyncio.gather(
         *(_task_of_run(r.get("task_id")) for r in runs), return_exceptions=True
