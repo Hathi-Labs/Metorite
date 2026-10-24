@@ -447,3 +447,140 @@ the order of the preamble. `test_resolve_person_r8.py` holds the one-org read.
    PZ-10 exists.
 3. **Should Mem0 promote into the profile?** `memory_architecture.md` §6.4
    promotes a fact that is used three times. That waits on WS-7.
+
+---
+
+## 12. Phase 2 — the learned voice, and a setup coach (PROPOSED, 2026-10-24)
+
+**Status: PROPOSED, 2026-10-24. Nothing is built.** Owner directive of
+2026-10-24, in chat. It extends §1 to §11, and it changes no rule of them.
+The slices start after PZ-11. Each one is dark until the owner says.
+
+### 12.1 The owner's ask
+
+The owner asked for four things:
+
+1. **Learn how the member writes,** from the mail the member already sent. The
+   email app has a voice profile, and it must serve the whole app, not only
+   email.
+2. **Learn from more than one channel.** Mail, WhatsApp and the chat each show
+   how the member talks to other people. They also show how the member wants
+   to be spoken to.
+3. **Ask the member, at the right moment.** When a part of the setup is
+   missing, the assistant asks one question in the chat. The member can set
+   their voice, their rules and their preferences as they use the app.
+4. **Keep this true as the app grows.** Each new app must read the member's
+   preferences through one seam, and it must name what it needs set up.
+
+### 12.2 Two kinds of preference
+
+The profile of §4 holds how the assistant talks **to** the member. Phase 2
+adds how the member talks **to other people**. They are two things, and they
+stay two things.
+
+| Kind | Example | Home | Reader |
+|---|---|---|---|
+| **Inbound style** | "Keep it short", "call me VJ" | `assistant_profile` (§4) | The chat, on every channel |
+| **Outbound voice** | "Signs off 'Cheers, VJ'", "formal with customers, casual with the team" | The voice profile of WS-52 S3 | Each drafter: email, WhatsApp, a message that the chat writes |
+
+### 12.3 One voice for the member, built from each source
+
+**No new store.** `email_voice_profiles` stays the store of the outbound
+voice, one row for each mailbox (WS-52 S3). Phase 2 adds a **member voice**:
+the merge of the member's mailbox profiles, read through one function in
+`acb_llm.voice`. Every drafter reads that function. No drafter reads a
+mailbox row directly.
+
+**The sources, in order of trust:**
+
+1. **What the member said.** Profile facts and style notes (§4). They always
+   win.
+2. **Sent mail.** The existing build job reads up to 150 sent mails, keeps
+   derived features only, and stores no sample (WS-52 S3).
+3. **The member's own WhatsApp messages and chat turns.** Length, language,
+   formality and the greeting the member uses. Derived features only. A
+   message from another person is never a source.
+
+**The audience rule.** The voice may differ by audience: a customer, a
+colleague, a supplier. Phase 2 derives this from sent mail by the domain of
+the recipient. It stores a rule such as "formal with `@customer.com`", never a
+mail.
+
+### 12.4 Learned facts are proposals, never writes
+
+D-PZ-2 stands. Nothing the app derives goes into the profile without the
+member's yes. A derived item becomes a **proposal**: "You sign most mail
+'Cheers, VJ'. Should I use that?" The member accepts, edits or dismisses it.
+An accepted proposal writes through the PZ-6 tools, with Undo.
+
+This answers §11 question 2. A pattern from behaviour is a proposal, and
+never a fact.
+
+### 12.5 The setup coach
+
+**What is set up.** One function, `setup_status(org, member)`, returns each
+setup item and its state: done, missing or stale. The first items:
+
+| Item | Done when |
+|---|---|
+| Form of address | `address.name` is set, or the member said "no preference" |
+| Answer style | `style.length` is set |
+| Writing voice | At least one mailbox has a voice profile, built with consent |
+| Email rules | The member has one rule or more, or said "not now" |
+| Names for people | At least one alias, after the member has named a person twice |
+
+**How it asks.** The coach uses only the seams that exist:
+
+- **In the chat:** one question at a time, at a moment that fits. Example:
+  after the chat drafts the third mail, it asks "Want me to learn your
+  writing voice from your sent mail?" The nudge of WS-62 (D-CF-7) carries a
+  question when no chat is open.
+- **On My Day:** one card that lists the open setup items (WS-58).
+- **On WhatsApp:** only through Reach (WS-59, D103), and only when the owner
+  turns that on.
+
+**Limits.** At most one setup question a day. A dismissed item waits 14 days.
+"Don't ask again" stops that item for good. The member sees every item in
+Settings → Assistant.
+
+### 12.6 The preference contract for every app
+
+**Each app joins through its shell manifest** (R9, D89). The manifest gains
+two optional fields:
+
+- `preferences`: the profile and voice keys that the app reads.
+- `setup`: the setup items that the app adds to the coach, each with its own
+  "done when".
+
+**The rule.** An app reads member preferences only through
+`acb_common.assistant_profile` and `acb_llm.voice`. A second store of member
+preference is a defect. A later fence test fails on an app that reads
+`user_settings.assistant_profile` or `email_voice_profiles` outside those two
+modules.
+
+This is how the system stays true as the app grows. A new app declares what
+it reads and what it needs set up. The coach then asks for it, and the
+profile serves it.
+
+### 12.7 The slices
+
+| Slice | What | Done when | Gate · tier |
+|---|---|---|---|
+| **PZ-12** | The member voice in `acb_llm.voice`: the merge of mailbox profiles. Every drafter reads it | A test shows that the email drafter, the WhatsApp drafter and a chat-written message read one function | **OWNER-GATE:** the consent wording (WS-52 S3) · HIGH |
+| **PZ-13** | The audience rule from sent mail, by recipient domain | A test with fixed mail derives "formal with X" and stores no body | AGENT-SAFE · HIGH (reads mail) |
+| **PZ-14** | Voice features from the member's own WhatsApp messages and chat turns | A test shows that a message from another person never counts | **OWNER-GATE:** the sources · HIGH |
+| **PZ-15** | Proposals: a derived item asks, and an accepted one writes with Undo | A test shows that no derived item writes without a yes | AGENT-SAFE · MEDIUM |
+| **PZ-16** | `setup_status` and the items of §12.5 | A test for each item's "done when" | AGENT-SAFE · LOW |
+| **PZ-17** | The coach in the chat and on My Day, with its limits | A test for one question a day, the 14-day wait and "don't ask again" | AGENT-SAFE · MEDIUM |
+| **PZ-18** | `preferences` and `setup` in the shell manifest, and the fence of §12.6 | The fence fails on a direct read outside the two modules | AGENT-SAFE · LOW |
+| **PZ-19** | The coach on WhatsApp through Reach | Reach sends a setup question only with its switch on | **OWNER-GATE:** WhatsApp sends · MEDIUM |
+
+### 12.8 Decisions the owner owes
+
+| # | Question | Default |
+|---|---|---|
+| **D-PZ-10** | The consent wording before the app reads sent mail | The WS-52 S3 notice: what it reads, what it keeps, how to delete it |
+| **D-PZ-11** | May the WhatsApp drafter read the email voice? | Yes, through the member voice of §12.3 |
+| **D-PZ-12** | May WhatsApp messages and chat turns feed the voice? | Yes, the member's own words only, and derived features only |
+| **D-PZ-13** | How often may the coach ask? | One question a day, a 14-day wait after a dismiss |
+| **D-PZ-14** | May the coach ask on WhatsApp? | Not until the owner turns it on, through Reach |
