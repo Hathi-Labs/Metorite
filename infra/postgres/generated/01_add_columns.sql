@@ -782,3 +782,7 @@ ALTER TABLE email_send_log
 ALTER TABLE email_mailbox_member_prefs
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE kb_entities
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;

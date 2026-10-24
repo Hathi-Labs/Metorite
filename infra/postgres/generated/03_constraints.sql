@@ -2317,3 +2317,15 @@ ALTER TABLE email_mailbox_member_prefs ALTER COLUMN organization_id SET NOT NULL
 ALTER TABLE email_mailbox_member_prefs ADD CONSTRAINT email_mailbox_member_prefs_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_mailbox_member_prefs_org_idx ON email_mailbox_member_prefs (organization_id);
+
+-- kb_entities
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_entities WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_entities still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_entities ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_entities ADD CONSTRAINT kb_entities_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_entities_org_idx ON kb_entities (organization_id);

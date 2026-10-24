@@ -26,6 +26,7 @@ organization is on ``KNOWLEDGE_ORGS`` (``flags.py``), then 403 without
 
 from gateway.routes.knowledge import (  # noqa: F401 — registers routes
     backlinks,
+    entities,
     gaps,
     history,
     home,
