@@ -228,6 +228,7 @@ test.describe("the reply card in the main chat", () => {
       body: "Hi all,\n\nConfirmed for June.\n\nJane",
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
+      bcc: [], // §21.14: the card always names its ticked Bcc
       message_id: MAIL_ID,
     });
     await expect(card).toHaveCount(0);
@@ -302,6 +303,7 @@ test.describe("the reply card in the main chat", () => {
       body: REPLY_FORM.body,
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
+      bcc: [], // §21.14: the card always names its ticked Bcc
       message_id: MAIL_ID,
     });
     await expect(page.getByText(RESULTS.save).first()).toBeVisible({ timeout: 15_000 });

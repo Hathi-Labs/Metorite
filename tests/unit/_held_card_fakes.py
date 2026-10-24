@@ -53,8 +53,11 @@ class FakeRedis:
     def __init__(self) -> None:
         self.keys: dict[str, str] = {}
 
-    async def set(self, k: str, v: str, nx: bool = False, ex: int | None = None) -> bool:
+    async def set(self, k: str, v: str, nx: bool = False, ex: int | None = None,
+                  xx: bool = False, keepttl: bool = False) -> bool:
         if nx and k in self.keys:
+            return False
+        if xx and k not in self.keys:  # §21.14: a Bcc joins only a live record
             return False
         self.keys[k] = v
         return True

@@ -21162,8 +21162,7 @@ card resets the Cc" left the revise text, because the new card keeps the Cc.
 
 **Not built.**
 
-- A Bcc on the reply card. The answer of the card has no Bcc key. The card
-  says when the thread's draft holds a Bcc, and `send_draft` sends it.
+- A Bcc on the reply card. **Built later, in 21.14.**
 - An "always Cc" rule for a domain (item 7b). It needs a new rule action
   that only adds people to the member's draft. The rule tools now count a
   `cc_address` as an outward act. So the new type needs its own decision in
@@ -21215,6 +21214,77 @@ quotes a mail with such a word. That costs a reply to a phishing mail,
 and it is the safe side.
 
 **Fence.** `tests/unit/test_lookalike_letters.py`.
+
+### 21.14 A Bcc on the reply card (2026-10-24)
+
+**Status: BUILT on the branch `email-single-mailbox-a`, not merged.** No
+migration and no switch.
+
+**What the member gets.** The reply card has a Bcc row, "Bcc (hidden from the
+others)". Each Bcc has a tick box. Three sources fill the row.
+
+1. **The tool.** `compose_reply(bcc=[...])` proposes a Bcc. It starts ticked.
+2. **The draft.** A Bcc of the thread's draft carries onto the card. It
+   starts ticked only for an `org`, `sent` or `thread` person (review P2-a
+   of 21.12). Before, the card only said that the draft held a Bcc.
+3. **The member.** The member types an address and presses "Add Bcc". The
+   browser posts `POST /email/reply-card/bcc`. No tool calls that route.
+
+**The server stays the only source of the list.**
+
+- The card route classes each Bcc with THE classifier. It keeps the Bcc in
+  the record of the card (`reply-card:<card id>`), beside the added people.
+  The route now writes a record for each card, so the member can add a Bcc.
+- `POST /email/reply-card/bcc` reads the record. It refuses a record of
+  another member or another mail, a person on To or Cc, and the member. It
+  adds the address with `SET XX`, so a record that the act already took
+  takes nothing.
+- The act takes a subset of the recorded Bcc only (`ticked_subset`). A Bcc
+  that the record does not hold sends nothing. An unticked Bcc does not go.
+- The answer may add one key, `bcc` (`REPLY_ANSWER_OPTIONAL_KEYS`). An answer
+  of an older card has none, and it still parses.
+- The draft in Drafts names the ticked Bcc (`exact_bcc`). A card with no
+  Bcc keeps the Bcc of the draft, as before.
+
+**The held chat.** The tool sets `held` on the card request from the run,
+never from the model. A held card takes a Bcc to an `org` or a `sent` person
+only, which is the rule of 21.10, open question 5.
+
+- A Bcc that the tool proposes to any other address answers 422, and no card
+  shows.
+- A Bcc of the draft to any other address leaves the card, and a notice
+  names it.
+- A Bcc that the member types follows the same rule, because the record
+  keeps the held flag.
+- This holds with `EMAIL_HELD_CARD_SEND` on or off. The server classes each
+  Bcc in both cases, so a new address never starts ticked.
+
+**The pin change.**
+
+| Pin | Change | Reason |
+|---|---|---|
+| `CARD_BOUND_SEND_TOOLS["compose_reply"]` | adds `bcc` | The gateway classes and records each Bcc, and the act takes a subset of the record. A held card takes an `org` or a `sent` Bcc only |
+
+**The fence changes, each with its reason.**
+
+- `test_the_parameter_fence_pins_compose_reply` now expects `bcc`. The
+  variant test adds `bcc_list` and `files`, which still break the pin.
+- `test_anything_else_is_no_reply_answer` now refuses a `bcc` that is not a
+  list. A list of addresses parses, and the act refuses a Bcc that the
+  record does not hold (`test_a_bcc_that_the_card_did_not_record_sends_nothing`).
+- `test_the_act_request_takes_no_recipient_body_or_file` still refuses `bcc`
+  on the act. The card request takes it, as it takes `cc`.
+- `test_the_client_builds_the_answer_the_server_reads` expects the keys and
+  the one optional key.
+- The tests of a held `compose_reply` expect `held` in the card request.
+- `test_a_cc_that_edit_draft_added_stays_on_the_next_card` now expects the
+  draft's Bcc on the card, in place of the old notice.
+- `OWNER_SCOPE_EXEMPT` gains `reply_card_bcc`, with its reason.
+
+**Fences.** `tests/unit/test_reply_card_bcc.py`,
+`tests/unit/test_email_chat_reply.py`, `tests/unit/test_recipient_intent.py`,
+`workbench/control_plane/src/lib/replyCard.test.ts` and
+`workbench/control_plane/e2e/email-chat-reply.spec.ts`.
 
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 

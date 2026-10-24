@@ -2314,7 +2314,8 @@ _CARD_REVISED = (
     "again with ALL the people in cc, in ONE call, so ONE card shows them. "
     "The card keeps every person of the email, the Cc of the email "
     "included, so never drop one. \"X and Y\" means one mail to both. For a "
-    "Bcc, save the reply, add the Bcc with edit_draft, and offer send_draft. "
+    "Bcc, call compose_reply again with the person in bcc, or add it to the "
+    "draft with edit_draft and offer send_draft. "
     "Never send the member to the Email app for it.")
 
 
@@ -2381,6 +2382,10 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     ticked = {k: {"to": list((given.get(k) or v).get("to") or []),
                   "cc": list((given.get(k) or v).get("cc") or [])}
               for k, v in lists.items()}
+    # §21.14: the Bcc of the card, when the gateway recorded one.
+    for k, v in lists.items():
+        if v.get("bcc"):
+            ticked[k]["bcc"] = list((given.get(k) or v).get("bcc") or [])
     notices = [str(n) for n in prep.get("notices") or [] if str(n or "").strip()]
     marks = {str(k).strip().lower(): str(v)
              for k, v in (prep.get("marks") or {}).items() if k and v}
@@ -2407,9 +2412,10 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
 def _left_out(form: dict[str, Any]) -> list[str]:
     """The people on the card that do NOT start ticked (item 8)."""
     shown = (form.get("recipients") or {}).get("reply_all") or {}
-    on = {a.lower() for key in ("to", "cc")
+    on = {a.lower() for key in ("to", "cc", "bcc")
           for a in ((form.get("ticked") or {}).get("reply_all") or {}).get(key) or []}
-    return [a for key in ("to", "cc") for a in shown.get(key) or [] if a.lower() not in on]
+    return [a for key in ("to", "cc", "bcc") for a in shown.get(key) or []
+            if a.lower() not in on]
 
 
 def _left_out_text(form: dict[str, Any]) -> str:
@@ -2451,11 +2457,12 @@ def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
     classes = {str(k).strip().lower(): str(v)
                for k, v in (prep.get("classes") or {}).items() if k}
     rec = form["recipients"]
-    every = {a.strip().lower() for choice in ("reply", "reply_all") for key in ("to", "cc")
+    every = {a.strip().lower() for choice in ("reply", "reply_all")
+             for key in ("to", "cc", "bcc")
              for a in (rec.get(choice) or {}).get(key) or []}
     form["classes"] = {a: classes.get(a, "new") for a in every}
     for choice in ("reply", "reply_all"):
-        for key in ("to", "cc"):
+        for key in [k for k in ("to", "cc", "bcc") if k in form["ticked"][choice]]:
             form["ticked"][choice][key] = [
                 a for a in form["ticked"][choice][key]
                 if form["classes"].get(a.strip().lower(), "new") != "new"]
@@ -2483,7 +2490,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
     email_id: str, account_id: str, reply_all: bool | None = None, draft: str = "",
-    instruction: str = "", cc: list[str] | None = None,
+    instruction: str = "", cc: list[str] | None = None, bcc: list[str] | None = None,
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
     member ONE card: the email it answers, every person who can get the
@@ -2522,11 +2529,14 @@ async def compose_reply(
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
+    ``bcc`` holds each person that the member asks to copy in secret ("Bcc
+    Veena"), as full addresses from find_contact. The card shows them as
+    "Bcc (hidden from the others)", and a Bcc of the thread's draft shows
+    there too. The member can also type a Bcc on the card.
+
     Each person on the card has a tick box, and the reply goes only to the
     people that the member leaves ticked. The draft in Drafts names the same
-    people. The card shows no Bcc. For a Bcc, save the reply, add the Bcc
-    with edit_draft, and offer send_draft. Never tell the member to open the
-    Email app for it."""
+    people. Never tell the member to open the Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
         from acb_skills import ask_tools
@@ -2566,7 +2576,21 @@ async def compose_reply(
             # person that the model names would start ticked. Refuse it.
             return _HELD_REPLY_CC_REFUSED
         steer["cc"] = asked
-    prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
+    secret = [str(a).strip() for a in (bcc or []) if str(a or "").strip()]
+    if secret:
+        # §21.14: in a held chat the gateway takes a Bcc to an org or a sent
+        # person only, and refuses a new address (open question 5 of 21.10).
+        steer["bcc"] = secret
+    if _egress_held():
+        # The run decides it, never the model. The record keeps it for a Bcc
+        # that the member types on the card.
+        steer["held"] = True
+    try:
+        prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
+    except GatewayError as exc:
+        if exc.status == 422 and secret:
+            return f"Not shown. {str(getattr(exc, 'detail', '') or exc)}"
+        raise
     form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if held_cards:
         _held_reply_form(form, prep)
@@ -2619,6 +2643,8 @@ async def compose_reply(
     })
     to, copied = _addr_text(res.get("to")), _addr_text(res.get("cc"))
     copy = f", with a copy to {copied}" if copied else ""
+    if res.get("bcc"):
+        copy += f", and a Bcc to {_addr_text(res.get('bcc'))}"
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
         return f"Sent to {to}{copy}, from {box}.{kept}"
