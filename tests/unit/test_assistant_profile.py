@@ -546,6 +546,100 @@ class TestTheMember:
         assert res.json() == {"detail": "unavailable"}
 
 
+# ── The change count (PZ-2) ────────────────────────────────────────────────
+
+
+def _gen(member: str = "ana@alpha.example") -> int:
+    from acb_common import assistant_profile as shared
+
+    return shared.generation(member)
+
+
+class TestTheChangeCount:
+    """Each committed write moves the member's change count, so the
+    executor's cached block is read again on the next turn (§5.1). A
+    refused or failed write moves nothing."""
+
+    @pytest.mark.parametrize(("method", "url", "body"), _CALLS[1:])
+    def test_a_committed_write_moves_the_count(
+        self, fake: _FakeDB, method: str, url: str, body: Any,
+    ) -> None:
+        before = _gen("ANA@alpha.example")
+        res = _call(_user(), method, url, body)
+        assert res.status_code < 300, res.text
+        assert _gen() == before + 1
+
+    @pytest.mark.parametrize(("method", "url", "body", "code"), [
+        ("put", _URL, {"key": "learning", "value": "yes"}, 422),
+        ("post", f"{_URL}/facts", {"text": "", "kind": "about"}, 422),
+        ("patch", f"{_URL}/facts/f9", {"text": "x"}, 404),
+        ("delete", f"{_URL}/facts/f9", None, 404),
+        ("patch", f"{_URL}/aliases/a9", {"alias": "x"}, 404),
+        ("delete", f"{_URL}/aliases/a9", None, 404),
+        ("get", _URL, None, 200),
+    ])
+    def test_a_refused_write_or_a_read_moves_nothing(
+        self, fake: _FakeDB, method: str, url: str, body: Any, code: int,
+    ) -> None:
+        before = _gen()
+        assert _call(_user(), method, url, body).status_code == code
+        assert _gen() == before
+
+    def test_a_cap_that_rolls_back_moves_nothing(self, fake: _FakeDB) -> None:
+        fake.row = {"v": 1, "facts": [
+            {"id": f"f{i}", "text": "x", "kind": "about"} for i in range(40)]}
+        before = _gen()
+        res = _call(_user(), "post", f"{_URL}/facts", {"text": "y", "kind": "about"})
+        assert res.status_code == 422
+        assert _gen() == before
+
+    def test_a_failed_write_moves_nothing(self, fake: _FakeDB) -> None:
+        fake.fail = True
+        before = _gen()
+        assert _call(_user(), "delete", _URL, None).status_code == 503
+        assert _gen() == before
+
+    def test_forget_all_then_a_turn_gives_no_block(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cache holds the block for a minute. A forget-all in this
+        process ends it, so the next turn carries no block."""
+        from acb_common import get_settings
+        from orchestrator import executor as ex
+
+        monkeypatch.setattr(get_settings(), "assistant_profile_enabled", True,
+                            raising=False)
+        monkeypatch.setattr(ex, "_current_run_org",
+                            lambda: "11111111-1111-4111-8111-111111111111")
+        monkeypatch.setattr(ex, "_verified_run_member", lambda: "ana@alpha.example")
+        monkeypatch.setattr(ex, "_read_member_profile",
+                            lambda org, m: fake.row if fake.row is not _NO_ROW else None)
+        ex._PROFILE_CACHE.clear()
+        token = ex._RUN_SOLO_ROOM.set(True)
+        try:
+            assert "Travels every Friday" in ex._member_profile_block("orchestrator")
+            assert _call(_user(), "delete", _URL, None).status_code == 204
+            assert ex._member_profile_block("orchestrator") == ""
+        finally:
+            ex._RUN_SOLO_ROOM.reset(token)
+            ex._PROFILE_CACHE.clear()
+
+
+def test_the_count_is_by_lower_case_member_and_bounded(monkeypatch) -> None:
+    from acb_common import assistant_profile as shared
+
+    monkeypatch.setattr(shared, "_GENERATIONS", {})
+    monkeypatch.setattr(shared, "GENERATIONS_MAX", 3)
+    shared.mark_changed(" Ana@Alpha.example ")
+    assert shared.generation("ana@alpha.example") == 1
+    shared.mark_changed("")
+    assert shared._GENERATIONS == {"ana@alpha.example": 1}
+    for m in ("b@x.y", "c@x.y", "d@x.y"):
+        shared.mark_changed(m)
+    assert list(shared._GENERATIONS) == ["b@x.y", "c@x.y", "d@x.y"]
+    assert shared.generation("ana@alpha.example") == 0
+
+
 def test_no_jsonb_cast_sits_beside_a_bind_name() -> None:
     """``:name::jsonb`` reads as a bind called ``name::jsonb`` to SQLAlchemy.
     Every cast here is ``CAST(... AS ...)``."""
