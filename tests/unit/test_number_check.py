@@ -201,6 +201,9 @@ _OTHER_PARSERS = {
     "apps/services/gateway/gateway/routes/crm/text_asks.py":
         "_FIGURE checks the shape of a figure that the server built for an option label "
         "(WS-53 §18.16 part 4). It reads no answer and checks no source",
+    "apps/services/gateway/gateway/routes/knowledge/gaps.py":
+        "mask_text blanks the figures of a question before it is stored (KB-9a, H-402). "
+        "It finds spans to hide, reads no value and checks no source",
 }
 
 

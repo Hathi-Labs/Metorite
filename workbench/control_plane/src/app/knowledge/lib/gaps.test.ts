@@ -6,7 +6,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { askersLabel, gapCount, gapsHref, listGaps, titleFromQuestion } from "./gaps";
+import { askersLabel, gapCount, gapsHref, listGaps, reopenGap, titleFromQuestion } from "./gaps";
 
 describe("the Gaps link", () => {
   it("is the view alone, or the view with the gap to write", () => {
@@ -59,6 +59,23 @@ describe("the list read", () => {
       expect(await listGaps()).toEqual({ gaps: [], scope: "mine", off: true });
       await expect(listGaps()).rejects.toThrow("down");
       await expect(listGaps()).rejects.toThrow("no list");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("the Undo of a dismiss", () => {
+  it("posts to the reopen route with the id encoded", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "g 1", status: "open", dismissed_at: null }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const out = await reopenGap("g 1");
+      expect(out.status).toBe("open");
+      expect(fetchMock.mock.calls[0][0]).toBe("/api/knowledge/gaps/g%201/reopen");
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     } finally {
       vi.unstubAllGlobals();
     }

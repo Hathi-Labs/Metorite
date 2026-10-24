@@ -70,6 +70,11 @@ export function dismissGap(id: string): Promise<Gap> {
   return call<Gap>(`/gaps/${encodeURIComponent(id)}/dismiss`, { method: "POST" });
 }
 
+/** Undo a dismiss: a dismissed gap reads open again. Needs `knowledge:manage`. */
+export function reopenGap(id: string): Promise<Gap> {
+  return call<Gap>(`/gaps/${encodeURIComponent(id)}/reopen`, { method: "POST" });
+}
+
 /** Close a gap with the page that answers it: "I wrote it". */
 export function markGapAnswered(id: string, pageId: string): Promise<Gap> {
   return call<Gap>(`/gaps/${encodeURIComponent(id)}/answered`, {
