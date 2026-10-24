@@ -492,7 +492,8 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
     :data:`UNDO_WINDOW_S` and the change is still in place: a later
     Settings edit, or the card's own Undo, makes it :data:`UNDO_CHANGED`.
     The record leaves the column with the undo, so a second undo finds
-    nothing. A PUT gets its prior whole object back. An added item goes.
+    nothing. A PUT gets its prior whole object back. An added item goes,
+    only while it equals the item that the chat wrote.
     A removed item comes back as it was. A changed item gets its prior form.
     """
     base = _as_dict(raw)
@@ -516,8 +517,10 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         return None, UNDO_NOTHING
     items = list(out.get(lkey)) if isinstance(out.get(lkey), list) else []
     if op == "post":
+        # The added item goes only while it is exactly as the chat wrote it.
+        # A fact edited in Settings since then stays (PZ-6a fix round 2).
         n = _item_index(items, last.get("id"))
-        if n < 0:
+        if n < 0 or not isinstance(last.get("after"), dict) or items[n] != last["after"]:
             return None, UNDO_CHANGED
         del items[n]
     elif op == "delete":
@@ -725,7 +728,10 @@ async def _add(uid: str, key: str, item: dict[str, Any],
     params = {"lkey": key, "item": json.dumps(item)}
     new, merge, where = _NEW_ITEM, _APPEND_ITEM, ""
     if via is not None:
-        params["last"] = _last({"op": "post", "list": key, "id": item["id"]})
+        # The item as written, so an undo can see a later Settings edit
+        # (PZ-6a fix round 2).
+        params["last"] = _last({"op": "post", "list": key, "id": item["id"],
+                                "after": item})
         new, merge = _with_last(_NEW_ITEM, _LAST), _with_last(_APPEND_ITEM, _LAST)
         where = _LEARNING_NOT_OFF
 

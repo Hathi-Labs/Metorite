@@ -457,6 +457,16 @@ async def _redeem_once(wa_id: str, rest: str) -> Reply:
 # ── One message, and the whole group ────────────────────────────────────────
 
 
+def is_forwarded(raw: Any) -> bool:
+    """True when Meta marks the message forwarded (``context.forwarded`` or
+    ``context.frequently_forwarded``). Another person wrote a forwarded
+    text, so it grounds no profile write (WS-63 PZ-6a fix round 2)."""
+    context = raw.get("context") if isinstance(raw, dict) else None
+    if not isinstance(context, dict):
+        return False
+    return context.get("forwarded") is True or context.get("frequently_forwarded") is True
+
+
 async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
     if msg.direction != "in" or msg.from_history or msg.is_echo \
             or msg.chat_kind != "dm":
@@ -493,7 +503,8 @@ async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
     # counts only for the card that it names.
     context = str(msg.quoted_wa_message_id or "").strip() or None
     return await bot_run.record_inbound(links, wa_id, wamid, body,
-                                        context_wamid=context)
+                                        context_wamid=context,
+                                        forwarded=is_forwarded(msg.raw))
 
 
 async def handle_bot_group(

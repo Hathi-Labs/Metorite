@@ -350,16 +350,84 @@ WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "profile_undo"})
 
 
-# ── The member's own words (PZ-6a fix round 1, D-PZ-2) ─────────────────────
+# ── The member's TYPED words (PZ-6a fix round 2, D-PZ-2) ───────────────────
+
+#: The member's typed text of THIS turn, and nothing else. The route binds it
+#: from the request BEFORE any server rewrite of ``message``: the Continue
+#: note, the supersede note and a replayed steer never reach it. It is ""
+#: for a Continue turn, a card answer sent as a message, a steer follow-up,
+#: an approved WhatsApp Confirm and a forwarded WhatsApp text. Two binders:
+#: ``gateway.routes.agent.run_agent_stream_endpoint`` and ``bot_run
+#: ._model_answer``, each through :func:`member_typed`. Every other run,
+#: a background, scheduled or workflow run included, reads "" and so
+#: grounds nothing. It is never read from a payload (R5). The CRM-Q29 seam
+#: ``member_message`` stays as it was, for the answer check.
+#: Fence: ``tests/unit/test_profile_write_tools.py``.
+MEMBER_TYPED: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "assistant_profile_member_typed", default="")
+
+#: A typed text longer than this grounds nothing: it is a paste, not a
+#: sentence. The member can say the fact in their own words.
+TYPED_MAX = 1_500
+#: The lines of a pasted mail: a header line, an "Original Message" or a
+#: "Forwarded message" rule, an "On ... wrote:" line, or a quoted line.
+_PASTED = re.compile(
+    r"^[ \t]*(?:>"
+    r"|(?:from|to|cc|bcc|sent|date|subject|reply-to)[ \t]*:"
+    r"|-{2,}[ \t]*(?:original message|forwarded message)"
+    r"|on [^\n]{1,200} wrote:[ \t]*$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def typed_text(text: Any) -> str:
+    """*text* as words that may ground a write, or ``""``. A paste of more
+    than :data:`TYPED_MAX` characters, or a text with a line of a pasted
+    mail (:data:`_PASTED`), grounds nothing."""
+    out = str(text or "")
+    if len(out) > TYPED_MAX or _PASTED.search(out):
+        return ""
+    return out
+
+
+@contextlib.contextmanager
+def member_typed(text: Any) -> Iterator[None]:
+    """Bind the member's typed text of one turn. Closing restores the value
+    it found, and never raises."""
+    token = MEMBER_TYPED.set(typed_text(text))
+    try:
+        yield
+    finally:
+        try:
+            MEMBER_TYPED.reset(token)
+        except (ValueError, RuntimeError):
+            MEMBER_TYPED.set("")
+
+
+def typed_words() -> str:
+    """The member's typed words of this turn, or ``""``."""
+    return MEMBER_TYPED.get()
+
 
 #: The refusal of a value that the member did not say in this turn.
 NOT_YOUR_WORDS = ("I can only save what you tell me yourself. Say it in your own "
                   "words and I will save it.")
 
 _GROUND_EMAIL = re.compile(r"[^\s@<>()\[\]\"',;:]+@[^\s@<>()\[\]\"',;:]+")
-_GROUND_URL = re.compile(r"(?:https?://|www\.)[^\s<>\"']+")
-_GROUND_DIGITS = re.compile(r"\d{3,}")
+_GROUND_URL = re.compile(r"(?:[a-z][a-z0-9+.\-]*://|www\.)[^\s<>\"']+")
 _GROUND_WORD = re.compile(r"[^\W\d_]{3,}")
+#: One number: digits, with spaces, dots, dashes and parentheses between
+#: them, and a leading ``+``. "+1 41 55 55 01 23" is ONE number.
+_NUMBER = re.compile(r"\+?\d(?:[\s().\-]*\d)*")
+#: A bare domain, such as "acme-pay.io", with no scheme and no "@".
+_DOMAIN = re.compile(
+    r"(?<![\w@.\-])(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![\w\-])")
+#: A number of this many digits or more needs the member's confirm.
+CONFIRM_DIGITS = 6
+#: The share of the content words of a value that the typed words must hold.
+CONTENT_SHARE = 0.8
+#: The marks that may end an address or a link in a sentence.
+_TRAIL = ".,;:!?)]}>"
 
 
 def fold(value: Any) -> str:
@@ -370,29 +438,72 @@ def fold(value: Any) -> str:
     return " ".join(text.casefold().split())
 
 
-def grounded(value: Any, words: Any) -> bool:
-    """True when the member's own *words* of this turn hold *value*.
+def _tokens(pattern: re.Pattern[str], text: str) -> set[str]:
+    """Each whole match of *pattern* in *text*, without a trailing mark."""
+    return {hit.rstrip(_TRAIL) for hit in pattern.findall(text)} - {""}
 
-    Two rules, on folded text. Every address, URL and run of three or more
-    digits in *value* appears whole in *words*. At least half of the
-    content words of *value* (three letters or more) appear in *words*. A
-    value with no content word must appear whole. An empty *words* holds
-    nothing. Fence: ``tests/unit/test_profile_write_tools.py``.
+
+def _numbers(text: str) -> set[str]:
+    """Each number of *text* as its digits only, so a split number is one."""
+    return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
+
+
+def needs_confirm(value: Any) -> bool:
+    """True when *value* holds an address, a link or a long number.
+
+    An address is any ``a@b``. A link is a scheme, ``www.`` or a bare
+    domain. A long number has :data:`CONFIRM_DIGITS` digits or more,
+    counted across spaces, dots, dashes, parentheses and a leading ``+``.
+    Such a value never writes from the chat without the member's approve
+    (PZ-6a fix round 2, the primary fence). Fence:
+    ``tests/unit/test_profile_write_tools.py``.
+    """
+    text = fold(value)
+    if not text:
+        return False
+    if "@" in text and _GROUND_EMAIL.search(text):
+        return True
+    if _GROUND_URL.search(text) or _DOMAIN.search(text):
+        return True
+    return any(len(n) >= CONFIRM_DIGITS for n in _numbers(text))
+
+
+def grounded(value: Any, words: Any) -> bool:
+    """True when the member's typed *words* of this turn hold *value*.
+
+    Three rules, on folded text (PZ-6a fix round 2):
+
+    * Each address and link in *value* is a WHOLE token of *words*. A
+      substring never counts: "raj@acme.com" is not in "vraj@acme.com.au".
+    * Each number of *value*, with its separators gone, is a number of
+      *words*, so "+1 41 55 55 01 23" must be said as that one number.
+    * At least :data:`CONTENT_SHARE` of the content words of *value* (three
+      letters or more), and at least one, are in *words*. A value with no
+      content word must be a whole token run of *words*.
+
+    An empty *words* holds nothing. Fence:
+    ``tests/unit/test_profile_write_tools.py``.
     """
     said, text = fold(words), fold(value)
     if not text:
         return True
     if not said:
         return False
-    for pattern in (_GROUND_EMAIL, _GROUND_URL, _GROUND_DIGITS):
-        for hit in pattern.findall(text):
-            if hit.rstrip(".") not in said:
-                return False
+    for pattern in (_GROUND_EMAIL, _GROUND_URL, _DOMAIN):
+        if not _tokens(pattern, text) <= _tokens(pattern, said):
+            return False
+    if not _numbers(text) <= _numbers(said):
+        return False
     content = _GROUND_WORD.findall(text)
     if not content:
-        return text in said
+        # Only addresses, links and numbers, which matched above: grounded.
+        rest = _NUMBER.sub(" ", _GROUND_URL.sub(" ", _GROUND_EMAIL.sub(" ", text)))
+        if not re.search(r"\w", rest):
+            return True
+        return re.search(rf"(?<!\w){re.escape(text)}(?!\w)", said) is not None
     spoken = set(_GROUND_WORD.findall(said))
-    return 2 * sum(1 for w in content if w in spoken) >= len(content)
+    hits = sum(1 for w in content if w in spoken)
+    return hits >= 1 and hits >= CONTENT_SHARE * len(content)
 
 
 # ── The last chat change (PZ-6a fix round 1) ───────────────────────────────

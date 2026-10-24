@@ -301,6 +301,17 @@ def _knowledge_propose_enabled() -> bool:
     return knowledge_propose_enabled()
 
 
+def _close_profile_writes() -> None:
+    """Close the run's profile writes (``assistant_profile.close_writes``).
+    Never raises (WS-63 PZ-6a fix round 2)."""
+    try:
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _assistant_profile_enabled() -> bool:
     """The one reader of ``ASSISTANT_PROFILE_ENABLED``, in ``acb_common`` (PZ-5)."""
     from acb_common.assistant_profile import enabled
@@ -324,6 +335,9 @@ def _context_recency_enabled() -> bool:
 @_annotate_risk(open_world=False)
 async def retrieve_entity_context(query: str) -> str:
     """Search the entity graph for projects, tasks, deals, and people relevant to the query."""
+    # WS-63 PZ-6a fix round 2: the answer holds text of other people, so
+    # the run's profile writes close for the rest of the run.
+    _close_profile_writes()
     # WS-29 acb_graph slice 7: resolve the run's tenant HERE, on the event-loop
     # frame, BEFORE the asyncio.to_thread hop — _RUN_ORG is a plain dict and
     # contextvars do not cross the hop, so the opener must be captured on this
@@ -346,6 +360,9 @@ async def retrieve_entity_context(query: str) -> str:
 @_annotate_risk(open_world=False)
 async def retrieve_sales_context(query: str) -> str:
     """Search the sales entity graph for customer 360 summaries and deal pipeline data."""
+    # WS-63 PZ-6a fix round 2: the answer holds text of other people, so
+    # the run's profile writes close for the rest of the run.
+    _close_profile_writes()
     # Same before-the-hop tenant capture as retrieve_entity_context (WS-29
     # acb_graph slice 7). sales_context() reads customer/deal/person through the
     # session passed to it, so binding the opener here binds sales_views.py's
@@ -382,6 +399,9 @@ async def search_timeline(entity_name: str, query: str) -> str:
         Formatted string with timestamped facts, or empty string if Graphiti
         is not enabled or no facts found.
     """
+    # WS-63 PZ-6a fix round 2: the answer holds text of other people, so
+    # the run's profile writes close for the rest of the run.
+    _close_profile_writes()
     return await search_entity_timeline(entity_name, query)
 
 

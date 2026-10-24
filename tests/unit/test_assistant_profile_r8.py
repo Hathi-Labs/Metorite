@@ -636,3 +636,38 @@ async def test_a_stale_change_and_a_second_undo_refuse(db) -> None:
     assert (stale.value.status_code, stale.value.detail) == (404, "too_old")
     assert web.value.status_code == 422
     assert [f["text"] for f in read["facts"]] == ["One", "Three"]
+
+
+async def test_an_undo_after_a_settings_edit_of_the_saved_fact_refuses(db) -> None:
+    """PZ-6a fix round 2 (P2): the chat saved a fact, then the member
+    edited it in Settings. A spoken undo must not delete the edited fact.
+    The record holds the item as written, and the undo compares it."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        fact = await _chat(lambda: ap.add_fact(body={"text": "I like tea", "kind": "preference"},
+                                               user=user, x_profile_via="chat"), db.org_a)
+        mid = _stored(db, email)[0][1]
+        assert mid["last_change"]["after"] == fact
+        await _chat(lambda: ap.edit_fact(fact["id"], body={"text": "I like green tea"},
+                                         user=user), db.org_a)
+        with pytest.raises(HTTPException) as changed:
+            await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert (changed.value.status_code, changed.value.detail) == (404, "changed_since")
+    assert [(f["id"], f["text"]) for f in read["facts"]] == [(fact["id"], "I like green tea")]
+
+
+async def test_an_undo_of_an_unchanged_saved_fact_removes_it(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    ap = _ap()
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _chat(lambda: ap.add_fact(body={"text": "I like tea", "kind": "preference"},
+                                        user=user, x_profile_via="chat"), db.org_a)
+        await _undo(db.org_a, user)
+        read = await _get(db.org_a, user)
+    assert read["facts"] == []
