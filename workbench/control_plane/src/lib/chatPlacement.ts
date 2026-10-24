@@ -308,6 +308,11 @@ const WRITE: readonly string[] = [
   "update_deal_status",
   "log_activity",
   "convert_lead",
+  // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
+  "profile_remember",
+  "profile_forget",
+  "profile_set",
+  "profile_alias",
 ];
 
 function build(): Readonly<Record<string, Placement>> {

@@ -36,6 +36,7 @@ import MessageBubble from "@/components/MessageBubble";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import ProjectToolCards, { PROJECT_CARD_TOOLS, projectEvidence } from "@/components/projects/ProjectToolCards";
 import TaskToolCards, { TASK_CARD_TOOLS, taskEvidence } from "@/components/tasks/TaskToolCards";
+import { PROFILE_CARD_TOOLS } from "@/components/profile/ProfileToolCards";
 import { ToolStepRow } from "@/components/ThinkingContainer";
 import {
   CACHED_SEGMENTS_MAX_CHARS,
@@ -58,7 +59,7 @@ function ev(name: string, result: string, status: ToolEvent["status"] = "done"):
 
 describe("one map classifies every tool a card file draws", () => {
   it("every tool a card file draws is classified", () => {
-    const unnamed = [...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS, ...CRM_CARD_TOOLS]
+    const unnamed = [...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS, ...CRM_CARD_TOOLS, ...PROFILE_CARD_TOOLS]
       .filter((n) => placementOf(n) === undefined);
     expect(unnamed).toEqual([]);
   });
