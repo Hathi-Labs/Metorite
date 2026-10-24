@@ -392,7 +392,7 @@ def test_the_card_caps_its_list_as_the_dialog_does() -> None:
           / "src" / "app" / "projects" / "lib" / "projectConvert.ts").read_text(
               encoding="utf-8")
     [limit] = re.findall(r"export const CONVERT_LIST_LIMIT = (\d+);", ts)
-    assert guarded.CONVERT_LIST_LIMIT == int(limit)
+    assert int(limit) == guarded.CONVERT_LIST_LIMIT
 
 
 async def test_the_chat_card_says_and_n_more(monkeypatch) -> None:
@@ -511,7 +511,7 @@ class TestFixRound1:
             return await wa._as(live, ADMIN, "POST", f"/projects/nodes/{mover}/move",
                                 {"parent_project_id": child})
 
-        r, child = await self._race(live, move)
+        r, _child = await self._race(live, move)
         assert r.status_code == 422, r.text
         with live.admin.begin() as c:
             assert str(c.execute(text(
