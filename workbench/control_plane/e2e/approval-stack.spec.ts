@@ -152,9 +152,9 @@ test.describe("a stack of approval cards", () => {
 
   test("the banner counts the cards, the dots and the arrows move between them", async ({ page }) => {
     await ask(page);
-    const banner = page.locator("[data-approval-stack-banner]");
+    const banner = page.locator("[data-card-stack-banner]");
     await expect(banner).toContainText("2 approvals waiting");
-    await expect(page.locator("[data-approval-stack-edge]")).toHaveCount(1);
+    await expect(page.locator("[data-card-stack-edge]")).toHaveCount(1);
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this draft?");
     await banner.getByRole("button", { name: "Show card 2 of 2" }).click();
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this new email?");
@@ -169,5 +169,6 @@ test.describe("a stack of approval cards", () => {
     await expect(mail.locator("[data-card-text]")).not.toContainText("The text of the draft");
   });
 });
+
 
 
