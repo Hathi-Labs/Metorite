@@ -6217,25 +6217,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D99 in `work_plan.md` §3 · `projects_agent_parity.md` §1
 - **Added:** 2026-10-23 · Projects chat parity session
 
-### H-388 · Turn on the held-chat send cards in production, after #1237 ships · [OWNER]
-- **Check:** `curl -s https://api.metorite.com/version` names an `applied_sha`
-  whose history holds `6097556` (#1237). Then `ssh metorite "sudo grep -c
-  '^EMAIL_HELD_CARD_SEND=true' /opt/acb/app/.env"` prints 1. If both pass,
-  delete this entry.
-- **Why:** #1237 built spec §21 dark behind `EMAIL_HELD_CARD_SEND`, default
-  off. The owner asked on 2026-10-22: "Turn it on after build, the flag". A
-  staging test of the switch is not possible: `acb-staging-flag` refuses every
-  EMAIL and SEND key, because staging keeps outbound switches off.
-- **Do this (agent, with the owner's approval of the command):** wait for
-  the nightly release that carries #1237. Copy the production `.env` to a
-  backup. Set `EMAIL_HELD_CARD_SEND=true`. Restart `acb-gateway`, and wait
-  for `/health`. Report the box, the restart and the evidence in the same
-  message (CLAUDE.md §3a rule 2).
-- **Then (owner):** in a chat that read outside mail, ask "reply to Dr
-  Sagar, CC Geo and Kiran, send it". Each step must stay in the chat.
-- **Authority:** `email_app_master_plan.md` §21 · #1237
-- **Added:** 2026-10-23 · email chat session
-
 ### H-389 · Finish the email chat polish branch · [AGENT]
 - **Check:** `git log origin/main --oneline | grep -i "spam action"` prints a
   line. If it does, delete this entry.
