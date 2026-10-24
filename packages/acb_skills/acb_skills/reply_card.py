@@ -52,12 +52,16 @@ __all__ = [
     "REPLY_ACTIONS",
     "REPLY_ANSWER_KEYS",
     "REPLY_ANSWER_PREFIX",
+    "LookalikeWord",
     "ReplyChoice",
     "clean_reply_body",
     "has_hidden_text",
     "has_invisible_spacing",
     "is_invisible_char",
     "is_lookalike_space",
+    "lookalike_refusal",
+    "lookalike_warning",
+    "lookalike_words",
     "looks_like_reply_answer",
     "looks_like_send_answer",
     "parse_reply_answer",
@@ -345,6 +349,124 @@ def has_hidden_text(text: str) -> bool:
     if reply_body_refusal(raw):
         return True
     return clean_reply_body(raw) != visible_spacing(raw)
+
+
+# ── Look-alike letters (H-393, ``email_app_master_plan.md`` §21.13) ──────────
+#
+# A Cyrillic "\u0430" inside a Latin word shows on a card as a Latin "a". A model
+# can use such letters, or an invisible character inside a word, to carry
+# member data out in a text that looks right. So each chat send path that a
+# held chat reaches refuses a word that mixes scripts, and a word with an
+# invisible character. Outside a held chat the card shows a warning. A text
+# that is all in one script (Hindi, Russian, Greek) passes.
+
+#: The scripts that join in one word in real text: Japanese mixes kanji,
+#: hiragana and katakana with no space. Their letters do not count.
+_FREE_SCRIPTS = frozenset({"CJK", "HIRAGANA", "KATAKANA", "KATAKANA-HIRAGANA", "HANGUL",
+                           "BOPOMOFO", "IDEOGRAPHIC", "HALFWIDTH"})
+#: ZERO WIDTH NON-JOINER and ZERO WIDTH JOINER, which shape letters of the
+#: Arabic and the Indic scripts.
+_SCRIPT_JOINERS = frozenset("‌‍")
+
+
+def _script_of(ch: str) -> str:
+    """The script of one letter, from its Unicode name ("CYRILLIC SMALL
+    LETTER A" is CYRILLIC), or "" for a character that does not count: a
+    mark, a digit, a modifier letter, or a letter of :data:`_FREE_SCRIPTS`."""
+    cat = unicodedata.category(ch)
+    if not cat.startswith("L") or cat == "Lm":
+        return ""
+    head = unicodedata.name(ch, "").split(" ", 1)[0]
+    return "" if head in _FREE_SCRIPTS else head
+
+
+@dataclass(frozen=True)
+class LookalikeWord:
+    """One word that a card cannot show as it is (H-393)."""
+
+    word: str
+    #: The letter that does not belong, or the invisible character.
+    letter: str
+    #: The script of that letter, such as CYRILLIC, or "" for an invisible one.
+    script: str
+    #: The main script of the word, such as LATIN.
+    main: str
+    #: The Latin letter that the letter imitates (``held_card.confusable_of``).
+    looks_like: str
+
+
+def lookalike_words(text: str) -> list[LookalikeWord]:
+    """Each word of *text* that mixes scripts, or that holds an invisible
+    character, in order. A word is a run of letters, marks and invisible
+    characters. NBSP and the other look-alike spaces end a word."""
+    from acb_skills.held_card import confusable_of
+
+    out: list[LookalikeWord] = []
+    word: list[str] = []
+
+    def close() -> None:
+        if not word:
+            return
+        raw = "".join(word)
+        word.clear()
+        shown = "".join(ch for ch in raw if not is_invisible_char(ch))
+        latin = any(_script_of(ch) == "LATIN" for ch in raw)
+        # Persian, Hindi and Malayalam join letters with ZWNJ and ZWJ. In a
+        # word with no Latin letter those two are writing, not a hiding place.
+        hidden = [ch for ch in raw if is_invisible_char(ch)
+                  and (latin or ch not in _SCRIPT_JOINERS)]
+        if hidden and shown:
+            out.append(LookalikeWord(shown, hidden[0], "", "", ""))
+            return
+        scripts = [s for s in (_script_of(ch) for ch in raw) if s]
+        if len(set(scripts)) < 2:
+            return
+        main = max(set(scripts), key=lambda s: (scripts.count(s), s == "LATIN"))
+        odd = next(ch for ch in raw if _script_of(ch) not in ("", main))
+        out.append(LookalikeWord(shown, odd, _script_of(odd), main, confusable_of(odd)))
+
+    for ch in str(text or ""):
+        if (is_invisible_char(ch) and ch not in "\n\t") or unicodedata.category(ch)[0] in "LM":
+            word.append(ch)
+        else:
+            close()
+    close()
+    return out
+
+
+def _lookalike_sentence(hit: LookalikeWord, where: str) -> str:
+    if not hit.script:
+        return (f"The {where} holds the word \"{hit.word}\" with an invisible character "
+                f"(U+{ord(hit.letter):04X}) inside it")
+    letter = f"a {hit.script.title()} letter \"{hit.letter}\" (U+{ord(hit.letter):04X}"
+    letter += (f", it looks like the Latin \"{hit.looks_like}\")" if hit.looks_like else ")")
+    return (f"The {where} holds the word \"{hit.word}\", which mixes {letter} into "
+            f"{hit.main.title()} letters")
+
+
+def lookalike_refusal(texts: dict[str, str]) -> str | None:
+    """The one sentence that refuses a send in a held chat (H-393), or None.
+
+    *texts* maps a name ("subject", "text") to its text. The first word that
+    mixes scripts, or that holds an invisible character, is named."""
+    for where, value in texts.items():
+        hits = lookalike_words(value)
+        if hits:
+            more = f" ({len(hits) - 1} more word(s) too)" if len(hits) > 1 else ""
+            return (f"Not sent. {_lookalike_sentence(hits[0], where)}{more}. A chat that "
+                    "read outside mail sends no such word. Write it again with plain letters.")
+    return None
+
+
+def lookalike_warning(texts: dict[str, str]) -> str | None:
+    """The warning of a card outside a held chat (H-393), or None."""
+    for where, value in texts.items():
+        hits = lookalike_words(value)
+        if hits:
+            more = f" ({len(hits) - 1} more word(s) too)" if len(hits) > 1 else ""
+            return (f"Check each letter. {_lookalike_sentence(hits[0], where)}{more}. "
+                    "It can look like a plain word.")
+    return None
 
 
 @dataclass(frozen=True)

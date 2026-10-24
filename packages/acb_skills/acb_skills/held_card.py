@@ -34,8 +34,8 @@ _log = get_logger("acb_skills.held_card")
 __all__ = [
     "ADDED_MARK",
     "ADDRESS_MAX",
-    "ASSISTANT_ADDED_MARK",
     "ARTIFACT_REF",
+    "ASSISTANT_ADDED_MARK",
     "ATTACHMENT_REF",
     "CLASSES",
     "CLASS_NEW",
@@ -56,8 +56,8 @@ __all__ = [
     "METORITE_FILE_REFUSED",
     "NEW_MARK",
     "RECIPIENT_KINDS",
-    "RULE_COPY_MARK",
     "ROW_KINDS",
+    "RULE_COPY_MARK",
     "SETTING_CLOSED",
     "SETTING_MAILBOX",
     "SETTING_REFUSED",
@@ -68,6 +68,7 @@ __all__ = [
     "address_problem",
     "class_mark",
     "closed_setting_value",
+    "confusable_of",
     "domain_of",
     "file_label",
     "held_card_send_enabled",
@@ -316,6 +317,17 @@ _CONFUSABLE = str.maketrans({
 #: The shortest domain that the one-edit rule reads. A short domain has too
 #: many neighbours, so only the folded rule reads it.
 _EDIT_MIN = 6
+
+
+def confusable_of(ch: str) -> str:
+    """The Latin letter that *ch* imitates, by the ONE look-alike table
+    (:data:`_CONFUSABLE`), or "" when the table holds no entry for a
+    letter that is not ASCII. The mixed-script check of a chat send names
+    this letter (H-393, ``reply_card.lookalike_words``)."""
+    if not ch or ch.isascii():
+        return ""
+    folded = ch.translate(_CONFUSABLE)
+    return folded if folded != ch else ""
 
 
 def _unicode_domain(domain: str) -> str:
