@@ -2121,6 +2121,33 @@ export async function saveAssistantSettings(
   });
 }
 
+/** One "always copy" rule of a mailbox (§21.15): a domain or an address,
+ *  and the colleagues that go, ticked, on each matching reply or new mail. */
+export interface AlwaysCopyRule {
+  match: string;
+  cc: string[];
+}
+
+export async function getAlwaysCopy(accountId: string): Promise<AlwaysCopyRule[]> {
+  const res = await gatewayFetch<{ rules?: AlwaysCopyRule[] }>(
+    `/email/assistant/always-copy?account_id=${encodeURIComponent(accountId)}`
+  );
+  return Array.isArray(res?.rules) ? res.rules : [];
+}
+
+/** Save the WHOLE list. The server takes only a colleague or a person you
+ *  wrote to before, and its refusal names the person. */
+export async function saveAlwaysCopy(
+  accountId: string,
+  rules: AlwaysCopyRule[]
+): Promise<AlwaysCopyRule[]> {
+  const res = await gatewayFetch<{ rules?: AlwaysCopyRule[] }>("/email/assistant/always-copy", {
+    method: "PUT",
+    body: JSON.stringify({ account_id: accountId, rules }),
+  });
+  return Array.isArray(res?.rules) ? res.rules : [];
+}
+
 export async function generateWritingStyle(
   accountId: string
 ): Promise<{ writing_style: string }> {

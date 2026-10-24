@@ -1011,6 +1011,11 @@ HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
         # a closed key (mail to the member's own address only), and
         # ``org_domains`` is refused in a held run (it decides who is "org").
         "morning_brief_enabled", "org_domains",
+        # §21.15 (owner, 2026-10-24): the always-copy rules. The row in
+        # ``held_card.HELD_SETTING_DECISIONS`` refuses it in a held run,
+        # because it changes the recipients of each later card. The gateway
+        # takes only an org or a sent colleague in any chat.
+        "always_copy",
     }),
 }
 

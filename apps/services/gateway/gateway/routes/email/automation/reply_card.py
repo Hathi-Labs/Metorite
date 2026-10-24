@@ -519,7 +519,13 @@ async def reply_card(
     # extra address of the draft is.
     carried = [a for a in carried if a.strip().lower() not in on_mail | own]
     usual = await _usual_candidates(owner, mail, [*all_to, *all_cc], skip=on_mail | own)
-    candidates = _unique([*asked, *carried, *usual], set(on_mail | own))[:MAX_ADDED]
+    # §21.15: the member's own "always copy" rules of this mailbox. Each
+    # colleague is an org or a sent person NOW, or it is not offered.
+    rule = await _rule_candidates(owner, mail, [mail.sender, *all_to, *all_cc],
+                                  skip=on_mail | own)
+    rule_match = {a.lower(): m for a, m in rule}
+    candidates = _unique([*asked, *carried, *(a for a, _m in rule), *usual],
+                         set(on_mail | own))[:MAX_ADDED]
     # §21.14: the Bcc of the card. A person on To or Cc is not a Bcc too.
     bcc_people = _unique([*asked_bcc, *draft_bcc],
                          {*on_mail, *own, *(a.lower() for a in candidates)})[:MAX_ADDED]
@@ -543,7 +549,10 @@ async def reply_card(
     carried_extra = [a for a in carried if (classes or {}).get(a.lower()) != "thread"]
     # Item 7: only a colleague of the organization is pre-added from Sent.
     usual_added = [a for a in usual if (classes or {}).get(a.lower()) == "org"]
-    added = [a for a in candidates if a in asked or a in carried or a in usual_added]
+    rule_added = [a for a in candidates if a.lower() in rule_match
+                  and (classes or {}).get(a.lower()) in ("org", "sent")]
+    added = [a for a in candidates
+             if a in asked or a in carried or a in usual_added or a in rule_added]
     notices: list[str] = []
     bcc_people = _held_bcc(bcc_people, asked_bcc, classes, req.held, notices)
     # The record of the card: the added people, the Bcc and the held flag.
@@ -601,6 +610,11 @@ async def reply_card(
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
+    # §21.15: a colleague of the member's own rule says so, whatever else.
+    from acb_skills.held_card import rule_copy_mark
+
+    marks.update({a.lower(): rule_copy_mark(rule_match[a.lower()]) for a in rule_added
+                  if a in added})
     out: dict[str, Any] = {
         "message_id": str(_as_uuid(req.message_id) or req.message_id),
         # A file the drafter did not read is named, so the member checks the
@@ -855,6 +869,21 @@ async def _usual_candidates(
            if r.addr and (int(r.n or 0) >= USUAL_MIN or bool(r.in_thread))
            and str(r.addr).lower() not in skip]
     return sorted(out)
+
+
+async def _rule_candidates(
+    owner: str, mail: Any, people: Sequence[str], *, skip: set[str],
+) -> list[tuple[str, str]]:
+    """``(colleague, match)`` of the member's always-copy rules for the
+    people of the mail (§21.15). A fault reads as none."""
+    from gateway.routes.email.automation.always_copy import always_copy_people
+
+    try:
+        async with _tenant_session() as db:
+            return await always_copy_people(db, owner, mail.account_id, people, skip=skip)
+    except Exception as exc:
+        _log.warning("email.reply_card_rule_failed", error=type(exc).__name__)
+        return []
 
 
 def _usual_note(added: Sequence[str], mail: Any) -> str:

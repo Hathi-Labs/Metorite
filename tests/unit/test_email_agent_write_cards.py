@@ -615,6 +615,8 @@ SETTING_ON: dict[str, Any] = {
     # H-404: the brief sends mail to the account address, and org_domains
     # changes who counts as the organization. Each asks a card.
     "morning_brief_enabled": True, "org_domains": ["brand.example"],
+    # §21.15: the always-copy rules change who goes on each later card.
+    "always_copy": [{"match": "contoso.test", "cc": ["geo@acme.test"]}],
 }
 #: The settings that ask no card even when they change, and why.
 SETTING_NO_CARD: dict[str, str] = {
