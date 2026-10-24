@@ -6282,6 +6282,17 @@ line — never reclaim a number by deleting the other entry.
   held chat could use that move to fake a `sent` contact. An Outlook or IMAP
   rule that moved mail there now fails at run time.
 - **Do this:** find such rules. Tell each owner, or change the rule.
+- **Built (2026-10-24, branch `email-single-mailbox-b`):** a rule save
+  (create, update, batch, generate) now answers 422 with a plain sentence
+  for a move into Sent or Drafts. A run skips an old rule's move and History
+  shows the same sentence as the issue. Fence:
+  `tests/unit/test_email_rule_move_into_sent.py`. Still to do: run the query
+  below on the database, and tell each owner. The query is also in that
+  test's docstring:
+  `SELECT r.id, r.account_id, r.name, a.label FROM email_rules r JOIN
+  email_actions a ON a.rule_id = r.id WHERE UPPER(a.type) = 'MOVE_FOLDER' AND
+  LOWER(BTRIM(a.label)) IN ('sent','sentitems','sent items','sent mail',
+  'drafts','draft');`
 - **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
