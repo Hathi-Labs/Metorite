@@ -204,6 +204,11 @@ def test_another_org_s_person_never_answers_the_join(db) -> None:
     never answers, even for a role that RLS does not narrow."""
     email = _address()
     _member_row(db, db.org_a, email, "Vijay Varada")
+    with db.admin_engine.begin() as c:
+        # The People row that a trigger made in org A goes, so B's is the only
+        # one. Without the org on both sides, the join would then find it.
+        c.execute(text("DELETE FROM people WHERE organization_id = CAST(:o AS uuid) "
+                       "AND lower(email) = lower(:e)"), {"o": db.org_a, "e": email})
     _person(db, db.org_b, email, "Eve", "America/New_York")
     with db.admin_engine.connect() as c:
         row = c.execute(text(ap.ADDRESS_SQL), {"org": db.org_a, "m": email.upper()}).first()
