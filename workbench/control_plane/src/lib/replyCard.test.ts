@@ -417,5 +417,7 @@ describe("a Bcc on the reply card (§21.15)", () => {
     expect(BCC_LABEL).toBe("Bcc (hidden from the others)");
     expect(src).toContain("<Input");
     expect(src).not.toMatch(/<input\b/);
+    // Review note: "Add Bcc" follows the armed rule of the other buttons.
+    expect(src).toContain("disabled={disabled || !armed || bccBusy || !bccDraft.trim()}");
   });
 });

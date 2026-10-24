@@ -143,6 +143,17 @@ async def test_a_held_card_leaves_a_new_draft_bcc_out(monkeypatch) -> None:
     assert any(STRANGER in n and "leaves it out" in n for n in out["notices"])
 
 
+async def test_the_held_notice_does_not_call_a_thread_person_new(monkeypatch) -> None:
+    """Review note: the notice names no class, because a ``thread`` person
+    leaves the card too, and it is not "a new address"."""
+    w = _World(monkeypatch)
+    w.db.draft = {"cc_addresses": "[]",
+                  "bcc_addresses": json.dumps([{"email": STRANGER}])}
+    out = await w.card(held=True)
+    [note] = [n for n in out["notices"] if "leaves it out" in n]
+    assert "new address" not in note and "not a colleague" in note
+
+
 async def test_a_draft_bcc_carries_and_starts_ticked_only_when_known(monkeypatch) -> None:
     w = _World(monkeypatch)
     w.db.draft = {"cc_addresses": "[]",

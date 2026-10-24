@@ -303,7 +303,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
               size="sm"
               icon="Plus"
               onClick={() => void submitBcc()}
-              disabled={disabled || bccBusy || !bccDraft.trim()}
+              disabled={disabled || !armed || bccBusy || !bccDraft.trim()}
               data-reply-bcc-submit=""
             >
               {bccBusy ? "Adding…" : "Add Bcc"}

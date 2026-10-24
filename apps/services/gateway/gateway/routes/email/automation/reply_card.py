@@ -104,8 +104,9 @@ HELD_BCC_REFUSED = ("This chat read outside mail, so a Bcc can only go to a coll
                     "to a person you wrote to before. {addr} is neither, so nothing was "
                     "shown or sent.")
 #: The notice when a held chat leaves a Bcc of the thread's draft off the card.
-HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc to a new address. "
-                         "This chat read outside mail, so the card leaves it out: {addrs}.")
+HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc that is not a colleague "
+                         "or a person you wrote to before. This chat read outside mail, so "
+                         "the card leaves it out: {addrs}.")
 #: The mark of a Bcc that the thread's draft holds (§21.15).
 DRAFT_BCC_MARK = "on the draft in Drafts"
 
