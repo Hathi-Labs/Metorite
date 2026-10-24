@@ -5908,6 +5908,36 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/external_agent_access.md` §10.1 step 5, R7
 - **Added:** 2026-10-20 · PR #1184 review, P3
 
+### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
+- **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
+  near `unheld_clause`. When the clause, `_HOLDER_SQL` and `_RUN_SELECT` all
+  carry the org predicate, item 3 is done. Read items 1 and 2 against the code.
+- **Why.** The review of PR #1192 found no blocker. It left four items. The
+  landing of #1192 fixed a fifth, the reopen race (two prompts at once gave
+  a 500), with `test_x13b`.
+- **Do this:**
+  1. A task that goes to done, cancelled or archived keeps its open run until
+     the lease ends. End the run on that status change, or let a closed task
+     not hold. Metorite task SW-10 (#341) covers the same ground.
+  2. The Release button uses `access.is_admin`. The server uses
+     `admin:members:read`. Make them the same rule, and ask whether a read
+     permission should release another member's run.
+  3. Add `organization_id` to `_HOLDER_SQL`, `_RUN_SELECT` and
+     `unheld_clause` (R5). Add a cross-org test for `held_by`. Decide whether
+     a released or abandoned run counts as "agent worked" in `agent_worked.py`.
+  4. **A delete ignores the hold, and it can deadlock** (review of the landing,
+     2026-10-25, P2). `agent_delete_task` (`routes/projects/tasks.py`, about
+     L1475) reads no run. Another session can delete a task that a live run
+     holds, and the cascade removes the run. The delete also locks the task
+     row first and the runs second, through the cascade. A holder's activity
+     takes the run first and the task row second. The two can deadlock, and
+     that was on main before EA-14a. Fix both doors (`DELETE` and
+     `agent-delete`): lock the task's open runs `FOR UPDATE` before
+     `lock_task`, and answer 409 `task_held` when another member or client
+     holds a fresh run. Or write in §12.3 that a delete overrides a hold.
+- **Authority:** `specs/external_agent_access.md` §12.3
+- **Added:** 2026-10-20 · PR #1192 review, P2 and P3
+
 ### H-357 · 🔴 A key that a chat saw must be rotated, and old rows scrubbed · [OWNER] · security
 - **Check:** ask each org whose chats set up a key, a GitHub token first.
   Did it rotate that key after 2026-10-18? Then count the rows that still
@@ -6252,17 +6282,6 @@ line — never reclaim a number by deleting the other entry.
   delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
-### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
-- **Check:** a fence refuses a word that mixes scripts, for example a
-  Cyrillic letter in a Latin word, at a chat send. If one exists, delete
-  this entry.
-- **Why:** the #1237 review rated this P2. It carries about one bit for each
-  letter, and the letters are visible. `compose_reply` on main has the same
-  gap.
-- **Do this:** add a mixed-script check for each word to
-  `reply_card.has_hidden_text`. Keep Hindi, Bengali and other single-script
-  text working. Add a fence.
-- **Authority:** `email_app_master_plan.md` §21.10
 - **Added:** 2026-10-23 · email chat session
 
 ### H-395 · A mail rule that moves mail into Sent now fails · [AGENT]
@@ -6313,15 +6332,14 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-23 · Knowledge session
 
 ### H-399 · Build the next Knowledge AI slices of §22 · [AGENT]
-- **Check:** `grep -nE "KB-5c|KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
+- **Check:** `grep -nE "KB-AI-2|KB-AI-3|KB-AI-4|KB-AI-6" project-docs/specs/knowledge_base.md`. Delete this entry when each row reads BUILT.
 - **Why:** §22 of `knowledge_base.md` is the AI roadmap of 2026-10-22. It ranks the slices by value and names the tier of each.
 - **Do this, in order:**
-  1. KB-5c: the 14-day expiry of pending proposals (no model).
-  2. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
-  3. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
-  4. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
-  5. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
-  6. KB-4b citation chips, then KB-10 `kb:read` on MCP.
+  1. KB-AI-2: "Tidy with AI" on `tier-fast`. It files the result as a KB-5a edit proposal, never a direct write.
+  2. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
+  3. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
+  4. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
+  5. KB-4b citation chips, then KB-10 `kb:read` on MCP.
   Each paid pass has its own flag, default off, which the owner turns on.
 - **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
 - **Added:** 2026-10-23 · Knowledge session
@@ -6338,18 +6356,6 @@ line — never reclaim a number by deleting the other entry.
 - **Why:** many WS-61 slices landed in build mode with the verifier only (engineering_practice.md §7a). The backlog holds K-1 to K-8.
 - **Do this:** open one `harden` PR. Run `diff-reviewer` on the whole wave 2 diff. Add the fences that K-4 to K-8 name. Run the visual review. Then close each K row.
 - **Authority:** owner directive, 2026-10-19. `specs/engineering_practice.md` §7a
-- **Added:** 2026-10-23 · Knowledge session
-
-### H-402 · Fix the four P2s of the KB-9a review, and decide the question-text risk · [AGENT] · OWNER note
-- **Check:** `grep -nE "normali|ask_count|first_asked_at|reopen" apps/services/gateway/gateway/routes/knowledge/gaps.py` shows each fix, and `knowledge_base.md` §8.4 names the question-text rule. If both hold, delete this entry.
-- **Why:** the adversarial review of KB-9a (PR #1241) approved the slice with four P2 findings.
-- **Do this:**
-  1. The normaliser turns Indic vowel signs into spaces, so different Hindi or Tamil questions merge into one gap. Keep Unicode marks (category M) inside a word.
-  2. After 20 askers, a repeat ask by an unstored member still adds 1 to `ask_count`. Count a repeat once, or stop counting at the cap.
-  3. The 30-day window follows `last_asked_at`, so a chain of asks keeps it open. Measure it from `first_asked_at`, or store the asks per day.
-  4. A dismissed or answered gap never reopens. Add an undo for Dismiss, and reopen a gap whose answer page is deleted.
-- **OWNER note:** `sample_query` keeps the raw question, which can hold a name or a salary. Every Knowledge manager can read it. Decide whether to filter it, and record the rule in §8.4.
-- **Authority:** `specs/knowledge_base.md` §8.4
 - **Added:** 2026-10-23 · Knowledge session
 
 ### H-403 · Check that the last two Knowledge PRs of 2026-10-23 merged and reached staging · [AGENT]
@@ -6394,6 +6400,20 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** if the count is not 0, list each row for the owner to review. Give the project, the owner, the subject and `created_at`. Do not delete or change a row without the owner's word.
 - **Authority:** `specs/one_projects_app.md` §8 D-OP-15 and §9 OP-9
 - **Added:** 2026-10-24 · WS-64 OP-9 fix round 1
+
+### H-410 · The look-alike guard refuses Pinyin tone letters and the Azerbaijani ə in a held chat · [AGENT]
+- **Check:** `lookalike_words("Nǐ hǎo")` and `lookalike_words("Azərbaycan")` in `acb_skills/reply_card.py` both return `[]`. If they do, delete this entry.
+- **Why:** #1288 (H-393) refuses a Latin letter outside Basic Latin, Latin-1, Latin Extended-A and the Vietnamese ranges, in a chat that read outside mail. Pinyin tone letters (U+01CE, U+01D0) and ə (U+0259) are real text, not look-alikes, so a held send that holds them is refused. Other chats only warn.
+- **Do this:** allow the letters of Latin Extended-B and IPA that have no ASCII twin in `held_card._CONFUSABLE`. Keep ɑ, ɡ and ı-style twins refused. Add a test for each language.
+- **Authority:** the final check of #1288, 2026-10-24.
+- **Added:** 2026-10-24 · email single-mailbox session
+
+### H-411 · Two first writes of the always-copy list at once can both pass · [AGENT]
+- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row. The agent sends the version that the model read. If both hold, delete this entry.
+- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing. So two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT. So it misses a change in the UI after the model read the list.
+- **Do this:** lock on the account row, or take an advisory lock on the account id. Carry the version from the model's read into the tool call.
+- **Authority:** the final check of #1288, 2026-10-24.
+- **Added:** 2026-10-24 · email single-mailbox session
 
 # DONE — deleted, not archived
 

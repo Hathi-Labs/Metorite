@@ -836,6 +836,18 @@ def _refuse_hidden_draft(row: Any) -> None:
         raise HTTPException(status_code=422, detail=exc.detail) from None
 
 
+def refuse_lookalike(texts: dict[str, str]) -> None:
+    """422 for a text with a word that mixes scripts, or with an invisible
+    character inside a word (H-393, §21.14). Each route of this module serves a
+    held chat, so it refuses and never warns. The detail names the word and
+    the letter in one sentence (``reply_card.lookalike_refusal``)."""
+    from acb_skills.reply_card import lookalike_refusal
+
+    why = lookalike_refusal(texts)
+    if why:
+        raise HTTPException(status_code=422, detail=why)
+
+
 def _refuse_new_bcc(rows: Sequence[dict[str, Any]]) -> None:
     if any(r["kind"] == KIND_BCC and r["class"] == CLASS_NEW for r in rows):
         raise HTTPException(status_code=422, detail=BCC_NEW_REFUSED)
@@ -922,6 +934,8 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         if row is None:
             raise HTTPException(status_code=404, detail="Draft not found")
         _refuse_hidden_draft(row)
+        refuse_lookalike({"subject": str(row.subject or ""),
+                          "text": str(row.body_text or "")})
         lists = _lists_of(row)
         _check_lists(lists)
         # Every sender guards the look-alike flag. Only a trusted sender
@@ -1264,6 +1278,7 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
     _refuse_bad_draft_id(req.message_id)
     lists = _people(req)
     note = _clean_text(req.note)
+    refuse_lookalike({"note": note})
     async with _tenant_session() as db:
         mail = (await db.execute(text(FORWARD_MAIL_SQL),
                                  {"mid": req.message_id, "uid": owner})).fetchone()
@@ -1303,6 +1318,7 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     if not body:
         raise HTTPException(status_code=422, detail="The email has no text, so nothing was sent.")
     subject = _clean_subject(req.subject)
+    refuse_lookalike({"subject": subject, "text": body})
     from acb_skills.held_card import is_metorite_file_ref
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
 
@@ -1312,6 +1328,10 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     mail_refs = [r for r in req.files if not is_metorite_file_ref(r)]
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, owner)
+        # §21.16: the member's own always-copy rules add colleagues as Cc
+        # rows. Each is an org or a sent person, so it starts ticked, and the
+        # member can untick it. A rule can only add, never take a person off.
+        ruled = await _always_copy_rows(db, owner, req.account_id, lists)
         classes = await classify_addresses(db, owner, [a for v in lists.values() for a in v])
         known = await known_domains(db, owner)
         files = await resolve_file_refs(db, owner, req.account_id, mail_refs)
@@ -1319,6 +1339,7 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     shared = await resolve_metorite_files(user, metorite, held=True) if metorite else []
     rows = recipient_rows(lists, classes, known)
     _refuse_new_bcc(rows)
+    _mark_ruled(rows, ruled)
     mail_rows = file_rows(files)
     rows += mail_rows
     rows += metorite_file_rows(
@@ -1329,6 +1350,32 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     return await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
     }, title="Send this new email?", mailbox=me)
+
+
+async def _always_copy_rows(
+    db: Any, owner: str, account_id: str, lists: dict[str, list[str]],
+) -> dict[str, str]:
+    """Add the colleagues of the member's always-copy rules to the Cc of
+    *lists*, in place, up to :data:`MAX_ROWS` rows. Returns each added
+    address with the match of its rule, by lower case."""
+    from gateway.routes.email.automation.always_copy import always_copy_people
+
+    named = [a for v in lists.values() for a in v]
+    found = await always_copy_people(db, owner, account_id, named, skip=[*named, owner])
+    room = MAX_ROWS - len(named)
+    added = found[:max(room, 0)]
+    lists[KIND_CC] = [*lists.get(KIND_CC, []), *(a for a, _m in added)]
+    return {a.lower(): m for a, m in added}
+
+
+def _mark_ruled(rows: list[dict[str, Any]], ruled: dict[str, str]) -> None:
+    """The hint of each row that a rule added: "your rule: always copy on X"."""
+    from acb_skills.held_card import rule_copy_mark
+
+    for r in rows:
+        match = ruled.get(str(r.get("address") or "").lower())
+        if match and r["kind"] == KIND_CC:
+            r["hint"] = rule_copy_mark(match)
 
 
 async def _person_card(

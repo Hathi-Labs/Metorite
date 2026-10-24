@@ -3296,6 +3296,7 @@ async def _upsert_reply_draft(
     owner_email: str, to: list[str], subject: str, body: str,
     cc: list[str] | None = None, exact_to: bool = False,
     prior: list[str] | None = None, exact_cc: bool = False,
+    bcc: list[str] | None = None, exact_bcc: bool = False,
 ) -> ReplyDraftWrite:
     """Write a reply draft so that the chat keeps ONE draft in a conversation.
 
@@ -3311,8 +3312,9 @@ async def _upsert_reply_draft(
     updated. ``prior`` is the record as it was before the caller replaced it.
 
     An update keeps the Cc of the draft when the caller gives none, unless
-    ``exact_cc`` (the member chose the Cc on the card). It keeps the Bcc and
-    the HTML of the row. An update that fails makes a fresh
+    ``exact_cc`` (the member chose the Cc on the card). It keeps the Bcc of
+    the row, unless ``exact_bcc`` (the Bcc of the reply card, §21.15), and it
+    keeps the HTML of the row. An update that fails makes a fresh
     draft. The local copy runs in a savepoint, and a failed copy is logged.
     A failed provider write raises. Fence:
     ``tests/unit/test_email_reply_draft_upsert.py``."""
@@ -3325,6 +3327,7 @@ async def _upsert_reply_draft(
     body = visible_spacing(body)
     subject = " ".join(str(subject or "").split())
     cc_list = [c for c in (cc or []) if c]
+    given_bcc = [b for b in (bcc or []) if b]
     rows: list[Any] = []
     if thread_id:
         rows = list((await db.execute(text(_THREAD_DRAFT_SQL), {
@@ -3349,19 +3352,24 @@ async def _upsert_reply_draft(
                     db, provider, account_id, str(ours.id),
                     ours.provider_message_id, to=to, subject=subject,
                     body=body, thread_id=thread_id, cc=keep_cc,
-                    bcc=_addresses_of(ours.bcc_addresses), attachments=None,
+                    bcc=given_bcc if exact_bcc else _addresses_of(ours.bcc_addresses),
+                    attachments=None,
                 )
         except Exception as exc:  # make a fresh draft below
             _log.warning("email.reply_draft_update_failed",
                          error=type(exc).__name__)
             provider_id = ""
     bcc_list = _addresses_of(ours.bcc_addresses) if ours is not None and provider_id else []
+    if exact_bcc:
+        bcc_list = given_bcc
     if not provider_id:
         provider_id = await provider.create_draft(
             to=to, subject=subject, body_text=body,
             reply_to_message_id=reply_to_provider_id,
             thread_id=thread_id or None, cc=cc_list or None,
             exact_to=exact_to,
+            # The Bcc of the reply card (§21.15). An older call names none.
+            **({"bcc": bcc_list} if exact_bcc and bcc_list else {}),
         )
     local_id = ""
     try:

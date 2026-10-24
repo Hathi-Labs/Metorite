@@ -14,7 +14,8 @@ EA-6d adds the task create pair, one non-idempotent write (``create_task``)
 and one edge input (its ``idempotency_key``). EA-6c adds the comment pair and
 the sixth edge input, the ``idempotency_key`` of ``add_comment``. EA-6g adds
 the archive request pair, and it holds that the archive and its approval
-stay OFF the edge (EA3-40). EA-6h adds the agent delete pair, the ONE class
+stay OFF the edge (EA3-40). EA-15 adds two reads and no pair, and the
+seventh edge input, the ``limit`` of ``my_work`` (§12.4). EA-6h adds the agent delete pair, the ONE class
 X pair that the edge holds, and the read of the member's switch (EA3-51). It
 holds that the plain task DELETE and the PUT of the switch stay OFF the edge.
 
@@ -103,7 +104,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     adds the three POST pairs of the agent runs (§12.1, EA12-9). EA-6c adds
     the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34). EA-6g
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
-    (EA3-51)."""
+    (EA3-51). EA-14a adds the release (§12.3)."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
@@ -113,6 +114,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-runs"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
+        ("POST", "/projects/agent-runs/{run_id}/release"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
     }
@@ -334,7 +336,33 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-6c (EA3-35). The same slot, keyed by the tool name too. The comment
     # route takes no such field either.
     ("add_comment", "idempotency_key"),
+    # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
+    # of `my_work` takes it.
+    ("my_work", "limit"),
 })
+
+#: The reads of EA-15 (§12.4). Each composes routes that are already in
+#: ``MCP_ROUTES``, so EA-15 adds no pair.
+EA15_READS = ("get_task_context", "my_work")
+
+
+def test_the_ea15_reads_are_listed_and_add_no_pair():
+    """EA-15a and EA-15b (§12.4). Both tools are reads of ``projects:read``,
+    and each route they reach is a GET pair that EA-15 found in the list.
+    Mutation: drop ``MY_WORK`` from ``TOOLS``, and this test fails."""
+    from acb_auth.agent_oauth import PROJECTS_READ
+    from agent_edge.tools import TOOLS
+
+    for name in EA15_READS:
+        tool = TOOLS[name]
+        assert tool.method == "GET" and tool.required_scope == PROJECTS_READ, name
+        assert dict(tool.annotations) == READ_HINTS, name
+        assert tool.runs is False, name  # the queue of assigned tasks needs no runs
+        assert not tool.prior_writes, name
+        for route in (tool.route, *tool.routes):
+            assert ("GET", route) in MCP_ROUTES, (name, route)
+    assert TOOLS["my_work"].edge_inputs == frozenset({"limit"})
+    assert TOOLS["get_task_context"].edge_inputs == frozenset()
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():

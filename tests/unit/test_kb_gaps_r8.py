@@ -246,11 +246,90 @@ async def test_an_old_window_starts_again_and_askers_keeps_twenty(
     _seed_gap(kb, kb.org_a, NORM, twenty)
     await _ask(kb, carol)
     [row] = _rows(kb)
-    assert row.ask_count == 21
+    assert row.ask_count == 20, "the count stops at the cap"
     assert row.askers == twenty, "a full list stores no new address"
-    # The same full list, an asker it holds: no new count.
+    # The same address again, and a known asker: nothing moves.
+    await _ask(kb, carol)
     await _ask(kb, _principal("m3@x.test", kb.org_a))
-    assert _rows(kb)[0].ask_count == 21
+    [row] = _rows(kb)
+    assert (row.ask_count, len(row.askers)) == (20, 20)
+
+
+def _seed_window(p: Any, norm: str, *, first_days: float, last_hours: float,
+                 askers: list[str], org: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO kb_gaps (organization_id, norm_query, sample_query, askers, "
+            "ask_count, first_asked_at, last_asked_at) VALUES (CAST(:o AS uuid), :n, :n, "
+            "CAST(:a AS text[]), :c, now() - make_interval(secs => :f), "
+            "now() - make_interval(secs => :l))"),
+            {"o": org, "n": norm, "a": askers, "c": len(askers),
+             "f": first_days * 86400, "l": last_hours * 3600})
+
+
+def _times(p: Any) -> Any:
+    with p.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT ask_count, now() - first_asked_at AS age FROM kb_gaps")).one()
+
+
+async def test_the_window_runs_from_the_first_ask(kb, app_engine) -> None:  # noqa: F811
+    from datetime import timedelta
+
+    carol = _principal(_address("carol"), kb.org_a)
+    _seed_window(kb, NORM, first_days=29, last_hours=1, askers=["old@x.test"], org=kb.org_a)
+    await _ask(kb, carol)
+    got = _times(kb)
+    assert got.ask_count == 2 and got.age > timedelta(days=28), "the window stays"
+
+    with kb.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM kb_gaps"))
+    _seed_window(kb, NORM, first_days=31, last_hours=1, askers=["old@x.test"], org=kb.org_a)
+    await _ask(kb, carol)
+    got = _times(kb)
+    assert got.ask_count == 1 and got.age < timedelta(minutes=5), "a new window"
+    assert _rows(kb)[0].askers == [carol.email.lower()]
+
+
+async def test_an_answered_gap_whose_page_is_gone_opens_again(kb, app_engine) -> None:  # noqa: F811
+    carol = _principal(_address("carol"), kb.org_a)
+    gid = _seed_gap(kb, kb.org_a, NORM, ["old@x.test"], status="answered")
+    assert _rows(kb)[0].answered_page_id is None, "the page was deleted (SET NULL)"
+    await _ask(kb, carol)
+    [row] = _rows(kb)
+    assert (str(row.id), row.status, row.answered_page_id) == (gid, "open", None)
+
+
+async def test_a_dismissed_gap_stays_dismissed_when_asked_again(kb, app_engine) -> None:  # noqa: F811
+    carol = _principal(_address("carol"), kb.org_a)
+    _seed_gap(kb, kb.org_a, NORM, ["old@x.test"], status="dismissed")
+    await _ask(kb, carol)
+    assert _rows(kb)[0].status == "dismissed"
+
+
+async def test_reopen_undoes_a_dismiss(kb, app_engine) -> None:  # noqa: F811
+    asha = _principal(_address("asha"), kb.org_a)
+    manager = _principal(_address("lead"), kb.org_a, CAPABILITY)
+    await _ask(kb, asha)
+    [row] = _rows(kb)
+    url = f"/knowledge/gaps/{row.id}/reopen"
+
+    assert (await _call(kb, manager, "POST", url)).status_code == 409, "open"
+    await _ok(kb, manager, "POST", f"/knowledge/gaps/{row.id}/dismiss")
+    assert (await _call(kb, asha, "POST", url)).status_code == 403
+    done = await _ok(kb, manager, "POST", url)
+    assert done["status"] == "open" and done["dismissed_at"] is None
+    [row] = _rows(kb)
+    assert (row.status, row.dismissed_by) == ("open", None)
+
+
+async def test_the_stored_text_holds_no_digits_of_an_amount(kb, app_engine) -> None:  # noqa: F811
+    asha = _principal(_address("asha"), kb.org_a)
+    await _ask(kb, asha, "what is the salary Rs 85,000 per month for a clerk")
+    [row] = _rows(kb)
+    assert "85" not in row.sample_query + row.norm_query
+    assert row.sample_query == "what is the salary [amount] per month for a clerk"
+    assert row.norm_query == "what is the salary amount per month for a clerk"
 
 
 # ── Tenancy ─────────────────────────────────────────────────────────────────

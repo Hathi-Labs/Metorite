@@ -156,6 +156,7 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
     Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
+    Route("POST", "/knowledge/gaps/{gap_id}/reopen", "", "X", reason=_GAP_DECISION_REASON),
     # ── Sources (KC-1a, knowledge_curation.md §7) ── the tree is names only. A
     # read may join the chat with `search_knowledge` (knowledge_base.md §7.2).
     Route("POST", "/knowledge/sources/google_drive/connect", "", "X",

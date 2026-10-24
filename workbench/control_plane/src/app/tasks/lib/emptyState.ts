@@ -36,7 +36,9 @@ export function tasksEmptyCopy(view: ViewKey, filtered: boolean): TasksEmptyCopy
   const message =
     view === "inbox"
       ? "Inbox zero. Mind like water."
-      : view === "waiting"
+      : view === "today"
+        ? "Nothing is due today."
+        : view === "waiting"
         ? "Nothing on your Waiting-For list."
         : view === "next"
           ? "No next actions assigned to you."

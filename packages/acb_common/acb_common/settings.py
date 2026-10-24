@@ -452,6 +452,13 @@ class Settings(BaseSettings):
     # sweep reads it inside its start function. Fence:
     # tests/unit/test_kb_embed_sweep.py.
     knowledge_embed_sweep: bool = True
+    # WS-61 KB-5c (knowledge_base.md §8.4 and §13). The kill switch of the
+    # proposal expiry, `gateway/routes/knowledge/proposal_expiry.py`. Default
+    # ON, because the loop does nothing for an org that Knowledge does not
+    # serve. Off, the loop does not start. The one reader is
+    # `gateway.routes.knowledge.flags`. Fence:
+    # tests/unit/test_kb_proposal_expiry.py.
+    knowledge_proposal_expiry: bool = True
     # WS-61 KB-5a (knowledge_base.md §8.1 and §13). The assistant's proposals,
     # default OFF. ON gives the orchestrator `propose_page`, `propose_edit` and
     # their persona line, and opens `POST /knowledge/proposals`. OFF keeps the

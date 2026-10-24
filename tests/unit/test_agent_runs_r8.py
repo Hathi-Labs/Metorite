@@ -973,14 +973,18 @@ class TestAgentRunsOnARealDatabase:
         assert {r["id"] for r in stored.json()["rows"]} == {idle["id"], live["id"]}
 
     async def test_fix8_the_pill_prefers_a_question_over_a_newer_run(self, w):
-        """Item 8. Mutation: order the pill by ``created_at`` alone — the
-        newer working run of member C hides member A's question."""
+        """Item 8, after EA-14a. A task has ONE open run, so a newer run of
+        member C cannot hide member A's question: C's start is refused with
+        ``task_held`` and the pill keeps the question. Mutation: drop the
+        gate in ``_gate_task`` — C's run opens and the second read below
+        finds two runs."""
         agent_c = _principal(w.c_email, w.p.org_a, agent_connection=w.conn_a)
         async with _session(w.p) as call:
             asking = await _start(w, call)
             await _act(call, w.agent_a, asking["id"], **_select())
-            newer = await _start(w, call, user=agent_c)
-            assert newer["id"] != asking["id"] and newer["state"] == "working"
+            refused = await call(agent_c, "POST", f"/projects/tasks/{w.task_a}/agent-runs", {})
+            assert refused.status_code == 409, refused.text
+            assert refused.json()["detail"]["error"] == "task_held"
             task = await call(w.c, "GET", f"/projects/tasks/{w.task_a}")
             listed = await call(w.c, "GET", "/projects/tasks?q=extruder")
             run_panel = await call(w.c, "GET", f"/projects/tasks/{w.task_a}/agent-runs")
@@ -988,8 +992,7 @@ class TestAgentRunsOnARealDatabase:
         assert task.json()["agent_member_email"] == w.a_email
         states = {r["id"]: r.get("agent_state") for r in listed.json()["rows"]}
         assert states[w.task_a] == "awaiting"
-        # The routes list newest first, and the UI applies the same rule.
-        assert [r["id"] for r in run_panel.json()["rows"]][:2] == [newer["id"], asking["id"]]
+        assert [r["id"] for r in run_panel.json()["rows"]] == [asking["id"]]
 
     async def test_fix9_a_second_answer_to_one_question_is_409(self, w):
         """Item 9. Mutation: drop the ``_has_answered_select`` branch — 422."""

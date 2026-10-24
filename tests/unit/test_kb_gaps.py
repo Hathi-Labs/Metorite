@@ -88,6 +88,21 @@ class TestTheNormalForm:
     def test_one_rule(self, raw: str | None, norm: str) -> None:
         assert gaps.normalize(raw) == norm
 
+    def test_a_vowel_sign_is_kept(self) -> None:
+        raw = "मेरा वेतन कब मिलेगा"
+        import unicodedata
+        want = unicodedata.normalize("NFKC", raw).lower()
+        assert gaps.normalize(raw) == want
+        assert len(gaps.normalize(raw).split()) == len(raw.split()) == 4
+
+    def test_two_words_that_differ_by_a_vowel_sign_are_two_gaps(self) -> None:
+        a = gaps.normalize("वेतन कब मिलेगा")
+        b = gaps.normalize("वेतन कब मुलेगा")
+        assert a != b
+        tamil_a = gaps.normalize("சம்பளம் எப்போது கிடைக்கும்")
+        tamil_b = gaps.normalize("சம்பளம் எப்போது கிடைக்கீம்")
+        assert tamil_a != tamil_b
+
     def test_two_wordings_are_one_gap(self) -> None:
         assert gaps.normalize("Refund window?") == gaps.normalize("refund   WINDOW")
 
@@ -99,6 +114,70 @@ class TestTheNormalForm:
     def test_the_sample_keeps_the_first_wording_on_one_line(self) -> None:
         assert gaps.sample_of("  How do we\n raise it?  ") == "How do we raise it?"
         assert len(gaps.sample_of("x" * 900)) == gaps.MAX_QUERY
+
+
+# ── The stored text ─────────────────────────────────────────────────────────
+
+class TestTheStoredText:
+    def test_a_phone_number_loses_its_digits(self) -> None:
+        masked = gaps.mask_text("call 98765 43210 now")
+        assert not any(c.isdigit() for c in masked)
+        assert masked == "call [phone] now"
+
+    @pytest.mark.parametrize("raw", [
+        "salary Rs 85,000 per month", "salary $1,200 per month", "salary ₹50000 per month",
+    ])
+    def test_an_amount_becomes_amount(self, raw: str) -> None:
+        masked = gaps.mask_text(raw)
+        assert "[amount]" in masked
+        assert not any(c.isdigit() for c in masked)
+
+    @pytest.mark.parametrize(("raw", "want"), [
+        ("salary ₹ 85 000 monthly", "salary [amount] monthly"),
+        ("pay 85 000 rupees monthly", "pay [amount] monthly"),
+        ("pay 2 lakh rupees monthly", "pay [amount] rupees monthly"),
+        ("call (044) 2345 6789 today", "call [phone] today"),
+        ("call +919876543210 today", "call [phone] today"),
+        ("pay 85,000 monthly", "pay [number] monthly"),
+        ("pay 1,20,000 monthly", "pay [number] monthly"),
+        ("a 50k budget", "a 50k budget"),
+        ("on 2026-10-25 we met", "on 2026-10-25 we met"),
+        ("a fee of 1,200 or 3D", "a fee of 1,200 or 3D"),
+    ])
+    def test_the_probes_leave_no_figure(self, raw: str, want: str) -> None:
+        assert gaps.mask_text(raw) == want
+
+    def test_a_probe_reaches_gap_for_with_no_digit(self, gates: Any) -> None:
+        found = gaps.gap_for(_user(), "what is the salary ₹ 85 000 per month")
+        assert found is not None
+        assert not any(c.isdigit() for c in "".join(found))
+
+    def test_a_long_run_of_digits_becomes_number(self) -> None:
+        assert gaps.mask_text("account 123456789012 balance") == "account [number] balance"
+
+    def test_an_email_becomes_email(self) -> None:
+        assert gaps.mask_text("who is a@b.example here") == "who is [email] here"
+
+    def test_plain_text_is_unchanged(self) -> None:
+        assert gaps.mask_text(QUESTION) == QUESTION
+        assert gaps.mask_text("warranty for a 3D printer in 2024") == (
+            "warranty for a 3D printer in 2024")
+
+    def test_gap_for_returns_masked_text_in_both_items(self, gates: Any) -> None:
+        found = gaps.gap_for(_user(), "what is the salary Rs 85,000 per month for staff")
+        assert found is not None
+        norm, sample = found
+        assert not any(c.isdigit() for c in norm + sample)
+        assert norm == "what is the salary amount per month for staff"
+        assert sample == "what is the salary [amount] per month for staff"
+
+    def test_two_figures_are_one_gap(self, gates: Any) -> None:
+        a = gaps.gap_for(_user(), "what is the salary Rs 50000 for staff")
+        b = gaps.gap_for(_user(), "what is the salary Rs 60000 for staff")
+        assert a is not None and a == b
+
+    def test_the_skip_rule_still_reads_the_raw_question(self, gates: Any) -> None:
+        assert gaps.gap_for(_user(), "INV 2024 0031 77") is None
 
 
 # ── The skip rules ──────────────────────────────────────────────────────────
@@ -267,6 +346,12 @@ class TestTheTrigger:
         monkeypatch.setattr(gaps, "gap_for", broken)
         assert _get(_user())["hits"] == []
 
+    def test_schedule_passes_the_masked_sample(self, gates: Any) -> None:
+        tasks = BackgroundTasks()
+        assert gaps.schedule_gap(tasks, _user(), "what is the salary Rs 85,000 for staff", 0)
+        assert tasks.tasks[0].args[3] == "what is the salary [amount] for staff"
+        assert tasks.tasks[0].args[2] == "what is the salary amount for staff"
+
     def test_schedule_reads_only_zero(self, gates: Any) -> None:
         tasks = BackgroundTasks()
         assert not gaps.schedule_gap(tasks, _user(), QUESTION, None)
@@ -296,6 +381,9 @@ class TestTheWriteNeverRaises:
         sql = gaps.UPSERT_GAP_SQL
         assert "ON CONFLICT (organization_id, norm_query) DO UPDATE" in sql
         assert sql.count(f"interval '{gaps.WINDOW_DAYS} days'") == 3
+        assert "g.first_asked_at < now()" in sql, "the window runs from the first ask"
+        assert "g.last_asked_at < now()" not in sql
+        assert "g.status = 'answered' AND g.answered_page_id IS NULL" in sql
         assert f">= {gaps.MAX_ASKERS} THEN g.askers" in sql
 
 
@@ -325,9 +413,66 @@ class TestTheRoutes:
         assert "knowledge:manage" in res.json()["detail"]
         assert opened == []
 
+    def test_reopen_needs_manage_before_any_read(self, gates: Any, monkeypatch) -> None:
+        from gateway.routes.knowledge import core
+
+        def session(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a member's reopen must not reach the database")
+
+        monkeypatch.setattr(core, "_tenant_session", session)
+        res = self._client(_user()).post(f"/knowledge/gaps/{OTHER}/reopen")
+        assert res.status_code == 403
+        assert "knowledge:manage" in res.json()["detail"]
+
+    @pytest.mark.parametrize(("status", "code"), [
+        (None, 404), ("open", 409), ("answered", 409), ("dismissed", 200),
+    ])
+    def test_reopen_by_status(self, gates: Any, monkeypatch, status: str | None,
+                              code: int) -> None:
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from gateway.routes.knowledge import core
+
+        state = {"status": status, "ran": []}
+
+        class _Db:
+            async def execute(self, stmt: Any, params: Any = None) -> None:
+                state["ran"].append(str(stmt))
+                state["status"] = "open"
+
+        @asynccontextmanager
+        async def session(*_a: Any, **_k: Any):
+            yield _Db()
+
+        async def one(db: Any, user: Any, gap_id: Any) -> Any:
+            if state["status"] is None:
+                raise core.not_found()
+            return SimpleNamespace(
+                id=OTHER, sample_query="q", ask_count=1, first_asked_at=None,
+                last_asked_at=None, status=state["status"], page_id=None,
+                page_title=None, asked_by_me=False, dismissed_at=None,
+                dismissed_by=None)
+
+        async def bump(_org: str) -> None:
+            return None
+
+        monkeypatch.setattr(core, "_tenant_session", session)
+        monkeypatch.setattr(gaps, "_one_gap", one)
+        monkeypatch.setattr(gaps, "_bump", bump)
+        res = self._client(_user("a@x.test", "knowledge:manage")).post(
+            f"/knowledge/gaps/{OTHER}/reopen")
+        assert res.status_code == code, res.text
+        if code == 200:
+            assert res.json()["status"] == "open" and res.json()["dismissed_at"] is None
+            assert "dismissed_at = NULL" in state["ran"][0]
+        else:
+            assert state["ran"] == []
+
     @pytest.mark.parametrize(("method", "path", "body"), [
         ("GET", "/knowledge/gaps", None),
         ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
+        ("POST", f"/knowledge/gaps/{OTHER}/reopen", None),
         ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
     ])
     def test_each_route_is_404_with_the_flag_off(

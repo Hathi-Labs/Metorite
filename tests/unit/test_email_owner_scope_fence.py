@@ -115,6 +115,12 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "mail with REPLY_ROW_SQL, whose join holds ea.user_id = :uid. A mail "
         "of another member is a 404. It writes nothing."
     ),
+    "reply_card_bcc": (
+        "A thin wrapper (§21.15). It reads the record of the card only when "
+        "its owner is the caller, and _load_mail reads the mail with "
+        "REPLY_ROW_SQL, whose join holds ea.user_id = :uid. It writes the "
+        "caller's own card record and sends nothing."
+    ),
     "reply_card_act": (
         "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
         "join holds ea.user_id = :uid, and _save_draft opens provider_session "

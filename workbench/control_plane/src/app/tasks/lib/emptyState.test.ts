@@ -34,6 +34,12 @@ describe("tasksEmptyCopy", () => {
     });
   });
 
+  it("an empty Today says Today and not Inbox", () => {
+    const copy = tasksEmptyCopy("today", false);
+    expect(copy.message).toBe("Nothing is due today.");
+    expect(copy.message).not.toMatch(/inbox/i);
+  });
+
   it("an honestly empty list is the success tick", () => {
     expect(tasksEmptyCopy("next", false)).toMatchObject({ tone: "success", filtered: false });
   });

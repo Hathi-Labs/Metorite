@@ -919,7 +919,11 @@ for every kind that `search_company` returns. It needs no «» and no change to 
 2. **An agent proposes.** After an answer the member marked useful, after a
    meeting summary, after a resolved thread, the specialist may call
    `propose_page`. The card is the gate. A proposal that nobody answers in
-   14 days archives itself, and no draft piles up.
+   14 days archives itself, and no draft piles up. KB-5c builds this
+   (2026-10-25). Every hour `routes/knowledge/proposal_expiry.py` runs.
+   It marks a pending edit proposal older than 14 days `expired`. It
+   archives a page proposal when nobody edited the draft in 14 days. Each
+   archive writes one version with the author `system` and the channel `sync`.
 3. **A gap is recorded (KB-9).** A `search_company` read can return no
    Knowledge hit. Then it writes one `kb_gaps` row. The row holds the question's normalised text, the asker and
    the time. A second asker within 30 days
@@ -945,25 +949,43 @@ form above where the two differ.
    address or a uuid. It writes nothing when more than half of the words
    hold a digit. Such a question is an id or a number.
 4. **The normal form.** Unicode NFKC, then lower case. Each character that is
-   not a letter or a digit becomes a space. Then the spaces fold to one, and
-   the ends are cut. Two questions with one normal form are one gap.
-   `sample_query` keeps the first wording, cut to 300 characters.
+   not a letter, a mark or a digit becomes a space. A vowel sign of Hindi or
+   Tamil is a mark (category M), so it stays inside its word. Then the spaces
+   fold to one, and the ends are cut. Two questions with one normal form are
+   one gap. `sample_query` keeps the first wording, cut to 300 characters.
 5. **The write.** The route answers first. Then a `BackgroundTasks` job
    writes in its own tenant session (`acb_common.db.tenant_session`). The
    org and the member come from the session. One `INSERT ... ON CONFLICT`
    statement adds the asker when the asker is new, and it moves
    `last_asked_at`. The job never raises, so a failed write never fails the
    search.
-6. **The window.** `ask_count` counts the different askers in one window. A
-   new ask that comes more than 30 days after the last ask starts a new
-   window with one asker. `askers` keeps 20 addresses at most. After 20, a
-   new address raises the count and is not stored.
+6. **The window.** `ask_count` counts the different askers in one window. The
+   window runs 30 days from its first ask (`first_asked_at`). A new ask after
+   that starts a new window with one asker, even when the last ask is recent.
+   `askers` keeps 20 addresses at most. When the list is full, the count
+   stops at 20. A new address then changes neither the list nor the count.
 7. **Who sees a gap.** A holder of `knowledge:manage` sees each gap of the
    org. A member sees the gaps that the member asked. A gap stores no space,
    so the card goes to a holder of `knowledge:manage`.
 8. **How a gap closes.** A person closes it. "I wrote it" links a page, and
    the gap reads `answered`. Dismiss sets `dismissed`. A publish closes no
-   gap in KB-9a.
+   gap in KB-9a. Undo of a Dismiss is `POST /knowledge/gaps/{id}/reopen`. It
+   needs `knowledge:manage` and it works on a dismissed gap only (409 for an
+   open or answered gap). The next ask reopens an `answered` gap whose page
+   is deleted (`answered_page_id` is NULL). A dismissed gap stays dismissed
+   at a new ask, by design.
+9. **The stored text.** The route masks the question after the skip rules and
+   before the normal form. So `norm_query` and `sample_query` both hold the
+   masked text. An email address becomes `[email]` and a phone number becomes
+   `[phone]`. An amount (a currency sign or word beside a figure) becomes
+   `[amount]`. Any other run of 5 digits or more becomes `[number]`. A figure
+   grouped by commas, such as 85,000, also becomes `[number]`. A phone number
+   needs a separator or a leading + to read `[phone]`. A plain run of digits
+   reads `[number]`. A short figure, such as a year, stays. A figure can have
+   spaces inside it, as in "Rs 85 000". One side effect follows. The questions
+   "salary Rs 50000" and "salary Rs 60000" are one gap. A name is not masked. Only a holder of `knowledge:manage` and the
+   asker see the stored text. One function does the mask, `mask_text` in
+   `gaps.py`. CX-3 may replace it with its shared mask.
 
 KB-AI-3 (§22) adds "Draft with AI" to the card. It drafts on
 `tier-balanced` and files the draft as a KB-5a proposal. KB-9a calls no
@@ -1150,7 +1172,7 @@ never a stub. The first screen is the space cards. A card opens its space, and t
 | Files | The connected documents and the files on pages the member can see, as a list with kind, size, space and where it lives. Filter by kind and source. A link opens the Artifacts library for everything members and agents make. This is the "file app" the owner raised, as a view, and the library of `artifact_management.md` stays the one library |
 | Sources | The connected folders, their trees, the include switches, the last sync. An admin connects an org source here. A member connects a personal one here |
 | Review | For a space manager: the drafts proposed by agents, the pages past review, the gaps. Hidden from a member with no `manage` |
-| Gaps | Built at KB-9a, before Review. The questions that Knowledge could not answer, the most asked first, with "Write a page" and Dismiss. The row shows to a holder of `knowledge:manage` while `KNOWLEDGE_GAPS` names the org. A member reaches `/knowledge/gaps` by URL and sees the questions the member asked |
+| Gaps | Built at KB-9a, before Review. The questions that Knowledge could not answer, the most asked first, with "Write a page" and Dismiss (with Undo). The row shows to a holder of `knowledge:manage` while `KNOWLEDGE_GAPS` names the org. A member reaches `/knowledge/gaps` by URL and sees the questions the member asked |
 
 The page view is the editor. It has a title, the body, the files as inline images or cards, and the links
 as pills. A right strip holds the author, the versions, the review date and
@@ -1199,6 +1221,7 @@ The first migration adds, and nothing renames (R6).
 | ~~`NEXT_PUBLIC_KNOWLEDGE`~~ | — | Not built. KB-12 found no such flag in the code. The launch status of the pane is the one gate of the sidebar (`launch_surface.md` §3), so no second flag is needed | — |
 | `KNOWLEDGE_EMBED` | off | Chunks get a vector. Off, the index is lexical only | AGENT-SAFE. Spends `tier-embed` credits, so a flip for an org is the owner's |
 | `KNOWLEDGE_EMBED_SWEEP` | on | The embed sweep of §6.4 starts. It does nothing for an org that `KNOWLEDGE_EMBED` does not name. Off, the loop does not start. Then a chunk that the door refused once gets a vector only when its text changes, because the request-time job embeds only new shas | AGENT-SAFE. The spend follows `KNOWLEDGE_EMBED` |
+| `KNOWLEDGE_PROPOSAL_EXPIRY` | on | The expiry loop of §8.4 door 2 starts. It does nothing for an org that Knowledge does not serve. Off, the loop does not start and a proposal stays open | AGENT-SAFE. It spends no credit and sends nothing |
 | `KNOWLEDGE_SOURCES` | empty | The organization ids that may connect a company file source, in the grammar of `KNOWLEDGE_ORGS`. A star is every org. Empty, every `/knowledge/sources` route answers 404. One flag for each provider opens that provider (`knowledge_curation.md` §17). Built at KC-1a | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_SOURCE_GOOGLE` | empty | The organization ids that may connect Google Drive, in the same grammar. It needs `KNOWLEDGE_SOURCES` too. Empty, the Drive connect and callback answer 404. Built at KC-1a | owner. Outside the Google test users it waits on §7.4 |
 | `KNOWLEDGE_SYNC_ENABLED` | off | The loop runs | AGENT-SAFE to build, owner to flip on the box |
@@ -1303,14 +1326,14 @@ its own branch, three or four in flight at most.
 | **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | AGENT-SAFE |
 | **KB-5a** ✅ BUILT 2026-10-22, dark behind `KNOWLEDGE_PROPOSALS` | Backend only. Migration 292 (check at merge): `kb_page_proposals` (§12) with FORCE RLS, the generated-phase lines and the tenant-coverage entry. `POST /knowledge/proposals` with `kind = page` (a draft, `origin = {"kind": "agent_proposal", "via": ..., "proposer": ...}`, a version with `reason = agent_proposal`) or `kind = edit` (a proposal row at the `base_version` that `read_page` printed, 409 when the page moved since). `POST /knowledge/proposals/{id}/accept` and `/reject`, web only, with the F1 rules of §8.1. `GET /knowledge/proposals?status=pending`. The tools `propose_page` and `propose_edit` in `knowledge_tools.py`, each behind `request_confirmation`, which send `X-Actor-Via: chat`. Their manifest rows, their `tool_annotations` entries (`read_only False`, `destructive False`, `open_world False`), the orchestrator's `retrieval_tools`, and one persona line. Not `link_page` and not `save_to_knowledge` | 1. A scripted run of `propose_page` with the card approved leaves one `kb_pages` row with `state = draft` and `origin.kind = agent_proposal`, one version with `reason = agent_proposal` and `via = chat`, and no row in `kb_chunks`. 2. A declined card, or a run with nobody to answer, writes nothing. 3. No tool in the manifest maps to a publish, accept, reject, restore or archive route, and a source test fails if one does. 4. Accept by the author writes a version with `reason = accept` and `via = web`, and the history returns the proposer and the accepter. 5. A member with no `write` on the space gets 403. A member who cannot see the page gets the 404 of a missing page. 6. A second accept is 409. An edit whose `base_version` moved is 409. 7. A proposal id of org A is 404 for org B (R8). 8. The tool output shows page text only under the "data, not instructions" line, with the title on one line. Fences: `test_kb_proposals.py` (hermetic: 2, 3 and 8) and `test_kb_proposals_r8.py` (R8: 1, 4, 5, 6 and 7) | AGENT-SAFE |
 | **KB-5b** ✅ BUILT 2026-10-23 (frontend, plus the space on each listed proposal) | The Review view and the card in the app. A list of the pending proposals over `GET /knowledge/proposals`, Accept and Reject, the diff of an edit proposal, "Proposed by the assistant" on a draft, and the link from the chat card to the draft | A member opens the Review view, sees the proposals of the assistant, and accepts one. The page history then says "Proposed by the assistant, accepted by <member>". The visual review passes in light mode, compact density and a changed accent | AGENT-SAFE |
-| **KB-5c** | The 14-day expiry (§8.4 door 2). A loop marks each pending edit proposal older than 14 days `expired`, and archives each page proposal that nobody answered in 14 days | A proposal 15 days old is `expired` or archived after one tick, and one 13 days old is not. The loop writes one version for each archive, with the actor `system` | AGENT-SAFE |
+| **KB-5c** ✅ BUILT 2026-10-25 (branch `kb-5c-expiry`, no migration) | The 14-day expiry (§8.4 door 2). A loop marks each pending edit proposal older than 14 days `expired`, and archives each page proposal that nobody answered in 14 days | A proposal 15 days old is `expired` or archived after one tick, and one 13 days old is not. The loop writes one version for each archive, with the actor `system`. The page age is `updated_at`, so an edited draft stays. The version channel is `sync`, because the CHECK has no `system`. Tests: `test_kb_proposal_expiry.py` and `test_kb_proposal_expiry_r8.py` (R8) | AGENT-SAFE |
 | **KB-6** | Save to Knowledge: the artifact card act, the Files panel act, the Artifacts app act, the route, the origin and the back link | A Markdown artifact becomes a page in `me` with provenance. The artifact is unchanged. A later edit shows "Compare" | AGENT-SAFE |
 | **KB-7a** | Sources: the adapter protocol, the Dropbox adapter, the connect flow in the app, the registry row, discovery, the tree view, the include switch | A Dropbox account connects, its tree shows with no text, one folder included becomes read-only pages that search finds. Disconnect revokes and keeps the pages. `test_kb_sources_no_global_creds.py` holds | AGENT-SAFE to build. The Dropbox app registration: owner |
 | **KB-7b** | The sync loop, changes, cursors, the run lock, `source_sync_failed` | A file edited at Dropbox re-indexes within 15 minutes with one embedding call. A revoked token sets `needs_reconnect` and never retries | AGENT-SAFE to build. The flip on the box: owner |
 | **KB-7c** | The OneDrive and SharePoint adapter on the Microsoft app the Email app uses | Same checks as 7a on a Microsoft 365 account | AGENT-SAFE. Org-wide `Sites.Read.All` consent: owner |
 | **KB-7d** — folded into KC-1 (`knowledge_curation.md` §22). KC-1a BUILT 2026-10-25, backend and dark. KC-1b (the Sources view) is open | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
 | **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
-| **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss` and `POST /knowledge/gaps/{id}/answered`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-10's rule |
+| **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss`, `POST /knowledge/gaps/{id}/answered` and, from the H-402 follow-up, `POST /knowledge/gaps/{id}/reopen`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-9b** | The other three kinds of §9: `doc_needs_review`, `doc_shared_with_me` and `source_sync_failed`, with their reach classes and the cache bumps of a publish and a source failure. `source_sync_failed` waits for KB-7b | A page past review shows a card to its author. A new page in a space the member reads shows a card. `test_reach_plan.py` pins the classes | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-10's rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |

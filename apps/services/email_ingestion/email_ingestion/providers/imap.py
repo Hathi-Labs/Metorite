@@ -537,6 +537,7 @@ class IMAPProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
     ) -> str:
+        self.last_refused = frozenset()
         smtp_host = self.credentials.get("smtp_host", "")
         smtp_port = int(self.credentials.get("smtp_port", 587))
         smtp_username = self.credentials.get(
@@ -600,7 +601,13 @@ class IMAPProvider(BaseEmailProvider):
                     server = _PinnedSMTP_SSL(
                         smtp_host, smtp_port, ip=ip, timeout=30, deadline=deadline)
                 server.login(smtp_username, smtp_password)
-                server.send_message(msg)
+                # §21.15 review P1: the envelope names To, Cc AND Bcc. The
+                # MIME holds no Bcc header, so no recipient sees the Bcc.
+                # ``send_message`` with no ``to_addrs`` reads only To and
+                # Cc from the headers, and a Bcc went nowhere.
+                envelope = [*to, *(cc or []), *(bcc or [])]
+                refused = server.send_message(msg, to_addrs=envelope) or {}
+                self.last_refused = frozenset(str(a).lower() for a in refused)
                 server.quit()
             finally:
                 deadline.cancel()

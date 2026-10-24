@@ -58,6 +58,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/gaps", None),
     ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
     ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
+    ("POST", f"/knowledge/gaps/{OTHER}/reopen", None),
     # KC-1a: the sources.
     ("POST", "/knowledge/sources/google_drive/connect", None),
     ("GET", "/knowledge/sources/google_drive/callback?code=c&state=s", None),
@@ -170,6 +171,7 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
 
 @pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED",
                                   "KNOWLEDGE_EMBED_SWEEP", "KNOWLEDGE_GAPS",
+                                  "KNOWLEDGE_PROPOSAL_EXPIRY",
                                   "KNOWLEDGE_SOURCES", "KNOWLEDGE_SOURCE_GOOGLE"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""

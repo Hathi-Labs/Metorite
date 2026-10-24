@@ -182,10 +182,12 @@ export function FilterSheetBody({
               .map((tag) => {
                 const on = filters.tags.includes(tag.name);
                 return (
-                  <button
+                  <Button
                     key={tag.id}
-                    type="button"
-                    aria-pressed={on}
+                    variant="text"
+                    size="none"
+                    radius="keep"
+                    selected={on}
                     onClick={() =>
                       set({
                         tags: on
@@ -194,12 +196,12 @@ export function FilterSheetBody({
                       })
                     }
                     className={`rounded-md px-1.5 py-0.5 text-[11px] ${
-                      on ? "bg-primary/10 text-primary" : chipClass(tag.color)
+                      on ? "bg-primary/10" : chipClass(tag.color)
                     }`}
                   >
                     {tag.name}
                     <span className="ml-1 opacity-70">{tag.task_count ?? 0}</span>
-                  </button>
+                  </Button>
                 );
               })}
           </div>

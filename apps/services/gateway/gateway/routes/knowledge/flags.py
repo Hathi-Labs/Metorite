@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader in the gateway of the eight settings below.
+This module is the ONE reader in the gateway of the nine settings below.
 Nothing else in the gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
@@ -15,6 +15,9 @@ Nothing else in the gateway reads them.
 * ``KNOWLEDGE_EMBED_SWEEP`` (KB-3c) — the kill switch of the embed sweep,
   default ON. The sweep does nothing for an org that ``KNOWLEDGE_EMBED``
   does not name, so ON costs nothing until an org is named.
+* ``KNOWLEDGE_PROPOSAL_EXPIRY`` (KB-5c) — the kill switch of the proposal
+  expiry, default ON. The loop expires nothing for an org that Knowledge
+  does not serve, so ON costs nothing there.
 * ``KNOWLEDGE_PROPOSALS`` (KB-5a) — the assistant's proposals, default OFF.
   Off, ``POST /knowledge/proposals`` answers 404 and the orchestrator holds
   no proposal tool. The setting's one reader is
@@ -110,6 +113,11 @@ def knowledge_embed_named() -> bool:
 def knowledge_embed_sweep_enabled() -> bool:
     """True when the embed sweep may start. Default ON (KB-3c)."""
     return get_settings().knowledge_embed_sweep is not False
+
+
+def knowledge_proposal_expiry_enabled() -> bool:
+    """True when the proposal expiry may start. Default ON (KB-5c)."""
+    return get_settings().knowledge_proposal_expiry is not False
 
 
 def knowledge_embed_allowed(organization_id: str | None) -> bool:

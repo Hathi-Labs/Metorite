@@ -558,6 +558,8 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),
     ("POST", "/projects/agent-runs/{run_id}/finish"),
+    # EA-14a: the holder gives a task up. The route of ``release_task``.
+    ("POST", "/projects/agent-runs/{run_id}/release"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
 })

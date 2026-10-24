@@ -104,7 +104,7 @@ type SortOrder = "newest" | "oldest";
  * lands in the personal ROOT, before any Area, so an Area scope would empty
  * this list. Clarify is where a capture gets its Area.
  */
-export function InboxView() {
+export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const backend = useTaskStore((s) => s.backend);
@@ -384,7 +384,7 @@ export function InboxView() {
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Mobile heading — the hero is hidden on mobile, so orient the user. */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden">
+      <div className={`flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden${embedded ? " hidden" : ""}`}>
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
         <h2 className="text-sm font-medium text-foreground">Inbox</h2>
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>

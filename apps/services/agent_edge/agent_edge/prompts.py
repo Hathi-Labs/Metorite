@@ -98,7 +98,7 @@ def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
     runs = agent_oauth.runs_enabled()
     about = "The task: its id, or its number as #42 or 42."
     if runs:
-        about += " Leave it empty to continue the runs that a member queued for you."
+        about += " Leave it empty to take your next work from my_work."
     return [{
         "name": PROMPT_NAME,
         "title": "Work on a task",
@@ -164,34 +164,86 @@ def _task_text(value: str, *, runs: bool) -> str:
 
 
 def _queued_text() -> str:
-    head = (
-        "Continue the Metorite runs that wait for you. Call list_agent_runs"
-        " with needs_agent=true. When it gives no run, stop, and tell me that no"
-        " run waits. For each run that it gives, call get_agent_run to read the"
-        " request. When get_agent_run gives the state stopping, do not do the"
-        " steps. Call finish_agent_run with a summary and go to the next run."
-        " Do not post an activity first, because an activity ends a stopping"
-        " run. Otherwise, do these steps on the task of that run. Do not call"
-        " start_agent_run, because the run is already open. When you stop"
-        " early, end the run as the last step says.")
-    first = "Call get_task with the task_id of the run, and note the version."
-    return head + "\n\n" + _steps(first, runs=True, start_run=False) + "\n\n" + _rules()
+    """The message with no argument: the protocol of EA-15c (§12.4). The
+    agent takes its next work from ``my_work``, and the same work steps as
+    with a task follow."""
+    head = "Find the Metorite work that waits for you, and do it. Do these steps in this order."
+    steps = [
+        "Call my_work. When it gives no row, stop, and tell me that nothing"
+        " waits for you.",
+        "Take the top row. When its reason is run_stopping, a person asked you"
+        " to stop. Call finish_agent_run with its run_id and a summary at once,"
+        " and go to the next row. Do not post an activity first, because an"
+        " activity ends a stopping run. When its reason is run_queued or"
+        " run_answered, call get_agent_run with its run_id to read the request."
+        " Then call claim_task with the task_id and the version of the row.",
+        "When claim_task says that another session holds the task (a 409"
+        " task_held), do not try that task again. Take the next row, and do"
+        " step 2 again. When claim_task refuses for another reason, tell me"
+        " why, and take the next row. Two sessions of one client share one"
+        " stamp, and Metorite does not tell them apart. So a claim does not"
+        " refuse a task that another session of your own client holds. Take"
+        " only a row that my_work lists.",
+        _context_step(start_run=True) + " Note the version of the task.",
+        *_work_steps(runs=True),
+    ]
+    return head + "\n\n" + _numbered(steps) + "\n\n" + _rules()
+
+
+#: The last rule of the protocol (EA-15c, §12.4): one disposition, and a
+#: comment is never one. With the runs flag off, ``ask_on_task`` and
+#: ``release_task`` do not show, so the text does not name them.
+_DISPOSITION_RUNS_ON = (
+    " End with exactly one disposition: the task moves to review or done, or a"
+    " question waits on a named member (ask_on_task), or release_task gives"
+    " the task back. A comment is evidence, never a disposition.")
+_DISPOSITION_RUNS_OFF = (
+    "End with exactly one disposition: the task moves to review or done. A"
+    " comment is evidence, never a disposition.")
+
+
+def _context_step(*, start_run: bool) -> str:
+    """Step 4 of the protocol: the context after the claim, then a run only
+    when the claim opened none (EA-13c gives ``agent_run_id``)."""
+    step = (
+        "Call get_task_context for the task. It shows why the task exists: its"
+        " parents, its project, its blockers and the newest comments.")
+    if start_run:
+        step += " Call start_agent_run only when claim_task gave no agent_run_id."
+    return step
+
+
+def _numbered(steps: list[str]) -> str:
+    return "\n".join(f"{n}. {step}" for n, step in enumerate(steps, start=1))
 
 
 def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     steps = [
         first + " When the task is done, cancelled, archived or in triage, stop,"
-        " and tell me why.",
-        "Call claim_task with that version as expected_version.",
+        " and tell me why. When get_task shows held_by and held_by.stale is"
+        " false, another AI session holds the task. That is true also when"
+        " held_by names your own client, because a claim does not refuse a"
+        " session of the same client. Stop, and tell me. Do not work on a held"
+        " task.",
+        "Call claim_task with that version as expected_version. When the tool"
+        " says that another session holds the task (a 409 task_held), stop, and"
+        " tell me. Do not claim that task again.",
+        _context_step(start_run=start_run),
+        *_work_steps(runs=runs),
     ]
-    if start_run:
-        steps.append("Call start_agent_run for the task.")
-    steps.append("Do the work that the description of the task asks for.")
+    return _numbered(steps)
+
+
+def _work_steps(*, runs: bool) -> list[str]:
+    """The steps after the context: the work, the progress, the links, the
+    review, the done, and the end with one disposition."""
+    steps = ["Do the work that the description of the task asks for."]
     if runs:
         steps.append(
             "Report progress. While a run is open, send a thought with"
-            " post_agent_activity at least once a minute. When no run is open,"
-            " call add_comment.")
+            " post_agent_activity at least once a minute. That is your"
+            " heartbeat. After 2 hours with no activity, another session can"
+            " take the task from you. When no run is open, call add_comment.")
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -217,8 +269,12 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
             " thought with post_agent_activity, because a created run cannot"
             " finish. Then call finish_agent_run with a summary. When a run reads"
             " stopping, stop the work at once and call finish_agent_run, with no"
-            " activity first.")
-    return "\n".join(f"{n}. {step}" for n, step in enumerate(steps, start=1))
+            " activity first. When you stop and will not finish the work, call"
+            " release_task with the run_id, so that another session can take the"
+            " task." + _DISPOSITION_RUNS_ON)
+    else:
+        steps.append(_DISPOSITION_RUNS_OFF)
+    return steps
 
 
 def _rules() -> str:
