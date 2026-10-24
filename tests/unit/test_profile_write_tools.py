@@ -583,7 +583,7 @@ def test_every_profile_write_route_reads_the_header_by_its_name() -> None:
     from gateway.routes.admin.me import me_router
 
     writes = [r for r in me_router.routes
-              if getattr(r, "path", "").startswith("/me/assistant-profile")
+              if "/me/assistant-profile" in getattr(r, "path", "")
               and set(getattr(r, "methods", ())) & {"PUT", "POST", "PATCH", "DELETE"}]
     assert len(writes) == 8
     for route in writes:
