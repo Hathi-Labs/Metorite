@@ -2918,7 +2918,9 @@ async def run_agent_stream_endpoint(
 
     # Which compartments this run may read, and the one it may write. Solo
     # resolves to exactly the three scopes and the write target it always had.
+    # `room_is_solo` is the profile block's bit (personalization.md §5.1).
     from acb_memory import resolve_clearance
+    from gateway.rooms import room_is_solo
     _clearance = resolve_clearance(
         actor=user_id if user_id != "anonymous" else "",
         agent_name=agent_name,
@@ -3175,6 +3177,11 @@ async def run_agent_stream_endpoint(
         # The web chat draws each card (`AgentChat`, `useAgentChat` and
         # `confirmationQueue.ts` read the CUSTOM card events of this stream).
         shows_cards=True,
+        # WS-63 PZ-2 (personalization.md §5.1): the member's own profile
+        # block goes only into a solo run. Solo is a private room of one,
+        # from the server's room and never the body. A room of one that
+        # other members can read (visibility org or people) is not solo.
+        solo_room=room_is_solo(room),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a

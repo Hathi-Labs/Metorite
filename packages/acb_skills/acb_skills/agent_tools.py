@@ -473,6 +473,11 @@ async def call_agent_background(agent_name: str, message: str) -> str:
                     {"message": message, "mode": "background_sub_task"},
                     run_id=run_id,
                     model=_parent_model,
+                    # WS-63 PZ-2 (personalization.md §5.1): the task copies
+                    # this context, solo bit too, and its answer goes to the
+                    # inbox and not to the member's solo chat. So it is never
+                    # solo, and gets no profile block.
+                    solo_room=False,
                 )
             )
         finally:
