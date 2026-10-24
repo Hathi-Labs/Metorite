@@ -365,7 +365,8 @@ async def backfill_folder(
                     """SELECT provider, credentials_encrypted, stored_bytes
                        FROM email_accounts
                        WHERE id = :id AND """
-                    + mailbox_predicate(uid="user_id", level="read")
+                    # An import spends the storage of the mailbox: send.
+                    + mailbox_predicate(uid="user_id", level="send")
                 ),
                 {"id": account_id, "user_id": user.email or "anonymous"},
             )

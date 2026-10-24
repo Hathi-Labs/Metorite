@@ -451,3 +451,18 @@ async def test_a_shared_box_is_not_hidden_from_the_connectors_senders(world, fla
                            f"/email/senders?account_id={w.private}&include_archived=true")
     assert response.status_code == 200, response.text
     assert w.addresses[w.sales] in response.text
+
+
+# ── An import spends the quota, so it needs send (fix round, P3) ────────────
+
+async def test_a_read_grant_cannot_start_an_import(world, flag) -> None:
+    """``rita`` holds ``read``. A backfill and a manual sync spend the storage
+    of the shared box, so each answers 404 before any provider call."""
+    w = world
+    flag(True)
+    backfill = await _call(w, w.p.org_a, w.m.rita, "POST",
+                           f"/email/accounts/{w.sales}/backfill", {"folder": "inbox"})
+    assert backfill.status_code == 404, backfill.text
+    sync = await _call(w, w.p.org_a, w.m.rita, "POST", "/email/sync",
+                       {"account_id": w.sales})
+    assert sync.status_code == 404, sync.text

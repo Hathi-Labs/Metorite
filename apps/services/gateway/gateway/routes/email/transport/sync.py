@@ -234,7 +234,8 @@ async def trigger_sync(
     async with _tenant_session() as db:
         own = (await db.execute(text(
             "SELECT id FROM email_accounts WHERE id = :id AND "
-            + mailbox_predicate(uid="uid", level="read")
+            # A sync imports mail and spends the storage of the mailbox.
+            + mailbox_predicate(uid="uid", level="send")
         ), {"id": req.account_id, "uid": user.email or "anonymous"})).fetchone()
         if not own:
             raise HTTPException(status_code=404, detail="Account not found")
