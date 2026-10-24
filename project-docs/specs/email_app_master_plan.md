@@ -21344,7 +21344,7 @@ only, which is the rule of 21.10, open question 5.
 ### 21.15 Always copy (item 7b, 2026-10-24)
 
 **Status: BUILT on the branch `email-single-mailbox-a`, not merged.** One
-expand-only migration, 298. No switch.
+expand-only migration, 299. It was 298 until PR #1285 took that number. No switch.
 
 **What the member gets.** "Always copy Kiran and Veena on mail to
 jainuniversity.ac.in." A rule names a domain or an address (`match`) and

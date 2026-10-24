@@ -3,7 +3,7 @@
 Runs as a non-privileged role on a phase-4-promoted catalog, in the world of
 ``test_email_contact_suggest_r8``:
 
-* migration 298 adds ``email_assistant_settings.always_copy``, and the route
+* migration 299 adds ``email_assistant_settings.always_copy``, and the route
   writes it with ``always_copy.WRITE_SQL`` for a mailbox with no settings row
   (the insert path) and with one (the update path);
 * ``put_always_copy`` saves an ``org`` and a ``sent`` colleague, and refuses a

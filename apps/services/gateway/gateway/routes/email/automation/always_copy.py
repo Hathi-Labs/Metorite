@@ -8,7 +8,7 @@ never acts on its own.
 
 It is not a mail rule. A mail rule runs on incoming mail, and the rule tools
 count a ``cc_address`` as an outward act. So the list is a setting of the
-mailbox: the column ``email_assistant_settings.always_copy`` (migration 298).
+mailbox: the column ``email_assistant_settings.always_copy`` (migration 299).
 
 Three rules hold.
 
