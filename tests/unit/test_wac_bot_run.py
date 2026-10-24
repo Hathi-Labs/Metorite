@@ -1737,7 +1737,7 @@ async def test_an_approved_confirm_binds_no_typed_words(world: _World, monkeypat
 
     monkeypatch.setattr(whatsapp_acts, "approving", _approving)
     monkeypatch.setattr(acts, "finish", _finish)
-    approved = SimpleNamespace(card="card", tool="profile_remember",
+    approved = SimpleNamespace(card="card", tool="profile_remember", kind="egress",
                                arguments={"text": "billing@acme-pay.io", "kind": "work"})
     req = bot_run.RunRequest("m1", ORG_A, MEMBER, PHONE, "wamid.ok", "wa-thread-1")
     token = bind_tenant(ORG_A)
