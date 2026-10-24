@@ -21078,13 +21078,20 @@ and a Bcc on a card, and the mail went to one person. The owner chose to
 build all the fixes below.
 
 **Open question 1, the owner's answer (2026-10-24).** "Everyone on the
-original email" starts ticked. Each To and each Cc of a received mail of the
-thread is `thread`.
+original email" starts ticked. These people are `thread`:
 
-One carve-out stays. A person on a look-alike domain is
-`new`, unticked and flagged. The domain is that of a sender of the thread,
-or an organization domain (`held_card.lookalike_of`). A
-Reply-To that is not the sender is never `thread`.
+- each To and each Cc of THE MAIL BEING ANSWERED.
+- each To and each Cc of another received mail of the thread, only when the
+  sender of that mail is `org` or `sent`.
+
+A mail in junk or spam never names a thread person. Anyone can send a mail
+into a thread, with a Cc of their choice, so a mail from a stranger names
+none (review P1-a).
+
+One carve-out stays. A person on a look-alike domain is `new`, unticked and
+flagged. The guard reads the domain of EVERY sender of the thread, and each
+organization domain (`held_card.lookalike_of`, review P2-b). A Reply-To that
+is not the sender is never `thread`.
 
 **What the member gets.**
 
@@ -21107,17 +21114,24 @@ Reply-To that is not the sender is never `thread`.
    one of the thread. The card notes it, for example "Added kiran@…, veena@…. You copy
    them on mail to jainuniversity.ac.in."
 6. **Words on each row.** A person of the mail shows "on Dr Sagar's original
-   email". An added colleague shows "you usually copy them". The card names
-   each person who will not get the mail.
+   email". A colleague from Sent shows "you usually copy them". The server
+   cannot know that the member named a person (review P1-b). In a held run,
+   an added person shows "the assistant added them". In other chats, it
+   shows "added to this reply". The card names each person who will not get
+   the mail.
 7. **The draft is the card.** The draft in Drafts names exactly the people
    that start ticked. A Cc of the thread's draft stays on the next card, so
    its Send carries it. This was the bug of the owner's report. The card
-   derived from the mail alone, and its Send dropped the Cc.
+   used the mail alone, and its Send dropped the Cc. A held run can put a
+   stranger on the draft (review P2-a). So a carried person starts unticked
+   unless `org` or `sent`. The record of the added people can fail (review
+   P3-a). Then the card adds nobody, says so, and leaves the draft as it was.
 8. **A reply that already went out.** When a reply of the thread went out in
    the last day, the tools say so. To add people, the chat offers to forward
    that mail. The send card of `send_draft` warns too.
-9. **One card closes.** A steer closes only the card that it names, or else
-   the newest card. Each other card stays open.
+9. **The steer and the cards.** A steer that names a card by a word of its
+   title closes only that card. A steer that names no card closes each
+   waiting card (review P3-b). So no older card stays open with old text.
 10. **The prompts.** "X and Y" is one mail. One send card shows at a time.
    "Send it" calls the tool at once, and the card is the confirmation.
 

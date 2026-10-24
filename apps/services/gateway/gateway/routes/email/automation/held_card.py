@@ -211,19 +211,21 @@ SELECT DISTINCT LOWER(em.from_address->>'email') AS addr
 """
 
 
-#: The people of one thread of one mailbox (open question 1, the owner's
-#: answer of 2026-10-24): each To and each Cc of a RECEIVED mail of the
-#: thread. A draft and a Sent mail are not received, so the member's own
-#: choices never make a person ``thread``.
+#: The people of one thread of one mailbox, each with the sender of its
+#: mail: each To and each Cc of a RECEIVED mail of the thread. A draft, a
+#: Sent mail and a mail in junk or spam are left out. The caller trusts a row
+#: only when its sender is ``org`` or ``sent`` (review P1-a,
+#: :func:`trusted_thread_participants`), because anyone can send a mail into
+#: a thread, with a Cc of their choice.
 THREAD_PARTICIPANTS_SQL = """
-SELECT DISTINCT LOWER(r->>'email') AS addr
+SELECT DISTINCT LOWER(r->>'email') AS addr, LOWER(em.from_address->>'email') AS sender
   FROM email_messages em
   CROSS JOIN LATERAL jsonb_array_elements(
         COALESCE(em.to_addresses, '[]'::jsonb)
         || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
  WHERE em.account_id = CAST(:aid AS uuid)
    AND em.thread_id = :tid
-   AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft', 'sent')
+   AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft', 'sent', 'junk', 'spam')
    AND r->>'email' IS NOT NULL
 """
 
@@ -255,6 +257,7 @@ async def classify_addresses(
     thread_senders: Iterable[str] = (),
     thread_people: Iterable[str] = (),
     org_domains: Iterable[str] = (),
+    guard_senders: Iterable[str] = (),
 ) -> dict[str, str]:
     """The class of each address, keyed by its lower-case form.
 
@@ -263,8 +266,10 @@ async def classify_addresses(
     To and Cc of a received mail of the thread, which the server read
     (:data:`THREAD_SENDERS_SQL`, :data:`THREAD_PARTICIPANTS_SQL`). A person
     of *thread_people* whose domain looks like a sender domain or one of
-    *org_domains* stays ``new`` (:func:`thread_person_guard`). The strongest
-    class wins: ``org``, then ``sent``, then ``thread``, then ``new``."""
+    *org_domains* stays ``new`` (:func:`thread_person_guard`). The guard reads
+    the domains of *thread_senders* and of *guard_senders*, which hold every
+    sender of the thread (review P2-b). The strongest class wins: ``org``,
+    then ``sent``, then ``thread``, then ``new``."""
     wanted = sorted({str(a).strip().lower() for a in addresses if str(a or "").strip()})
     if not wanted:
         return {}
@@ -273,6 +278,7 @@ async def classify_addresses(
     senders = {str(a).strip().lower() for a in thread_senders if a}
     people = {str(a).strip().lower() for a in thread_people if a}
     org_doms = [str(d).strip().lower() for d in org_domains if d]
+    guard = senders | {str(a).strip().lower() for a in guard_senders if a}
     out: dict[str, str] = {}
     for addr in wanted:
         r = found.get(addr)
@@ -281,20 +287,43 @@ async def classify_addresses(
         elif r is not None and bool(r.is_sent):
             out[addr] = CLASS_SENT
         elif addr in senders or (
-                addr in people and thread_person_guard(addr, senders, org_doms) is None):
+                addr in people and thread_person_guard(addr, guard, org_doms) is None):
             out[addr] = CLASS_THREAD
         else:
             out[addr] = CLASS_NEW
     return out
 
 
-async def thread_participants(db: Any, account_id: str, thread_id: str | None) -> list[str]:
-    """Each To and Cc of a received mail of the thread, or none."""
+async def thread_participants(db: Any, account_id: str, thread_id: str | None
+                              ) -> list[tuple[str, str]]:
+    """``(address, sender)`` of each To and Cc of a received mail of the
+    thread, or none. Use :func:`trusted_thread_participants` to class."""
     if not thread_id:
         return []
     rows = (await db.execute(text(THREAD_PARTICIPANTS_SQL),
                              {"aid": account_id, "tid": thread_id})).fetchall()
-    return [str(r.addr) for r in rows if getattr(r, "addr", None)]
+    return [(str(r.addr), str(getattr(r, "sender", "") or ""))
+            for r in rows if getattr(r, "addr", None)]
+
+
+async def trusted_thread_participants(
+    db: Any, owner: str, account_id: str, thread_id: str | None,
+) -> list[str]:
+    """Each To and Cc of a received mail of the thread whose SENDER is
+    ``org`` or ``sent`` (review P1-a). A stranger can send a mail into a
+    thread with a Cc of their choice, so a mail from a stranger names no
+    thread person. The owner's words were "everyone on the original email":
+    the caller adds the To and Cc of the mail being answered itself."""
+    rows = await thread_participants(db, account_id, thread_id)
+    if not rows:
+        return []
+    senders = sorted({s for _a, s in rows if s})
+    known = await classify_addresses(db, owner, senders) if senders else {}
+    out: list[str] = []
+    for addr, sender in rows:
+        if known.get(sender) in (CLASS_ORG, CLASS_SENT) and addr not in out:
+            out.append(addr)
+    return out
 
 
 async def org_domains(db: Any, owner: str) -> frozenset[str]:
@@ -856,7 +885,7 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         lists = _lists_of(row)
         _check_lists(lists)
         senders = await thread_senders(db, req.account_id, row.thread_id)
-        people = await thread_participants(db, req.account_id, row.thread_id)
+        people = await trusted_thread_participants(db, owner, req.account_id, row.thread_id)
         classes = await classify_addresses(
             db, owner, [a for v in lists.values() for a in v], thread_senders=senders,
             thread_people=people,

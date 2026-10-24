@@ -32,8 +32,9 @@ from acb_common import get_logger
 _log = get_logger("acb_skills.held_card")
 
 __all__ = [
+    "ADDED_MARK",
     "ADDRESS_MAX",
-    "ASKED_MARK",
+    "ASSISTANT_ADDED_MARK",
     "ARTIFACT_REF",
     "ATTACHMENT_REF",
     "CLASSES",
@@ -128,8 +129,12 @@ THREAD_MARK = "from this thread"
 USUAL_COPY_MARK = "you usually copy them"
 #: The mark on a person that the member's own "always Cc" rule adds.
 RULE_COPY_MARK = "your rule copies them"
-#: The mark on a person that the member asked to add in the chat.
-ASKED_MARK = "you asked to add them"
+#: The mark on a person that the chat added to a reply, outside a held run.
+#: The server cannot know that the member named the person (review P1-b).
+ADDED_MARK = "added to this reply"
+#: The mark on a person that the chat added in a held run: the model chose
+#: the address, and the member checks it (review P1-b).
+ASSISTANT_ADDED_MARK = "the assistant added them"
 
 
 def thread_mark(sender: str) -> str:

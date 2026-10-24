@@ -158,7 +158,11 @@ class FakeDb:
         if q == hc.THREAD_SENDERS_SQL:
             return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
         if q == hc.THREAD_PARTICIPANTS_SQL:
-            return _Result([types.SimpleNamespace(addr=a) for a in self.participants])
+            # Each row names its mail's sender. A bare address stands for a
+            # mail from KNOWN, a person the member wrote to.
+            return _Result([types.SimpleNamespace(addr=a, sender=KNOWN) if isinstance(a, str)
+                            else types.SimpleNamespace(addr=a[0], sender=a[1])
+                            for a in self.participants])
         if q == hc.ORG_DOMAINS_SQL:
             return _Result([types.SimpleNamespace(d=d) for d in self.org_domains])
         from gateway.routes.email.automation import reply_card as rc
