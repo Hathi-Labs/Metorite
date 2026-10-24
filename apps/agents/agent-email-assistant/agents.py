@@ -106,6 +106,24 @@ def _held_card_mode() -> bool:
     return held_card_send_enabled() and _egress_held()
 
 
+def _lookalike_check(texts: dict[str, Any]) -> tuple[str | None, str | None]:
+    """``(refusal, warning)`` for the text of a chat send (H-393, §21.14).
+
+    A word that mixes scripts, such as a Cyrillic letter in a Latin word, or
+    a word with an invisible character, is refused in a held run, and the
+    refusal names the word and the letter. Outside a held run the card shows
+    the warning instead. ``acb_skills.reply_card.lookalike_words`` is the one
+    test. An older platform with no test checks nothing."""
+    try:
+        from acb_skills.reply_card import lookalike_refusal, lookalike_warning
+    except ImportError:
+        return None, None
+    clean = {k: str(v or "") for k, v in texts.items() if v}
+    if _egress_held():
+        return lookalike_refusal(clean), None
+    return None, lookalike_warning(clean)
+
+
 def _egress_held_answer(act: str) -> str:
     """The answer of a rule tool that refuses its outward part in a held run.
     It starts "Nothing changed.", so the chat card draws an act that did not
@@ -131,7 +149,9 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
 
 #: EM-G11c1 (§12.3.13.6): the answer of each tool of ``MAILBOX_WRITE_TOOLS``
 #: when no card can show. A scheduled run, a batch run and a WhatsApp run
-#: have no card channel, so the card answers "no" at once. The member refused
+#: with writes off have no card channel, so the card answers "no" at once.
+#: A WhatsApp run with writes on has a reply path: the card of an email act
+#: parks for the member's reply code (H-391, :func:`_wa_parked`). The member refused
 #: nothing, so the answer is never "Cancelled". It sends the member to the
 #: Chat app or the Email app, which both show the card (EM-G11c1b,
 #: §12.3.13.6b). It never names a chat as a place with no card.
@@ -149,6 +169,21 @@ def _card_channel_open() -> bool:
     return confirmation_channel_open()
 
 
+def _wa_parked() -> str | None:
+    """H-391: what the tool says when its card waits on WhatsApp, or None.
+
+    In a WhatsApp run the card of an email act parks for the member's reply
+    code (``acb_skills.whatsapp_acts``). The tool then wrote nothing, and
+    this line tells the model so. A card that cannot park because another
+    act already waits gets the line that says so. Anywhere else it is None,
+    and the tool answers as before."""
+    try:
+        from acb_skills.whatsapp_acts import parked_line, waiting_line
+    except ImportError:  # an older platform: no WhatsApp act
+        return None
+    return parked_line() or waiting_line()
+
+
 async def _card_refusal(
     title: str, detail: str, cancelled: str, context: str = "",
 ) -> str | None:
@@ -156,10 +191,20 @@ async def _card_refusal(
 
     The one gate of EM-G11c1. A "no" in a live chat answers *cancelled*. A run
     with no card channel answers ``_NO_CARD_CHANNEL``. ``request_confirmation``
-    fails closed in both, so the tool writes nothing."""
+    fails closed in both, so the tool writes nothing. A card that waits for
+    the member's code on WhatsApp answers that it waits (H-391)."""
     if await _confirm_destructive(title=title, detail=detail, context=context):
         return None
-    return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
+    return _unapproved_line() or cancelled
+
+
+def _unapproved_line() -> str | None:
+    """The answer of a tool whose card got no approval, or None for a "no".
+
+    A card that waits for the member's code on WhatsApp says so (H-391). A
+    run with no card channel answers ``_NO_CARD_CHANNEL``. A "no" of a
+    member in a live chat is None, and the tool says what it cancelled."""
+    return _wa_parked() or (None if _card_channel_open() else _NO_CARD_CHANNEL)
 
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
@@ -2321,7 +2366,8 @@ _CARD_REVISED = (
     "again with ALL the people in cc, in ONE call, so ONE card shows them. "
     "The card keeps every person of the email, the Cc of the email "
     "included, so never drop one. \"X and Y\" means one mail to both. For a "
-    "Bcc, save the reply, add the Bcc with edit_draft, and offer send_draft. "
+    "Bcc, call compose_reply again with the person in bcc, or add it to the "
+    "draft with edit_draft and offer send_draft. "
     "Never send the member to the Email app for it.")
 
 
@@ -2346,6 +2392,17 @@ def _recent_reply_text(prep: dict[str, Any]) -> str:
             f"(email_id {mid}). If the member asks to add people, offer: "
             "\"Forward the sent mail to <the missing people>\", with forward_email "
             "of that email_id. Do not send the whole reply again.")
+
+
+def _pin_for_whatsapp(**pins: Any) -> None:
+    """Pin the arguments of this call for its approval run on WhatsApp
+    (H-391, ``acb_skills.whatsapp_acts.pin_arguments``). Anywhere else it
+    does nothing, and the card is the same."""
+    try:
+        from acb_skills.whatsapp_acts import pin_arguments
+    except ImportError:  # an older platform: no WhatsApp act
+        return
+    pin_arguments(**pins)
 
 
 def _revised(answer: Any) -> bool:
@@ -2388,13 +2445,17 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     ticked = {k: {"to": list((given.get(k) or v).get("to") or []),
                   "cc": list((given.get(k) or v).get("cc") or [])}
               for k, v in lists.items()}
+    # §21.15: the Bcc of the card, when the gateway recorded one.
+    for k, v in lists.items():
+        if v.get("bcc"):
+            ticked[k]["bcc"] = list((given.get(k) or v).get("bcc") or [])
     notices = [str(n) for n in prep.get("notices") or [] if str(n or "").strip()]
     marks = {str(k).strip().lower(): str(v)
              for k, v in (prep.get("marks") or {}).items() if k and v}
     return {
         "message_id": prep.get("message_id") or "",
         # The card shows four notices at most. The rest go in the note.
-        "notices": notices,  # every notice: none may vanish (read-tool paging fence)
+        "notices": notices[:4],
         "mailbox": prep.get("mailbox") or "",
         "subject": prep.get("subject") or "",
         "original": prep.get("original") or {},
@@ -2414,9 +2475,10 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
 def _left_out(form: dict[str, Any]) -> list[str]:
     """The people on the card that do NOT start ticked (item 8)."""
     shown = (form.get("recipients") or {}).get("reply_all") or {}
-    on = {a.lower() for key in ("to", "cc")
+    on = {a.lower() for key in ("to", "cc", "bcc")
           for a in ((form.get("ticked") or {}).get("reply_all") or {}).get(key) or []}
-    return [a for key in ("to", "cc") for a in shown.get(key) or [] if a.lower() not in on]
+    return [a for key in ("to", "cc", "bcc") for a in shown.get(key) or []
+            if a.lower() not in on]
 
 
 def _left_out_text(form: dict[str, Any]) -> str:
@@ -2438,6 +2500,15 @@ _REPLY_NEW_UNTICKED_NOTICE = (
     "starts unticked, so it gets nothing unless you tick it.")
 
 
+def _add_card_notice(form: dict[str, Any], line: str) -> None:
+    """Put *line* on a reply form: a notice while the card has room for one
+    (four at most, ``ask_tools.clean_reply_form``), else first in the note."""
+    if len(form["notices"]) < 4:
+        form["notices"].append(line)
+    else:
+        form["note"] = f"{line} {form['note']}".strip()
+
+
 def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
     """Put the server's classes on a reply form of a held run (§21).
 
@@ -2449,11 +2520,12 @@ def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
     classes = {str(k).strip().lower(): str(v)
                for k, v in (prep.get("classes") or {}).items() if k}
     rec = form["recipients"]
-    every = {a.strip().lower() for choice in ("reply", "reply_all") for key in ("to", "cc")
+    every = {a.strip().lower() for choice in ("reply", "reply_all")
+             for key in ("to", "cc", "bcc")
              for a in (rec.get(choice) or {}).get(key) or []}
     form["classes"] = {a: classes.get(a, "new") for a in every}
     for choice in ("reply", "reply_all"):
-        for key in ("to", "cc"):
+        for key in [k for k in ("to", "cc", "bcc") if k in form["ticked"][choice]]:
             form["ticked"][choice][key] = [
                 a for a in form["ticked"][choice][key]
                 if form["classes"].get(a.strip().lower(), "new") != "new"]
@@ -2481,7 +2553,7 @@ def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
 @_annotate_risk(destructive=True, open_world=True, card_bound=True)
 async def compose_reply(
     email_id: str, account_id: str, reply_all: bool | None = None, draft: str = "",
-    instruction: str = "", cc: list[str] | None = None,
+    instruction: str = "", cc: list[str] | None = None, bcc: list[str] | None = None,
 ) -> str:
     """Reply to one email in the chat. The tool drafts the reply and shows the
     member ONE card: the email it answers, every person who can get the
@@ -2520,11 +2592,14 @@ async def compose_reply(
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
+    ``bcc`` holds each person that the member asks to copy in secret ("Bcc
+    Veena"), as full addresses from find_contact. The card shows them as
+    "Bcc (hidden from the others)", and a Bcc of the thread's draft shows
+    there too. The member can also type a Bcc on the card.
+
     Each person on the card has a tick box, and the reply goes only to the
     people that the member leaves ticked. The draft in Drafts names the same
-    people. The card shows no Bcc. For a Bcc, save the reply, add the Bcc
-    with edit_draft, and offer send_draft. Never tell the member to open the
-    Email app for it."""
+    people. Never tell the member to open the Email app for it."""
     _ = account_id  # the mailbox of the email acts (§11.3 rule 1)
     try:
         from acb_skills import ask_tools
@@ -2552,6 +2627,11 @@ async def compose_reply(
         # The tick boxes: the server starts each new address unticked, and the
         # draft in Drafts leaves it out, so the draft holds what the card sends.
         steer["untick_new"] = True
+    # H-393 (§21.14): a held run refuses a look-alike word before any draft
+    # is written. Outside a held run the card warns, below.
+    refusal, _warn = _lookalike_check({"text": draft})
+    if refusal:
+        return refusal
     asked = [str(a).strip() for a in (cc or []) if str(a or "").strip()]
     if asked:
         if _egress_held() and not held_cards:
@@ -2559,13 +2639,36 @@ async def compose_reply(
             # person that the model names would start ticked. Refuse it.
             return _HELD_REPLY_CC_REFUSED
         steer["cc"] = asked
-    prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
+    secret = [str(a).strip() for a in (bcc or []) if str(a or "").strip()]
+    if secret:
+        # §21.15: in a held chat the gateway takes a Bcc to an org or a sent
+        # person only, and refuses a new address (open question 5 of 21.10).
+        steer["bcc"] = secret
+    if _egress_held():
+        # The run decides it, never the model. The record keeps it for a Bcc
+        # that the member types on the card.
+        steer["held"] = True
+    try:
+        prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
+    except GatewayError as exc:
+        if exc.status == 422 and secret:
+            return f"Not shown. {str(getattr(exc, 'detail', '') or exc)}"
+        raise
     form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
     if held_cards:
         _held_reply_form(form, prep)
+    refusal, warning = _lookalike_check({"text": form["body"]})
+    if refusal:
+        return refusal
+    if warning:
+        _add_card_notice(form, warning)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     card_id = str(prep.get("card_id") or "")
     gone = _left_out_text(form)
+    # H-391: on WhatsApp the card parks for the member's code. The approval
+    # run then shows the SAME text and the same Reply or Reply all, so the
+    # server writes no new text and the card that it builds again matches.
+    _pin_for_whatsapp(draft=form["body"], reply_all=bool(form["reply_all"]))
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, form["reply_all"]),
         detail=_card_text(
@@ -2588,11 +2691,17 @@ async def compose_reply(
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
         # card's draft (``ReplyCardForm``), and a timeout keeps the draft.
-        return (_REPLY_DISCARDED + kept) if _card_channel_open() else _NO_CARD_CHANNEL
+        return _unapproved_line() or (_REPLY_DISCARDED + kept)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return ("Nothing was sent. Another member answered this card, "
                 "and only the member who asked can send this reply.")
+    # H-393: the text that the member posted is checked again, because the
+    # member can edit it on the card. A held run sends no look-alike word.
+    choice = getattr(answer, "choice", None)
+    refusal, _warn = _lookalike_check({"text": getattr(choice, "body", "")})
+    if refusal:
+        return refusal.replace("Not sent.", "Nothing was sent or saved.", 1)
     res = await _post("/email/reply-card/act", {
         "message_id": email_id,
         "card_request_id": answer.request_id,
@@ -2601,6 +2710,11 @@ async def compose_reply(
     })
     to, copied = _addr_text(res.get("to")), _addr_text(res.get("cc"))
     copy = f", with a copy to {copied}" if copied else ""
+    if res.get("bcc"):
+        copy += f", and a Bcc to {_addr_text(res.get('bcc'))}"
+    if res.get("refused"):
+        # Review P1: the mail server refused these people, so they got nothing.
+        copy += f". The mail server refused {_addr_text(res.get('refused'))}, so they got nothing"
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
         return f"Sent to {to}{copy}, from {box}.{kept}"
@@ -3537,6 +3651,10 @@ async def get_rules_and_settings(account_id: str) -> str:
         f"cold-blocker={settings_obj.get('cold_email_blocker')}, "
         f"about set={'yes' if settings_obj.get('about') else 'no'}."
     )
+    # §21.16: the always-copy rules, which update_assistant_settings takes whole.
+    copy = (await _get("/email/assistant/always-copy", {"account_id": account_id})
+            or {}).get("rules") or []
+    lines.append(f"Always copy: {_copy_rules_text(copy)}.")
     return "\n".join(lines)
 
 
@@ -4314,6 +4432,15 @@ def _settings_needing_card(
                     "address, and on the dashboard. It costs a model call each day."))
     # H-404: the extra domains decide whose mail counts as the organization.
     # Each change asks, a removal too, and the card lists the old and the new set.
+    # §21.16: the always-copy rules add colleagues to each later card that
+    # matches. Each change asks, a removal too, and the card lists both sets.
+    copy = wanted.get("always_copy")
+    if copy is not None and _copy_rules_text(copy) != _copy_rules_text(cur.get("always_copy")):
+        out.append(("the always-copy rules",
+                    "Always copy: each colleague goes, ticked, on your reply and new-mail "
+                    "cards for that domain or address. Nothing sends on its own. Now: "
+                    + _copy_rules_text(cur.get("always_copy")) + ". After: "
+                    + _copy_rules_text(copy) + "."))
     domains = wanted.get("org_domains")
     if domains is not None:
         old = _clean_domains(cur.get("org_domains") or [])
@@ -4378,6 +4505,44 @@ def _org_domains_problem(value: Any) -> tuple[list[str], str]:
     return domains, ""
 
 
+#: §21.16: the most always-copy rules of one mailbox, and the most
+#: colleagues of one rule (``always_copy.MAX_RULES``, ``MAX_CC``).
+_COPY_RULES_MAX = 20
+_COPY_CC_MAX = 5
+
+
+def _copy_rules_text(rules: Any) -> str:
+    """The rules in one line for a card: "jain.ac.in → kiran@…, veena@…"."""
+    parts = []
+    for r in rules if isinstance(rules, list) else []:
+        if isinstance(r, dict):
+            cc = ", ".join(_card_text(a, _TARGET_LIMIT) for a in r.get("cc") or [])
+            parts.append(f"{_card_text(r.get('match'), 120)} → {cc}")
+    return "; ".join(parts) or "(none)"
+
+
+def _copy_rules_problem(value: Any) -> tuple[list[dict[str, Any]], str]:
+    """``(rules, "")`` for a valid ``always_copy`` list, else ``([], why)``.
+
+    The shape only. The gateway checks that each colleague is a person of the
+    organization, or a person the member wrote to before, and refuses any
+    other (``always_copy.put_always_copy``)."""
+    why = ("Nothing changed. always_copy is the WHOLE list of rules, such as "
+           "[{\"match\": \"university.edu\", \"cc\": [\"kiran@brand.com\"]}].")
+    if not isinstance(value, list) or len(value) > _COPY_RULES_MAX:
+        return [], why
+    rules: list[dict[str, Any]] = []
+    for r in value:
+        if not isinstance(r, dict) or set(r) - {"match", "cc"}:
+            return [], why
+        match = str(r.get("match") or "").strip().lower().lstrip("@")
+        cc = [str(a).strip().lower() for a in r.get("cc") or [] if str(a or "").strip()]
+        if not match or not cc or len(cc) > _COPY_CC_MAX or any("@" not in a for a in cc):
+            return [], why
+        rules.append({"match": match, "cc": cc})
+    return rules, ""
+
+
 # §21.6: ``card_bound`` keeps nothing while EMAIL_HELD_CARD_SEND is off. With
 # the switch on, a held run keeps this tool, and it changes only the closed
 # keys behind a card (:func:`_held_settings`).
@@ -4404,6 +4569,7 @@ async def update_assistant_settings(
     sensitive_data_protection: bool | None = None,
     morning_brief_enabled: bool | None = None,
     org_domains: list[str] | None = None,
+    always_copy: list[dict[str, Any]] | None = None,
 ) -> str:
     """Update assistant settings. Only the fields you pass change; every other
     setting is preserved.
@@ -4437,6 +4603,13 @@ async def update_assistant_settings(
             organization, e.g. ["brand.com"]. The mailbox's own domain always
             counts. No wildcard and no public webmail domain. Read the list
             with get_rules_and_settings first, and pass it whole.
+        always_copy: the WHOLE list of "always copy" rules, e.g.
+            [{"match": "university.edu", "cc": ["kiran@brand.com"]}]. Each
+            rule puts its colleagues, ticked, on the member's reply and
+            new-mail cards for mail to or from that domain or address. It
+            never sends on its own. Only a colleague or a person the member
+            wrote to before can be in ``cc``. Read the list with
+            get_rules_and_settings first, and pass it whole. [] removes each.
 
     No model or tier is a setting. The platform picks it (D-EM-7, D-EM-61).
 
@@ -4460,7 +4633,12 @@ async def update_assistant_settings(
             "sensitive_data_protection": sensitive_data_protection,
             "morning_brief_enabled": morning_brief_enabled,
             "org_domains": org_domains,
+            "always_copy": always_copy,
         })
+    if always_copy is not None:
+        always_copy, bad = _copy_rules_problem(always_copy)
+        if bad:
+            return bad
     if org_domains is not None:
         org_domains, bad = _org_domains_problem(org_domains)
         if bad:
@@ -4471,6 +4649,13 @@ async def update_assistant_settings(
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
+    copy_version = ""
+    if always_copy is not None:
+        # §21.16: the rules live apart from the settings body. The PUT takes
+        # the version that this read saw, so a change in between sends 409.
+        got = await _get("/email/assistant/always-copy", {"account_id": account_id}) or {}
+        copy_version = str(got.get("version") or "")
+        cur = {**(cur or {}), "always_copy": got.get("rules") or []}
     # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
     # A change that turns one off, or any other setting, asks nothing.
     turned_on = _settings_needing_card(cur, {
@@ -4486,6 +4671,7 @@ async def update_assistant_settings(
         "follow_up_needs_reply_days": follow_up_needs_reply_days,
         "morning_brief_enabled": morning_brief_enabled,
         "org_domains": org_domains,
+        "always_copy": always_copy,
     })
     if turned_on:
         box = await _named(account_id)
@@ -4528,8 +4714,29 @@ async def update_assistant_settings(
     setif("sensitive_data_protection", sensitive_data_protection)
     setif("morning_brief_enabled", morning_brief_enabled)
     setif("org_domains", org_domains)
+    body.pop("always_copy", None)
+    if always_copy is not None:
+        try:
+            await _put("/email/assistant/always-copy",
+                       {"account_id": account_id, "rules": always_copy,
+                        "expected": copy_version})
+        except GatewayError as exc:
+            if exc.status in (404, 409, 422):
+                return str(getattr(exc, "detail", "") or exc)
+            raise
+        if not _other_settings(locals()):
+            return f"Always-copy rules updated for {await _named(account_id)}."
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
+
+
+def _other_settings(scope: dict[str, Any]) -> bool:
+    """True when ``update_assistant_settings`` changes a setting other than
+    ``always_copy`` (§21.16), so the settings body is written too."""
+    import inspect
+
+    names = set(inspect.signature(update_assistant_settings).parameters)
+    return any(scope.get(k) is not None for k in names - {"account_id", "always_copy"})
 
 
 #: The settings that ``apply_settings_to_mailboxes`` changes in several
@@ -4676,7 +4883,7 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
         held = [k for k in refused if HELD_SETTING_DECISIONS.get(k) == SETTING_REFUSED]
         return ("Nothing changed. This chat read email from outside senders, so it cannot "
                 f"change {', '.join(held or refused)}: free text, the organization domains, "
-                "or a send that a later run acts on. Tell the member in one sentence, and change the other settings "
+                "the always-copy rules, or a send that a later run acts on. Tell the member in one sentence, and change the other settings "
                 "without it.")
     if not given:
         return "Nothing changed. Name one setting to change."
@@ -5805,6 +6012,18 @@ async def send_email(
         usual = await _usual_mailbox_note(account_id, to[0])
         if usual:
             reply_notices.append(usual)
+    if not reply_to_email_id:
+        # §21.16: the member's own always-copy rules add colleagues to the Cc
+        # of a new mail. The card names each one and its rule.
+        cc, ruled = await _always_copy_cc(account_id, to, cc, bcc)
+        reply_notices.extend(ruled)
+    # H-393 (§21.14): a held run never reaches this path (it goes through the
+    # held card, which refuses). So the card warns about a look-alike word.
+    refusal, warning = _lookalike_check({"subject": subject, "text": body})
+    if refusal:
+        return refusal
+    if warning:
+        reply_notices.insert(0, warning)
 
     payload: dict[str, Any] = {
         "account_id": account_id,
@@ -5873,8 +6092,9 @@ async def send_email(
     if not approved:
         if _revised(approved):
             return _CARD_REVISED
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
+        line = _unapproved_line()
+        if line:
+            return line
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
     count = len(refs) + len(shared)
@@ -5883,6 +6103,31 @@ async def send_email(
     tail = f" {usual}" if usual else ""
     return (f"{lead} {', '.join(to)} from {sender}{note} "
             f"(id={res.get('id', '')}).{tail}")
+
+
+async def _always_copy_cc(
+    account_id: str, to: list[str], cc: list[str], bcc: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """``(cc, lines)``: *cc* with the colleagues of the member's always-copy
+    rules for the people of a new mail, and one card line for each (§21.16).
+    The gateway checks that each one is a colleague or a person the member
+    wrote to before. A fault adds nobody."""
+    people = [*to, *cc, *(bcc or [])]
+    try:
+        found = (await _get("/email/assistant/always-copy/match",
+                            {"account_id": account_id, "people": people}) or {})
+    except Exception:  # the card shows the people the mail names
+        return cc, []
+    have = {a.lower() for a in people}
+    out, lines = list(cc), []
+    for p in found.get("people") or [] if isinstance(found, dict) else []:
+        addr = str((p or {}).get("address") or "").strip()
+        if addr and addr.lower() not in have:
+            have.add(addr.lower())
+            out.append(addr)
+            lines.append(f"Cc {_card_text(addr, _TARGET_LIMIT)} — your rule: always copy on "
+                         f"{_card_text((p or {}).get('match'), 120)}.")
+    return out, lines
 
 
 #: The answer of a reply through ``send_email`` in a held run (§21.3, the New row).
@@ -6100,6 +6345,10 @@ async def forward_email(
         carried = mail_files if include_attachments else []
     subject = _card_text(orig.get("subject") or "(no subject)", 120)
     shown_files = _forward_files(carried)
+    # H-393 (§21.14): the note is the one text that the model writes here.
+    refusal, warning = _lookalike_check({"note": note})
+    if refusal:
+        return refusal.replace("Not sent", "Not forwarded", 1)
 
     from acb_skills.ask_tools import request_confirmation
     approved = await request_confirmation(
@@ -6109,15 +6358,17 @@ async def forward_email(
         # files last (verifier F1).
         detail=_card_detail(sender, to=to, files=shown_files, subject=subject),
         context=_card_context(
-            _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
+            _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried))
+            + (f"\n{warning}" if warning else ""),
             note),
         close_on_steer=True,
     )
     if not approved:
         if _revised(approved):
             return _CARD_REVISED
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
+        line = _unapproved_line()
+        if line:
+            return line
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {
         "message_id": mid,
@@ -6325,7 +6576,7 @@ async def _held_card(
     if _revised(answer):
         return _HELD_CARD_REVISED
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
-        return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
+        return _unapproved_line() or cancelled
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return (f"{lead}. Another member answered this card, and only the member "
@@ -6429,6 +6680,14 @@ async def _sealed_card(
     detail, context = _draft_card(sender, seal.get("subject"), lists)
     if not context:
         return too_many
+    # H-393 (§21.14): the subject and the text that the seal covers. A held
+    # run refuses a look-alike word, and any other run warns first on the card.
+    refusal, warning = _lookalike_check({"subject": seal.get("subject"),
+                                         "text": seal.get("body_text")})
+    if refusal:
+        return refusal.replace("Not sent", lead, 1)
+    if warning:
+        detail = f"{warning} {detail}"
     context = _with_draft_text(context, seal.get("body_text"), draft.get("snippet"),
                                whole=True)
     if context:
@@ -6541,9 +6800,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
-        if _channel_open():
-            return "Send cancelled — the draft was not sent."
-        return _NO_CARD_CHANNEL
+        return _unapproved_line() or "Send cancelled — the draft was not sent."
     try:
         await _post(
             "/email/drafts/send",
@@ -7266,8 +7523,9 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     if not approved:
         if _revised(approved):
             return _CARD_REVISED
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
+        line = _unapproved_line()
+        if line:
+            return line
         return "Cancelled — nothing was scheduled. The draft stays in Drafts."
     try:
         res = await _post("/email/drafts/schedule", {

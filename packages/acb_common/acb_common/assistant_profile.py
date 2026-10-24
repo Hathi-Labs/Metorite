@@ -29,10 +29,13 @@ Fences: ``tests/unit/test_assistant_profile.py`` and
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import re
 import unicodedata
+from collections.abc import Iterator
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -247,6 +250,282 @@ def enabled() -> bool:
         return getattr(get_settings(), "assistant_profile_enabled", False) is True
     except Exception:
         return False
+
+
+# ── The write-origin fence (PZ-6a) ─────────────────────────────────────────
+
+class _Writes:
+    """The one holder of a run's profile-write switch. A tool call may run
+    in a COPY of the run's context, so a ``ContextVar.set`` inside it never
+    reaches the next call. The copy holds the same object, so a change of
+    :attr:`open` reaches every later call of the run (PZ-6a fix round 1)."""
+
+    __slots__ = ("open", "closed_by_read")
+
+    def __init__(self, open_: bool) -> None:
+        self.open = open_ is True
+        #: True when a reader of other people's text closed an open switch,
+        #: so a refusal can say why (final verify P2-2).
+        self.closed_by_read = False
+
+
+#: The holder of this run's switch. Only a run where the member can change
+#: their own profile from the chat holds an open one: the run boundary bound
+#: a solo room, the member is verified, and the run is not ``no_egress``.
+#: The executor binds a fresh holder at the boundary and resets it with the
+#: run (``orchestrator.executor``). The default is None, so a background,
+#: delegated, scheduled, workflow or shared-room run can write nothing
+#: (personalization.md §5.5). It is never read from a payload (R5). The
+#: write tools of ``acb_skills.profile_tools`` refuse when it is closed.
+#: Fence: ``tests/unit/test_profile_write_tools.py``.
+WRITES_OPEN: contextvars.ContextVar[_Writes | None] = contextvars.ContextVar(
+    "assistant_profile_writes_open", default=None)
+
+
+def writes_open() -> bool:
+    """True when this run may write the member's profile from the chat."""
+    gate = WRITES_OPEN.get()
+    return gate is not None and gate.open is True
+
+
+def bind_writes(open_: bool) -> contextvars.Token[_Writes | None]:
+    """Bind a fresh holder for one run. Only ``True`` itself opens it. Hand
+    the token to :func:`release_writes`."""
+    return WRITES_OPEN.set(_Writes(open_ is True))
+
+
+def close_writes() -> None:
+    """Close the run's profile writes for the rest of the run. It never
+    opens. A tool that hands the model text of another person calls it
+    (``search_company``, ``read_page``, ``list_spaces``), and so does the
+    end of a delegated or specialist run (PZ-6a fix round 1, §5.5)."""
+    gate = WRITES_OPEN.get()
+    if gate is not None:
+        if gate.open:
+            gate.closed_by_read = True
+        gate.open = False
+
+
+def writes_closed_by_read() -> bool:
+    """True when this run COULD write until a reader of other people's text
+    closed it. The refusal then asks for a new message (final verify P2-2)."""
+    gate = WRITES_OPEN.get()
+    return gate is not None and gate.closed_by_read
+
+
+def release_writes(token: contextvars.Token[_Writes | None] | None) -> None:
+    """Close a :func:`bind_writes` scope. Never raises. A failed reset binds
+    a closed holder, so it fails closed and never open."""
+    if token is None:
+        return
+    try:
+        WRITES_OPEN.reset(token)
+    except (ValueError, RuntimeError):
+        WRITES_OPEN.set(_Writes(False))
+
+
+# ── The channel of the run (PZ-6a fix round 1) ─────────────────────────────
+
+#: The channel of the run, and whether that channel may write: ``("chat",
+#: True)`` by default. ``bot_run`` binds ``("whatsapp", <the org's WhatsApp
+#: writes switch>)`` around each WhatsApp run, native or not, so a profile
+#: write labels ``whatsapp`` and a WhatsApp run with writes off holds no
+#: write tool. Never read from a payload (R5).
+CHANNEL: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
+    "assistant_profile_channel", default=("chat", True))
+
+
+@contextlib.contextmanager
+def profile_channel(name: str, *, writes: bool) -> Iterator[None]:
+    """Bind the channel of one run. Closing restores the value it found."""
+    token = CHANNEL.set((str(name), writes is True))
+    try:
+        yield
+    finally:
+        CHANNEL.reset(token)
+
+
+def channel() -> str:
+    """``whatsapp`` inside a WhatsApp run, else ``chat``."""
+    return "whatsapp" if CHANNEL.get()[0] == "whatsapp" else "chat"
+
+
+def channel_writes() -> bool:
+    """False in a WhatsApp run whose org has its writes switch off."""
+    return CHANNEL.get()[1] is True
+
+
+#: The profile tools that change the profile. A WhatsApp run with writes
+#: off holds none of them (``_tool_injection._whatsapp_withheld``).
+WRITE_TOOL_NAMES: frozenset[str] = frozenset({
+    "profile_remember", "profile_forget", "profile_set", "profile_alias",
+    "profile_undo"})
+
+
+# ── The member's TYPED words (PZ-6a fix round 2, D-PZ-2) ───────────────────
+
+#: The member's typed text of THIS turn, and nothing else. The route binds it
+#: from the request BEFORE any server rewrite of ``message``: the Continue
+#: note, the supersede note and a replayed steer never reach it. It is ""
+#: for a Continue turn, a card answer sent as a message, a steer follow-up,
+#: an approved WhatsApp Confirm and a forwarded WhatsApp text. Two binders:
+#: ``gateway.routes.agent.run_agent_stream_endpoint`` and ``bot_run
+#: ._model_answer``, each through :func:`member_typed`. Every other run,
+#: a background, scheduled or workflow run included, reads "" and so
+#: grounds nothing. It is never read from a payload (R5). The CRM-Q29 seam
+#: ``member_message`` stays as it was, for the answer check.
+#: Fence: ``tests/unit/test_profile_write_tools.py``.
+MEMBER_TYPED: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "assistant_profile_member_typed", default="")
+
+#: A typed text longer than this grounds nothing: it is a paste, not a
+#: sentence. The member can say the fact in their own words.
+TYPED_MAX = 1_500
+#: The lines of a pasted mail: a header line, an "Original Message" or a
+#: "Forwarded message" rule, an "On ... wrote:" line, or a quoted line.
+_PASTED = re.compile(
+    r"^[ \t]*(?:>"
+    r"|(?:from|to|cc|bcc|sent|date|subject|reply-to)[ \t]*:"
+    r"|-{2,}[ \t]*(?:original message|forwarded message)"
+    r"|on [^\n]{1,200} wrote:[ \t]*$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def typed_text(text: Any) -> str:
+    """*text* as words that may ground a write, or ``""``. A paste of more
+    than :data:`TYPED_MAX` characters, or a text with a line of a pasted
+    mail (:data:`_PASTED`), grounds nothing."""
+    out = str(text or "")
+    if len(out) > TYPED_MAX or _PASTED.search(out):
+        return ""
+    return out
+
+
+@contextlib.contextmanager
+def member_typed(text: Any) -> Iterator[None]:
+    """Bind the member's typed text of one turn. Closing restores the value
+    it found, and never raises."""
+    token = MEMBER_TYPED.set(typed_text(text))
+    try:
+        yield
+    finally:
+        try:
+            MEMBER_TYPED.reset(token)
+        except (ValueError, RuntimeError):
+            MEMBER_TYPED.set("")
+
+
+def typed_words() -> str:
+    """The member's typed words of this turn, or ``""``."""
+    return MEMBER_TYPED.get()
+
+
+#: The refusal of a value that the member did not say in this turn.
+NOT_YOUR_WORDS = ("I can only save what you tell me yourself. Say it in your own "
+                  "words and I will save it.")
+
+_GROUND_EMAIL = re.compile(r"[^\s@<>()\[\]\"',;:]+@[^\s@<>()\[\]\"',;:]+")
+_GROUND_URL = re.compile(r"(?:[a-z][a-z0-9+.\-]*://|www\.)[^\s<>\"']+")
+_GROUND_WORD = re.compile(r"[^\W\d_]{3,}")
+#: One number: digits, with spaces, dots, dashes and parentheses between
+#: them, and a leading ``+``. "+1 41 55 55 01 23" is ONE number.
+_NUMBER = re.compile(r"\+?\d(?:[\s().\-]*\d)*")
+#: A bare domain, such as "acme-pay.io", with no scheme and no "@".
+_DOMAIN = re.compile(
+    r"(?<![\w@.\-])(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![\w\-])")
+#: A number of this many digits or more needs the member's confirm.
+CONFIRM_DIGITS = 6
+#: The share of the content words of a value that the typed words must hold.
+CONTENT_SHARE = 0.8
+#: The marks that may end an address or a link in a sentence.
+_TRAIL = ".,;:!?)]}>"
+
+
+def fold(value: Any) -> str:
+    """*value* for comparison: NFKD, no combining mark, casefold, one space.
+    The fold of ``assistant_profile_people.fold``."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(text.casefold().split())
+
+
+def _tokens(pattern: re.Pattern[str], text: str) -> set[str]:
+    """Each whole match of *pattern* in *text*, without a trailing mark."""
+    return {hit.rstrip(_TRAIL) for hit in pattern.findall(text)} - {""}
+
+
+def _numbers(text: str) -> set[str]:
+    """Each number of *text* as its digits only, so a split number is one."""
+    return {"".join(ch for ch in hit if ch.isdigit()) for hit in _NUMBER.findall(text)}
+
+
+def needs_confirm(value: Any) -> bool:
+    """True when *value* holds an address, a link or a long number.
+
+    An address is any ``a@b``. A link is a scheme, ``www.`` or a bare
+    domain. A long number has :data:`CONFIRM_DIGITS` digits or more,
+    counted across spaces, dots, dashes, parentheses and a leading ``+``.
+    Such a value never writes from the chat without the member's approve
+    (PZ-6a fix round 2, the primary fence). Fence:
+    ``tests/unit/test_profile_write_tools.py``.
+    """
+    text = fold(value)
+    if not text:
+        return False
+    if "@" in text and _GROUND_EMAIL.search(text):
+        return True
+    if _GROUND_URL.search(text) or _DOMAIN.search(text):
+        return True
+    return any(len(n) >= CONFIRM_DIGITS for n in _numbers(text))
+
+
+def grounded(value: Any, words: Any) -> bool:
+    """True when the member's typed *words* of this turn hold *value*.
+
+    Three rules, on folded text (PZ-6a fix round 2):
+
+    * Each address and link in *value* is a WHOLE token of *words*. A
+      substring never counts: "raj@acme.com" is not in "vraj@acme.com.au".
+    * Each number of *value*, with its separators gone, is a number of
+      *words*, so "+1 41 55 55 01 23" must be said as that one number.
+    * At least :data:`CONTENT_SHARE` of the content words of *value* (three
+      letters or more), and at least one, are in *words*. A value with no
+      content word must be a whole token run of *words*.
+
+    An empty *words* holds nothing. Fence:
+    ``tests/unit/test_profile_write_tools.py``.
+    """
+    said, text = fold(words), fold(value)
+    if not text:
+        return True
+    if not said:
+        return False
+    for pattern in (_GROUND_EMAIL, _GROUND_URL, _DOMAIN):
+        if not _tokens(pattern, text) <= _tokens(pattern, said):
+            return False
+    if not _numbers(text) <= _numbers(said):
+        return False
+    content = _GROUND_WORD.findall(text)
+    if not content:
+        # Only addresses, links and numbers, which matched above: grounded.
+        rest = _NUMBER.sub(" ", _GROUND_URL.sub(" ", _GROUND_EMAIL.sub(" ", text)))
+        if not re.search(r"\w", rest):
+            return True
+        return re.search(rf"(?<!\w){re.escape(text)}(?!\w)", said) is not None
+    spoken = set(_GROUND_WORD.findall(said))
+    hits = sum(1 for w in content if w in spoken)
+    return hits >= 1 and hits >= CONTENT_SHARE * len(content)
+
+
+# ── The last chat change (PZ-6a fix round 1) ───────────────────────────────
+
+#: The reserved key of the stored column that holds the last chat change of
+#: the member, for a spoken Undo (``POST .../undo``). It is not a profile
+#: key: :func:`stored_profile`, :func:`render_block` and the caps ignore it.
+LAST_CHANGE = "last_change"
+#: How long the last chat change stays undoable, in seconds.
+UNDO_WINDOW_S = 15 * 60
 
 
 # ── The change counter (PZ-2) ──────────────────────────────────────────────

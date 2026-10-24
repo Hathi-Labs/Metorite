@@ -847,15 +847,16 @@ _REPLY_ADDRESS_MAX = 320
 
 
 def _clean_recipients(value: Any) -> dict[str, list[str]]:
-    """The To and Cc lists of one choice. An address is never cut and a list
-    is never shortened, because the card must show each recipient in full.
-    A list that is too long, or an address that is too long, raises
-    ``ValueError`` before any card is drawn."""
+    """The To, Cc and Bcc lists of one choice. An address is never cut and a
+    list is never shortened, because the card must show each recipient in
+    full. A list that is too long, or an address that is too long, raises
+    ``ValueError`` before any card is drawn. ``bcc`` (§21.15) is the Bcc
+    that the gateway recorded for the card, and it shows apart."""
     from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
 
     v = value if isinstance(value, dict) else {}
     out: dict[str, list[str]] = {}
-    for name in ("to", "cc"):
+    for name in ("to", "cc", "bcc"):
         items = v.get(name) if isinstance(v.get(name), list) else []
         if len(items) > MAX_REPLY_RECIPIENTS:
             raise ValueError("a reply form names too many recipients")
@@ -863,6 +864,9 @@ def _clean_recipients(value: Any) -> dict[str, list[str]]:
         if any(len(a) > _REPLY_ADDRESS_MAX for a in clean):
             raise ValueError("a reply form names an address that is too long")
         out[name] = [a for a in clean if a]
+    if not out["bcc"]:
+        # A card with no Bcc is exactly as before (§21.15).
+        del out["bcc"]
     return out
 
 
@@ -941,7 +945,7 @@ def clean_reply_form(form: dict | None) -> dict | None:
 def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
     """The words of each person, each a person of the card's list. A mark of
     a person that is not on the card, or an over-long mark, raises."""
-    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"]]}
+    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"], *reply_all.get("bcc", [])]}
     out: dict[str, str] = {}
     for addr, words in value.items():
         a = " ".join(str(addr or "").split()).lower()
@@ -961,7 +965,9 @@ def _reply_ticked(value: dict, reply: dict, reply_all: dict) -> dict:
     for key, lists in (("reply", reply), ("reply_all", reply_all)):
         raw = value.get(key) if isinstance(value.get(key), dict) else {}
         out[key] = {}
-        for part in ("to", "cc"):
+        for part in ("to", "cc", "bcc"):
+            if part not in lists:
+                continue
             have = {a.lower(): a for a in lists[part]}
             got = raw.get(part, lists[part])
             if not isinstance(got, list):
@@ -1298,8 +1304,51 @@ def reply_card_channel_open() -> bool:
     """True when this run can show the reply card (EM-CR): a card channel
     (:func:`confirmation_channel_open`) and no WhatsApp run. The reply tool
     asks it BEFORE it drafts, so a run with no card drafts, saves and sends
-    nothing."""
+    nothing.
+
+    H-391: a WhatsApp run with writes on is a reply path too. Its card parks
+    for the member's reply code (:func:`_whatsapp_email_path`)."""
+    if _whatsapp_email_path():
+        return True
     return confirmation_channel_open() and not _whatsapp_run()
+
+
+def _whatsapp_email_path() -> bool:
+    """True in a WhatsApp run with writes on, where an email card can park
+    for a reply code or take the yes of one (H-391). A fault reads False."""
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        run = current_run()
+    except Exception:
+        return False
+    return run is not None and bool(getattr(run, "writes", False))
+
+
+#: The answer of :func:`_whatsapp_email_answer` that leaves the card to the gate.
+_NOT_EMAIL = object()
+
+
+async def _whatsapp_email_answer(title: str, detail: str, context: str,
+                                 rows: list[dict] | None, reply: dict | None,
+                                 request_id: str | None, with_answer: bool,
+                                 cut: bool = False) -> Any:
+    """``acb_skills.whatsapp_acts.answer_email_card``, or :data:`_NOT_EMAIL`.
+
+    H-391: an email card of a WhatsApp run parks for the member's reply code,
+    or takes the yes of the code that approved it. A fault is no answer from
+    here, so the card goes to the gate below, which denies inside
+    ``refuse_cards``. It fails closed."""
+    if not _whatsapp_email_path():
+        return _NOT_EMAIL
+    try:
+        from acb_skills.whatsapp_acts import NOT_EMAIL, answer_email_card
+
+        answer = await answer_email_card(title, detail, context, rows, reply,
+                                         request_id, with_answer, cut=cut)
+    except Exception:
+        return _NOT_EMAIL
+    return _NOT_EMAIL if answer is NOT_EMAIL else answer
 
 
 def _whatsapp_answer(title: str, detail: str, context: str,
@@ -1402,6 +1451,16 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    # H-391: an email card in a WhatsApp run parks for the member's reply
+    # code, or takes the yes of the code that approved it. Anything else
+    # goes on below, as before.
+    _email = await _whatsapp_email_answer(
+        _title, _detail, _context, _rows, _reply, request_id, _with_answer,
+        cut=(len(str(title or "").strip()) > len(_title)
+             or len(str(detail or "").strip()) > len(_detail)
+             or len(str(context or "").strip()) > len(_context)))
+    if _email is not _NOT_EMAIL:
+        return _email
     if _reply is not None:
         if _rows is not None:
             raise ValueError("a card has rows or a reply form, never both")

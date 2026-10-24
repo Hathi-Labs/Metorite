@@ -75,6 +75,12 @@ Cancel buttons. The phone's next message in the thread is settled before any
 run (``acts.settle``): Confirm runs the stored call once with no model, Cancel
 closes the act, and any other message voids it and runs as normal.
 
+**An email act (H-391, §18).** With writes on, the card of an email write of
+the email assistant parks too, with its tick-box rows or its reply form. The
+run stores it with the hash of a reply code (``acts.park_code``) and sends the
+whole card as text, the code last, with no buttons. "YES <code>" approves it,
+and the model runs again inside ``whatsapp_acts.approving_email``.
+
 **The WhatsApp profile (WAC-10a, §12).** With ``WHATSAPP_ASSISTANT_NATIVE_UI``
 on, the run opens ``acb_skills.whatsapp_ui.whatsapp_run`` as well. The
 injection seam then drops the web-only tools and the web prompt blocks, and
@@ -237,8 +243,16 @@ SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
     "for their Confirm, add no buttons, and never say that it is done. One "
     "change waits at a time. When the member asks for several, prepare the "
     "first, and say that you do the next one when they ask after their "
-    "Confirm. For any other change, tell the member to make it in the "
-    "Metorite web app, and add a link button.\n"
+    "Confirm.\n"
+    "You can also make the member's email changes from WhatsApp, through the "
+    "Email assistant: archive, label, move, reply, send a draft, schedule a "
+    "send, forward and a new mail. Ask the Email assistant to do it, as in "
+    "the web chat. Nothing is sent or changed until the member replies with "
+    "the code that Metorite sends them with the whole summary. So say in one "
+    "line that it waits for their code, never write a code or the summary "
+    "yourself, and never say that it is done. "
+    "For any other change, tell the member to make it in the Metorite web "
+    "app, and add a link button.\n"
 ))
 
 #: What a run with documents on adds to its scope rule (WAC-12, §15).
@@ -528,6 +542,14 @@ SELECT content, timestamp_ms FROM chat_message
    AND NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
 """
 
+#: Whether the member's turn is marked forwarded (WS-63 PZ-6a fix round 2).
+_FORWARDED_SQL = """
+SELECT COALESCE(custom_events, CAST('[]' AS jsonb))
+       @> CAST('[{"name": "forwarded"}]' AS jsonb)
+  FROM chat_message
+ WHERE session_id = :sid AND id = :mid AND role = 'user'
+"""
+
 #: The reply that a try already wrote into the thread. A retry sends it again
 #: with no second run of the agent.
 _STORED_REPLY_SQL = """
@@ -719,8 +741,13 @@ async def _write_session(
     )
 
 
+#: The custom event of a member's turn that Meta marked forwarded (WS-63
+#: PZ-6a fix round 2). The turn grounds no profile write.
+FORWARDED_EVENT = "forwarded"
+
+
 async def _write_turn(
-    org: str, email: str, wamid: str, body: str,
+    org: str, email: str, wamid: str, body: str, forwarded: bool = False,
 ) -> str:
     """Write the member's turn into the WhatsApp thread. Returns the thread id.
 
@@ -741,7 +768,9 @@ async def _write_turn(
                          preview=_preview(body), count=others + 1)
     declined = await asyncio.to_thread(
         _upsert_messages, sid,
-        [MessageRecord(id=mid, role="user", content=body, timestamp=_now_ms())],
+        [MessageRecord(id=mid, role="user", content=body, timestamp=_now_ms(),
+                       custom_events=([{"name": FORWARDED_EVENT, "value": {}}]
+                                      if forwarded else []))],
         actor_email=email, organization_id=org,
     )
     if declined:
@@ -827,6 +856,20 @@ async def _waiting(session_id: str) -> list[RunRequest]:
     return [_request(r) for r in rows]
 
 
+async def _turn_forwarded(session_id: str, message_id: str) -> bool:
+    """True when the member's turn carries :data:`FORWARDED_EVENT`. A fault
+    reads as forwarded, so it fails closed: the turn grounds nothing."""
+    try:
+        async with tenant_session() as db:
+            return bool((await db.execute(
+                text(_FORWARDED_SQL), {"sid": session_id, "mid": message_id},
+            )).scalar())
+    except Exception as exc:  # the record names the class only
+        _log.warning("whatsapp_channel.run.forwarded_unread",
+                     error_type=type(exc).__name__)
+        return True
+
+
 async def _thread_turns(
     session_id: str, message_id: str,
 ) -> tuple[str | None, list[dict[str, str]]]:
@@ -876,14 +919,15 @@ def current_link(links: list[Any]) -> Any | None:
 
 async def record_inbound(
     links: list[Any], wa_id: str, wamid: str, body: str,
-    context_wamid: str | None = None,
+    context_wamid: str | None = None, forwarded: bool = False,
 ) -> RunRequest | None:
     """Record one text from a linked phone. Returns the run to start, or None.
 
     *links* is what ``whatsapp_member_links_for_phone`` returned. Runs inside
     the webhook request, before the 200, so the turn is durable before Meta
     hears that the message arrived. *context_wamid* is the message that a tap
-    or a swipe reply answers (Meta's ``context.id``), or None.
+    or a swipe reply answers (Meta's ``context.id``), or None. *forwarded*
+    marks the turn (:data:`FORWARDED_EVENT`), so it grounds no profile write.
     """
     hint = wa_id[-4:]
     link = current_link(links)
@@ -910,13 +954,13 @@ async def record_inbound(
             return None
         async with _thread_lock(org, email):
             try:
-                session_id = await _write_turn(org, email, wamid, body)
+                session_id = await _write_turn(org, email, wamid, body, forwarded=forwarded)
             except SessionOfAnotherTenant:
                 # A copy of this message in ANOTHER process opened the
                 # thread between the two reads of `_refuse_if_elsewhere`.
                 # Once more: the thread read finds it now. A row of another
                 # tenant raises again, and nothing is written.
-                session_id = await _write_turn(org, email, wamid, body)
+                session_id = await _write_turn(org, email, wamid, body, forwarded=forwarded)
             row_id = await _insert(org=org, email=email, wa_id=wa_id,
                                    wamid=wamid, direction="in",
                                    state="received", session_id=session_id,
@@ -1520,9 +1564,11 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         elif view is not None:
             reply, ui = view.text, list(view.ui)
         else:
+            forwarded = await _turn_forwarded(req.chat_session_id, turn_id(req.wamid))
             answered = await _model_answer(req, message, history, attempt, run_id,
                                            native=native, writes=writes,
-                                           approved=approved, shared=shared)
+                                           approved=approved, shared=shared,
+                                           forwarded=forwarded)
             if answered is None:
                 return
             reply, ui = answered
@@ -1632,6 +1678,7 @@ async def _model_answer(req: RunRequest, message: str,
                         history: list[dict[str, str]], attempt: _Attempt,
                         run_id: str, *, native: bool, writes: bool,
                         approved: Any = None, shared: bool = False,
+                        forwarded: bool = False,
                         ) -> tuple[str, list[Any]] | None:
     """Run the assistant for one message. Returns the reply and its elements.
 
@@ -1641,9 +1688,15 @@ async def _model_answer(req: RunRequest, message: str,
     *approved* (WAC-P4, ``acts.Approved``) is the Confirm of one egress
     call. The run then holds the yes for that ONE call, and the act closes
     after it. *shared* is True for a room, which reads no memory (WAC-P2).
+
+    WS-63 PZ-6a fix round 2: the run binds the member's TYPED words
+    (``assistant_profile.member_typed``), the only words that ground a
+    profile write. A Confirm (*approved*) and a *forwarded* text bind "":
+    the Confirm's turn holds the model's arguments, and another person
+    wrote a forwarded text.
     """
+    from acb_common.assistant_profile import member_typed, profile_channel
     from acb_skills.ask_tools import refuse_cards
-    from acb_skills.whatsapp_acts import approving
     from acb_skills.whatsapp_ui import whatsapp_run
     from gateway.routes.whatsapp_channel import acts, views
 
@@ -1662,8 +1715,12 @@ async def _model_answer(req: RunRequest, message: str,
     crm_asks = _open_crm_asks(req.organization_id)
     yes: Any = None
     try:
-        with refuse_cards(), (approving(approved.card) if approved is not None
-                              else contextlib.nullcontext()) as yes, (whatsapp_run(
+        # WS-63 PZ-6a fix round 1: the channel of the run, native or not, so
+        # a profile write labels `whatsapp`, and with the org's writes off
+        # the run holds no profile write tool (SCOPE_RULE says the same).
+        typed = "" if approved is not None or forwarded else message
+        with refuse_cards(), profile_channel("whatsapp", writes=writes), \
+                member_typed(typed), _approval(req, approved) as yes, (whatsapp_run(
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
                 notify=_notifier(req), writes=writes,
@@ -1740,6 +1797,25 @@ async def _model_answer(req: RunRequest, message: str,
     return reply, ui
 
 
+def _approval(req: RunRequest, approved: Any) -> Any:
+    """The yes of a run at a Confirm, or a context that holds none.
+
+    WAC-P4: ``whatsapp_acts.approving`` for ONE egress call. H-391: an email
+    act that a code approved gets ``approving_email``, with the lines that
+    the member left out or added, and the org, the member and the thread of
+    the link row (R5). Each one closes with the run."""
+    from acb_skills.whatsapp_acts import approving, approving_email
+
+    if approved is None:
+        return contextlib.nullcontext()
+    if getattr(approved, "kind", "egress") == "email":
+        return approving_email(approved.card, tool=approved.tool,
+                               arguments=approved.arguments, without=approved.without,
+                               include=approved.include, org=req.organization_id,
+                               member=req.member_email, thread=req.chat_session_id)
+    return approving(approved.card)
+
+
 async def _native_parts(req: RunRequest, wa_run: Any,
                         reply: str) -> tuple[str, list[Any]]:
     """The reply and the elements of a run with the WhatsApp profile.
@@ -1775,10 +1851,21 @@ async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
     code builds them. When the act cannot be stored, nothing waits for a
     Confirm, and the member gets a line that sends the change to the web app.
     """
-    from acb_skills.whatsapp_acts import confirm_buttons, summary
+    from acb_skills.whatsapp_acts import code_summary_parts, confirm_buttons, summary
     from acb_skills.whatsapp_ui import OutMessage
     from gateway.routes.whatsapp_channel import acts
 
+    if getattr(act, "kind", "button") == "code":
+        # H-391: the whole card as text, the reply code last, and no buttons.
+        # The LAST part names the act, so the code counts only once Meta took
+        # the part that holds it.
+        parked = await acts.park_code(req, act)
+        if parked is None:
+            return acts.REPLY_NOT_HELD
+        act_id, code = parked
+        parts = code_summary_parts(act, code, MAX_CHARS)
+        return [OutMessage("text", part, act_id=act_id if i == len(parts) - 1 else None)
+                for i, part in enumerate(parts)]
     act_id = await acts.park(req, act)
     if act_id is None:
         return acts.REPLY_NOT_HELD

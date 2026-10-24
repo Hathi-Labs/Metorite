@@ -2738,6 +2738,13 @@ async def run_agent_stream_endpoint(
         actor=actor_email, room=room, supersedes=_supersedes,
         card_answer=_card_answer,
     )
+    # WS-63 PZ-6a fix round 2 (P1-a): the member's TYPED words, the only
+    # words that may ground a profile write (`assistant_profile.member_typed`).
+    # Read HERE, before the Continue note, a replayed steer or the supersede
+    # note changes `message`. A card answer sent as a message holds the
+    # card's text, which the model wrote, so it grounds nothing.
+    _typed = "" if _card_answer is not None else str(
+        req.payload.get("message") or req.payload.get("user_query") or "")
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
         from gateway.chat_supersede import (  # noqa: PLC0415
@@ -2780,7 +2787,10 @@ async def run_agent_stream_endpoint(
     # The chat's Continue button sends ``resume: true``. The words the model
     # reads are the SERVER's, built from the saved partial reply, so a client
     # cannot write that instruction. See gateway.chat_recovery.
-    if req.payload.pop("resume", None) and req.thread_id:
+    _resume = bool(req.payload.pop("resume", None))
+    if _resume:
+        _typed = ""  # a Continue turn: the member typed nothing (PZ-6a)
+    if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
             req.payload["message"] = _note
@@ -2800,6 +2810,7 @@ async def run_agent_stream_endpoint(
         if _gate is not None:
             return _gate
         req.payload["message"] = ""
+        _typed = ""  # the replayed steers are not this turn's typed words
         _decision = _FuDecision(_FuRoute.ENGAGE, "steer_followup")
     else:
         _incoming_text = str(
@@ -3190,7 +3201,17 @@ async def run_agent_stream_endpoint(
     # nothing, so nothing about single-player behaviour changes.
     _floor = list(room.members) if (room is not None and room.is_shared) else None
 
+    from acb_common.assistant_profile import member_typed  # noqa: PLC0415
+
     async def _serve():
+        # WS-63 PZ-6a fix round 2: the typed words reach the run through
+        # this ONE binding. The drain task that `run_detached` starts copies
+        # the context here, so the run reads them, and nothing else does.
+        with member_typed(_typed):
+            async for chunk in _serve_run():
+                yield chunk
+
+    async def _serve_run():
         try:
             async for evt in run_detached(
                 thread_id, agent_gen, tee=False,

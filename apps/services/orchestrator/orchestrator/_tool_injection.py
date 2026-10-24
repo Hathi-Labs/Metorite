@@ -1792,7 +1792,19 @@ def _whatsapp_withheld() -> frozenset[str]:
         from acb_skills.whatsapp_ui import WITHHELD_TOOLS, current_run  # noqa: PLC0415
     except ImportError:
         return frozenset()
-    return WITHHELD_TOOLS if current_run() is not None else frozenset()
+    run = current_run()
+    out = WITHHELD_TOOLS if run is not None else frozenset()
+    # WS-63 PZ-6a fix round 1: a WhatsApp run of an org with its writes off
+    # holds no profile write. Its scope rule says that it cannot change
+    # data from WhatsApp, and the tools agree. `resolve_person` stays.
+    from acb_common.assistant_profile import (
+        WRITE_TOOL_NAMES,
+        channel,
+        channel_writes,
+    )
+    wa_off = (run is not None and not getattr(run, "writes", False)) or (
+        channel() == "whatsapp" and not channel_writes())
+    return out | WRITE_TOOL_NAMES if wa_off else out
 
 
 def _whatsapp_ui_tools(agent_name: str | None) -> list[Any]:

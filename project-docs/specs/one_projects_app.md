@@ -590,6 +590,15 @@ second step, after OP-2 lands, because both edit the Projects page and nav.
    fails. Fence: the existing `assert_move_keeps_privacy` test, with the new
    shape.
 
+**Status: the server half is BUILT 2026-10-24** (task #297). `GET /projects/tree`
+adds a `personal` key with the caller's own tree, nested at every depth, with
+the same counts. Each personal node carries `personal: true` and
+`can_write_grants` false. `rows` does not change (R6). An agent without
+`include_personal` gets an empty list (D-EA-4). Fence: `TestThePersonalSpace`
+in `test_personal_privacy_r8.py`, and `test_personal_owner_stamp.py` (R8). The
+sidebar draw waits on OP-2. A team node under the caller's root (the stop rule
+of 297) stays in `rows`, and the sidebar must draw it there.
+
 **Verify.** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`,
 then `uv run pytest tests/unit/test_personal_tree.py
 tests/unit/test_personal_owner_stamp.py tests/unit/test_personal_privacy_r8.py`.

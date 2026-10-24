@@ -33,6 +33,7 @@
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
+> 🔨 **§21.13 (H-391) is BUILT on branch `email-whatsapp-confirm`, not merged (2026-10-24).** Archive, label, move, reply, send a draft, schedule, forward and new mail work from WhatsApp. The member approves each one with a reply code. Migration 298, dark behind `WHATSAPP_ASSISTANT_WRITES`.
 > 🔨 **§22 is BUILT on branch `email-chat-parity-w1`, not merged (2026-10-23).** The chat edits whole rules, runs and copies them, teaches the classifier, runs the cleaner, and manages the voice profile and each mailbox. No migration, no flag, and no new outward act in a held chat.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -21162,12 +21163,9 @@ card resets the Cc" left the revise text, because the new card keeps the Cc.
 
 **Not built.**
 
-- A Bcc on the reply card. The answer of the card has no Bcc key. The card
-  says when the thread's draft holds a Bcc, and `send_draft` sends it.
-- An "always Cc" rule for a domain (item 7b). It needs a new rule action
-  that only adds people to the member's draft. The rule tools now count a
-  `cc_address` as an outward act. So the new type needs its own decision in
-  `_is_outward_action`, in the held refusal and in the engine.
+- A Bcc on the reply card. **Built later, in 21.15.**
+- An "always Cc" rule for a domain (item 7b). **Built later, in 21.16**, as a
+  setting of the mailbox and not as a mail rule.
 
 **Fences.** `tests/unit/test_recipient_intent.py`,
 `tests/unit/test_email_recipient_intent_r8.py` (R8),
@@ -21175,6 +21173,267 @@ card resets the Cc" left the revise text, because the new card keeps the Cc.
 `tests/unit/test_email_chat_reply.py`, `tests/unit/test_held_send_classes.py`,
 `workbench/control_plane/src/lib/replyCard.test.ts` and
 `workbench/control_plane/e2e/email-chat-reply.spec.ts`.
+
+### 21.13 Email writes from WhatsApp (2026-10-24, H-391)
+
+**Status: BUILT on the branch `email-whatsapp-confirm`, not merged.**
+Migration 298 adds one nullable column. The build adds no switch. It is dark
+behind `WHATSAPP_ASSISTANT_WRITES`, which the owner turns on per org.
+
+**Origin.** Each email write over WhatsApp answered "ask in the app"
+(`_NO_CARD_CHANNEL`). The owner rule of 2026-10-10 says that a channel changes
+delivery, never function. `whatsapp_assistant_channel.md` §18 owns the design.
+This section records what it means for the email tools.
+
+**What the member gets.** Archive, label, move, reply, send a draft,
+schedule, forward and new mail work from WhatsApp. The card of the tool parks.
+The member then gets ONE text with the whole card and a short code. "YES
+7K3Q" approves it, "YES 7K3Q WITHOUT 2" leaves out line 2, and "NO" cancels.
+
+**The rules of §21 hold on WhatsApp.**
+
+1. **The card shows all that the send sends.** The text has each person
+   with a number, the class mark and the look-alike warning. It also has the
+   subject and the whole text. A long text goes over parts and is never cut.
+2. **A new address starts excluded.** It gets nothing unless the member
+   names its number with WITH ("YES 7K3Q WITH 3").
+3. **The server records the card.** A held card and a reply card record the
+   answer with `reply_card.record_reply_answer`, as the web's respond-input
+   does. The act route then sends exactly the recorded rows that the answer
+   ticks, minus the dropped ones. No second store exists.
+4. **Only the member approves.** Only the member's own phone can approve,
+   and Meta's signed webhook names that phone, not the message text. The
+   code works once, for 15 minutes.
+
+**What the email tools changed.**
+
+- `_card_refusal` and each send tool answer `_unapproved_line()`. A card
+  that parked answers `whatsapp_acts.EMAIL_PARKED_TEXT`, never "ask in the
+  app". `_NO_CARD_CHANNEL` stays only for a run with no reply path: a batch
+  run, a scheduled run and a WhatsApp run with writes off.
+- `compose_reply` pins its text and its Reply or Reply all choice before its
+  card. So the approval run sends the same text, and the server writes no
+  new one.
+- `ask_tools.reply_card_channel_open` is true in a WhatsApp run with writes
+  on, because that run has a reply path.
+
+**Not built.** A plain send card (a chat that read no outside mail) has no
+tick boxes, so WITH and WITHOUT do not apply to it. The member approves it as
+shown, or replies NO and asks for the change. Every other email write keeps
+its card on the web.
+
+**The fence change.** `test_email_chat_reply.py::test_no_card_on_whatsapp`
+expected no card in a WhatsApp run with writes on. It now names writes off,
+the one WhatsApp run with no reply path. `tests/unit/test_wac_email_confirm.py`
+fences the run with writes on.
+
+**Fences.** `tests/unit/test_wac_email_confirm.py` and
+`tests/unit/test_wac_email_confirm_r8.py` (R8).
+
+### 21.14 Look-alike letters (H-393, 2026-10-24)
+
+**Status: BUILT on the branch `email-single-mailbox-a`, not merged.** No
+migration and no switch. It closes HANDOFF H-393 and the open P2 of 21.10.
+
+**The rule.** A Cyrillic "а" in a Latin word looks like a Latin "a" on a
+card. A model can hide member data in such letters, or in an invisible
+character inside a word. So each chat send refuses such a word in a held
+chat. In other chats the card shows a warning, and the member decides.
+
+- **The one test.** `acb_skills.reply_card.lookalike_words` reads each word.
+  A word is a run of letters, marks and invisible characters. The test
+  names a word when its letters come from two scripts, or when it holds an
+  invisible character.
+- **Real text passes.** A text in one script passes: Hindi, Russian, Greek.
+  Kanji, hiragana, katakana and Hangul do not count, because Japanese mixes
+  them in one word. In a word with no Latin letter, ZWNJ and ZWJ are
+  writing, as in Persian and Malayalam. Digits and marks do not count.
+- **One table.** The refusal names the Latin letter that the odd letter
+  looks like. That letter comes from `held_card._CONFUSABLE` through
+  `held_card.confusable_of`, the table of the look-alike domain flag.
+- **One sentence.** The refusal names the word, the script, the letter and
+  its code point, for example "U+0430, it looks like the Latin a".
+
+**Where it runs.**
+
+| Path | Held chat | Other chat |
+|---|---|---|
+| `compose_reply` | Refused: the agreed text before any draft, the drafted text before the card, and the member's text before the act | A notice on the card |
+| `send_draft`, `schedule_send` | Refused at the card, for the subject and the sealed text (`_sealed_card`) | A warning first in the card detail |
+| The held card: `send_draft`, `schedule_send`, `forward_email`, `send_email` | Refused by the gateway (`held_card.refuse_lookalike`): the draft subject and text, the note, the new subject and text | Not reached |
+| `forward_email`, `send_email` | Held, so not reached | A warning on the card |
+
+The subject of a reply card is not checked. The server derives it from the
+mail, so the model cannot write it. A held chat also refuses a draft that
+quotes a mail with such a word. That costs a reply to a phishing mail,
+and it is the safe side.
+
+**Review fix (P1, 2026-10-24).** Three single-script cases join the test.
+
+1. A Latin letter outside Basic Latin, the Latin-1 Supplement and Latin
+   Extended-A, such as the IPA alpha U+0251. The Romanian and Vietnamese
+   letters stay plain.
+2. A word of another script in which the one table folds each letter to
+   ASCII, such as "pay" in Cyrillic. A text that holds a real
+   word of that script, one with a letter that has no ASCII twin, passes.
+   So real Russian and Greek pass.
+3. A number-letter form (Nl), such as U+217C, counts as a letter.
+
+`held_card._CONFUSABLE` gains the IPA alpha and script g, the dotless i,
+the dental click and two small Roman numerals.
+
+**Fence.** `tests/unit/test_lookalike_letters.py`.
+
+### 21.15 A Bcc on the reply card (2026-10-24)
+
+**Status: BUILT on the branch `email-single-mailbox-a`, not merged.** No
+migration and no switch.
+
+**What the member gets.** The reply card has a Bcc row, "Bcc (hidden from the
+others)". Each Bcc has a tick box. Three sources fill the row.
+
+1. **The tool.** `compose_reply(bcc=[...])` proposes a Bcc. It starts ticked.
+2. **The draft.** A Bcc of the thread's draft carries onto the card. It
+   starts ticked only for an `org`, `sent` or `thread` person (review P2-a
+   of 21.12). Before, the card only said that the draft held a Bcc.
+3. **The member.** The member types an address and presses "Add Bcc". The
+   browser posts `POST /email/reply-card/bcc`. No tool calls that route.
+
+**The server stays the only source of the list.**
+
+- The card route classes each Bcc with THE classifier. It keeps the Bcc in
+  the record of the card (`reply-card:<card id>`), beside the added people.
+  The route now writes a record for each card, so the member can add a Bcc.
+- `POST /email/reply-card/bcc` reads the record. It refuses a record of
+  another member or another mail, a person on To or Cc, and the member. It
+  adds the address with `SET XX`, so a record that the act already took
+  takes nothing.
+- The act takes a subset of the recorded Bcc only (`ticked_subset`). A Bcc
+  that the record does not hold sends nothing. An unticked Bcc does not go.
+- The answer may add one key, `bcc` (`REPLY_ANSWER_OPTIONAL_KEYS`). An answer
+  of an older card has none, and it still parses.
+- The draft in Drafts names the ticked Bcc (`exact_bcc`). A card with no
+  Bcc keeps the Bcc of the draft, as before.
+
+**The held chat.** The tool sets `held` on the card request from the run,
+never from the model. A held card takes a Bcc to an `org` or a `sent` person
+only, which is the rule of 21.10, open question 5.
+
+- A Bcc that the tool proposes to any other address answers 422, and no card
+  shows.
+- A Bcc of the draft to any other address leaves the card, and a notice
+  names it.
+- A Bcc that the member types follows the same rule, because the record
+  keeps the held flag.
+- This holds with `EMAIL_HELD_CARD_SEND` on or off. The server classes each
+  Bcc in both cases, so a new address never starts ticked.
+
+**The pin change.**
+
+| Pin | Change | Reason |
+|---|---|---|
+| `CARD_BOUND_SEND_TOOLS["compose_reply"]` | adds `bcc` | The gateway classes and records each Bcc, and the act takes a subset of the record. A held card takes an `org` or a `sent` Bcc only |
+
+**The fence changes, each with its reason.**
+
+- `test_the_parameter_fence_pins_compose_reply` now expects `bcc`. The
+  variant test adds `bcc_list` and `files`, which still break the pin.
+- `test_anything_else_is_no_reply_answer` now refuses a `bcc` that is not a
+  list. A list of addresses parses, and the act refuses a Bcc that the
+  record does not hold (`test_a_bcc_that_the_card_did_not_record_sends_nothing`).
+- `test_the_act_request_takes_no_recipient_body_or_file` still refuses `bcc`
+  on the act. The card request takes it, as it takes `cc`.
+- `test_the_client_builds_the_answer_the_server_reads` expects the keys and
+  the one optional key.
+- The tests of a held `compose_reply` expect `held` in the card request.
+- `test_a_cc_that_edit_draft_added_stays_on_the_next_card` now expects the
+  draft's Bcc on the card, in place of the old notice.
+- `OWNER_SCOPE_EXEMPT` gains `reply_card_bcc`, with its reason.
+
+**Review fixes (2026-10-24).**
+
+- **P1, IMAP.** The SMTP send names To, Cc and Bcc as the envelope, and
+  the MIME holds no Bcc header. Before, a Bcc went nowhere. The provider
+  keeps each refused recipient, and the send route returns it. The act
+  and the tool name a refused person as refused, never as sent. Fence:
+  `tests/unit/test_imap_bcc_envelope.py`.
+- **P2, WhatsApp.** The WhatsApp summary numbers each Bcc, marked
+  "Bcc (hidden from the others)". WITHOUT takes it off, and the built
+  answer carries the kept Bcc. Fence: `tests/unit/test_wac_email_bcc.py`.
+- The held notice of a draft Bcc names no class. "Add Bcc" waits for the
+  card to arm, as the other buttons do.
+
+**Fences.** `tests/unit/test_reply_card_bcc.py`,
+`tests/unit/test_email_chat_reply.py`, `tests/unit/test_recipient_intent.py`,
+`workbench/control_plane/src/lib/replyCard.test.ts` and
+`workbench/control_plane/e2e/email-chat-reply.spec.ts`.
+
+### 21.16 Always copy (item 7b, 2026-10-24)
+
+**Status: BUILT on the branch `email-single-mailbox-a`, not merged.** One
+expand-only migration, 299. It was 298 until PR #1285 took that number. No switch.
+
+**What the member gets.** "Always copy Kiran and Veena on mail to
+jainuniversity.ac.in." A rule names a domain or an address (`match`) and
+the colleagues to copy (`cc`). It adds those colleagues to the member's own
+cards as rows that start ticked. The member can untick each one. A rule
+never sends and never acts on its own.
+
+**Why a setting and not a mail rule.** A mail rule runs on incoming mail.
+The rule tools count a `cc_address` as an outward act. So the list is a
+setting of the mailbox, the column `email_assistant_settings.always_copy`.
+
+**The three rules.**
+
+1. **Only a known colleague.** `PUT /email/assistant/always-copy` takes a
+   `cc` person only when THE classifier says `org` or `sent`. It refuses a
+   stranger, a person of another tenant and the member's own address, and
+   the refusal names the person. So no chat can put a stranger on the list.
+2. **Checked again on use.** `always_copy.always_copy_people` classes each
+   person again when a card reads the list. A colleague who left the
+   organization drops off.
+3. **A held chat never changes the list.** It changes the people of each
+   later card. `held_card.HELD_SETTING_DECISIONS` refuses `always_copy`.
+
+**Where it shows.**
+
+| Card | What the rule does |
+|---|---|
+| The reply card | Each colleague is an added Cc, ticked, with the mark "your rule: always copy on <match>". A match is the sender or any To or Cc of the mail, by address, by domain or by a subdomain |
+| The held new-mail card | Each colleague is a Cc row, ticked, with the same mark (`held_card._always_copy_rows`) |
+| The new-mail card of `send_email` | The tool adds each colleague to Cc. The card names each one and its rule |
+
+**The chat.** `update_assistant_settings(always_copy=[...])` takes the WHOLE
+list. Each change asks a card that names the rules now and after.
+`get_rules_and_settings` names the rules.
+
+**The Email app.** Settings, the Advanced section, holds the card "Always
+copy", before the domains card. The member adds and removes a rule there.
+The card uses the controls of its neighbour, the domains card.
+
+**The pin change.**
+
+| Pin | Change | Reason |
+|---|---|---|
+| `HELD_CARD_SEND_TOOLS["update_assistant_settings"]` | adds `always_copy` | The row in `HELD_SETTING_DECISIONS` refuses it in a held run. The gateway takes only an `org` or a `sent` colleague in any chat |
+
+**The fence changes.** `test_the_h404_pin_changes_are_named` now expects 22
+keys and names `always_copy`. `SETTING_ON` of
+`test_email_agent_write_cards.py` adds `always_copy`, which asks a card.
+
+**Review fix (P2, 2026-10-24).** A failed read can never wipe the list.
+The Settings card keeps the list empty of value after a failed read, shows
+the error, and offers no write. The PUT needs `expected`, the version of
+the list that the caller read. The route reads the row `FOR UPDATE`, and
+a list with another version answers 409 with no write. The version was
+the smaller change than one rule for each call, and the tool keeps its
+whole-list contract.
+
+**Fences.** `tests/unit/test_email_always_copy.py`,
+`tests/unit/test_email_always_copy_r8.py` (R8),
+`tests/unit/test_egress_card_bound_pin.py`,
+`tests/unit/test_email_agent_write_cards.py` and
+`workbench/control_plane/src/app/email/lib/alwaysCopy.test.ts`.
 
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 

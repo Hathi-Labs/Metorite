@@ -188,6 +188,20 @@ def _may(permission: str) -> bool:
         return False
 
 
+def _close_profile_writes() -> None:
+    """WS-63 PZ-6a fix round 2: a memory read hands the model text that
+    another person, a mail or an import may have shaped, so it closes the
+    run's profile writes for the rest of the run
+    (``acb_common.assistant_profile.close_writes``). Never raises. Fence:
+    ``tests/unit/test_profile_write_tools.py``."""
+    try:
+        from acb_common.assistant_profile import close_writes
+
+        close_writes()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def remember(query: str) -> str:
     """Search episodic memory for facts about the current user related to *query*.
 
@@ -207,6 +221,7 @@ async def remember(query: str) -> str:
         facts = await remember("Vijay's preferred communication channel")
         facts = await remember("ABC Corp deal status and contacts")
     """
+    _close_profile_writes()
     try:
         from acb_memory import get_memory_context  # noqa: PLC0415
 
@@ -246,6 +261,7 @@ async def recall_timeline(entity_name: str, query: str) -> str:
         history = await recall_timeline("ABC Corp", "all deal stage changes")
         history = await recall_timeline("Rahul Kumar", "meetings and follow-ups")
     """
+    _close_profile_writes()
     try:
         from acb_memory import search_entity_timeline  # noqa: PLC0415
 
@@ -411,6 +427,7 @@ async def recall_agent(query: str) -> str:
         ctx = await recall_agent("our standard quote-approval workflow")
         ctx = await recall_agent("which suppliers we've had quality issues with")
     """
+    _close_profile_writes()
     try:
         from acb_memory import get_scoped_context, scope_key  # noqa: PLC0415
 
@@ -490,6 +507,7 @@ async def recall_org(query: str) -> str:
         ctx = await recall_org("our fiscal year and reporting cadence")
         ctx = await recall_org("company-wide priorities this quarter")
     """
+    _close_profile_writes()
     try:
         from acb_memory import get_scoped_context, scope_key  # noqa: PLC0415
 

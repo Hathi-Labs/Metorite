@@ -181,8 +181,12 @@ def _queued_text() -> str:
 def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     steps = [
         first + " When the task is done, cancelled, archived or in triage, stop,"
-        " and tell me why.",
-        "Call claim_task with that version as expected_version.",
+        " and tell me why. When get_task shows held_by and held_by.stale is"
+        " false, another AI session holds the task. Stop, and tell me. Do not"
+        " work on a held task.",
+        "Call claim_task with that version as expected_version. When the tool"
+        " says that another session holds the task, stop, and tell me. Do not"
+        " claim that task again.",
     ]
     if start_run:
         steps.append("Call start_agent_run for the task.")
@@ -190,8 +194,9 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     if runs:
         steps.append(
             "Report progress. While a run is open, send a thought with"
-            " post_agent_activity at least once a minute. When no run is open,"
-            " call add_comment.")
+            " post_agent_activity at least once a minute. That is your"
+            " heartbeat. After 2 hours with no activity, another session can"
+            " take the task from you. When no run is open, call add_comment.")
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -217,7 +222,9 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
             " thought with post_agent_activity, because a created run cannot"
             " finish. Then call finish_agent_run with a summary. When a run reads"
             " stopping, stop the work at once and call finish_agent_run, with no"
-            " activity first.")
+            " activity first. When you stop and will not finish the work, call"
+            " release_task with the run_id, so that another session can take the"
+            " task.")
     return "\n".join(f"{n}. {step}" for n, step in enumerate(steps, start=1))
 
 
