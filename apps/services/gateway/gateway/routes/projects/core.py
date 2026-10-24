@@ -3491,6 +3491,53 @@ def validate_grant_subject(subject: str) -> str:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
+#: The groups of one organization, for the grant routes (WS-64 OP-6b, fix
+#: round 1). ``org_group`` has no row security, so the statement names the
+#: organization, as ``report_scope`` does.
+_ORG_GROUPS_SQL = (
+    "SELECT slug, display_name FROM org_group "
+    " WHERE organization_id = CAST(:org AS uuid) ORDER BY slug"
+)
+
+
+async def org_groups(db: Any, organization_id: Any) -> list[dict[str, str]]:
+    """Each group of the organization as ``{"slug", "display_name"}``.
+
+    ``GET /nodes/{id}/grants`` gives the list, so the chat can refuse an
+    unknown group before its card. ``POST /nodes/{id}/grants`` reads it to
+    refuse one at the route.
+    """
+    if not organization_id:
+        return []
+    rows = (await db.execute(text(_ORG_GROUPS_SQL), {"org": str(organization_id)})).fetchall()
+    return [{"slug": str(r.slug), "display_name": str(r.display_name or r.slug)} for r in rows]
+
+
+def unknown_group_sentence(slug: str, groups: list[dict[str, str]]) -> str:
+    """The 422 words for a ``group:<slug>`` that names no group."""
+    if not groups:
+        return f"There is no group called {slug}. This organization has no groups."
+    listed = ", ".join(f"{g['display_name']} (group:{g['slug']})" for g in groups)
+    return f"There is no group called {slug}. The groups are: {listed}."
+
+
+async def assert_grant_group_exists(db: Any, organization_id: Any, subject: str) -> None:
+    """422 when *subject* is ``group:<slug>`` and the organization has no such group.
+
+    *subject* is already in the stored form of ``validate_grant_subject``.
+    ``org`` and an email address pass. A grant to a group that does not
+    exist lets nobody in, and reads as if it worked. The importer refuses the
+    same thing (``imports.GROUP_EXISTS_SQL``).
+    """
+    if not subject.startswith("group:"):
+        return
+    slug = subject.split(":", 1)[1]
+    groups = await org_groups(db, organization_id)
+    if any(g["slug"].lower() == slug.lower() for g in groups):
+        return
+    raise HTTPException(status_code=422, detail=unknown_group_sentence(slug, groups))
+
+
 def validate_choice(value: str | None, allowed: tuple[str, ...], what: str) -> None:
     if value is not None and value not in allowed:
         raise HTTPException(

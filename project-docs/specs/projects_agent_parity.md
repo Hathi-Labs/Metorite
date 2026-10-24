@@ -1604,7 +1604,7 @@ as for the app's screens.
 | `report_save`, `report_delete` | `_visible_report`: the author or an admin | The pre-check reads the server's `can_edit` and `can_delete`, and quotes the server's words. Kept |
 | `capture_intake`, `triage_intake` | Visibility, the queue state | None |
 | `mark_notifications_read` | The member's own bell | None |
-| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40) |
+| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40). ⚠️ Superseded 2026-10-24: `grant_access` and `revoke_access` are class C (WS-64 OP-6b, D-OP-9), and the route checks D-OP-11 |
 | Hard delete of a project or a task | Class X in the manifest | No tool (D-PM-35) |
 
 ### 16.7 The rules that stay
@@ -1612,7 +1612,7 @@ as for the app's screens.
 | Rule | Owner | Kind |
 |---|---|---|
 | The chat never hard-deletes a project or a task. Archive is the remove verb | D-PM-35 | Product decision |
-| The chat does not write grants | D-PM-40 | Product decision |
+| The chat does not write grants. ⚠️ Superseded by D-OP-9, built in WS-64 OP-6b | D-PM-40 | Product decision |
 | A guarded act is one card for each act, with the counts first | `projects_ai_chat.md` §3.3 | Product decision |
 | An agent assignee in a run that may not send is refused | H-236 | Product decision (egress) |
 | A comment is edited or deleted by its author only | `activities.py` `_load_own_comment` | Server rule, mirrored before the card |

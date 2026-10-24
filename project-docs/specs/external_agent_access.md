@@ -107,7 +107,7 @@ Source: `github.com/personalagentproxy/proxy` (MIT, early). It is a self-hosted 
 **Non-goals (version 1):**
 
 - Email, WhatsApp, CRM, meetings and the member's personal stores. D91.4 says a personal store never gets a direct read tool for a shared agent. This edge is an outside agent, so the rule binds harder.
-- A hard delete, a grant write, a role write, billing, and any `admin:*` route. D-PM-35 and D-PM-40 already refuse these for the in-product chat.
+- A hard delete, a grant write, a role write, billing, and any `admin:*` route. D-PM-35 and D-PM-40 refused the first two for the in-product chat. Since 2026-10-23 (D-OP-9) the in-product chat does both behind a card, and the server decides who may (D-OP-11, D-OP-12). This edge keeps the grant write out of version 1.
 - A personal access token and a device flow. See D-EA-5.
 - Metorite's own agents calling this edge. They keep native tools (D91.1).
 - A local stdio server. Outside agents reach us over HTTPS only.

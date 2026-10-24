@@ -403,6 +403,23 @@ def _op6c_answers(call: dict) -> Any:
     return None
 
 
+#: WS-64 OP-6b. The grants of the project, as `GET /projects/nodes/{id}/grants` lists them.
+GRANT_ID = "a1f8fad5-d9cb-469f-a165-70867728950e"
+GRANTS = [{"id": GRANT_ID, "project_id": UUID, "subject": "group:design", "created_by": "a@x.io"}]
+
+
+def _op6b_answers(call: dict) -> Any:
+    """WS-64 OP-6b: the grant list, a new grant and a removed one."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/nodes/{UUID}/grants" and method == "GET":
+        return {"rows": GRANTS, "total": len(GRANTS)}
+    if path == f"/projects/nodes/{UUID}/grants" and method == "POST":
+        return {"id": OTHER, "project_id": UUID, "subject": call["json"]["subject"]}
+    if path == f"/projects/nodes/{UUID}/grants/{GRANT_ID}" and method == "DELETE":
+        return {"deleted": GRANT_ID, "subject": "group:design"}
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
@@ -414,7 +431,7 @@ def responder(call: dict) -> Any:
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
     # `_op6c_answers` first: its task answers a `/my/tasks/` read that `_s2b_answers` also claims.
-    answered = _answered(call, _op6c_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -618,6 +635,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     # WS-64 OP-6c — a nudge to the person the member waits on, a file from the chat
     "nudge_task": [{"task_id": WAITER}],
     "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
+    # WS-64 OP-6b — one grant per card, by grant_id or by subject
+    "grant_access": [{"project_id": UUID, "subject": "org"}],
+    "revoke_access": [
+        {"project_id": UUID, "grant": GRANT_ID},
+        {"project_id": UUID, "grant": "group:Design"},
+    ],
     # WS-64 OP-6a — a new area of the member's own
     "create_area": [{"name": "Garden"}],
     # S4 — the forms: an editable card, then the class B card
@@ -701,6 +724,8 @@ _ONE_ID: dict[str, str] = {
     "rename_area": "area",
     "nudge_task": "task_id",
     "attach_to_task": "task_id",
+    "grant_access": "subject",
+    "revoke_access": "grant",
 }
 
 

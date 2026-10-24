@@ -105,12 +105,6 @@ _AGENT_DELETE_REASON = (
 _DELIVERY_REASON = (
     "Report delivery stays in the Reports app. Arming the schedule is owner-gated (§9.12.8)."
 )
-#: Writing who can see a project is a membership-shaped act. D-PM-40, the
-#: owner's answer of 2026-09-29 to spec §12 question 2.
-_GRANT_REASON = (
-    "D-PM-40 — the chat does not write grants. Propose the grant in words, "
-    "and a person applies it in the app."
-)
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
@@ -144,8 +138,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
     Route("GET", "/projects/nodes/{project_id}/grants", "project_access", "A"),
-    Route("POST", "/projects/nodes/{project_id}/grants", "", "X", _GRANT_REASON),
-    Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "", "X", _GRANT_REASON),
+    # WS-64 OP-6b (D-OP-9 reverses D-PM-40): one grant per card. The route
+    # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
+    Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
+    Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
@@ -860,6 +856,8 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     },
     # WS-64 OP-6c: the file is the one part of the multipart body.
     ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
+    # WS-64 OP-6b: the one field of a grant.
+    ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
     # WS-64 OP-6a
     ("POST", "/projects/my/areas"): {"name": "create_area.name"},
     ("PATCH", "/projects/my/areas/{area_id}"): {"name": "rename_area.new_name"},

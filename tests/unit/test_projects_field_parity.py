@@ -294,6 +294,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "capture_intake": {"title": "Vendor called"},
     # WS-64 OP-6c: the file is in the fake upload (tw.UPLOAD).
     "attach_to_task": {"task_id": UUID, "file_name": "brief.pdf"},
+    # WS-64 OP-6b: one grant, for the whole organization.
+    "grant_access": {"project_id": UUID},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
     "complete": {"task_id": UUID},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
@@ -351,6 +353,7 @@ _BASE: dict[str, dict[str, Any]] = {
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    "subject": "org",
     "assignee": "priya@x.io",
     "assignees": "priya@x.io",
     "assignees_add": "Priya",

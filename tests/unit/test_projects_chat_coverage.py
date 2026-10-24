@@ -185,7 +185,8 @@ def test_the_two_hard_deletes_are_guarded_tools() -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("POST", "/projects/nodes/0f8fad5b-d9cb-469f-a165-70867728950e/grants"),
+        # The grant POST left class X in WS-64 OP-6b. The planner stays X.
+        ("POST", "/projects/my/calendar/plan"),
         ("PATCH", "/projects/reports/0f8fad5b-d9cb-469f-a165-70867728950e/schedule"),
     ],
 )

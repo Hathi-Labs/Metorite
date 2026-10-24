@@ -228,6 +228,8 @@ const WRITE: readonly string[] = [
   "delete_area",
   "nudge_task",
   "attach_to_task",
+  "grant_access",
+  "revoke_access",
   // ── Tasks ──────────────────────────────────────────────────────────────
   "my_tasks_capture",
   "my_tasks_capture_many",

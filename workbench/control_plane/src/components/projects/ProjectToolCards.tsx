@@ -186,6 +186,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   rename_area: { icon: "Layers", label: "Area renamed" },
   nudge_task: { icon: "Bell", label: "Person nudged" },
   attach_to_task: { icon: "Paperclip", label: "File attached" },
+  grant_access: { icon: "UserPlus", label: "Access given" },
+  revoke_access: { icon: "UserMinus", label: "Access removed" },
   delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
@@ -284,6 +286,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "delete_area",
   "nudge_task",
   "attach_to_task",
+  "grant_access",
+  "revoke_access",
 ]);
 
 /**
