@@ -589,3 +589,26 @@ describe("the ticks are the member's", () => {
     expect(queue).not.toMatch(/\.filter\(|\.checked/);
   });
 });
+
+describe("the stack of waiting cards (owner, 2026-10-24)", () => {
+  it("a drag to the left shows the next card, to the right the previous, and the ends do not wrap", async () => {
+    const { swipeStep, SWIPE_STEP_PX } = await import("./confirmationQueue");
+    expect(swipeStep(-SWIPE_STEP_PX, 0, 3)).toBe(1);
+    expect(swipeStep(SWIPE_STEP_PX, 1, 3)).toBe(-1);
+    expect(swipeStep(-SWIPE_STEP_PX, 2, 3)).toBe(0);
+    expect(swipeStep(SWIPE_STEP_PX, 0, 3)).toBe(0);
+    expect(swipeStep(-10, 0, 3)).toBe(0);
+    expect(swipeStep(-200, 0, 1)).toBe(0);
+    expect(swipeStep(Number.NaN, 0, 3)).toBe(0);
+  });
+
+  it("at most two edges peek behind the card, and one card has none", async () => {
+    const { stackDepth } = await import("./confirmationQueue");
+    expect([1, 2, 3, 10].map(stackDepth)).toEqual([0, 1, 2, 2]);
+  });
+
+  it("the banner counts the cards and names the swipe", async () => {
+    const { stackBanner } = await import("./confirmationQueue");
+    expect(stackBanner(2)).toBe("2 approvals waiting. Swipe or use the arrows to see each one.");
+  });
+});

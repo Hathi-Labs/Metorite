@@ -1625,6 +1625,20 @@ html.panel-swap::view-transition-new(assistant-panel) {
   animation: bounce-subtle 1.5s ease-in-out infinite;
 }
 
+/* A stack of approval cards nudges once: the shown card slides a little to
+   the left and back, twice, to show that a swipe reaches the next card
+   (owner, 2026-10-24, components/ConfirmationQueue.tsx). With reduced
+   motion it stays still, and the banner and the card edges say the same. */
+@keyframes approval-stack-nudge {
+  0%, 40%, 100% { transform: translateX(0); }
+  20%, 60%      { transform: translateX(-14px); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .approval-stack-nudge[data-nudge] {
+    animation: approval-stack-nudge 1.4s var(--motion-easing) 0.3s 1;
+  }
+}
+
 /* ── Scrollbars ────────────────────────────────────────────── */
 /*
    ⚠️ THE DEFAULT, not an opt-in. Owner report, 2026-09-20: "the scroll bar
