@@ -171,12 +171,25 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 describe("My work is a mount, not a copy", () => {
+  // Two clashes were in the tree before OP-2 (measured 2026-10-24): each is a
+  // different component for a different app (the Projects chat rail and
+  // board). The list is closed. Never add a name to it.
+  const BEFORE_OP2 = new Set(["assistantrail.tsx", "taskboard.tsx"]);
+
   it("no file under app/projects has the basename of a file in app/tasks/components", () => {
     const taken = new Set(fs.readdirSync(TASK_COMPONENTS).map((f) => f.toLowerCase()));
     const clash = walk(PROJECTS)
       .map((f) => path.basename(f))
-      .filter((name) => taken.has(name.toLowerCase()));
+      .filter((name) => taken.has(name.toLowerCase()) && !BEFORE_OP2.has(name.toLowerCase()));
     expect(clash, "a My work view is imported from app/tasks/components, never copied").toEqual([]);
+  });
+
+  it("the closed list still names real clashes, so it cannot go stale", () => {
+    const projects = new Set(walk(PROJECTS).map((f) => path.basename(f).toLowerCase()));
+    const tasks = new Set(fs.readdirSync(TASK_COMPONENTS).map((f) => f.toLowerCase()));
+    for (const name of BEFORE_OP2) {
+      expect(projects.has(name) && tasks.has(name), name).toBe(true);
+    }
   });
 
   it("nothing imports app/tasks/page.tsx", () => {
@@ -188,7 +201,9 @@ describe("My work is a mount, not a copy", () => {
   });
 
   it("the host imports the views by path from app/tasks/components", () => {
-    const source = fs.readFileSync(path.join(PROJECTS, "components", "MyWorkHost.tsx"), "utf8");
+    const source = fs
+      .readFileSync(path.join(PROJECTS, "components", "MyWorkHost.tsx"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
     for (const view of ["InboxView", "ItemList"]) {
       expect(source).toContain(`@/app/tasks/components/${view}`);
     }
