@@ -4585,9 +4585,9 @@ function ProjectsWorkspace() {
         project={convertingNode}
         childNames={
           convertingNode
-            ? (pathTo(roots, convertingNode.id).at(-1)?.children ?? [])
-                .filter((child) => !child.archived_at)
-                .map((child) => child.name)
+            ? (pathTo(roots, convertingNode.id).at(-1)?.children ?? []).map(
+                (child) => child.name,
+              )
             : []
         }
         error={convertError}

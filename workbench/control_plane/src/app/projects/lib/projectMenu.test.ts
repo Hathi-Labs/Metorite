@@ -108,6 +108,40 @@ describe("projectMenuItems", () => {
     expect(labels(projectMenuItems(project(), withHandler))).toContain("Delete");
   });
 
+  it("offers Convert to project only on a folder the server lets this member convert (OP-10)", () => {
+    // WS-64 OP-10 (D-OP-16). `can_convert` comes from the server's one rule,
+    // and only an explicit `true` offers the entry.
+    const onConvert = vi.fn();
+    const withHandler = { ...handlers(), onConvert };
+    const ui = { onBeginRename: vi.fn() };
+    const folder = (over: Partial<ProjectRow> = {}) => project({ kind: "folder", ...over });
+    const items = projectMenuItems(folder({ can_convert: true }), withHandler, ui, "folder");
+    // Beside Rename, in the group that changes what the node IS.
+    expect(labels(items).slice(0, 2)).toEqual(["Rename", "Convert to project"]);
+    const entry = items.find(
+      (i) => i.kind === "item" && i.label === "Convert to project"
+    ) as { onSelect: () => void };
+    entry.onSelect();
+    expect(onConvert).toHaveBeenCalledWith(expect.objectContaining({ id: "p1" }));
+    // Not without the flag, not on a false flag, not on a project, not without a handler.
+    expect(labels(projectMenuItems(folder(), withHandler, ui, "folder"))).not.toContain(
+      "Convert to project"
+    );
+    expect(
+      labels(projectMenuItems(folder({ can_convert: false }), withHandler, ui, "folder"))
+    ).not.toContain("Convert to project");
+    expect(
+      labels(projectMenuItems(project({ can_convert: true }), withHandler, ui, "project"))
+    ).not.toContain("Convert to project");
+    expect(
+      labels(projectMenuItems(folder({ can_convert: true }), handlers(), ui, "folder"))
+    ).not.toContain("Convert to project");
+    // A tree with no edit group still offers it, in a group of its own.
+    expect(
+      labels(projectMenuItems(folder({ can_convert: true }), withHandler, undefined, "folder"))
+    ).toContain("Convert to project");
+  });
+
   it("offers Delete LAST, and behind a separator", () => {
     // The ranking IS the design (spec §9.8.4): archive is the default
     // affordance and delete is the harder one to reach. An entry that drifted

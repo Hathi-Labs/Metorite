@@ -415,7 +415,7 @@ async def convert_folder_to_project(project_id: str) -> str:
     if refused:
         return refused
     found = await _tree_node(pid)
-    kids = [c for c in (found or {}).get("children") or [] if not c.get("archived_at")]
+    kids = list((found or {}).get("children") or [])
     # The tree read is visibility-filtered and the conversion is not: every
     # project inside becomes a subproject. So the card says "you can see".
     impact = (
