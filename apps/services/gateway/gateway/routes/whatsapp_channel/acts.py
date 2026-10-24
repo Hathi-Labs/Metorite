@@ -73,6 +73,7 @@ Fences: ``tests/unit/test_wac_writes.py`` (database-free) and
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -639,10 +640,11 @@ def _answers_this_card(act: dict[str, Any]) -> bool:
 
 
 def act_function(name: str) -> Callable[..., Awaitable[Any]] | None:
-    """The tool that an act of *name* runs, from ``ALLOWED_ACTS`` only."""
-    from acb_skills.whatsapp_acts import ALLOWED_ACTS
+    """The tool that an act of *name* runs, from ``ALLOWED_ACTS`` and
+    ``PROFILE_ACTS`` only (``whatsapp_acts.act_module``)."""
+    from acb_skills.whatsapp_acts import act_module
 
-    module = ALLOWED_ACTS.get(name)
+    module = act_module(name)
     if module is None:
         return None
     import importlib
@@ -656,12 +658,37 @@ def _arguments(raw: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _member_text(tool_text: str) -> str:
+def _member_text(tool_text: str, tool: str = "") -> str:
     """The tool's own text, for the member: without its "Next:" lines, which
-    speak to the model."""
+    speak to the model. A profile act (WS-63 PZ-6b) loses its machine line
+    and its words for the model (``profile_tools.member_text``)."""
+    from acb_skills.whatsapp_acts import PROFILE_ACTS
+
+    if tool in PROFILE_ACTS:
+        from acb_skills.profile_tools import member_text
+
+        return member_text(tool_text)
     lines = [ln for ln in str(tool_text or "").splitlines()
              if not ln.strip().startswith("Next:")]
     return "\n".join(lines).strip()
+
+
+def _act_scope(tool: str) -> Any:
+    """The run context of the stored call of *tool* at Confirm.
+
+    A profile act (WS-63 PZ-6b, D-PZ-20) runs as a WhatsApp write of the
+    member's own thread: :func:`settle` runs only with the org's WhatsApp
+    writes on and in no room, and the link's member is verified. So it
+    opens the profile writes for this one call
+    (``profile_tools.whatsapp_confirm_scope``). Every other act runs as
+    before."""
+    from acb_skills.whatsapp_acts import PROFILE_ACTS
+
+    if tool not in PROFILE_ACTS:
+        return contextlib.nullcontext()
+    from acb_skills.profile_tools import whatsapp_confirm_scope
+
+    return whatsapp_confirm_scope()
 
 
 def _refusal(exc: BaseException) -> str | None:
@@ -694,7 +721,7 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
     # only (H-73). The "yes" answers one card and is reset on the way out.
     binding = _bind_memory_user_id(req.member_email)
     try:
-        with refuse_cards(), confirming(str(act["card_text"])) as state:
+        with refuse_cards(), _act_scope(tool), confirming(str(act["card_text"])) as state:
             try:
                 out = str(await asyncio.wait_for(fn(**arguments), timeout=ACT_TIMEOUT_S))
             except asyncio.CancelledError:
@@ -715,14 +742,14 @@ async def _run(req: RunRequest, act_id: str, act: dict[str, Any]) -> str:
         _log.warning("whatsapp_channel.act.failed", act_id=act_id, tool=tool,
                      error_type=type(error).__name__, after_yes=state.used)
         if refused is not None:
-            return _member_text(refused) or REPLY_FAILED
+            return _member_text(refused, tool) or REPLY_FAILED
         return REPLY_FAILED if sure else REPLY_UNSURE
     if not state.used:
         # The tool answered before its card: a refusal in its own words.
         await _close(act_id, "running", "failed", "no_card")
         _log.info("whatsapp_channel.act.failed", act_id=act_id, tool=tool, code="no_card")
-        return _member_text(out or "") or REPLY_FAILED
+        return _member_text(out or "", tool) or REPLY_FAILED
     await _close(act_id, "running", "done", None)
     _log.info("whatsapp_channel.act.done", act_id=act_id, tool=tool,
               organization_id=req.organization_id)
-    return _member_text(out or "") or REPLY_FAILED
+    return _member_text(out or "", tool) or REPLY_FAILED

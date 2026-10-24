@@ -67,6 +67,28 @@ ALLOWED_ACTS: dict[str, str] = {
     "set_my_overlay": "skill_projects.writes",
 }
 
+#: WS-63 PZ-6b (D-PZ-20): the profile writes that ask the member first. A
+#: fact with an address, a link or a long number, a sensitive fact, a fact
+#: that replaces another one, and an alias with an address park here, and
+#: the same Confirm and Cancel buttons settle them. They are not in
+#: :data:`ALLOWED_ACTS`, because that list holds the class B acts of the
+#: Projects manifest (``test_wac_writes.py``). :func:`act_module` reads both.
+#: At Confirm, ``whatsapp_channel/acts.py`` runs the stored call with no
+#: model, inside ``profile_tools.whatsapp_confirm_scope``. Fence:
+#: ``tests/unit/test_profile_write_tools.py``.
+PROFILE_ACTS: dict[str, str] = {
+    "profile_remember": "acb_skills.profile_tools",
+    "profile_set": "acb_skills.profile_tools",
+    "profile_alias": "acb_skills.profile_tools",
+}
+
+
+def act_module(name: str) -> str | None:
+    """The module of the act *name*, from :data:`ALLOWED_ACTS` or
+    :data:`PROFILE_ACTS`, or None for a tool that may not park."""
+    return ALLOWED_ACTS.get(name) or PROFILE_ACTS.get(name)
+
+
 #: The two button titles. A tap arrives as its title (``inbound.tap_text``).
 CONFIRM = "Confirm"
 CANCEL = "Cancel"
@@ -238,7 +260,7 @@ def answer_card(title: str, detail: str, context: str,
         return None
     call = _CALL.get()
     if (call is None or call.arguments is None
-            or ALLOWED_ACTS.get(call.name) != call.module):
+            or act_module(call.name) != call.module):
         return None
     arguments = _stored_arguments(call.arguments)
     if arguments is None:
@@ -273,6 +295,16 @@ def confirming(card: str) -> Iterator[Confirming]:
         yield state
     finally:
         _reset(_CONFIRMING, token)
+
+
+def confirming_now() -> bool:
+    """True inside :func:`confirming`: the run of a stored act at Confirm.
+
+    Only ``whatsapp_channel/acts._run`` opens it, after the member's
+    Confirm passed every check. A profile tool reads it to skip the
+    typed-words rule, because the member typed "Confirm" and nothing else.
+    The card gate still binds the write to the card that the member saw."""
+    return _CONFIRMING.get() is not None
 
 
 def _plain(value: str) -> str:
