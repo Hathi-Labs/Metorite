@@ -32,7 +32,9 @@ from acb_common import get_logger
 _log = get_logger("acb_skills.held_card")
 
 __all__ = [
+    "ADDED_MARK",
     "ADDRESS_MAX",
+    "ASSISTANT_ADDED_MARK",
     "ARTIFACT_REF",
     "ATTACHMENT_REF",
     "CLASSES",
@@ -54,12 +56,14 @@ __all__ = [
     "METORITE_FILE_REFUSED",
     "NEW_MARK",
     "RECIPIENT_KINDS",
+    "RULE_COPY_MARK",
     "ROW_KINDS",
     "SETTING_CLOSED",
     "SETTING_MAILBOX",
     "SETTING_REFUSED",
     "TASK_FILE_REF",
     "THREAD_MARK",
+    "USUAL_COPY_MARK",
     "WORKSPACE_FILE_REFUSED",
     "address_problem",
     "class_mark",
@@ -73,6 +77,7 @@ __all__ = [
     "parse_file_ref",
     "recipient_label",
     "strongest_class",
+    "thread_mark",
 ]
 
 
@@ -97,9 +102,12 @@ def held_card_send_enabled() -> bool:
 CLASS_ORG = "org"
 #: A person that the member wrote to before (a To or a Cc of a sent mail).
 CLASS_SENT = "sent"
-#: A person that the reply derivation gave for this thread: the sender of a
-#: mail of the thread. Open question 1 took the safer choice, so only that
-#: sender counts. Each other person on the thread is new, unless known.
+#: A person of this thread: the sender of a received mail of the thread, or a
+#: To or a Cc of such a mail. The owner answered open question 1 on
+#: 2026-10-24: "Everyone on the original email" starts ticked. One carve-out
+#: stays: a person whose domain is a LOOK-ALIKE of the domain of a sender of
+#: the thread, or of an organization domain (:func:`lookalike_of`), is new,
+#: unticked and flagged. A Reply-To that is not the sender is never thread.
 CLASS_THREAD = "thread"
 #: Anything else. A sender of outside mail (``seen``) is new too, because the
 #: attacker is a sender (§21.2 rule 3).
@@ -115,6 +123,26 @@ DEFAULT_TICKED: frozenset[str] = frozenset({CLASS_ORG, CLASS_SENT, CLASS_THREAD}
 NEW_MARK = "new address — not in your contacts"
 #: The mark on a person of the thread.
 THREAD_MARK = "from this thread"
+#: The mark on a colleague that the server put on a reply card, because the
+#: member copies them on mail of this thread or to this domain (item 7 of
+#: the owner's request of 2026-10-24).
+USUAL_COPY_MARK = "you usually copy them"
+#: The mark on a person that the member's own "always Cc" rule adds.
+RULE_COPY_MARK = "your rule copies them"
+#: The mark on a person that the chat added to a reply, outside a held run.
+#: The server cannot know that the member named the person (review P1-b).
+ADDED_MARK = "added to this reply"
+#: The mark on a person that the chat added in a held run: the model chose
+#: the address, and the member checks it (review P1-b).
+ASSISTANT_ADDED_MARK = "the assistant added them"
+
+
+def thread_mark(sender: str) -> str:
+    """The mark on a person of the original email, with the sender named:
+    "on Dr Sagar's original email". *sender* is the name of the sender, else
+    the address."""
+    who = " ".join(str(sender or "").split())[:80]
+    return f"on {who}'s original email" if who else "on the original email"
 
 
 def strongest_class(classes: Iterable[str]) -> str:

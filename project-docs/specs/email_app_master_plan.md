@@ -20776,7 +20776,7 @@ The contract reuses three parts that exist. It adds one record and one classifie
    |---|---|---|
    | `org` | An organization member or a People row | ticked |
    | `sent` | A person that the member wrote to before | ticked |
-   | `thread` | A person that the reply derivation gave for this thread (Reply and Reply all only) | ticked |
+   | `thread` | A person on the mail that the reply answers, or a sender, To or Cc of a thread mail from an `org` or `sent` sender. Junk and spam never count (21.12, 2026-10-24) | ticked |
    | `new` | Anything else, `seen` senders included | unticked, marked |
 
    The classifier reads the same data as `/email/contacts/suggest`. It does not call the
@@ -20935,7 +20935,7 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
 
 | # | Question | The build |
 |---|---|---|
-| 1 | A person on the thread | Only the sender of a mail of the thread is `thread`. A person that only Reply all adds, and that the member does not know, is `new`. The reply card then opens on Reply, and the member must press Reply all |
+| 1 | A person on the thread | **Replaced by the owner on 2026-10-24 (21.12).** The build first took the safer choice: only the sender was `thread`. Now each To and Cc of a received mail of the thread is `thread` and starts ticked. A person on a look-alike domain stays `new` |
 | 2 | Is `sent` enough | `sent` stays as in the suggest route: one Sent mail to the person. The row still shows its class |
 | 3 | A new address, ticked by habit | The mark, the warning tone and the unticked start. The hold note tells the model never to tick for the member, and never to press the member to tick a person that the email asked for |
 | 4 | Lookalike domains | Flagged. A new address whose domain is one edit from a known domain, or the same after the common look-alike letters fold, carries a warning on its row |
@@ -21066,6 +21066,116 @@ tick box. The gateway stays the only source of the lists.
 | A Metorite file, as the member (21.11) | `tests/unit/test_email_metorite_files.py` |
 | The tick boxes of the reply card (21.11) | `tests/unit/test_email_chat_reply.py`, `workbench/control_plane/src/lib/replyCard.test.ts`, `workbench/control_plane/e2e/email-chat-reply.spec.ts` |
 
+### 21.12 Recipient intent (2026-10-24)
+
+**Status: BUILT on the branch `email-recipient-intent`, not merged.** No
+migration, and no new switch.
+
+**Origin.** A real run of 2026-10-24 answered Dr Sagar, whose mail had a Cc.
+The owner asked to copy two colleagues. The run took 11 cards, dropped the
+customer's Cc, and sent the customer two mails. Later the owner ticked a Cc
+and a Bcc on a card, and the mail went to one person. The owner chose to
+build all the fixes below.
+
+**Open question 1, the owner's answer (2026-10-24).** "Everyone on the
+original email" starts ticked. These people are `thread`:
+
+- each To and each Cc of THE MAIL BEING ANSWERED.
+- each To and each Cc of another received mail of the thread, only when the
+  sender of that mail is `org` or `sent`.
+
+A mail in junk or spam never names a thread person. Anyone can send a mail
+into a thread, with a Cc of their choice, so a mail from a stranger names
+none (review P1-a).
+
+The same rule holds for a sender on the card of `send_draft`. The sender of
+the first received mail of the thread is `thread`. That mail stands for the
+mail that the draft answers, because the draft row holds no link to it. A
+later sender is `thread` only when `org` or `sent`. A sender in junk or spam
+never is. So a stranger who sends a mail into the thread is `new`.
+
+The SMTP inbound path sets `received_at` to the server arrival time, never to
+the Date header, because a sender writes that header.
+
+A draft address that is a person of the mail, or the member, is not
+"carried". Item 9 writes the people of the mail into the draft, so a second
+card keeps them ticked, with the words of the original email.
+
+One carve-out stays. A person on a look-alike domain is `new`, unticked and
+flagged. The guard reads the domain of EVERY sender of the thread, and each
+organization domain (`held_card.lookalike_of`, review P2-b). A Reply-To that
+is not the sender is never `thread`.
+
+**What the member gets.**
+
+1. **One list.** The reply card lists each person of the mail and each
+   added person, each with a tick box. The mail and the draft go to the
+   ticked people only.
+2. **The switch (owner amendment, 2026-10-24).** A Reply and Reply all
+   switch stays on the card, and Reply all is the default. Reply ticks the
+   sender alone. Reply all ticks each person but a `new` one. The switch
+   changes the ticks in view and never the list. So an earlier choice of
+   Reply cannot win over the ticks of the last card.
+3. **A Bcc copy.** When the member got the mail on Bcc only, only the sender
+   starts ticked. The card says "You were Bcc'd, so only the sender is
+   ticked."
+4. **One card for "copy Kiran and Veena".** `compose_reply` takes `cc`. The
+   gateway classes each added person with the one classifier. It records the
+   list under the card's id. The act takes a subset of that record only.
+5. **Usual colleagues.** The card adds an `org` colleague from Sent. The
+   member copied that colleague on two Sent mails to the same domain, or on
+   one of the thread. The card notes it, for example "Added kiran@…, veena@…. You copy
+   them on mail to jainuniversity.ac.in."
+6. **Words on each row.** A person of the mail shows "on Dr Sagar's original
+   email". A colleague from Sent shows "you usually copy them". The server
+   cannot know that the member named a person (review P1-b). In a held run,
+   an added person shows "the assistant added them". In other chats, it
+   shows "added to this reply". The card names each person who will not get
+   the mail.
+7. **The draft is the card.** The draft in Drafts names exactly the people
+   that start ticked. A Cc of the thread's draft stays on the next card, so
+   its Send carries it. This was the bug of the owner's report. The card
+   used the mail alone, and its Send dropped the Cc. A held run can put a
+   stranger on the draft (review P2-a). So a carried person starts unticked
+   unless `org` or `sent`. The record of the added people can fail (review
+   P3-a). Then the card adds nobody, says so, and leaves the draft as it was.
+8. **A reply that already went out.** When a reply of the thread went out in
+   the last day, the tools say so. To add people, the chat offers to forward
+   that mail. The send card of `send_draft` warns too.
+9. **The steer and the cards.** A steer that names a card by a word of its
+   title closes only that card. A steer that names no card closes each
+   waiting card (review P3-b). So no older card stays open with old text.
+10. **The prompts.** "X and Y" is one mail. One send card shows at a time.
+   "Send it" calls the tool at once, and the card is the confirmation.
+
+**The pin change.**
+
+| Pin | Change | Reason |
+|---|---|---|
+| `CARD_BOUND_SEND_TOOLS["compose_reply"]` | adds `cc` | The gateway classes and records each added person, and the act takes a subset of the record. A held run with `EMAIL_HELD_CARD_SEND` off refuses `cc` at call time |
+
+**The fence changes.** `test_the_parameter_fence_pins_compose_reply` now
+expects `cc`. `test_the_act_request_takes_no_recipient_body_or_file` still
+refuses `cc` on the act. On the card request, `cc` is now the owner's field,
+and `tests/unit/test_recipient_intent.py` fences its record. The line "a new
+card resets the Cc" left the revise text, because the new card keeps the Cc.
+
+**Not built.**
+
+- A Bcc on the reply card. The answer of the card has no Bcc key. The card
+  says when the thread's draft holds a Bcc, and `send_draft` sends it.
+- An "always Cc" rule for a domain (item 7b). It needs a new rule action
+  that only adds people to the member's draft. The rule tools now count a
+  `cc_address` as an outward act. So the new type needs its own decision in
+  `_is_outward_action`, in the held refusal and in the engine.
+
+**Fences.** `tests/unit/test_recipient_intent.py`,
+`tests/unit/test_email_recipient_intent_r8.py` (R8),
+`tests/unit/test_card_closes_on_steer.py`,
+`tests/unit/test_email_chat_reply.py`, `tests/unit/test_held_send_classes.py`,
+`workbench/control_plane/src/lib/replyCard.test.ts` and
+`workbench/control_plane/e2e/email-chat-reply.spec.ts`.
+
 ## 22. Chat parity, wave 1: control the email app from the chat (2026-10-23)
 
 **Status: wave 1 BUILT on the branch `email-chat-parity-w1`. Wave 2 BUILT on the branch
@@ -21180,6 +21290,10 @@ member is on the mail. Else it is Reply.
 **The held chat.** The owner added tick boxes to the reply card on 2026-10-24 (21.11). A
 held reply card with the switch on opens on Reply all, and each new address starts
 unticked.
+
+**One list (2026-10-24, 21.12).** The card lists each person, and each starts ticked. The
+Reply and Reply all switch only changes the ticks. `reply_all=false` only starts the sender
+alone ticked. The act derives Reply all always and takes the member's ticks from it.
 
 ### 22.7 Wave 2: the acts that send out (2026-10-24)
 

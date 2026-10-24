@@ -211,22 +211,91 @@ SELECT DISTINCT LOWER(em.from_address->>'email') AS addr
 """
 
 
+#: The senders of the received mails of one thread, the first mail first,
+#: with no draft, no Sent mail and no mail in junk or spam. The draft row
+#: holds no link to the mail it answers, so the first received mail stands
+#: for it: the provider sets ``received_at`` when the mail arrives, so a mail
+#: that a stranger sends into the thread later cannot come first.
+#: :func:`trusted_thread_senders` reads it.
+THREAD_SENDER_ROWS_SQL = """
+SELECT LOWER(em.from_address->>'email') AS addr
+  FROM email_messages em
+ WHERE em.account_id = CAST(:aid AS uuid)
+   AND em.thread_id = :tid
+   AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft', 'sent', 'junk', 'spam')
+   AND em.from_address->>'email' IS NOT NULL
+ ORDER BY em.received_at ASC NULLS LAST, em.id ASC
+ LIMIT 200
+"""
+
+#: The people of one thread of one mailbox, each with the sender of its
+#: mail: each To and each Cc of a RECEIVED mail of the thread. A draft, a
+#: Sent mail and a mail in junk or spam are left out. The caller trusts a row
+#: only when its sender is ``org`` or ``sent`` (review P1-a,
+#: :func:`trusted_thread_participants`), because anyone can send a mail into
+#: a thread, with a Cc of their choice.
+THREAD_PARTICIPANTS_SQL = """
+SELECT DISTINCT LOWER(r->>'email') AS addr, LOWER(em.from_address->>'email') AS sender
+  FROM email_messages em
+  CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(em.to_addresses, '[]'::jsonb)
+        || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
+ WHERE em.account_id = CAST(:aid AS uuid)
+   AND em.thread_id = :tid
+   AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft', 'sent', 'junk', 'spam')
+   AND r->>'email' IS NOT NULL
+"""
+
+#: The domains of the organization, for the look-alike carve-out of a
+#: thread person: the domains of the active members of the bound tenant, and
+#: of the member's own mailboxes.
+ORG_DOMAINS_SQL = f"""
+SELECT DISTINCT d FROM (
+    SELECT SPLIT_PART(LOWER(au.email), '@', 2) AS d FROM app_user au
+     WHERE COALESCE(au.status, 'active') = 'active'
+       AND au.organization_id = {_TENANT}
+    UNION
+    SELECT SPLIT_PART(LOWER(email_address), '@', 2) FROM email_accounts
+     WHERE user_id = :uid
+) k WHERE d <> '' LIMIT 500
+"""
+
+
+def thread_person_guard(addr: str, senders: Iterable[str], org_domains: Iterable[str]) -> str | None:
+    """The domain that *addr* imitates, or None. A person of the thread whose
+    domain looks like the domain of a sender of the thread, or like an
+    organization domain, is not ``thread`` (the owner's carve-out)."""
+    guard = {domain_of(s) for s in senders if s} | {str(d).lower() for d in org_domains if d}
+    return lookalike_of(domain_of(addr), guard)
+
+
 async def classify_addresses(
     db: Any, owner: str, addresses: Iterable[str], *,
     thread_senders: Iterable[str] = (),
+    thread_people: Iterable[str] = (),
+    org_domains: Iterable[str] = (),
+    guard_senders: Iterable[str] = (),
 ) -> dict[str, str]:
     """The class of each address, keyed by its lower-case form.
 
     THE classifier. It takes no class from the caller and calls no model.
-    *thread_senders* are the senders of the thread, which the server read
-    (:data:`THREAD_SENDERS_SQL`). The strongest class wins: ``org``, then
-    ``sent``, then ``thread``, then ``new``."""
+    *thread_senders* are the senders of the thread, and *thread_people* each
+    To and Cc of a received mail of the thread, which the server read
+    (:data:`THREAD_SENDERS_SQL`, :data:`THREAD_PARTICIPANTS_SQL`). A person
+    of *thread_people* whose domain looks like a sender domain or one of
+    *org_domains* stays ``new`` (:func:`thread_person_guard`). The guard reads
+    the domains of *thread_senders* and of *guard_senders*, which hold every
+    sender of the thread (review P2-b). The strongest class wins: ``org``,
+    then ``sent``, then ``thread``, then ``new``."""
     wanted = sorted({str(a).strip().lower() for a in addresses if str(a or "").strip()})
     if not wanted:
         return {}
     rows = (await db.execute(text(CLASSIFY_SQL), {"wanted": wanted, "uid": owner})).fetchall()
     found = {str(r.addr): r for r in rows}
     senders = {str(a).strip().lower() for a in thread_senders if a}
+    people = {str(a).strip().lower() for a in thread_people if a}
+    org_doms = [str(d).strip().lower() for d in org_domains if d]
+    guard = senders | {str(a).strip().lower() for a in guard_senders if a}
     out: dict[str, str] = {}
     for addr in wanted:
         r = found.get(addr)
@@ -234,11 +303,73 @@ async def classify_addresses(
             out[addr] = CLASS_ORG
         elif r is not None and bool(r.is_sent):
             out[addr] = CLASS_SENT
-        elif addr in senders:
+        elif addr in senders or (
+                addr in people and thread_person_guard(addr, guard, org_doms) is None):
             out[addr] = CLASS_THREAD
         else:
             out[addr] = CLASS_NEW
     return out
+
+
+async def thread_participants(db: Any, account_id: str, thread_id: str | None
+                              ) -> list[tuple[str, str]]:
+    """``(address, sender)`` of each To and Cc of a received mail of the
+    thread, or none. Use :func:`trusted_thread_participants` to class."""
+    if not thread_id:
+        return []
+    rows = (await db.execute(text(THREAD_PARTICIPANTS_SQL),
+                             {"aid": account_id, "tid": thread_id})).fetchall()
+    return [(str(r.addr), str(getattr(r, "sender", "") or ""))
+            for r in rows if getattr(r, "addr", None)]
+
+
+async def trusted_thread_senders(
+    db: Any, owner: str, account_id: str, thread_id: str | None,
+) -> list[str]:
+    """The senders of the thread that may class ``thread`` (the rule of review
+    P1-a, for senders). The sender of the first received mail counts: it
+    stands for the mail that the draft answers. A later sender counts only
+    when it is ``org`` or ``sent``. A mail in junk or spam never counts."""
+    if not thread_id:
+        return []
+    rows = (await db.execute(text(THREAD_SENDER_ROWS_SQL),
+                             {"aid": account_id, "tid": thread_id})).fetchall()
+    order: list[str] = []
+    for r in rows:
+        a = str(getattr(r, "addr", "") or "")
+        if a and a not in order:
+            order.append(a)
+    if not order:
+        return []
+    rest = order[1:]
+    known = await classify_addresses(db, owner, rest) if rest else {}
+    return [order[0], *[a for a in rest if known.get(a) in (CLASS_ORG, CLASS_SENT)]]
+
+
+async def trusted_thread_participants(
+    db: Any, owner: str, account_id: str, thread_id: str | None,
+) -> list[str]:
+    """Each To and Cc of a received mail of the thread whose SENDER is
+    ``org`` or ``sent`` (review P1-a). A stranger can send a mail into a
+    thread with a Cc of their choice, so a mail from a stranger names no
+    thread person. The owner's words were "everyone on the original email":
+    the caller adds the To and Cc of the mail being answered itself."""
+    rows = await thread_participants(db, account_id, thread_id)
+    if not rows:
+        return []
+    senders = sorted({s for _a, s in rows if s})
+    known = await classify_addresses(db, owner, senders) if senders else {}
+    out: list[str] = []
+    for addr, sender in rows:
+        if known.get(sender) in (CLASS_ORG, CLASS_SENT) and addr not in out:
+            out.append(addr)
+    return out
+
+
+async def org_domains(db: Any, owner: str) -> frozenset[str]:
+    """The domains of the organization (:data:`ORG_DOMAINS_SQL`)."""
+    rows = (await db.execute(text(ORG_DOMAINS_SQL), {"uid": owner})).fetchall()
+    return frozenset(str(r.d) for r in rows if getattr(r, "d", None))
 
 
 async def known_domains(db: Any, owner: str) -> frozenset[str]:
@@ -749,6 +880,24 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
                     status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
 
 
+#: The warning of a send card when a reply of the thread went out in the last
+#: day (item 6). The member may want to forward that mail to the missing
+#: people, and not send the reply to the first people again.
+RECENT_REPLY_WARNING = ("A reply of this thread went out in the last day. To add people, "
+                        "forward that mail to them in place of this send.")
+
+
+async def _recent_of(db: Any, account_id: str, thread_id: str | None) -> dict[str, str]:
+    """``reply_card.recent_thread_reply``. A fault reads as none."""
+    from gateway.routes.email.automation.reply_card import recent_thread_reply
+
+    try:
+        return await recent_thread_reply(db, account_id, thread_id)
+    except Exception as exc:
+        _log.warning("email.held_card_recent_failed", error=type(exc).__name__)
+        return {}
+
+
 def _when(send_at: str) -> datetime:
     from gateway.routes.email.automation import send_later
 
@@ -775,15 +924,24 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         _refuse_hidden_draft(row)
         lists = _lists_of(row)
         _check_lists(lists)
+        # Every sender guards the look-alike flag. Only a trusted sender
+        # classes ``thread`` (the rule of review P1-a, for senders).
         senders = await thread_senders(db, req.account_id, row.thread_id)
+        trusted = await trusted_thread_senders(db, owner, req.account_id, row.thread_id)
+        people = await trusted_thread_participants(db, owner, req.account_id, row.thread_id)
         classes = await classify_addresses(
-            db, owner, [a for v in lists.values() for a in v], thread_senders=senders)
+            db, owner, [a for v in lists.values() for a in v], thread_senders=trusted,
+            thread_people=people, guard_senders=senders,
+            org_domains=await org_domains(db, owner) if people else ())
         known = await known_domains(db, owner)
         me = await resolve_self(db, req.account_id)
+        recent = await _recent_of(db, req.account_id, row.thread_id)
         files = []
         if row.has_attachments:
             files = (await db.execute(text(DRAFT_FILES_SQL), {"id": req.draft_id})).fetchall()
-    rows = recipient_rows(lists, classes, known)
+    # The domains of the thread's senders count as known for the look-alike
+    # warning, so a person of the thread on a look-alike domain is flagged.
+    rows = recipient_rows(lists, classes, {*known, *(domain_of(s) for s in senders)})
     _refuse_new_bcc(rows)
     body = _check_text(str(row.body_text or ""))
     mailbox = (f"{me.label} · {me.address}" if me.label and me.label != me.address
@@ -801,7 +959,12 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         raise HTTPException(status_code=422, detail=TEXT_TOO_LONG)
     new = sum(1 for r in rows if r["class"] == CLASS_NEW)
     detail = (f"From {mailbox} · {len(rows)} recipient(s). Only a ticked person gets "
-              f"the mail. {new} new address(es) start unticked.")[:DETAIL_MAX]
+              f"the mail. {new} new address(es) start unticked.")
+    if recent:
+        # Item 6 (owner, 2026-10-24): the thread had a reply in the last day.
+        # The detail says it first, because the cut at DETAIL_MAX keeps it.
+        detail = f"{RECENT_REPLY_WARNING} {detail}"
+    detail = detail[:DETAIL_MAX]
     title = f"Send this draft at {_stamp(when)}?" if when else "Send this draft?"
     record = {
         "v": 1, "kind": req.kind, "owner": owner.lower(),

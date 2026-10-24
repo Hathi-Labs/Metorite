@@ -930,7 +930,29 @@ def clean_reply_form(form: dict | None) -> dict | None:
         # each person ticked.
         **({"ticked": _reply_ticked(form["ticked"], reply, reply_all)}
            if isinstance(form.get("ticked"), dict) else {}),
+        # Item 8 (owner, 2026-10-24): the server's words for each person
+        # ("on Dr Sagar's original email"), by lower case. A form with none
+        # draws the class mark only, as before.
+        **({"marks": _reply_marks(form["marks"], reply_all)}
+           if isinstance(form.get("marks"), dict) and form["marks"] else {}),
     }
+
+
+def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
+    """The words of each person, each a person of the card's list. A mark of
+    a person that is not on the card, or an over-long mark, raises."""
+    have = {a.lower() for a in [*reply_all["to"], *reply_all["cc"]]}
+    out: dict[str, str] = {}
+    for addr, words in value.items():
+        a = " ".join(str(addr or "").split()).lower()
+        if a not in have:
+            raise ValueError("a mark names a person of the card")
+        line = _whole_line(words)
+        if len(line) > 200:
+            raise ValueError("a mark is too long")
+        if line:
+            out[a] = line
+    return out
 
 
 def _reply_ticked(value: dict, reply: dict, reply_all: dict) -> dict:
@@ -1026,21 +1048,122 @@ def _steer_marks(thread_id: str) -> frozenset[int] | None:
     return guidance_marks(thread_id)
 
 
-async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int]) -> None:
-    """Answer *fut* as revised when a NEW steer for *thread_id* arrives.
+def _steer_texts(thread_id: str) -> dict[int, str]:
+    """The text of each waiting steer note of *thread_id*, by its mark."""
+    try:
+        from orchestrator.steer import guidance_texts  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - no orchestrator: no text
+        return {}
+    return guidance_texts(thread_id)
+
+
+#: The cards of each thread that a steer can close, in the order they
+#: opened: ``{thread: {request id: (order, title)}}``.
+_STEER_CARDS: dict[str, dict[str, tuple[int, str]]] = {}
+#: The card that each steer note closed: ``{thread: {mark: request id}}``.
+#: The first card that sees a note decides, so two cards never both close.
+_STEER_DECIDED: dict[str, dict[int, str]] = {}
+_STEER_ORDER = __import__("itertools").count()
+
+#: Words of a card title that name no card.
+_TITLE_STOP = frozenset({
+    "send", "this", "that", "draft", "reply", "email", "mail", "with", "from",
+    "your", "recipient", "recipients", "save", "forward", "change", "label",
+    "the", "and", "for", "to", "of", "it", "a", "an", "at", "on", "in", "now",
+})
+
+
+def _title_words(title: str) -> set[str]:
+    """The words of a card title that can name it: each address, the local
+    part of each address, and each other word of four letters or more."""
+    words: set[str] = set()
+    for raw in _re.findall(r"[\w.+-]+@[\w.-]+|[\w'-]+", title.lower()):
+        w = raw.strip(".-'")
+        if "@" in w:
+            words.add(w)
+            words.add(w.split("@", 1)[0])
+        elif len(w) >= 4 and w not in _TITLE_STOP:
+            words.add(w)
+    return words
+
+
+def _steer_target(thread_id: str, texts: list[str]) -> set[str]:
+    """The cards that a steer is about (item 5, owner 2026-10-24).
+
+    A card whose title holds a word of the steer that no other open card
+    holds is named, and only the named cards close. With no card named, each
+    open card is the target (review P3-b)."""
+    cards = _STEER_CARDS.get(thread_id) or {}
+    if not cards:
+        return set()
+    said = set(_re.findall(r"[\w.+@-]+", " ".join(texts).lower()))
+    words = {rid: _title_words(title) for rid, (_o, title) in cards.items()}
+    named: set[str] = set()
+    for rid, mine in words.items():
+        others = set().union(*(w for r, w in words.items() if r != rid)) if len(words) > 1 \
+            else set()
+        if (mine - others) & said:
+            named.add(rid)
+    if named:
+        return named
+    # Review P3-b: a steer that names no card closes EVERY waiting card, the
+    # safe default, so no older card stays answerable with its old text.
+    return set(cards)
+
+
+def _steer_register(thread_id: str, rid: str, title: str) -> None:
+    _STEER_CARDS.setdefault(thread_id, {})[rid] = (next(_STEER_ORDER), title)
+
+
+def _steer_forget(thread_id: str, rid: str) -> None:
+    cards = _STEER_CARDS.get(thread_id)
+    if cards is not None:
+        cards.pop(rid, None)
+        if not cards:
+            _STEER_CARDS.pop(thread_id, None)
+            _STEER_DECIDED.pop(thread_id, None)
+
+
+async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int],
+                              rid: str = "", title: str = "") -> None:
+    """Answer *fut* as revised when a NEW steer for *thread_id* is about it.
 
     The card closes as the member writes, and the run goes on. Only a note
     that is not in *before* counts, so a note that waited before the card
     cannot close each new card at once. The caller reads *before* before the
-    card can reach the member, so a fast answer is never in it."""
+    card can reach the member, so a fast answer is never in it.
+
+    Item 5 (owner, 2026-10-24): a steer closes only the card that it is
+    about (:func:`_steer_target`), never each open card. A card that the
+    steer is not about takes the note into its own *before* and stays open."""
     import asyncio as _asyncio
 
-    while not fut.done():
-        await _asyncio.sleep(_STEER_POLL_S)
-        now = _steer_marks(thread_id) or frozenset()
-        if (now - before) and not fut.done():
-            fut.set_result({"answer": REVISED_ANSWER, "revised": True})
-            return
+    if rid:
+        _steer_register(thread_id, rid, title)
+    try:
+        while not fut.done():
+            await _asyncio.sleep(_STEER_POLL_S)
+            now = _steer_marks(thread_id) or frozenset()
+            new = now - before
+            if not new or fut.done():
+                continue
+            if not rid:
+                fut.set_result({"answer": REVISED_ANSWER, "revised": True})
+                return
+            decided = _STEER_DECIDED.setdefault(thread_id, {})
+            undecided = sorted(m for m in new if m not in decided)
+            if undecided:
+                texts = _steer_texts(thread_id)
+                targets = _steer_target(thread_id, [texts.get(m, "") for m in undecided])
+                for m in undecided:
+                    decided[m] = ",".join(sorted(targets))
+            if any(rid in decided.get(m, "").split(",") for m in new):
+                fut.set_result({"answer": REVISED_ANSWER, "revised": True})
+                return
+            before = before | new
+    finally:
+        if rid:
+            _steer_forget(thread_id, rid)
 
 
 class ReplyAnswer:
@@ -1382,7 +1505,10 @@ async def request_confirmation(
         _ticked: frozenset[str] | None = None
         _watch = None
         if _baseline is not None:
-            _watch = _asyncio.ensure_future(_close_on_new_steer(_fut, *_baseline))
+            # The card's id and title: a steer closes only the card it is
+            # about (item 5, owner 2026-10-24).
+            _watch = _asyncio.ensure_future(
+                _close_on_new_steer(_fut, *_baseline, _rid, _title))
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
