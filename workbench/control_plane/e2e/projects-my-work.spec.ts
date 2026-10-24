@@ -208,12 +208,10 @@ async function mockTree(page: Page) {
     },
   ];
   const rows = [
-    {
-      id: "t-space",
-      name: "Team space",
-      tasks: 1,
-      children: [{ id: "t-kept", name: "Kept team project", parent_project_id: "p-root" }],
-    },
+    { id: "t-space", name: "Team space", tasks: 1 },
+    // The server (`tree.py` `_nest`) makes a team node whose parent is the
+    // personal root a ROOT of `rows`.
+    { id: "t-kept", name: "Kept team project", parent_project_id: "p-root" },
   ];
   await page.route("**/api/**/projects/tree", (route) =>
     route.fulfill({ json: { rows, total: 1, personal } }),
@@ -230,10 +228,14 @@ test("the Personal section sits between My work and Spaces, with a lock", async 
   await expect(section).toBeVisible({ timeout: 30_000 });
   await expect(section.getByText("Personal", { exact: true }).first()).toBeVisible();
   await expect(section.getByText("Personal space")).toBeVisible();
-  // The team node kept under the caller's root draws in Spaces, not under Personal.
+  // The team node kept under the caller's root is a root of Spaces: visible
+  // outside the personal section, and absent inside it.
   await expect(section.getByText("Kept team project")).toHaveCount(0);
+  await expect(page.getByText("Kept team project", { exact: true })).toBeVisible();
   await expect(page.getByText("Team space", { exact: true }).first()).toBeVisible();
-  // No row menu entry shares a personal node.
+  // The personal root's menu has no Move and no Archive.
   await section.getByText("Personal space").click({ button: "right" });
-  await expect(page.getByRole("menuitem", { name: /share|access/i })).toHaveCount(0);
+  const names = await page.getByRole("menuitem").allTextContents();
+  expect(names.length).toBeGreaterThan(0);
+  expect(names.join("|")).not.toMatch(/move|archive|share|access/i);
 });

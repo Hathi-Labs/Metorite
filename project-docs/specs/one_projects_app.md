@@ -615,6 +615,14 @@ team node under the root stays in Spaces. Fence: `personalTree.test.ts`, and
 the e2e case in `e2e/projects-my-work.spec.ts` (not run). The phone Menu sheet
 reuses `ProjectNav`, so it carries the section.
 
+Fix round 1 (2026-10-24). An archived personal Area leaves the live Personal
+tree. It waits in an "Archived" fold inside the Personal section, apart from
+the team fold (`splitPersonal`). The Move tasks card offers the team tree for
+team tasks and the personal tree for personal tasks. A mixed selection gets no
+destination and a sentence (`moveDestinationRoots`). The shared vocabulary
+anchors on the first team space (`firstTeamSpaceId`). The e2e mock now puts the
+kept team node in `rows` as a root. Fence: `personalTree.test.ts`.
+
 **Verify.** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`,
 then `uv run pytest tests/unit/test_personal_tree.py
 tests/unit/test_personal_owner_stamp.py tests/unit/test_personal_privacy_r8.py`.

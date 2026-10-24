@@ -8,7 +8,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ProjectRow } from "./api";
-import { PERSONAL_SECTION_LABEL, lookupRoots, personalRoots } from "./personalTree";
+import {
+  PERSONAL_SECTION_LABEL,
+  firstTeamSpaceId,
+  lookupRoots,
+  moveDestinationRoots,
+  personalRoots,
+  splitPersonal,
+} from "./personalTree";
 import { projectMenuItems } from "./projectMenu";
 import { nodeLevel, nodeKind, pathTo } from "./tree";
 
@@ -33,9 +40,10 @@ const personalRoot = node("root", {
   children: [personalArea],
 });
 // Migration 297 keeps a TEAM node under the caller's root. It stays in `rows`.
+// The server (`tree.py` `_nest`) makes it a ROOT of `rows`.
 const teamKept = node("team-kept", { parent_project_id: "root" });
-const teamSpace = node("space", { children: [teamKept] });
-const data = { rows: [teamSpace], personal: [personalRoot] };
+const teamSpace = node("space");
+const data = { rows: [teamSpace, teamKept], personal: [personalRoot] };
 
 const handlers = () => ({
   onSetState: vi.fn(),
@@ -73,7 +81,8 @@ describe("lookupRoots", () => {
     expect(pathTo(all, "area").map((n) => n.id)).toEqual(["root", "area"]);
   });
   it("keeps a team node under the caller's root in Spaces, not in Personal", () => {
-    expect(pathTo(data.rows, "team-kept").map((n) => n.id)).toEqual(["space", "team-kept"]);
+    expect(pathTo(data.rows, "team-kept").map((n) => n.id)).toEqual(["team-kept"]);
+    expect(data.rows.map((n) => n.id)).toContain("team-kept");
     expect(pathTo(personalRoots(data, true), "team-kept")).toEqual([]);
   });
 });
@@ -113,5 +122,46 @@ describe("the row menu of a personal node", () => {
     const got = labels(projectMenuItems(teamSpace, handlers(), ui, "space"));
     expect(got).toContain("Move to…");
     expect(got).toContain("Archive");
+  });
+});
+
+describe("an archived personal Area (fix round 1)", () => {
+  const archivedArea = node("area", { personal: true, archived_at: "2026-10-01T00:00:00Z" });
+  const liveArea = node("live-area", { personal: true });
+  const root = node("root", { personal: true, children: [archivedArea, liveArea] });
+  it("leaves the live Personal tree and heads the Personal archived fold", () => {
+    const split = splitPersonal([root]);
+    expect(split.active[0].children?.map((n) => n.id)).toEqual(["live-area"]);
+    expect(split.archived.map((e) => e.node.id)).toEqual(["area"]);
+    expect(split.count).toBe(1);
+  });
+  it("comes back when unarchived", () => {
+    const back = { ...root, children: [{ ...archivedArea, archived_at: null }, liveArea] };
+    const split = splitPersonal([back]);
+    expect(split.active[0].children?.map((n) => n.id)).toEqual(["area", "live-area"]);
+    expect(split.count).toBe(0);
+  });
+});
+
+describe("moveDestinationRoots (fix round 1)", () => {
+  const team = [teamSpace, teamKept];
+  const mine = [personalRoot];
+  it("offers the team tree for team tasks", () => {
+    expect(moveDestinationRoots(["space", "team-kept"], team, mine)).toEqual({ roots: team, mixed: false });
+  });
+  it("offers the personal tree for personal tasks", () => {
+    expect(moveDestinationRoots(["area", "root"], team, mine)).toEqual({ roots: mine, mixed: false });
+  });
+  it("offers nothing for a mixed selection", () => {
+    expect(moveDestinationRoots(["space", "area"], team, mine)).toEqual({ roots: [], mixed: true });
+  });
+});
+
+describe("firstTeamSpaceId (fix round 1)", () => {
+  it("skips the personal root", () => {
+    expect(firstTeamSpaceId([personalRoot, teamSpace])).toBe("space");
+  });
+  it("is null for a member with no team space", () => {
+    expect(firstTeamSpaceId([personalRoot])).toBeNull();
   });
 });

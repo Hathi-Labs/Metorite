@@ -72,10 +72,14 @@ import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
 import {
+  MIXED_MOVE_HINT,
+  PERSONAL_ARCHIVED_FOLD_ID,
   PERSONAL_SECTION_HINT,
   PERSONAL_SECTION_LABEL,
   lookupRoots,
+  moveDestinationRoots,
   personalRoots,
+  splitPersonal,
 } from "./lib/personalTree";
 import MyWorkHost from "./components/MyWorkHost";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
@@ -434,6 +438,14 @@ function ProjectNav({
   // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
   const split = useMemo(() => splitArchived(roots), [roots]);
   const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
+  // A personal Area that is archived leaves the live Personal tree and waits in
+  // its own fold inside the Personal section (never in the team fold above).
+  const personalSplit = useMemo(() => splitPersonal(personal), [personal]);
+  const personalArchivedOpen = useFoldOpen(PERSONAL_ARCHIVED_FOLD_ID);
+  const personalArchivedGen = useMemo(
+    () => new Map(personalSplit.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [personalSplit.archived],
+  );
   const archivedGen = useMemo(
     () => new Map(split.archived.map((entry) => [entry.node.id, entry.parentGen])),
     [split.archived],
@@ -535,7 +547,7 @@ function ProjectNav({
             <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
           </p>
           <ProjectTree
-            roots={personal}
+            roots={personalSplit.active}
             selectedId={app ? null : selectedId}
             onSelect={(project) => {
               onSelect(project);
@@ -575,6 +587,41 @@ function ProjectNav({
               onPicked?.();
             }}
           />
+          {personalSplit.count > 0 ? (
+            <div className="mt-1" data-testid="personal-archived-section">
+              <button
+                type="button"
+                aria-expanded={personalArchivedOpen}
+                aria-controls="projects-personal-archived-list"
+                onClick={() => toggleFold(PERSONAL_ARCHIVED_FOLD_ID)}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+              >
+                <Icon name={personalArchivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+                <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+                  Archived
+                </span>
+                <span className="shrink-0 text-xs tabular-nums">
+                  {personalSplit.count}
+                  <span className="sr-only"> archived personal projects</span>
+                </span>
+              </button>
+              {personalArchivedOpen ? (
+                <div id="projects-personal-archived-list" className="opacity-75">
+                  <ProjectTree
+                    roots={personalSplit.archived.map((entry) => entry.node)}
+                    selectedId={app ? null : selectedId}
+                    onSelect={(project) => {
+                      onSelect(project);
+                      onPicked?.();
+                    }}
+                    actions={navActions}
+                    rootParentGen={(node) => personalArchivedGen.get(node.id) ?? 0}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -1519,6 +1566,13 @@ function ProjectsWorkspace() {
   );
   // The Spaces section draws `spaceRoots`; every lookup (selection, level,
   // breadcrumb, deep link) reads this, which adds the personal tree (OP-3).
+  // The Move tasks card offers the side the selection sits on (the server
+  // refuses team to personal). A mixed selection gets none and a sentence.
+  const moveDestinations = useMemo(() => {
+    const byId = new Map(tasks.map((t) => [t.id, t.project_id]));
+    const projectIds = (movingTasks ?? []).map((id) => byId.get(id) ?? "");
+    return moveDestinationRoots(projectIds, roots, personal);
+  }, [movingTasks, tasks, roots, personal]);
   const visibleRoots = useMemo(() => lookupRoots(spaceRoots, personal), [spaceRoots, personal]);
 
   // Which LEVEL the selection occupies, derived from the tree rather than
@@ -4664,7 +4718,8 @@ function ProjectsWorkspace() {
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
-        roots={allRoots}
+        roots={moveDestinations.roots}
+        unavailable={moveDestinations.mixed ? MIXED_MOVE_HINT : null}
         busy={movingTasksBusy}
         error={moveTasksError}
         onClose={() => {
