@@ -162,7 +162,9 @@ def test_the_archive_and_its_approval_stay_off_the_edge():
     for pair in ARCHIVE_ROUTES:
         assert pair in served, pair
         assert pair not in MCP_ROUTES, pair
-        assert classes[pair] == "C", pair
+        # WS-64 OP-6e (D-OP-13): the approval is class X, with a reason. The chat
+        # lists the request and never answers it. The archive itself stays class C.
+        assert classes[pair] == ("X" if pair[1].endswith("/archive-approval") else "C"), pair
     request = ("POST", "/projects/tasks/{task_id}/archive-request")
     assert request in MCP_WRITE_ROUTES and classes[request] == "B"
     from agent_edge.tools import TOOLS

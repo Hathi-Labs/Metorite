@@ -42,7 +42,11 @@ from skill_projects import manifest as m
 from tests.unit._projects_agent_fakes import SKILL_DIR, fake_gateway, writes
 
 T1, T2 = str(uuid.uuid4()), str(uuid.uuid4())
-NOW = datetime.now(UTC)
+
+
+def _now() -> datetime:
+    """The clock at the call, so a slow run of the suite does not age a row."""
+    return datetime.now(UTC)
 
 
 def _run(task_id: str, *, ago: timedelta, request: dict | None = None, body: str = "May I?",
@@ -51,10 +55,10 @@ def _run(task_id: str, *, ago: timedelta, request: dict | None = None, body: str
     return {
         "id": str(uuid.uuid4()), "task_id": task_id, "status": "awaiting", "state": "awaiting",
         "client_via": "claude", "client_name": client,
-        "last_activity_at": (NOW - ago).isoformat(),
+        "last_activity_at": (_now() - ago).isoformat(),
         "open_elicitation": {
             "type": "elicitation", "content": {"body": body}, "content_metadata": meta,
-            "created_at": (NOW - ago).isoformat(),
+            "created_at": (_now() - ago).isoformat(),
         },
     }
 
@@ -74,7 +78,7 @@ def _gateway(monkeypatch, runs: list[dict], *, titles: dict[str, str] | None = N
     return fake_gateway(monkeypatch, answer)
 
 
-ARCHIVE = {"kind": "archive_task", "expires_at": (NOW + timedelta(hours=1)).isoformat()}
+ARCHIVE = {"kind": "archive_task", "expires_at": (_now() + timedelta(days=1)).isoformat()}
 
 
 async def test_it_lists_each_request_with_task_agent_age_and_card_link(monkeypatch) -> None:
@@ -118,7 +122,7 @@ async def test_agent_text_and_titles_are_fenced_as_data(monkeypatch) -> None:
 
 
 async def test_an_expired_request_says_so_and_nobody_waits_says_so(monkeypatch) -> None:
-    old = {"kind": "archive_task", "expires_at": (NOW - timedelta(hours=1)).isoformat()}
+    old = {"kind": "archive_task", "expires_at": (_now() - timedelta(days=1)).isoformat()}
     _gateway(monkeypatch, [_run(T1, ago=timedelta(hours=3), request=old)])
     assert "(the request has expired)" in await skill_projects.waiting_agent_requests()
     _gateway(monkeypatch, [])
