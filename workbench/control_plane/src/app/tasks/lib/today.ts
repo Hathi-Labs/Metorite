@@ -17,7 +17,7 @@
  */
 
 import { localDate } from "./utils";
-import type { MyTask } from "./types";
+import type { MyTask, ViewKey } from "./types";
 
 type TodayFields = Pick<
   MyTask,
@@ -53,3 +53,12 @@ export function todayRows<T extends TodayFields>(
 ): T[] {
   return items.filter((item) => isInToday(item, today, timeZone));
 }
+
+/**
+ * The view /tasks may show. `today` belongs to My work in Projects, and /tasks
+ * has no Today list, so a `today` left in the store reads as Next actions.
+ */
+export function tasksEntryView(view: ViewKey): ViewKey {
+  return view === "today" ? "next" : view;
+}
+

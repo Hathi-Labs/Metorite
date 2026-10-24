@@ -70,7 +70,7 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
-import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled } from "./lib/myWork";
+import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
 import MyWorkHost from "./components/MyWorkHost";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
@@ -836,9 +836,10 @@ function ProjectsWorkspace() {
   const myWorkItems = useTaskStore((s) => s.items);
   const myWorkFrom = useTaskStore((s) => s.fromProjectIds);
   const myWorkToday = useTaskStore((s) => s.myToday);
+  const myWorkTimezone = useTaskStore((s) => s.myTimezone);
   const myWorkNavCounts = useMemo(
-    () => (MY_WORK_LIVE ? myWorkCounts(myWorkItems, myWorkFrom, myWorkToday) : undefined),
-    [myWorkItems, myWorkFrom, myWorkToday],
+    () => (MY_WORK_LIVE ? myWorkCounts(myWorkItems, myWorkFrom, myWorkToday, myWorkTimezone) : undefined),
+    [myWorkItems, myWorkFrom, myWorkToday, myWorkTimezone],
   );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
@@ -1129,7 +1130,7 @@ function ProjectsWorkspace() {
    * holds the values needed to revert a row in a project you have navigated
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
-  const undoApi = useUndoScope(`projects:${selected?.id ?? "none"}`);
+  const undoApi = useUndoScope(projectsUndoScope(app, selected?.id));
   // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
   const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
@@ -2629,6 +2630,8 @@ function ProjectsWorkspace() {
       project: searchParams.get("project"),
       task: searchParams.get("task"),
       app: searchParams.get("app"),
+      assignee: searchParams.get("assignee"),
+      center: searchParams.get("center"),
     });
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (to) setApp(to);

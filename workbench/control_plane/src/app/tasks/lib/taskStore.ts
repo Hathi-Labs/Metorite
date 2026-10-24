@@ -890,6 +890,8 @@ interface TaskState {
   /** The member's date ("YYYY-MM-DD") from `GET /projects/my/today`, which the
    *  Today view reads (`today.ts`). Null until `loadMyToday` answers. */
   myToday: string | null;
+  /** The member's IANA zone from the same answer. `isInToday` reads instants in it. */
+  myTimezone: string | null;
   loadMyToday: () => Promise<void>;
   /** when drilled into a single @context under Next Actions */
   selectedContext: string | null;
@@ -1513,11 +1515,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   selectedView: "inbox",
   myToday: null,
+  myTimezone: null,
   loadMyToday: async () => {
     try {
       const res = await lensFetchToday();
       if (res.today) {
-        set({ myToday: res.today });
+        set({ myToday: res.today, myTimezone: res.timezone || null });
         return;
       }
     } catch {
@@ -1525,7 +1528,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
     // The gateway is out of reach: read the date in the zone the store holds,
     // which is the zone the gateway would have used.
-    set({ myToday: localDate(Date.now(), get().settings.timezone) });
+    set({
+      myToday: localDate(Date.now(), get().settings.timezone),
+      myTimezone: get().settings.timezone || null,
+    });
   },
   selectedContext: null,
   focusedItemId: null,
@@ -3981,6 +3987,7 @@ export function itemsForView(
   context: string | null,
   source: "all" | "local" | "synced" = "all",
   today: string | null = null,
+  timeZone?: string | null,
 ): MyTask[] {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
@@ -3992,7 +3999,7 @@ export function itemsForView(
       return items.filter((i) => i.disposition === "INBOX");
     case "today":
       // WS-64 OP-2 — one rule (`today.ts`). No date yet means no rows.
-      return today ? items.filter((i) => isInToday(i, today)) : [];
+      return today ? items.filter((i) => isInToday(i, today, timeZone ?? undefined)) : [];
     case "next":
       // "My Next Actions" = only tasks assigned to ME (isMine). This excludes
       // unassigned "team pool" tasks (synced as NEXT but is_mine=false) and, of
@@ -4062,6 +4069,7 @@ export function viewCounts(
   items: MyTask[],
   source: "all" | "local" | "synced" = "all",
   today: string | null = null,
+  timeZone?: string | null,
 ): Record<ViewKey, number> {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
@@ -4084,7 +4092,7 @@ export function viewCounts(
       c.priority++;
     if (i.disposition === "NEXT" && i.isMine) c.engage++;
     if (isCalendarItem(i)) c.calendar++;
-    if (today && isInToday(i, today)) c.today++;
+    if (today && isInToday(i, today, timeZone ?? undefined)) c.today++;
   }
   return c;
 }

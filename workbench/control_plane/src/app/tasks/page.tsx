@@ -11,6 +11,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
+import { tasksEntryView } from "./lib/today";
 import { ListsSidebar } from "./components/ListsSidebar";
 import { CaptureBar } from "./components/CaptureBar";
 import { ItemList } from "./components/ItemList";
@@ -145,6 +146,13 @@ export default function TasksPage() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // `today` is a My work view of Projects (WS-64 OP-2). /tasks has no Today
+  // list, so a view left by that host maps to Next actions on mount.
+  useEffect(() => {
+    const now = useTaskStore.getState().selectedView;
+    if (tasksEntryView(now) !== now) selectView(tasksEntryView(now));
+  }, [selectView]);
 
   // Tell the mobile bottom bar which My Tasks section is active (for its highlight).
   useEffect(() => {

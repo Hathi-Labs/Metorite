@@ -18,6 +18,7 @@ import {
   MY_WORK_VIEWS,
   isMyWorkId,
   landingApp,
+  projectsUndoScope,
   myWorkCounts,
   myWorkEnabled,
   myWorkView,
@@ -105,6 +106,9 @@ describe("the landing rule", () => {
     expect(landingApp(true, { project: "p1" })).toBeNull();
     expect(landingApp(true, { task: "t1" })).toBeNull();
     expect(landingApp(true, { app: "reports" })).toBeNull();
+    // The People "Assign work" link is /projects?assignee=<email>.
+    expect(landingApp(true, { assignee: "a@b.co" })).toBeNull();
+    expect(landingApp(true, { center: "ops" })).toBeNull();
   });
 
   it("changes nothing with the flag off", () => {
@@ -174,21 +178,26 @@ describe("My work is a mount, not a copy", () => {
   // Two clashes were in the tree before OP-2 (measured 2026-10-24): each is a
   // different component for a different app (the Projects chat rail and
   // board). The list is closed. Never add a name to it.
-  const BEFORE_OP2 = new Set(["assistantrail.tsx", "taskboard.tsx"]);
+  // Pinned by full path, so a new copy of the same name elsewhere fails.
+  const BEFORE_OP2 = new Set([
+    "app/projects/components/assistantrail.tsx",
+    "app/projects/components/taskboard.tsx",
+  ]);
+  const rel = (f: string) => path.relative(path.join(APP, ".."), f).split(path.sep).join("/").toLowerCase();
 
   it("no file under app/projects has the basename of a file in app/tasks/components", () => {
     const taken = new Set(fs.readdirSync(TASK_COMPONENTS).map((f) => f.toLowerCase()));
     const clash = walk(PROJECTS)
-      .map((f) => path.basename(f))
-      .filter((name) => taken.has(name.toLowerCase()) && !BEFORE_OP2.has(name.toLowerCase()));
+      .filter((f) => taken.has(path.basename(f).toLowerCase()) && !BEFORE_OP2.has(rel(f)))
+      .map((f) => rel(f));
     expect(clash, "a My work view is imported from app/tasks/components, never copied").toEqual([]);
   });
 
   it("the closed list still names real clashes, so it cannot go stale", () => {
-    const projects = new Set(walk(PROJECTS).map((f) => path.basename(f).toLowerCase()));
+    const projects = new Set(walk(PROJECTS).map(rel));
     const tasks = new Set(fs.readdirSync(TASK_COMPONENTS).map((f) => f.toLowerCase()));
     for (const name of BEFORE_OP2) {
-      expect(projects.has(name) && tasks.has(name), name).toBe(true);
+      expect(projects.has(name) && tasks.has(path.basename(name)), name).toBe(true);
     }
   });
 
@@ -208,5 +217,37 @@ describe("My work is a mount, not a copy", () => {
       expect(source).toContain(`@/app/tasks/components/${view}`);
     }
     expect(source).not.toMatch(/tasks\/page/);
+  });
+});
+
+describe("My work and the shared stores (fix round 1)", () => {
+  it("My work has its own undo scope, and the board scope returns after it", () => {
+    expect(projectsUndoScope("my-today", "p1")).toBe("projects:my-work");
+    expect(projectsUndoScope("my-inbox", null)).toBe("projects:my-work");
+    expect(projectsUndoScope(null, "p1")).toBe("projects:p1");
+    expect(projectsUndoScope("reports", "p1")).toBe("projects:p1");
+    expect(projectsUndoScope(null, null)).toBe("projects:none");
+  });
+
+  const host = fs
+    .readFileSync(path.join(PROJECTS, "components", "MyWorkHost.tsx"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+  it("the host claims the My work undo scope", () => {
+    expect(host).toContain('useUndoScope("projects:my-work")');
+  });
+
+  it("the host puts the store view back on unmount", () => {
+    expect(host).toMatch(/return \(\) => \{[\s\S]*selectView\(tasksEntryView\(before\)\)/);
+  });
+
+  it("the host reads the date again when the tab returns", () => {
+    expect(host).toContain('"visibilitychange"');
+    expect(host).toContain('"focus"');
+  });
+
+  it("the page uses the scope rule, not a project-only scope", () => {
+    const page = fs.readFileSync(path.join(PROJECTS, "page.tsx"), "utf8");
+    expect(page).toContain("useUndoScope(projectsUndoScope(app, selected?.id))");
   });
 });

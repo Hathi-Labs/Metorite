@@ -87,8 +87,9 @@ export function myWorkCounts(
   items: MyTask[],
   fromProjectIds: ReadonlySet<string>,
   today: string | null,
+  timeZone?: string | null,
 ): Record<MyWorkId, number> {
-  const counts = viewCounts(items, "all", today);
+  const counts = viewCounts(items, "all", today, timeZone);
   const out = {} as Record<MyWorkId, number>;
   for (const entry of MY_WORK_VIEWS) {
     out[entry.id] =
@@ -99,14 +100,29 @@ export function myWorkCounts(
 
 /**
  * The landing rule (§9 OP-2 item 5, §8 answer 2). With the flag on, `/projects`
- * with no `?project=`, `?task=` or `?app=` opens Today. Any other link wins.
+ * with no `?project=`, `?task=`, `?app=`, `?assignee=` or `?center=` opens Today.
+ * Any other link wins.
  * Flag off: null, and the page lands as it always did.
  */
 export function landingApp(
   flag: boolean,
-  params: { project?: string | null; task?: string | null; app?: string | null },
+  params: {
+    project?: string | null;
+    task?: string | null;
+    app?: string | null;
+    assignee?: string | null;
+    center?: string | null;
+  },
 ): MyWorkId | null {
   if (!flag) return null;
-  if (params.project || params.task || params.app) return null;
+  if (params.project || params.task || params.app || params.assignee || params.center) return null;
   return "my-today";
+}
+
+/**
+ * The undo scope of the Projects page (§9 OP-2). My work has its own scope, so
+ * entering it clears the board history, and Ctrl+Z reaches one store only.
+ */
+export function projectsUndoScope(app: string | null | undefined, projectId: string | null | undefined): string {
+  return isMyWorkId(app) ? "projects:my-work" : `projects:${projectId ?? "none"}`;
 }

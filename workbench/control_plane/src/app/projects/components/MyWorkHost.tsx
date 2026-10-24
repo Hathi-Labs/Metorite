@@ -32,6 +32,10 @@ import { TaskFocusModal } from "@/app/tasks/components/TaskFocusModal";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 
+import { useUndoScope } from "@/components/UndoProvider";
+
+import { tasksEntryView } from "@/app/tasks/lib/today";
+
 import { myWorkView, type MyWorkId } from "../lib/myWork";
 
 export default function MyWorkHost({ app }: { app: MyWorkId }) {
@@ -42,6 +46,31 @@ export default function MyWorkHost({ app }: { app: MyWorkId }) {
   const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const view = useTaskStore((s) => s.selectedView);
   const wanted = myWorkView(app);
+
+  // My work has its own undo scope, so Ctrl+Z never reaches the board history.
+  // The page returns the board scope when this host unmounts.
+  useUndoScope("projects:my-work");
+
+  // The store is shared with /tasks. Put its view back when My work closes.
+  useEffect(() => {
+    const before = useTaskStore.getState().selectedView;
+    return () => {
+      useTaskStore.getState().selectView(tasksEntryView(before));
+    };
+  }, []);
+
+  // A tab left open past midnight moves on: read the date again on return.
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === "visible") void loadMyToday();
+    };
+    document.addEventListener("visibilitychange", again);
+    window.addEventListener("focus", again);
+    return () => {
+      document.removeEventListener("visibilitychange", again);
+      window.removeEventListener("focus", again);
+    };
+  }, [loadMyToday]);
 
   // The store loads when a My work view opens, and not before.
   useEffect(() => {

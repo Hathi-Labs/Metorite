@@ -62,6 +62,7 @@ const VIEW_META: Record<
   { title: string; icon: ThemedIcon; hint: string }
 > = {
   inbox: { title: "Inbox", icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
+  today: { title: "Today", icon: themedIcon("CalendarDays"), hint: "Your next actions dated today or before, in your time zone." },
   next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by stage and sorted by priority — the very next physical step for each." },
   // D78: one priority system, the matrix, in both apps.
   priority: { title: "Priority", icon: themedIcon("Target"), hint: "Your open work by priority level — Critical first, Low Priority last." },
@@ -78,6 +79,7 @@ export function ItemList() {
   const loading = useTaskStore((s) => s.loading);
   const view = useTaskStore((s) => s.selectedView);
   const myToday = useTaskStore((s) => s.myToday);
+  const myTimezone = useTaskStore((s) => s.myTimezone);
   const context = useTaskStore((s) => s.selectedContext);
   const filters = useTaskStore((s) => s.filters);
   const sort = useTaskStore((s) => s.sort);
@@ -140,8 +142,8 @@ export function ItemList() {
   // BEFORE the toolbar so its context/assignee dropdowns only offer what the
   // Area holds. `itemsInArea` says why membership is `projectId` alone.
   const inView = useMemo(
-    () => itemsInArea(itemsForView(items, view, context, "all", myToday), selectedAreaId),
-    [items, view, context, selectedAreaId, myToday],
+    () => itemsInArea(itemsForView(items, view, context, "all", myToday, myTimezone), selectedAreaId),
+    [items, view, context, selectedAreaId, myToday, myTimezone],
   );
   // The legacy Priority view (no longer a sidebar entry, but still reachable in
   // code) forces the priority sort so its sections read rank-ordered; every

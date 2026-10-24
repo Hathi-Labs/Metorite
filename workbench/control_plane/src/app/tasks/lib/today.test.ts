@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { itemsForView, viewCounts } from "./taskStore";
-import { isInToday, todayRows } from "./today";
+import { isInToday, tasksEntryView, todayRows } from "./today";
 import type { MyTask } from "./types";
 
 const TODAY = "2026-10-24";
@@ -88,5 +88,31 @@ describe("todayRows and the store", () => {
   it("holds no row until the date is known", () => {
     expect(itemsForView(ITEMS, "today", null)).toEqual([]);
     expect(viewCounts(ITEMS).today).toBe(0);
+  });
+});
+
+describe("the member's zone", () => {
+  // 23:30 on 2026-10-24 in Los Angeles (UTC-7) is 06:30 UTC on the 25th.
+  // A browser five hours ahead of the member reads that instant as the 25th.
+  const due = "2026-10-25T06:30:00Z";
+
+  it("reads an instant in the member's zone and not the browser's", () => {
+    const t = task("z", { dueAt: due });
+    expect(isInToday(t, "2026-10-24", "America/Los_Angeles")).toBe(true);
+    expect(isInToday(t, "2026-10-24", "Pacific/Auckland")).toBe(false);
+  });
+
+  it("itemsForView and viewCounts pass the zone through", () => {
+    const items = [task("z", { dueAt: due })];
+    expect(itemsForView(items, "today", null, "all", "2026-10-24", "America/Los_Angeles")).toHaveLength(1);
+    expect(viewCounts(items, "all", "2026-10-24", "America/Los_Angeles").today).toBe(1);
+  });
+});
+
+describe("tasksEntryView", () => {
+  it("maps the My work only view to Next actions and leaves the rest", () => {
+    expect(tasksEntryView("today")).toBe("next");
+    expect(tasksEntryView("inbox")).toBe("inbox");
+    expect(tasksEntryView("done")).toBe("done");
   });
 });
