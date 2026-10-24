@@ -52,6 +52,13 @@ chat tools ``move_project`` and ``move_task`` call those routes. A subtask
 that a move carries follows the one check on the task the member names,
 as a delete does.
 
+**A folder becomes a project (WS-64 OP-10, D-OP-16).** The conversion
+changes the shape of the tree, so it needs :func:`may_write_grant` on the
+folder: a lead of a project above it, or a Projects admin. In a personal
+tree the owner of the tree may also convert their own folder. Door:
+``POST /nodes/{id}/convert``. The tree and node reads carry
+``can_convert`` through :func:`attach_can_convert`.
+
 Each read runs inside the caller's tenant session, so RLS bounds it.
 Fence: ``tests/unit/test_projects_write_authority.py`` (R8).
 """
@@ -114,6 +121,12 @@ PROJECT_MOVE_REFUSED = (
 TASK_MOVE_REFUSED = (
     "Only the person who created this task, the project lead or a Projects "
     "admin can move it to another project."
+)
+
+#: The 403 of a folder that becomes a project (WS-64 OP-10, D-OP-16).
+CONVERT_REFUSED = (
+    "Only the project lead or a Projects admin can turn this folder into a "
+    "project."
 )
 
 #: Each project that the member leads, and each project below one. ``UNION``
@@ -378,4 +391,49 @@ async def attach_can_delete(
             # The 403's own words, so the chat quotes the server and holds
             # no copy of who may act.
             row["delete_refusal"] = words
+    return rows
+
+
+async def may_convert_node(
+    db: Any, user: Any, project: Any, *, led: frozenset[str] | None = None,
+) -> bool:
+    """May *user* turn the folder *project* into a project? (D-OP-16.)
+
+    The grant rule (:func:`may_write_grant`), because a conversion changes
+    the shape of the tree. The owner of a personal tree may also convert a
+    folder in their own tree. The cheap arms go first.
+    """
+    if await may_write_grant(db, user, project, led=led):
+        return True
+    me = _me(user)
+    return bool(me) and await personal_tree_owner(db, project) == me
+
+
+async def assert_may_convert_node(db: Any, user: Any, project: Any) -> None:
+    """403 with :data:`CONVERT_REFUSED`, or return. (D-OP-16.)"""
+    if not await may_convert_node(db, user, project):
+        raise HTTPException(status_code=403, detail=CONVERT_REFUSED)
+
+
+async def attach_can_convert(
+    db: Any, user: Any, rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Set ``can_convert`` on each row, through :func:`may_convert_node`.
+
+    WS-64 OP-10. Only a folder converts, so a project row reads false. A
+    folder row that the member may not convert also carries
+    ``convert_refusal``, the words of the 403, which the chat quotes. The
+    app shows "Convert to project" only where the flag is true. The lead
+    set is read once for the page.
+    """
+    folders = [r for r in rows if str(_field(r, "kind") or "project") == "folder"]
+    led: frozenset[str] | None = None
+    if folders and not can_manage_settings(user):
+        led = await led_projects(db, user)
+    for row in rows:
+        row["can_convert"] = False
+    for row in folders:
+        row["can_convert"] = await may_convert_node(db, user, row, led=led or frozenset())
+        if not row["can_convert"]:
+            row["convert_refusal"] = CONVERT_REFUSED
     return rows

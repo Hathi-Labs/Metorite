@@ -527,6 +527,56 @@ def assert_node_grammar(
                    "projects. Break the work down with tasks and subtasks.",
         )
 
+
+def assert_folder_converts(
+    *,
+    parent_kind: str | None,
+    parent_generation: int,
+    children: list[tuple[str, int]],
+) -> None:
+    """May a folder become a project where it sits? (WS-64 OP-10, D-OP-16.)
+
+    ``children`` holds each project directly inside the folder, as
+    ``(name, depth)``. ``depth`` is the longest project chain in that
+    child's subtree, the child included. A folder cannot hold a folder, so
+    each direct child is a project.
+
+    :func:`assert_node_grammar` decides, as for a create and a move: the
+    converted node is a project whose ``subtree_depth`` is 1 plus the
+    deepest child. This function adds only the words. When the grammar
+    refuses, the 422 names each child project that is too deep, so the
+    member knows what to move. Pure, so the hermetic suite tests each case.
+    """
+    depth = 1 + max((d for _, d in children), default=0)
+    try:
+        assert_node_grammar(
+            kind="project",
+            parent_kind=parent_kind,
+            parent_generation=parent_generation,
+            subtree_depth=depth,
+        )
+    except HTTPException as refused:
+        # The project chain that may sit below the new project.
+        room = MAX_PROJECT_GENERATIONS - parent_generation - 1
+        blockers = sorted(name for name, d in children if d > room)
+        if not blockers:
+            raise
+        names = ", ".join(f"'{n}'" for n in blockers)
+        if room <= 0:
+            detail = (
+                f"This folder is inside a project, so as a project it would "
+                f"be a subproject, and a subproject cannot hold projects. "
+                f"Move {names} out of the folder first."
+            )
+        else:
+            detail = (
+                f"{names} have sub-projects of their own, and those would go "
+                f"below the lowest level. Move their sub-projects out first, "
+                f"or move the project out of the folder."
+            )
+        raise HTTPException(status_code=422, detail=detail) from refused
+
+
 #: The one system task type. Its only rule — an Epic cannot have a parent —
 #: makes it structurally the root level (§3.4). There is deliberately no
 #: 'Subtask' type: a subtask is a task with a parent.

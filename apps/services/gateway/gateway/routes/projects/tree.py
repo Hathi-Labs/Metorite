@@ -9,6 +9,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``tree.py`` row).
     PATCH  /projects/nodes/{id}
     DELETE /projects/nodes/{id}                  → what cascaded
     POST   /projects/nodes/{id}/move
+    POST   /projects/nodes/{id}/convert          → a folder becomes a project
     GET    /projects/nodes/{id}/grants
     POST   /projects/nodes/{id}/grants
     DELETE /projects/nodes/{id}/grants/{grant_id}
@@ -28,11 +29,13 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.authority import (
     assert_may_change_lead,
+    assert_may_convert_node,
     assert_may_delete_project,
     assert_may_move_project,
     assert_may_name_lead,
     assert_may_revoke_grant,
     assert_may_write_grant,
+    attach_can_convert,
     attach_can_delete,
     attach_can_write_grants,
 )
@@ -49,6 +52,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_grant_group_exists,
+    assert_folder_converts,
     assert_no_project_cycle,
     assert_node_grammar,
     assert_project_move_keeps_privacy,
@@ -232,6 +236,12 @@ class GrantIn(BaseModel):
     subject: str
 
 
+class ConvertNode(BaseModel):
+    """WS-64 OP-10. The one direction a node converts today."""
+
+    to: str
+
+
 class DeleteResponse(BaseModel):
     """R7/R8 — a destructive route says what it destroyed, per table."""
 
@@ -282,6 +292,8 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
         nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
         # WS-64 OP-8 — the app hides Delete on a node where this is false.
         await attach_can_delete(db, user, list(nodes.values()), kind="project")
+        # WS-64 OP-10 — the app offers "Convert to project" where this is true.
+        await attach_can_convert(db, user, list(nodes.values()))
 
     roots: list[dict] = []
     for node in nodes.values():
@@ -421,6 +433,8 @@ async def get_node(
         await attach_can_delete(db, user, [result], kind="project")
         # WS-64 OP-6b — the chat refuses before its grant card where this is false.
         await attach_can_write_grants(db, user, result)
+        # WS-64 OP-10 — the chat refuses before its convert card where this is false.
+        await attach_can_convert(db, user, [result])
         return result
 
 
@@ -1113,6 +1127,114 @@ async def move_node(
         result["statuses_remapped"] = remapped
 
     await emit("pm.project.moved", {"project_id": project_id})
+    return result
+
+
+#: WS-64 OP-10. Each project directly inside a node, with the longest project
+#: chain in its subtree, the child included. One read for every child, so the
+#: refusal can name each child that is too deep.
+_CHILD_DEPTHS_SQL = (
+    "WITH RECURSIVE sub AS ("
+    "  SELECT id, id AS branch, name AS branch_name,"
+    "         CASE WHEN coalesce(kind, 'project') = 'project'"
+    "           THEN 1 ELSE 0 END AS d"
+    "    FROM pm_projects WHERE parent_project_id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, s.branch, s.branch_name,"
+    "         s.d + CASE WHEN coalesce(p.kind, 'project') = 'project'"
+    "           THEN 1 ELSE 0 END"
+    "    FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id"
+    ") SELECT branch, branch_name, max(d) AS depth FROM sub"
+    "   GROUP BY branch, branch_name"
+)
+
+#: The timeline words of a conversion.
+CONVERTED_BODY = "Converted from a folder to a project"
+
+
+@router.post("/nodes/{project_id}/convert")
+async def convert_node(
+    project_id: str, payload: ConvertNode,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Turn a folder into a project (WS-64 OP-10, D-OP-16).
+
+    One transaction, and only the kind changes. The projects inside the
+    folder become subprojects, because a level is derived from the kind and
+    the place (``node_level``), and nothing stored moves.
+
+    ⚠️ **A project below a space needs nothing that a folder lacks.** A
+    space owns the status set, the types and the task counter, and every
+    node below it reads them from there (migration 196). ``create_node``
+    seeds a set only for a new root, and a folder is never a root. So the
+    children keep their statuses and their tasks with no write, and the
+    new project reads the same set. The run state is the column default
+    ``active``. A value outside ``RUN_STATES`` becomes ``active``.
+
+    The grammar decides through :func:`core.assert_folder_converts`, which
+    calls ``assert_node_grammar``. The authority is the grant rule
+    (``authority.may_convert_node``). The kind is locked first, so two
+    calls cannot both convert.
+    """
+    if payload.to != "project":
+        raise HTTPException(
+            status_code=422,
+            detail="A folder converts only to a project. Send {\"to\": \"project\"}.",
+        )
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        node = await load_visible_project(db, vis, project_id)
+        await assert_may_convert_node(db, user, node)
+        locked = (await db.execute(
+            text(
+                "SELECT kind, status, parent_project_id FROM pm_projects"
+                " WHERE id = CAST(:pid AS uuid) FOR UPDATE"
+            ),
+            {"pid": project_id},
+        )).fetchone()
+        if locked is None or node_kind(locked.kind) != "folder":
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{node.name}' is already a project. Only a folder "
+                       f"converts to a project.",
+            )
+        parent_id = locked.parent_project_id
+        parent = None
+        if parent_id is not None:
+            # The parent's kind, read without the caller's visibility: the
+            # shape is a structural fact, as in `_project_generation`.
+            parent = (await db.execute(
+                text("SELECT kind FROM pm_projects WHERE id = CAST(:pid AS uuid)"),
+                {"pid": str(parent_id)},
+            )).fetchone()
+        children = (await db.execute(
+            text(_CHILD_DEPTHS_SQL), {"pid": project_id},
+        )).fetchall()
+        assert_folder_converts(
+            parent_kind=(
+                node_kind(getattr(parent, "kind", None))
+                if parent_id is not None else None
+            ),
+            parent_generation=(
+                await _project_generation(db, str(parent_id))
+                if parent_id is not None else 0
+            ),
+            children=[(str(c.branch_name), int(c.depth or 0)) for c in children],
+        )
+
+        values: dict[str, Any] = {"kind": "project"}
+        if locked.status not in RUN_STATES:
+            values["status"] = "active"
+        after = await update_row(db, "pm_projects", project_id, values)
+        await record_activity(
+            db, activity_type="system", created_by=actor(user),
+            project_id=project_id, body=CONVERTED_BODY,
+        )
+        result = row_to_dict(after, ProjectModel)
+        await attach_can_delete(db, user, [result], kind="project")
+        await attach_can_convert(db, user, [result])
+
+    await emit("pm.project.updated", {"project_id": project_id})
     return result
 
 
