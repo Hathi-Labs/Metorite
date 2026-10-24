@@ -127,7 +127,9 @@ export function rowSummary(title: string, ticked: number, total: number): string
   if (ticked === total) return title;
   const count = new RegExp(`\\b${total}\\b`);
   if (count.test(title)) return title.replace(count, `${ticked} of ${total}`);
-  return `${title} (${ticked} of ${total})`;
+  // "· 1 of 4 ticked", and not "(1 of 4)": beside a stack's "1 of 2" pager,
+  // a bare count read as a second card counter (owner report, 2026-10-24).
+  return `${title} · ${ticked} of ${total} ticked`;
 }
 
 /**
@@ -374,3 +376,7 @@ export function settleAnswer(
   if (outcome === "drop") return { type: "dropped", key: card.key };
   return { type: "answered", key: card.key };
 }
+
+// The stack of waiting cards lives in `lib/cardStack.ts`, shared with every
+// stack of cards in the chat. Re-exported here for the queue's callers.
+export { SWIPE_STEP_PX, stackBanner, stackDepth, swipeStep } from "./cardStack";

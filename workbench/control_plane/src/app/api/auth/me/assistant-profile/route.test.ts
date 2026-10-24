@@ -144,4 +144,20 @@ describe("/api/auth/me/assistant-profile", () => {
     expect((await DELETE(req("", "DELETE"))).status).toBe(401);
     expect(asked).toHaveLength(0);
   });
+
+  it("GET /address forwards to its path and passes a fault through (PZ-4)", async () => {
+    stub(() => new Response(JSON.stringify({ name: "VJ" }), { status: 200 }));
+    const address = await import("./address/route");
+    const res = await address.GET(req("/address", "GET"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ name: "VJ" });
+    expect(asked[0].url).toBe(`${GW}/address`);
+    expect(asked[0].init?.method).toBe("GET");
+    stub(() => new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 }));
+    expect((await address.GET(req("/address", "GET"))).status).toBe(503);
+    signedIn = false;
+    stub(() => new Response("{}", { status: 200 }));
+    expect((await address.GET(req("/address", "GET"))).status).toBe(401);
+    expect(asked).toHaveLength(0);
+  });
 });

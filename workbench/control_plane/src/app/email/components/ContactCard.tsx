@@ -233,8 +233,10 @@ export function RecipientList({
   accountId?: string;
 }) {
   if (!people || people.length === 0) return null;
+  // Each person shows the name AND the address, so the member can check
+  // exactly who got a mail (owner report, 2026-10-24).
   return (
-    <div className="text-xs text-muted-foreground">
+    <div className="break-words text-xs text-muted-foreground" data-recipient-list={label}>
       {label}:{" "}
       {people.map((p, i) => (
         <span key={`${p.email}-${i}`}>
@@ -244,7 +246,13 @@ export function RecipientList({
             accountId={accountId}
             className="hover:text-primary hover:underline tech-transition"
           >
-            {p.name || p.email}
+            {p.name && p.name !== p.email ? (
+              <>
+                {p.name} <span className="text-muted-foreground/80">&lt;{p.email}&gt;</span>
+              </>
+            ) : (
+              p.email
+            )}
           </ContactTrigger>
         </span>
       ))}

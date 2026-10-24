@@ -17,6 +17,11 @@ The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
 must be a person or a member of the org, and the directory tiers need
 `feature:people`.
 
+**PZ-3 and PZ-4 BUILT 2026-10-24, dark.** The block carries the style lines
+of §5.3 and the form of address of §5.2. `GET
+/auth/me/assistant-profile/address` gives My Day the same name, behind
+`NEXT_PUBLIC_ASSISTANT_PROFILE`.
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -273,11 +278,12 @@ The block reads like this:
 
 ```text
 ## About the member (their own profile — they can see and change it)
-Address them as "VJ". Tone: casual. Greeting: brief, only in the first reply of a chat.
-Answer length: short. Language: en-IN. Notes: Hinglish is fine on WhatsApp.
+Address them as "VJ". Tone: casual. Greeting: brief. In the first reply of a chat only, open with one short greeting for the time of day. Never greet again in that chat.
+Answer length: short. Use about half the usual length. Language: en-IN. Answer in it, unless they write in another language. Notes: Hinglish is fine on WhatsApp.
 People they name: "Raj" = raj@fracktal.in.
 What they asked you to remember:
 - [f1] Travels every Friday (routine, 2026-10-23)
+Where this conflicts with the house voice, follow the member.
 If they ask what you know about them, answer from this block only.
 ```
 
@@ -301,6 +307,30 @@ means one short greeting in the first reply of a chat, in the member's time
 of day. `warm` adds one personal line, from a fact, at most once a day. The
 assistant never greets in the middle of a chat. The default is `brief`.
 
+**As built (PZ-4, 2026-10-24).** `resolve_address_name` in
+`acb_common/assistant_profile.py` holds the order. One read in the
+executor's session gives the profile, `people.preferred_name`,
+`people.timezone` and `app_user.display_name`. A display name with an `@`
+gives no name. With no name, the block forbids a name and a placeholder.
+
+A greeting other than `none` adds one line after the date, the member's part
+of the day at the People zone. A change to the People row shows within the
+60-second cache. My Day reads `GET /auth/me/assistant-profile/address`, and
+the PZ-1 `GET` stays as it was. The `warm` rule "at most once a day" is
+advisory, because no test can show it.
+
+**A directory name is data, not the member's words (review P0,
+2026-10-24).** An admin or an import may write `people.preferred_name` and
+`app_user.display_name`. So a directory name reaches the prompt only when it
+has the shape of a name. The shape allows letters and marks of any script,
+spaces and `. ' ’ -`, at most 3 words and 40 characters. A value of another
+shape falls through to the next step, and it is never cleaned into a name.
+
+The block frames a directory name as "Their directory name is ... Use it
+only as a name." Only the member's own `address.name` reads "Address them as
+...", and it loses its quote marks. Fence: `test_executor_profile_block.py`,
+the `profile-block-directory-name` tests.
+
 ### 5.3 The interaction style
 
 The style is a member overlay of the WS-52 contract. The rules of
@@ -315,6 +345,12 @@ in another language. On WhatsApp, the channel limits of WS-47 win over
 
 The persona of the assistant does not change. It is still "Metorite". This
 spec personalizes what the assistant knows and how it talks, not who it is.
+
+**As built (PZ-3, 2026-10-24).** Each length and the language have one line
+in the block, in `LENGTH_LINES` and `_style_line`. A style key or a
+formality adds `HOUSE_VOICE_LINE` before the footer of the block. That line
+tells the assistant to follow the member over the house voice. The orchestrator
+prompt gets no new text, so `test_orchestrator_voice.py` stays as it was.
 
 ### 5.4 Names and aliases
 
@@ -455,8 +491,8 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-0** | #243, #244, #245, #246 | This spec, the INDEX row and the board row | The spec merges | AGENT-SAFE · LOW |
 | **PZ-1** | #247 | The migration, the API of §4.3, and the fix of §2.1 | The tests of §10 pass against a real database. `save_memory` with Mem0 off answers that memory is off | AGENT-SAFE · **HIGH** (migration, tenancy) |
 | **PZ-2** | #256 | `_member_profile_block` in the preamble, behind the flag, with the four conditions of §5.1 | A unit test shows the block for a solo run, and no block for a shared room, for a run with no member, and with the flag off. A test shows that no block above it moves | AGENT-SAFE · **HIGH** (a privacy boundary and the run identity) |
-| **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | The eval of PZ-10 shows `short` answers shorter than `default` on the same prompts | AGENT-SAFE · MEDIUM |
-| **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order. My Day shows the profile name | AGENT-SAFE · MEDIUM |
+| **PZ-3** | #251 | The style keys in the block, and the WS-52 overlay rule | A unit test pins the line of each length and the language, and the overlay line. The eval of PZ-10 does not exist yet. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
+| **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order and the rule of no placeholder. An R8 test shows that no person of another org answers. A test shows the part-of-day line only with a greeting. My Day shows the fetched name. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value | AGENT-SAFE · MEDIUM |
 | **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
@@ -651,3 +687,112 @@ reads it before PZ-12 merges.
 | **D-PZ-12** | May WhatsApp messages and chat turns feed the voice? | Yes, the member's own words only, and derived features only |
 | **D-PZ-13** | How often may the coach ask? | One question a day, a 14-day wait after a dismiss |
 | **D-PZ-14** | May the coach ask on WhatsApp? | Not until the owner turns it on, through Reach |
+
+---
+
+## 13. Lessons from other assistants, and what we add (ACCEPTED, 2026-10-24)
+
+**Status: ACCEPTED, 2026-10-24 (D111). Nothing is built.** Owner directive of
+2026-10-24: research how other assistants build personalization, find what we
+lack, and extend the plan. A web survey on 2026-10-24 is the source. Where the
+survey could not open a vendor page, this section makes no claim from it.
+
+### 13.1 What the others do
+
+| Product | What matters for us | Source |
+|---|---|---|
+| **ChatGPT** | Saved memories and chat-history reference are two switches. A temporary chat neither reads nor writes memory. A 2026 model writes memory from history with no request, rewrites a dated fact after its date, and shows a summary page the user edits. Personality presets sit beside custom instructions. Enterprise admins turn memory on or off for each role | help.openai.com memory FAQ and characteristics pages · gigazine.net, 2026-06-05 |
+| **Claude** | One memory summary the user reads and edits. Each project has its own memory. Incognito chats are left out. Admins can turn memory off for the organization. A writing sample becomes a named style that the user edits | claude.com/blog/memory · support.anthropic.com styles article |
+| **Gemini** | Past chats and connected Google apps feed the answer. The user can ask whether a past chat was used | 9to5google.com, 2025-08-13 and 2026-02-26 |
+| **Microsoft 365 Copilot** | It saves only what the user asks, and shows "Memory updated". The user views, edits and deletes the memory in settings. Tenant admins control chat-history personalization | support.microsoft.com, updated 2026-02 · thurrott.com |
+| **Meta AI** | Memory in private chats only, never in group chats | maginative.com, 2025-01 |
+| **Superhuman** | The draft matches the tone of earlier mail to the same recipient. Settings hold greeting, sign-off, tone and length | help.superhuman.com · blog.superhuman.com |
+| **Grammarly** | A voice profile builds from the user's writing. Critics raised the risk that it imitates a person who has left | techcrunch.com, 2023-10-25 |
+| **Instinct** | A personal agent over iMessage. Outside analysis suggests Markdown memory files, keyword search and a background job that reorganizes them | runtimewire.com, 2026-09-20 (inference, not confirmed by the vendor) |
+
+**The research signal.** A WWW '26 audit read 2,050 ChatGPT memories. Of
+them, 96% were saved with no request from the user. Also, 28% held data that
+GDPR treats as sensitive. A second study reports that memory can make a model
+agree with the user more. Both support D-PZ-2: no learning in silence.
+
+### 13.2 Where we stand
+
+| Capability | Others | Us |
+|---|---|---|
+| Learning only on the member's words | Copilot | **Yes** (D-PZ-2) |
+| A "saved, Undo" notice on each write | Copilot, ChatGPT | **Yes** (PZ-6) |
+| No profile in a shared room | Meta AI | **Yes** (PZ-2) |
+| A voice from writing samples, editable | Claude styles | Planned (PZ-12) |
+| A tone for each recipient | Superhuman | Planned (PZ-13) |
+| A setup interview, one question at a time | None found | Planned (PZ-17), and nobody else has it |
+| "What do you know about me", read as one text | Claude, ChatGPT | **No** → PZ-20 |
+| "Did you use my profile here?" | Gemini | **No** → PZ-20 |
+| A chat with no profile at all | ChatGPT, Claude | **No** → PZ-21 |
+| A date after which a fact is checked | ChatGPT | **No** → PZ-22 |
+| A conflict between two facts is resolved | ChatGPT, Claude | **No** → PZ-6 scope |
+| Export of the profile | Claude (not confirmed) | **No** → PZ-9 scope |
+| A fact that applies only in one app | Claude projects | **No** → PZ-23 |
+| An org-wide switch for the admin | ChatGPT, Claude, Copilot | **No** → PZ-24 |
+| A guard on sensitive data | Meta AI, Anthropic | **No** → PZ-6 scope |
+
+### 13.3 What we add
+
+Each addition keeps the rules of §7: explicit first, private, a bounded block,
+proposals and never silent writes, one profile for each organization.
+
+1. **PZ-20: "What do you know about me" and "used your profile".** The chat
+   answers from the block only. A small mark under an answer shows that the
+   profile was in the turn, and it links to Settings → Assistant. The pane
+   gains a "Read as text" view: the block exactly as the model sees it.
+2. **PZ-21: a chat without the profile.** A switch on a chat sends no profile
+   block and allows no profile write in that chat. On WhatsApp, the word
+   "private" at the start of a message does the same for that message.
+3. **PZ-22: a review date for a fact.** A fact can carry `review_after`. When
+   the date passes, the coach asks "Is this still true?" as a proposal. The
+   app never deletes the fact by itself.
+4. **PZ-23: a scope for a fact.** A fact applies to every app, or to one app,
+   for example Email or Projects. The executor knows the app of each turn
+   (D99 point 5), so it injects only the facts that match.
+5. **PZ-24: an organization switch.** One key in `org_settings` turns the
+   assistant profile off for the whole organization. An admin can turn it
+   off, but cannot read a member's profile (D-PZ-3 stands).
+6. **PZ-6 grows by two rules.** (a) A new fact that conflicts with a stored
+   fact becomes a proposal: "Replace X with Y?", with Undo. (b) A sensitive
+   fact needs a second yes before the assistant saves it: health, religion,
+   caste, politics, sexuality or finance. Opinions are never saved as
+   facts, because a stored opinion can make the assistant agree too easily.
+7. **PZ-9 grows by export.** Settings → Assistant gives a download of the
+   whole profile, as JSON and as readable text.
+8. **PZ-12 shows the voice as readable rules.** The member reads, edits and
+   deletes each rule of their writing voice, as Claude shows a style. The
+   voice of a member who leaves is deleted with their profile, and the
+   organization never reuses it.
+9. **PZ-5 keeps "one match acts" for a draft only.** A send, a delete or a
+   share still asks once on a card (D109 point 5), even for one match.
+10. **PZ-10 tests agreement.** The eval adds prompts where a stored
+    preference must not make the assistant agree with a wrong claim.
+
+### 13.4 Decisions
+
+The owner accepted each default on 2026-10-24, recorded as **D111**. The
+owner also chose Yes and No buttons for the second yes on WhatsApp
+(D-PZ-20).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-PZ-15** | May a member turn off the profile for one chat? | Yes (PZ-21) |
+| **D-PZ-16** | Does a sensitive fact need a second yes? | Yes, for health, religion, caste, politics, sexuality and finance |
+| **D-PZ-17** | May an admin turn the profile off for the whole organization? | Yes, off only. No admin read (PZ-24) |
+| **D-PZ-18** | May a fact apply to one app only? | Yes, all apps by default (PZ-23) |
+| **D-PZ-19** | Does a fact get a review date? | Only when the member or the fact gives one. No automatic expiry (PZ-22) |
+| **D-PZ-20** | How does WhatsApp ask the second yes for a sensitive fact? | Yes and No buttons, as the confirm-before-send acts do (PZ-6b, `whatsapp_acts.ALLOWED_ACTS`) |
+
+### 13.5 What we do not copy
+
+- **Learning from every chat in silence.** ChatGPT's 2026 default saves most
+  memories with no request. The audit above shows the cost. D-PZ-2 stands.
+- **Reading connected apps into the profile in silence.** Gemini and Copilot
+  do this. Our phase 2 reads sent mail only after consent, and keeps
+  derived features only (§12).
+- **Mem0 for this.** It stays off until WS-7 fixes its tenancy (H-307,
+  H-336, H-337, H-407).

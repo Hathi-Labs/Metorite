@@ -42,13 +42,16 @@ import { AppTopBar } from "@/components/AppTopBar";
 import PageHeader from "@/components/PageHeader";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { assistantProfileOn } from "@/lib/assistantProfileFlag";
 import { visibleSections } from "@/lib/nav";
+import { useCachedResource } from "@/lib/useCachedResource";
 
+import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressName";
 import AppLauncher from "./AppLauncher";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import { FeedColumn, useFeed } from "./FeedCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
-import { cardOrderFor, cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
+import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLine } from "./myDay";
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import { homePane } from "./shellNav";
@@ -81,6 +84,14 @@ export default function MyDay() {
   const { data: session } = useSession();
   const now = useMinute();
   const [launcherOpen, setLauncherOpen] = useState(false);
+  // WS-63 PZ-4 (`personalization.md` §5.2): the name the assistant calls the
+  // member, behind NEXT_PUBLIC_ASSISTANT_PROFILE. Off, loading or failed, the
+  // header keeps the session name (`addressName.ts`).
+  const profileOn = useSyncExternalStore(noSubscribe, assistantProfileOn, () => false);
+  const address = useCachedResource<string>(
+    profileOn ? ADDRESS_KEY : null,
+    () => fetchAddressName(),
+  );
   // This page renders only with the flag on, so its pane is My Day.
   const home = homePane(true);
 
@@ -148,7 +159,10 @@ export default function MyDay() {
         {now ? (
           // The one page header (`pageHeading.test.ts`): the same title
           // size as every other surface, so Home reads as the same product.
-          <PageHeader title={greetingLine(now, session?.user?.name)} subtitle={dateLine(now)} />
+          <PageHeader
+            title={addressedGreetingLine(now, address.data, session?.user?.name)}
+            subtitle={dateLine(now)}
+          />
         ) : (
           <div aria-hidden className="mb-3">
             <Skeleton className="h-6 w-56" />

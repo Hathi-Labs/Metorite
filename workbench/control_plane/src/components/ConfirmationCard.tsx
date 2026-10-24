@@ -43,6 +43,7 @@
 import { useEffect, useState } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
+import { splitCardEmailText } from "@/lib/cardEmailText";
 import FencedText from "@/components/FencedText";
 import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
@@ -470,11 +471,48 @@ export default function ConfirmationCard({
               })}
             </dl>
           )}
-          {body.text && (
-            <p className="whitespace-pre-wrap break-words text-xs text-foreground" data-card-text="">
-              {body.text}
-            </p>
-          )}
+          {body.text && (() => {
+            // An email in the card: its rows apart, the mail in a frame of
+            // its own, so no label reads as part of the mail (owner,
+            // 2026-10-24, `lib/cardEmailText.ts`). Any other text draws
+            // whole, as before.
+            const mail = splitCardEmailText(body.text);
+            if (!mail) {
+              return (
+                <p className="whitespace-pre-wrap break-words text-xs text-foreground" data-card-text="">
+                  {body.text}
+                </p>
+              );
+            }
+            return (
+              <div className="space-y-2" data-card-email="">
+                {mail.head.length > 0 && (
+                  <dl className="space-y-1">
+                    {mail.head.map((row, i) => (
+                      <div key={`${row.key}-${i}`} className="flex items-baseline gap-2 text-xs" data-card-email-row={row.key}>
+                        <dt className="shrink-0">
+                          <Badge size="xs">{row.key}</Badge>
+                        </dt>
+                        <dd className="min-w-0 flex-1 break-words font-medium text-foreground">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                <div>
+                  <p className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <Icon name="Mail" size={12} />
+                    The email, as it is sent
+                  </p>
+                  <div
+                    className="whitespace-pre-wrap break-words rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs text-foreground"
+                    data-card-text=""
+                  >
+                    {mail.body}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {[...afterNotes, ...body.trailing].map((note, i) => (
             <p key={i} className="text-[11px] text-muted-foreground">
               <CardText text={note} fenced={fenced} />
