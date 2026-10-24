@@ -324,12 +324,18 @@ async def test_r8_nobody_changes_the_grants_of_a_personal_space(live, monkeypatc
 async def test_r8_a_stray_grant_on_a_personal_space_can_be_removed(live) -> None:
     """Review round 2. A grant on a personal tree that was written before OP-6b
     (``org`` here) must not be stuck: a revoke only makes the tree more
-    private. The owner and a Projects admin remove it. A member who is
-    neither gets 403. The owner's own grant still never goes.
+    private. The owner removes it. A member who is neither gets 403 or 404.
+    The owner's own grant still never goes.
+
+    WS-64 OP-9 fix round 1 (D-OP-15): the stray grant shows the tree to
+    nobody but the owner. So the org admin and the settings admin both read
+    a 404, and the row stays until the owner removes it.
 
     Mutation N1: ``delete_grant`` calls ``assert_may_write_grant`` again in
-    place of ``assert_may_revoke_grant``. The admin's revoke gets 403 and
-    this test fails.
+    place of ``assert_may_revoke_grant``. The owner's revoke gets 403 and
+    this test fails. Mutation G1: delete the ``personal_owner`` line from the
+    seed of ``_VISIBLE_PROJECTS_SQL``. The settings admin reads the tree
+    through the stray grant, the revoke answers 200, and this test fails.
     """
     from gateway.routes.projects.authority import GRANT_WRITE_REFUSED, PERSONAL_GRANT_REFUSED
 
@@ -350,16 +356,15 @@ async def test_r8_a_stray_grant_on_a_personal_space_can_be_removed(live) -> None
         assert r.json()["detail"] == GRANT_WRITE_REFUSED, r.text
     assert "org" in _grants(live, root)
     # WS-64 OP-9 (D-OP-15): the org admin reads no personal tree, so the
-    # revoke is a 404 and the row stays. A Projects admin who sees the tree
-    # through the stray grant itself removes it.
-    r = await _as(live, admin, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
-    assert r.status_code == 404, r.text
-    assert "org" in _grants(live, root)
-    r = await _as(live, settings_admin, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
-    assert r.status_code == 200, r.text
-    assert "org" not in _grants(live, root)
+    # revoke is a 404 and the row stays. Fix round 1: the stray grant shows
+    # the tree to nobody but the owner, so the settings admin who used to
+    # read it through that grant gets the same 404.
+    for who in (admin, settings_admin):
+        r = await _as(live, who, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
+        assert r.status_code == 404, (who, r.text)
+        assert "org" in _grants(live, root)
 
-    gid = stray()
+    # The owner removes it.
     r = await _as(live, VIEWER, "DELETE", f"/projects/nodes/{root}/grants/{gid}")
     assert r.status_code == 200, r.text
     assert "org" not in _grants(live, root)

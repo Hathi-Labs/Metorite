@@ -256,6 +256,11 @@ def world():
 
     p["team"] = a.project("Team", grant_to="org")
     task("team", p["team"], p["team"], by=OWNER, assignee=OWNER)
+    # Fix round 1: a personal node of OWNER under the team project, with no
+    # task. It holds the descent of `_VISIBLE_PROJECTS_SQL`: the `org` grant
+    # on the team project must not carry a reader into it.
+    p["owner_under_team"] = a.project("Owner under team", parent=p["team"],
+                                      personal_owner=OWNER)
 
     # OWNER's personal tree: the root and an Area are stamped, as migration
     # 297 and `tree.create_node` stamp them. The team node under the root is
@@ -719,6 +724,34 @@ class TestAStrayGrantShowsTheOwnerOnly:
         rows = await _seam_tasks(armed, who)
         assert not (rows & armed.owner_personal), who
         assert armed.team <= rows, "the team node under the root keeps its own grant"
+
+
+class TestTheDescentStopsAtAPersonalNode:
+    """Mutation G2: delete the ``personal_owner`` line from the recursive
+    step of ``_VISIBLE_PROJECTS_SQL``. The ``org`` grant on the team
+    project then carries MEMBER into OWNER's node under it."""
+
+    async def _projects(self, world, who: str) -> set[str]:
+        from gateway.routes.projects.core import resolve_visibility_for
+
+        async def _go(db) -> set[str]:
+            vis = await resolve_visibility_for(db, who)
+            rows = (await db.execute(
+                text(f"SELECT id FROM pm_projects WHERE {vis.project_clause()}"),
+                vis.params,
+            )).fetchall()
+            return {str(r.id) for r in rows}
+
+        return await _as_app(world, _go)
+
+    @pytest.mark.parametrize("who", OTHERS, ids=OTHER_IDS)
+    async def test_no_other_reader_reaches_it(self, armed, who):
+        got = await self._projects(armed, who)
+        assert armed.p["owner_under_team"] not in got, who
+        assert armed.p["team"] in got, who
+
+    async def test_the_owner_reaches_it(self, armed):
+        assert armed.p["owner_under_team"] in await self._projects(armed, OWNER)
 
 
 class TestTheScopeColumnIsTheTasksOwnNode:

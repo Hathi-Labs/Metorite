@@ -646,7 +646,7 @@ async def test_pm_assignee_load_is_scoped_to_the_callers_visibility(
     db = _FakeDB()
     await PM_ITEMS.assignee_load(db, "A@x")
     (sql, params), = db.calls
-    assert "t.root_project_id IN (SELECT id FROM visible)" in sql
+    assert "t.project_id IN (SELECT id FROM visible)" in sql
     assert "GROUP BY 1" in sql and "t.archived_at IS NULL" in sql
     assert params == {"vis_org": "org-1", "who": "a@x"}
     item_lens.resolve_visibility_for.assert_awaited_once_with(db, "a@x")
