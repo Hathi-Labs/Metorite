@@ -6422,9 +6422,9 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-24 · email single-mailbox session
 
 ### H-411 · Two first writes of the always-copy list at once can both pass · [AGENT]
-- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row, and the agent sends the version that the model read. If both hold, delete this entry.
-- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing, so two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT, so a change made in the UI between the model's read and the tool call is not caught.
-- **Do this:** lock on the account row (or an advisory lock on the account id), and carry the version from the model's read into the tool call.
+- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row. The agent sends the version that the model read. If both hold, delete this entry.
+- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing. So two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT. So it misses a change in the UI after the model read the list.
+- **Do this:** lock on the account row, or take an advisory lock on the account id. Carry the version from the model's read into the tool call.
 - **Authority:** the final check of #1288, 2026-10-24.
 - **Added:** 2026-10-24 · email single-mailbox session
 
