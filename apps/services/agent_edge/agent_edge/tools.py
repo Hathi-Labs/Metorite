@@ -13,7 +13,10 @@ of the gateway checks the nonce, the scope, the writes flag and the cap. The
 ``agent_edge.idempotency``, and :func:`_claim_slot` and :func:`_keyed_write` hold
 the rules of its slot for both tools. EA-12b adds the six
 agent-run tools of §12.1 and ``agent_runs`` in ``get_task``. They show only
-while ``agent_runs_enabled`` is on.
+while ``agent_runs_enabled`` is on. EA-15 (§12.4) adds two reads that compose
+routes already in ``MCP_ROUTES``: ``get_task_context`` (the task, its parents,
+its project, its blockers and the newest comments) and ``my_work`` (the next
+work of this client).
 
 **The tool record (§9.5).** Each :class:`Tool` declares its ``name``,
 ``title``, ``required_scope``, ``inputSchema``, ``outputSchema``, the four
@@ -53,7 +56,11 @@ for ``agent_runs`` while the runs flag is on (EA-12b). ``get_project`` makes
 five. ``create_task`` makes three: the statuses, the POST and the re-read. It
 makes one more for a parent and one more for a ``type_id``. ``update_task``
 makes three: the PATCH, the re-read and the statuses. ``claim_task`` makes
-three: the POST, the re-read and the statuses. The other tools make one
+three: the POST, the re-read and the statuses. ``get_task_context`` makes
+at most :data:`CONTEXT_CALL_CEILING` (EA-15a). ``my_work`` makes four, then
+at most :data:`MAX_BLOCKER_READS` relations reads, one task read for each
+run row whose task is not in the member's list (at most ``limit``), and at
+most :data:`MAX_STATUS_READS` status reads (EA-15b). The other tools make one
 or two. The long poll of ``get_agent_run`` is the one exception (EA-12b,
 §12.1): its request has ``wait_seconds`` plus
 :data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has ``wait_seconds`` plus
@@ -85,6 +92,7 @@ from agent_edge.gateway_client import (
     GatewayNotSent,
     GatewayUnreachable,
     RouteRefused,
+    actor_via,
 )
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
@@ -2334,6 +2342,515 @@ GET_TASK_TIMELINE = Tool(
 )
 
 
+# ── get_task_context (EA-15a, §12.4) ────────────────────────────────────────
+
+#: The most parents that ``get_task_context`` reads, from the task up (§12.4).
+MAX_ANCESTORS = 5
+#: The first characters of the description of each parent (§12.4).
+ANCESTOR_DESCRIPTION_CHARS = 500
+#: The newest comments that ``get_task_context`` reads (§12.4).
+CONTEXT_COMMENTS = 20
+#: The most gateway calls of one ``get_task_context`` (§12.4): the five of
+#: ``get_task``, one for each parent, the project node and the timeline.
+CONTEXT_CALL_CEILING = 12
+
+#: The keys of one parent of ``ancestors`` (§12.4).
+ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "description")
+#: The keys of the result of ``get_task_context`` (§12.4).
+CONTEXT_KEYS: tuple[str, ...] = (
+    "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
+    "held_by", "refs", "recent_comments",
+)
+
+#: The one stub of a parent that the member cannot see. It has no title.
+_HIDDEN_ANCESTOR: Mapping[str, bool] = {"hidden": True}
+
+_ANCESTOR_STATUS_SCHEMA = _object({
+    "id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
+})
+_ANCESTOR_SCHEMA: dict[str, Any] = {"anyOf": [
+    _object({
+        "id": {"type": "string"}, "task_number": _NULLABLE_INTEGER,
+        "title": _UNTRUSTED_SCHEMA, "status": _ANCESTOR_STATUS_SCHEMA,
+        "description": _UNTRUSTED_OR_NULL,
+    }),
+    _object({"hidden": {"type": "boolean", "enum": [True]}}),
+]}
+_CONTEXT_PROJECT_SCHEMA: dict[str, Any] = {"anyOf": [
+    _object({"id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA,
+             "description": _UNTRUSTED_OR_NULL}),
+    {"type": "null"},
+]}
+_CONTEXT_OUTPUT: dict[str, Any] = _object({
+    "task": _TASK_SCHEMA,
+    "ancestors": {"type": "array", "items": _ANCESTOR_SCHEMA},
+    "project": _CONTEXT_PROJECT_SCHEMA,
+    "blocked_by": {"type": "array", "items": _LINK_SCHEMA},
+    "blocks": {"type": "array", "items": _LINK_SCHEMA},
+    "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
+    "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    "held_by": _HELD_BY_SCHEMA,
+    "refs": {"type": "array", "items": _REF_SCHEMA},
+    "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
+        "activities"]["items"]},
+})
+
+
+async def _statuses_of(ctx: Context, project: str) -> dict[str, Mapping[str, Any]]:
+    """``{status id: row}`` of *project*, with the name and the category.
+
+    The rule of :func:`_status_names`: a project that the member cannot open
+    (403, 404 or any other 4xx) gives no rows. A 401 and a busy gateway end
+    the whole call.
+    """
+    try:
+        body = await _get(ctx, STATUSES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text == TEXT_BUSY:
+            raise
+        return {}
+    rows = body.get("rows") if isinstance(body, dict) else None
+    return {str(r["id"]): r for r in rows or ()
+            if isinstance(r, dict) and r.get("id") is not None}
+
+
+@dataclass
+class _Walk:
+    """The parents that :func:`_walk_up` found, nearest first. A ``None``
+    item is the stub of a parent that the member cannot see. ``statuses``
+    holds the statuses of each other project that the spare calls read."""
+
+    parents: list[dict[str, Any] | None] = field(default_factory=list)
+    statuses: dict[str, dict[str, Mapping[str, Any]]] = field(default_factory=dict)
+
+
+async def _walk_up(ctx: Context, row: Mapping[str, Any]) -> _Walk:
+    """Read each parent of the task, from the task up, at most
+    :data:`MAX_ANCESTORS` levels (§12.4).
+
+    A parent that the member cannot see answers 404 (or 403). The walk then
+    stops at that level with one stub, so no title of it ever leaves. The
+    statuses of the task's own project come from the read of ``get_task``.
+    A parent in another project takes its category from one more read of
+    that project's statuses, but only with the calls that the walk left
+    unused, so the call ceiling holds.
+    """
+    walk = _Walk()
+    seen = {str(row.get("id"))}
+    parent = _id(row.get("parent_task_id"))
+    while parent is not None and parent not in seen and len(walk.parents) < MAX_ANCESTORS:
+        seen.add(parent)
+        try:
+            found = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                               path_params={"task_id": parent})
+        except ToolError as exc:
+            if exc.text not in (TEXT_TASK_NOT_FOUND, TEXT_FORBIDDEN):
+                raise
+            walk.parents.append(None)
+            break
+        if not isinstance(found, dict):
+            raise ToolError(TEXT_BUSY)
+        walk.parents.append(found)
+        parent = _id(found.get("parent_task_id"))
+    own = str(row.get("project_id"))
+    others: dict[str, None] = {}
+    for item in walk.parents:
+        project = _id(item.get("project_id")) if item is not None else None
+        if project is not None and project != own:
+            others.setdefault(project, None)
+    spare = MAX_ANCESTORS - len(walk.parents)
+    wanted = list(others)[:max(spare, 0)]
+    if wanted:
+        read = await _together(*(_statuses_of(ctx, p) for p in wanted))
+        walk.statuses = dict(zip(wanted, read, strict=True))
+    return walk
+
+
+def _ancestor(row: Mapping[str, Any], own_project: str,
+              own: Mapping[str, Mapping[str, Any]],
+              others: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, Any]:
+    """One parent (§12.4). The name of the status shows only for a parent
+    in the task's own project. A parent in another project shows the status
+    category only. The description is cut to its first
+    :data:`ANCESTOR_DESCRIPTION_CHARS` characters BEFORE it is wrapped."""
+    status_id = _str_or_none(row.get("status_id"))
+    project = str(row.get("project_id"))
+    if project == own_project:
+        status = own.get(status_id or "", {})
+        name = status.get("name")
+        shown = untrusted(name) if isinstance(name, str) else None
+    else:
+        status = others.get(project, {}).get(status_id or "", {})
+        shown = None
+    description = row.get("description")
+    return {
+        "id": str(row.get("id")),
+        "task_number": _int_or_none(row.get("task_number")),
+        "title": untrusted(row.get("title") or ""),
+        "status": {"id": status_id or "", "name": shown,
+                   "category": _key(status.get("category"))},
+        "description": untrusted(description[:ANCESTOR_DESCRIPTION_CHARS])
+        if isinstance(description, str) else None,
+    }
+
+
+async def _project_of(ctx: Context, project: str) -> dict[str, Any] | None:
+    """The project node: id, name and description (§12.4). A project that
+    the member cannot open gives null, as the status names do in
+    ``get_task``. A 401 and a busy gateway end the whole call."""
+    try:
+        node = await _get(ctx, NODE_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text == TEXT_BUSY:
+            raise
+        return None
+    if not isinstance(node, dict):
+        return None
+    return {"id": str(node.get("id")), "name": untrusted(node.get("name") or ""),
+            "description": untrusted(node.get("description"))}
+
+
+def _blocks_links(links: Any, direction: str) -> list[dict[str, Any]]:
+    """The ``blocks`` links of one direction, each with its status category.
+    Incoming means that the other task blocks this one (``relations.py``)."""
+    if not isinstance(links, list):
+        return []
+    return [_link(r) for r in links if isinstance(r, dict)
+            and r.get("link_type") == "blocks" and r.get("direction") == direction]
+
+
+async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """The task, why it exists and what holds it up, in one call (§12.4).
+
+    The task route first, as ``get_task`` does. Then, at the same time: the
+    relations, the references, the open runs, the statuses of the project,
+    the project node, the newest comments, and the walk up the parents. At
+    most :data:`CONTEXT_CALL_CEILING` gateway calls.
+    """
+    where = {"task_id": str(args["task_id"])}
+    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    project = str(row.get("project_id"))
+    valid = _id(project) is not None
+    no_statuses: dict[str, Mapping[str, Any]] = {}
+
+    async def nothing() -> None:
+        return None
+
+    async def no_rows() -> dict[str, Mapping[str, Any]]:
+        return no_statuses
+
+    found = await _together(
+        _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where),
+        _get(ctx, REFS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
+             query=[("refresh", "false")]),
+        _open_runs(ctx, where),
+        _statuses_of(ctx, project) if valid else no_rows(),
+        _project_of(ctx, project) if valid else nothing(),
+        _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
+             query=[("kind", "comments"), ("page", "1"),
+                    ("page_size", str(CONTEXT_COMMENTS))]),
+        _walk_up(ctx, row),
+    )
+    relations, refs, runs, statuses, node, timeline, walk = found
+    if not isinstance(relations, dict):
+        raise ToolError(TEXT_BUSY)
+    names = {k: v["name"] for k, v in statuses.items() if isinstance(v.get("name"), str)}
+    task = _task(row, names)
+    subtasks, links = relations.get("subtasks"), relations.get("links")
+    ancestors = [
+        _ancestor(p, project, statuses, walk.statuses) if p is not None
+        else dict(_HIDDEN_ANCESTOR)
+        for p in reversed(walk.parents)
+    ]
+    # The timeline answers newest first. The result reads oldest first.
+    comments = [_activity(r) for r in reversed(_rows_of(timeline))]
+    return {
+        "task": task,
+        "ancestors": ancestors,
+        "project": node,
+        "blocked_by": _blocks_links(links, "incoming"),
+        "blocks": _blocks_links(links, "outgoing"),
+        "subtasks": [_subtask(r) for r in subtasks or () if isinstance(r, dict)]
+        if isinstance(subtasks, list) else [],
+        "agent_runs": runs,
+        "held_by": task["held_by"],
+        "refs": [reference(r) for r in _rows_of(refs)],
+        "recent_comments": comments,
+    }
+
+
+GET_TASK_CONTEXT = Tool(
+    name="get_task_context",
+    title="Get the context of a task",
+    description=(
+        "Read why a task exists, in one call. Call it after claim_task and"
+        " before you start the work. Returns the task (the shape of get_task),"
+        " its parents from the root down to the task, at most five levels, its"
+        " project with the description, the tasks that block it (blocked_by)"
+        " and the tasks it blocks (blocks), each with its status category, its"
+        " subtasks, its open agent runs, held_by, its references and the"
+        " newest 20 comments, oldest first. A parent that this member cannot"
+        " see shows as {\"hidden\": true}, and the parents above it do not"
+        " show. Each parent has the first 500 characters of its description."
+        " A parent in another project shows its status category only."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_TASK_ID_INPUT,
+    output_schema=_CONTEXT_OUTPUT,
+    route=TASK_ROUTE,
+    params={"task_id": "task_id"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_get_task_context,
+    routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, TASK_RUNS_ROUTE, STATUSES_ROUTE,
+            NODE_ROUTE, TIMELINE_ROUTE),
+)
+
+
+# ── my_work (EA-15b, §12.4) ─────────────────────────────────────────────────
+
+MY_WORK_LIMIT_MAX = 25
+MY_WORK_LIMIT_DEFAULT = 10
+#: ``my_work`` reads the relations of at most this many task rows (§12.4).
+MAX_BLOCKER_READS = 10
+#: The status categories of the tasks that ``my_work`` offers. The claim
+#: refuses ``triage``, ``done`` and ``cancelled`` (§12.4).
+MY_WORK_CATEGORIES = "backlog,todo,in_progress"
+#: The page of the task list that ``my_work`` reads.
+MY_WORK_TASK_PAGE = 50
+#: The page of each runs list that ``my_work`` reads (the route's own cap).
+MY_WORK_RUNS_PAGE = 100
+#: The ``state`` of a run that waits for this client, and its ``reason``.
+WAITING_REASONS: Mapping[str, str] = {
+    "queued": "run_queued", "answered": "run_answered", "stopping": "run_stopping",
+}
+REASON_HELD = "held_by_you"
+REASON_ASSIGNED = "assigned"
+MY_WORK_REASONS: tuple[str, ...] = (*WAITING_REASONS.values(), REASON_HELD, REASON_ASSIGNED)
+
+#: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
+#: ``claim_task`` sends back as ``expected_version``.
+MY_WORK_ROW_KEYS: tuple[str, ...] = (
+    "task_id", "task_number", "title", "status", "project_id", "version", "reason",
+    "run_id", "held_by",
+)
+
+_MY_WORK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": MY_WORK_LIMIT_MAX,
+                  "default": MY_WORK_LIMIT_DEFAULT,
+                  "description": "The most rows to return."},
+    },
+    "additionalProperties": False,
+}
+_MY_WORK_ROW_SCHEMA = _object({
+    "task_id": {"type": "string"}, "task_number": _NULLABLE_INTEGER,
+    "title": _UNTRUSTED_OR_NULL,
+    "status": {"anyOf": [_STATUS_SCHEMA, {"type": "null"}]},
+    "project_id": _NULLABLE_STRING, "version": _NULLABLE_STRING,
+    "reason": {"type": "string", "enum": list(MY_WORK_REASONS)},
+    "run_id": _NULLABLE_STRING, "held_by": _HELD_BY_SCHEMA,
+})
+_MY_WORK_OUTPUT: dict[str, Any] = _object({
+    "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
+})
+
+
+async def _my_runs(ctx: Context, via: str, *, needs_agent: bool) -> list[dict[str, Any]]:
+    """The runs of this member and this client, newest first. A 404 means
+    that the gateway has the runs flag off, and it gives no runs."""
+    query = [("client_via", via), ("limit", str(MY_WORK_RUNS_PAGE))]
+    if needs_agent:
+        query.append(("needs_agent", "true"))
+    try:
+        body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
+    except ToolError as exc:
+        if exc.text == TEXT_TASK_NOT_FOUND:
+            return []
+        raise
+    # The gateway filters by the stamp. The edge checks it again, so a run
+    # of another client never reaches the list.
+    return [r for r in _rows_of(body) if r.get("client_via") == via]
+
+
+def _live_holder(value: Any) -> bool:
+    """True when an open run that is not stale holds the task (EA-14a)."""
+    return isinstance(value, dict) and value.get("stale") is not True
+
+
+def _open_blocker(links: Any) -> bool:
+    """True when an incoming ``blocks`` link of a task still waits: its
+    other end is not in a closing category (``relations.blocked_by_open``)."""
+    return any(link["category"] not in CLOSING_CATEGORIES
+               for link in _blocks_links(links, "incoming"))
+
+
+async def _unblocked(ctx: Context, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*rows* without each of the first :data:`MAX_BLOCKER_READS` that an
+    open ``blocks`` link waits on. The rest keep their order unchecked. A
+    row whose relations the member cannot read is dropped too."""
+    gate = asyncio.Semaphore(STATUS_READ_CONCURRENCY)
+
+    async def blocked(row: dict[str, Any]) -> bool:
+        async with gate:
+            try:
+                body = await _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND,
+                                  path_params={"task_id": str(row.get("id"))})
+            except ToolError as exc:
+                if exc.text == TEXT_BUSY:
+                    raise
+                return True
+        return _open_blocker(body.get("links") if isinstance(body, dict) else None)
+
+    checked = rows[:MAX_BLOCKER_READS]
+    verdicts = await _together(*(blocked(r) for r in checked)) if checked else []
+    kept = [r for r, wait in zip(checked, verdicts, strict=True) if not wait]
+    return kept + rows[MAX_BLOCKER_READS:]
+
+
+async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The task row of each id, for a run row whose task is not in the
+    member's own list. A task that the member cannot read gives no row."""
+    gate = asyncio.Semaphore(STATUS_READ_CONCURRENCY)
+
+    async def one(task_id: str) -> dict[str, Any] | None:
+        async with gate:
+            try:
+                row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                                 path_params={"task_id": task_id})
+            except ToolError as exc:
+                if exc.text == TEXT_BUSY:
+                    raise
+                return None
+        return row if isinstance(row, dict) else None
+
+    found = await _together(*(one(i) for i in ids)) if ids else []
+    return {i: r for i, r in zip(ids, found, strict=True) if r is not None}
+
+
+def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
+              run_id: str | None,
+              names_by_project: Mapping[str, Mapping[str, str]]) -> dict[str, Any]:
+    """One row of ``my_work`` (§12.4). With no task row, the task fields are
+    null and the row still names the run."""
+    if row is None:
+        return {"task_id": task_id, "task_number": None, "title": None, "status": None,
+                "project_id": None, "version": None, "reason": reason, "run_id": run_id,
+                "held_by": None}
+    status_id = row.get("status_id")
+    names = names_by_project.get(str(row.get("project_id")), {})
+    return {
+        "task_id": task_id,
+        "task_number": _int_or_none(row.get("task_number")),
+        "title": untrusted(row.get("title") or ""),
+        "status": {
+            "id": str(status_id) if status_id is not None else "",
+            "name": untrusted(names.get(str(status_id))) if status_id is not None else None,
+        },
+        "project_id": _str_or_none(row.get("project_id")),
+        "version": _str_or_none(row.get("updated_at")),
+        "reason": reason,
+        "run_id": run_id,
+        "held_by": _held_by(row.get("held_by")),
+    }
+
+
+async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """The next work of this client, in one call (§12.4).
+
+    The calls, in order: ``GET /auth/me`` for the member's email (the token
+    holds none), the runs list twice with this client's stamp (only while
+    the runs flag is on), the task list of the member, and the relations of
+    the first :data:`MAX_BLOCKER_READS` task rows. Then the task route for a
+    run row whose task is not in that list, and the statuses of the projects
+    of the rows, as ``list_tasks`` reads them.
+    """
+    limit = int(args.get("limit", MY_WORK_LIMIT_DEFAULT))
+    me = await _get(ctx, ME_ROUTE, TEXT_BUSY)
+    email = me.get("email") if isinstance(me, dict) else None
+    if not isinstance(email, str) or not email:
+        raise ToolError(TEXT_BUSY)
+
+    waiting: list[dict[str, Any]] = []
+    holding: list[dict[str, Any]] = []
+    via = _via(actor_via(ctx.caller.lookup))
+    if agent_oauth.runs_enabled() and via is not None:
+        needs, every = await _together(
+            _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, needs_agent=False))
+        waiting = [r for r in needs if r.get("state") in WAITING_REASONS]
+        holding = [r for r in every if r.get("status") in OPEN_RUN_STATUSES]
+
+    body = await _get(ctx, LIST_TASKS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=[
+        ("assignee", email), ("status_category", MY_WORK_CATEGORIES),
+        ("page", "1"), ("page_size", str(MY_WORK_TASK_PAGE))])
+    assigned = _rows_of(body)
+
+    listed: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+    for run, reason in [*((r, WAITING_REASONS[r["state"]]) for r in waiting),
+                        *((r, REASON_HELD) for r in holding)]:
+        task_id = _id(run.get("task_id"))
+        if task_id is None or task_id in seen:
+            continue
+        seen.add(task_id)
+        listed.append((task_id, reason, _id(run.get("id"))))
+
+    if len(listed) < limit:
+        free: list[dict[str, Any]] = []
+        for row in assigned:
+            task_id = _id(row.get("id"))
+            if task_id is None or task_id in seen or _live_holder(row.get("held_by")):
+                continue
+            seen.add(task_id)
+            free.append(row)
+        for row in await _unblocked(ctx, free):
+            listed.append((str(row["id"]), REASON_ASSIGNED, None))
+    listed = listed[:limit]
+
+    rows = {str(r.get("id")): r for r in assigned}
+    missing = [task_id for task_id, _, _ in listed if task_id not in rows]
+    rows.update(await _tasks_by_id(ctx, missing))
+    shown = [rows[t] for t, _, _ in listed if t in rows]
+    names = await _status_names(ctx, _distinct_projects(shown))
+    return {"rows": [_work_row(t, rows.get(t), reason, run_id, names)
+                     for t, reason, run_id in listed]}
+
+
+MY_WORK = Tool(
+    name="my_work",
+    title="My work",
+    description=(
+        "Find your next work, in one call. Call it at the start of each"
+        " session. The rows come in this order. First, the agent runs that wait"
+        " for this client: reason run_queued (a member queued work for you),"
+        " run_answered (a member answered your question) or run_stopping (a"
+        " member asked you to stop). Second, the tasks that this client holds"
+        " through an open run (held_by_you). Third, the tasks assigned to this"
+        " member that no AI session holds and that no open task blocks"
+        " (assigned). Take the top row. For a waiting run, read it with"
+        " get_agent_run and its run_id. For a task, call claim_task with the"
+        " task_id and the version. The list never holds a task that is not"
+        " assigned to this member and that this client does not hold."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_MY_WORK_INPUT,
+    output_schema=_MY_WORK_OUTPUT,
+    route=LIST_TASKS_ROUTE,
+    params={},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_my_work,
+    routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, RELATIONS_ROUTE, TASK_ROUTE,
+            STATUSES_ROUTE),
+    edge_inputs=frozenset({"limit"}),
+)
+
+
 # ── set_task_status (EA-6a, §9.2) ───────────────────────────────────────────
 
 #: The keys of the result of ``set_task_status`` (§9.2).
@@ -3845,8 +4362,9 @@ LIST_AGENT_RUNS = Tool(
     title="List agent runs",
     description=(
         "List this member's agent runs on the tasks they can see, newest first."
-        " At the start of every session, call it with needs_agent true before"
-        " other work. That lists the runs that wait for an agent: a run that a"
+        " It lists every run of the member, from each client, for an agent that"
+        " needs the full history. To find your next work, call my_work. With"
+        " needs_agent true, it lists the runs that wait for an agent: a run that a"
         " member queued for an agent (state queued), a run whose question a"
         " member answered (state answered), and a run that a member asked to"
         " stop (state stopping). For a queued or answered run, read it with"
@@ -3992,7 +4510,9 @@ RELEASE_TASK = Tool(
 
 # ── The registry ────────────────────────────────────────────────────────────
 
-#: Every tool of the edge, by name, in the order of ``tools/list``. The write
+#: Every tool of the edge, by name, in the order of ``tools/list``. The two
+#: reads of EA-15 (``get_task_context`` and ``my_work``) follow the seven
+#: reads of EA-3. The write
 #: tools come after the reads: the two of EA-6a, then the two of EA-6d, then
 #: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
@@ -4000,7 +4520,8 @@ RELEASE_TASK = Tool(
 #: It shows only while the member's switch is on (:func:`listed_for`).
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
-    SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
+    SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK,
+    SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RELEASE_TASK,
@@ -4105,6 +4626,8 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_MOVE_REFUSED",
+    "ANCESTOR_DESCRIPTION_CHARS",
+    "ANCESTOR_KEYS",
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "AUTHOR_AGENT",
@@ -4116,6 +4639,9 @@ __all__ = [
     "COMMENT_KEYS",
     "COMMENT_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
+    "CONTEXT_CALL_CEILING",
+    "CONTEXT_COMMENTS",
+    "CONTEXT_KEYS",
     "CREATE_ANNOTATIONS",
     "CREATE_BODY_KEYS",
     "CREATE_TASK",
@@ -4127,6 +4653,7 @@ __all__ = [
     "GET_AGENT_RUN",
     "GET_PROJECT",
     "GET_TASK",
+    "GET_TASK_CONTEXT",
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
     "LINK_KEYS",
@@ -4136,10 +4663,18 @@ __all__ = [
     "LIST_TASK_KEYS",
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
+    "MAX_ANCESTORS",
+    "MAX_BLOCKER_READS",
     "MAX_COMMENT_CHARS",
     "MAX_DELETE_IDS",
     "MAX_STATUS_READS",
     "MAX_WAIT_SECONDS",
+    "MY_WORK",
+    "MY_WORK_CATEGORIES",
+    "MY_WORK_LIMIT_DEFAULT",
+    "MY_WORK_LIMIT_MAX",
+    "MY_WORK_REASONS",
+    "MY_WORK_ROW_KEYS",
     "OPEN_RUN_STATUSES",
     "POST_AGENT_ACTIVITY",
     "PROJECT_KEYS",
@@ -4207,6 +4742,7 @@ __all__ = [
     "UPDATED_TASK_KEYS",
     "UPDATE_BODY_KEYS",
     "UPDATE_TASK",
+    "WAITING_REASONS",
     "WHOAMI",
     "WHOAMI_KEYS",
     "WRITE_ANNOTATIONS",
