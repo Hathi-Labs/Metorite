@@ -241,6 +241,34 @@ async def test_the_held_draft_card_classes_a_thread_person_thread(monkeypatch) -
     assert by[f"Cc: {F.STRANGER}"]["checked"] is True
 
 
+async def test_an_intruder_sender_of_the_thread_is_new_on_the_draft_card(monkeypatch) -> None:
+    """The sender rule of P1-a, on the send_draft card. The first received
+    mail of the thread is from the partner, and an intruder sent a later
+    mail into the thread. A draft to both: the partner is ``thread`` and
+    ticked, the intruder is ``new`` and unticked. Mutation: trust each
+    sender of the thread → the intruder is thread → red."""
+    partner, intruder = "anna@partner.example", "boss@intruder.example"
+    db = F.install_db(monkeypatch)
+    F.install_redis(monkeypatch)
+    F.flag_on(monkeypatch)
+    db.draft["to_addresses"] = json.dumps([{"email": partner}, {"email": intruder}])
+    db.draft["cc_addresses"] = "[]"
+    db.classes = {}
+    db.senders = [partner, intruder]  # received order: the partner first
+    out = await hc.held_card(hc.HeldCardRequest(kind="draft", account_id=F.BOX,
+                                                draft_id=F.DRAFT), F.user())
+    by = {r["label"]: r for r in out["rows"]}
+    assert by[f"To: {partner}"]["class"] == "thread" and by[f"To: {partner}"]["checked"]
+    assert by[f"To: {intruder}"]["class"] == "new"
+    assert by[f"To: {intruder}"]["checked"] is False
+    # A later sender that the member wrote to counts.
+    db.classes = {intruder: (False, True)}
+    got = await hc.trusted_thread_senders(db, F.MEMBER, F.BOX, "t")
+    assert got == [partner, intruder]
+    assert "'junk', 'spam'" in hc.THREAD_SENDER_ROWS_SQL
+    assert "ORDER BY" in hc.THREAD_SENDER_ROWS_SQL
+
+
 # ── Items 2, 8, 9 and 11: the reply card ─────────────────────────────────────
 
 
