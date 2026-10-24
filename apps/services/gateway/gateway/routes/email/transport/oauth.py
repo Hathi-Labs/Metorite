@@ -49,6 +49,7 @@ from email_ingestion.providers.gmail import GMAIL_SCOPES
 from email_ingestion.providers.outlook import GRAPH_SCOPES
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from gateway.routes.email.mailbox_access import connector_predicate
 from gateway.routes.email.core import (
     MAILBOX_LIMIT_DETAIL,
     MAX_MAILBOXES_PER_MEMBER,
@@ -806,8 +807,8 @@ async def _save_account(
         nothing_old = import_months == 0
         result = await db.execute(
             text(
-                # private-only: the connect flow reads the member's own rows. It mirrors
-                # the unique index of migration 223 (WS-65 SM-2). SM-3 owns a shared row.
+                # The first-mailbox test mirrors the partial unique index of
+                # one default for each user_id (migration 223, WS-65 SM-2).
                 f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
@@ -816,7 +817,7 @@ async def _save_account(
                    VALUES (:id, :user_id, :provider, :email, :label,
                             :color, :creds,
                             NOT EXISTS (SELECT 1 FROM email_accounts
-                                        WHERE lower(user_id) = :member),
+                                        WHERE {connector_predicate(uid="member", fold="column")}),
                             CAST(:org AS uuid), :import_since,
                             :initial_sync_done, :import_phase,
                             {NEXT_SLOT_SQL})

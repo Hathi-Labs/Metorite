@@ -140,6 +140,29 @@ def mailbox_ids_sql(*, uid: str = "uid", level: str = "manage") -> str:
     return f"SELECT id FROM email_accounts WHERE {mailbox_predicate(uid=uid, level=level)}"
 
 
+def connector_predicate(
+    alias: str | None = None, *, uid: str = "uid", fold: str = "",
+) -> str:
+    """The rows whose ``user_id`` is the member: private rows AND the shared
+    rows that the member connected (D-SM-1 keeps the connector there).
+
+    NEVER an access check. Only a site that mirrors a per-member index of
+    migration 223 uses it: the duplicate check of a connect, the election of
+    the default mailbox, the colour slot of a new mailbox. ``fold`` is ``""``
+    (``user_id = :uid``), ``"column"`` (``lower(user_id) = :uid``) or
+    ``"both"`` (``lower(user_id) = lower(:uid)``), so each caller keeps its
+    SQL text.
+    """
+    col = f"{alias}." if alias else ""
+    if fold == "column":
+        return f"lower({col}user_id) = :{uid}"
+    if fold == "both":
+        return f"lower({col}user_id) = lower(:{uid})"
+    if fold:
+        raise ValueError(f"unknown fold {fold!r}")
+    return f"{col}user_id = :{uid}"
+
+
 def private_predicate(alias: str | None = None, *, uid: str = "uid") -> str:
     """The predicate of the member's PRIVATE mailboxes only, at every flag.
 

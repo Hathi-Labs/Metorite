@@ -35,6 +35,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from gateway.routes.email.mailbox_access import private_predicate
 from gateway.routes.email.core import IN_ALL_INBOXES_SQL, NOT_A_COPY_FOLDERS
 from gateway.routes.email.mailbox_identity import display_labels
 from sqlalchemy import text
@@ -178,14 +179,15 @@ def _same_sender_sql(copy: str, mail: str) -> str:
 #: ⚠️ Outlook stores ``internet_message_id``, and Gmail does too since WS-17
 #: EM-G2. IMAP stores none, so an IMAP mailbox pairs with nothing. EM-G9
 #: proves a Gmail and Outlook pair (spec §12.3.11).
-# private-only: "also in" pairs the member's private mailboxes (D-EM-30). A
-# shared mailbox is never "self" and never pairs (D-SM-5, WS-65 SM-2).
+# "Also in" pairs the member's private mailboxes (D-EM-30). A shared
+# mailbox is never "self" and never pairs (D-SM-5, WS-65 SM-2).
 ALSO_IN_SQL = f"""
     SELECT m.id::text AS id, p.id::text AS other
       FROM email_messages m
       CROSS JOIN LATERAL ({paired_mailbox_ids_sql("m.account_id")}) AS p (id)
      WHERE m.id = ANY(CAST(:ids AS uuid[]))
-       AND m.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)
+       AND m.account_id IN (SELECT id FROM email_accounts
+                             WHERE {private_predicate(uid="uid")})
        AND COALESCE(m.internet_message_id, '') <> ''
        AND {_not_a_copy_sql("m")}
        AND EXISTS (

@@ -40,7 +40,7 @@ _INBOUND = f"LOWER(COALESCE(m.folder, '')) <> 'sent' AND {_LIVE_MAIL}"
 
 # A sender is only "yours" if it is one of the connected accounts. Without this
 # the user is their own #1 correspondent (the whole Sent folder is from-self).
-# private-only: "self" is the member's private mailboxes only (D-SM-5).
+# "Self" is the member's private mailboxes only (D-SM-5): private_predicate.
 _NOT_SELF = ("LOWER(COALESCE(m.from_address->>'email', '')) NOT IN "
              "(SELECT LOWER(email_address) FROM email_accounts "
              "WHERE " + private_predicate(uid="uid") + ")")

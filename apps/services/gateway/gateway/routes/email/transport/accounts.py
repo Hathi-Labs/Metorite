@@ -17,7 +17,7 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user, require_permission
 from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
-from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
+from gateway.routes.email.mailbox_access import connector_predicate, mailbox_predicate, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     MAILBOX_LIMIT_DETAIL,
@@ -616,12 +616,12 @@ async def create_account(
     async with _tenant_session(org) as db:
         if (await db.execute(
             text(
-                # private-only: the duplicate check of a connect mirrors the
-                # unique index of migration 223, which counts each row of
-                # user_id, a shared row of the connector too (WS-65 SM-2).
-                """SELECT id FROM email_accounts
+                # The duplicate check of a connect mirrors the unique index
+                # of migration 223, which counts each row of user_id, a
+                # shared row of the connector too (WS-65 SM-2).
+                f"""SELECT id FROM email_accounts
                    WHERE organization_id = CAST(:org AS uuid)
-                     AND user_id = :user_id AND provider = :provider
+                     AND {connector_predicate(uid="user_id")} AND provider = :provider
                      AND email_address = :email"""
             ),
             {"org": org, "user_id": user.email, "provider": req.provider,
@@ -677,8 +677,8 @@ async def create_account(
         # names organization_id: a write names its tenant (R5).
         is_default_row = await db.execute(
             text(
-                # private-only: the first-mailbox test mirrors the partial
-                # unique index of one default for each user_id (migration 223).
+                # The first-mailbox test mirrors the partial unique index of
+                # one default for each user_id (migration 223).
                 f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
@@ -686,7 +686,7 @@ async def create_account(
                    VALUES (:id, :user_id, :provider, :email, :label,
                            :color, :creds,
                            NOT EXISTS (SELECT 1 FROM email_accounts
-                                       WHERE user_id = :user_id
+                                       WHERE {connector_predicate(uid="user_id")}
                                          AND organization_id = CAST(:org AS uuid)),
                            CAST(:org AS uuid), {NEXT_SLOT_SQL})
                    RETURNING is_default, color_slot, created_at,
@@ -917,13 +917,13 @@ async def delete_account(
             if bool(deleted.is_default):
                 await db.execute(
                     text(
-                        # private-only: the re-election mirrors the partial
-                        # unique index of one default for each user_id.
-                        """UPDATE email_accounts
+                        # The re-election mirrors the partial unique index of
+                        # one default for each user_id.
+                        f"""UPDATE email_accounts
                            SET is_default = true, updated_at = now()
                            WHERE id = (
                                SELECT id FROM email_accounts
-                               WHERE user_id = :uid
+                               WHERE {connector_predicate(uid="uid")}
                                ORDER BY created_at, id
                                LIMIT 1
                            )"""

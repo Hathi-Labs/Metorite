@@ -13,12 +13,13 @@ reason.
 What this file holds:
 
 1. **The seam fence.** An AST scan of each SQL string literal under
-   ``routes/email`` (docstrings excluded). A literal with an owner predicate
-   passes when a ``# private-only: <reason>`` comment stands in the three
-   lines above the string, or inside it, or when its file has an entry in
-   ``email_owner_predicate_allowlist.json`` with a count and a reason. A new
-   unmarked site fails. An entry above the real count fails too, so the
-   ceiling only goes down.
+   ``routes/email`` (docstrings excluded), line by line. A line with an owner
+   predicate passes when a ``# private-only: <reason>`` marker stands at most
+   four lines above it, and each marker covers ONE line, the first predicate
+   line below it. A marker that covers no line is stale and fails. A file can
+   instead have an entry in ``email_owner_predicate_allowlist.json`` with an
+   exact count and a reason. A new unmarked site fails, so the ceiling only
+   goes down.
 2. **The flag off is the text of before.** Each builder of the seam returns
    the private arm, character for character, with ``EMAIL_SHARED_MAILBOX``
    off (§8.2 step 2).
@@ -41,8 +42,10 @@ Run::
 from __future__ import annotations
 
 import ast
+import io
 import json
 import re
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -59,8 +62,8 @@ OWNER_PREDICATE = re.compile(
 
 MARKER = re.compile(r"#\s*private-only:\s*(\S.*)?$")
 
-#: The lines above a string that may hold its marker.
-MARKER_REACH = 3
+#: How far below its marker a predicate line may stand.
+MARKER_REACH = 4
 
 
 def _docstrings(tree: ast.AST) -> set[int]:
@@ -75,41 +78,70 @@ def _docstrings(tree: ast.AST) -> set[int]:
     return ids
 
 
-def unmarked_sites(source: str) -> list[int]:
-    """The line of each owner predicate in a SQL literal with no marker.
-
-    A literal inside an f-string takes the first line of the f-string, so a
-    marker above a long f-string covers each of its parts.
-    """
+def predicate_lines(source: str) -> dict[int, int]:
+    """Each source line inside a SQL literal (docstrings excluded) that holds
+    an owner predicate, with the count of predicates on it."""
     tree = ast.parse(source)
     lines = source.splitlines()
     docs = _docstrings(tree)
-    start: dict[int, int] = {}
+    spans: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.JoinedStr):
-            for part in ast.walk(node):
-                start.setdefault(id(part), node.lineno)
-    found: list[int] = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
-            continue
-        if id(node) in docs:
-            continue
-        hits = len(OWNER_PREDICATE.findall(node.value))
-        if not hits:
-            continue
-        first = start.get(id(node), node.lineno)
-        window = lines[max(0, first - 1 - MARKER_REACH):node.end_lineno]
-        if any(MARKER.search(line) for line in window):
-            continue
-        found.extend([node.lineno] * hits)
-    return found
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docs and OWNER_PREDICATE.search(node.value)):
+            spans.update(range(node.lineno, node.end_lineno + 1))
+    return {n: k for n in sorted(spans)
+            if (k := len(OWNER_PREDICATE.findall(lines[n - 1])))}
+
+
+def _marker_comments(source: str) -> list[tuple[int, str]]:
+    """``(line, text)`` of each ``# private-only:`` COMMENT. Text inside a
+    string or a docstring is not a marker."""
+    out = []
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT and MARKER.search(tok.string):
+            out.append((tok.start[0], tok.string))
+    return out
+
+
+def _marker_lines(source: str) -> list[int]:
+    return [line for line, _text in _marker_comments(source)]
+
+
+def _covered(source: str) -> tuple[set[int], list[int]]:
+    """The predicate lines that a marker covers, and the stale markers.
+
+    A marker covers ONE line: the first predicate line at or below it, within
+    :data:`MARKER_REACH` lines. A second predicate in the same SQL needs a
+    marker of its own. A marker that covers no line is stale.
+    """
+    preds = predicate_lines(source)
+    covered: set[int] = set()
+    stale: list[int] = []
+    for m in _marker_lines(source):
+        hit = next((n for n in preds if m <= n <= m + MARKER_REACH), None)
+        if hit is None:
+            stale.append(m)
+        else:
+            covered.add(hit)
+    return covered, stale
+
+
+def unmarked_sites(source: str) -> list[int]:
+    """The line of each owner predicate in a SQL literal with no marker."""
+    covered, _stale = _covered(source)
+    return [n for n, k in predicate_lines(source).items() if n not in covered
+            for _ in range(k)]
+
+
+def stale_markers(source: str) -> list[int]:
+    """The line of each ``# private-only:`` marker that covers no predicate."""
+    return _covered(source)[1]
 
 
 def markers_without_reason(source: str) -> list[int]:
     """The line of each ``# private-only:`` marker with no reason after it."""
-    return [i + 1 for i, line in enumerate(source.splitlines())
-            if (m := MARKER.search(line)) and not (m.group(1) or "").strip()]
+    return [line for line, text in _marker_comments(source)
+            if not ((m := MARKER.search(text)) and (m.group(1) or "").strip())]
 
 
 def scan() -> dict[str, list[int]]:
@@ -156,6 +188,14 @@ class TestTheSeamFence:
                 "the entry when it reaches 0."
             )
 
+    def test_no_marker_is_stale(self) -> None:
+        bad = {
+            path.relative_to(_EMAIL).as_posix(): lines
+            for path in sorted(_EMAIL.rglob("*.py"))
+            if (lines := stale_markers(path.read_text(encoding="utf-8")))
+        }
+        assert not bad, f"a `# private-only:` marker that covers no predicate: {bad}"
+
     def test_each_marker_names_a_reason(self) -> None:
         bad = {
             path.relative_to(_EMAIL).as_posix(): lines
@@ -169,13 +209,21 @@ class TestTheSeamFence:
         assert unmarked_sites(bare) == [1]
         marked = "# private-only: self is private (D-SM-5).\n" + bare
         assert unmarked_sites(marked) == []
-        far = "# private-only: too far.\n\n\n\n" + bare
-        assert unmarked_sites(far) == [5]
+        far = "# private-only: too far.\n\n\n\n\n" + bare
+        assert unmarked_sites(far) == [6]
+        assert stale_markers(far) == [1]
         doc = 'def f():\n    """It reads user_id = :uid."""\n'
         assert unmarked_sites(doc) == []
         fstr = ('# private-only: an f-string.\nX = f"""SELECT {a}\n'
                 '  FROM t WHERE lower(user_id) = :m"""\n')
         assert unmarked_sites(fstr) == []
+        # A marker inside the text of a string is not a marker.
+        quoted = 'X = "# private-only: no."\nY = "SELECT 1 WHERE user_id = :uid"\n'
+        assert unmarked_sites(quoted) == [2]
+        # One marker covers one line. A second site in the same SQL is red.
+        two = ('# private-only: the first.\nX = """SELECT 1 WHERE user_id = :uid\n'
+               '  AND x IN (SELECT 1 WHERE user_id = :uid)"""\n')
+        assert unmarked_sites(two) == [3]
         assert markers_without_reason("# private-only:\n") == [1]
 
 

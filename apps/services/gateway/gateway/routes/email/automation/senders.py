@@ -149,8 +149,8 @@ async def list_senders(
         # meant different things on different rows.
         in_folder_sql = "COUNT(*) FILTER (WHERE LOWER(folder) = 'inbox')"
         rows = (await db.execute(text(
-            # private-only: "never list the user" reads "self", the member's
-            # private mailboxes only (D-SM-5, WS-65 SM-2).
+            # "Never list the user" reads "self": private_predicate, the
+            # member's private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT LOWER(from_address->>'email') AS email,
                        MAX(from_address->>'name') AS name,
                        COUNT(*) AS count,
@@ -180,8 +180,8 @@ async def list_senders(
         # hides the tail is worse than useless — the user believes they've dealt
         # with everything.
         total_row = (await db.execute(text(
-            # private-only: "never list the user" reads "self", the member's
-            # private mailboxes only (D-SM-5, WS-65 SM-2).
+            # "Never list the user" reads "self": private_predicate, the
+            # member's private mailboxes only (D-SM-5, WS-65 SM-2).
             f"""SELECT COUNT(DISTINCT LOWER(from_address->>'email')) AS c
                 FROM email_messages em
                 WHERE {scope}{folder_sql}
@@ -227,8 +227,8 @@ async def list_senders(
         # trims, so an exact-case comparison here silently dropped every label
         # whose rule name differed by case or stray whitespace — the sender then
         # rendered as uncategorized despite its mail being labelled.
-        # private-only: "never list the user" reads "self", the member's
-        # private mailboxes only (D-SM-5, WS-65 SM-2).
+        # "Never list the user" reads "self": private_predicate, the
+        # member's private mailboxes only (D-SM-5, WS-65 SM-2).
         not_self = (" AND LOWER(em.from_address->>'email') NOT IN ("
                     "SELECT LOWER(email_address) FROM email_accounts "
                     "WHERE " + private_predicate(uid="uid") + ")")

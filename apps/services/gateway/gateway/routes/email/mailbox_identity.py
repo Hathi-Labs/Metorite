@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 
+from gateway.routes.email.mailbox_access import connector_predicate
+
 #: The slots of the categorical ramp (``--cat-1`` to ``--cat-12``).
 SLOTS = range(1, 13)
 
@@ -172,15 +174,15 @@ def valid_slot(slot: object) -> bool:
 #: binds ``:member`` (the address of the member, any case) and ``:org``.
 #: ``tests/unit/test_email_mailbox_identity.py`` checks that the two agree on
 #: a real database (R8).
-# private-only: the colour slot of a new mailbox reads the other rows of the
-# member who connects it, the connector of a shared row too (WS-65 SM-2).
-NEXT_SLOT_SQL = """(
+# The colour slot of a new mailbox reads the other rows of the member who
+# connects it, the connector of a shared row too (WS-65 SM-2).
+NEXT_SLOT_SQL = f"""(
     SELECT s.slot
       FROM generate_series(1, 12) AS s(slot)
       LEFT JOIN (
             SELECT color_slot, count(*) AS n
               FROM email_accounts
-             WHERE lower(user_id) = lower(:member)
+             WHERE {connector_predicate(uid="member", fold="both")}
                AND organization_id = CAST(:org AS uuid)
                AND color_slot IS NOT NULL
              GROUP BY color_slot

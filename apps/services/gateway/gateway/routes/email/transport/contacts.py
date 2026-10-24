@@ -576,9 +576,9 @@ FUZZY_THRESHOLD = 0.3
 FUZZY_LIMIT = 5
 
 #: Closest members and People rows of the caller's own organization.
-# private-only: the caller's own addresses leave the list. "Self" is the
-# member's private mailboxes only (D-SM-5, WS-65 SM-2).
-_FUZZY_SQL = """
+# The caller's own addresses leave the list. "Self" is the member's
+# private mailboxes only (D-SM-5, WS-65 SM-2).
+_FUZZY_SQL = f"""
     WITH org AS (
         SELECT LOWER(au.email) AS email, NULLIF(TRIM(au.display_name), '') AS name
           FROM app_user au
@@ -607,7 +607,7 @@ _FUZZY_SQL = """
            AND (:dom = '' OR SPLIT_PART(o.email, '@', 2) ~ :dom)
            AND o.email <> LOWER(:uid)
            AND o.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
-                                WHERE user_id = :uid AND shared_since IS NULL)
+                                WHERE {private_predicate(uid="uid")})
     )
     SELECT email, COALESCE(MAX(name), '') AS name, MAX(sim) AS sim
       FROM scored WHERE sim >= :thr

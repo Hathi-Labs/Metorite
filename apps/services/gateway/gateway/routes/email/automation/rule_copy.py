@@ -281,8 +281,8 @@ def forwards_to_own_address(rule: dict[str, Any], own: set[str]) -> bool:
 async def _own_addresses(db: Any, owner: str) -> set[str]:
     """The lower-case address of each mailbox of the member."""
     rows = (await db.execute(text(
-        # private-only: the own-address set of D-EM-29 is the member's
-        # private mailboxes. SM-6 adds the set of a shared target.
+        # The own-address set of D-EM-29 is the member's private
+        # mailboxes (private_predicate). SM-6 adds the set of a shared target.
         "SELECT email_address FROM email_accounts WHERE "
         + private_predicate(uid="uid")
     ), {"uid": owner})).fetchall()
