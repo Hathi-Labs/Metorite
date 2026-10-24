@@ -47,6 +47,12 @@ Fix round 1:
 
 * Y12 (P1). ``E`` ``_my_work``: the old held group, every open run of the runs list with no state filter. ``test_y12_a_live_run_of_this_client_is_not_listed_and_a_stale_one_is``.
 * Y13 (P3b). ``E`` ``_my_runs``: read one page and stop. ``test_y13_the_runs_lists_follow_next_cursor_up_to_the_cap``.
+
+SW-13b (one member, two machines, one stamp):
+
+* Y14. ``E`` ``_my_runs``: drop the check of ``_run_connection``. ``test_y14_a_stale_run_of_another_connection_is_not_listed`` and ``test_y15_an_answered_run_of_another_connection_is_not_listed``.
+* Y16. ``E`` ``_my_runs``: keep a run with no ``connection_id`` (``_run_connection(r) in (mine, None)``). ``test_y16_a_run_with_no_connection_is_not_this_agents``.
+* Y17. ``E`` ``_my_runs``: keep a ``queued`` run of any connection. ``test_y17_member_queued_work_for_this_connection_still_shows``.
 """
 from __future__ import annotations
 
@@ -63,6 +69,7 @@ from acb_common import get_settings
 from agent_edge import gateway_client, tools
 
 from tests.unit.test_mcp_edge_writes import (  # noqa: F401 — fixtures
+    CONN,
     GOOD,
     PROJECT,
     TASK,
@@ -92,10 +99,15 @@ def _task_row(task_id: str, *, parent: str | None = None, project: str = PROJECT
             "updated_at": V0, "held_by": held_by}
 
 
+#: SW-13b. Another connection of the same member and the same stamp: the
+#: same client, signed in on another machine.
+OTHER_CONN = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+
+
 def _run(run_id: str, task_id: str, *, state: str = "working", status: str = "in_progress",
-         via: str = VIA) -> dict[str, Any]:
+         via: str = VIA, connection: str | None = CONN) -> dict[str, Any]:
     return {"id": run_id, "task_id": task_id, "member_email": ME, "client_via": via,
-            "status": status, "state": state}
+            "status": status, "state": state, "connection_id": connection}
 
 
 def _blocks(other: str, direction: str, category: str) -> dict[str, Any]:
@@ -559,6 +571,63 @@ class TestMyWork:
         board.answers[("GET", "/projects/agent-runs")] = (404, {"detail": "Not Found"})
         _assign(board, _uuid(8201))
         assert [r["reason"] for r in await _work()] == ["assigned"]
+
+
+class TestOneMemberTwoMachines:
+    """SW-13b. The PC session and the VPS session of one member act through
+    one stamp. Each machine signs in on its own, so each has its own
+    connection, and each run carries ``connection_id``. ``my_work`` lists a
+    run only of the caller's own connection."""
+
+    async def test_y14_a_stale_run_of_another_connection_is_not_listed(self, board):
+        """The VPS run reads stale while its subagents work. It is alive, so
+        the PC session must not take it back."""
+        vps, pc = _uuid(8401), _uuid(8402)
+        for task_id in (vps, pc):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [_run(_uuid(6401), vps, state="stale", connection=OTHER_CONN),
+                      _run(_uuid(6402), pc, state="stale", connection=CONN)]
+        rows = await _work()
+        assert [(r["task_id"], r["reason"], r["run_id"]) for r in rows] == [
+            (pc, "held_by_you", _uuid(6402))]
+
+    async def test_y15_an_answered_run_of_another_connection_is_not_listed(self, board):
+        """Group 1 too: an answer for the VPS run is the VPS session's."""
+        vps, pc = _uuid(8411), _uuid(8412)
+        for task_id in (vps, pc):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6411), vps, state="answered", connection=OTHER_CONN),
+            _run(_uuid(6412), vps, state="stopping", status="stopping", connection=OTHER_CONN),
+            _run(_uuid(6413), pc, state="answered", connection=CONN.upper()),
+        ]
+        rows = await _work()
+        assert [(r["task_id"], r["reason"]) for r in rows] == [(pc, "run_answered")]
+
+    async def test_y16_a_run_with_no_connection_is_not_this_agents(self, board):
+        legacy = _uuid(8421)
+        board.tasks[legacy] = _task_row(legacy)
+        board.runs = [_run(_uuid(6421), legacy, state="stale", connection=None),
+                      _run(_uuid(6422), legacy, state="queued", status="created",
+                           connection=None)]
+        assert await _work() == []
+
+    async def test_y17_member_queued_work_for_this_connection_still_shows(self, board):
+        """"Ask an agent" names one of the member's connections, and the
+        start route stores it on the run (``agent_runs.py``, the member arm
+        of the start). So the queued run reaches the connection that the
+        member picked, and not the other machine."""
+        mine, theirs = _uuid(8431), _uuid(8432)
+        for task_id in (mine, theirs):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6431), mine, state="queued", status="created", connection=CONN),
+            _run(_uuid(6432), theirs, state="queued", status="created",
+                 connection=OTHER_CONN),
+        ]
+        rows = await _work()
+        assert [(r["task_id"], r["reason"], r["run_id"]) for r in rows] == [
+            (mine, "run_queued", _uuid(6431))]
 
 
 def _replace_origin(lookup: Any, origin: str) -> Any:

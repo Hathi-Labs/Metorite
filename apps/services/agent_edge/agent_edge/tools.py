@@ -2631,6 +2631,9 @@ MY_WORK_RUNS_PAGES = 3
 #: (``filters.AGENT_RUN_STALE_AFTER_S``), so its session most likely ended. A
 #: live run of a sibling session of the same client is NOT listed, because two
 #: sessions of one client share the stamp and a claim cannot tell them apart.
+#: SW-13b: a stale run can still be alive (a session whose subagents work for
+#: a long time posts nothing), so a run of another connection, which is
+#: another machine, is never listed either (:func:`_my_runs`).
 HELD_STATE = "stale"
 #: The ``state`` of a run that waits for this client, and its ``reason``.
 WAITING_REASONS: Mapping[str, str] = {
@@ -2698,8 +2701,27 @@ async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
             break
         cursor = following
     # The gateway filters by the stamp. The edge checks it again, so a run
-    # of another client never reaches the list.
-    return [r for r in found if r.get("client_via") == via]
+    # of another client never reaches the list. SW-13b: the edge also keeps
+    # only a run of THIS connection. Two machines of one member share the
+    # stamp, and each signs in on its own connection.
+    mine = _caller_connection(ctx)
+    return [r for r in found if r.get("client_via") == via
+            and mine is not None and _run_connection(r) == mine]
+
+
+def _caller_connection(ctx: Context) -> str | None:
+    """The id of the caller's own ``agent_connection`` row, from the token
+    row, in lower case. ``None`` when it is not an id (SW-13b)."""
+    found = _id(str(ctx.caller.lookup.connection_id))
+    return found.lower() if found is not None else None
+
+
+def _run_connection(run: Mapping[str, Any]) -> str | None:
+    """The ``connection_id`` of a run on the runs wire, in lower case, or
+    ``None`` (SW-13b). An agent's start and each agent move stamp it. A
+    member's start stamps the connection that the member picked."""
+    found = _id(run.get("connection_id"))
+    return found.lower() if found is not None else None
 
 
 def _live_holder(value: Any) -> bool:
@@ -2770,7 +2792,8 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     The calls, in order: ``GET /auth/me`` for the member's email (the token
     holds none), and the runs list twice with this client's stamp (only
     while the runs flag is on): once with ``needs_agent``, and once with
-    ``status=stale``. Then the task list of the member. Its rows carry
+    ``status=stale``. The edge keeps a run of the caller's own connection
+    only (SW-13b). Then the task list of the member. Its rows carry
     ``blocked_by_count``, so the blocker test needs no call. Then the task
     route for a run row whose task is not in that list, and the statuses of
     the projects of the rows, as ``list_tasks`` reads them.
@@ -2833,19 +2856,21 @@ MY_WORK = Tool(
     title="My work",
     description=(
         "Find your next work, in one call. Call it at the start of each"
-        " session. The rows come in this order. First, the agent runs that wait"
-        " for this client: reason run_queued (a member queued work for you),"
-        " run_answered (a member answered your question) or run_stopping (a"
-        " member asked you to stop). Second, the tasks of a run of this client"
-        " whose session went quiet for five minutes, which you may take back"
-        " (held_by_you). Third, the tasks assigned to this member that no AI"
-        " session holds and that no open task blocks (assigned). Take the top"
-        " row. For a waiting run, read it with get_agent_run and its run_id."
-        " For a task, with projects:write, claim the task with claim_task, the"
-        " task_id and the version. Take only a row that this list gives: two"
-        " sessions of one client share one name, and a claim cannot tell them"
-        " apart. The list never holds a task that is not assigned to this"
-        " member and that this client does not hold." + _UNTRUSTED_NOTE
+        " session. The rows come in this order. First, the agent runs of this"
+        " connection that wait: reason run_queued (a member queued work for"
+        " you), run_answered (a member answered your question) or run_stopping"
+        " (a member asked you to stop). Second, the tasks of a run of this"
+        " connection whose session went quiet for five minutes, which you may"
+        " take back (held_by_you). Third, the tasks assigned to this member that"
+        " no AI session holds and that no open task blocks (assigned). A run of"
+        " another connection, such as one on another machine, is never yours,"
+        " and the list leaves it out. Take the top row. For a waiting run, read"
+        " it with get_agent_run and its run_id. For a task, with"
+        " projects:write, claim the task with claim_task, the task_id and the"
+        " version. Take only a row that this list gives: two terminals on one"
+        " connection share one name, and a claim cannot tell them apart. The"
+        " list never holds a task that is not assigned to this member and that"
+        " this connection does not hold." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_MY_WORK_INPUT,
