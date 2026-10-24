@@ -968,8 +968,11 @@ def connection_gone_sql(alias: str) -> str:
     deletes a connection, so that state has no meaning to act on, and the
     lease rule alone decides. ONE text for the gate (``agent_runs._HOLDER_SQL``),
     the ``unheld`` filter and ``held_by``, so the three cannot disagree."""
+    # The organization arm is defence in depth beside FORCE RLS, as
+    # `agent_tokens._CONNECTION_LIVE_SQL` has it (fix round 1, P3).
     return (
         f"EXISTS (SELECT 1 FROM agent_connection gc WHERE gc.id = {alias}.connection_id"
+        f" AND gc.organization_id = {alias}.organization_id"
         " AND (gc.revoked_at IS NOT NULL OR gc.expires_at <= now()))"
     )
 

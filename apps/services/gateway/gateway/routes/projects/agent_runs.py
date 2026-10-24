@@ -1082,9 +1082,36 @@ async def _member_name(db: Any, email: str) -> str:
     return str(found or email)
 
 
-def _task_held(holder: Any) -> HTTPException:
+#: SW-13c fix round 1 (P2-a). The hint of a 409 whose holder is the caller's
+#: OWN run from another connection of the same client. A new sign-in on the
+#: same machine leaves the old connection live, so its run holds the task.
+#: The release checks the member and the stamp only, so the agent may end it.
+SAME_CLIENT_HINT = (
+    "This is your own run from another connection of the same client (another"
+    " machine, or an earlier sign-in). If that session has ended, release it"
+    " with release_task and this run_id, then claim again."
+)
+
+
+def _same_client(holder: Any, me: str | None, via: str | None,
+                 connection: str | None) -> bool:
+    """True when *holder* is of the caller's member and stamp, on ANOTHER
+    connection (SW-13c). Only an agent caller passes a connection."""
+    return (connection is not None and holder.member_email == me
+            and holder.client_via == via
+            and str(holder.connection_id or "") != connection)
+
+
+def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
+               connection: str | None = None) -> HTTPException:
     """The 409 ``task_held``. The message names the holder, the client, the
-    start and the last activity, and tells the caller to pick another task."""
+    start and the last activity, and tells the caller to pick another task.
+
+    SW-13c fix round 1: ``same_client`` is true when the holder is the
+    caller's own run from another connection of the same client. Then the
+    detail also carries ``run_id`` and :data:`SAME_CLIENT_HINT`, because only
+    then may the caller release that run. Another member's run id never
+    leaves."""
     name = holder.member_name or holder.member_email
     client = agent_oauth.client_label(holder.client_via)
     since = wire(holder.started_at or holder.created_at)
@@ -1094,14 +1121,20 @@ def _task_held(holder: Any) -> HTTPException:
         f"The run began at {since}. The last activity was at {last}. "
         "Pick another task. Do not try this task again."
     )
-    return HTTPException(status_code=409, detail={
-        "error": TASK_HELD, "message": message,
+    own = _same_client(holder, me, via, connection)
+    detail: dict[str, Any] = {
+        "error": TASK_HELD, "message": message, "same_client": own,
         "held_by": {
             "member": holder.member_email, "member_name": name,
             "client_via": holder.client_via, "client_name": client,
             "since": since, "last_activity_at": last,
         },
-    })
+    }
+    if own:
+        detail["message"] = f"{message} {SAME_CLIENT_HINT}"
+        detail["run_id"] = str(holder.id)
+        detail["hint"] = SAME_CLIENT_HINT
+    return HTTPException(status_code=409, detail=detail)
 
 
 async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | None,
@@ -1197,7 +1230,7 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
         if holder is None:
             return None
         if not _free(holder):
-            raise _task_held(holder)
+            raise _task_held(holder, me=me, via=via, connection=connection)
         if await _take_over(db, holder, me=me, via=via):
             return None
     raise HTTPException(status_code=409, detail="Try the call again.")
@@ -1213,10 +1246,10 @@ async def _clear_for_reopen(db: Any, run: Any, user: UserContext) -> None:
     )).fetchone()
     if holder is None or str(holder.id) == str(run.id):
         return
-    if not _free(holder) or not await _take_over(
-        db, holder, me=_member(user), via=_agent_via(user),
-    ):
-        raise _task_held(holder)
+    via = _agent_via(user)
+    if not _free(holder) or not await _take_over(db, holder, me=_member(user), via=via):
+        raise _task_held(holder, me=_member(user), via=via,
+                         connection=_agent_connection(user))
 
 
 _INSERT_RUN_SQL = (
@@ -1242,10 +1275,17 @@ _INSERT_RUN_SQL = (
 #: SW-13c: ``:cid`` is the connection of an AGENT caller, and the run must
 #: carry it. A person binds NULL, and the read keeps the old rule (member and
 #: stamp). One query for both, so the rule cannot fork.
+#:
+#: Fix round 1 (P2-b): a run whose connection is revoked or expired is never
+#: anyone's own. So a person's start does not write into a dead run that the
+#: next claim abandons: the gate takes it over, and a new run opens on the
+#: live connection that the person names. An agent's own connection is live
+#: (branch 0 refuses a dead one), so the arm changes nothing for an agent.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
     "   AND r.status = ANY(:open) AND r.client_via = :via "
     "   AND (CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)) "
+    f"   AND NOT {connection_gone_sql('r')} "
     " ORDER BY r.created_at DESC LIMIT 1"
 )
 

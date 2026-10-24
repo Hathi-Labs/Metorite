@@ -60,7 +60,7 @@ SW-13c (one member, two machines, one stamp; spec §12.3):
   ``test_z3_a_revoked_or_expired_holder_is_taken_over_at_once`` (R8),
   ``test_z5_the_reads_agree_with_the_gate_for_a_revoked_holder`` (R8) and
   ``test_a_holder_of_a_dead_connection_is_free_and_a_live_one_holds``.
-* Z3. ``G`` ``create_agent_run``: bind the member's named connection as
+* Z3. ``G`` ``start_agent_run``: bind the member's named connection as
   ``own_connection``. ``test_z4_a_person_start_keeps_the_old_rule`` (R8).
 * Z4. ``F`` ``unheld_clause``: drop the ``NOT connection_gone`` arm.
   ``test_z5_the_reads_agree_with_the_gate_for_a_revoked_holder`` (R8) and
@@ -71,6 +71,19 @@ SW-13c (one member, two machines, one stamp; spec §12.3):
   ``test_the_holder_rule_frees_a_dead_connection``.
 * Z7. ``E``: "from this client" in the ``start_agent_run`` text.
   ``test_the_tools_say_own_run_means_this_connection``.
+
+SW-13c fix round 1:
+
+* Z8. ``G`` ``_same_client``: return ``False``.
+  ``test_an_own_run_of_another_connection_carries_its_id_and_the_hint`` and
+  ``test_z6_a_new_sign_in_releases_its_own_old_run_and_claims`` (R8).
+* Z9. ``E`` ``task_held_text``: ignore ``same_client``.
+  ``test_the_edge_adds_the_hint_only_for_the_same_client``.
+* Z10. ``G`` ``_OPEN_RUN_SQL``: drop the ``NOT connection_gone`` arm.
+  ``test_a_dead_run_is_nobodys_own_and_the_org_arm_holds`` and
+  ``test_z7_a_person_start_never_writes_into_a_dead_run`` (R8).
+* Z11. ``F`` ``connection_gone_sql``: drop the ``organization_id`` arm.
+  ``test_a_dead_run_is_nobodys_own_and_the_org_arm_holds``.
 """
 
 from __future__ import annotations
@@ -235,6 +248,9 @@ class TestOneConnectionOneOwner:
             await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA, connection=conn_b)
         assert held.value.status_code == 409
         assert held.value.detail["error"] == "task_held"
+        # Fix round 1: machine B learns that the holder is its own client's run.
+        assert held.value.detail["same_client"] is True
+        assert held.value.detail["run_id"] == run.id
         # A person binds no connection and keeps the old rule.
         assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
                                            connection=None) is run
@@ -258,6 +274,48 @@ class TestOneConnectionOneOwner:
         with pytest.raises(HTTPException):
             await agent_runs._gate_task(
                 db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4()))
+
+
+class TestTheOwnRunOfAnotherConnection:
+    """SW-13c fix round 1 (P2-a, P2-b, P3), hermetic."""
+
+    def test_an_own_run_of_another_connection_carries_its_id_and_the_hint(self) -> None:
+        """Z8. Only the caller's own member and stamp on ANOTHER connection
+        gets ``same_client``, the run id and the hint."""
+        conn_a, conn_b = str(uuid.uuid4()), str(uuid.uuid4())
+        run = _FakeRun(conn_a)
+        detail = agent_runs._task_held(run, me=ALICE, via=VIA, connection=conn_b).detail
+        assert detail["same_client"] is True
+        assert detail["run_id"] == run.id
+        assert detail["hint"] == agent_runs.SAME_CLIENT_HINT
+        assert agent_runs.SAME_CLIENT_HINT in detail["message"]
+        assert "release_task" in agent_runs.SAME_CLIENT_HINT
+        for me, via, connection in ((BOB, VIA, conn_b), (ALICE, VIA_CURSOR, conn_b),
+                                    (ALICE, VIA, None), (ALICE, VIA, conn_a)):
+            other = agent_runs._task_held(run, me=me, via=via, connection=connection).detail
+            assert other["same_client"] is False, (me, via, connection)
+            assert "run_id" not in other and "hint" not in other
+        assert agent_runs._task_held(run).detail["same_client"] is False
+
+    def test_the_edge_adds_the_hint_only_for_the_same_client(self) -> None:
+        """Z9. The edge keeps its fixed text, and adds the hint with the run
+        id only in the shape of an id."""
+        run_id = str(uuid.uuid4())
+        own = tools.task_held_text({"error": "task_held", "same_client": True,
+                                    "run_id": run_id, "message": "SECRET"})
+        assert own.startswith(tools.TEXT_TASK_HELD)
+        assert f"call release_task with run_id {run_id}" in own
+        assert "SECRET" not in own
+        for detail in ({"error": "task_held"},
+                       {"error": "task_held", "same_client": False, "run_id": run_id},
+                       {"error": "task_held", "same_client": True, "run_id": "not an id"},
+                       {"error": "task_held", "same_client": "yes", "run_id": run_id}):
+            assert tools.task_held_text(detail) == tools.TEXT_TASK_HELD, detail
+
+    def test_a_dead_run_is_nobodys_own_and_the_org_arm_holds(self) -> None:
+        """Z10 and Z11."""
+        assert "AND NOT " + filters.connection_gone_sql("r") in agent_runs._OPEN_RUN_SQL
+        assert "gc.organization_id = x.organization_id" in filters.connection_gone_sql("x")
 
 
 class _FakeRun(SimpleNamespace):
@@ -358,6 +416,17 @@ class TestTheEdge:
         assert "SECRET" not in json.dumps(result)
         assert "pick another task" in tools.TEXT_TASK_HELD.lower()
         assert "do not claim or start this task again" in tools.TEXT_TASK_HELD.lower()
+
+    async def test_a_same_client_409_gets_the_hint_through_the_edge(self, edge):  # noqa: F811
+        """SW-13c fix round 1, Z9 through the real edge app."""
+        run_id = str(uuid.uuid4())
+        body = {"detail": {"error": "task_held", "message": "SECRET", "same_client": True,
+                           "run_id": run_id, "held_by": {}}}
+        edge.gateway.answers[("POST", CLAIM_PATH)] = (409, body)
+        result = await _tool("claim_task", _claim_args())
+        assert _text(result) == tools.TEXT_TASK_HELD + (
+            tools.TEXT_TASK_HELD_SAME_CLIENT.format(run_id=run_id))
+        assert "SECRET" not in json.dumps(result)
 
     async def test_a_409_that_is_not_task_held_keeps_its_own_text(self, edge):  # noqa: F811
         edge.gateway.answers[("POST", CLAIM_PATH)] = (409, {"detail": "something else"})
@@ -934,6 +1003,58 @@ class TestOneAiForEachTask:
             assert await reads(call) == (True, True)
             taken = await _claim(call, w.bob, task)
         assert taken.status_code == 200, taken.text
+
+    async def test_z6_a_new_sign_in_releases_its_own_old_run_and_claims(self, w):
+        """Fix round 1 (P2-a). A new sign-in on the same machine leaves the
+        old connection LIVE, so its run holds the task. The 409 says that the
+        holder is the caller's own client, with the run id, and the release
+        of that run by the new connection frees the task. Mutation Z8."""
+        task = _fresh(w)
+        old = _agent(ALICE, w.org, _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code"), VIA)
+        new = _agent(ALICE, w.org, _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code"), VIA)
+        async with _session(w.p) as call:
+            old_run = (await _claim(call, old, task)).json()["agent_run_id"]
+            refused = await _claim(call, new, task)
+            assert refused.status_code == 409, refused.text
+            detail = _detail(refused)
+            assert detail["same_client"] is True and detail["run_id"] == old_run
+            assert "release_task" in detail["message"]
+            released = await call(new, "POST", f"/projects/agent-runs/{old_run}/release", {})
+            assert released.status_code == 200, released.text
+            claimed = await _claim(call, new, task)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["agent_run_id"] != old_run
+        # Another member's 409 never carries the run id.
+        async with _session(w.p) as call:
+            stranger = await _claim(call, w.bob, task)
+        assert stranger.status_code == 409
+        assert _detail(stranger)["same_client"] is False
+        assert "run_id" not in _detail(stranger)
+
+    async def test_z7_a_person_start_never_writes_into_a_dead_run(self, w):
+        """Fix round 1 (P2-b). Alice's run of a revoked connection is not her
+        own any more. Her "Ask an agent" start takes it over and opens a new
+        run on the live connection that she names. Mutation Z10."""
+        task = _fresh(w)
+        dead_conn = _connection(w.p, w.org, ALICE, CLIENT_ID, "Claude Code")
+        async with _session(w.p) as call:
+            dead_run = (await _claim(call, _agent(ALICE, w.org, dead_conn, VIA), task)
+                        ).json()["agent_run_id"]
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE agent_connection SET revoked_at = now() "
+                           "WHERE id = CAST(:i AS uuid)"), {"i": dead_conn})
+        async with _session(w.p) as call:
+            made = await call(w.alice_person, "POST", f"/projects/tasks/{task}/agent-runs",
+                              {"connection_id": w.conn_alice, "body": "Start again",
+                               "idempotency_key": _key()})
+        assert made.status_code == 201, made.text
+        assert made.json()["created"] is True
+        new_run = made.json()["run"]
+        assert new_run["id"] != dead_run and new_run["connection_id"] == w.conn_alice
+        [row] = _rows(w.p, "SELECT status FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                      i=dead_run)
+        assert row.status == "abandoned"
+        assert [str(r.id) for r in _open_runs(w, task)] == [new_run["id"]]
 
     # ── The reopen of a completed run ───────────────────────────────────
 

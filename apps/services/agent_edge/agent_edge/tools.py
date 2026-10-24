@@ -219,6 +219,26 @@ TEXT_ARCHIVE_CONFLICT = (
 TEXT_TASK_HELD = (
     "Another AI session holds this task. Pick another task. Do not claim or"
     " start this task again. Call list_tasks with unheld true to find a free task.")
+#: SW-13c fix round 1 (P2-a). Added to :data:`TEXT_TASK_HELD` when the gateway
+#: marks the holder ``same_client``: the caller's own run from another
+#: connection of the same client. ``{run_id}`` is the run id in its shape.
+TEXT_TASK_HELD_SAME_CLIENT = (
+    " Exception: the holder is your own run from another connection of the"
+    " same client (another machine, or an earlier sign-in). If that session"
+    " has ended, call release_task with run_id {run_id}, then claim the task"
+    " again. If that session still works, leave the task to it.")
+
+
+def task_held_text(detail: Mapping[str, Any]) -> str:
+    """The fixed text of a 409 ``task_held`` (EA-14a). With ``same_client``
+    true and a ``run_id`` in the shape of an id, the hint of SW-13c follows.
+    Nothing else of the gateway's detail reaches the agent."""
+    run_id = _id(detail.get("run_id")) if detail.get("same_client") is True else None
+    if run_id is None:
+        return TEXT_TASK_HELD
+    return TEXT_TASK_HELD + TEXT_TASK_HELD_SAME_CLIENT.format(run_id=run_id)
+
+
 #: A 403 of ``release_task``: the run belongs to another client or member.
 TEXT_RELEASE_FORBIDDEN = "You can release only your own agent run."
 #: The code of the gateway's 409 for a held task (``agent_runs.TASK_HELD``).
@@ -428,8 +448,9 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         # EA-14a: one text for every write that opens a run. It goes before
         # `texts`, so no per-tool 409 text hides it. The gateway's message
         # and the name of the holder never reach the agent. get_task shows
-        # `held_by`, as (U) text.
-        raise ToolError(TEXT_TASK_HELD)
+        # `held_by`, as (U) text. SW-13c: the hint of an own run of another
+        # connection, with its id only in the shape of an id.
+        raise ToolError(task_held_text(detail))
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
     if coded and answer.status == 422:
@@ -4743,6 +4764,7 @@ __all__ = [
     "TEXT_STALE",
     "TEXT_SUBTASK_NOT_BELOW",
     "TEXT_TASK_HELD",
+    "TEXT_TASK_HELD_SAME_CLIENT",
     "TEXT_TASK_NOT_FOUND",
     "TEXT_UPDATE_EMPTY",
     "TEXT_WRITES_OFF",
@@ -4774,6 +4796,7 @@ __all__ = [
     "offered",
     "reference",
     "run_activity",
+    "task_held_text",
     "text_nul",
     "timeline_meta",
     "untrusted",
