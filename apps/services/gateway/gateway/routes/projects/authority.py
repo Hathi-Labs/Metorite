@@ -395,18 +395,27 @@ async def attach_can_delete(
 
 
 async def may_convert_node(
-    db: Any, user: Any, project: Any, *, led: frozenset[str] | None = None,
+    db: Any, user: Any, project: Any, *,
+    led: frozenset[str] | None = None, walk: bool = True,
 ) -> bool:
     """May *user* turn the folder *project* into a project? (D-OP-16.)
 
     The grant rule (:func:`may_write_grant`), because a conversion changes
     the shape of the tree. The owner of a personal tree may also convert a
     folder in their own tree. The cheap arms go first.
+
+    *walk* False reads the row's own ``personal_owner`` column and makes no
+    query. A tree read uses it, because migration 297 and ``create_node``
+    stamp each node of a personal tree. The single-node routes keep the walk.
     """
     if await may_write_grant(db, user, project, led=led):
         return True
     me = _me(user)
-    return bool(me) and await personal_tree_owner(db, project) == me
+    if not me:
+        return False
+    if not walk:
+        return str(_field(project, "personal_owner") or "").strip().lower() == me
+    return await personal_tree_owner(db, project) == me
 
 
 async def assert_may_convert_node(db: Any, user: Any, project: Any) -> None:
@@ -416,7 +425,7 @@ async def assert_may_convert_node(db: Any, user: Any, project: Any) -> None:
 
 
 async def attach_can_convert(
-    db: Any, user: Any, rows: list[dict[str, Any]],
+    db: Any, user: Any, rows: list[dict[str, Any]], *, walk: bool = True,
 ) -> list[dict[str, Any]]:
     """Set ``can_convert`` on each row, through :func:`may_convert_node`.
 
@@ -425,6 +434,10 @@ async def attach_can_convert(
     ``convert_refusal``, the words of the 403, which the chat quotes. The
     app shows "Convert to project" only where the flag is true. The lead
     set is read once for the page.
+
+    *walk* goes to :func:`may_convert_node`. A page of rows passes False and
+    carries ``personal_owner`` on each row, so the page costs one query and
+    not one walk per folder (OP-10 fix round 1).
     """
     folders = [r for r in rows if str(_field(r, "kind") or "project") == "folder"]
     led: frozenset[str] | None = None
@@ -433,7 +446,9 @@ async def attach_can_convert(
     for row in rows:
         row["can_convert"] = False
     for row in folders:
-        row["can_convert"] = await may_convert_node(db, user, row, led=led or frozenset())
+        row["can_convert"] = await may_convert_node(
+            db, user, row, led=led or frozenset(), walk=walk,
+        )
         if not row["can_convert"]:
             row["convert_refusal"] = CONVERT_REFUSED
     return rows
