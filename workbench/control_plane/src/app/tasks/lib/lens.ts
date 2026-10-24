@@ -405,6 +405,8 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   // The same path as `task`, with DELETE. Never `tasks/{id}`, which admits
   // anybody who can see the task and so deletes a team task for everyone.
   purge: "my/tasks/{task_id}",
+  // WS-64 OP-2 — my date and my zone, for the Today rule (`today.ts`).
+  today: "my/today",
 };
 
 const at = (template: string, id: string): string =>
@@ -513,7 +515,7 @@ export async function lensFetchNext(limit = 20): Promise<MyTask[]> {
  * `user_settings.timezone`, the zone the member stores.
  */
 export async function lensFetchToday(): Promise<{ today: string; timezone: string }> {
-  return projectsCall<{ today: string; timezone: string }>("my/today");
+  return projectsCall<{ today: string; timezone: string }>(MY_ROUTES.today);
 }
 
 /** A project I lead, as `/projects/my/led` answers it. */
