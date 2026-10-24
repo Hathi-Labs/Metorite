@@ -225,3 +225,63 @@ test("a Today row opens the Projects panel with the overlay strip", async ({ pag
   await page.keyboard.press("Escape");
   await expect(page.getByText("Task n1", { exact: true })).toHaveCount(0);
 });
+
+/**
+ * WS-64 OP-3 — the Personal section. The tree answer carries the caller's own
+ * tree in `personal`, and a team node kept under the caller's root in `rows`.
+ * Playwright runs the last registered route first, so this overrides `mock`.
+ */
+async function mockTree(page: Page) {
+  const personalArea = {
+    id: "p-area",
+    name: "Home admin",
+    kind: "folder",
+    parent_project_id: "p-root",
+    personal: true,
+    can_delete: true,
+    can_write_grants: false,
+    tasks: 2,
+  };
+  const personal = [
+    {
+      id: "p-root",
+      name: "Personal space",
+      personal: true,
+      can_delete: false,
+      can_write_grants: false,
+      tasks: 2,
+      children: [personalArea],
+    },
+  ];
+  const rows = [
+    { id: "t-space", name: "Team space", tasks: 1 },
+    // The server (`tree.py` `_nest`) makes a team node whose parent is the
+    // personal root a ROOT of `rows`.
+    { id: "t-kept", name: "Kept team project", parent_project_id: "p-root" },
+  ];
+  await page.route("**/api/**/projects/tree", (route) =>
+    route.fulfill({ json: { rows, total: 1, personal } }),
+  );
+}
+
+test("the Personal section sits between My work and Spaces, with a lock", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await mockTree(page);
+  await page.goto("/projects");
+  const section = page.getByTestId("personal-section");
+  await expect(section).toBeVisible({ timeout: 30_000 });
+  await expect(section.getByText("Personal", { exact: true }).first()).toBeVisible();
+  await expect(section.getByText("Personal space")).toBeVisible();
+  // The team node kept under the caller's root is a root of Spaces: visible
+  // outside the personal section, and absent inside it.
+  await expect(section.getByText("Kept team project")).toHaveCount(0);
+  await expect(page.getByText("Kept team project", { exact: true })).toBeVisible();
+  await expect(page.getByText("Team space", { exact: true }).first()).toBeVisible();
+  // The personal root's menu has no Move and no Archive.
+  await section.getByText("Personal space").click({ button: "right" });
+  const names = await page.getByRole("menuitem").allTextContents();
+  expect(names.length).toBeGreaterThan(0);
+  expect(names.join("|")).not.toMatch(/move|archive|share|access/i);
+});
