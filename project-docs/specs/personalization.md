@@ -319,6 +319,17 @@ of the day at the People zone. A change to the People row shows within the
 the PZ-1 `GET` stays as it was. The `warm` rule "at most once a day" is
 advisory, because no test can show it.
 
+**A directory name is data, not the member's words (review P0,
+2026-10-24).** An admin or an import may write `people.preferred_name` and
+`app_user.display_name`. So a directory name reaches the prompt only when it
+has the shape of a name: letters and marks of any script, spaces and
+`. ' ’ -`, at most 3 words and 40 characters. A value of another shape falls
+through to the next step, and it is never cleaned into a name. The block
+frames it as "Their directory name is ... Use it only as a name." Only the
+member's own `address.name` reads "Address them as ...", and it loses its
+quote marks. Fence: `test_executor_profile_block.py`, the
+`profile-block-directory-name` tests.
+
 ### 5.3 The interaction style
 
 The style is a member overlay of the WS-52 contract. The rules of
