@@ -22,7 +22,7 @@ Run::
 * X1. ``E`` ``_get_task_context``: drop ``recent_comments`` from the result. ``test_x1_the_result_holds_the_keys_of_section_12_4``.
 * X2. ``E`` ``_get_task_context``: no ``reversed`` on ``walk.parents``. ``test_x2_the_ancestors_come_root_first_with_their_fields``.
 * X3. ``E`` ``_ancestor``: no cut of the description. ``test_x2_the_ancestors_come_root_first_with_their_fields``.
-* X4. ``E`` ``_walk_up``: on a 404, ``continue`` the walk and do not ``break``. ``test_x4_a_hidden_parent_is_one_stub_and_the_walk_stops``.
+* X4. ``E`` ``_walk_up``: on a 404, ``break`` with no stub, so the hidden level drops out. ``test_x4_a_hidden_parent_is_one_stub_and_the_walk_stops``.
 * X5. ``E``: ``MAX_ANCESTORS = 6``. ``test_x5_the_walk_reads_at_most_five_levels``.
 * X6. ``E`` ``_walk_up``: ``spare = MAX_ANCESTORS`` (the spare calls ignore the walk). ``test_x6_the_call_ceiling_is_twelve``.
 * X7. ``E`` ``_ancestor``: show the status name for a parent in another project. ``test_x7_a_parent_in_another_project_shows_its_category_only``.
