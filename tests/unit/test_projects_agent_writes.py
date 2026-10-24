@@ -148,7 +148,7 @@ def _s3_reads(call: dict) -> Any:
     if path.endswith("/views") and method == "GET":
         return {"rows": [{"id": VIEW_ID, "name": "Board", "view_type": "board"}]}
     if path.endswith("/attachments") and method == "GET":
-        return {"rows": [{"id": FILE, "name": "quote.pdf"}], "total": 1}
+        return {"rows": [{"attachment_id": FILE, "name": "quote.pdf"}], "total": 1}
     if path.endswith("/status-set/preview"):
         return {
             "lanes": [{"name": "Inbox"}, {"name": "Done"}],

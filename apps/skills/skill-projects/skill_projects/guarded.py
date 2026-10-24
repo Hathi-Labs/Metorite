@@ -1628,7 +1628,7 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
     tid, task = await _task(task_id)
     aid = uuid_of(attachment_id, "attachment_id")
     files = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
-    row = next((f for f in files if str(f.get("id")) == aid), None)
+    row = next((f for f in files if str(f.get("attachment_id") or f.get("id")) == aid), None)
     if row is None:
         return f"{_ref(task)} has no attachment with that id. task_detail lists them."
     impact = f"1 file detached from {_ref(task)}; the bytes are kept"
