@@ -97,16 +97,23 @@ _DB_GATE = pytest.mark.skipif(
 
 GOLDEN_ORG = "11111111-1111-1111-1111-111111111111"
 
+#: ⚠️ WS-64 OP-9 fix round 1 changed this ON PURPOSE (D-OP-15). A stray
+#: grant on another member's personal node seeds nothing, and the closure
+#: does not descend into such a node. The restricted digests changed with it.
 _GRANTED = (
     "\nWITH RECURSIVE granted AS (\n    SELECT DISTINCT g.project_id AS id\n"
     "    FROM pm_project_grants g\n    JOIN pm_projects gp ON gp.id = g.project_id\n"
     "    WHERE g.organization_id = CAST(:vis_org AS uuid)\n"
-    "      AND gp.sealed_at IS NULL\n      AND (g.subject = 'org'\n"
+    "      AND gp.sealed_at IS NULL\n"
+    "      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)\n"
+    "      AND (g.subject = 'org'\n"
     "           OR lower(g.subject) = :vis_email\n"
     "           OR g.subject = ANY(:vis_groups))\n    UNION\n    SELECT p.id\n"
     "    FROM pm_projects p\n    JOIN granted a ON p.parent_project_id = a.id\n"
     "    WHERE p.organization_id = CAST(:vis_org AS uuid)\n"
-    "      AND p.sealed_at IS NULL\n)\nSELECT id FROM granted\n"
+    "      AND p.sealed_at IS NULL\n"
+    "      AND (p.personal_owner IS NULL OR lower(p.personal_owner) = :vis_email)\n"
+    ")\nSELECT id FROM granted\n"
 )
 #: ⚠️ WS-64 OP-9 changed this ON PURPOSE (D-OP-15). The tenant set leaves
 #: out every other member's personal node, so `data:org:read` reads no
@@ -131,10 +138,10 @@ def _assignee(alias: str) -> str:
 GOLDEN: dict[str, tuple[str, str]] = {
     "restricted.project_clause()": (
         f"id IN ({_GRANTED})",
-        "dba65e0b590787f64898e72d22bee7038c18e66ea2ca7687141ba65c83995c39"),
+        "9562730fc8f8cb77234f75ee274b868902578e341e46f9c890b2c0f13e47e898"),
     "restricted.project_clause('p.id')": (
         f"p.id IN ({_GRANTED})",
-        "ecd969e75b9fd54e88baec240b7c430877d723fa7f41baa6ae3f312493364859"),
+        "3aee88cebdbad8262bf45d9d94c25f0b5f05324b7dccbdd9b6bf70b26a3a50b5"),
     "unrestricted.project_clause()": (
         f"id IN ({_TENANT_ONLY})",
         "726ab86a486c93b214eed1e3b206aca5f55373758c3be6f8dcfecfb618f2bcfe"),
@@ -144,11 +151,11 @@ GOLDEN: dict[str, tuple[str, str]] = {
     "task_visibility_clause(restricted)": (
         f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_GRANTED})"
         + _assignee("t"),
-        "3c4159407bc824edc0b27b6b9a70a20ba7236657d0c865e3a0570bd738b5eb12"),
+        "e2dc1d6188a1b68addd14f3a6b1cfdfdf146131f0e2fcff3673eb5593aec44e2"),
     "task_visibility_clause(restricted, 'x')": (
         f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_GRANTED})"
         + _assignee("x"),
-        "cc2295becad3c04cbac338584b95bf7c27c47cc363aa012f6918000471e84480"),
+        "2a74176bc685c247665adc06a37d9134d12e7d6d0a0f562313e9988aaf888ed8"),
     # ⚠️ H-304 changed these two ON PURPOSE (D63). The unrestricted task
     # clause was the tenant alone, so `data:org:read` read a closed tree. It
     # now has the same two arms as the restricted clause, over the tenant set.

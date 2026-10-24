@@ -1166,6 +1166,14 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 #: Filtering the recursive step as well is not redundant. It stops the closure
 #: descending THROUGH a sealed Area into anything beneath it, and it means a
 #: subtree can be sealed without sealing its parent.
+#:
+#: ⚠️ **A personal node is its owner's only, on BOTH arms too** (WS-64 OP-9,
+#: D-OP-15). A stray ``org``, ``group:`` or email grant on a personal tree,
+#: written before OP-6b, shows the tree to nobody but its owner. The seed
+#: drops such a grant, and the recursive step stops at any personal node of
+#: somebody else. A team node under a personal root carries no
+#: ``personal_owner``, so its own grant still seeds it.
+#: Fence: ``tests/unit/test_personal_privacy_r8.py``.
 _VISIBLE_PROJECTS_SQL = """
 WITH RECURSIVE granted AS (
     SELECT DISTINCT g.project_id AS id
@@ -1173,6 +1181,7 @@ WITH RECURSIVE granted AS (
     JOIN pm_projects gp ON gp.id = g.project_id
     WHERE g.organization_id = CAST(:vis_org AS uuid)
       AND gp.sealed_at IS NULL
+      AND (gp.personal_owner IS NULL OR lower(gp.personal_owner) = :vis_email)
       AND (g.subject = 'org'
            OR lower(g.subject) = :vis_email
            OR g.subject = ANY(:vis_groups))
@@ -1182,6 +1191,7 @@ WITH RECURSIVE granted AS (
     JOIN granted a ON p.parent_project_id = a.id
     WHERE p.organization_id = CAST(:vis_org AS uuid)
       AND p.sealed_at IS NULL
+      AND (p.personal_owner IS NULL OR lower(p.personal_owner) = :vis_email)
 )
 SELECT id FROM granted
 """

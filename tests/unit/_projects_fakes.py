@@ -1792,6 +1792,15 @@ class FakeProjectsDB:
             str(p["id"]) for p in self.rows("pm_projects")
             if p.get("sealed_at") is not None
         }
+        # WS-64 OP-9 fix round 1 (D-OP-15): a personal node of somebody else
+        # leaves the closure on BOTH arms, as the SQL does. A stray grant on
+        # it seeds nothing, and the descent does not enter it.
+        me = (email or "").lower()
+        sealed |= {
+            str(p["id"]) for p in self.rows("pm_projects")
+            if p.get("personal_owner")
+            and str(p.get("personal_owner")).lower() != me
+        }
         seeds = {
             str(g.get("project_id")) for g in self.rows("pm_project_grants")
             if (
