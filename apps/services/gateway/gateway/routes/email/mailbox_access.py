@@ -144,15 +144,13 @@ def private_predicate(alias: str | None = None, *, uid: str = "uid") -> str:
     """The predicate of the member's PRIVATE mailboxes only, at every flag.
 
     For a site that must never see a shared mailbox: "self" (D-SM-5), the
-    member's default mailbox, the reconnect of the member's own row. With
-    the flag off it is the text of before WS-65. With it on, it adds
-    ``shared_since IS NULL``.
+    member's default mailbox, the own-address set of D-EM-29. It names
+    ``shared_since IS NULL`` with the flag off too: the connector of a
+    shared row keeps ``user_id``, and a shared box is never "self" for
+    anyone. With no shared row the rows are the rows of before WS-65.
     """
     col = f"{alias}." if alias else ""
-    private = f"{col}user_id = :{uid}"
-    if not shared_enabled():
-        return private
-    return f"({private} AND {col}shared_since IS NULL)"
+    return f"({col}user_id = :{uid} AND {col}shared_since IS NULL)"
 
 
 async def may_access(

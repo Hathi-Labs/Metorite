@@ -94,7 +94,7 @@ from acb_auth import UserContext, get_current_user
 from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from email_ingestion.providers.factory import build_provider
 from fastapi import Depends, HTTPException
-from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
 from gateway.routes.email.automation.actions import SYSTEM_FOLDER_KEYS
 from gateway.routes.email.automation.rules import (
     _is_reply_rule,
@@ -283,7 +283,8 @@ async def _own_addresses(db: Any, owner: str) -> set[str]:
     rows = (await db.execute(text(
         # private-only: the own-address set of D-EM-29 is the member's
         # private mailboxes. SM-6 adds the set of a shared target.
-        "SELECT email_address FROM email_accounts WHERE user_id = :uid"
+        "SELECT email_address FROM email_accounts WHERE "
+        + private_predicate(uid="uid")
     ), {"uid": owner})).fetchall()
     return {(r.email_address or "").strip().lower() for r in rows if r.email_address}
 

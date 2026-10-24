@@ -21,7 +21,7 @@ from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
     _host_is_public,
     _is_safe_external_url,
 )
-from gateway.routes.email.mailbox_access import mailbox_ids_sql
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
@@ -166,7 +166,7 @@ async def list_senders(
                   -- + self-CC'd mail is all from-self).
                   AND LOWER(from_address->>'email') NOT IN (
                     SELECT LOWER(email_address) FROM email_accounts
-                    WHERE user_id = :uid)
+                    WHERE {private_predicate(uid="uid")})
                 GROUP BY LOWER(from_address->>'email')
                 -- Tie-break on the address so paging is stable: without a
                 -- deterministic order, senders with equal volume could shuffle
@@ -188,7 +188,7 @@ async def list_senders(
                   AND COALESCE(from_address->>'email','') <> ''
                   AND LOWER(from_address->>'email') NOT IN (
                     SELECT LOWER(email_address) FROM email_accounts
-                    WHERE user_id = :uid)"""
+                    WHERE {private_predicate(uid="uid")})"""
         ), params)).fetchone()
 
         # Merge newsletter disposition (APPROVED/UNSUBSCRIBED/AUTO_ARCHIVED).
@@ -231,7 +231,7 @@ async def list_senders(
         # private mailboxes only (D-SM-5, WS-65 SM-2).
         not_self = (" AND LOWER(em.from_address->>'email') NOT IN ("
                     "SELECT LOWER(email_address) FROM email_accounts "
-                    "WHERE user_id = :uid)")
+                    "WHERE " + private_predicate(uid="uid") + ")")
         msgcat_rows = (await db.execute(text(
             _LABEL_TALLY_SQL.format(scope=scope, extra=folder_sql + not_self)
         ), {**params, "labels": _KNOWN_LABELS_LOWER})).fetchall()

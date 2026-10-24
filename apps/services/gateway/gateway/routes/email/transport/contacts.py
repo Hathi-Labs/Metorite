@@ -607,7 +607,7 @@ _FUZZY_SQL = """
            AND (:dom = '' OR SPLIT_PART(o.email, '@', 2) ~ :dom)
            AND o.email <> LOWER(:uid)
            AND o.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
-                                WHERE user_id = :uid)
+                                WHERE user_id = :uid AND shared_since IS NULL)
     )
     SELECT email, COALESCE(MAX(name), '') AS name, MAX(sim) AS sim
       FROM scored WHERE sim >= :thr

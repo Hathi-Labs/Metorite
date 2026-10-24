@@ -109,15 +109,19 @@ def world(promoted, app_engine):  # noqa: F811 — fixtures
             {"e": m.zed, "o": p.org_b})
         users.append(m.zed)
 
+        addresses: dict[str, str] = {}
+
         def box(org: str, owner: str, shared: bool) -> str:
+            address = f"box-{uuid.uuid4().hex[:6]}@sm2.test"
             bid = str(c.execute(text(
                 "INSERT INTO email_accounts (user_id, provider, email_address, "
                 "credentials_encrypted, initial_sync_done, organization_id, shared_since) "
                 "VALUES (:u, 'microsoft', :a, 'x', true, CAST(:o AS uuid), "
                 "CASE WHEN :s THEN now() END) RETURNING id"),
-                {"u": owner, "a": f"box-{uuid.uuid4().hex[:6]}@sm2.test", "o": org,
+                {"u": owner, "a": address, "o": org,
                  "s": shared}).scalar_one())
             boxes.append(bid)
+            addresses[bid] = address
             return bid
 
         private = box(p.org_a, m.own, False)
@@ -148,20 +152,24 @@ def world(promoted, app_engine):  # noqa: F811 — fixtures
             "VALUES (CAST(:g AS uuid), CAST(:u AS uuid), CAST(:o AS uuid))"),
             {"g": gid, "u": uid["carol"], "o": p.org_a})
 
-        def mail(account: str, org: str) -> str:
+        def mail(account: str, org: str, sender: str = "ravi@contoso.test") -> str:
             return str(c.execute(text(
                 "INSERT INTO email_messages (account_id, provider_message_id, thread_id, "
                 "folder, from_address, to_addresses, subject, body_text, body_html, "
                 "snippet, received_at, organization_id) VALUES (CAST(:a AS uuid), :pid, "
-                ":pid, 'inbox', '{\"name\": \"Ravi\", \"email\": \"ravi@contoso.test\"}'"
-                "::jsonb, '[]'::jsonb, 'Quote', 'The quote.', '<p>The quote.</p>', "
+                ":pid, 'inbox', jsonb_build_object('name', 'Ravi', 'email', CAST(:f AS text)), "
+                "'[]'::jsonb, 'Quote', 'The quote.', '<p>The quote.</p>', "
                 "'The quote.', now(), CAST(:o AS uuid)) RETURNING id"),
-                {"a": account, "pid": f"pm-{uuid.uuid4().hex[:8]}", "o": org}).scalar_one())
+                {"a": account, "pid": f"pm-{uuid.uuid4().hex[:8]}", "o": org,
+                 "f": sender}).scalar_one())
 
-        mails = {"private": mail(private, p.org_a), "sales": mail(sales, p.org_a)}
+        mails = {"private": mail(private, p.org_a), "sales": mail(sales, p.org_a),
+                 # Mail from the shared box to the connector's private box.
+                 "from_sales": mail(private, p.org_a, addresses[sales])}
 
     try:
         yield SimpleNamespace(p=p, m=m, private=private, sales=sales, team=team,
+                              addresses=addresses,
                               other=other, mails=mails, group=gid, carol_id=uid["carol"])
     finally:
         with p.admin_engine.begin() as c:
@@ -409,3 +417,37 @@ async def test_a_grant_without_the_email_feature_gets_403(world, flag) -> None:
     response = await _call(w, w.p.org_a, w.m.mia, "GET",
                            f"/email/messages/{w.mails['sales']}", feature=False)
     assert response.status_code == 403
+
+
+# ── D-SM-5 at the "self" sites (fix round, P2-1) ────────────────────────────
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_a_shared_box_is_not_in_the_connectors_own_addresses(world, flag, on) -> None:
+    """``own`` connected ``sales``. The own-address set of D-EM-29 holds her
+    private box only, at every flag."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.db import tenant_session
+    from gateway.routes.email.automation.rule_copy import _own_addresses
+
+    w = world
+    flag(on)
+    token = bind_tenant(w.p.org_a)
+    try:
+        async with tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)):
+            async with tenant_session() as db:
+                own = await _own_addresses(db, w.m.own)
+    finally:
+        release_tenant(token)
+    assert own == {w.addresses[w.private]}
+
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_a_shared_box_is_not_hidden_from_the_connectors_senders(world, flag, on) -> None:
+    """Mail from ``sales`` in the private box of its connector is mail from
+    another party, so the Senders list shows it."""
+    w = world
+    flag(on)
+    response = await _call(w, w.p.org_a, w.m.own, "GET",
+                           f"/email/senders?account_id={w.private}&include_archived=true")
+    assert response.status_code == 200, response.text
+    assert w.addresses[w.sales] in response.text

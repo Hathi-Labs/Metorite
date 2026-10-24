@@ -25,7 +25,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
-from gateway.routes.email.mailbox_access import mailbox_ids_sql
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import _account_scope, _tenant_session, router
@@ -43,7 +43,7 @@ _INBOUND = f"LOWER(COALESCE(m.folder, '')) <> 'sent' AND {_LIVE_MAIL}"
 # private-only: "self" is the member's private mailboxes only (D-SM-5).
 _NOT_SELF = ("LOWER(COALESCE(m.from_address->>'email', '')) NOT IN "
              "(SELECT LOWER(email_address) FROM email_accounts "
-             "WHERE user_id = :uid)")
+             "WHERE " + private_predicate(uid="uid") + ")")
 
 
 def _round(value: Any, places: int = 1) -> float | None:

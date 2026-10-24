@@ -209,7 +209,9 @@ class TestTheBuilders:
             assert ma.mailbox_predicate(uid="uid", level=level) == "user_id = :uid"
             assert ma.mailbox_ids_sql(uid="uid", level=level) == (
                 "SELECT id FROM email_accounts WHERE user_id = :uid")
-        assert ma.private_predicate("a", uid="uid") == "a.user_id = :uid"
+        # "Self" never holds a shared box, at every flag (D-SM-5).
+        assert ma.private_predicate("a", uid="uid") == (
+            "(a.user_id = :uid AND a.shared_since IS NULL)")
         params: dict = {}
         assert core._account_scope(None, params) == (
             "em.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)")
