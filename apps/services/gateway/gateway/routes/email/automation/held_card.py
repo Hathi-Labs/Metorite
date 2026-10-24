@@ -812,6 +812,24 @@ async def seal_of(owner: str, account_id: str, draft_id: str) -> str:
                     status_code=502, detail=DRAFT_TEXT_READ_FAILED_DETAIL) from exc
 
 
+#: The warning of a send card when a reply of the thread went out in the last
+#: day (item 6). The member may want to forward that mail to the missing
+#: people, and not send the reply to the first people again.
+RECENT_REPLY_WARNING = ("A reply of this thread went out in the last day. To add people, "
+                        "forward that mail to them in place of this send.")
+
+
+async def _recent_of(db: Any, account_id: str, thread_id: str | None) -> dict[str, str]:
+    """``reply_card.recent_thread_reply``. A fault reads as none."""
+    from gateway.routes.email.automation.reply_card import recent_thread_reply
+
+    try:
+        return await recent_thread_reply(db, account_id, thread_id)
+    except Exception as exc:
+        _log.warning("email.held_card_recent_failed", error=type(exc).__name__)
+        return {}
+
+
 def _when(send_at: str) -> datetime:
     from gateway.routes.email.automation import send_later
 
@@ -846,6 +864,7 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
             org_domains=await org_domains(db, owner) if people else ())
         known = await known_domains(db, owner)
         me = await resolve_self(db, req.account_id)
+        recent = await _recent_of(db, req.account_id, row.thread_id)
         files = []
         if row.has_attachments:
             files = (await db.execute(text(DRAFT_FILES_SQL), {"id": req.draft_id})).fetchall()
@@ -869,7 +888,12 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         raise HTTPException(status_code=422, detail=TEXT_TOO_LONG)
     new = sum(1 for r in rows if r["class"] == CLASS_NEW)
     detail = (f"From {mailbox} · {len(rows)} recipient(s). Only a ticked person gets "
-              f"the mail. {new} new address(es) start unticked.")[:DETAIL_MAX]
+              f"the mail. {new} new address(es) start unticked.")
+    if recent:
+        # Item 6 (owner, 2026-10-24): the thread had a reply in the last day.
+        # The detail says it first, because the cut at DETAIL_MAX keeps it.
+        detail = f"{RECENT_REPLY_WARNING} {detail}"
+    detail = detail[:DETAIL_MAX]
     title = f"Send this draft at {_stamp(when)}?" if when else "Send this draft?"
     record = {
         "v": 1, "kind": req.kind, "owner": owner.lower(),

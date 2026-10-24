@@ -122,6 +122,8 @@ class FakeDb:
         #: Each To and Cc of a received mail of the thread (open question 1).
         self.participants: list[str] = []
         self.org_domains: list[str] = ["acme.test"]
+        #: A reply of the thread that went out in the last day (item 6).
+        self.recent: list[Any] = []
         self.files: list[Any] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         #: The seal of the draft's text NOW (``held_card.seal_of``). A test
@@ -159,6 +161,10 @@ class FakeDb:
             return _Result([types.SimpleNamespace(addr=a) for a in self.participants])
         if q == hc.ORG_DOMAINS_SQL:
             return _Result([types.SimpleNamespace(d=d) for d in self.org_domains])
+        from gateway.routes.email.automation import reply_card as rc
+
+        if q == rc.RECENT_REPLY_SQL:
+            return _Result(list(self.recent))
         if q == hc.DRAFT_FILES_SQL:
             return _Result(self.files)
         if q == hc.FORWARD_MAIL_SQL:

@@ -71,6 +71,7 @@ class _Db:
         self.org_domains = ["fracktal.in"]
         self.draft: dict[str, Any] | None = None
         self.usual: list[tuple[str, int, bool]] = []
+        self.recent: list[Any] = []
 
     async def execute(self, sql: Any, params: dict[str, Any] | None = None) -> Any:
         q, p = str(sql), dict(params or {})
@@ -92,6 +93,8 @@ class _Db:
         if q == rc.USUAL_CC_SQL:
             return rows([types.SimpleNamespace(addr=a, n=n, in_thread=t)
                          for a, n, t in self.usual])
+        if q == rc.RECENT_REPLY_SQL:
+            return rows(list(self.recent))
         raise AssertionError(f"unexpected SQL: {q[:80]}")
 
 
@@ -361,6 +364,59 @@ async def test_a_usual_colleague_is_pre_added_only_when_org(monkeypatch) -> None
 def test_the_usual_sql_counts_only_the_mailboxs_own_sent_mail() -> None:
     assert "LOWER(em.from_address->>'email') = LOWER(ea.email_address)" in rc.USUAL_CC_SQL
     assert "ea.user_id = :uid" in rc.USUAL_CC_SQL
+
+
+# ── Items 3 and 4: the words that the models read ────────────────────────────
+
+
+def test_the_prompts_say_one_mail_one_card_and_no_text_confirmation() -> None:
+    """Mutation: drop a rule from a prompt → red."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    text = (repo / "apps" / "agents" / "agent-email-assistant"
+            / "instructions.md").read_text(encoding="utf-8")
+    orch = types.SimpleNamespace(_PULL_INSTRUCTIONS=(
+        repo / "apps" / "services" / "orchestrator" / "orchestrator"
+        / "agents.py").read_text(encoding="utf-8"))
+    assert '"X and Y" means ONE mail with both people on it' in text
+    assert "Never open more than one send card at a time" in text
+    assert "The card is the confirmation. Never ask in text first." in text
+    assert "put ALL of them in `cc` in the same call" in text
+    assert "A new reply card resets the Cc" not in text
+    assert "Reply or Reply all\n   toggle" not in text
+    prompt = orch._PULL_INSTRUCTIONS
+    assert '"X and Y" means ONE mail' in prompt
+    assert "the Cc of\n  the email included" in prompt
+    assert "never ask for a\n  confirmation in text first" in prompt
+
+
+# ── Item 6: a reply that already went out ────────────────────────────────────
+
+
+async def test_a_recent_reply_is_named_on_the_card_and_in_the_revise(monkeypatch) -> None:
+    """Mutation: drop ``recent_reply`` from the card route → red."""
+    w = _World(monkeypatch)
+    w.db.recent = [types.SimpleNamespace(id="sent-mail-1", received_at=None)]
+    out = await w.card()
+    assert out["recent_reply"] == {"message_id": "sent-mail-1", "sent_at": ""}
+    agents = F.load_email_agent("ea_recipient_recent")
+    text = agents._recent_reply_text(out)
+    assert "forward_email" in text and "sent-mail-1" in text
+    assert "Do not send the whole reply again" in text
+    assert agents._recent_reply_text({}) == ""
+
+
+async def test_the_send_draft_card_warns_of_a_recent_reply(monkeypatch) -> None:
+    db = F.install_db(monkeypatch)
+    F.install_redis(monkeypatch)
+    F.flag_on(monkeypatch)
+    db.recent = [types.SimpleNamespace(id="sent-mail-1", received_at=None)]
+    out = await hc.held_card(hc.HeldCardRequest(kind="draft", account_id=F.BOX,
+                                                draft_id=F.DRAFT), F.user())
+    assert out["detail"].startswith(hc.RECENT_REPLY_WARNING)
+    agents = F.load_email_agent("ea_recipient_recent2")
+    assert agents._RECENT_REPLY_WARNING == hc.RECENT_REPLY_WARNING
 
 
 # ── Item 10: the owner's report — a Cc that edit_draft added ─────────────────

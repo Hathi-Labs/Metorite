@@ -6428,6 +6428,25 @@ def _draft_files_block(files: Any) -> str:
     return "\n".join(lines)
 
 
+#: The warning of a send card when a reply of the thread went out in the last
+#: day (item 6, owner 2026-10-24). The words of ``held_card.RECENT_REPLY_WARNING``.
+_RECENT_REPLY_WARNING = (
+    "A reply of this thread went out in the last day. To add people, forward "
+    "that mail to them in place of this send.")
+
+
+async def _with_recent_reply(draft_id: str, detail: str) -> str:
+    """*detail* with the warning of item 6 first, when the thread of the draft
+    had a reply in the last day. A fault leaves *detail* as it was."""
+    try:
+        recent = await _get("/email/recent-reply", {"draft_id": draft_id}) or {}
+    except Exception:  # the card shows without the warning
+        return detail
+    if isinstance(recent, dict) and recent.get("message_id"):
+        return f"{_RECENT_REPLY_WARNING} {detail}"
+    return detail
+
+
 # H-374 (owner decision "Drafts, with a card", 2026-10-22). A held run keeps
 # this send, as it keeps ``compose_reply``. The tool takes no recipient: the
 # draft row holds them, the card lists each one, and a list that does not
@@ -6493,6 +6512,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     if isinstance(card, str):
         return card
     detail, context, seal = card
+    detail = await _with_recent_reply(draft_id, detail)
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
