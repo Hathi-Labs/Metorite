@@ -11,7 +11,10 @@
  * member's edits only.
  *
  * The client derives no recipient. The toggle switches between the server's
- * two lists, and each list shows in full.
+ * two lists, and each list shows in full. Each To and Cc has a tick box
+ * (owner, 2026-10-24). The reply goes only to the ticked people, and the
+ * card counts them ("Sends to 3 of 5"). In a held chat a new address starts
+ * unticked, as the server chose.
  *
  * Nothing hides (security review of #1191). The summary names each address
  * the reply goes to, in full. Each notice of the server shows: a Reply-To
@@ -24,6 +27,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
 import { Textarea } from "@/components/ui/Input";
 import {
   bodyCanGo,
@@ -37,9 +41,14 @@ import {
   replyAnswer,
   replyHint,
   replySummary,
+  sendsCount,
+  startTicks,
+  tickedFor,
+  toggleTick,
   type ReplyAction,
   type ReplyApproval,
   type ReplyForm,
+  type ReplyTicks,
 } from "@/lib/replyCard";
 import { rowMark } from "@/lib/sendCard";
 
@@ -55,35 +64,53 @@ interface ReplyCardFormProps {
   disabled?: boolean;
 }
 
-function AddressRow({ label, list, form }: { label: string; list: string[]; form: ReplyForm }) {
+function AddressRow({
+  label,
+  list,
+  form,
+  ticked,
+  onTick,
+  disabled,
+}: {
+  label: string;
+  list: string[];
+  form: ReplyForm;
+  ticked: Set<string>;
+  onTick: (address: string) => void;
+  disabled: boolean;
+}) {
   // A held reply card (§21) marks each person that the server classed as
-  // new or as the person of the thread. Any other card draws the list as before.
-  const marked = !!form.classes;
+  // new or as the person of the thread. Each person has a tick box.
   return (
     <div className="flex gap-3 text-xs" data-reply-recipients={label.toLowerCase()}>
       <dt className="w-10 shrink-0 pt-px text-muted-foreground">{label}</dt>
-      {marked ? (
-        <dd className="min-w-0 flex-1 space-y-0.5 break-words text-foreground">
-          {list.map((a) => {
-            const cls = classOfAddress(form, a);
-            const mark = rowMark(cls);
-            return (
-              <span key={a} className="flex flex-wrap items-center gap-1.5">
-                <span className="min-w-0 break-words">{a}</span>
-                {mark && (
-                  <span data-reply-mark={cls}>
-                    <Badge tone={cls === "new" ? "warning" : "neutral"} size="xs">
-                      {mark}
-                    </Badge>
-                  </span>
-                )}
-              </span>
-            );
-          })}
-        </dd>
-      ) : (
-        <dd className="min-w-0 flex-1 break-words text-foreground">{list.join(", ")}</dd>
-      )}
+      <dd className="min-w-0 flex-1 space-y-0.5 break-words text-foreground">
+        {list.map((a) => {
+          const cls = classOfAddress(form, a);
+          const mark = cls ? rowMark(cls) : "";
+          const on = ticked.has(a.toLowerCase());
+          return (
+            <label key={a} className="flex cursor-pointer flex-wrap items-center gap-1.5" data-reply-person={a}>
+              <Checkbox
+                size="sm"
+                checked={on}
+                onChange={() => onTick(a)}
+                disabled={disabled}
+                aria-label={`Send to ${a}`}
+                data-reply-tick={a}
+              />
+              <span className="min-w-0 break-words">{a}</span>
+              {mark && (
+                <span data-reply-mark={cls}>
+                  <Badge tone={cls === "new" ? "warning" : "neutral"} size="xs">
+                    {mark}
+                  </Badge>
+                </span>
+              )}
+            </label>
+          );
+        })}
+      </dd>
     </div>
   );
 }
@@ -91,6 +118,9 @@ function AddressRow({ label, list, form }: { label: string; list: string[]; form
 export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
   const [replyAll, setReplyAll] = useState(form?.replyAll ?? false);
   const [body, setBody] = useState(form?.body ?? "");
+  const [ticks, setTicks] = useState<ReplyTicks>(() =>
+    form ? startTicks(form) : { reply: [], reply_all: [] },
+  );
   const box = useRef<HTMLTextAreaElement>(null);
   // The box is as tall as its text, so no line hides under an inner scroll.
   useLayoutEffect(() => {
@@ -114,11 +144,15 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
   }
   const shown = recipientsFor(form, replyAll);
   const widens = replyAllAddsSomeone(form);
-  const ok = bodyCanGo(body);
+  const picked = tickedFor(form, replyAll, ticks);
+  const ticked = new Set(replyAll ? ticks.reply_all : ticks.reply);
+  const onTick = (a: string) => setTicks((t) => toggleTick(t, replyAll, a));
+  // A reply needs one ticked To at least.
+  const ok = bodyCanGo(body) && picked.to.length > 0;
   const lines = lineCount(body);
   const answer = (action: ReplyAction) => {
     if (!armed) return;
-    const a = replyAnswer(form, { action, replyAll, body });
+    const a = replyAnswer(form, { action, replyAll, body, ticks });
     if (a) onAnswer(a);
   };
   const when = receivedText(form.original.received);
@@ -126,7 +160,7 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
     <div className="space-y-2.5" data-reply-card="">
       <div className="min-w-0">
         <p className="break-words text-xs font-medium leading-relaxed text-foreground" data-reply-summary="">
-          {replySummary(form, replyAll)}
+          {replySummary(form, replyAll, ticks)}
         </p>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
       </div>
@@ -183,9 +217,14 @@ export default function ReplyCardForm({ form, detail, onAnswer, onDiscard, armed
       </div>
 
       <dl className="space-y-1" aria-label="Recipients">
-        <AddressRow label="To" list={shown.to} form={form} />
-        {shown.cc.length > 0 && <AddressRow label="Cc" list={shown.cc} form={form} />}
+        <AddressRow label="To" list={shown.to} form={form} ticked={ticked} onTick={onTick} disabled={disabled} />
+        {shown.cc.length > 0 && (
+          <AddressRow label="Cc" list={shown.cc} form={form} ticked={ticked} onTick={onTick} disabled={disabled} />
+        )}
       </dl>
+      <p className="text-[11px] text-muted-foreground" data-reply-count="">
+        {sendsCount(form, replyAll, ticks)}. Only a ticked person gets the reply.
+      </p>
 
       {form.note && <p className="text-[11px] text-muted-foreground">{form.note}</p>}
       <Textarea

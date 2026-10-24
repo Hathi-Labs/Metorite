@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-2 to OP-5 and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 to OP-5 are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -321,7 +321,7 @@ authority: the route still checks the member's own access.
 | Export | `GET /projects/export/tasks.csv` | One tool. The file comes back as a chat document (S8). **BUILT in OP-6c** as `export_tasks` |
 | Attachments | `POST /projects/tasks/{id}/attachments` | One tool that attaches a file the member uploaded to the chat (H-229). **BUILT in OP-6c** as `attach_to_task` |
 | Report delivery | recipients and schedule | Four tools: `report_recipients` (a read) and three writes behind a card. **BUILT in OP-6d.** The send switch stays the owner's (§3a rule 3), and no tool reads it or sets it |
-| Agent runs | the eight `PLANNED` tools | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
+| Agent runs | `waiting_agent_requests` (BUILT, OP-6e). The other `PLANNED` tools wait for EA-12e | The chat lists the waiting requests and links each to its task card. It answers none (D-OP-13, OP-6e) |
 | Stays X | view state, positions, delta, raw bytes, `/projects/nodes`, `/search/refs`, `/vocabulary` | These are client plumbing or a second door to a read the chat has. There is no act to give |
 | Stays X | the import wizard, the Calendar planner routes | The import needs the review grid. The Calendar app owns the planner. Both have a door in their own app |
 | Stays X | the six `/my/...` doors of My Tasks (project, batch capture, organize, checklist, purge, lanes), `GET /vocabulary/{kind}/{id}/impact` and `POST /tasks/{id}/agent-delete` | The chat gives the same acts through `create_personal_task`, `update_task`, `add_subtasks` and `delete_task`. The impact count belongs to the admin screen. The agent-delete door is for an outside agent (EA3-51, pinned by `test_mcp_edge_coverage.py`) |
@@ -366,6 +366,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-12** | A task, a project or a sub-project is deleted by the member who created it, by the lead of its project, or by a member who may manage Projects settings. A member who only sees it cannot delete it. The rule is the same in the app, the chat and MCP | Owner, 2026-10-23, verbatim: "Any person who has created a task or a project, even if they're not an admin or a project lead, should be able to delete the task [...] or project or sub project that they themselves have added." |
 | **D-OP-14** | A move changes who sees a row, so a view of the row is not enough to move it. A re-parent of a project needs the grant authority of D-OP-11 on the moved project. A move of a task to another project needs the delete authority of D-OP-12 on the task where it is now. A reorder under the same parent, and a status move inside one project, need only a view. The 403 names who may move it. A subtask that a move carries follows the check on the task the member names, as a delete does | Supervisor decision, OP-8 fix round 1, 2026-10-23. Review finding: a member who leads a space of their own could move another member's project or task into it, and then delete it |
 | **D-OP-13** | An agent's archive or delete request is answered only on the card of the task in Metorite (EA3-40 stands). The chat may list the waiting requests and link to each card. It never answers one | Owner, 2026-10-23, in chat ("Keep it on the task card") |
+| **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change | Owner, 2026-10-24, in chat ("go ahead with your recommendation") |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
 
 ---
@@ -711,7 +712,15 @@ address.
   with the SMTP door shut), `test_projects_chat_x_pin.py` (the four routes left
   class X, and `PENDING_OP6` is empty), and eval cases PO-21 to PO-25.
 
-#### OP-6e — agent runs in the chat · MEDIUM
+#### OP-6e — agent runs in the chat · MEDIUM · BUILT 2026-10-24
+
+**Built.** `waiting_agent_requests` is a class A read over `GET /projects/agent-runs`
+with `status=awaiting`. Each row has the task number and title, the agent, the
+request in plain words, its age and the link `/projects?task=<id>`. Text that
+an agent wrote is fenced as data. `POST …/archive-approval` is class X with a
+reason that cites D-OP-13 and EA3-40, and `test_projects_agent_requests_tools.py`
+fails if a tool of the skill names an answer route. `agent_summary` and the
+start, post, finish and claim tools stay `PLANNED` for EA-12e.
 
 D-OP-13. The chat lists the waiting agent requests of the member, and each
 row links to its task card. No chat tool answers a request, and
@@ -871,6 +880,31 @@ names the counts.
 3. The counts in the summary, on the button and on the card match what the
    route reports after the delete. Fence: vitest and the R8 tests of EA-6h.
 4. The visual-review skill passes on the dialog at 390 and 1280 px.
+
+### OP-9 — personal tasks stay with their owner · HIGH · AGENT-SAFE
+
+**Scope.** D-OP-15. Today `task_visibility_clause` (`routes/projects/core.py`)
+gives a caller who may read every project `_TENANT_PROJECTS_SQL`. That read
+leaves out sealed trees only, so such a caller reads every member's personal
+tasks through `GET /projects/tasks`, search, reports and the chat. OP-9 adds
+`personal_owner IS NULL OR lower(personal_owner) = :me` to that arm, on the
+tree read, the task read and every read built on them.
+
+**Find each read first.** List every read that uses the unrestricted arm, and
+say for each how OP-9 covers it: the task list and detail, `/projects/tree`
+and `/projects/nodes`, search and `#` references, analytics and reports, the
+delta feed, My Day, the chat's dataset read, and the agent reads.
+
+**Done when.** Each is an R8 test with an owner, a `data:org:read` member and
+a Projects admin, red first under a named mutation:
+
+1. The owner reads their personal task in every read listed above.
+2. The org reader and the admin read it in none of them, and a direct
+   `GET /projects/tasks/{id}` answers 404.
+3. Team projects read as before for the org reader.
+4. The counts of reports and analytics leave out personal tasks for the org
+   reader.
+
 
 ### OP-5 — one filter component, and the old shell retires · AGENT-SAFE
 

@@ -87,6 +87,11 @@ def test_every_parameter_has_a_decision() -> None:
     refused = {k for k, v in H.HELD_SETTING_DECISIONS.items() if v == H.SETTING_REFUSED}
     assert {"about", "signature", "personal_instructions", "writing_style",
             "digest_send_to_email"} <= refused
+    # H-404: org_domains changes who counts as "org" on the held card, so a
+    # held chat never changes it. The morning brief goes to the member's own
+    # address, so it is a closed key behind the held card.
+    assert H.HELD_SETTING_DECISIONS["org_domains"] == H.SETTING_REFUSED
+    assert H.HELD_SETTING_DECISIONS["morning_brief_enabled"] == H.SETTING_CLOSED
 
 
 async def test_a_closed_key_writes_behind_a_card(gw) -> None:
@@ -153,3 +158,37 @@ async def test_with_the_switch_off_the_tool_is_as_before(gw, monkeypatch) -> Non
     out = await agents.update_assistant_settings(account_id=F.BOX, auto_run=False)
     assert out.startswith("Assistant settings updated")
     assert gw.cards == []
+
+
+async def test_org_domains_is_refused_in_a_held_chat(gw) -> None:
+    """H-404. A wider org makes a stranger's domain read as known on the next
+    card. Mutation: mark org_domains closed → red."""
+    out = await agents.update_assistant_settings(
+        account_id=F.BOX, org_domains=["evil.example"], auto_run=False)
+    assert out.startswith("Nothing changed.") and "org_domains" in out
+    assert gw.cards == [] and gw.puts == []
+
+
+async def test_the_morning_brief_writes_behind_the_held_card(gw) -> None:
+    """H-404. The brief goes to the member's own address only, so a held chat
+    with the switch on changes it behind the card. Mutation: skip the card →
+    red."""
+    out = await agents.update_assistant_settings(account_id=F.BOX, morning_brief_enabled=True)
+    assert out.startswith("Assistant settings updated")
+    [card] = gw.cards
+    assert "- morning_brief_enabled: (not set) → on" in card["context"]
+    assert gw.puts[0]["morning_brief_enabled"] is True
+
+
+async def test_the_morning_brief_takes_on_or_off_only(gw) -> None:
+    out = await agents.update_assistant_settings(account_id=F.BOX, morning_brief_enabled="yes")
+    assert out.startswith("Nothing changed.") and "morning_brief_enabled" in out
+    assert gw.cards == [] and gw.puts == []
+
+
+async def test_with_the_switch_off_a_held_run_does_not_hold_the_settings_tool(gw, monkeypatch) -> None:
+    """H-404, the switch off: the held run does not get the tool at all, so
+    neither new key can change there (H-374)."""
+    F.flag_off(monkeypatch)
+    assert eg.is_card_bound_send(agents.update_assistant_settings) is False
+    assert eg.is_egress_tool(agents.update_assistant_settings) is True

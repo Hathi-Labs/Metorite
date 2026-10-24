@@ -119,6 +119,8 @@ ALL_OFF: dict[str, Any] = {
     "about": "", "signature": "", "personal_instructions": "",
     "writing_style": "", "digest_categories": [], "digest_day_of_week": 1,
     "digest_time_of_day": "08:00",
+    # H-404: the morning brief and the extra organization domains.
+    "morning_brief_enabled": False, "org_domains": [],
 }
 
 
@@ -610,6 +612,9 @@ SETTING_ON: dict[str, Any] = {
     "digest_day_of_week": 3, "digest_time_of_day": "09:30",
     "digest_send_to_email": True, "multi_rule_execution": True,
     "sensitive_data_protection": False,
+    # H-404: the brief sends mail to the account address, and org_domains
+    # changes who counts as the organization. Each asks a card.
+    "morning_brief_enabled": True, "org_domains": ["brand.example"],
 }
 #: The settings that ask no card even when they change, and why.
 SETTING_NO_CARD: dict[str, str] = {
@@ -682,6 +687,7 @@ NO_TURN_ON = [
     {"sensitive_data_protection": True},
     {"digest_frequency": "OFF"},
     {"digest_send_to_email": False},
+    {"morning_brief_enabled": False},
     {"follow_up_awaiting_days": 0},
     {"signature": ""},
     {"signature": "Jane"},  # the text of now: no change
@@ -1089,3 +1095,66 @@ def test_the_legacy_names_match_the_route() -> None:
     [node] = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
               and any(isinstance(t, ast.Name) and t.id == "legacy" for t in n.targets)]
     assert ast.literal_eval(node.value) == agents._PRESET_LEGACY
+
+
+# ── H-404: the morning brief and the organization domains ───────────────────
+
+
+async def test_turning_on_the_morning_brief_asks_and_names_the_address(gw: Gateway) -> None:
+    """The brief is mail to the account address. The card says so, as the
+    digest card does. Mutation: drop the brief line of
+    ``_settings_needing_card`` → red."""
+    gw.answer = False
+    out = await agents.update_assistant_settings(BOX, morning_brief_enabled=True)
+    assert out.startswith("Cancelled") and gw.writes == []
+    [card] = gw.cards
+    assert "Morning brief" in card["context"] and "account address" in card["context"]
+
+
+async def test_a_change_of_org_domains_asks_and_lists_each_domain(gw: Gateway) -> None:
+    gw.settings["org_domains"] = ["old.example"]
+    gw.answer = True
+    out = await agents.update_assistant_settings(
+        BOX, org_domains=["Brand.Example", "@second.example"])
+    assert out.startswith("Assistant settings updated")
+    [card] = gw.cards
+    assert "brand.example" in card["context"] and "second.example" in card["context"]
+    assert "old.example" in card["context"]
+    [(_m, _p, body)] = gw.writes
+    assert body["org_domains"] == ["brand.example", "second.example"]
+
+
+async def test_removing_every_org_domain_asks_too(gw: Gateway) -> None:
+    """A removal changes who counts as the organization too, so it asks."""
+    gw.settings["org_domains"] = ["old.example"]
+    gw.answer = False
+    await agents.update_assistant_settings(BOX, org_domains=[])
+    assert len(gw.cards) == 1 and gw.writes == []
+
+
+async def test_the_same_org_domains_ask_nothing(gw: Gateway) -> None:
+    gw.settings["org_domains"] = ["brand.example"]
+    await agents.update_assistant_settings(BOX, org_domains=["BRAND.example"])
+    assert gw.cards == []
+
+
+@pytest.mark.parametrize(("domains", "words"), [
+    (["*.brand.example"], "wildcard"),
+    (["gmail.com"], "public webmail"),
+    (["Outlook.com"], "public webmail"),
+    (["not a domain"], "not a domain"),
+    (["localhost"], "not a domain"),
+    (["10.0.0.1"], "not a domain"),
+    (["br\u0430nd.example"], "not a domain"),
+    (["x" * 300 + ".example"], "not a domain"),
+    ("brand.example", "list"),
+])
+async def test_a_bad_org_domain_changes_nothing(
+    gw: Gateway, domains: Any, words: str,
+) -> None:
+    """Mutation: drop ``_org_domains_problem`` → red (the PUT goes)."""
+    gw.answer = True
+    out = await agents.update_assistant_settings(BOX, org_domains=domains)
+    assert out.startswith("Nothing changed."), out
+    assert words in out
+    assert gw.cards == [] and gw.writes == []

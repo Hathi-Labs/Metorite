@@ -9,8 +9,10 @@
  * goes back in ONE respond-input as `APPROVE {"reply": {...}}`.
  *
  * The client never derives a recipient. It shows the server's two lists and
- * switches between them, and it echoes the list it showed in the answer, so
- * the gateway can refuse a reply whose recipients changed after the card.
+ * switches between them. Each To and Cc has a tick box (owner, 2026-10-24),
+ * and the answer names the people the member left ticked. The gateway takes
+ * only a subset of its own list, so a tick can take a person off and never
+ * add one, and a list that changed after the card sends nothing.
  * The server owns the shape (`acb_skills/reply_card.py`, `REPLY_ANSWER_KEYS`),
  * and `tests/unit/test_email_chat_reply.py` reads this file to hold
  * the two in step.
@@ -67,6 +69,18 @@ export interface ReplyForm {
    * case. A form with none is exactly as before, and draws no mark.
    */
   classes?: Record<string, PersonClass>;
+  /**
+   * The tick boxes (owner, 2026-10-24): the people of each choice that start
+   * ticked, as the server chose them. In a held chat a new address starts
+   * unticked. A form with none starts with each person ticked.
+   */
+  ticked?: { reply: ReplyRecipients; reply_all: ReplyRecipients };
+}
+
+/** The ticked people of each choice, by lower case. */
+export interface ReplyTicks {
+  reply: string[];
+  reply_all: string[];
 }
 
 export type ReplyAction = "send" | "save";
@@ -74,6 +88,8 @@ export type ReplyAction = "send" | "save";
 export type ReplyApproval = `APPROVE {"reply":${string}`;
 
 const text = (v: unknown, max = 500): string => (typeof v === "string" ? v.slice(0, max) : "");
+
+const lower = (list: string[]) => list.map((a) => a.toLowerCase());
 
 function addresses(v: unknown): string[] | null {
   if (!Array.isArray(v) || v.length > MAX_REPLY_RECIPIENTS) return null;
@@ -106,6 +122,9 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
   const reply = recipients(rec.reply);
   const replyAll = recipients(rec.reply_all);
   if (!reply || !replyAll) return null;
+  // A start that names a person off the list is a form the card cannot read.
+  const ticked = tickedOf(v.ticked, { reply, reply_all: replyAll });
+  if (ticked === null) return null;
   const o = v.original && typeof v.original === "object" ? (v.original as Record<string, unknown>) : {};
   const messageId = typeof v.message_id === "string" ? v.message_id.trim() : "";
   if (!messageId) return null;
@@ -127,7 +146,34 @@ export function replyFromEvent(value: unknown): ReplyForm | null {
     note: text(v.note),
     draftId: text(v.draft_id, 64),
     ...classesOf(v.classes),
+    ...(ticked ? { ticked } : {}),
   };
+}
+
+/**
+ * The ticked start of a form, or null when the value names a person that is
+ * not on the list of its choice. A form that names no start has none.
+ */
+function tickedOf(
+  value: unknown,
+  lists: { reply: ReplyRecipients; reply_all: ReplyRecipients },
+): { reply: ReplyRecipients; reply_all: ReplyRecipients } | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const out = { reply: { to: [] as string[], cc: [] as string[] }, reply_all: { to: [] as string[], cc: [] as string[] } };
+  for (const key of ["reply", "reply_all"] as const) {
+    const raw = v[key] && typeof v[key] === "object" ? (v[key] as Record<string, unknown>) : null;
+    if (!raw) return null;
+    for (const part of ["to", "cc"] as const) {
+      const got = addresses(raw[part] ?? []);
+      if (!got) return null;
+      const have = new Set(lower(lists[key][part]));
+      if (got.some((a) => !have.has(a.toLowerCase()))) return null;
+      out[key][part] = got;
+    }
+  }
+  return out;
 }
 
 /** The classes of a form, or nothing for a form with none. */
@@ -179,8 +225,6 @@ export function recipientsFor(form: ReplyForm, replyAll: boolean): ReplyRecipien
   return replyAll ? form.recipients.reply_all : form.recipients.reply;
 }
 
-const lower = (list: string[]) => list.map((a) => a.toLowerCase());
-
 /** Reply all adds someone. When it does not, the toggle has nothing to switch. */
 export function replyAllAddsSomeone(form: ReplyForm): boolean {
   const a = form.recipients.reply;
@@ -193,17 +237,53 @@ export function bodyCanGo(body: string): boolean {
   return body.trim().length > 0 && body.length <= MAX_REPLY_BODY;
 }
 
+/** The ticked start of each choice: the server's, or each person. */
+export function startTicks(form: ReplyForm): ReplyTicks {
+  const of = (key: "reply" | "reply_all") => {
+    const t = form.ticked ? form.ticked[key] : form.recipients[key];
+    return lower([...t.to, ...t.cc]);
+  };
+  return { reply: of("reply"), reply_all: of("reply_all") };
+}
+
+/** The people of the choice that are ticked, in the server's order. */
+export function tickedFor(form: ReplyForm, replyAll: boolean, ticks: ReplyTicks): ReplyRecipients {
+  const shown = recipientsFor(form, replyAll);
+  const on = new Set(replyAll ? ticks.reply_all : ticks.reply);
+  return { to: shown.to.filter((a) => on.has(a.toLowerCase())), cc: shown.cc.filter((a) => on.has(a.toLowerCase())) };
+}
+
+/** Tick or untick one person of the choice. */
+export function toggleTick(ticks: ReplyTicks, replyAll: boolean, address: string): ReplyTicks {
+  const key = replyAll ? "reply_all" : "reply";
+  const a = address.toLowerCase();
+  const list = ticks[key];
+  return { ...ticks, [key]: list.includes(a) ? list.filter((x) => x !== a) : [...list, a] };
+}
+
+/** "Sends to 3 of 5": the ticked people, and the people on the card. */
+export function sendsCount(form: ReplyForm, replyAll: boolean, ticks: ReplyTicks): string {
+  const shown = recipientsFor(form, replyAll);
+  const on = tickedFor(form, replyAll, ticks);
+  return `Sends to ${on.to.length + on.cc.length} of ${shown.to.length + shown.cc.length}`;
+}
+
 /**
- * The answer of Send or Save to Drafts, or null when the body may not go.
- * The keys are exactly `REPLY_ANSWER_KEYS`, and `to` and `cc` are the lists
- * the card showed. The body goes as typed, with no trim.
+ * The answer of Send or Save to Drafts, or null when the body may not go or
+ * no To is ticked. The keys are exactly `REPLY_ANSWER_KEYS`, and `to` and
+ * `cc` are the people the member ticked, from the server's lists. With no
+ * `ticks`, each person of the choice goes. The body goes as typed, with no
+ * trim.
  */
 export function replyAnswer(
   form: ReplyForm,
-  choice: { action: ReplyAction; replyAll: boolean; body: string },
+  choice: { action: ReplyAction; replyAll: boolean; body: string; ticks?: ReplyTicks },
 ): ReplyApproval | null {
   if (!bodyCanGo(choice.body)) return null;
-  const shown = recipientsFor(form, choice.replyAll);
+  const shown = choice.ticks
+    ? tickedFor(form, choice.replyAll, choice.ticks)
+    : recipientsFor(form, choice.replyAll);
+  if (shown.to.length === 0) return null;
   const reply = {
     action: choice.action,
     reply_all: choice.replyAll,
@@ -228,9 +308,13 @@ export function lineCount(body: string): number {
   return body.split("\n").length;
 }
 
-/** The summary of the card: who gets the reply now, each address in full. */
-export function replySummary(form: ReplyForm, replyAll: boolean): string {
-  return `Reply to ${recipientsFor(form, replyAll).to.join(", ")}`;
+/**
+ * The summary of the card: who gets the reply now, each ticked To in full.
+ * With `ticks`, only the ticked people count.
+ */
+export function replySummary(form: ReplyForm, replyAll: boolean, ticks?: ReplyTicks): string {
+  const to = ticks ? tickedFor(form, replyAll, ticks).to : recipientsFor(form, replyAll).to;
+  return to.length > 0 ? `Reply to ${to.join(", ")}` : "No one in To is ticked, so the reply cannot go";
 }
 
 /** What the buttons do, in one line under them. */

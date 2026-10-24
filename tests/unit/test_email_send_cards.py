@@ -1048,3 +1048,63 @@ async def test_a_draft_with_only_a_preview_says_it_is_cut(gw: Gateway) -> None:
     out = await agents.send_draft(BOX, "d1")
     # §21 fix round 3: only the start is stored, so no send card shows.
     assert gw.cards == [] and "too long to show on the card" in out
+
+
+# ── H-404 (b): several senders behind ONE card ──────────────────────────────
+
+SENDER_2 = "promo@shop.example"
+
+
+@pytest.fixture()
+def two(gw: Gateway, monkeypatch) -> Gateway:
+    """Each sender has its own target: a one-click link and a mailto link."""
+    targets = {SENDER: dict(ONE_CLICK), SENDER_2: dict(MAILTO)}
+    gw.targets = targets
+    inner = agents._get
+
+    async def get(path, params=None):
+        if path == "/email/unsubscribe/target":
+            gw.gets.append((path, dict(params or {})))
+            return dict(targets[params["email"]])
+        return await inner(path, params)
+
+    monkeypatch.setattr(agents, "_get", get)
+    return gw
+
+
+async def test_several_senders_ask_one_card_that_lists_each_target(two: Gateway) -> None:
+    """Mutation: ask one card for each sender, or leave out the mailto
+    address → red."""
+    out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
+    [card] = two.cards
+    assert card["title"] == "Unsubscribe from 2 senders?"
+    assert f"- {SENDER}: one-click, host: list.example.com" in card["context"]
+    assert f"- {SENDER_2}: mail to: unsub@list.example" in card["context"]
+    assert "subject: stop" in card["context"]
+    assert [b["email"] for _p, b in two.posts] == [SENDER, SENDER_2]
+    assert [b["unsubscribe_link"] for _p, b in two.posts] == [ONE_CLICK["link"], MAILTO["link"]]
+    assert SENDER in out and SENDER_2 in out
+
+
+async def test_one_bad_target_of_several_asks_nothing(two: Gateway) -> None:
+    two.targets[SENDER_2] = {**MAILTO, "address": "Evil <e@evil.test>"}
+    out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
+    assert out.startswith("Nothing changed.") and SENDER_2 in out
+    assert two.cards == [] and two.posts == []
+
+
+async def test_a_no_on_the_card_of_several_senders_sends_nothing(two: Gateway) -> None:
+    two.answer = False
+    out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
+    assert out.startswith("Cancelled") and two.posts == []
+
+
+async def test_email_and_emails_together_are_refused(two: Gateway) -> None:
+    out = await agents.unsubscribe_sender(BOX, SENDER, emails=[SENDER_2])
+    assert out.startswith("Nothing changed.") and two.cards == [] and two.posts == []
+
+
+async def test_too_many_senders_are_refused(two: Gateway) -> None:
+    many = [f"s{i}@list.example" for i in range(agents._UNSUBSCRIBE_MAX + 1)]
+    out = await agents.unsubscribe_sender(BOX, emails=many)
+    assert out.startswith("Nothing changed.") and two.cards == [] and two.posts == []

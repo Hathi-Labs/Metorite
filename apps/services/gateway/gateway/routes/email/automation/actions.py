@@ -520,6 +520,14 @@ async def _rule_draft_files(db: Any, message_id: str, owner: str) -> Any:
         return None
 
 
+def _action_copies(action: dict[str, Any]) -> tuple[list[str] | None, list[str] | None]:
+    """The Cc and the Bcc of a reply or forward action, or None for each
+    that the action does not name (H-404). Each field holds one address."""
+    cc = str(action.get("cc_address") or "").strip()
+    bcc = str(action.get("bcc_address") or "").strip()
+    return ([cc] if cc else None), ([bcc] if bcc else None)
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -695,11 +703,15 @@ async def _apply_rule_actions(
                 # so Outlook writes it over the To of createReply. With none,
                 # createReply keeps its To, which honours a Reply-To (EM-T10
                 # review round 1).
+                # H-404: the Cc and the Bcc that the rule names go on the
+                # draft, as the card that saved the rule showed them.
+                cc, bcc = _action_copies(a)
                 draft_pid = await provider.create_draft(
                     to=[to], subject=subj, body_text=body,
                     reply_to_message_id=provider_msg_id,
                     thread_id=email.get("thread_id") or None,
                     attachments=_load_action_attachments(a, user_email) or None,
+                    cc=cc, bcc=bcc,
                     exact_to=bool(a.get("to_address")),
                 )
                 # Mirror the draft locally so it shows in the Drafts folder and
@@ -711,7 +723,7 @@ async def _apply_rule_actions(
                         thread_id=email.get("thread_id") or None,
                         owner_email=await _draft_from_address(
                             db, account_id, None if tmpl else draft_email, email),
-                        to_email=to, subject=subj, body=body,
+                        to_email=to, subject=subj, body=body, cc=cc, bcc=bcc,
                     )
                 # AI-written (non-template) drafts: remember for edit-learning.
                 # commit=False: every caller of _apply_rule_actions holds a
@@ -744,11 +756,13 @@ async def _apply_rule_actions(
                     append_signature_text,
                 )
                 fwd = append_signature_text(signature, fwd)
+                fcc, fbcc = _action_copies(a)  # H-404, as for a reply
                 fwd_pid = await provider.create_draft(
                     to=[a["to_address"]],
                     subject=fwd_subject,
                     body_text=fwd,
                     attachments=_load_action_attachments(a, user_email) or None,
+                    cc=fcc, bcc=fbcc,
                 )
                 if fwd_pid and account_id:
                     await _upsert_local_draft(
@@ -756,7 +770,7 @@ async def _apply_rule_actions(
                         owner_email=await _draft_from_address(
                             db, account_id, email),
                         to_email=a["to_address"],
-                        subject=fwd_subject, body=fwd,
+                        subject=fwd_subject, body=fwd, cc=fcc, bcc=fbcc,
                     )
             elif t == "NOTIFY_ME":
                 await _notify_me(db, a, email, message_id, user_email=user_email,

@@ -6259,18 +6259,6 @@ line — never reclaim a number by deleting the other entry.
   changes delivery, not function"
 - **Added:** 2026-10-23 · email chat session
 
-### H-392 · Decide which store a Metorite file comes from, for an email attachment · [OWNER]
-- **Check:** `email_app_master_plan.md` §21 names a store for a Metorite file
-  row. If it does, delete this entry.
-- **Why:** #1237 lets a held chat attach only a file of the member's own
-  mail. A file from Artifacts, Knowledge or a task cannot be attached,
-  because the spec names no owner for it. The reply card also has no tick per
-  address yet, so a held reply opens on Reply and not Reply all.
-- **Do this (owner):** choose the store, for example Artifacts. Then an
-  agent builds the file rows and the ticks per address.
-- **Authority:** `email_app_master_plan.md` §21.10
-- **Added:** 2026-10-23 · email chat session
-
 ### H-393 · Look-alike letters can carry data in a chat send · [AGENT] · security
 - **Check:** a fence refuses a word that mixes scripts, for example a
   Cyrillic letter in a Latin word, at a chat send. If one exists, delete
@@ -6378,18 +6366,6 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** if #1241 is still open, read its failed checks, fix forward, and merge it. Re-check that migration 293 is free on main first (R1). Then confirm staging serves it and the staging log shows `293_kb_gaps.sql ... ok`.
 - **Authority:** `specs/knowledge_base.md` §17 KB-9a
 - **Added:** 2026-10-23 · Knowledge session
-
-### H-404 · Build wave 2 of email control from the chat: the acts that send mail out · [AGENT] · security
-- **Check:** `grep -n "to_address\|CALL_WEBHOOK" apps/agents/agent-email-assistant/agents.py | grep -c "_clean_actions"` prints more than 0, and §22 of `email_app_master_plan.md` names wave 2 BUILT. If both hold, delete this entry.
-- **Why:** #1245 built wave 1. Five gaps stay, and each one changes the egress pin in `acb_skills/egress.py`:
-  - a rule that forwards, replies to an address, or calls a webhook
-  - cc and bcc on a rule action
-  - unsubscribe from several senders in one call
-  - `morning_brief_enabled` in `update_assistant_settings`
-  - `org_domains`, which changes who counts as "org" in the held-card classes
-- **Do this:** use a session in manual mode, because auto mode blocks an edit of the egress guard. Each outward rule act needs its own card that names each address and URL. A held chat must refuse it. Run a diff-reviewer on Opus before the merge.
-- **Authority:** owner request, 2026-10-23. The owner asked to control every part of the Email app from the chat.
-- **Added:** 2026-10-23 · chat cards session
 
 ### H-405 · Confirm that migration 297 stamped each private tree in production · [AGENT]
 - **Check:** after the release that carries 297, run this SQL once on production, as a role that bypasses RLS. It prints 0. Then delete this entry.

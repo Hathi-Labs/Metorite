@@ -38,13 +38,16 @@ import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from evals.coding_engine import stub_api as coding_stub
 from evals.projects_ops.dataset import (
+    AGENT_ARCHIVE,
+    AGENT_NAME,
+    AGENT_QUESTION,
     AREAS,
     CLOSED,
     DELEGATED,
@@ -102,6 +105,11 @@ class StubError(Exception):
         self.detail = detail
 
 
+def _ago(minutes: int) -> str:
+    """A stamp *minutes* before now, for the age of a waiting run."""
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
 @dataclass
 class OpsRequest:
     """One request the stub saw."""
@@ -140,6 +148,9 @@ class OpsStub:
     #: mail route at all, so a request for one answers 404 and `mail` stays empty.
     reports: dict[str, dict[str, Any]] = field(default_factory=dict)
     recipients: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: WS-64 OP-6e: the agent runs of the acting member, newest first. The stub has no route
+    #: that answers a run, so a request for one answers 404 and shows as a write.
+    agent_runs: list[dict[str, Any]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
@@ -153,6 +164,7 @@ class OpsStub:
             }
         self.recipients = {ident("report", REPORT_WEEKLY): [self._recipient(me.email, me.email)],
                            ident("report", REPORT_BOARD): []}
+        self.agent_runs = self._seed_agent_runs()
         launch = self.dataset.project("Launch").id
         priya = self.dataset.members[1].email
         self.grants = {launch: [{
@@ -228,6 +240,7 @@ class OpsStub:
             # The grant id is the named group. The project id is in the path too.
             ("DELETE", rf"/projects/nodes/[0-9a-fA-F-]{{36}}/grants/{_ID}",
              lambda i, _q, _b: self.remove_grant(i)),
+            ("GET", "/projects/agent-runs", lambda _i, q, _b: self.list_agent_runs(q)),
             ("GET", "/projects/reports", lambda _i, _q, _b: self.list_reports()),
             ("GET", f"/projects/reports/{_ID}", lambda i, _q, _b: self.report(i)),
             ("GET", f"/projects/reports/{_ID}/recipients",
@@ -355,6 +368,37 @@ class OpsStub:
                 held.remove(row)
                 return {"deleted": row["id"], "subject": row["subject"]}
         raise StubError(404, "Grant not found")
+
+    # ── the agent runs that wait for the member (WS-64 OP-6e) ───────────────
+
+    def _seed_agent_runs(self) -> list[dict[str, Any]]:
+        me = self.dataset.members[0].email
+        by_number = {t.number: t for t in self.dataset.tasks}
+
+        def run(number: int, status: str, minutes: int, ask: dict[str, Any] | None) -> dict:
+            then = _ago(minutes)
+            return {
+                "id": ident("agent-run", str(number)), "task_id": by_number[number].id,
+                "member_email": me, "client_via": "mcp:claude.ai:claude-code",
+                "client_name": AGENT_NAME, "status": status, "state": status,
+                "created_at": then, "last_activity_at": then, "open_elicitation": ask,
+            }
+
+        archive = {"type": "elicitation", "content": {"body": "The release shipped. May I archive this?"},
+                   "content_metadata": {"request": {"kind": "archive_task",
+                                                    "expires_at": "2099-01-01T00:00:00+00:00"}},
+                   "created_at": _ago(60)}
+        question = {"type": "elicitation", "content": {"body": "Which printer should I clean first?"},
+                    "content_metadata": None, "created_at": _ago(120)}
+        return [
+            run(AGENT_ARCHIVE, "awaiting", 60, archive),
+            run(AGENT_QUESTION, "awaiting", 120, question),
+            run(3, "completed", 600, None),
+        ]
+
+    def list_agent_runs(self, query: dict[str, str]) -> dict[str, Any]:
+        rows = [r for r in self.agent_runs if not query.get("status") or r["status"] == query["status"]]
+        return {"rows": copy.deepcopy(rows), "next_cursor": None}
 
     # ── who gets a report, and when (WS-64 OP-6d) ───────────────────────────
 

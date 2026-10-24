@@ -123,3 +123,47 @@ async def test_a_refused_provider_call_leaves_no_local_folder_change() -> None:
         if "folder='trash'" in str(c[0][0])
     ]
     assert folder_writes == [], "a refused TRASH still wrote a phantom folder"
+
+
+# ── H-404: a rule draft carries the Cc and the Bcc that the rule names ───────
+#
+# The rules UI and the chat save ``cc_address`` and ``bcc_address`` on a reply
+# or a forward action. The engine dropped them, so the card named people that
+# the draft never held. Mutation: drop ``cc=`` or ``bcc=`` from a
+# ``create_draft`` call of ``_apply_rule_actions`` → red.
+
+
+async def test_a_forward_draft_carries_the_cc_and_the_bcc_of_the_rule() -> None:
+    db, provider = AsyncMock(), AsyncMock()
+    done = await m._apply_rule_actions(
+        db, provider, "mid", "pmid",
+        [{"type": "FORWARD", "to_address": "boss@example.com",
+          "cc_address": "ops@example.com", "bcc_address": "records@example.com"}], _EMAIL,
+    )
+    assert done == ["FORWARD"]
+    kwargs = provider.create_draft.await_args.kwargs
+    assert kwargs["to"] == ["boss@example.com"]
+    assert kwargs["cc"] == ["ops@example.com"]
+    assert kwargs["bcc"] == ["records@example.com"]
+
+
+async def test_a_reply_draft_carries_the_cc_and_the_bcc_of_the_rule() -> None:
+    db, provider = AsyncMock(), AsyncMock()
+    done = await m._apply_rule_actions(
+        db, provider, "mid", "pmid",
+        [{"type": "DRAFT_EMAIL", "content": "Thanks.", "to_address": "a@example.com",
+          "cc_address": "b@example.com", "bcc_address": "c@example.com"}], _EMAIL,
+    )
+    assert done == ["DRAFT_EMAIL"]
+    kwargs = provider.create_draft.await_args.kwargs
+    assert kwargs["cc"] == ["b@example.com"] and kwargs["bcc"] == ["c@example.com"]
+
+
+async def test_a_rule_with_no_cc_drafts_with_none() -> None:
+    db, provider = AsyncMock(), AsyncMock()
+    await m._apply_rule_actions(
+        db, provider, "mid", "pmid",
+        [{"type": "FORWARD", "to_address": "boss@example.com"}], _EMAIL,
+    )
+    kwargs = provider.create_draft.await_args.kwargs
+    assert kwargs.get("cc") is None and kwargs.get("bcc") is None

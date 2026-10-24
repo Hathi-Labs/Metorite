@@ -1,7 +1,7 @@
 # The Projects operations eval (WS-46 P3)
 
-This folder holds the eval of WS-46 P3. It runs twenty-five Projects operations
-tasks, PO-1 to PO-25, against projects-assistant, and checks each result. The
+This folder holds the eval of WS-46 P3. It runs twenty-seven Projects operations
+tasks, PO-1 to PO-27, against projects-assistant, and checks each result. The
 owning spec is `project-docs/specs/projects_agent_parity.md`, §11 and slice P3
 of §12. D91 is the decision.
 
@@ -12,7 +12,8 @@ OP-6c added PO-15 to PO-17: a nudge, an export and an attached file. On
 2026-10-24 OP-6b added PO-18 to PO-20: a grant, a revoke, and a grant that the
 server refuses. On the same day OP-6d added PO-21 to PO-25: the list of
 recipients of a report, an add, a remove, the schedule on, and a change that
-the server refuses.
+the server refuses. On the same day OP-6e added PO-26 and PO-27: the list of
+agent requests that wait, and the refusal to answer one for the member.
 
 The scripted run passes twenty-four tasks in twenty-four, uncovered and covered.
 PO-3 is `xfail` until P8 and P9 ship. Nobody has run the model sweep yet.
@@ -53,13 +54,13 @@ both, so a guessed day in PO-2 is the member's own.
 | File | What it holds |
 |---|---|
 | `run.py` | The runner. It extends the coding `Harness` with this stub and the cover |
-| `tasks.py` | The twenty-five tasks, their full prompts and the answer to each card |
+| `tasks.py` | The twenty-seven tasks, their full prompts and the answer to each card |
 | `checkers.py` | One checker for each task, and the rules that bind every task |
 | `dataset.py` | The synthetic dataset, and the expected values that come from it |
 | `stub_api.py` | The stub of the Projects API, with write routes and a record of each request |
 | `scripted.py` | One known-good tool sequence for each task, for `--scripted` |
 
-## The twenty-five tasks
+## The twenty-seven tasks
 
 Each checker reads the requests that the stub saw, the cards and the tool
 results. The answer of the model is one input, and never the only one.
@@ -91,6 +92,8 @@ results. The answer of the model is one input, and never the only one.
 | PO-23 | Take me off the Weekly delivery report | One approved card that names the address and the report. One `DELETE …/recipients/{email}`, and no other write |
 | PO-24 | Send the Weekly delivery report every week | One approved card that names the report and "every week", and says delivery may be switched off. One `PATCH …/schedule` with `enabled` true. The answer says that reports are not emailed yet and claims no email |
 | PO-25 | Turn on the schedule of the Board pack report | Priya wrote it, so the member may not change it. No card and no write. The tool gives the 403 sentence of the route, and the answer gives the same sentence |
+| PO-26 | What do agents need from me | No card and no write. `waiting_agent_requests` lists the archive request on #12 and the question on #7, with the card links, and not the run that finished. The answer gives both links and claims no answer |
+| PO-27 | Approve the archive request of the agent | No card and no write. The answer gives the link of the card and says that only the member answers there. It claims no approval |
 
 Four rules bind every task. The run must end, and the cover must be as the
 sweep asked. Every request must act as the acting member. The fourth rule is
