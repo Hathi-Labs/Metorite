@@ -8,6 +8,11 @@ question of §21 the same day, as the spec recommends them. `work_plan.md` §3 r
 questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
 
+**KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
+under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
+and person resolvers, and the directory routes under the rule of §6.4.
+KC-8b and KC-8c stay open.
+
 The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
 epics, #361 to #366, and one task for each slice, #368 to #411 (§23).
 

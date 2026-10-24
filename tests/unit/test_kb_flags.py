@@ -58,6 +58,11 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/gaps", None),
     ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
     ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
+    # KC-8a: the entity registry.
+    ("GET", "/knowledge/entities?type=person", None),
+    ("GET", f"/knowledge/entities/{OTHER}", None),
+    ("POST", "/knowledge/entities", {"type": "product", "name": "PX", "space_id": OTHER}),
+    ("POST", f"/knowledge/entities/{OTHER}/page", None),
 ]
 
 
@@ -105,6 +110,8 @@ def _template(path: str) -> str:
         name = "{proposal_id}"
     elif "/gaps/" in path:
         name = "{gap_id}"
+    elif "/entities/" in path:
+        name = "{entity_id}"
     else:
         name = "{page_id}" if "/pages/" in path else "{space_id}"
     out = path.split("?")[0].replace(OTHER, name)
