@@ -424,7 +424,7 @@ async def convert_folder_to_project(project_id: str) -> str:
     )
     rest: dict[str, Any] = {
         "folder": name,
-        "subprojects": ", ".join(data(c.get("name")) for c in kids[:10]) or "none",
+        "subprojects": ", ".join(data(c.get("name")) for c in kids) or "none",
         "undo": "none; a project does not turn back into a folder",
     }
     if not await _confirm(
