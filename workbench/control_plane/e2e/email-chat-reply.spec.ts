@@ -78,7 +78,7 @@ async function install(page: Page, form: Record<string, unknown> = REPLY_FORM) {
         if (path.startsWith("/api/email/")) {
           emailCalls.push(`${method} ${path}`);
           if (path === "/api/email/reply-card/bcc") {
-            // §21.14: the server takes the member's Bcc for this card.
+            // §21.15: the server takes the member's Bcc for this card.
             const body = JSON.parse(String(init?.body ?? "{}"));
             return json({ address: body.address, class: "org", mark: "added to this reply" });
           }
@@ -233,7 +233,7 @@ test.describe("the reply card in the main chat", () => {
       body: "Hi all,\n\nConfirmed for June.\n\nJane",
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
-      bcc: [], // §21.14: the card always names its ticked Bcc
+      bcc: [], // §21.15: the card always names its ticked Bcc
       message_id: MAIL_ID,
     });
     await expect(card).toHaveCount(0);
@@ -243,7 +243,7 @@ test.describe("the reply card in the main chat", () => {
     expect(await emailCalls(page)).toEqual([]);
   });
 
-  test("a Bcc row: the proposed Bcc starts ticked, and a typed Bcc joins it (21.14)", async ({ page }) => {
+  test("a Bcc row: the proposed Bcc starts ticked, and a typed Bcc joins it (21.15)", async ({ page }) => {
     const withBcc = {
       ...REPLY_FORM,
       recipients: {
@@ -335,7 +335,7 @@ test.describe("the reply card in the main chat", () => {
       body: REPLY_FORM.body,
       to: ["kim@contoso.test", "lee@contoso.test"],
       cc: ["ops@contoso.test"],
-      bcc: [], // §21.14: the card always names its ticked Bcc
+      bcc: [], // §21.15: the card always names its ticked Bcc
       message_id: MAIL_ID,
     });
     await expect(page.getByText(RESULTS.save).first()).toBeVisible({ timeout: 15_000 });

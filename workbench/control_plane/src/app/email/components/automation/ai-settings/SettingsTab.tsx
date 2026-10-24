@@ -128,7 +128,7 @@ function OrgDomainsCard({
   );
 }
 
-/** The member's "always copy" rules (§21.15). Each rule names a domain or
+/** The member's "always copy" rules (§21.16). Each rule names a domain or
  *  an address, and the colleagues that go, ticked, on each matching reply
  *  and new-mail card. Nothing sends on its own. The server takes only a
  *  colleague or a person you wrote to before, and says who it refused. */

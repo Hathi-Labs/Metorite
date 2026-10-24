@@ -5,7 +5,7 @@
 --       of rules. Each rule is `{"match": <domain or address>, "cc": [<address>,
 --       ...]}`. The empty list is the default, so each mailbox starts with no
 --       rule.
--- Why:  WS-17, `project-docs/specs/email_app_master_plan.md` §21.15 (item 7b of
+-- Why:  WS-17, `project-docs/specs/email_app_master_plan.md` §21.16 (item 7b of
 --       §21.12, owner 2026-10-24). "Always copy Kiran and Veena on mail to
 --       jainuniversity.ac.in." A rule adds those colleagues to the member's
 --       own reply card and new-mail card, as rows that the member can untick.
@@ -26,5 +26,5 @@ ALTER TABLE email_assistant_settings
     ADD COLUMN IF NOT EXISTS always_copy JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 COMMENT ON COLUMN email_assistant_settings.always_copy IS
-    'The always-copy rules of the mailbox (§21.15): [{"match": domain or address, '
+    'The always-copy rules of the mailbox (§21.16): [{"match": domain or address, '
     '"cc": [address, ...]}]. Each cc is an org or a sent person when saved.';

@@ -36,7 +36,7 @@ export interface ReplyRecipients {
   to: string[];
   cc: string[];
   /**
-   * §21.14: the Bcc that the server recorded for the card. The card shows it
+   * §21.15: the Bcc that the server recorded for the card. The card shows it
    * apart, as "Bcc (hidden from the others)". A card with none has no key.
    */
   bcc?: string[];
@@ -87,7 +87,7 @@ export interface ReplyForm {
    */
   marks?: Record<string, string>;
   /**
-   * The `request_id` of the card (§21.14). A Bcc that the member types goes
+   * The `request_id` of the card (§21.15). A Bcc that the member types goes
    * to the record of THIS card, so the act can take it.
    */
   requestId?: string;
@@ -379,14 +379,14 @@ export function replyAnswer(
     body: choice.body,
     to: shown.to,
     cc: shown.cc,
-    // §21.14: the ticked Bcc, a subset of the server's record of this card.
+    // §21.15: the ticked Bcc, a subset of the server's record of this card.
     bcc: shown.bcc ?? [],
     message_id: form.messageId,
   };
   return `${REPLY_ANSWER_PREFIX}${JSON.stringify({ reply })}` as ReplyApproval;
 }
 
-/** The label of the Bcc row (§21.14). */
+/** The label of the Bcc row (§21.15). */
 export const BCC_LABEL = "Bcc (hidden from the others)";
 
 /**

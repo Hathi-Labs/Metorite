@@ -17,7 +17,7 @@
  * only to the ticked people, the card counts them ("Sends to 3 of 5"), and
  * it names each person who will not get it.
  *
- * A Bcc row (§21.14) lists the Bcc that the server recorded for the card,
+ * A Bcc row (§21.15) lists the Bcc that the server recorded for the card,
  * under "Bcc (hidden from the others)". The member can type one more. The
  * server classes it and adds it to the record of THIS card, so the act
  * still takes a subset of the server's list only.
@@ -132,7 +132,7 @@ function AddressRow({
 }
 
 export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
-  // §21.14: the form grows by each Bcc that the server took for this card.
+  // §21.15: the form grows by each Bcc that the server took for this card.
   const [form, setForm] = useState<ReplyForm | null>(given);
   const [bccDraft, setBccDraft] = useState("");
   const [bccBusy, setBccBusy] = useState(false);

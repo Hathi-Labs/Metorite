@@ -2121,7 +2121,7 @@ export async function saveAssistantSettings(
   });
 }
 
-/** One "always copy" rule of a mailbox (§21.15): a domain or an address,
+/** One "always copy" rule of a mailbox (§21.16): a domain or an address,
  *  and the colleagues that go, ticked, on each matching reply or new mail. */
 export interface AlwaysCopyRule {
   match: string;

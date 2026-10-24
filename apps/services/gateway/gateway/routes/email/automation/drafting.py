@@ -3313,7 +3313,7 @@ async def _upsert_reply_draft(
 
     An update keeps the Cc of the draft when the caller gives none, unless
     ``exact_cc`` (the member chose the Cc on the card). It keeps the Bcc of
-    the row, unless ``exact_bcc`` (the Bcc of the reply card, §21.14), and it
+    the row, unless ``exact_bcc`` (the Bcc of the reply card, §21.15), and it
     keeps the HTML of the row. An update that fails makes a fresh
     draft. The local copy runs in a savepoint, and a failed copy is logged.
     A failed provider write raises. Fence:
@@ -3368,7 +3368,7 @@ async def _upsert_reply_draft(
             reply_to_message_id=reply_to_provider_id,
             thread_id=thread_id or None, cc=cc_list or None,
             exact_to=exact_to,
-            # The Bcc of the reply card (§21.14). An older call names none.
+            # The Bcc of the reply card (§21.15). An older call names none.
             **({"bcc": bcc_list} if exact_bcc and bcc_list else {}),
         )
     local_id = ""

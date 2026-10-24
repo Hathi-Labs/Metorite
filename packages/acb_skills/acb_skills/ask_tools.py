@@ -850,7 +850,7 @@ def _clean_recipients(value: Any) -> dict[str, list[str]]:
     """The To, Cc and Bcc lists of one choice. An address is never cut and a
     list is never shortened, because the card must show each recipient in
     full. A list that is too long, or an address that is too long, raises
-    ``ValueError`` before any card is drawn. ``bcc`` (§21.14) is the Bcc
+    ``ValueError`` before any card is drawn. ``bcc`` (§21.15) is the Bcc
     that the gateway recorded for the card, and it shows apart."""
     from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
 
@@ -865,7 +865,7 @@ def _clean_recipients(value: Any) -> dict[str, list[str]]:
             raise ValueError("a reply form names an address that is too long")
         out[name] = [a for a in clean if a]
     if not out["bcc"]:
-        # A card with no Bcc is exactly as before (§21.14).
+        # A card with no Bcc is exactly as before (§21.15).
         del out["bcc"]
     return out
 

@@ -527,7 +527,7 @@ async def test_a_cc_that_edit_draft_added_stays_on_the_next_card(monkeypatch) ->
     out = await w.card(reply_all=False)
     assert out["ticked"]["reply_all"]["to"] == [SAGAR]
     assert out["ticked"]["reply_all"]["cc"] == [KIRAN]
-    # §21.14 (owner, 2026-10-24): the draft's Bcc now carries onto the card,
+    # §21.15 (owner, 2026-10-24): the draft's Bcc now carries onto the card,
     # in its own row, where a notice used to say that the card sends none.
     assert out["recipients"]["reply_all"]["bcc"] == [VEENA]
     await w.act(out, to=[SAGAR], cc=[KIRAN])

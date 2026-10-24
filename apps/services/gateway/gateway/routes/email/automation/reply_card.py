@@ -95,7 +95,7 @@ BCC_ONLY_NOTICE = "You were Bcc'd, so only the sender is ticked."
 #: added person, because the act could not check one.
 ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the draft in "
                       "Drafts was left as it was. Ask again in a moment.")
-#: The classes that a Bcc of a held chat may have (§21.14, the rule of 21.10
+#: The classes that a Bcc of a held chat may have (§21.15, the rule of 21.10
 #: open question 5): a person that the member knows. A held chat refuses a
 #: Bcc to any other address, and no tick can allow it.
 HELD_BCC_CLASSES = frozenset({"org", "sent"})
@@ -106,7 +106,7 @@ HELD_BCC_REFUSED = ("This chat read outside mail, so a Bcc can only go to a coll
 #: The notice when a held chat leaves a Bcc of the thread's draft off the card.
 HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc to a new address. "
                          "This chat read outside mail, so the card leaves it out: {addrs}.")
-#: The mark of a Bcc that the thread's draft holds (§21.14).
+#: The mark of a Bcc that the thread's draft holds (§21.15).
 DRAFT_BCC_MARK = "on the draft in Drafts"
 
 #: The colleagues that the member copies on mail of this thread, or on mail
@@ -183,7 +183,7 @@ class ReplyCardRequest(BaseModel):
     #: the act takes only a subset of what this card showed. One card
     #: replaces the reply card, the edit_draft card and the send_draft card.
     cc: list[str] = Field(default_factory=list, max_length=MAX_ADDED)
-    #: Bcc people that the tool proposes (§21.14, owner 2026-10-24). Classed
+    #: Bcc people that the tool proposes (§21.15, owner 2026-10-24). Classed
     #: as ``cc`` is, and recorded apart. The act takes a subset only.
     bcc: list[str] = Field(default_factory=list, max_length=MAX_ADDED)
     #: True when the chat read outside mail (H-236). The tool sets it from the
@@ -194,7 +194,7 @@ class ReplyCardRequest(BaseModel):
 
 
 class ReplyCardBccRequest(BaseModel):
-    """A Bcc that the member typed on the reply card (§21.14). The member's
+    """A Bcc that the member typed on the reply card (§21.15). The member's
     browser posts it, and no tool calls it. The server classes the address
     and adds it to the record of the card, so the act still takes a subset
     of the record only."""
@@ -519,14 +519,14 @@ async def reply_card(
     # extra address of the draft is.
     carried = [a for a in carried if a.strip().lower() not in on_mail | own]
     usual = await _usual_candidates(owner, mail, [*all_to, *all_cc], skip=on_mail | own)
-    # §21.15: the member's own "always copy" rules of this mailbox. Each
+    # §21.16: the member's own "always copy" rules of this mailbox. Each
     # colleague is an org or a sent person NOW, or it is not offered.
     rule = await _rule_candidates(owner, mail, [mail.sender, *all_to, *all_cc],
                                   skip=on_mail | own)
     rule_match = {a.lower(): m for a, m in rule}
     candidates = _unique([*asked, *carried, *(a for a, _m in rule), *usual],
                          set(on_mail | own))[:MAX_ADDED]
-    # §21.14: the Bcc of the card. A person on To or Cc is not a Bcc too.
+    # §21.15: the Bcc of the card. A person on To or Cc is not a Bcc too.
     bcc_people = _unique([*asked_bcc, *draft_bcc],
                          {*on_mail, *own, *(a.lower() for a in candidates)})[:MAX_ADDED]
     held_on = held_card_send_enabled()
@@ -610,7 +610,7 @@ async def reply_card(
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
-    # §21.15: a colleague of the member's own rule says so, whatever else.
+    # §21.16: a colleague of the member's own rule says so, whatever else.
     from acb_skills.held_card import rule_copy_mark
 
     marks.update({a.lower(): rule_copy_mark(rule_match[a.lower()]) for a in rule_added
@@ -785,7 +785,7 @@ def _asked_cc(cc: Sequence[str], *, label: str = "Cc") -> list[str]:
 
 def _held_bcc(bcc: list[str], asked: Sequence[str], classes: dict[str, str] | None,
               held: bool, notices: list[str]) -> list[str]:
-    """The Bcc of a card (§21.14). Outside a held chat, each one stays.
+    """The Bcc of a card (§21.15). Outside a held chat, each one stays.
 
     In a held chat a Bcc goes only to an ``org`` or a ``sent`` person (21.10,
     open question 5). A Bcc that the tool proposed to anyone else answers
@@ -875,7 +875,7 @@ async def _rule_candidates(
     owner: str, mail: Any, people: Sequence[str], *, skip: set[str],
 ) -> list[tuple[str, str]]:
     """``(colleague, match)`` of the member's always-copy rules for the
-    people of the mail (§21.15). A fault reads as none."""
+    people of the mail (§21.16). A fault reads as none."""
     from gateway.routes.email.automation.always_copy import always_copy_people
 
     try:
@@ -956,7 +956,7 @@ async def _write_reply_record(
 ) -> str:
     """Record the added people of one card under a card id that this server
     mints. Returns the id, or "" on a fault, and then the card adds nobody.
-    The record also holds the Bcc of the card and the held flag (§21.14)."""
+    The record also holds the Bcc of the card and the held flag (§21.15)."""
     import uuid
 
     from acb_common.tenant_redis import organization_scope
@@ -1030,7 +1030,7 @@ async def reply_card_bcc(
     req: ReplyCardBccRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Add a Bcc that the member typed on the reply card (§21.14).
+    """Add a Bcc that the member typed on the reply card (§21.15).
 
     The member's browser posts it on the member's own click. No tool calls
     it. The server classes the address with THE classifier and adds it to
@@ -1166,7 +1166,7 @@ async def reply_card_act(
     derived_to, derived_cc = mail.recipients(True)
     added, derived_bcc = await _take_reply_record(user, req.card_request_id, req.message_id)
     derived_cc = _unique([*derived_cc, *added], {a.lower() for a in derived_to})
-    # §21.14: the Bcc comes from the record of THIS card too. A Bcc that is
+    # §21.15: the Bcc comes from the record of THIS card too. A Bcc that is
     # also on To or Cc is not one.
     derived_bcc = _unique(derived_bcc, {a.lower() for a in [*derived_to, *derived_cc]})
     # The tick boxes (owner, 2026-10-24): the answer names the people that the
@@ -1239,7 +1239,7 @@ async def _write_draft(
                 # people that the card starts ticked. The card carries the Cc
                 # of the thread's draft as added people, so no Cc is lost.
                 body=body, exact_to=True, prior=prior, exact_cc=True,
-                # §21.14: a card with a Bcc writes the ticked Bcc. A card with
+                # §21.15: a card with a Bcc writes the ticked Bcc. A card with
                 # none keeps the Bcc of the draft, as before.
                 **({"bcc": bcc, "exact_bcc": True} if bcc is not None else {}),
             )

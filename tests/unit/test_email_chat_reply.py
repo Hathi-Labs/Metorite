@@ -198,7 +198,7 @@ def test_a_reply_answer_parses() -> None:
 @pytest.mark.parametrize("bad", [
     "APPROVE",
     "REJECT",
-    # §21.14: ``bcc`` is now an answer key (REPLY_ANSWER_OPTIONAL_KEYS). A
+    # §21.15: ``bcc`` is now an answer key (REPLY_ANSWER_OPTIONAL_KEYS). A
     # Bcc that is not a list of addresses is still no answer, and a Bcc that
     # is not on the card's record sends nothing
     # (``test_a_bcc_that_the_card_did_not_record_sends_nothing``).
@@ -451,7 +451,7 @@ def test_the_act_request_takes_no_recipient_body_or_file(field: str) -> None:
     if field in ("cc", "bcc"):
         # Item 2 (owner, 2026-10-24): the CARD request takes ``cc``. The server
         # classes and records each one, and the act takes a subset of the
-        # record only (``test_recipient_intent.py``). §21.14: ``bcc`` too
+        # record only (``test_recipient_intent.py``). §21.15: ``bcc`` too
         # (``test_reply_card_bcc.py``). The ACT request still takes neither,
         # above.
         return
@@ -522,7 +522,7 @@ async def test_a_card_with_no_text_writes_no_draft(monkeypatch, card_drafts) -> 
 def test_the_parameter_fence_pins_compose_reply() -> None:
     params = list(inspect.signature(agents.compose_reply).parameters)
     # Item 2 (owner, 2026-10-24): ``cc`` joins the pin. The gateway classes
-    # and records each added person (``test_recipient_intent.py``). §21.14
+    # and records each added person (``test_recipient_intent.py``). §21.15
     # (owner, 2026-10-24): ``bcc`` joins the pin on the same terms, and a held
     # card takes an org or a sent Bcc only (``test_reply_card_bcc.py``).
     assert params == ["email_id", "account_id", "reply_all", "draft", "instruction", "cc",
@@ -802,7 +802,7 @@ async def test_compose_reply_asks_for_the_reply_all_draft(monkeypatch, gw) -> No
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX, reply_all=True)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": True,
-        # §21.14: a held run tells the card route so. The run sets it.
+        # §21.15: a held run tells the card route so. The run sets it.
         "held": True})
 
 
@@ -1063,7 +1063,7 @@ def test_the_client_builds_the_answer_the_server_reads() -> None:
     block = re.search(r"const reply = \{(.*?)\};", src, re.S)
     assert block, "replyAnswer builds its object as `const reply = {...}`"
     keys = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))
-    # §21.14: the client always names ``bcc``, the one optional key.
+    # §21.15: the client always names ``bcc``, the one optional key.
     assert keys == set(rcard.REPLY_ANSWER_KEYS) | set(rcard.REPLY_ANSWER_OPTIONAL_KEYS), keys
 
 
@@ -1485,7 +1485,7 @@ async def test_compose_reply_false_is_sent_on_as_reply(monkeypatch, gw) -> None:
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX, reply_all=False)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False,
-        # §21.14: a held run tells the card route so. The run sets it.
+        # §21.15: a held run tells the card route so. The run sets it.
         "held": True})
 
 
@@ -1497,7 +1497,7 @@ async def test_compose_reply_in_a_held_run_asks_no_server_reply_all(monkeypatch,
     _card_answer(monkeypatch, lambda kw: _member_send(kw, body="x"))
     await agents.compose_reply(MAIL, BOX)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False,
-        # §21.14: a held run tells the card route so. The run sets it.
+        # §21.15: a held run tells the card route so. The run sets it.
         "held": True})
 
 
@@ -1644,7 +1644,7 @@ async def test_a_held_chat_with_the_switch_on_asks_untick_new_and_lets_the_serve
     cards = _card_answer(monkeypatch, lambda kw: None)
     await agents.compose_reply(MAIL, BOX)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "untick_new": True,
-        # §21.14: a held run tells the card route so. The run sets it.
+        # §21.15: a held run tells the card route so. The run sets it.
         "held": True})
     form = cards[0]["reply"]
     assert form["reply_all"] is True
@@ -1660,7 +1660,7 @@ async def test_a_held_chat_with_the_switch_off_keeps_reply(monkeypatch, gw) -> N
     cards = _card_answer(monkeypatch, lambda kw: None)
     await agents.compose_reply(MAIL, BOX)
     assert gw.posts[0] == ("/email/reply-card", {"message_id": MAIL, "reply_all": False,
-        # §21.14: a held run tells the card route so. The run sets it.
+        # §21.15: a held run tells the card route so. The run sets it.
         "held": True})
     assert cards[0]["reply"]["ticked"] == cards[0]["reply"]["recipients"]
 

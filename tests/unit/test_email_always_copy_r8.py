@@ -1,4 +1,4 @@
-"""The always-copy rules on a real database (R8, FORCE RLS, §21.15).
+"""The always-copy rules on a real database (R8, FORCE RLS, §21.16).
 
 Runs as a non-privileged role on a phase-4-promoted catalog, in the world of
 ``test_email_contact_suggest_r8``:

@@ -130,7 +130,7 @@ THREAD_MARK = "from this thread"
 #: the owner's request of 2026-10-24).
 USUAL_COPY_MARK = "you usually copy them"
 #: The head of the mark on a person that the member's own "always copy" rule
-#: adds (§21.15): "your rule: always copy on jainuniversity.ac.in".
+#: adds (§21.16): "your rule: always copy on jainuniversity.ac.in".
 RULE_COPY_MARK = "your rule: always copy on"
 #: The mark on a person that the chat added to a reply, outside a held run.
 #: The server cannot know that the member named the person (review P1-b).
@@ -150,7 +150,7 @@ def thread_mark(sender: str) -> str:
 
 def rule_copy_mark(match: str) -> str:
     """The mark of a colleague that the member's always-copy rule for
-    *match* (a domain or an address) adds to a card (§21.15)."""
+    *match* (a domain or an address) adds to a card (§21.16)."""
     m = " ".join(str(match or "").split())[:120]
     return f"{RULE_COPY_MARK} {m}" if m else RULE_COPY_MARK
 
@@ -468,7 +468,7 @@ HELD_SETTING_DECISIONS: dict[str, str] = {
     # the reading of each later mail. An injection that adds its own domain
     # makes its mail read as internal. So a held chat never changes it.
     "org_domains": SETTING_REFUSED,
-    # §21.15 (owner, 2026-10-24): the always-copy rules decide who goes on
+    # §21.16 (owner, 2026-10-24): the always-copy rules decide who goes on
     # each later reply and new-mail card. An injection that changes them
     # changes future recipients, so a held chat never changes them.
     "always_copy": SETTING_REFUSED,

@@ -21163,8 +21163,8 @@ card resets the Cc" left the revise text, because the new card keeps the Cc.
 
 **Not built.**
 
-- A Bcc on the reply card. **Built later, in 21.14.**
-- An "always Cc" rule for a domain (item 7b). **Built later, in 21.15**, as a
+- A Bcc on the reply card. **Built later, in 21.15.**
+- An "always Cc" rule for a domain (item 7b). **Built later, in 21.16**, as a
   setting of the mailbox and not as a mail rule.
 
 **Fences.** `tests/unit/test_recipient_intent.py`,
@@ -21230,7 +21230,7 @@ fences the run with writes on.
 **Fences.** `tests/unit/test_wac_email_confirm.py` and
 `tests/unit/test_wac_email_confirm_r8.py` (R8).
 
-### 21.13 Look-alike letters (H-393, 2026-10-24)
+### 21.14 Look-alike letters (H-393, 2026-10-24)
 
 **Status: BUILT on the branch `email-single-mailbox-a`, not merged.** No
 migration and no switch. It closes HANDOFF H-393 and the open P2 of 21.10.
@@ -21270,7 +21270,7 @@ and it is the safe side.
 
 **Fence.** `tests/unit/test_lookalike_letters.py`.
 
-### 21.14 A Bcc on the reply card (2026-10-24)
+### 21.15 A Bcc on the reply card (2026-10-24)
 
 **Status: BUILT on the branch `email-single-mailbox-a`, not merged.** No
 migration and no switch.
@@ -21341,7 +21341,7 @@ only, which is the rule of 21.10, open question 5.
 `workbench/control_plane/src/lib/replyCard.test.ts` and
 `workbench/control_plane/e2e/email-chat-reply.spec.ts`.
 
-### 21.15 Always copy (item 7b, 2026-10-24)
+### 21.16 Always copy (item 7b, 2026-10-24)
 
 **Status: BUILT on the branch `email-single-mailbox-a`, not merged.** One
 expand-only migration, 299. It was 298 until PR #1285 took that number. No switch.

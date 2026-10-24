@@ -1,4 +1,4 @@
-"""The member's "always copy" rules (owner, 2026-10-24, ``email_app_master_plan.md`` §21.15).
+"""The member's "always copy" rules (owner, 2026-10-24, ``email_app_master_plan.md`` §21.16).
 
 "Always Cc Kiran and Veena on mail to jainuniversity.ac.in." A rule ADDS its
 colleagues to the member's own reply card and new-mail card, as rows that

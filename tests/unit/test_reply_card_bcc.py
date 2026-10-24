@@ -1,4 +1,4 @@
-"""A Bcc on the reply card (owner, 2026-10-24, ``email_app_master_plan.md`` §21.14).
+"""A Bcc on the reply card (owner, 2026-10-24, ``email_app_master_plan.md`` §21.15).
 
 The card gains a Bcc row that the tool can propose (``compose_reply(bcc=...)``)
 and that the member can fill (``POST /email/reply-card/bcc``). The server stays

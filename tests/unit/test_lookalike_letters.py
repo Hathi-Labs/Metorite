@@ -1,4 +1,4 @@
-"""H-393: look-alike letters in a chat send (``email_app_master_plan.md`` §21.13).
+"""H-393: look-alike letters in a chat send (``email_app_master_plan.md`` §21.14).
 
 A Cyrillic "\u0430" inside a Latin word shows on a card as a Latin "a". A model can
 use such letters, or an invisible character inside a word, to carry member

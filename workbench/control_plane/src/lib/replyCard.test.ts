@@ -96,7 +96,7 @@ describe("the reply form of the event", () => {
   });
 
   it("travels on the queue's card, and a broken form stays a reply card with no form", () => {
-    expect(cardFromEvent(EVENT)!.reply).toEqual(replyFromEvent(EVENT.reply, "rid-1"))  // §21.14: the card id rides on the form;
+    expect(cardFromEvent(EVENT)!.reply).toEqual(replyFromEvent(EVENT.reply, "rid-1"))  // §21.15: the card id rides on the form;
     expect(cardFromEvent({ ...EVENT, reply: { body: "x" } })!.reply).toBeNull();
     expect(cardFromEvent({ title: "Archive?", request_id: "r2" })).not.toHaveProperty("reply");
   });
@@ -135,7 +135,7 @@ describe("the answer of Send and Save to Drafts", () => {
     const a = replyAnswer(form, { action: "save", replyAll: false, body: "Hi" })!;
     const body = JSON.parse(a.slice("APPROVE ".length));
     expect(Object.keys(body)).toEqual(["reply"]);
-    // §21.14: `bcc` is the one key that the server may also read.
+    // §21.15: `bcc` is the one key that the server may also read.
     expect(Object.keys(body.reply).sort()).toEqual(["action", "bcc", "body", "cc", "message_id", "reply_all", "to"]);
   });
 
@@ -340,7 +340,7 @@ describe("one list, words on each person (owner, 2026-10-24)", () => {
 });
 
 
-describe("a Bcc on the reply card (§21.14)", () => {
+describe("a Bcc on the reply card (§21.15)", () => {
   const BCC_EVENT = {
     ...EVENT.reply,
     recipients: {

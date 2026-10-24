@@ -838,7 +838,7 @@ def _refuse_hidden_draft(row: Any) -> None:
 
 def refuse_lookalike(texts: dict[str, str]) -> None:
     """422 for a text with a word that mixes scripts, or with an invisible
-    character inside a word (H-393, §21.13). Each route of this module serves a
+    character inside a word (H-393, §21.14). Each route of this module serves a
     held chat, so it refuses and never warns. The detail names the word and
     the letter in one sentence (``reply_card.lookalike_refusal``)."""
     from acb_skills.reply_card import lookalike_refusal
@@ -1328,7 +1328,7 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     mail_refs = [r for r in req.files if not is_metorite_file_ref(r)]
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, owner)
-        # §21.15: the member's own always-copy rules add colleagues as Cc
+        # §21.16: the member's own always-copy rules add colleagues as Cc
         # rows. Each is an org or a sent person, so it starts ticked, and the
         # member can untick it. A rule can only add, never take a person off.
         ruled = await _always_copy_rows(db, owner, req.account_id, lists)

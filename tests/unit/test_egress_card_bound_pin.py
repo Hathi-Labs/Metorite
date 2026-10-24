@@ -188,7 +188,7 @@ def test_the_h404_pin_changes_are_named() -> None:
     }
     settings = eg.HELD_CARD_SEND_TOOLS["update_assistant_settings"]
     assert {"morning_brief_enabled", "org_domains"} <= settings  # H-404 (c)
-    # §21.15 (owner, 2026-10-24): the always-copy rules. A held run refuses
+    # §21.16 (owner, 2026-10-24): the always-copy rules. A held run refuses
     # the key (``HELD_SETTING_DECISIONS``), because it changes the people of
     # each later card.
     assert "always_copy" in settings

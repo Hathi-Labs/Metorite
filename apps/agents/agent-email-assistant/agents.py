@@ -107,7 +107,7 @@ def _held_card_mode() -> bool:
 
 
 def _lookalike_check(texts: dict[str, Any]) -> tuple[str | None, str | None]:
-    """``(refusal, warning)`` for the text of a chat send (H-393, §21.13).
+    """``(refusal, warning)`` for the text of a chat send (H-393, §21.14).
 
     A word that mixes scripts, such as a Cyrillic letter in a Latin word, or
     a word with an invisible character, is refused in a held run, and the
@@ -2445,7 +2445,7 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
     ticked = {k: {"to": list((given.get(k) or v).get("to") or []),
                   "cc": list((given.get(k) or v).get("cc") or [])}
               for k, v in lists.items()}
-    # §21.14: the Bcc of the card, when the gateway recorded one.
+    # §21.15: the Bcc of the card, when the gateway recorded one.
     for k, v in lists.items():
         if v.get("bcc"):
             ticked[k]["bcc"] = list((given.get(k) or v).get("bcc") or [])
@@ -2627,7 +2627,7 @@ async def compose_reply(
         # The tick boxes: the server starts each new address unticked, and the
         # draft in Drafts leaves it out, so the draft holds what the card sends.
         steer["untick_new"] = True
-    # H-393 (§21.13): a held run refuses a look-alike word before any draft
+    # H-393 (§21.14): a held run refuses a look-alike word before any draft
     # is written. Outside a held run the card warns, below.
     refusal, _warn = _lookalike_check({"text": draft})
     if refusal:
@@ -2641,7 +2641,7 @@ async def compose_reply(
         steer["cc"] = asked
     secret = [str(a).strip() for a in (bcc or []) if str(a or "").strip()]
     if secret:
-        # §21.14: in a held chat the gateway takes a Bcc to an org or a sent
+        # §21.15: in a held chat the gateway takes a Bcc to an org or a sent
         # person only, and refuses a new address (open question 5 of 21.10).
         steer["bcc"] = secret
     if _egress_held():
@@ -3648,7 +3648,7 @@ async def get_rules_and_settings(account_id: str) -> str:
         f"cold-blocker={settings_obj.get('cold_email_blocker')}, "
         f"about set={'yes' if settings_obj.get('about') else 'no'}."
     )
-    # §21.15: the always-copy rules, which update_assistant_settings takes whole.
+    # §21.16: the always-copy rules, which update_assistant_settings takes whole.
     copy = (await _get("/email/assistant/always-copy", {"account_id": account_id})
             or {}).get("rules") or []
     lines.append(f"Always copy: {_copy_rules_text(copy)}.")
@@ -4429,7 +4429,7 @@ def _settings_needing_card(
                     "address, and on the dashboard. It costs a model call each day."))
     # H-404: the extra domains decide whose mail counts as the organization.
     # Each change asks, a removal too, and the card lists the old and the new set.
-    # §21.15: the always-copy rules add colleagues to each later card that
+    # §21.16: the always-copy rules add colleagues to each later card that
     # matches. Each change asks, a removal too, and the card lists both sets.
     copy = wanted.get("always_copy")
     if copy is not None and _copy_rules_text(copy) != _copy_rules_text(cur.get("always_copy")):
@@ -4502,7 +4502,7 @@ def _org_domains_problem(value: Any) -> tuple[list[str], str]:
     return domains, ""
 
 
-#: §21.15: the most always-copy rules of one mailbox, and the most
+#: §21.16: the most always-copy rules of one mailbox, and the most
 #: colleagues of one rule (``always_copy.MAX_RULES``, ``MAX_CC``).
 _COPY_RULES_MAX = 20
 _COPY_CC_MAX = 5
@@ -4647,7 +4647,7 @@ async def update_assistant_settings(
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
     if always_copy is not None:
-        # §21.15: the rules live apart from the settings body.
+        # §21.16: the rules live apart from the settings body.
         cur = {**(cur or {}), "always_copy": (await _get(
             "/email/assistant/always-copy", {"account_id": account_id}) or {}).get("rules") or []}
     # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
@@ -4725,7 +4725,7 @@ async def update_assistant_settings(
 
 def _other_settings(scope: dict[str, Any]) -> bool:
     """True when ``update_assistant_settings`` changes a setting other than
-    ``always_copy`` (§21.15), so the settings body is written too."""
+    ``always_copy`` (§21.16), so the settings body is written too."""
     import inspect
 
     names = set(inspect.signature(update_assistant_settings).parameters)
@@ -6006,11 +6006,11 @@ async def send_email(
         if usual:
             reply_notices.append(usual)
     if not reply_to_email_id:
-        # §21.15: the member's own always-copy rules add colleagues to the Cc
+        # §21.16: the member's own always-copy rules add colleagues to the Cc
         # of a new mail. The card names each one and its rule.
         cc, ruled = await _always_copy_cc(account_id, to, cc, bcc)
         reply_notices.extend(ruled)
-    # H-393 (§21.13): a held run never reaches this path (it goes through the
+    # H-393 (§21.14): a held run never reaches this path (it goes through the
     # held card, which refuses). So the card warns about a look-alike word.
     refusal, warning = _lookalike_check({"subject": subject, "text": body})
     if refusal:
@@ -6102,7 +6102,7 @@ async def _always_copy_cc(
     account_id: str, to: list[str], cc: list[str], bcc: list[str] | None,
 ) -> tuple[list[str], list[str]]:
     """``(cc, lines)``: *cc* with the colleagues of the member's always-copy
-    rules for the people of a new mail, and one card line for each (§21.15).
+    rules for the people of a new mail, and one card line for each (§21.16).
     The gateway checks that each one is a colleague or a person the member
     wrote to before. A fault adds nobody."""
     people = [*to, *cc, *(bcc or [])]
@@ -6338,7 +6338,7 @@ async def forward_email(
         carried = mail_files if include_attachments else []
     subject = _card_text(orig.get("subject") or "(no subject)", 120)
     shown_files = _forward_files(carried)
-    # H-393 (§21.13): the note is the one text that the model writes here.
+    # H-393 (§21.14): the note is the one text that the model writes here.
     refusal, warning = _lookalike_check({"note": note})
     if refusal:
         return refusal.replace("Not sent", "Not forwarded", 1)
@@ -6673,7 +6673,7 @@ async def _sealed_card(
     detail, context = _draft_card(sender, seal.get("subject"), lists)
     if not context:
         return too_many
-    # H-393 (§21.13): the subject and the text that the seal covers. A held
+    # H-393 (§21.14): the subject and the text that the seal covers. A held
     # run refuses a look-alike word, and any other run warns first on the card.
     refusal, warning = _lookalike_check({"subject": seal.get("subject"),
                                          "text": seal.get("body_text")})

@@ -57,7 +57,7 @@ class FakeRedis:
                   xx: bool = False, keepttl: bool = False) -> bool:
         if nx and k in self.keys:
             return False
-        if xx and k not in self.keys:  # §21.14: a Bcc joins only a live record
+        if xx and k not in self.keys:  # §21.15: a Bcc joins only a live record
             return False
         self.keys[k] = v
         return True

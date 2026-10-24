@@ -1,4 +1,4 @@
-"""The member's "always copy" list of a mailbox (``email_app_master_plan.md`` §21.15).
+"""The member's "always copy" list of a mailbox (``email_app_master_plan.md`` §21.16).
 
 Item 7b of §21.12 (owner, 2026-10-24): "always Cc Kiran and Veena on mail to
 jainuniversity.ac.in". A rule names a domain or an address (``match``) and the
@@ -218,7 +218,7 @@ async def match_always_copy(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The colleagues that the caller's rules add for *people*, for the card
-    of a new mail (§21.15). A read: it writes nothing and sends nothing."""
+    of a new mail (§21.16). A read: it writes nothing and sends nothing."""
     owner = user.email or "anonymous"
     async with _tenant_session() as db:
         await _assert_account_owner(db, account_id, owner)

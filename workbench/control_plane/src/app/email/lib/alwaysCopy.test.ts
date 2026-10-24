@@ -1,5 +1,5 @@
 /**
- * The "always copy" rules in the Email app's settings (§21.15).
+ * The "always copy" rules in the Email app's settings (§21.16).
  *
  * 1. The client reads and writes the WHOLE list through the gateway routes,
  *    and shows the server's refusal in its own words.

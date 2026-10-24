@@ -91,7 +91,7 @@ REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
 REPLY_ANSWER_KEYS: frozenset[str] = frozenset(
     {"action", "reply_all", "body", "to", "cc", "message_id"})
 #: The one key that an answer MAY add: ``bcc``, the Bcc people that the
-#: member ticked (§21.14, owner 2026-10-24). The gateway sends a Bcc only
+#: member ticked (§21.15, owner 2026-10-24). The gateway sends a Bcc only
 #: when each one is on the record of THIS card (``reply_card.ticked_subset``),
 #: so the member can take one off and never add one. An answer of an older
 #: card names no ``bcc``, and it still parses.
@@ -358,7 +358,7 @@ def has_hidden_text(text: str) -> bool:
     return clean_reply_body(raw) != visible_spacing(raw)
 
 
-# ── Look-alike letters (H-393, ``email_app_master_plan.md`` §21.13) ──────────
+# ── Look-alike letters (H-393, ``email_app_master_plan.md`` §21.14) ──────────
 #
 # A Cyrillic "\u0430" inside a Latin word shows on a card as a Latin "a". A model
 # can use such letters, or an invisible character inside a word, to carry
@@ -486,7 +486,7 @@ class ReplyChoice:
     to: tuple[str, ...]
     cc: tuple[str, ...]
     message_id: str = ""
-    #: The Bcc people that the member ticked (§21.14). Empty for an answer
+    #: The Bcc people that the member ticked (§21.15). Empty for an answer
     #: that names no ``bcc``.
     bcc: tuple[str, ...] = ()
 
