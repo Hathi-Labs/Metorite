@@ -5,6 +5,7 @@ Spec: ``project-docs/specs/knowledge_base.md`` §8.4 door 3, §9, §12 and §13.
     GET  /knowledge/gaps?status=&limit=        the gaps the caller may see
     POST /knowledge/gaps/{id}/dismiss          close a gap (knowledge:manage)
     POST /knowledge/gaps/{id}/answered         close a gap with a page {page_id}
+    POST /knowledge/gaps/{id}/reopen           undo a dismiss (knowledge:manage)
 
 **The write.** ``GET /search/company`` (``gateway/retrieval/company.py``)
 calls :func:`schedule_gap` after it asked every source. When Knowledge
@@ -20,12 +21,23 @@ never raises. No model runs.
 * **The skip rules** (:func:`skip_reason`). Fewer than :data:`MIN_WORDS`
   words, a URL, an email address, a uuid, or a question in which more than
   half of the words hold a digit.
+* **The stored text** (:func:`mask_text`). The question is masked BEFORE it
+  is normalised and cut, so ``norm_query`` and ``sample_query`` both hold the
+  masked text. An email address, a phone number, an amount and a long number
+  become ``[email]``, ``[phone]``, ``[amount]`` and ``[number]``. So two
+  questions that differ only in a figure are one gap.
 * **The normal form** (:func:`normalize`). NFKC, lower case, each character
-  that is not a letter or a digit as a space, the spaces folded, the ends cut.
+  that is not a letter, a mark or a digit as a space (a vowel sign is a
+  mark, so Hindi and Tamil words stay whole), the spaces folded, the ends cut.
 * **The window.** ``ask_count`` counts the different askers of one window.
-  An ask more than :data:`WINDOW_DAYS` days after the last ask starts a new
-  window with one asker. ``askers`` keeps :data:`MAX_ASKERS` addresses. After
-  that a new address raises the count and is not stored.
+  A window runs :data:`WINDOW_DAYS` days from its FIRST ask. An ask after
+  that starts a new window with one asker, however recent the last ask is.
+  ``askers`` keeps :data:`MAX_ASKERS` addresses. When it is full, the count
+  stops at :data:`MAX_ASKERS` too, so the count never exceeds the list.
+* **Reopen.** A gap that reads ``answered`` whose page is gone
+  (``answered_page_id`` is NULL after the page delete) opens again at the
+  next ask. A ``dismissed`` gap stays dismissed, by design. A manager
+  reopens it with ``POST /gaps/{id}/reopen``.
 
 **Who sees a gap.** A holder of ``knowledge:manage`` sees each gap of the
 org. A member sees the gaps that the member asked. A gap stores no space,
@@ -79,7 +91,13 @@ _URL = re.compile(r"(?:https?://|www\.)\S+|\b[\w-]+\.(?:com|in|io|org|net|dev|ai
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _UUID = re.compile(r"\b[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\b",
                    re.IGNORECASE)
-_NOT_WORD = re.compile(r"[^\w]|_", re.UNICODE)
+_AMOUNT = re.compile(
+    r"(?:[$\u20b9\u20ac\u00a3]|\b(?:rs|inr|usd|eur|gbp)\b\.?)\s*\d[\d,.]*"
+    r"|\b\d[\d,.]*\s*(?:rs|inr|usd|eur|gbp|rupees|dollars)\b",
+    re.IGNORECASE,
+)
+_PHONE = re.compile(r"(?<![\w.])\+?\d(?:[ ()-]?\d){8,}(?!\w)")
+_LONG_NUMBER = re.compile(r"\d{5,}")
 _SPACES = re.compile(r"\s+")
 
 #: The Gaps view of the Knowledge app.
@@ -103,15 +121,39 @@ _GAP_COLUMNS = (
 
 # ── The normal form and the skip rules (pure) ───────────────────────────────
 
+def mask_text(question: str | None) -> str:
+    """The question with its personal figures masked, for the stored text.
+
+    An email address becomes ``[email]``, an amount (a currency sign or word
+    beside a figure) ``[amount]``, a phone number ``[phone]`` and any other
+    run of five digits or more ``[number]``. Short figures such as a year
+    stay. The order matters: an amount first, so ``Rs 85,000`` is one amount.
+    CX-3 may later replace this function with its shared mask.
+    """
+    out = str(question or "")
+    out = _EMAIL.sub("[email]", out)
+    out = _AMOUNT.sub("[amount]", out)
+    # A run with a space, bracket or dash in it is a phone number. A run
+    # with none is a plain number, and a short run stays.
+    out = _PHONE.sub(lambda m: "[phone]" if re.search(r"\D", m.group().lstrip("+"))
+                     else "[number]", out)
+    return _LONG_NUMBER.sub("[number]", out)
+
+
 def normalize(question: str | None) -> str:
     """The normal form of a question: one rule, so one question is one gap.
 
-    NFKC, then lower case. Each character that is not a letter or a digit
-    becomes a space. The spaces fold to one, and the ends are cut. At most
-    :data:`MAX_QUERY` characters, cut at a word.
+    NFKC, then lower case. A character stays when its Unicode category is a
+    letter (L), a number (N) or a mark (M). Every other character becomes a
+    space. The marks matter: a vowel sign of Hindi or Tamil is a mark, and
+    without it two different words read as one. The spaces fold to one, and
+    the ends are cut. At most :data:`MAX_QUERY` characters, cut at a word.
     """
     folded = unicodedata.normalize("NFKC", str(question or "")).lower()
-    flat = _SPACES.sub(" ", _NOT_WORD.sub(" ", folded)).strip()
+    kept = "".join(
+        ch if unicodedata.category(ch)[0] in "LNM" else " " for ch in folded
+    )
+    flat = _SPACES.sub(" ", kept).strip()
     if len(flat) <= MAX_QUERY:
         return flat
     cut = flat[:MAX_QUERY]
@@ -165,7 +207,8 @@ def gap_for(user: UserContext, question: str | None) -> tuple[str, str] | None:
     """``(norm_query, sample_query)`` when this ask may write a gap, else ``None``.
 
     It checks the flag, the member and the skip rules, in that order. It
-    reads no database.
+    reads no database. The skip rules read the RAW question. Both items are
+    made from the MASKED question (:func:`mask_text`).
     """
     if not flags.knowledge_gaps_allowed(user.organization_id):
         return None
@@ -173,10 +216,11 @@ def gap_for(user: UserContext, question: str | None) -> tuple[str, str] | None:
         return None
     if skip_reason(question) is not None:
         return None
-    norm = normalize(question)
+    masked = mask_text(question)
+    norm = normalize(masked)
     if not norm:
         return None
-    return norm, sample_of(question) or norm
+    return norm, sample_of(masked) or norm
 
 
 def schedule_gap(
@@ -210,7 +254,10 @@ def schedule_gap(
 
 #: One statement. The CASEs read the OLD row, so a new window, a known asker
 #: and a full ``askers`` each give the right count and list.
-_STALE = f"g.last_asked_at < now() - interval '{WINDOW_DAYS} days'"
+#: The window runs from the FIRST ask, so a steady asker cannot hold one
+#: window open for ever. ``my_day_rows`` still reads ``last_asked_at``,
+#: because the freshness of a card is about the last ask.
+_STALE = f"g.first_asked_at < now() - interval '{WINDOW_DAYS} days'"
 UPSERT_GAP_SQL = (
     "INSERT INTO kb_gaps AS g (organization_id, norm_query, sample_query, askers, ask_count) "
     "VALUES (CAST(:org AS uuid), :norm, :sample, ARRAY[CAST(:me AS text)], 1) "
@@ -221,8 +268,11 @@ UPSERT_GAP_SQL = (
     "ELSE array_append(g.askers, CAST(:me AS text)) END, "
     f"ask_count = CASE WHEN {_STALE} THEN 1 "
     "WHEN CAST(:me AS text) = ANY(g.askers) THEN g.ask_count "
+    f"WHEN coalesce(array_length(g.askers, 1), 0) >= {MAX_ASKERS} THEN g.ask_count "
     "ELSE g.ask_count + 1 END, "
     f"first_asked_at = CASE WHEN {_STALE} THEN now() ELSE g.first_asked_at END, "
+    "status = CASE WHEN g.status = 'answered' AND g.answered_page_id IS NULL "
+    "THEN 'open' ELSE g.status END, "
     "last_asked_at = now() "
     "RETURNING g.ask_count, g.status"
 )
@@ -375,6 +425,32 @@ async def dismiss_gap(
                  "dismissed_at = now() WHERE organization_id = CAST(:org AS uuid) "
                  "AND id = CAST(:gap AS uuid) AND status = 'open'"),
             {"me": core.viewer_email(user), "org": core.org_of(user), "gap": str(row.id)},
+        )
+        row = await _one_gap(db, user, str(row.id))
+    await _bump(core.org_of(user))
+    return _gap_dict(row, user)
+
+
+@router.post("/gaps/{gap_id}/reopen", dependencies=_GATED)
+async def reopen_gap(
+    gap_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Undo a dismiss: a ``dismissed`` gap reads ``open`` again.
+
+    It needs ``knowledge:manage``. An open or answered gap answers 409.
+    """
+    if not core.is_manager(user):
+        raise core.forbidden("Reopening a question needs knowledge:manage.")
+    async with core._tenant_session() as db:
+        row = await _one_gap(db, user, gap_id)
+        if row.status != "dismissed":
+            raise _closed(row)
+        await db.execute(
+            text("UPDATE kb_gaps SET status = 'open', dismissed_by = NULL, "
+                 "dismissed_at = NULL WHERE organization_id = CAST(:org AS uuid) "
+                 "AND id = CAST(:gap AS uuid) AND status = 'dismissed'"),
+            {"org": core.org_of(user), "gap": str(row.id)},
         )
         row = await _one_gap(db, user, str(row.id))
     await _bump(core.org_of(user))
