@@ -211,22 +211,68 @@ SELECT DISTINCT LOWER(em.from_address->>'email') AS addr
 """
 
 
+#: The people of one thread of one mailbox (open question 1, the owner's
+#: answer of 2026-10-24): each To and each Cc of a RECEIVED mail of the
+#: thread. A draft and a Sent mail are not received, so the member's own
+#: choices never make a person ``thread``.
+THREAD_PARTICIPANTS_SQL = """
+SELECT DISTINCT LOWER(r->>'email') AS addr
+  FROM email_messages em
+  CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(em.to_addresses, '[]'::jsonb)
+        || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
+ WHERE em.account_id = CAST(:aid AS uuid)
+   AND em.thread_id = :tid
+   AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft', 'sent')
+   AND r->>'email' IS NOT NULL
+"""
+
+#: The domains of the organization, for the look-alike carve-out of a
+#: thread person: the domains of the active members of the bound tenant, and
+#: of the member's own mailboxes.
+ORG_DOMAINS_SQL = f"""
+SELECT DISTINCT d FROM (
+    SELECT SPLIT_PART(LOWER(au.email), '@', 2) AS d FROM app_user au
+     WHERE COALESCE(au.status, 'active') = 'active'
+       AND au.organization_id = {_TENANT}
+    UNION
+    SELECT SPLIT_PART(LOWER(email_address), '@', 2) FROM email_accounts
+     WHERE user_id = :uid
+) k WHERE d <> '' LIMIT 500
+"""
+
+
+def thread_person_guard(addr: str, senders: Iterable[str], org_domains: Iterable[str]) -> str | None:
+    """The domain that *addr* imitates, or None. A person of the thread whose
+    domain looks like the domain of a sender of the thread, or like an
+    organization domain, is not ``thread`` (the owner's carve-out)."""
+    guard = {domain_of(s) for s in senders if s} | {str(d).lower() for d in org_domains if d}
+    return lookalike_of(domain_of(addr), guard)
+
+
 async def classify_addresses(
     db: Any, owner: str, addresses: Iterable[str], *,
     thread_senders: Iterable[str] = (),
+    thread_people: Iterable[str] = (),
+    org_domains: Iterable[str] = (),
 ) -> dict[str, str]:
     """The class of each address, keyed by its lower-case form.
 
     THE classifier. It takes no class from the caller and calls no model.
-    *thread_senders* are the senders of the thread, which the server read
-    (:data:`THREAD_SENDERS_SQL`). The strongest class wins: ``org``, then
-    ``sent``, then ``thread``, then ``new``."""
+    *thread_senders* are the senders of the thread, and *thread_people* each
+    To and Cc of a received mail of the thread, which the server read
+    (:data:`THREAD_SENDERS_SQL`, :data:`THREAD_PARTICIPANTS_SQL`). A person
+    of *thread_people* whose domain looks like a sender domain or one of
+    *org_domains* stays ``new`` (:func:`thread_person_guard`). The strongest
+    class wins: ``org``, then ``sent``, then ``thread``, then ``new``."""
     wanted = sorted({str(a).strip().lower() for a in addresses if str(a or "").strip()})
     if not wanted:
         return {}
     rows = (await db.execute(text(CLASSIFY_SQL), {"wanted": wanted, "uid": owner})).fetchall()
     found = {str(r.addr): r for r in rows}
     senders = {str(a).strip().lower() for a in thread_senders if a}
+    people = {str(a).strip().lower() for a in thread_people if a}
+    org_doms = [str(d).strip().lower() for d in org_domains if d]
     out: dict[str, str] = {}
     for addr in wanted:
         r = found.get(addr)
@@ -236,9 +282,26 @@ async def classify_addresses(
             out[addr] = CLASS_SENT
         elif addr in senders:
             out[addr] = CLASS_THREAD
+        elif addr in people and thread_person_guard(addr, senders, org_doms) is None:
+            out[addr] = CLASS_THREAD
         else:
             out[addr] = CLASS_NEW
     return out
+
+
+async def thread_participants(db: Any, account_id: str, thread_id: str | None) -> list[str]:
+    """Each To and Cc of a received mail of the thread, or none."""
+    if not thread_id:
+        return []
+    rows = (await db.execute(text(THREAD_PARTICIPANTS_SQL),
+                             {"aid": account_id, "tid": thread_id})).fetchall()
+    return [str(r.addr) for r in rows if getattr(r, "addr", None)]
+
+
+async def org_domains(db: Any, owner: str) -> frozenset[str]:
+    """The domains of the organization (:data:`ORG_DOMAINS_SQL`)."""
+    rows = (await db.execute(text(ORG_DOMAINS_SQL), {"uid": owner})).fetchall()
+    return frozenset(str(r.d) for r in rows if getattr(r, "d", None))
 
 
 async def known_domains(db: Any, owner: str) -> frozenset[str]:
@@ -776,14 +839,19 @@ async def _draft_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]
         lists = _lists_of(row)
         _check_lists(lists)
         senders = await thread_senders(db, req.account_id, row.thread_id)
+        people = await thread_participants(db, req.account_id, row.thread_id)
         classes = await classify_addresses(
-            db, owner, [a for v in lists.values() for a in v], thread_senders=senders)
+            db, owner, [a for v in lists.values() for a in v], thread_senders=senders,
+            thread_people=people,
+            org_domains=await org_domains(db, owner) if people else ())
         known = await known_domains(db, owner)
         me = await resolve_self(db, req.account_id)
         files = []
         if row.has_attachments:
             files = (await db.execute(text(DRAFT_FILES_SQL), {"id": req.draft_id})).fetchall()
-    rows = recipient_rows(lists, classes, known)
+    # The domains of the thread's senders count as known for the look-alike
+    # warning, so a person of the thread on a look-alike domain is flagged.
+    rows = recipient_rows(lists, classes, {*known, *(domain_of(s) for s in senders)})
     _refuse_new_bcc(rows)
     body = _check_text(str(row.body_text or ""))
     mailbox = (f"{me.label} · {me.address}" if me.label and me.label != me.address

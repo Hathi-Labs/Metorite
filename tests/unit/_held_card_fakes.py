@@ -119,6 +119,9 @@ class FakeDb:
             KNOWN: (False, True), COLLEAGUE: (True, False)}
         self.domains = ["contoso.test", "acme.test"]
         self.senders: list[str] = [KNOWN]
+        #: Each To and Cc of a received mail of the thread (open question 1).
+        self.participants: list[str] = []
+        self.org_domains: list[str] = ["acme.test"]
         self.files: list[Any] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         #: The seal of the draft's text NOW (``held_card.seal_of``). A test
@@ -152,6 +155,10 @@ class FakeDb:
             return _Result([types.SimpleNamespace(d=d) for d in self.domains])
         if q == hc.THREAD_SENDERS_SQL:
             return _Result([types.SimpleNamespace(addr=a) for a in self.senders])
+        if q == hc.THREAD_PARTICIPANTS_SQL:
+            return _Result([types.SimpleNamespace(addr=a) for a in self.participants])
+        if q == hc.ORG_DOMAINS_SQL:
+            return _Result([types.SimpleNamespace(d=d) for d in self.org_domains])
         if q == hc.DRAFT_FILES_SQL:
             return _Result(self.files)
         if q == hc.FORWARD_MAIL_SQL:
