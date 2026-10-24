@@ -23,6 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useTheme } from "next-themes";
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
@@ -33,6 +34,7 @@ import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 import { AppTopBar } from "@/components/AppTopBar";
+import { assistantProfileOn } from "@/lib/assistantProfileFlag";
 import { MyNumberFormat } from "@/components/NumberFormatSettings";
 import {
   AUTO_FOLD_EVENT,
@@ -92,6 +94,7 @@ export default function AppearancePage() {
             <PersonalSettings />
             <SidebarSettings />
             <MyNumberFormat />
+            {assistantProfileOn() ? <AssistantLinkRow /> : null}
           </div>
         ) : (
           <OrganisationSettings />
@@ -114,6 +117,24 @@ function AppearanceHeader() {
       title="Appearance"
       subtitle="Colour mode, density, accent, the sidebar and number format"
     />
+  );
+}
+
+/** The way into Settings → Assistant, while it has no nav pane (WS-63 PZ-7). */
+function AssistantLinkRow() {
+  return (
+    <Link
+      href="/settings/assistant"
+      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 tech-transition hover:bg-secondary"
+    >
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-foreground">Assistant</span>
+        <span className="block text-xs text-muted-foreground">
+          What the assistant remembers about you and how it talks to you
+        </span>
+      </span>
+      <Icon name="ChevronRight" size={15} className="shrink-0 text-muted-foreground" />
+    </Link>
   );
 }
 
