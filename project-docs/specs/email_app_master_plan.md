@@ -21268,6 +21268,20 @@ mail, so the model cannot write it. A held chat also refuses a draft that
 quotes a mail with such a word. That costs a reply to a phishing mail,
 and it is the safe side.
 
+**Review fix (P1, 2026-10-24).** Three single-script cases join the test.
+
+1. A Latin letter outside Basic Latin, the Latin-1 Supplement and Latin
+   Extended-A, such as the IPA alpha U+0251. The Romanian and Vietnamese
+   letters stay plain.
+2. A word of another script in which the one table folds each letter to
+   ASCII, such as "pay" in Cyrillic. A text that holds a real
+   word of that script, one with a letter that has no ASCII twin, passes.
+   So real Russian and Greek pass.
+3. A number-letter form (Nl), such as U+217C, counts as a letter.
+
+`held_card._CONFUSABLE` gains the IPA alpha and script g, the dotless i,
+the dental click and two small Roman numerals.
+
 **Fence.** `tests/unit/test_lookalike_letters.py`.
 
 ### 21.15 A Bcc on the reply card (2026-10-24)
@@ -21336,6 +21350,19 @@ only, which is the rule of 21.10, open question 5.
   draft's Bcc on the card, in place of the old notice.
 - `OWNER_SCOPE_EXEMPT` gains `reply_card_bcc`, with its reason.
 
+**Review fixes (2026-10-24).**
+
+- **P1, IMAP.** The SMTP send names To, Cc and Bcc as the envelope, and
+  the MIME holds no Bcc header. Before, a Bcc went nowhere. The provider
+  keeps each refused recipient, and the send route returns it. The act
+  and the tool name a refused person as refused, never as sent. Fence:
+  `tests/unit/test_imap_bcc_envelope.py`.
+- **P2, WhatsApp.** The WhatsApp summary numbers each Bcc, marked
+  "Bcc (hidden from the others)". WITHOUT takes it off, and the built
+  answer carries the kept Bcc. Fence: `tests/unit/test_wac_email_bcc.py`.
+- The held notice of a draft Bcc names no class. "Add Bcc" waits for the
+  card to arm, as the other buttons do.
+
 **Fences.** `tests/unit/test_reply_card_bcc.py`,
 `tests/unit/test_email_chat_reply.py`, `tests/unit/test_recipient_intent.py`,
 `workbench/control_plane/src/lib/replyCard.test.ts` and
@@ -21393,6 +21420,14 @@ The card uses the controls of its neighbour, the domains card.
 **The fence changes.** `test_the_h404_pin_changes_are_named` now expects 22
 keys and names `always_copy`. `SETTING_ON` of
 `test_email_agent_write_cards.py` adds `always_copy`, which asks a card.
+
+**Review fix (P2, 2026-10-24).** A failed read can never wipe the list.
+The Settings card keeps the list empty of value after a failed read, shows
+the error, and offers no write. The PUT needs `expected`, the version of
+the list that the caller read. The route reads the row `FOR UPDATE`, and
+a list with another version answers 409 with no write. The version was
+the smaller change than one rule for each call, and the tool keeps its
+whole-list contract.
 
 **Fences.** `tests/unit/test_email_always_copy.py`,
 `tests/unit/test_email_always_copy_r8.py` (R8),
