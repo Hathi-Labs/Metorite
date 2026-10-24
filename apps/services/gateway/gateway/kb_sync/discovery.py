@@ -280,7 +280,7 @@ async def discover_source(org: str, source_id: str, source: KbSource) -> str:
             async with tenant_session(org) as db:
                 await db.execute(text(_GONE_SQL), {
                     "org": org, "source": source_id,
-                    "started": started.started_at.isoformat(),
+                    "started": started.started_at,
                 })
         else:
             await _walk(org, source_id, owner, source)

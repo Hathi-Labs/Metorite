@@ -32,6 +32,7 @@ holds the gateway half with no database.
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -115,7 +116,13 @@ class FakeGoogle:
             assert params["includeItemsFromAllDrives"] == "true"
             assert "fields" in params
             half = (len(self.files) + 1) // 2 if self.pages == 2 else len(self.files)
-            if params.get("pageToken") == "p2":
+            folder = re.fullmatch(r"'([A-Za-z0-9_-]+)' in parents and trashed = false",
+                                  params["q"])
+            if folder is not None:
+                # The level walk: the children of one folder, one page.
+                body = {"files": [f for f in self.files
+                                  if (f.get("parents") or [None])[0] == folder.group(1)]}
+            elif params.get("pageToken") == "p2":
                 body = {"files": self.files[half:]}
             else:
                 body = {"files": self.files[:half]}
@@ -342,6 +349,37 @@ async def test_the_upsert_is_idempotent_and_a_vanished_node_is_gone(kc, app_engi
     assert state == "gone" and count == 5
     shown = await _ok(kc, ana, "GET", f"/knowledge/sources/{sid}/tree?parent=sd-A5")
     assert shown["nodes"] == [], "a gone node is still in the tree"
+
+
+# ── The cap: the level walk and the unexplored folders ──────────────────────
+
+@pytest.mark.parametrize(("cap", "levels", "kept", "unexplored"), [
+    # Three levels fit, the cap stops the walk: the folders it did not list.
+    (3, 3, {"root-C1", "sd-C1", "fold-C1"}, {"sd-C1", "fold-C1"}),
+    # One level: a folder on the last level keeps explored = false.
+    (5, 1, {"root-C1", "sd-C1", "fold-C1", "deck-C1"}, {"fold-C1"}),
+])
+async def test_a_tree_past_the_cap_keeps_the_first_levels(
+    kc, app_engine, monkeypatch, cap: int, levels: int, kept: set[str],  # noqa: F811
+    unexplored: set[str],
+) -> None:
+    from gateway.kb_sync import discovery
+
+    monkeypatch.setattr(discovery, "NODE_CAP", cap)
+    monkeypatch.setattr(discovery, "LEVELS", levels)
+    ana = _principal(_address("ana"), kc.org_a)
+    sid = await _connect(kc, ana, email="ana-cap@kc1a-g.test", account_id="C1")
+    with kc.admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT ext_id, explored FROM kb_source_nodes WHERE source_id = CAST(:s AS uuid)"),
+            {"s": sid}).fetchall()
+        state = c.execute(text("SELECT state, node_count FROM kb_sources "
+                               "WHERE id = CAST(:s AS uuid)"), {"s": sid}).one()
+    assert {r.ext_id for r in rows} == kept, rows
+    assert {r.ext_id for r in rows if not r.explored} == unexplored, rows
+    assert state.state == "ready" and state.node_count == len(kept)
+    folder = await _ok(kc, ana, "GET", f"/knowledge/sources/{sid}/tree?parent=root-C1")
+    assert {n["ext_id"]: n["explored"] for n in folder["nodes"]}["fold-C1"] is False
 
 
 # ── FORCE RLS, for a role that is not the owner and not BYPASSRLS ───────────
