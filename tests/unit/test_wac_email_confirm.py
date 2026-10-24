@@ -573,3 +573,19 @@ def test_the_approval_turn_carries_no_member_text() -> None:
     turn = acts.approved_message("YES 7K3Q WITHOUT 2", approved)
     assert "7K3Q" not in turn and "send_draft" in turn
     assert json.dumps({"draft_id": "d1"}) in turn
+
+
+async def test_a_card_that_the_gate_cuts_never_parks(gw) -> None:
+    """A summary never shows less than the act sends (§21): a card whose
+    context the gate cuts does not park, and the tool says why."""
+
+    async def send_email(**_kw: Any) -> str:  # the name of an email act
+        ok = await ask_tools.request_confirmation(
+            title="Send this email?", detail="To kim@contoso.test",
+            context="To: kim@contoso.test\n\n" + "x" * 5000)
+        return "sent" if ok else (agents._wa_parked() or "no")
+
+    with wui.whatsapp_run("orchestrator", writes=True) as run:
+        out = await _call(send_email, {"body": "x"})
+    assert run.parked is None
+    assert out == wacts.EMAIL_TOO_LONG_TEXT

@@ -1325,7 +1325,8 @@ _NOT_EMAIL = object()
 
 async def _whatsapp_email_answer(title: str, detail: str, context: str,
                                  rows: list[dict] | None, reply: dict | None,
-                                 request_id: str | None, with_answer: bool) -> Any:
+                                 request_id: str | None, with_answer: bool,
+                                 cut: bool = False) -> Any:
     """``acb_skills.whatsapp_acts.answer_email_card``, or :data:`_NOT_EMAIL`.
 
     H-391: an email card of a WhatsApp run parks for the member's reply code,
@@ -1338,7 +1339,7 @@ async def _whatsapp_email_answer(title: str, detail: str, context: str,
         from acb_skills.whatsapp_acts import NOT_EMAIL, answer_email_card
 
         answer = await answer_email_card(title, detail, context, rows, reply,
-                                         request_id, with_answer)
+                                         request_id, with_answer, cut=cut)
     except Exception:
         return _NOT_EMAIL
     return _NOT_EMAIL if answer is NOT_EMAIL else answer
@@ -1447,8 +1448,11 @@ async def request_confirmation(
     # H-391: an email card in a WhatsApp run parks for the member's reply
     # code, or takes the yes of the code that approved it. Anything else
     # goes on below, as before.
-    _email = await _whatsapp_email_answer(_title, _detail, _context, _rows, _reply,
-                                          request_id, _with_answer)
+    _email = await _whatsapp_email_answer(
+        _title, _detail, _context, _rows, _reply, request_id, _with_answer,
+        cut=(len(str(title or "").strip()) > len(_title)
+             or len(str(detail or "").strip()) > len(_detail)
+             or len(str(context or "").strip()) > len(_context)))
     if _email is not _NOT_EMAIL:
         return _email
     if _reply is not None:
