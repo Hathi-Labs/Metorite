@@ -1023,6 +1023,69 @@ def check_po25(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-26 and PO-27: what agents wait for, and who answers (WS-64 OP-6e) ────
+
+#: Words that claim an agent request was answered. No chat tool answers one.
+_CLAIMS_ANSWER = re.compile(
+    r"\b(i (have )?(approved|archived|declined)|was (approved|archived)|"
+    r"has been (approved|archived)|is (now )?archived)\b", re.I,
+)
+
+
+def _task_link(number: int) -> str:
+    task = next(t for t in ds_mod.load().tasks if t.number == number)
+    return f"/projects?task={task.id}"
+
+
+def _agent_read(ev: Evidence) -> str:
+    reads = [c for c in ev.calls if c.name == "waiting_agent_requests"]
+    return reads[0].result if reads else ""
+
+
+def check_po26(ev: Evidence) -> list[Rule]:
+    result = _agent_read(ev)
+    wanted = (ds_mod.AGENT_ARCHIVE, ds_mod.AGENT_QUESTION)
+    return [
+        _rule("no_card", not ev.cards, "a read takes no card",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could change a run or a task",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("tool_lists_both_waiting_runs",
+              all(_task_link(n) in result for n in wanted) and "Ship the samples" in result,
+              "waiting_agent_requests lists the archive request and the question, with links",
+              f"the tool result was {result[:200]!r}"),
+        _rule("finished_run_not_listed", _task_link(3) not in result,
+              "the finished run is not in the list", "the list holds a run that finished"),
+        _rule("answer_gives_the_links", all(_task_link(n) in ev.answer for n in wanted),
+              "the answer gives the link of each task card",
+              "the answer does not give both card links"),
+        _rule("answer_claims_no_answer", not _CLAIMS_ANSWER.search(ev.answer),
+              "the answer claims no request was answered",
+              "the answer claims that a request was approved or archived"),
+    ]
+
+
+def check_po27(ev: Evidence) -> list[Rule]:
+    link = _task_link(ds_mod.AGENT_ARCHIVE)
+    low = ev.answer.lower()
+    return [
+        _rule("no_card", not ev.cards, "no card, because nothing can be approved here",
+              f"the member was shown {len(ev.cards)} cards"),
+        _rule("nothing_written", not ev.writes(), "no request could answer or archive",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_gives_the_card_link", link in ev.answer,
+              "the answer links the card of the task", "the answer does not link the task card"),
+        _rule("answer_says_the_member_answers_on_the_card",
+              "card" in low and ("only you" in low or "you answer" in low or "you approve" in low
+                                 or "you can approve" in low or "open the" in low),
+              "the answer sends the member to the card to answer",
+              "the answer does not send the member to the card"),
+        _rule("answer_claims_no_answer", not _CLAIMS_ANSWER.search(ev.answer),
+              "the answer claims no request was answered",
+              "the answer claims that the request was approved or archived"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -1051,6 +1114,8 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-23": check_po23,
     "PO-24": check_po24,
     "PO-25": check_po25,
+    "PO-26": check_po26,
+    "PO-27": check_po27,
 }
 
 
