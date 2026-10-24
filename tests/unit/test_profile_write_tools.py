@@ -1424,7 +1424,10 @@ def test_a_written_out_address_asks_in_the_tool(own_chat) -> None:
 
 @pytest.mark.parametrize("tag,ok", [
     ("en", True), ("en-IN", True), ("zh-Hant", True), ("hi-Latn-IN", True),
-    ("en-12", True), ("en-123", False), ("x-9845012", False), ("en-IN-55501", False),
+    ("en-12", True), ("x-9845012", False), ("en-IN-55501", False),
+    # One subtag of exactly three digits is a UN M.49 region (es-419 is
+    # Latin American Spanish). A longer run, or a second one, is refused.
+    ("es-419", True), ("en-4192", False), ("es-419-419", False),
 ])
 def test_a_language_tag_with_a_digit_run_is_refused(tag, ok) -> None:
     if ok:

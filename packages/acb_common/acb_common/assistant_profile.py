@@ -73,6 +73,20 @@ _LANGUAGE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
 _LANGUAGE_DIGITS = re.compile(r"\d{3,}")
 
 
+def _language_has_number(tag: str) -> bool:
+    """True when *tag* carries a number. One subtag of exactly three digits
+    is a UN M.49 region ("es-419", Latin American Spanish), so it passes.
+    Any other run of three digits or more is refused ("en-48213")."""
+    regions = 0
+    for sub in tag.split("-")[1:]:
+        if sub.isdigit() and len(sub) == 3:
+            regions += 1
+            continue
+        if _LANGUAGE_DIGITS.search(sub):
+            return True
+    return regions > 1
+
+
 def empty_profile() -> dict[str, Any]:
     """The profile of a member who set nothing (§4.2 defaults)."""
     return {"v": PROFILE_VERSION, "learning": True, "address": {}, "style": {},
@@ -146,7 +160,7 @@ def _clean_style(value: Any) -> dict[str, Any]:
         lang = _text(raw["language"], LANGUAGE_MAX, "style.language")
         # PZ-6b (P3): a tag is exempt from grounding, so it may not carry a
         # number. A run of 3 digits or more is refused ("en-48213").
-        if not _LANGUAGE.match(lang) or _LANGUAGE_DIGITS.search(lang):
+        if not _LANGUAGE.match(lang) or _language_has_number(lang):
             raise ValueError("style.language is a BCP 47 tag")
         out["language"] = lang
     if "notes" in raw:
