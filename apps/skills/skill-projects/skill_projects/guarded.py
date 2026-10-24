@@ -1983,8 +1983,9 @@ async def _sees_parent(node: dict[str, Any]) -> bool:
     parent = node.get("parent_project_id")
     if not parent:
         return False
+    parent_id = uuid_of(str(parent), "parent_project_id")
     try:
-        await get(f"/projects/nodes/{uuid_of(str(parent), 'parent_project_id')}")
+        await get(f"/projects/nodes/{parent_id}")
     except GatewayRefusal:
         return False
     return True

@@ -1148,7 +1148,11 @@ def test_po19_the_card_names_whose_access_goes(harness: R.OpsHarness) -> None:
     record = _run(harness, "PO-19")
     [card] = record["cards"]
     assert "«Launch»" in card["detail"] and f"«{D.PRIYA.email}»" in card["detail"]
-    assert "impact: access narrows" in card["context"]
+    # «Launch» is a top project and this is its only grant, so the card warns
+    # first (OP-6b fix round 1), and then says that access narrows.
+    from skill_projects.guarded import LAST_GRANT_CLAUSE
+
+    assert f"impact: {LAST_GRANT_CLAUSE} access narrows" in card["context"]
 
 
 def test_po20_a_grant_on_a_project_the_member_does_not_lead_shows_no_card(
