@@ -60,6 +60,7 @@ from gateway.routes.projects.core import (
     diff_changes,
     emit,
     from_jsonb,
+    grant_personal_owner,
     insert_row,
     load_default_status,
     load_visible_task,
@@ -496,7 +497,7 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
         "owns_statuses": True,
     })
     project_id = str(project.id)
-    await _grant_owner(db, project_id, email)
+    await grant_personal_owner(db, project_id, email)
     # Ordered, and the order is the whole answer: a capture lands in the FIRST
     # lane. There is no `is_default` on a status any more (2026-09-06) — see
     # `core.load_default_status` — and "Inbox" leads because it is first.
@@ -506,22 +507,6 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
             "position": (position + 1) * 10,
         })
     return project
-
-
-async def _grant_owner(db: Any, project_id: str, email: str) -> None:
-    """The grant every personal node carries — root and child alike.
-
-    The grant is what the visibility model reads; `personal_owner` is only the
-    fast path to finding it. Both, so neither is load-bearing alone.
-    """
-    await db.execute(
-        text(
-            "INSERT INTO pm_project_grants (project_id, subject, created_by) "
-            "VALUES (CAST(:pid AS uuid), :who, :who) "
-            "ON CONFLICT (project_id, subject) DO NOTHING"
-        ),
-        {"pid": project_id, "who": email},
-    )
 
 
 async def find_personal_child(
@@ -585,7 +570,7 @@ async def mint_personal_child(db: Any, email: str, root: Any, name: str) -> Any:
         "organization_id": getattr(root, "organization_id", None),
         "owns_statuses": False,
     })
-    await _grant_owner(db, str(child.id), email)
+    await grant_personal_owner(db, str(child.id), email)
     return child
 
 

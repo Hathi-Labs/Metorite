@@ -1625,6 +1625,52 @@ async def assert_project_move_keeps_privacy(
     )
 
 
+async def grant_personal_owner(db: Any, project_id: str, email: str) -> None:
+    """The grant every personal node carries — root and child alike.
+
+    The grant is what the visibility model reads; `personal_owner` is only the
+    fast path to finding it. Both, so neither is load-bearing alone.
+    """
+    await db.execute(
+        text(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by) "
+            "VALUES (CAST(:pid AS uuid), :who, :who) "
+            "ON CONFLICT (project_id, subject) DO NOTHING"
+        ),
+        {"pid": project_id, "who": email},
+    )
+
+
+async def personal_tree_owner(db: Any, node_id: str) -> str | None:
+    """The owner of the private tree that holds *node_id*, or None.
+
+    WS-64, task #304. The node itself and each ancestor are read, and the
+    nearest ``personal_owner`` wins. A personal root always carries it, so a
+    child that was minted without the stamp still answers with its owner.
+
+    ⚠️ This walk is for a WRITE that must stamp a new child. Every read
+    (``tree.py``, ``_AGENT_NOT_PERSONAL_SQL``, the move checks) reads the
+    node's OWN column. So the invariant is "each node of a private tree
+    carries the owner", and each path that inserts a child must keep it.
+    """
+    row = (await db.execute(
+        text(
+            "WITH RECURSIVE anc AS ("
+            "  SELECT id, parent_project_id, personal_owner, 0 AS depth"
+            "    FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+            "  UNION ALL"
+            "  SELECT p.id, p.parent_project_id, p.personal_owner, a.depth + 1"
+            "    FROM pm_projects p JOIN anc a ON p.id = a.parent_project_id"
+            "   WHERE a.depth < 64"
+            ") SELECT personal_owner FROM anc"
+            "   WHERE personal_owner IS NOT NULL ORDER BY depth LIMIT 1"
+        ),
+        {"pid": str(node_id)},
+    )).fetchone()
+    owner = getattr(row, "personal_owner", None) if row is not None else None
+    return (owner or "").lower() or None
+
+
 async def assert_move_keeps_privacy(
     db: Any, task: Any, new_project_id: str,
 ) -> None:
