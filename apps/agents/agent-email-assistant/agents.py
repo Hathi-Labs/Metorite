@@ -131,7 +131,9 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
 
 #: EM-G11c1 (§12.3.13.6): the answer of each tool of ``MAILBOX_WRITE_TOOLS``
 #: when no card can show. A scheduled run, a batch run and a WhatsApp run
-#: have no card channel, so the card answers "no" at once. The member refused
+#: with writes off have no card channel, so the card answers "no" at once.
+#: A WhatsApp run with writes on has a reply path: the card of an email act
+#: parks for the member's reply code (H-391, :func:`_wa_parked`). The member refused
 #: nothing, so the answer is never "Cancelled". It sends the member to the
 #: Chat app or the Email app, which both show the card (EM-G11c1b,
 #: §12.3.13.6b). It never names a chat as a place with no card.
@@ -149,6 +151,21 @@ def _card_channel_open() -> bool:
     return confirmation_channel_open()
 
 
+def _wa_parked() -> str | None:
+    """H-391: what the tool says when its card waits on WhatsApp, or None.
+
+    In a WhatsApp run the card of an email act parks for the member's reply
+    code (``acb_skills.whatsapp_acts``). The tool then wrote nothing, and
+    this line tells the model so. A card that cannot park because another
+    act already waits gets the line that says so. Anywhere else it is None,
+    and the tool answers as before."""
+    try:
+        from acb_skills.whatsapp_acts import parked_line, waiting_line
+    except ImportError:  # an older platform: no WhatsApp act
+        return None
+    return parked_line() or waiting_line()
+
+
 async def _card_refusal(
     title: str, detail: str, cancelled: str, context: str = "",
 ) -> str | None:
@@ -156,10 +173,20 @@ async def _card_refusal(
 
     The one gate of EM-G11c1. A "no" in a live chat answers *cancelled*. A run
     with no card channel answers ``_NO_CARD_CHANNEL``. ``request_confirmation``
-    fails closed in both, so the tool writes nothing."""
+    fails closed in both, so the tool writes nothing. A card that waits for
+    the member's code on WhatsApp answers that it waits (H-391)."""
     if await _confirm_destructive(title=title, detail=detail, context=context):
         return None
-    return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
+    return _unapproved_line() or cancelled
+
+
+def _unapproved_line() -> str | None:
+    """The answer of a tool whose card got no approval, or None for a "no".
+
+    A card that waits for the member's code on WhatsApp says so (H-391). A
+    run with no card channel answers ``_NO_CARD_CHANNEL``. A "no" of a
+    member in a live chat is None, and the tool says what it cancelled."""
+    return _wa_parked() or (None if _card_channel_open() else _NO_CARD_CHANNEL)
 
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
@@ -2323,6 +2350,17 @@ def _recent_reply_text(prep: dict[str, Any]) -> str:
             "of that email_id. Do not send the whole reply again.")
 
 
+def _pin_for_whatsapp(**pins: Any) -> None:
+    """Pin the arguments of this call for its approval run on WhatsApp
+    (H-391, ``acb_skills.whatsapp_acts.pin_arguments``). Anywhere else it
+    does nothing, and the card is the same."""
+    try:
+        from acb_skills.whatsapp_acts import pin_arguments
+    except ImportError:  # an older platform: no WhatsApp act
+        return
+    pin_arguments(**pins)
+
+
 def _revised(answer: Any) -> bool:
     """True when the member wrote over the card (``ask_tools.REVISED``)."""
     try:
@@ -2541,6 +2579,10 @@ async def compose_reply(
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     card_id = str(prep.get("card_id") or "")
     gone = _left_out_text(form)
+    # H-391: on WhatsApp the card parks for the member's code. The approval
+    # run then shows the SAME text and the same Reply or Reply all, so the
+    # server writes no new text and the card that it builds again matches.
+    _pin_for_whatsapp(draft=form["body"], reply_all=bool(form["reply_all"]))
     answer = await ask_tools.request_confirmation(
         title=_reply_title(form, form["reply_all"]),
         detail=_card_text(
@@ -2563,7 +2605,7 @@ async def compose_reply(
         # Discard and a timeout look the same here, so the tool trashes
         # nothing. The member's Discard click posts its own trash of the
         # card's draft (``ReplyCardForm``), and a timeout keeps the draft.
-        return (_REPLY_DISCARDED + kept) if _card_channel_open() else _NO_CARD_CHANNEL
+        return _unapproved_line() or (_REPLY_DISCARDED + kept)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return ("Nothing was sent. Another member answered this card, "
@@ -5848,8 +5890,9 @@ async def send_email(
     if not approved:
         if _revised(approved):
             return _CARD_REVISED
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
+        line = _unapproved_line()
+        if line:
+            return line
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
     count = len(refs) + len(shared)
@@ -6091,8 +6134,9 @@ async def forward_email(
     if not approved:
         if _revised(approved):
             return _CARD_REVISED
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
+        line = _unapproved_line()
+        if line:
+            return line
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {
         "message_id": mid,
@@ -6300,7 +6344,7 @@ async def _held_card(
     if _revised(answer):
         return _HELD_CARD_REVISED
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
-        return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
+        return _unapproved_line() or cancelled
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return (f"{lead}. Another member answered this card, and only the member "
@@ -6516,9 +6560,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
-        if _channel_open():
-            return "Send cancelled — the draft was not sent."
-        return _NO_CARD_CHANNEL
+        return _unapproved_line() or "Send cancelled — the draft was not sent."
     try:
         await _post(
             "/email/drafts/send",
@@ -7241,8 +7283,9 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     if not approved:
         if _revised(approved):
             return _CARD_REVISED
-        if not _card_channel_open():
-            return _NO_CARD_CHANNEL
+        line = _unapproved_line()
+        if line:
+            return line
         return "Cancelled — nothing was scheduled. The draft stays in Drafts."
     try:
         res = await _post("/email/drafts/schedule", {
