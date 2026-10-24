@@ -645,14 +645,17 @@ def _reply_people(reply: dict[str, Any]) -> list[Person]:
     classes = reply.get("classes") or {}
     marks = reply.get("marks") or {}
     out: list[Person] = []
-    for kind in ("to", "cc"):
+    # §21.15 review P2: the Bcc of the reply card is a numbered line too,
+    # marked hidden, so a WhatsApp approval never drops it in silence.
+    heads = {"to": "To", "cc": "Cc", "bcc": "Bcc (hidden from the others)"}
+    for kind in ("to", "cc", "bcc"):
         on = ({str(a).lower() for a in (ticked.get(kind) or [])}
               if isinstance(ticked, dict) else None)
         for addr in lists.get(kind) or []:
             low = str(addr).lower()
             out.append(Person(
                 number=len(out) + 1, key=str(addr), kind=kind,
-                label=f"{'To' if kind == 'to' else 'Cc'}: {addr}",
+                label=f"{heads[kind]}: {addr}",
                 ticked=True if on is None else low in on,
                 cls=str(classes.get(low) or ""), mark=str(marks.get(low) or "")))
     return out
@@ -1056,6 +1059,9 @@ async def _email_yes(state: EmailApproval, rows: list[dict[str, Any]] | None,
         "body": str((reply or {}).get("body") or ""),
         "to": [p.key for p in kept if p.kind == "to"],
         "cc": [p.key for p in kept if p.kind == "cc"],
+        # §21.15 review P2: the kept Bcc lines. The gateway sends a Bcc only
+        # when the card's record holds it, so the answer can add no one.
+        "bcc": [p.key for p in kept if p.kind == "bcc"],
         "message_id": str((reply or {}).get("message_id") or ""),
     }}
     answer = REPLY_ANSWER_PREFIX + json.dumps(payload, ensure_ascii=False)
