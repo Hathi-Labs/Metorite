@@ -372,6 +372,74 @@ async def delete_project(project_id: str) -> str:
     )
 
 
+def convert_refusal(row: dict[str, Any], name: Any) -> str:
+    """The server's "no" before a convert card, or ``""`` to go on (WS-64 OP-10).
+
+    *row* is ``GET /projects/nodes/{id}``. Its ``can_convert`` and
+    ``convert_refusal`` come from ``authority.py``, the rule and the 403
+    words of the convert route (D-OP-16). Only an explicit ``False`` stops
+    the tool. A row without the flag lets the tool go on, and the route
+    decides.
+    """
+    if row.get("can_convert") is not False:
+        return ""
+    lines = [
+        f"{REFUSED} The server says that this member may not turn the folder "
+        f"{name} into a project. Nothing was done."
+    ]
+    said = str(row.get("convert_refusal") or "").strip()
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def convert_folder_to_project(project_id: str) -> str:
+    """Turn a folder into a project. ONE folder per call. The projects inside
+    the folder become its subprojects. Their tasks, statuses and access do
+    not change, and the folder keeps its name, lead and access. The route
+    refuses when a project inside has subprojects of its own, and names it.
+    The card leads with how many projects become subprojects. A project
+    does not turn back into a folder."""
+    if _many(project_id):
+        return f"convert_folder_to_project {ONE_ACT}"
+    pid, node = await _node(project_id)
+    name = data(node.get("name"))
+    if str(node.get("kind") or "project") != "folder":
+        return f"{name} is already a project. Only a folder converts to a project."
+    refused = convert_refusal(node, name)
+    if refused:
+        return refused
+    found = await _tree_node(pid)
+    kids = [c for c in (found or {}).get("children") or [] if not c.get("archived_at")]
+    # The tree read is visibility-filtered and the conversion is not: every
+    # project inside becomes a subproject. So the card says "you can see".
+    impact = (
+        f"{name} becomes a project · {_plural(len(kids), 'project')} you can see inside it "
+        "become its subprojects; their tasks and statuses do not change"
+    )
+    rest: dict[str, Any] = {
+        "folder": name,
+        "subprojects": ", ".join(data(c.get("name")) for c in kids[:10]) or "none",
+        "undo": "none; a project does not turn back into a folder",
+    }
+    if not await _confirm(
+        title="Convert this folder to a project?",
+        detail=f"{name} · the projects inside it become subprojects",
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    await post(f"/projects/nodes/{pid}/convert", {"to": "project"})
+    return (
+        f"Converted {name} to a project. The {_plural(len(kids), 'project')} inside it "
+        f"are now its subprojects.\n  project_id: {pid}"
+    )
+
+
 #: The most rows one card holds (``acb_skills.ask_tools.MAX_CARD_ROWS``). The
 #: task is the first row, so a task with more subtasks than this draws no
 #: tick boxes, and the choice is "none" or "all".
@@ -2373,6 +2441,7 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
     "move_project",
+    "convert_folder_to_project",
     "archive_task",
     "merge_tasks",
     "bulk_update",

@@ -94,6 +94,8 @@ def _sub(rid: str, parent: str, title: str, archived: bool = False) -> dict[str,
 SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
 #: WS-64 OP-6c. A task the member waits on a colleague for (nudge_task).
 WAITER = "ab8fad5b-d9cb-469f-a165-70867728950e"
+#: WS-64 OP-10. A folder the member may turn into a project.
+FOLDER = "cd8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
     "title": "Fix the extruder",
@@ -141,6 +143,10 @@ def _s3_reads(call: dict) -> Any:
         return {**TASK, "id": LIVE, "task_number": 9, "archived_at": None}
     if path == f"/projects/nodes/{ARCHIVED}" and method == "GET":
         return {"id": ARCHIVED, "name": "Old", "archived_at": "2026-09-01T00:00:00+00:00"}
+    if path == f"/projects/nodes/{FOLDER}" and method == "GET":
+        return {"id": FOLDER, "name": "Ops", "kind": "folder", "can_convert": True}
+    if path == f"/projects/nodes/{FOLDER}/convert" and method == "POST":
+        return {"id": FOLDER, "name": "Ops", "kind": "project"}
     if path.endswith("/summary"):
         return {"id": UUID, "tasks": 5, "by_category": {"todo": 3, "done": 2}}
     if path.endswith("/impact"):
@@ -627,6 +633,7 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "archive_project": [{"project_id": UUID}],
     "unarchive_project": [{"project_id": ARCHIVED}],
     "move_project": [{"project_id": UUID, "parent_project_id": SALES}],
+    "convert_folder_to_project": [{"project_id": FOLDER}],
     "archive_task": [{"task_id": LIVE}, {"task_id": LIVE, "include_subtasks": "yes"}],
     "delete_project": [{"project_id": UUID}],
     "delete_task": [{"task_id": LIVE}],
@@ -730,6 +737,7 @@ _ONE_ID: dict[str, str] = {
     "archive_project": "project_id",
     "unarchive_project": "project_id",
     "move_project": "project_id",
+    "convert_folder_to_project": "project_id",
     "archive_task": "task_id",
     "delete_project": "project_id",
     "delete_task": "task_id",

@@ -135,6 +135,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes", "create_project", "B"),
     Route("PATCH", "/projects/nodes/{project_id}", "update_project", "B"),
     Route("POST", "/projects/nodes/{project_id}/move", "move_project", "C"),
+    # WS-64 OP-10 (D-OP-16): a folder becomes a project, one card per folder.
+    Route("POST", "/projects/nodes/{project_id}/convert", "convert_folder_to_project", "C"),
     Route("DELETE", "/projects/nodes/{project_id}", "delete_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
@@ -835,6 +837,10 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         # WS-46 P7 (G13): the tree drag's order among the siblings.
         "position": "move_project.place",
     },
+    # WS-64 OP-10: the one direction, which the tool sets by itself.
+    ("POST", "/projects/nodes/{project_id}/convert"): {
+        "to": "convert_folder_to_project",
+    },
     ("POST", "/projects/nodes/{project_id}/views"): {
         "name": "save_view.name",
         "view_type": "save_view.view_type",
@@ -1275,6 +1281,7 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.archiveProject": "archive_project",
     "projectsApi.unarchiveProject": "unarchive_project",
     "projectsApi.deleteProject": "delete_project",
+    "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",
