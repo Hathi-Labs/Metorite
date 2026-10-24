@@ -372,19 +372,49 @@ def has_hidden_text(text: str) -> bool:
 _FREE_SCRIPTS = frozenset({"CJK", "HIRAGANA", "KATAKANA", "KATAKANA-HIRAGANA", "HANGUL",
                            "BOPOMOFO", "IDEOGRAPHIC", "HALFWIDTH"})
 #: ZERO WIDTH NON-JOINER and ZERO WIDTH JOINER, which shape letters of the
-#: Arabic and the Indic scripts.
+#: Arabic and the Indic scripts. Written as escapes, so no reader is fooled.
 _SCRIPT_JOINERS = frozenset("‌‍")
+#: The script name of a number-letter form (category Nl, such as U+217C
+#: SMALL ROMAN NUMERAL FIFTY, which looks like "l"). It counts as a letter
+#: of its own script (review P1, part c).
+_NUMBER_FORM = "NUMBER-FORM"
+#: The Latin letters of real text (review P1, part a): Basic Latin, the
+#: Latin-1 Supplement and Latin Extended-A (e acute, n tilde, the Turkish
+#: dotless i), plus the Romanian s and t with a comma and the Vietnamese
+#: letters. Any other Latin letter, the IPA alpha U+0251 or the click
+#: letter U+01C0 for example, is a look-alike form.
+_PLAIN_LATIN: tuple[tuple[int, int], ...] = (
+    (0x0000, 0x017F),
+    (0x01A0, 0x01A1), (0x01AF, 0x01B0),   # Vietnamese ơ Ơ ư Ư
+    (0x0218, 0x021B),                     # Romanian Ș ș Ț ț
+    (0x1EA0, 0x1EF9),                     # Vietnamese, Latin Extended Additional
+)
 
 
 def _script_of(ch: str) -> str:
     """The script of one letter, from its Unicode name ("CYRILLIC SMALL
     LETTER A" is CYRILLIC), or "" for a character that does not count: a
-    mark, a digit, a modifier letter, or a letter of :data:`_FREE_SCRIPTS`."""
+    mark, a digit, a modifier letter, or a letter of :data:`_FREE_SCRIPTS`.
+    A number-letter form (Nl) is :data:`_NUMBER_FORM`."""
     cat = unicodedata.category(ch)
+    if cat == "Nl":
+        return _NUMBER_FORM
     if not cat.startswith("L") or cat == "Lm":
         return ""
     head = unicodedata.name(ch, "").split(" ", 1)[0]
     return "" if head in _FREE_SCRIPTS else head
+
+
+def _plain_latin(ch: str) -> bool:
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _PLAIN_LATIN)
+
+
+#: The kinds of a :class:`LookalikeWord`.
+KIND_HIDDEN = "hidden"   # an invisible character inside a word
+KIND_MIXED = "mixed"     # letters of two scripts in one word
+KIND_ODD = "odd"         # a Latin letter outside the plain Latin blocks
+KIND_WHOLE = "whole"     # a word of another script that all looks like Latin
 
 
 @dataclass(frozen=True)
@@ -400,54 +430,106 @@ class LookalikeWord:
     main: str
     #: The Latin letter that the letter imitates (``held_card.confusable_of``).
     looks_like: str
+    #: One of the KIND_* values.
+    kind: str = KIND_MIXED
+
+
+def _word_hit(raw: str, confusable_of: Any) -> tuple[LookalikeWord | None, str]:
+    """The hit of one word, or None, and the one script of the word ("" for
+    a word of no counted letter or of two scripts)."""
+    shown = "".join(ch for ch in raw if not is_invisible_char(ch))
+    latin = any(_script_of(ch) == "LATIN" for ch in raw)
+    # Persian, Hindi and Malayalam join letters with ZWNJ and ZWJ. In a
+    # word with no Latin letter those two are writing, not a hiding place.
+    hidden = [ch for ch in raw if is_invisible_char(ch)
+              and (latin or ch not in _SCRIPT_JOINERS)]
+    if hidden and shown:
+        return LookalikeWord(shown, hidden[0], "", "", "", KIND_HIDDEN), ""
+    scripts = [s for s in (_script_of(ch) for ch in raw) if s]
+    if len(set(scripts)) >= 2:
+        main = max(set(scripts), key=lambda s: (scripts.count(s), s == "LATIN"))
+        odd = next(ch for ch in raw if _script_of(ch) not in ("", main))
+        return LookalikeWord(shown, odd, _script_of(odd), main, confusable_of(odd),
+                             KIND_MIXED), ""
+    odd_latin = next((ch for ch in raw if _script_of(ch) == "LATIN"
+                      and not _plain_latin(ch)), None)
+    if odd_latin is not None:
+        return LookalikeWord(shown, odd_latin, "LATIN", "LATIN", confusable_of(odd_latin),
+                             KIND_ODD), ""
+    return None, (scripts[0] if scripts else "")
 
 
 def lookalike_words(text: str) -> list[LookalikeWord]:
-    """Each word of *text* that mixes scripts, or that holds an invisible
-    character, in order. A word is a run of letters, marks and invisible
-    characters. NBSP and the other look-alike spaces end a word."""
+    """Each word of *text* that a card cannot show as it is, in order.
+
+    A word is a run of letters, number-letter forms, marks and invisible
+    characters. NBSP and the other look-alike spaces end a word. A word is
+    named when it holds an invisible character, when its letters come from
+    two scripts, or when it holds a Latin letter outside the plain Latin
+    blocks (:data:`_PLAIN_LATIN`).
+
+    Review P1, part b: a word of another script whose EVERY letter folds to
+    an ASCII letter (Cyrillic "pay" or "cop", a lone Cyrillic "a") is named too, unless the
+    text holds a real word of that script, one with a letter that has no
+    ASCII twin. So a real Russian sentence passes, because its words hold
+    such letters, and "pay" in Cyrillic inside English text does not."""
     from acb_skills.held_card import confusable_of
 
     out: list[LookalikeWord] = []
     word: list[str] = []
+    #: For each script but Latin: its words, and whether each folds to ASCII.
+    by_script: dict[str, list[tuple[int, str, bool]]] = {}
 
     def close() -> None:
         if not word:
             return
         raw = "".join(word)
         word.clear()
-        shown = "".join(ch for ch in raw if not is_invisible_char(ch))
-        latin = any(_script_of(ch) == "LATIN" for ch in raw)
-        # Persian, Hindi and Malayalam join letters with ZWNJ and ZWJ. In a
-        # word with no Latin letter those two are writing, not a hiding place.
-        hidden = [ch for ch in raw if is_invisible_char(ch)
-                  and (latin or ch not in _SCRIPT_JOINERS)]
-        if hidden and shown:
-            out.append(LookalikeWord(shown, hidden[0], "", "", ""))
-            return
-        scripts = [s for s in (_script_of(ch) for ch in raw) if s]
-        if len(set(scripts)) < 2:
-            return
-        main = max(set(scripts), key=lambda s: (scripts.count(s), s == "LATIN"))
-        odd = next(ch for ch in raw if _script_of(ch) not in ("", main))
-        out.append(LookalikeWord(shown, odd, _script_of(odd), main, confusable_of(odd)))
+        hit, script = _word_hit(raw, confusable_of)
+        if hit is not None:
+            out.append(hit)
+        elif script and script != "LATIN":
+            letters = [ch for ch in raw if _script_of(ch)]
+            folds = all(confusable_of(ch) for ch in letters)
+            by_script.setdefault(script, []).append((len(out), raw, folds))
 
     for ch in str(text or ""):
-        if (is_invisible_char(ch) and ch not in "\n\t") or unicodedata.category(ch)[0] in "LM":
+        cat = unicodedata.category(ch)
+        if (is_invisible_char(ch) and ch not in "\n\t") or cat[0] in "LM" or cat == "Nl":
             word.append(ch)
         else:
             close()
     close()
+    whole: list[tuple[int, LookalikeWord]] = []
+    for script, words in by_script.items():
+        if all(folds for _i, _w, folds in words):
+            at, raw, _f = words[0]
+            first = next(ch for ch in raw if _script_of(ch))
+            whole.append((at, LookalikeWord(raw, first, script, script,
+                                            confusable_of(first), KIND_WHOLE)))
+    for at, hit in sorted(whole, key=lambda x: x[0], reverse=True):
+        out.insert(at, hit)
     return out
 
 
+def _letter_text(hit: LookalikeWord) -> str:
+    what = "a number form" if hit.script == _NUMBER_FORM else f"a {hit.script.title()} letter"
+    text = f"{what} \"{hit.letter}\" (U+{ord(hit.letter):04X}"
+    return text + (f", it looks like the Latin \"{hit.looks_like}\")" if hit.looks_like else ")")
+
+
 def _lookalike_sentence(hit: LookalikeWord, where: str) -> str:
-    if not hit.script:
+    if hit.kind == KIND_HIDDEN or not hit.script:
         return (f"The {where} holds the word \"{hit.word}\" with an invisible character "
                 f"(U+{ord(hit.letter):04X}) inside it")
-    letter = f"a {hit.script.title()} letter \"{hit.letter}\" (U+{ord(hit.letter):04X}"
-    letter += (f", it looks like the Latin \"{hit.looks_like}\")" if hit.looks_like else ")")
-    return (f"The {where} holds the word \"{hit.word}\", which mixes {letter} into "
+    if hit.kind == KIND_ODD:
+        return (f"The {where} holds the word \"{hit.word}\", with an unusual Latin letter "
+                f"\"{hit.letter}\" (U+{ord(hit.letter):04X}"
+                + (f", it looks like \"{hit.looks_like}\")" if hit.looks_like else ")"))
+    if hit.kind == KIND_WHOLE:
+        return (f"The {where} holds the word \"{hit.word}\", written in {hit.script.title()} "
+                f"letters that each look like a Latin letter, such as {_letter_text(hit)}")
+    return (f"The {where} holds the word \"{hit.word}\", which mixes {_letter_text(hit)} into "
             f"{hit.main.title()} letters")
 
 
@@ -455,7 +537,7 @@ def lookalike_refusal(texts: dict[str, str]) -> str | None:
     """The one sentence that refuses a send in a held chat (H-393), or None.
 
     *texts* maps a name ("subject", "text") to its text. The first word that
-    mixes scripts, or that holds an invisible character, is named."""
+    a card cannot show as it is gets named."""
     for where, value in texts.items():
         hits = lookalike_words(value)
         if hits:

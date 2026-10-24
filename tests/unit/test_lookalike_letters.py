@@ -265,3 +265,63 @@ async def test_outside_a_held_chat_the_draft_card_warns(monkeypatch) -> None:
         "Work", BOX, "d-1", {"to": ["kim@contoso.test"], "cc": [], "bcc": []}, {},
         "Not sent", "too many")
     assert detail.startswith("Check each letter.")
+
+
+
+# \u2500\u2500 4. Review P1: single-script look-alikes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+@pytest.mark.parametrize("text, kind, word", [
+    ("p\u0251ypal", "odd", "p\u0251ypal"),                 # IPA alpha
+    ("Goo\u0261le", "odd", "Goo\u0261le"),                 # IPA script g
+    ("pay\u01c0", "odd", "pay\u01c0"),                     # dental click, Latin Ext-B
+    ("pay\u217c", "mixed", "pay\u217c"),                   # SMALL ROMAN NUMERAL FIFTY
+    ("send \u217c", "whole", "\u217c"),                     # a lone number form
+    ("Pay \u0440\u0430\u0443 pal", "whole", "\u0440\u0430\u0443"),   # Cyrillic "pay"
+    ("the \u0441\u043e\u0440 file", "whole", "\u0441\u043e\u0440"),  # Cyrillic "cop"
+    ("Pay \u0430 now", "whole", "\u0430"),                  # one Cyrillic letter
+], ids=["ipa-alpha", "ipa-g", "click", "roman-in-word", "roman-alone", "cyr-pay", "cyr-cop",
+        "cyr-a"])
+def test_a_single_script_lookalike_is_named(text: str, kind: str, word: str) -> None:
+    [hit] = rcard.lookalike_words(text)
+    assert hit.kind == kind and hit.word == word
+    assert rcard.lookalike_refusal({"text": text}).startswith("Not sent.")
+    assert rcard.lookalike_warning({"text": text}).startswith("Check each letter.")
+
+
+@pytest.mark.parametrize("text", [
+    # Real Russian, with "\u0430" and "\u043a\u0430\u043a", which fold to ASCII alone.
+    "\u041f\u0440\u0438\u0432\u0435\u0442, \u043a\u0430\u043a \u0434\u0435\u043b\u0430? "
+    "\u0410 \u0443 \u0442\u0435\u0431\u044f?",
+    # Real Greek.
+    "\u039a\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1, \u03c4\u03b9 \u03ba\u03ac\u03bd\u03b5\u03b9\u03c2;",
+    "\u0131l\u0131k \u015fe\u011fer \u00e7ok",            # Turkish, dotless i
+    "\u0219i \u021bar\u0103",                              # Romanian
+    "Vi\u1ec7t Nam \u01a1i",                               # Vietnamese
+    "Erd\u0151s, se\u00f1or, M\u00fcller",                 # Hungarian, Spanish, German
+    "\u0645\u0631\u062d\u0628\u0627 \u0628\u0643",          # Arabic
+    "at \u216b o'clock",                                   # a Roman numeral with no twin
+], ids=["russian", "greek", "turkish", "romanian", "vietnamese", "latin-1-ext-a", "arabic",
+        "clock"])
+def test_real_text_still_passes(text: str) -> None:
+    assert rcard.lookalike_words(text) == []
+
+
+def test_the_new_lookalikes_join_the_one_table() -> None:
+    for ch, like in (("\u0251", "a"), ("\u0261", "g"), ("\u0131", "i"), ("\u01c0", "l"),
+                     ("\u217c", "l")):
+        assert hcard.confusable_of(ch) == like
+
+
+async def test_a_held_reply_refuses_a_whole_cyrillic_word(monkeypatch, gw) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    out = await agents.compose_reply(MAIL, BOX, draft="Pay \u0440\u0430\u0443 pal today")
+    assert out.startswith("Not sent.") and gw.posts == []
+
+
+async def test_outside_a_held_chat_an_ipa_letter_warns(monkeypatch, gw) -> None:
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    gw.body = "Pay p\u0251ypal today."
+    cards = _cards(monkeypatch, "Fine.")
+    await agents.compose_reply(MAIL, BOX)
+    assert any("unusual Latin letter" in n for n in cards[0]["reply"]["notices"])

@@ -322,6 +322,11 @@ _CONFUSABLE = str.maketrans({
     # Greek
     "\u03b1": "a", "\u03bf": "o", "\u03c1": "p", "\u03bd": "v", "\u03b9": "i",
     "\u03ba": "k", "\u03c4": "t", "\u03c5": "u",
+    # Latin forms and number forms that a reader takes for a plain letter
+    # (H-393 review P1): IPA alpha and script g, dotless i, the dental
+    # click, and the small Roman numerals one and fifty.
+    "\u0251": "a", "\u0261": "g", "\u0131": "i", "\u01c0": "l",
+    "\u2170": "i", "\u217c": "l",
 })
 #: The shortest domain that the one-edit rule reads. A short domain has too
 #: many neighbours, so only the folded rule reads it.
