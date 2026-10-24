@@ -515,4 +515,45 @@ def test_the_route_module_is_registered() -> None:
 
     paths = {getattr(r, "path", "") for r in knowledge.router.routes}
     assert {"/knowledge/entities", "/knowledge/entities/{entity_id}",
-            "/knowledge/entities/{entity_id}/page"} <= paths, paths
+            "/knowledge/entities/{entity_id}/page",
+            "/knowledge/entities/by-ref"} <= paths, paths
+
+
+# ── Repair round 1 ──────────────────────────────────────────────────────────
+
+def test_a_page_title_is_cut_never_refused() -> None:
+    """An owner name over the limit, or none, still gives a title (P2-4)."""
+    from gateway.kb_entities import registry
+
+    assert registry.page_title("x" * 250) == "x" * registry.NAME_MAX
+    assert registry.page_title("  Asha   Rao ") == "Asha Rao"
+    assert registry.page_title("") == registry.UNTITLED
+    assert registry.page_title(None) == registry.UNTITLED
+
+
+def test_the_sql_fold_strips_the_marks_fold_strips() -> None:
+    """The SQL half of a search folds as ``fold()`` does, letter by letter."""
+    from gateway.kb_entities import registry, resolver
+
+    assert len(registry.FOLD_FROM) == len(registry.FOLD_TO)
+    for ch, plain in zip(registry.FOLD_FROM, registry.FOLD_TO, strict=True):
+        assert resolver.fold(ch) == plain, ch
+    for ch in "éúñçåš":
+        assert ch in registry.FOLD_FROM, ch
+
+
+def test_the_customer_rule_checks_feature_crm_first() -> None:
+    func = _functions(_REGISTRY)["_customer_rule"]
+    source = ast.unparse(func)
+    assert "CRM_FEATURE" in source and "has_permission" in _calls(func)
+    assert source.index("CRM_FEATURE") < source.index("require_crm_enabled(user)")
+
+
+def test_by_ref_reads_the_owner_row_under_the_rule_before_it_writes() -> None:
+    source = ast.unparse(_functions(_REGISTRY)["ensure_by_ref"])
+    assert source.index("directory_rows(") < source.index("ensure_entity(")
+
+
+def test_q_is_matched_in_sql_before_the_limit() -> None:
+    rows = ast.unparse(_functions(_REGISTRY)["directory_rows"])
+    assert "strpos(" in rows and "unnest(e.aliases)" in rows

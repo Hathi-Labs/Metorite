@@ -98,14 +98,66 @@ CREATABLE_TYPES: tuple[str, ...] = ("product", "topic")
 PEOPLE_FEATURE = "feature:people"
 PROJECTS_FEATURE = "feature:projects"
 WORKFLOWS_FEATURE = "feature:workflows"
+CRM_FEATURE = "feature:crm"
 
-#: The most rows that one rule reads.
+#: The most rows that one rule reads. Read at call time, so a test can lower it.
 DIRECTORY_CAP = 2000
 #: The longest name, and the most aliases of one entity (the CHECKs).
 NAME_MAX = 200
 ALIASES_MAX = 50
 #: The longest alias.
 ALIAS_MAX = 120
+#: The title of an entity page whose owner row has no name.
+UNTITLED = "Untitled entity"
+
+#: The types whose record another app owns. ``by-ref`` makes their pointer.
+OWNED_ELSEWHERE: tuple[str, ...] = tuple(
+    t for t in ENTITY_TYPES if KNOWLEDGE_TABLE not in OWNER_TABLES[t]
+    or len(OWNER_TABLES[t]) > 1
+)
+
+
+def _fold_map() -> tuple[str, str]:
+    """The ``translate()`` pairs that strip a mark from one Latin letter.
+
+    The ladder has no ``unaccent``, so the SQL half of a search folds with
+    ``translate(lower(x), from, to)``. Each pair maps a letter of Latin-1 and
+    Latin Extended-A to the one ASCII letter that ``fold()`` gives it. A
+    letter that folds to two letters (``ß``) stays as it is.
+    """
+    import unicodedata
+
+    src, dst = [], []
+    for code in range(0xC0, 0x180):
+        ch = chr(code).lower()
+        if ch in src or len(ch) != 1:
+            continue
+        plain = "".join(c for c in unicodedata.normalize("NFKD", ch)
+                        if not unicodedata.combining(c)).casefold()
+        if len(plain) == 1 and plain.isascii() and plain != ch:
+            src.append(ch)
+            dst.append(plain)
+    return "".join(src), "".join(dst)
+
+
+FOLD_FROM, FOLD_TO = _fold_map()
+
+
+def sql_fold(expr: str) -> str:
+    """*expr* folded in SQL: lower case, one space, the marks of
+    :func:`_fold_map` stripped. It binds ``:ke_from`` and ``:ke_to``."""
+    return (f"translate(lower(regexp_replace(coalesce({expr}, ''), '\\s+', ' ', 'g')), "
+            ":ke_from, :ke_to)")
+
+
+def page_title(name: Any) -> str:
+    """The title of an entity page: the live name, cut to :data:`NAME_MAX`.
+
+    An owner row may hold a longer name, or none. The page then still gets a
+    title, and the route never answers 422 for a name the caller did not type.
+    """
+    out = " ".join(str(name or "").split())
+    return out[:NAME_MAX].rstrip() or UNTITLED
 
 #: The bound tenant, as ``people/core.py::has_login`` writes it. ``NULLIF``
 #: fails closed: an unbound GUC matches no row.
@@ -314,6 +366,10 @@ async def _customer_rule(user: UserContext, org: str) -> OwnerRule | None:
     from gateway.routes.crm.access import require_crm_access
     from gateway.routes.crm.flags import require_crm_enabled
 
+    # The CRM router's own feature gate, which runs before its two
+    # dependencies. An admin with a deny on feature:crm sees no customer.
+    if not user.has_permission(CRM_FEATURE):
+        return None
     try:
         await require_crm_enabled(user)
         await require_crm_access(user)
@@ -419,8 +475,9 @@ def _row_dict(rule: OwnerRule, row: Any) -> dict[str, Any]:
 
 async def directory_rows(
     db: Any, user: UserContext, kind: str, *, entity_id: str | None = None,
+    ref_table: str | None = None, ref_id: str | None = None, q: str | None = None,
     extra_where: str | None = None, extra_params: dict[str, Any] | None = None,
-    cap: int = DIRECTORY_CAP,
+    cap: int | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The rows of *kind* the caller sees, and whether a rule hit the cap.
 
@@ -428,18 +485,34 @@ async def directory_rows(
     ``kb_entities``. So an owner row with no entity shows with ``id`` None,
     and an entity whose owner row is gone (an orphan) never shows. The page
     joins under ``visible_pages_clause``, so ``page_id`` is None for a page
-    the caller cannot see. *extra_where* is a code constant of this package
-    (an alias or an email filter), never input.
+    the caller cannot see.
+
+    *ref_table* and *ref_id* narrow the read to one owner row. *q* is the
+    folded search words (``fold()``). It matches the live name or an alias
+    in SQL, before the ORDER BY and the LIMIT, so a row past the cap is
+    found. *extra_where* is a code constant of this package (an alias or an
+    email filter), never input.
     """
     vis, vparams = core.visible_pages_clause(user, "p")
     out: list[dict[str, Any]] = []
     truncated = False
+    limit = cap if cap is not None else DIRECTORY_CAP
     for rule in await owner_rules(db, user, kind):
-        params: dict[str, Any] = {**vparams, **rule.params, "ke_cap": cap}
+        if ref_table is not None and rule.ref_table != ref_table:
+            continue
+        params: dict[str, Any] = {**vparams, **rule.params, "ke_cap": limit}
         cond = ""
         if entity_id is not None:
             cond += " AND e.id = CAST(:ke_id AS uuid)"
             params["ke_id"] = entity_id
+        if ref_id is not None:
+            cond += f" AND {rule.ref} = CAST(:ke_ref AS uuid)"
+            params["ke_ref"] = ref_id
+        if q:
+            cond += (f" AND (strpos({sql_fold(rule.name)}, :ke_q) > 0"
+                     " OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS ke_a(v)"
+                     f" WHERE strpos({sql_fold('ke_a.v')}, :ke_q) > 0))")
+            params.update({"ke_q": q, "ke_from": FOLD_FROM, "ke_to": FOLD_TO})
         if extra_where:
             cond += f" AND ({extra_where})"
             params.update(extra_params or {})
@@ -452,7 +525,7 @@ async def directory_rows(
                  f"ORDER BY lower({rule.name}), {rule.ref} LIMIT :ke_cap"),
             params,
         )).fetchall()
-        truncated = truncated or len(rows) >= cap
+        truncated = truncated or len(rows) >= limit
         out.extend(_row_dict(rule, r) for r in rows)
     return out, truncated
 
@@ -483,6 +556,33 @@ async def get_entity(db: Any, user: UserContext, entity_id: str | None) -> dict[
         return None
     rows, _ = await directory_rows(db, user, kind, entity_id=eid, cap=1)
     return rows[0] if rows else None
+
+
+async def ensure_by_ref(
+    db: Any, user: UserContext, kind: str, ref_id: str | None,
+) -> dict[str, Any] | None:
+    """Get or make the entity of one owner row the caller can see.
+
+    *kind* is a type whose record another app owns (:data:`OWNED_ELSEWHERE`).
+    The owner row is read first, UNDER THE OWNER RULE of *kind*. A row the
+    caller cannot see, or a row of another org, gives None and writes
+    nothing. Then :func:`ensure_entity` makes the pointer, and the answer is
+    the entity under the same rule. A directory row with no ``id`` calls
+    this before "Write the page".
+    """
+    if kind not in OWNED_ELSEWHERE:
+        raise ValueError(f"{kind!r} is not a type of another app")
+    ref = core.parse_id(ref_id)
+    if ref is None:
+        return None
+    table = OWNER_TABLES[kind][0]
+    rows, _ = await directory_rows(db, user, kind, ref_table=table, ref_id=ref, cap=1)
+    if not rows:
+        return None
+    if rows[0]["id"] is not None:
+        return rows[0]
+    made = await ensure_entity(db, table, ref)
+    return await get_entity(db, user, made) if made else None
 
 
 async def lock_page_slot(db: Any, user: UserContext, entity_id: str) -> str | None:

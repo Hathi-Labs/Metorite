@@ -63,6 +63,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/entities?type=person", None),
     ("GET", f"/knowledge/entities/{OTHER}", None),
     ("POST", "/knowledge/entities", {"type": "product", "name": "PX", "space_id": OTHER}),
+    ("POST", "/knowledge/entities/by-ref", {"type": "person", "ref_id": OTHER}),
     ("POST", f"/knowledge/entities/{OTHER}/page", None),
 ]
 

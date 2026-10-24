@@ -308,6 +308,19 @@ def _add_workflow(p: Any, org: str, name: str) -> str:
             {"n": name, "h": uuid.uuid4().hex, "o": org}).scalar())
 
 
+def _company_space(p: Any, org: str) -> str | None:
+    with p.admin_engine.connect() as c:
+        sid = c.execute(text(
+            "SELECT id FROM kb_spaces WHERE organization_id = CAST(:o AS uuid) "
+            "AND kind = 'company'"), {"o": org}).scalar()
+    return str(sid) if sid is not None else None
+
+
+def _entity_count(p: Any) -> int:
+    with p.admin_engine.connect() as c:
+        return int(c.execute(text("SELECT count(*) FROM kb_entities")).scalar())
+
+
 def _entity_rows(p: Any, ref_id: str) -> list[Any]:
     with p.admin_engine.connect() as c:
         return c.execute(text(
@@ -456,6 +469,11 @@ async def test_the_crm_rule_decides_the_customers(ns, app_engine, monkeypatch) -
 
     # No row reads as `admins`.
     assert await _names(ns, admin, "customer") == {"Acme"}
+    # The CRM router's feature gate binds here too: an admin without
+    # feature:crm sees no customer.
+    no_crm_admin = _principal(_address("admin-no-crm"), ns.org_a, CRM_ADMIN)
+    assert await _listed(ns, no_crm_admin, "customer") == []
+    assert await _get_status(ns, no_crm_admin, eid) == 404
     assert await _listed(ns, seller_a, "customer") == []
     assert await _get_status(ns, seller_a, eid) == 404
 
@@ -508,14 +526,17 @@ async def test_a_hidden_page_shows_as_null(ns, app_engine) -> None:  # noqa: F81
     _assert_non_priv(app_engine)
     person = _add_person(ns, ns.org_a, f"Dev {uuid.uuid4().hex[:6]}")
     eid = await _ensure(ns, ns.org_a, "people", person)
-    author = _principal(_address("author"), ns.org_a, PEOPLE)
-    # The author makes the page in their own `me` space, through the route.
+    author = _principal(_address("author"), ns.org_a, PEOPLE, CAPABILITY)
+    # The author makes the page through the route. With no space it lands in
+    # the org's `company` space, as a draft only its author sees.
     made = await _ok(ns, author, "POST", f"/knowledge/entities/{eid}/page", {}, status=201)
     page_id = made["page"]["id"]
     assert made["entity"]["page_id"] == page_id
     assert made["page"]["state"] == "draft" and made["page"]["title"] == made["entity"]["name"]
+    assert made["page"]["space_id"] == _company_space(ns, ns.org_a)
 
-    other = _principal(_address("other"), ns.org_a, PEOPLE)
+    # knowledge:manage reads published pages, never another member's draft.
+    other = _principal(_address("other"), ns.org_a, PEOPLE, CAPABILITY)
     seen = await _ok(ns, other, "GET", f"/knowledge/entities/{eid}")
     assert seen["page_id"] is None, "a page the member cannot see must not show"
     assert (await _ok(ns, author, "GET", f"/knowledge/entities/{eid}"))["page_id"] == page_id
@@ -642,3 +663,103 @@ async def test_the_person_resolver(ns, app_engine) -> None:  # noqa: F811
     assert (await resolve(f"nobody{tag}"))["status"] == "none"
     refused = await resolve(f"arjun{tag}", _principal(_address("x"), ns.org_a))
     assert refused == {"status": "none", "via": None, "matches": [], "directory": False}
+
+
+# ── Repair round 1: by-ref, the page space, q past the cap ──────────────────
+
+async def test_by_ref_makes_a_person_entity_and_its_page(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    tag = uuid.uuid4().hex[:6]
+    person = _add_person(ns, ns.org_a, f"Farah {tag}")
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY, PEOPLE)
+    member_email = _address("member")
+    member = _principal(member_email, ns.org_a, PEOPLE)
+    notes = (await _ok(ns, admin, "POST", "/knowledge/spaces",
+                       {"name": "People notes",
+                        "grants": [{"subject": member_email, "level": "write"}]},
+                       status=201))["id"]
+
+    # The directory row has no id until the pointer is needed.
+    row = next(r for r in await _listed(ns, member, "person") if r["ref_id"] == person)
+    assert row["id"] is None
+    made = await _ok(ns, member, "POST", "/knowledge/entities/by-ref",
+                     {"type": "person", "ref_id": person})
+    assert made["ref_id"] == person and made["id"] is not None
+    again = await _ok(ns, member, "POST", "/knowledge/entities/by-ref",
+                      {"type": "person", "ref_id": person})
+    assert again["id"] == made["id"]
+    assert len(_entity_rows(ns, person)) == 1
+
+    # The page never goes into a `me` space, and the company space needs write.
+    mine = await _ok(ns, member, "POST", "/knowledge/pages", {"title": "Scratch"}, status=201)
+    refused = await _call(ns, member, "POST", f"/knowledge/entities/{made['id']}/page",
+                          {"space_id": mine["space_id"]})
+    assert refused.status_code == 422, refused.text
+    refused = await _call(ns, member, "POST", f"/knowledge/entities/{made['id']}/page", {})
+    assert refused.status_code == 403, refused.text
+    page = await _ok(ns, member, "POST", f"/knowledge/entities/{made['id']}/page",
+                     {"space_id": notes}, status=201)
+    assert page["page"]["space_id"] == notes
+    assert page["entity"]["page_id"] == page["page"]["id"]
+
+    # A long owner name gives a title cut to the limit, never a 422. With no
+    # space, the page lands in the company space.
+    long_person = _add_person(ns, ns.org_a, "L" * 250)
+    long_entity = await _ok(ns, admin, "POST", "/knowledge/entities/by-ref",
+                            {"type": "person", "ref_id": long_person})
+    long_page = await _ok(ns, admin, "POST",
+                          f"/knowledge/entities/{long_entity['id']}/page", {}, status=201)
+    assert long_page["page"]["title"] == "L" * 200
+    assert long_page["page"]["space_id"] == _company_space(ns, ns.org_a)
+
+
+async def test_by_ref_refuses_a_row_the_caller_cannot_see(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    me = _address("m")
+    _add_member(ns, ns.org_a, me)
+    secret = _add_project(ns, ns.org_a, "Secret")
+    person = _add_person(ns, ns.org_a, f"Gita {uuid.uuid4().hex[:6]}")
+    member = _principal(me, ns.org_a, PROJECTS)
+    for kind, ref in (("workstream", secret), ("person", person)):
+        response = await _call(ns, member, "POST", "/knowledge/entities/by-ref",
+                               {"type": kind, "ref_id": ref})
+        assert response.status_code == 404, (kind, response.text)
+    assert _entity_count(ns) == 0, "a refused by-ref must write nothing"
+    wrong = await _call(ns, member, "POST", "/knowledge/entities/by-ref",
+                        {"type": "product", "ref_id": secret})
+    assert wrong.status_code == 422
+
+    # Org B cannot by-ref org A's ids, with every feature it could hold.
+    b = _principal(_address("b"), ns.org_b, PEOPLE, PROJECTS, CRM, WORKFLOWS, CAPABILITY)
+    _add_member(ns, ns.org_b, b.email)
+    company = _add_company(ns, ns.org_a, "Acme A")
+    _set_crm_access(ns, ns.org_b, "everyone", [])
+    for kind, ref in (("person", person), ("workstream", secret),
+                      ("customer", company), ("company", ns.org_a)):
+        response = await _call(ns, b, "POST", "/knowledge/entities/by-ref",
+                               {"type": kind, "ref_id": ref})
+        assert response.status_code == 404, (kind, response.text)
+    assert _entity_count(ns) == 0
+
+
+async def test_q_finds_a_row_past_the_cap(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    from gateway.kb_entities import registry
+
+    tag = uuid.uuid4().hex[:6]
+    for i in range(5):
+        _add_person(ns, ns.org_a, f"a{tag} {i}")
+    last = _add_person(ns, ns.org_a, f"zz{tag} Jos\u00e9 Z\u00fa\u00f1iga")
+    eid = await _ensure(ns, ns.org_a, "people", last)
+    _set_alias(ns, eid, f"Kilo{tag}")
+    monkeypatch.setattr(registry, "DIRECTORY_CAP", 3)
+
+    member = _principal(_address("m"), ns.org_a, PEOPLE)
+    plain = await _ok(ns, member, "GET", "/knowledge/entities?type=person")
+    assert len(plain["entities"]) == 3 and plain["truncated"] is True
+    assert last not in {r["ref_id"] for r in plain["entities"]}
+    for words in ("jose zuniga", "JOS\u00c9", f"kilo{tag}"):
+        found = await _listed(ns, member, "person", words)
+        assert [r["ref_id"] for r in found] == [last], words
+    # The alias match stays under the owner rule.
+    assert await _listed(ns, _principal(_address("x"), ns.org_a), "person", f"kilo{tag}") == []
