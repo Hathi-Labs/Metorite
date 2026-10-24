@@ -250,7 +250,9 @@ export function projectMenuItems(
     ];
     // Beside Rename, because both edit what the node IS rather than filing or
     // pausing it. A move is the second such act the product has.
-    if (ui.onMove) {
+    // WS-64 OP-3 — the personal root has nowhere to go: a private tree
+    // cannot sit under a team node, and there is no "top level" for it.
+    if (ui.onMove && !isPersonalRoot(project)) {
       edit.push({
         kind: "item",
         label: "Move to…",
@@ -383,7 +385,8 @@ export function projectMenuItems(
     groups.push(states);
   }
 
-  groups.push(archiveItems(project, handlers, archived));
+  // WS-64 OP-3 — the personal root is not filed away; its Areas are.
+  if (!isPersonalRoot(project)) groups.push(archiveItems(project, handlers, archived));
 
   // LAST, and alone in its group, so a separator always stands between Delete
   // and the reversible act above it. Every other group here is conditional,
@@ -410,6 +413,16 @@ export function projectMenuItems(
     items.push(...group);
   }
   return items;
+}
+
+/**
+ * WS-64 OP-3 (D-OP-2) — the caller's personal root: a node of the private
+ * tree with no parent. The menu never offers it Move or Archive. Nothing on a
+ * personal node offers a share or access item either, because this menu has
+ * none to offer (`projectMenu.test.ts` fences it).
+ */
+function isPersonalRoot(project: ProjectRow): boolean {
+  return project.personal === true && !project.parent_project_id;
 }
 
 /**

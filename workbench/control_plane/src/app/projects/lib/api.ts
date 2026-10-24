@@ -165,6 +165,16 @@ export interface ProjectRow {
    */
   can_delete?: boolean;
   /**
+   * WS-64 OP-3 (D-OP-2, D-OP-15). True on every node of the caller's own
+   * personal tree, which `GET /projects/tree` returns in its separate
+   * `personal` key. The sidebar draws those under "Personal" and the row
+   * menu offers them no access item. Absent on a team node.
+   */
+  personal?: boolean;
+  /** OP-3 — always false on a personal node, with the server's reason beside it. */
+  can_write_grants?: boolean;
+  grant_refusal?: string | null;
+  /**
    * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
    * tasks live at or under it, how many were delivered, and how many were
    * abandoned.
@@ -1669,7 +1679,13 @@ export function isReadOnlyPost(method: string, path: string): boolean {
 export { call as projectsCall };
 
 export const projectsApi = {
-  tree: () => call<{ rows: ProjectRow[]; total: number }>("tree"),
+  tree: () =>
+    call<{
+      rows: ProjectRow[];
+      total: number;
+      /** OP-3 — the caller's own personal tree, nested at every depth. Absent from an older gateway. */
+      personal?: ProjectRow[];
+    }>("tree"),
 
   /** The subtree roll-up behind every dashboard and every aggregate view. */
   summary: (nodeId: string) =>

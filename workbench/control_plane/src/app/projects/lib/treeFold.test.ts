@@ -89,7 +89,7 @@ describe("the wiring (source fence)", () => {
     // Review of #853: a child created under a closed row vanished on commit.
     const page = read("../page.tsx");
     expect(page).toMatch(/if \(creating\.parent\) openFolds\(\[creating\.parent\.id\]\);/);
-    expect(page.match(/openFolds\(pathTo\(roots, (?:parentId|into)\)/g)).toHaveLength(2);
+    expect(page.match(/openFolds\(pathTo\((?:roots|allRoots), (?:parentId|into)\)/g)).toHaveLength(2);
   });
 
   it("the Projects page forgets on leaving and resumes on return", () => {

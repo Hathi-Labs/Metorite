@@ -179,3 +179,61 @@ test("each count equals the count that /tasks shows", async ({ page }) => {
   expect(mine.inbox).not.toBeNull();
   expect(mine).toEqual(tasks);
 });
+
+/**
+ * WS-64 OP-3 — the Personal section. The tree answer carries the caller's own
+ * tree in `personal`, and a team node kept under the caller's root in `rows`.
+ * Playwright runs the last registered route first, so this overrides `mock`.
+ */
+async function mockTree(page: Page) {
+  const personalArea = {
+    id: "p-area",
+    name: "Home admin",
+    kind: "folder",
+    parent_project_id: "p-root",
+    personal: true,
+    can_delete: true,
+    can_write_grants: false,
+    tasks: 2,
+  };
+  const personal = [
+    {
+      id: "p-root",
+      name: "Personal space",
+      personal: true,
+      can_delete: false,
+      can_write_grants: false,
+      tasks: 2,
+      children: [personalArea],
+    },
+  ];
+  const rows = [
+    {
+      id: "t-space",
+      name: "Team space",
+      tasks: 1,
+      children: [{ id: "t-kept", name: "Kept team project", parent_project_id: "p-root" }],
+    },
+  ];
+  await page.route("**/api/**/projects/tree", (route) =>
+    route.fulfill({ json: { rows, total: 1, personal } }),
+  );
+}
+
+test("the Personal section sits between My work and Spaces, with a lock", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await mockTree(page);
+  await page.goto("/projects");
+  const section = page.getByTestId("personal-section");
+  await expect(section).toBeVisible({ timeout: 30_000 });
+  await expect(section.getByText("Personal", { exact: true }).first()).toBeVisible();
+  await expect(section.getByText("Personal space")).toBeVisible();
+  // The team node kept under the caller's root draws in Spaces, not under Personal.
+  await expect(section.getByText("Kept team project")).toHaveCount(0);
+  await expect(page.getByText("Team space", { exact: true }).first()).toBeVisible();
+  // No row menu entry shares a personal node.
+  await section.getByText("Personal space").click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: /share|access/i })).toHaveCount(0);
+});
