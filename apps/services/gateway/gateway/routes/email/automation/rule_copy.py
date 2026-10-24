@@ -94,7 +94,6 @@ from acb_auth import UserContext, get_current_user
 from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from email_ingestion.providers.factory import build_provider
 from fastapi import Depends, HTTPException
-from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
 from gateway.routes.email.automation.actions import SYSTEM_FOLDER_KEYS
 from gateway.routes.email.automation.rules import (
     _is_reply_rule,
@@ -107,6 +106,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 

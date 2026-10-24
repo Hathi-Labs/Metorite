@@ -71,8 +71,8 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import _decrypt_credentials, _instantiate_provider, _log
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 

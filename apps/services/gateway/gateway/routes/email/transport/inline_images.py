@@ -51,7 +51,6 @@ from acb_common.tenant_redis import (
 from email_ingestion.providers.base import normalize_content_id
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import Response
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     _decrypt_credentials,
@@ -61,6 +60,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.transport.attachments import (
     BINARY_REDIS_GATE_SIZE,
     _binary_redis_gate,

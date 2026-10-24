@@ -16,7 +16,6 @@ from acb_common import get_settings
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from gateway.db import bind_tenant, current_tenant, release_tenant
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _instantiate_provider,
@@ -25,6 +24,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.transport.signing import sign_webhook_org, verify_webhook_org
 from pydantic import BaseModel
 from sqlalchemy import text

@@ -49,7 +49,6 @@ from email_ingestion.providers.gmail import GMAIL_SCOPES
 from email_ingestion.providers.outlook import GRAPH_SCOPES
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from gateway.routes.email.mailbox_access import connector_predicate
 from gateway.routes.email.core import (
     MAILBOX_LIMIT_DETAIL,
     MAX_MAILBOXES_PER_MEMBER,
@@ -60,6 +59,7 @@ from gateway.routes.email.core import (
     member_mailbox_count,
     router,
 )
+from gateway.routes.email.mailbox_access import connector_predicate
 from gateway.routes.email.mailbox_identity import NEXT_SLOT_SQL
 from gateway.routes.email.transport.signing import (
     SigningUnavailable,

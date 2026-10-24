@@ -21,9 +21,8 @@ from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
     _host_is_public,
     _is_safe_external_url,
 )
-from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
-from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     CONVERSATION_LABELS_LOWER,
@@ -31,17 +30,17 @@ from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     _account_scope,
     _assert_account_owner,
-    _owned_accounts_sql,
-    _tenant_session,
     _llm_json,
     _log,
+    _owned_accounts_sql,
     _savepoint,
+    _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 # Folders whose mail is already disposed of (or was never received). The Email
 # Cleaner and its uncategorized sweep both exclude these, so a sender is never

@@ -194,9 +194,11 @@ async def _may(w: Any, org: str, member: str, account: str, level: str) -> bool:
 
     token = bind_tenant(org)
     try:
-        async with tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)):
-            async with tenant_session() as db:
-                return await may_access(db, account, member, level)
+        async with (
+            tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+            tenant_session() as db,
+        ):
+            return await may_access(db, account, member, level)
     finally:
         release_tenant(token)
 
@@ -208,11 +210,13 @@ async def _ids(w: Any, org: str, member: str, level: str) -> set[str]:
 
     token = bind_tenant(org)
     try:
-        async with tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)):
-            async with tenant_session() as db:
-                rows = (await db.execute(text(mailbox_ids_sql(level=level)),
-                                         {"uid": member})).fetchall()
-                return {str(r[0]) for r in rows}
+        async with (
+            tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+            tenant_session() as db,
+        ):
+            rows = (await db.execute(text(mailbox_ids_sql(level=level)),
+                                     {"uid": member})).fetchall()
+            return {str(r[0]) for r in rows}
     finally:
         release_tenant(token)
 
@@ -397,12 +401,14 @@ async def test_a_shared_mailbox_is_never_self(world, flag, on) -> None:
 
     token = bind_tenant(w.p.org_a)
     try:
-        async with tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)):
-            async with tenant_session() as db:
-                mine = {str(r[0]) for r in (await db.execute(
-                    text(SELF_MAILBOX_IDS_SQL), {"aid": w.private})).fetchall()}
-                shared = {str(r[0]) for r in (await db.execute(
-                    text(SELF_MAILBOX_IDS_SQL), {"aid": w.sales})).fetchall()}
+        async with (
+            tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+            tenant_session() as db,
+        ):
+            mine = {str(r[0]) for r in (await db.execute(
+                text(SELF_MAILBOX_IDS_SQL), {"aid": w.private})).fetchall()}
+            shared = {str(r[0]) for r in (await db.execute(
+                text(SELF_MAILBOX_IDS_SQL), {"aid": w.sales})).fetchall()}
     finally:
         release_tenant(token)
     assert mine == {w.private}
@@ -433,9 +439,11 @@ async def test_a_shared_box_is_not_in_the_connectors_own_addresses(world, flag, 
     flag(on)
     token = bind_tenant(w.p.org_a)
     try:
-        async with tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)):
-            async with tenant_session() as db:
-                own = await _own_addresses(db, w.m.own)
+        async with (
+            tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+            tenant_session() as db,
+        ):
+            own = await _own_addresses(db, w.m.own)
     finally:
         release_tenant(token)
     assert own == {w.addresses[w.private]}

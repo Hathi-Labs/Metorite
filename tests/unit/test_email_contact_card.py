@@ -20,6 +20,7 @@ from gateway.routes.email.transport.contacts import (
     _preview,
     _signature_block,
 )
+
 from tests.unit._email_fakes import bind_db
 
 

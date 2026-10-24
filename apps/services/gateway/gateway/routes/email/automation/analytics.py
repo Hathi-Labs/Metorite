@@ -25,10 +25,10 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
-from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import _account_scope, _tenant_session, router
+from gateway.routes.email.mailbox_access import mailbox_ids_sql, private_predicate
 from sqlalchemy import text
 
 # Mail that was never really "received into" the mailbox, or has already been

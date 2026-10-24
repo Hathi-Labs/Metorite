@@ -15,18 +15,6 @@ from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.provider_errors import (
-    RETRY_AFTER_MAX_SECS,
-    provider_http_error,
-    sign_in_unchecked,
-)
-# The names that ``transport/inline_images.py`` and the HTML route read.
-from gateway.routes.email.provider_errors import (
-    is_provider_429 as _is_provider_429,
-)
-from gateway.routes.email.provider_errors import (
-    provider_retry_after as _provider_retry_after,
-)
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     HUMAN_SENDER_CATEGORIES_LOWER,
@@ -43,19 +31,32 @@ from gateway.routes.email.core import (
     _fetch_attachments,
     _fetch_attachments_batch,
     _html_remote,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
     _provider_for_message,
     _row_to_message,
+    _tenant_session,
     _truncate_body,
     folder_scope,
     router,
 )
-from gateway.routes.email.transport.attachments import _canonical_uuid
 from gateway.routes.email.mailbox_access import mailbox_ids_sql, mailbox_predicate
+from gateway.routes.email.provider_errors import (
+    RETRY_AFTER_MAX_SECS,
+    provider_http_error,
+    sign_in_unchecked,
+)
+
+# The names that ``transport/inline_images.py`` and the HTML route read.
+from gateway.routes.email.provider_errors import (
+    is_provider_429 as _is_provider_429,
+)
+from gateway.routes.email.provider_errors import (
+    provider_retry_after as _provider_retry_after,
+)
 from gateway.routes.email.quoting import strip_for_reading
+from gateway.routes.email.transport.attachments import _canonical_uuid
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 

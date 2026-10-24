@@ -30,8 +30,8 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import _bound_org, _tenant_session
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from sqlalchemy import text
 
 #: The values that mean "every mailbox of the member". Compared in lower case.

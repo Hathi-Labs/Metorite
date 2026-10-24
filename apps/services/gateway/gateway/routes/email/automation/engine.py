@@ -13,7 +13,6 @@ from typing import Any
 from acb_skills.untrusted import UntrustedFrame
 from fastapi import HTTPException
 from gateway import decide_features
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.automation.identity import (
     own_addresses,
     resolve_org_domains,
@@ -28,6 +27,7 @@ from gateway.routes.email.core import (
     _log,
     _savepoint,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from sqlalchemy import text
 
 

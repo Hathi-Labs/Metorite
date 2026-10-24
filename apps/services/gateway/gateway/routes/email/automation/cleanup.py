@@ -61,11 +61,11 @@ from gateway.routes.email.automation.senders import (
 )
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
     _provider_for_account_any,
+    _tenant_session,
     router,
 )
 from pydantic import BaseModel

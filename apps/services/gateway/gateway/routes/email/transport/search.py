@@ -44,8 +44,8 @@ from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     UNCATEGORIZED_SQL,
     _account_scope,
-    _tenant_session,
     _row_to_message,
+    _tenant_session,
     folder_scope,
     router,
 )

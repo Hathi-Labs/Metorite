@@ -23,9 +23,13 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
-from gateway.routes.email.mailbox_access import mailbox_ids_sql, mailbox_predicate, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.core import _account_scope, _tenant_session, _log, router
+from gateway.routes.email.core import _account_scope, _log, _tenant_session, router
+from gateway.routes.email.mailbox_access import (
+    mailbox_ids_sql,
+    mailbox_predicate,
+    private_predicate,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 

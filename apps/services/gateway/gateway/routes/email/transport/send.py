@@ -11,12 +11,12 @@ from contextlib import contextmanager
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 

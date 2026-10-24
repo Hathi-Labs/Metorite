@@ -9,15 +9,15 @@ from email_ingestion import import_window
 from email_ingestion import storage as ingest_storage
 from fastapi import Depends, HTTPException
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
+    _tenant_session,
     _upsert_message,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 

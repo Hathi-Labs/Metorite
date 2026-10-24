@@ -17,7 +17,6 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user, require_permission
 from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
-from gateway.routes.email.mailbox_access import connector_predicate, mailbox_predicate, private_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     MAILBOX_LIMIT_DETAIL,
@@ -29,6 +28,11 @@ from gateway.routes.email.core import (
     enforce_mailbox_limit,
     member_mailbox_count,
     router,
+)
+from gateway.routes.email.mailbox_access import (
+    connector_predicate,
+    mailbox_predicate,
+    private_predicate,
 )
 from gateway.routes.email.mailbox_identity import (
     NEXT_SLOT_SQL,

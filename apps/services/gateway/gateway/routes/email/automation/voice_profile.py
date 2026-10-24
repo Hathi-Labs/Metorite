@@ -25,17 +25,17 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job, llm_slot
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, status
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _llm_json,
     _log,
     _parse_iso_date,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text

@@ -14,7 +14,6 @@ from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
-from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
@@ -32,16 +31,16 @@ from gateway.routes.email.core import (
     _assert_thread_in_mailbox,
     _attachment_summaries,
     _fmt_addr_list,
-    _tenant_session,
     _instantiate_provider,
     _llm_json,
     _log,
     _persist_rotated_creds,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 
 def _addr_dict(raw: Any) -> dict:
@@ -3048,8 +3047,7 @@ async def resolve_thread(
             # commitment task, or an inbound capture on the same thread). The
             # helper only touches non-DONE tasks, so a task the forward path
             # already closed is left alone — no ping-pong.
-            from gateway.routes.tasks.email_link import (
-                propagate_thread_done_to_tasks)
+            from gateway.routes.tasks.email_link import propagate_thread_done_to_tasks
             with contextlib.suppress(Exception):  # best-effort; thread is Done
                 await propagate_thread_done_to_tasks(
                     db, user.email or "anonymous", req.account_id,

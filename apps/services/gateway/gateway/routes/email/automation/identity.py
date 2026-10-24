@@ -35,8 +35,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from gateway.routes.email.mailbox_access import private_predicate
 from gateway.routes.email.core import IN_ALL_INBOXES_SQL, NOT_A_COPY_FOLDERS
+from gateway.routes.email.mailbox_access import private_predicate
 from gateway.routes.email.mailbox_identity import display_labels
 from sqlalchemy import text
 

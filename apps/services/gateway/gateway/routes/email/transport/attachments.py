@@ -39,14 +39,14 @@ from acb_skills.attachment_tools import parse_bounded
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from gateway.db import TenantUnbound
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
-    _tenant_session,
     _log,
+    _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 

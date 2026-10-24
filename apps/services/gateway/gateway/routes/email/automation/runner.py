@@ -10,21 +10,8 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
-from gateway.routes.email.mailbox_access import mailbox_predicate
-from gateway.routes.email.automation.assistant import _load_assistant_about
-from gateway.routes.email.automation.engine import (
-    _MOVE_ACTIONS,
-    LLMUnavailable,
-    _email_payload_from_id,
-    _is_conversation_status_rule,
-    _match_email_to_rule,
-    _match_email_to_rules_multi,
-    ask_rule_match,
-    classify_matches,
-    email_dict_from_row,
-    read_classification,
-    resolve_classification,
-)
+from gateway.routes.email.account_ref import resolve_account_filter
+
 # Re-exported action machinery (2.3 split): the lazy importers (cleaner sweep,
 # senders, rules) and the tests address these through the runner seam, and the
 # apply loop below calls them via this module's namespace — so a test patching
@@ -40,6 +27,20 @@ from gateway.routes.email.automation.actions import (  # noqa: F401
     mirror_label,
     push_label,
     remove_label,
+)
+from gateway.routes.email.automation.assistant import _load_assistant_about
+from gateway.routes.email.automation.engine import (
+    _MOVE_ACTIONS,
+    LLMUnavailable,
+    _email_payload_from_id,
+    _is_conversation_status_rule,
+    _match_email_to_rule,
+    _match_email_to_rules_multi,
+    ask_rule_match,
+    classify_matches,
+    email_dict_from_row,
+    read_classification,
+    resolve_classification,
 )
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
@@ -58,20 +59,20 @@ from gateway.routes.email.automation.rules import (
     proposes_only,
 )
 from gateway.routes.email.automation.senders import _maybe_block_cold
-from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _date_range_clause,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _parse_iso_date,
     _persist_rotated_creds,
     _provider_for_account,
     _savepoint,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from pydantic import BaseModel
 from sqlalchemy import text
 

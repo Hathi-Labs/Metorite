@@ -14,14 +14,14 @@ _KB_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _log,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field

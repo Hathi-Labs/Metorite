@@ -71,13 +71,13 @@ from typing import Any
 import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
-from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.core import (
     _log,
     _tenant_session,
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.transport.attachments import (
     _canonical_uuid,
     _fetch_owned_attachment,

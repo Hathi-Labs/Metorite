@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from acb_auth import require_feature_router
 from acb_common import get_logger
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
@@ -46,9 +47,6 @@ from gateway.db import get_session_factory as _get_session_factory
 # `_get_db` site left in the package is the discovery read of
 # `scheduler_hooks.mailbox_owner` (fence: test_email_request_jobs_tenancy.py).
 from gateway.db import tenant_session as _tenant_session
-from pydantic import BaseModel
-from sqlalchemy import text
-from acb_auth import require_feature_router
 
 # The ONE mailbox access seam (WS-65 SM-2). A leaf too: it imports nothing
 # from this package.
@@ -57,6 +55,8 @@ from gateway.routes.email.mailbox_access import (
     mailbox_ids_sql,
     mailbox_predicate,
 )
+from pydantic import BaseModel
+from sqlalchemy import text
 
 _log = get_logger("gateway.email")
 
