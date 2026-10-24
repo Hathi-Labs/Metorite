@@ -45,4 +45,32 @@ def today_line(now: datetime | None = None, zone: str | None = None) -> str:
     return f"Today is {local:%A}, {local.day} {local:%B %Y} ({tz.key})."
 
 
-__all__ = ["DEFAULT_ZONE", "today_line"]
+def part_of_day(zone: str | None, now: datetime | None = None) -> str:
+    """``morning`` (5 to 11), ``afternoon`` (12 to 16), ``evening`` (17 to
+    20) or ``night``, at the hour of *zone*. A bad or missing zone reads as
+    :data:`DEFAULT_ZONE`. A naive *now* reads as UTC."""
+    tz = _zone(zone)
+    moment = now or datetime.now(tz)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=ZoneInfo("UTC"))
+    hour = moment.astimezone(tz).hour
+    if 5 <= hour <= 11:
+        return "morning"
+    if 12 <= hour <= 16:
+        return "afternoon"
+    if 17 <= hour <= 20:
+        return "evening"
+    return "night"
+
+
+def part_of_day_line(zone: str | None, now: datetime | None = None) -> str:
+    """"Part of the day for the member: morning." One short line.
+
+    WS-63 PZ-4 (``personalization.md`` §5.2): the greeting rule says "for the
+    time of day", and :func:`today_line` gives no hour. *zone* is the
+    member's ``people.timezone``. Fence:
+    ``tests/unit/test_assistant_profile_address.py``."""
+    return f"Part of the day for the member: {part_of_day(zone, now)}."
+
+
+__all__ = ["DEFAULT_ZONE", "part_of_day", "part_of_day_line", "today_line"]

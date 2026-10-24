@@ -56,11 +56,15 @@ EXAMPLE: dict[str, Any] = {
 #: The block of §5.1, byte for byte.
 GOLDEN = (
     "## About the member (their own profile — they can see and change it)\n"
-    'Address them as "VJ". Tone: casual. Greeting: brief, only in the first reply of a chat.\n'
-    "Answer length: short. Language: en-IN. Notes: Hinglish is fine on WhatsApp.\n"
+    'Address them as "VJ". Tone: casual. Greeting: brief. In the first reply of a chat '
+    "only, open with one short greeting for the time of day. Never greet again in that "
+    "chat.\n"
+    "Answer length: short. Use about half the usual length. Language: en-IN. Answer in "
+    "it, unless they write in another language. Notes: Hinglish is fine on WhatsApp.\n"
     'People they name: "Raj" = raj@fracktal.in.\n'
     "What they asked you to remember:\n"
     "- [f1] Travels every Friday (routine, 2026-10-23)\n"
+    "Where this conflicts with the house voice, follow the member.\n"
     "If they ask what you know about them, answer from this block only."
 )
 
@@ -71,13 +75,14 @@ def run(monkeypatch: pytest.MonkeyPatch):
     on, and a recorded read of the profile."""
     monkeypatch.setattr(get_settings(), "assistant_profile_enabled", True, raising=False)
     state: dict[str, Any] = {"org": ORG, "member": MEMBER, "raw": EXAMPLE,
+                             "preferred": "", "zone": "", "display": "",
                              "reads": [], "fail": False}
 
     def read(org: str, member: str) -> Any:
         state["reads"].append((org, member))
         if state["fail"]:
             raise RuntimeError("the database is down")
-        return state["raw"]
+        return (state["raw"], state["preferred"], state["zone"], state["display"])
 
     monkeypatch.setattr(ex, "_current_run_org", lambda: state["org"])
     monkeypatch.setattr(ex, "_verified_run_member", lambda: state["member"])
@@ -171,7 +176,7 @@ def test_a_run_with_no_org_gets_no_block_and_no_read(run) -> None:
     assert run["reads"] == []
 
 
-def test_an_empty_profile_gives_no_block(run) -> None:
+def test_an_empty_profile_with_no_name_gives_no_block(run) -> None:
     for raw in (None, {}, ap.empty_profile(), {"learning": False}):
         ex._PROFILE_CACHE.clear()
         run["raw"] = raw
@@ -188,7 +193,9 @@ def test_the_flag_adds_one_block_and_moves_nothing(run, monkeypatch) -> None:
     _flag(monkeypatch, True)
     on = _parts(payload=payload)
     at = off.index(ex.MEMBER_NAME_LINE.format(name="Ana Rao")) + 1
-    assert on == [*off[:at], GOLDEN, *off[at:]]
+    # The block, and the part-of-day line last (PZ-4). Nothing else moves.
+    assert on[:-1] == [*off[:at], GOLDEN, *off[at:]]
+    assert on[-1].startswith("Part of the day for the member: ")
     assert off[0] == "Organisation: Acme Tools."
 
 
@@ -301,15 +308,19 @@ def test_the_read_binds_the_run_org_and_member(monkeypatch) -> None:
 
         def execute(self, stmt: Any, params: dict[str, Any]):
             seen.append((str(stmt), params))
-            return type("R", (), {"first": lambda self: ({"v": 1},)})()
+            row = ({"v": 1},) if len(seen) == 1 else ("VJ R", None, "Vijay Varada")
+            return type("R", (), {"first": lambda self: row})()
 
     monkeypatch.setattr(ex, "_opener_for_org", lambda org: _Session)
-    assert ex._read_member_profile(ORG, MEMBER) == {"v": 1}
-    ((sql, params),) = seen
+    assert ex._read_member_profile(ORG, MEMBER) == ({"v": 1}, "VJ R", "", "Vijay Varada")
+    ((sql, params), (address_sql, address_params)) = seen
     assert sql == ap.READ_SQL
     assert params == {"org": ORG, "m": MEMBER}
     assert "CAST(:org AS uuid)" in sql and "lower(user_id) = lower(:m)" in sql
     assert "::" not in sql
+    assert address_sql == ap.ADDRESS_SQL
+    assert address_params == {"org": ORG, "m": MEMBER}
+    assert "{org}" not in address_sql and "::" not in address_sql
 
 
 # ── profile-block-solo-plumbing ────────────────────────────────────────────
@@ -593,7 +604,8 @@ def test_white_space_collapses_in_every_value() -> None:
     assert "- [f 1] one two three (about)" in block
     for line in block.split("\n"):
         assert "  " not in line
-    assert block.count("\n") == 6
+    # Seven breaks: a note is a style key, so the house-voice line shows (PZ-3).
+    assert block.count("\n") == 7
 
 
 def _fact(n: int, at: str) -> dict[str, Any]:

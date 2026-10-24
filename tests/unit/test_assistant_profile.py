@@ -656,7 +656,8 @@ class TestTheChangeCount:
                             lambda: "11111111-1111-4111-8111-111111111111")
         monkeypatch.setattr(ex, "_verified_run_member", lambda: "ana@alpha.example")
         monkeypatch.setattr(ex, "_read_member_profile",
-                            lambda org, m: fake.row if fake.row is not _NO_ROW else None)
+                            lambda org, m: (fake.row if fake.row is not _NO_ROW else None,
+                                            "", "", ""))
         ex._PROFILE_CACHE.clear()
         token = ex._RUN_SOLO_ROOM.set(True)
         try:
