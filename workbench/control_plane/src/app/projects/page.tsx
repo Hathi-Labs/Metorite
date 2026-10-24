@@ -72,6 +72,16 @@ import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
+import {
+  MIXED_MOVE_HINT,
+  PERSONAL_ARCHIVED_FOLD_ID,
+  PERSONAL_SECTION_HINT,
+  PERSONAL_SECTION_LABEL,
+  lookupRoots,
+  moveDestinationRoots,
+  personalRoots,
+  splitPersonal,
+} from "./lib/personalTree";
 import MyWorkHost from "./components/MyWorkHost";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
@@ -386,8 +396,11 @@ function ProjectNav({
   onManageTags,
   onManageLifecycle,
   counts,
+  personal = NO_ROOTS,
 }: {
   roots: ProjectRow[];
+  /** WS-64 OP-3 — the caller's own tree, drawn under "Personal". Empty with the flag off. */
+  personal?: ProjectRow[];
   selectedId: string | null;
   /** The app-level destination, or null when a space/project is selected. */
   app: ProjectAppId | null;
@@ -426,6 +439,14 @@ function ProjectNav({
   // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
   const split = useMemo(() => splitArchived(roots), [roots]);
   const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
+  // A personal Area that is archived leaves the live Personal tree and waits in
+  // its own fold inside the Personal section (never in the team fold above).
+  const personalSplit = useMemo(() => splitPersonal(personal), [personal]);
+  const personalArchivedOpen = useFoldOpen(PERSONAL_ARCHIVED_FOLD_ID);
+  const personalArchivedGen = useMemo(
+    () => new Map(personalSplit.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [personalSplit.archived],
+  );
   const archivedGen = useMemo(
     () => new Map(split.archived.map((entry) => [entry.node.id, entry.parentGen])),
     [split.archived],
@@ -519,6 +540,103 @@ function ProjectNav({
           </div>
         </div>
       ))}
+
+      {/* WS-64 OP-3 — Personal 🔒, between My work and Spaces (D-OP-2). The same
+          tree row and counts as Spaces. No "+" on the heading, because a
+          personal root is not a space, and no drag, so a private node cannot
+          be dropped into a team space. The row menu drops Share and Move-out
+          (`projectMenu.ts`). */}
+      {personal.length > 0 ? (
+        <div className="mb-2" data-testid="personal-section">
+          <p
+            className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+            title={PERSONAL_SECTION_HINT}
+          >
+            <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
+            <Icon name="Lock" className="h-3 w-3 shrink-0" />
+            <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
+          </p>
+          <ProjectTree
+            roots={personalSplit.active}
+            selectedId={app ? null : selectedId}
+            onSelect={(project) => {
+              onSelect(project);
+              onPicked?.();
+            }}
+            onAddChild={onAddChild}
+            onOpenSettings={(space) => {
+              onOpenSettings(space);
+              onPicked?.();
+            }}
+            onMove={(node) => {
+              onMove(node);
+              onPicked?.();
+            }}
+            creating={
+              creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
+                ? creating
+                : null
+            }
+            onCommitCreate={onCommitCreate}
+            onCancelCreate={onCancelCreate}
+            actions={navActions}
+            onManageStatuses={(space) => {
+              onManageStatuses(space);
+              onPicked?.();
+            }}
+            onManageFields={(space) => {
+              onManageFields(space);
+              onPicked?.();
+            }}
+            onManageTags={(space) => {
+              onManageTags(space);
+              onPicked?.();
+            }}
+            onManageLifecycle={(space) => {
+              onManageLifecycle(space);
+              onPicked?.();
+            }}
+          />
+          {personalSplit.count > 0 ? (
+            <div className="mt-1" data-testid="personal-archived-section">
+              <button
+                type="button"
+                aria-expanded={personalArchivedOpen}
+                aria-controls="projects-personal-archived-list"
+                onClick={() => toggleFold(PERSONAL_ARCHIVED_FOLD_ID)}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+              >
+                <Icon name={personalArchivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+                <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+                  Archived
+                </span>
+                <span
+                  className="shrink-0 text-xs tabular-nums"
+                  title="Archived personal projects and areas"
+                >
+                  {personalSplit.count}
+                  <span className="sr-only"> archived personal projects</span>
+                </span>
+              </button>
+              {personalArchivedOpen ? (
+                <div id="projects-personal-archived-list" className="opacity-75">
+                  <ProjectTree
+                    roots={personalSplit.archived.map((entry) => entry.node)}
+                    selectedId={app ? null : selectedId}
+                    onSelect={(project) => {
+                      onSelect(project);
+                      onPicked?.();
+                    }}
+                    actions={navActions}
+                    rootParentGen={(node) => personalArchivedGen.get(node.id) ?? 0}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* The Spaces section — its own heading, with the + that creates one. */}
       <div className="mb-1 flex items-center gap-1 px-2 py-1.5">
@@ -682,6 +800,11 @@ function ProjectsWorkspace() {
    */
   const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
   const roots = useMemo(() => tree.data?.rows ?? NO_ROOTS, [tree.data]);
+  // WS-64 OP-3 — the caller's own tree, empty with the flag off. `roots` stays
+  // the TEAM tree (Spaces, the grants fan-out, the drag). `allRoots` is where a
+  // node is looked up, so a selected personal node resolves like any project.
+  const personal = useMemo(() => personalRoots(tree.data, MY_WORK_LIVE), [tree.data]);
+  const allRoots = useMemo(() => lookupRoots(roots, personal), [roots, personal]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [selected, setSelected] = useState<ProjectRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
@@ -1314,7 +1437,7 @@ function ProjectsWorkspace() {
     (open: (node: ProjectRow) => void) => (node: ProjectRow) => {
       setApp(null);
       setSelected(node);
-      open(spaceOf(roots, node));
+      open(spaceOf(allRoots, node));
     };
 
   const projectMenuActions: ProjectMenuHandlers = useMemo(
@@ -1458,12 +1581,22 @@ function ProjectsWorkspace() {
     );
   }
 
-  const visibleRoots = useMemo(
+  const spaceRoots = useMemo(
     // ⚠️ `rootIds` gates the grants, so an empty tree can never be filtered by
     // the PREVIOUS tree's grants while the fan-out below has not run yet.
     () => filterByCenter(roots, rootIds === "" ? NO_GRANTS : grants, center),
     [roots, rootIds, grants, center]
   );
+  // The Spaces section draws `spaceRoots`; every lookup (selection, level,
+  // breadcrumb, deep link) reads this, which adds the personal tree (OP-3).
+  // The Move tasks card offers the side the selection sits on (the server
+  // refuses team to personal). A mixed selection gets none and a sentence.
+  const moveDestinations = useMemo(() => {
+    const byId = new Map(tasks.map((t) => [t.id, t.project_id]));
+    const projectIds = (movingTasks ?? []).map((id) => byId.get(id) ?? "");
+    return moveDestinationRoots(projectIds, roots, personal);
+  }, [movingTasks, tasks, roots, personal]);
+  const visibleRoots = useMemo(() => lookupRoots(spaceRoots, personal), [spaceRoots, personal]);
 
   // Which LEVEL the selection occupies, derived from the tree rather than
   // stored (owner directive 2026-08-31). It decides the whole surface: a
@@ -1621,7 +1754,8 @@ function ProjectsWorkspace() {
         )}
         {sheet === "tree" ? (
           <ProjectNav
-            roots={visibleRoots}
+            roots={spaceRoots}
+            personal={personal}
             selectedId={selected?.id ?? null}
             app={app}
             counts={myWorkNavCounts}
@@ -2201,8 +2335,8 @@ function ProjectsWorkspace() {
 
   const projectName = useCallback(
     (id: string) =>
-      flatten(roots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
-    [roots]
+      flatten(allRoots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
+    [allRoots]
   );
 
   // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
@@ -2840,11 +2974,11 @@ function ProjectsWorkspace() {
       // Not while it is open: a re-seed remounts the pane and drops an edit.
       openSettings: () => {
         if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(roots, selected).id : null);
+        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode, selected, openSettings, roots, app],
+    [router, setPanelMode, selected, openSettings, allRoots, app],
   );
 
   const commandCtx: CommandContext = {
@@ -3054,7 +3188,7 @@ function ProjectsWorkspace() {
    * Undoable. The inverse is the parent it came from, read before the write.
    */
   async function moveNodeTo(node: ProjectRow, parentId: string | null) {
-    const path = pathTo(roots, node.id);
+    const path = pathTo(allRoots, node.id);
     const from = path.length > 1 ? path[path.length - 2].id : null;
     setMoving(true);
     setError(null);
@@ -3063,7 +3197,7 @@ function ProjectsWorkspace() {
       setMovingNode(null);
       setTreeKey((k) => k + 1);
       // The node lands in view: its new parent and that parent's path open.
-      if (parentId) openFolds(pathTo(roots, parentId).map((n) => n.id));
+      if (parentId) openFolds(pathTo(allRoots, parentId).map((n) => n.id));
       undoApi.record({
         label: `moved ${node.name}`,
         undo: async () => {
@@ -3130,7 +3264,7 @@ function ProjectsWorkspace() {
     const selectionIsInside =
       !!selected &&
       (selected.id === node.id ||
-        pathTo(roots, selected.id).some((row) => row.id === node.id));
+        pathTo(allRoots, selected.id).some((row) => row.id === node.id));
 
     setDeleting(true);
     setDeleteError(null);
@@ -3852,7 +3986,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                openSettings("general", spaceOf(roots, selected).id);
+                openSettings("general", spaceOf(allRoots, selected).id);
               }}
             >
               <Icon name="Settings" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -3945,8 +4079,8 @@ function ProjectsWorkspace() {
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
         key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
-        spaces={roots}
-        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(roots, selected).id : null)}
+        spaces={allRoots}
+        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(allRoots, selected).id : null)}
         initialSection={settingsSeed.section ?? null}
         mayImport={mayImport}
         onStartImport={() => {
@@ -4446,7 +4580,7 @@ function ProjectsWorkspace() {
   // node the Center filter hides cannot be selected, so that path is text.
   const openWhere = (task: TaskRow): TaskWhere => {
     const shown = taskWhere(visibleRoots, task.project_id);
-    if (!shown.length) return { path: taskWhere(roots, task.project_id) };
+    if (!shown.length) return { path: taskWhere(allRoots, task.project_id) };
     return {
       path: shown,
       onOpen: (id) => {
@@ -4628,7 +4762,8 @@ function ProjectsWorkspace() {
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
-        roots={roots}
+        roots={moveDestinations.roots}
+        unavailable={moveDestinations.mixed ? MIXED_MOVE_HINT : null}
         busy={movingTasksBusy}
         error={moveTasksError}
         onClose={() => {
@@ -4915,7 +5050,8 @@ function ProjectsWorkspace() {
         {railOpen ? (
           <nav ref={navRef} className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
             <ProjectNav
-              roots={visibleRoots}
+              roots={spaceRoots}
+              personal={personal}
               selectedId={selected?.id ?? null}
               app={app}
               counts={myWorkNavCounts}
@@ -5065,7 +5201,10 @@ function ProjectsWorkspace() {
         <MoveDialog
           open
           moving={movingNode}
-          roots={roots}
+          // OP-3: a personal node picks among the personal tree alone, with
+          // no "Top level" row, so it cannot leave for a team space.
+          roots={movingNode.personal ? personal : roots}
+          topLevel={!movingNode.personal}
           busy={moving}
           onClose={() => setMovingNode(null)}
           onMove={(parentId) => void moveNodeTo(movingNode, parentId)}

@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 to OP-5 are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2 (OP-2b owes §4.3). OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-4 and OP-5 are not built. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`).
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -603,6 +603,26 @@ the same counts. Each personal node carries `personal: true` and
 in `test_personal_privacy_r8.py`, and `test_personal_owner_stamp.py` (R8). The
 sidebar draw waits on OP-2. A team node under the caller's root (the stop rule
 of 297) stays in `rows`, and the sidebar must draw it there.
+
+**Status: the sidebar half is BUILT 2026-10-24** (task #297), dark behind
+`NEXT_PUBLIC_PROJECTS_MY_WORK`. `ProjectNav` draws "Personal" with a lock
+between My work and Spaces, from `personal`, with the same row and counts. The
+section has no "+" and no drag. A personal node opens like any project, because
+the page looks nodes up in `lookupRoots` (`lib/personalTree.ts`). The row menu
+(`projectMenu.ts`) offers the personal root no Move and no Archive. A personal
+Area keeps Move, and `MoveDialog` shows it the personal tree alone, with no
+"Top level" row. Delete follows `can_delete`. The menu has no share item. A
+team node under the root stays in Spaces. Fence: `personalTree.test.ts`, and
+the e2e case in `e2e/projects-my-work.spec.ts` (passed 2026-10-24 in a browser, 5 of 5). The phone Projects-tab sheet
+reuses `ProjectNav`, so it carries the section.
+
+Fix round 1 (2026-10-24). An archived personal Area leaves the live Personal
+tree. It waits in an "Archived" fold inside the Personal section, apart from
+the team fold (`splitPersonal`). The Move tasks card offers the team tree for
+team tasks and the personal tree for personal tasks. A mixed selection gets no
+destination and a sentence (`moveDestinationRoots`). The shared vocabulary
+anchors on the first team space (`firstTeamSpaceId`). The e2e mock now puts the
+kept team node in `rows` as a root. Fence: `personalTree.test.ts`.
 
 **Verify.** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`,
 then `uv run pytest tests/unit/test_personal_tree.py
