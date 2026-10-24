@@ -321,9 +321,61 @@ The name and the role stay in `people`, and the People app stays their owner.
 
 The Knowledge rail gains one group, **Directories**. It holds a row for each
 page type that has at least one entity. The rows are Company, Products,
-People, Customers, Workstreams, Workflows and Topics. A directory is a view over `kb_entities`
-by type, filtered by the visibility clause. It is not a space and it holds no
-grant (D-KB-7 holds: a view, not a pane).
+People, Customers, Workstreams, Workflows and Topics. A directory is a view
+over the owner records of one type. The owning app's rule filters it (§6.4),
+and the visibility clause filters each page. It is not a space and it holds
+no grant (D-KB-7 holds: a view, not a pane). A rail row shows only when the
+caller can see one entity of that type, or more.
+
+### 6.4 Who sees a directory row
+
+Most entities have no page, so the page clause cannot gate them. Each type
+follows the rule of the app that owns the record. A row shows only when all
+four tests pass.
+
+1. **The Knowledge gate.** `KNOWLEDGE_ORGS` and `feature:knowledge`, as the
+   router does today.
+2. **The owning app's rule.** The code calls the app's own function and never
+   copies its SQL.
+
+   | Type | The rule |
+   |---|---|
+   | `person` | `feature:people`, active people only. The row returns the name only, never an email, skills or HR fields |
+   | `customer` | `require_crm_enabled` for the org and `require_crm_access(user)` (`routes/crm/access.py`) |
+   | `workstream` | `feature:projects`, `resolve_visibility(db, user).project_clause("p.id")`, and `p.personal_owner IS NULL`. A personal project of another member never shows |
+   | `workflow` (a row of `workflows`) | `feature:workflows`. The name only, never the graph or a hook token |
+   | `company` | Any member who passes test 1 |
+   | `product`, `topic`, a written `workflow` | `space_id` passes `readable_spaces_clause` (`routes/knowledge/core.py`) |
+
+3. **The name comes from the owner row,** by a live join. `kb_entities.name`
+   is a cache for the Knowledge-owned types only. So a project made private,
+   or a person renamed, never leaks an old name. The same join gates alias
+   matching, so an alias never reveals a hidden record.
+4. **`page_id` returns only when the page passes `visible_pages_clause`.**
+   Otherwise the row shows with no page.
+
+**The list starts from the owner table.** A directory reads the owner rows
+under the owner rule and LEFT JOINs `kb_entities`. So it is complete and
+current with no sync loop, no backfill and no hook in another app. A row of
+`kb_entities` is made by `ensure_entity` only when a page, an alias, a filing
+or a fact needs the pointer. An owner row that is gone leaves an orphan
+entity, which the inner join hides and KC-12 sweeps.
+
+**A background caller has no viewer.** The classifier and the fact pass may
+get entity ids from the resolver, never names. A viewer reads them back only
+through this rule.
+
+**The person resolver.** The PZ-5 route `resolve_person` is bound to the
+calling member and returns a name and an email. The registry maps an email to
+`people.id` with `lower(email)`, and reuses `fold()`, `email_in_org()` and
+`_directory_tier()` from `routes/admin/assistant_profile_people.py` by import.
+`acb_graph.resolver.resolve_person` is a different Person model, and the
+registry never calls it.
+
+**Fence (R7).** `tests/unit/test_kc_entities.py` fails on a read of
+`kb_entities` in `gateway/kb_entities/` or `routes/knowledge/` that does not
+join the owner table through its rule. It also fails on any `INSERT INTO
+kb_entities` outside `ensure_entity`.
 
 ---
 
@@ -733,7 +785,7 @@ All of it lives in the Knowledge app and its rail. No new pane (D-KB-7).
 | Where | What | Who |
 |---|---|---|
 | Rail → **Sources** | The connected drives, their tree, the filing plan, the exceptions | A member sees their own sources. A manager sees every source |
-| Rail → **Directories** | Company, Products, People, Customers, Workstreams, Workflows, Topics | Every member, through the clause |
+| Rail → **Directories** | Company, Products, People, Customers, Workstreams, Workflows, Topics | Each type by its owning app's rule (§6.4) |
 | An entity page | The brief and the body (§11) | Through the clause |
 | Rail → **Review** (built) | Proposals: pages, edits, merges, promotions, drafts | The reviewers of KB-5a |
 | Rail → **Health** | The gardener's last run, conflicts, orphans, spend | `knowledge:manage` |
@@ -770,6 +822,12 @@ nullable with a default (R6).
 
 `kb_chunks.source_kind` gains `document` (already named in migration 273) and
 `fact`. No other change to the index.
+
+**`kb_entities`, two rules.** A Knowledge-owned entity (a product, a topic, a
+written workflow) holds `ref_table = 'kb_entities'` and its own id as
+`ref_id`, so the unique index covers it too, and it must hold a `space_id`.
+The page-type list is a code constant in KC-8a, mirrored by a CHECK. A
+per-org rename or a new type is a follow-up with no ticket yet.
 
 ---
 
@@ -933,7 +991,9 @@ keeps the brain current.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KC-8** | The entity registry: `kb_entities`, the page types, aliases, the Directories group in the rail, lazy entity pages | Each person in `people` resolves to one entity. A second insert for one record fails. The Products directory lists an entity made from a filing | AGENT-SAFE |
+| **KC-8a** | The entity registry, backend: `kb_entities`, the page types, aliases, `ensure_entity`, the resolver, the directory routes under the rule of §6.4, lazy entity pages. It does not depend on KC-1 to KC-7 | Each person in `people` resolves to one entity. A second insert for one record fails. A member without the owning app's access gets no row of that type, and a GET by id is 404. A project the member cannot see, another member's personal project, and a CRM company outside `crm_settings.access` never show in a list, a get or an alias hit. Org B sees no entity of org A | AGENT-SAFE. HIGH tier |
+| **KC-8b** | The Directories group in the rail, after KC-8a | A rail row shows only for a type with a visible entity. The visual review passes | AGENT-SAFE |
+| **KC-8c** | After KC-6: a filing makes a product entity | The Products directory lists an entity made from a filing | AGENT-SAFE |
 | **KC-9** | Facts and episodes: `kb_episodes`, `kb_facts`, `kb_fact_episodes`, extraction from documents and pages, the update step, the quote check, fact chunks | A datasheet v3 that changes a value closes the v2 fact and keeps it in history. A fact with no quote in its episode is dropped. `test_kc_fact_audience.py`: a private fact and an org fact never merge. The eval precision is 90% or more | AGENT-SAFE to build. HIGH tier. The flip: owner |
 | **KC-10** | The brief zone: drawn per reader, Confirm, Correct, Hide, the confidence floor, the history | Two members with different access see two briefs, and neither sees a fact outside their audience (R8). Correct closes the old fact and adds the new one | AGENT-SAFE. Showing learned facts before a click: §21 Q3 |
 | **KC-11** | "Draft this page" for an entity, STORM-shaped, as a KB-5a proposal | A product with 12 facts gets a cited draft. Each line of the draft cites a fact the author can see | AGENT-SAFE |
@@ -997,12 +1057,14 @@ node .claude/hooks/ste-lint.test.mjs
 # The fences each slice adds. Each exists from the slice named after it.
 uv run pytest tests/unit/test_kc_sources_read_only_scopes.py tests/unit/test_kb_sources_no_global_creds.py -q  # KC-1
 uv run pytest tests/unit/test_kc_document_visibility.py -q   # KC-4
+uv run pytest tests/unit/test_kc_entities.py -q              # KC-8a
 uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
 
 # The R8 suites. A skip is not a pass.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_kc_sources_r8.py -p no:xdist -rs -q    # KC-1, KC-3
 uv run pytest tests/unit/test_kc_access_r8.py -p no:xdist -rs -q     # KC-4
+uv run pytest tests/unit/test_kc_entities_r8.py -p no:xdist -rs -q   # KC-8a
 uv run pytest tests/unit/test_kc_facts_r8.py -p no:xdist -rs -q      # KC-9, KC-10, KC-13
 uv run pytest tests/unit/test_kc_eval_r8.py -p no:xdist -rs -q       # KC-15
 
