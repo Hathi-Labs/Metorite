@@ -518,9 +518,10 @@ def test_no_code_calls_a_write_tool_and_one_file_registers_them() -> None:
                     name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
                     if name in TOOLS:
                         calls.append(rel)
-                if isinstance(node, ast.ImportFrom) and node.module == "acb_skills.profile_tools":
-                    if {a.name for a in node.names} & {*TOOLS, "WRITE_TOOLS"}:
-                        holders.add(rel)
+                if (isinstance(node, ast.ImportFrom)
+                        and node.module == "acb_skills.profile_tools"
+                        and {a.name for a in node.names} & {*TOOLS, "WRITE_TOOLS"}):
+                    holders.add(rel)
     assert calls == []
     assert holders == {"apps/services/orchestrator/orchestrator/agents.py"}
 
