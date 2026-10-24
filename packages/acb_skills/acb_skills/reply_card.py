@@ -76,9 +76,11 @@ REPLY_ANSWER_PREFIX = "APPROVE "
 #: What the member may choose on the card. Discard is ``REJECT``.
 REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
 
-#: The keys of ``answer.reply``, exactly. ``to`` and ``cc`` are the lists the
-#: member SAW. The gateway never sends to them: it derives the recipients
-#: again and refuses the answer when the two differ. ``message_id`` is the
+#: The keys of ``answer.reply``, exactly. ``to`` and ``cc`` are the people
+#: that the member TICKED on the card (owner, 2026-10-24). The gateway
+#: derives the recipients again, and it sends only when each ticked person
+#: is on the derived list (``reply_card.ticked_subset``): the member can take
+#: a person off and never add one. ``message_id`` is the
 #: email the card answers, so the record of one card cannot act on another
 #: email (security review of #1191).
 REPLY_ANSWER_KEYS: frozenset[str] = frozenset(

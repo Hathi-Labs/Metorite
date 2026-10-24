@@ -924,7 +924,31 @@ def clean_reply_form(form: dict | None) -> dict | None:
         # with no classes is exactly as before.
         **({"classes": _reply_classes(form["classes"])}
            if isinstance(form.get("classes"), dict) and form["classes"] else {}),
+        # The tick boxes (owner, 2026-10-24): the people of each choice that
+        # start ticked. Each one is a person of that choice's list, or the
+        # form raises before any card is drawn. A form with none starts with
+        # each person ticked.
+        **({"ticked": _reply_ticked(form["ticked"], reply, reply_all)}
+           if isinstance(form.get("ticked"), dict) else {}),
     }
+
+
+def _reply_ticked(value: dict, reply: dict, reply_all: dict) -> dict:
+    """The ticked start of each choice, each a subset of the choice's lists."""
+    out: dict[str, dict[str, list[str]]] = {}
+    for key, lists in (("reply", reply), ("reply_all", reply_all)):
+        raw = value.get(key) if isinstance(value.get(key), dict) else {}
+        out[key] = {}
+        for part in ("to", "cc"):
+            have = {a.lower(): a for a in lists[part]}
+            got = raw.get(part, lists[part])
+            if not isinstance(got, list):
+                raise ValueError("a ticked list is a list")
+            picked = [str(a).strip().lower() for a in got]
+            if any(a not in have for a in picked):
+                raise ValueError("a ticked address is a person of the card")
+            out[key][part] = [a for a in lists[part] if a.lower() in set(picked)]
+    return out
 
 
 #: The classes of a person on a held card (``acb_skills.held_card.CLASSES``).

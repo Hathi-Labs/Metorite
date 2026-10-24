@@ -2327,16 +2327,26 @@ def _draft_line(draft_id: Any, subject: Any) -> str:
 
 
 def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
-    """The card's reply form, from the gateway's ``/email/reply-card``."""
+    """The card's reply form, from the gateway's ``/email/reply-card``.
+
+    ``ticked`` (owner, 2026-10-24) is the gateway's start of the tick box of
+    each person, for each choice. An older gateway sends none, and then each
+    person starts ticked."""
     rec = prep.get("recipients") or {}
     body = str(prep.get("body") or "")
+    lists = {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}}
+    given = prep.get("ticked") if isinstance(prep.get("ticked"), dict) else {}
+    ticked = {k: {"to": list((given.get(k) or v).get("to") or []),
+                  "cc": list((given.get(k) or v).get("cc") or [])}
+              for k, v in lists.items()}
     return {
         "message_id": prep.get("message_id") or "",
         "notices": list(prep.get("notices") or []),
         "mailbox": prep.get("mailbox") or "",
         "subject": prep.get("subject") or "",
         "original": prep.get("original") or {},
-        "recipients": {"reply": rec.get("reply") or {}, "reply_all": rec.get("reply_all") or {}},
+        "recipients": lists,
+        "ticked": ticked,
         "reply_all": bool(reply_all),
         "body": body,
         # The draft that this card wrote. The member's Discard trashes it.
@@ -2349,35 +2359,38 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
 #: The longest card title that ``request_confirmation`` keeps whole.
 _REPLY_TITLE_MAX = 120
 
-#: The notice of a held reply card whose Reply all adds a new address (§21,
-#: open question 1, the safer choice).
-_REPLY_ALL_NEW_NOTICE = (
-    "Reply all adds an address that you do not know, so the card opens on "
-    "Reply. Each new address is marked. Press Reply all to add them.")
+#: The notice of a held reply card with a new address (§21, the tick boxes
+#: of 2026-10-24). The card opens on the server's choice (§22.6), and each
+#: new address starts unticked.
+_REPLY_NEW_UNTICKED_NOTICE = (
+    "An address that you do not know is on this mail. It is marked, and it "
+    "starts unticked, so it gets nothing unless you tick it.")
 
 
 def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
     """Put the server's classes on a reply form of a held run (§21).
 
-    A person that Reply all adds, and that the member does not know, starts
-    out: the card opens on Reply, and the member must press Reply all. An
-    address with no class reads as new, so a fault fails closed."""
+    The tick boxes (owner, 2026-10-24): the card opens on the server's
+    choice, Reply all by §22.6, and each person that the member does not
+    know starts UNTICKED. The ticks come from the gateway (``untick_new``).
+    A person with no class reads as new and starts unticked, so a fault
+    fails closed."""
     classes = {str(k).strip().lower(): str(v)
                for k, v in (prep.get("classes") or {}).items() if k}
     rec = form["recipients"]
-    shown = {a.strip().lower() for key in ("to", "cc")
-             for a in (rec.get("reply") or {}).get(key) or []}
-    added = [a for key in ("to", "cc") for a in (rec.get("reply_all") or {}).get(key) or []
-             if a.strip().lower() not in shown]
     every = {a.strip().lower() for choice in ("reply", "reply_all") for key in ("to", "cc")
              for a in (rec.get(choice) or {}).get(key) or []}
     form["classes"] = {a: classes.get(a, "new") for a in every}
-    if form["reply_all"] and any(classes.get(a.strip().lower(), "new") == "new" for a in added):
-        form["reply_all"] = False
+    for choice in ("reply", "reply_all"):
+        for key in ("to", "cc"):
+            form["ticked"][choice][key] = [
+                a for a in form["ticked"][choice][key]
+                if form["classes"].get(a.strip().lower(), "new") != "new"]
+    if any(c == "new" for c in form["classes"].values()):
         if len(form["notices"]) < 4:
-            form["notices"].append(_REPLY_ALL_NEW_NOTICE)
+            form["notices"].append(_REPLY_NEW_UNTICKED_NOTICE)
         else:
-            form["note"] = f"{_REPLY_ALL_NEW_NOTICE} {form['note']}".strip()
+            form["note"] = f"{_REPLY_NEW_UNTICKED_NOTICE} {form['note']}".strip()
 
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
@@ -2431,8 +2444,9 @@ async def compose_reply(
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
-    The card adds no Cc or Bcc. When the member asks for one, do it in the
-    chat: find each person with find_contact. The card saved the reply to
+    Each To and Cc on the card has a tick box, and the reply goes only to
+    the people that the member leaves ticked. The card adds no Cc or Bcc.
+    When the member asks for one, do it in the chat: find each person with find_contact. The card saved the reply to
     Drafts, and the answer names its draft_id. Add the people with
     edit_draft, and offer send_draft. Never tell the member to open the
     Email app for it."""
@@ -2448,18 +2462,24 @@ async def compose_reply(
         steer["draft"] = draft
     elif (instruction or "").strip():
         steer["instruction"] = instruction
-    if reply_all is None and _egress_held():
-        # A held chat does not let the server choose Reply all. The card may
-        # open on Reply (§21), and the draft in Drafts must name the same
-        # people as the card (review of §22.6, P2).
+    held_cards = _held_card_mode()
+    if reply_all is None and _egress_held() and not held_cards:
+        # A held chat with EMAIL_HELD_CARD_SEND off has no class and no
+        # unticked start, so it does not let the server choose Reply all
+        # (review of §22.6, P2). With the switch on, the card opens on the
+        # server's choice, and each new address starts unticked.
         reply_all = False
     if reply_all is not None:
         # The draft in Drafts takes the recipients that the card opens with.
         # Left out, the server chooses (§22.6).
         steer["reply_all"] = bool(reply_all)
+    if held_cards:
+        # The tick boxes: the server starts each new address unticked, and the
+        # draft in Drafts leaves it out, so the draft holds what the card sends.
+        steer["untick_new"] = True
     prep = await _post("/email/reply-card", {"message_id": email_id, **steer})
     form = _reply_form(prep, bool(prep.get("reply_all", reply_all)))
-    if _held_card_mode():
+    if held_cards:
         _held_reply_form(form, prep)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     answer = await ask_tools.request_confirmation(
