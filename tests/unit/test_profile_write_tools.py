@@ -800,7 +800,7 @@ def test_a_third_party_read_closes_every_write_for_the_rest_of_the_run(
         return await asyncio.create_task(_call(name))
 
     assert ap.writes_open() is True
-    assert _refused(_run(_turn()), "not_your_turn") == pt.NOT_OWN_CHAT
+    assert _refused(_run(_turn()), "closed_by_read") == pt.CLOSED_BY_READ
     assert own_chat.requests == []
     assert ap.writes_open() is False
 
@@ -1184,5 +1184,23 @@ def test_a_memory_or_graph_read_closes_the_writes(own_chat, monkeypatch, read) -
         return await asyncio.create_task(_call("profile_remember"))
 
     assert ap.writes_open() is True
-    assert _refused(_run(_turn()), "not_your_turn") == pt.NOT_OWN_CHAT
+    assert _refused(_run(_turn()), "closed_by_read") == pt.CLOSED_BY_READ
     assert own_chat.requests == []
+
+
+
+def test_the_prompt_says_save_first() -> None:
+    """Final verify P2-2: rule 8 asks for remember() first, and a read
+    closes writes. The profile line says to call the profile tool first."""
+    mod = _orchestrator_module()
+    assert "Call the profile tool first, before remember()" in mod._PROFILE_SWAP[1]
+
+
+def test_a_closed_run_that_never_read_keeps_the_own_chat_reason(monkeypatch) -> None:
+    token = ap.bind_writes(False)
+    try:
+        assert ap.writes_closed_by_read() is False
+        ap.close_writes()
+        assert ap.writes_closed_by_read() is False
+    finally:
+        ap.release_writes(token)

@@ -260,10 +260,13 @@ class _Writes:
     reaches the next call. The copy holds the same object, so a change of
     :attr:`open` reaches every later call of the run (PZ-6a fix round 1)."""
 
-    __slots__ = ("open",)
+    __slots__ = ("open", "closed_by_read")
 
     def __init__(self, open_: bool) -> None:
         self.open = open_ is True
+        #: True when a reader of other people's text closed an open switch,
+        #: so a refusal can say why (final verify P2-2).
+        self.closed_by_read = False
 
 
 #: The holder of this run's switch. Only a run where the member can change
@@ -298,7 +301,16 @@ def close_writes() -> None:
     end of a delegated or specialist run (PZ-6a fix round 1, §5.5)."""
     gate = WRITES_OPEN.get()
     if gate is not None:
+        if gate.open:
+            gate.closed_by_read = True
         gate.open = False
+
+
+def writes_closed_by_read() -> bool:
+    """True when this run COULD write until a reader of other people's text
+    closed it. The refusal then asks for a new message (final verify P2-2)."""
+    gate = WRITES_OPEN.get()
+    return gate is not None and gate.closed_by_read
 
 
 def release_writes(token: contextvars.Token[_Writes | None] | None) -> None:

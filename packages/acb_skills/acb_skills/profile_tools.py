@@ -92,6 +92,7 @@ from acb_common.assistant_profile import (
     grounded,
     needs_confirm,
     typed_words,
+    writes_closed_by_read,
     writes_open,
 )
 
@@ -272,6 +273,11 @@ LEARNING_OFF = "Learning is off. Nothing saved."
 SHARED_ROOM_WRITE = "A shared room cannot change a profile."
 #: A run that is not the member's own chat (``WRITES_OPEN`` is False).
 NOT_OWN_CHAT = "I can only change your profile in your own chat."
+#: A run that could write until it read other people's text (a search, a
+#: page, memory). The member says it again in a new message (final verify
+#: P2-2: the persona asks for remember() first, and it closes writes).
+CLOSED_BY_READ = ("I read other content in this turn, so I cannot change your profile "
+                  "now. Say it again in a new message and I will save it.")
 #: A WhatsApp run of an org with its WhatsApp writes off.
 WHATSAPP_OFF = "I cannot change your profile from WhatsApp. Change it in Settings."
 #: The session read the answer of an agent that reads stranger text.
@@ -289,7 +295,7 @@ UNDO_PREFIX = "undo: "
 #: The start of the machine line of a refusal or an undo: the FIRST line.
 STATUS_PREFIX = "profile: "
 #: The machine reasons of a refusal. ``ProfileToolCards.tsx`` reads them.
-REASONS: tuple[str, ...] = ("learning_off", "not_your_turn", "not_your_words",
+REASONS: tuple[str, ...] = ("learning_off", "not_your_turn", "closed_by_read", "not_your_words",
                             "marked", "duplicate", "invalid", "needs_confirm",
                             "declined")
 #: The most same-kind facts that a save lists for the model, and the longest
@@ -383,6 +389,8 @@ async def _write_gate() -> dict[str, str]:
     user = _current_user_email()
     if user and "@" not in user:
         raise _Refused(SHARED_ROOM_WRITE, "not_your_turn")
+    if user and not writes_open() and writes_closed_by_read():
+        raise _Refused(CLOSED_BY_READ, "closed_by_read")
     if not user or not writes_open():
         raise _Refused(NOT_OWN_CHAT, "not_your_turn")
     if not channel_writes():
