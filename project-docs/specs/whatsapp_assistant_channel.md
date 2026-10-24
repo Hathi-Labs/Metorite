@@ -2049,8 +2049,9 @@ with writes off. That run has no reply path.
    stored card text holds each row and each field that the send uses
    (`whatsapp_acts.email_card_text`).
 2. **The record.** One row in `whatsapp_pending_acts`, as §14.3 item 2 says.
-   Migration 298 adds `confirm_code_hash`. It holds the SHA-256 of the code
-   and never the code. NULL is a Confirm-button act, so §14 does not change.
+   Migration 298 adds `confirm_code_hash` and `wrong_codes`. The first holds
+   an HMAC-SHA256 of the code, keyed with `gateway_session_secret`, and never
+   the code. NULL is a Confirm-button act, so §14 does not change.
 3. **The summary.** `bot_run` sends one text with no buttons. It holds all
    that the card shows: the act, the mailbox and each person with a number.
    Each person has its class mark and its look-alike warning, if any. It also
@@ -2073,7 +2074,7 @@ settles it before any run:
 | `YES 7K3Q WITHOUT 2` | Metorite leaves out line 2 |
 | `YES 7K3Q WITH 3` | Metorite adds line 3. A new address starts unticked, so it needs this |
 | `NO` | The act closes as `cancelled` |
-| A wrong code | Nothing. The act stays, and the reply says why |
+| A wrong code | Nothing. The act stays, and the reply says why. The fifth wrong code closes the act as `void` |
 | `YES` with no code | Nothing. The act stays, and the reply says why |
 | A quoted reply | Nothing. The act stays, and the reply says why |
 | Extra words after `YES` | Nothing. The act stays, and the reply says why |
@@ -2100,9 +2101,12 @@ numbers. `bot_run` runs the model again inside `whatsapp_acts.approving_email`.
 The turn names the tool and its stored arguments. The member's text is not in
 it, because code already applied the numbers.
 
-1. **One card gets the yes.** The FIRST email card whose text equals the
-   stored text gets it. Any other card parks again, so the member sees its
-   own summary and a new code.
+1. **One call gets the yes.** The FIRST email call that matches gets it.
+   The email assistant must make it, with the stored tool and exactly the
+   stored arguments. Its card text must also equal the stored text. The text
+   alone does not bind the call, because a card shows 20 messages and a
+   count (review P1). Any other call parks again, so the member sees its own
+   summary and a new code.
 2. **A plain card** gets True, and the tool acts as it does on the web.
 3. **A held send card** (§21 of the email plan) gets a `RowsAnswer`. It holds
    the rows that start ticked, minus WITHOUT, plus WITH.
