@@ -318,9 +318,20 @@ The name and the role stay in `people`, and the People app stays their owner.
   "the Penrose", "PX-1", "Penrose Pellet Extruder". The resolver reads them
   first. `personalization.md` §5.4 `resolve_person` keeps owning the member
   aliases, and this resolver calls it for a person.
-- **A page per entity, made lazily.** An entity gets a page in its space the
-  first time a fact about it is accepted, or when a person opens "Write the
-  page". No empty page is made in bulk.
+- **A page per entity, made lazily.** An entity gets a page the first time a
+  fact about it is accepted, or when a person opens "Write the page". No
+  empty page is made in bulk. One entity has one page for the whole org.
+- **Where the page lives** (supervisor decision, 2026-10-25). A product, a
+  topic or a written workflow keeps its page in its own space. The page of a
+  person, a customer, a workstream, a workflow or the company goes into the
+  org's `company` space by default. The caller may name another space that
+  they can write in. The page never goes into a `me` space.
+- **The pointer comes first.** A directory row of another app's record has
+  no entity id until something needs one. "Write the page" calls
+  `POST /knowledge/entities/by-ref` with the type and the owner id. The route
+  reads the owner row under the rule of §6.4, then calls `ensure_entity`.
+  The page route then takes the entity id. A row that the caller cannot see
+  gets 404, and nothing is written.
 
 ### 6.3 The directories
 
@@ -347,7 +358,7 @@ four tests pass.
    | Type | The rule |
    |---|---|
    | `person` | `feature:people`, active people only. The row returns the name only, never an email, skills or HR fields |
-   | `customer` | `require_crm_enabled` for the org and `require_crm_access(user)` (`routes/crm/access.py`) |
+   | `customer` | `feature:crm`, `require_crm_enabled` for the org and `require_crm_access(user)` (`routes/crm/access.py`) |
    | `workstream` | `feature:projects`, `resolve_visibility(db, user).project_clause("p.id")`, and `p.personal_owner IS NULL`. A personal project of another member never shows |
    | `workflow` (a row of `workflows`) | `feature:workflows`. The name only, never the graph or a hook token |
    | `company` | Any member who passes test 1 |
