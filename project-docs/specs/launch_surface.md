@@ -443,7 +443,7 @@ move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 
 **Done when:** `nav.test.ts` asserts all four of these.
 
-- (a) The live set is exactly §2's **eleven** `(section, href)` pairs (Email joined
+- (a) The live set is exactly §2's **fifteen** `(section, href)` pairs (measured 2026-10-24 in `nav.test.ts`; Email joined
   on 2026-10-02, My Access left for the People app on 2026-10-05, and WhatsApp
   joined on 2026-10-08).
 - (b) Every pane carries an explicit `launch`.
