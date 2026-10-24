@@ -127,7 +127,9 @@ export function rowSummary(title: string, ticked: number, total: number): string
   if (ticked === total) return title;
   const count = new RegExp(`\\b${total}\\b`);
   if (count.test(title)) return title.replace(count, `${ticked} of ${total}`);
-  return `${title} (${ticked} of ${total})`;
+  // "· 1 of 4 ticked", and not "(1 of 4)": beside a stack's "1 of 2" pager,
+  // a bare count read as a second card counter (owner report, 2026-10-24).
+  return `${title} · ${ticked} of ${total} ticked`;
 }
 
 /**
@@ -373,4 +375,34 @@ export function settleAnswer(
   if (outcome === "retry") return { type: "restore", card };
   if (outcome === "drop") return { type: "dropped", key: card.key };
   return { type: "answered", key: card.key };
+}
+
+// ── The stack of waiting cards (owner, 2026-10-24) ──────────────────────────
+//
+// "I could easily miss that there are multiple approval cards." With two or
+// more cards the queue draws as a stack: a banner that counts them, the edges
+// of the cards behind, a swipe between them on a touch screen, and one nudge
+// that shows the swipe. Each card is still one consent: no "Approve all".
+
+/** The px of a sideways drag that moves to the next or previous card. */
+export const SWIPE_STEP_PX = 56;
+
+/** The move that a finished drag of `dx` px asks for: +1 the next card,
+ *  -1 the previous one, 0 none. A drag to the LEFT shows the next card, as
+ *  a stack of paper does. The ends of the queue do not wrap. */
+export function swipeStep(dx: number, at: number, total: number, step = SWIPE_STEP_PX): -1 | 0 | 1 {
+  if (!Number.isFinite(dx) || total < 2) return 0;
+  if (dx <= -step && at < total - 1) return 1;
+  if (dx >= step && at > 0) return -1;
+  return 0;
+}
+
+/** How many card edges peek out behind the shown card: at most two. */
+export function stackDepth(total: number): number {
+  return Math.max(0, Math.min(2, total - 1));
+}
+
+/** The banner's words for `total` waiting cards. */
+export function stackBanner(total: number): string {
+  return `${total} approvals waiting. Swipe or use the arrows to see each one.`;
 }
