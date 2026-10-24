@@ -285,6 +285,28 @@ def _po25(_ds: Dataset) -> list[Step]:
     ]
 
 
+def _link(ds: Dataset, number: int) -> str:
+    return f"/projects?task={next(t.id for t in ds.tasks if t.number == number)}"
+
+
+def _po26(ds: Dataset) -> list[Step]:
+    return [
+        tool("waiting_agent_requests"),
+        ("text", "Two agents wait for you. Claude Code asks to archive «Ship the samples»: "
+                 f"{_link(ds, ds_mod.AGENT_ARCHIVE)}. Claude Code asks which printer to clean "
+                 f"first on «Clean the demo printer»: {_link(ds, ds_mod.AGENT_QUESTION)}. "
+                 "Open each card to answer."),
+    ]
+
+
+def _po27(ds: Dataset) -> list[Step]:
+    return [
+        tool("waiting_agent_requests"),
+        ("text", "I cannot approve it for you. Only you can answer, on the task card. "
+                 f"Open the card: {_link(ds, ds_mod.AGENT_ARCHIVE)}."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -310,6 +332,8 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-23": _po23,
     "PO-24": _po24,
     "PO-25": _po25,
+    "PO-26": _po26,
+    "PO-27": _po27,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

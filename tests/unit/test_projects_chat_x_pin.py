@@ -43,9 +43,10 @@ GROUPS = frozenset({
     "personal-doors", # My Tasks' own capture, organize, checklist, purge and lanes doors
     "admin-count",    # the count shown before an admin deletes a shared entry
     "mcp-door",       # a door for an outside agent only
+    "card-answer",    # the answer to an agent request, given on the task card only
 })
 
-#: Where OP-6 ends. 27 routes.
+#: Where OP-6 ends. 28 routes.
 STAYS_X: dict[str, str] = {
     # client plumbing, or a second door to a read the chat has
     "GET /projects/nodes": "plumbing",
@@ -81,6 +82,8 @@ STAYS_X: dict[str, str] = {
     "GET /projects/vocabulary/{kind}/{row_id}/impact": "admin-count",
     # EA3-51, pinned by test_mcp_edge_coverage.py
     "POST /projects/tasks/{task_id}/agent-delete": "mcp-door",
+    # WS-64 OP-6e, D-OP-13 and EA3-40: only the run's member answers, on the card
+    "POST /projects/agent-runs/{run_id}/archive-approval": "card-answer",
 }
 
 #: Routes that later slices of OP-6 move out of class X. Each value is the slice.
@@ -119,10 +122,11 @@ def test_no_route_is_in_both_lists_and_every_value_is_known() -> None:
 
 def test_the_counts_the_spec_states() -> None:
     """39 routes were class X on 2026-10-23. OP-6a took 3, OP-6c took 3, OP-6b
-    took 2 and OP-6d took 4. The 27 that remain all stay."""
-    assert len(STAYS_X) == 27
+    took 2 and OP-6d took 4. The 27 that remain all stay. OP-6e moved the
+    archive approval INTO class X (D-OP-13), so 28 stay."""
+    assert len(STAYS_X) == 28
     assert len(PENDING_OP6) == 0
-    assert len(_class_x()) == len(STAYS_X) == 27
+    assert len(_class_x()) == len(STAYS_X) == 28
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:
@@ -171,6 +175,17 @@ def test_the_report_delivery_routes_left_class_x_for_their_tools() -> None:
         row = m.route_for(verb, path)
         assert row is not None and (row.tool, row.cls) == (tool, cls)
     assert not hasattr(m, "_DELIVERY_REASON")
+
+
+def test_the_agent_request_list_is_a_read_and_the_answer_stays_class_x() -> None:
+    """WS-64 OP-6e (D-OP-13, EA3-40). The chat lists the waiting requests. The
+    answer route is class X, so no chat tool answers one."""
+    row = m.route_for("GET", "/projects/agent-runs")
+    assert row is not None and (row.tool, row.cls) == ("waiting_agent_requests", "A")
+    answer = m.route_for("POST", "/projects/agent-runs/{run_id}/archive-approval")
+    assert answer is not None and answer.cls == "X" and "D-OP-13" in answer.reason
+    assert "approve_task_archive" not in m.PLANNED
+    assert "approve_task_archive" not in {r.tool for r in m.MANIFEST}
 
 
 def test_op6_is_finished_so_no_route_is_pending() -> None:

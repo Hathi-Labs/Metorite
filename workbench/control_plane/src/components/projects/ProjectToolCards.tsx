@@ -76,6 +76,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   find_conflicts: { icon: "TriangleAlert", label: "Conflicts" },
   report_list: { icon: "FileText", label: "Reports" },
   report_recipients: { icon: "Users", label: "Report recipients" },
+  waiting_agent_requests: { icon: "Bot", label: "Agent requests" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
   // The overlay line is the point of this read, and a list card drops it.

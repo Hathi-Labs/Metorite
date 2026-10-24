@@ -25,6 +25,8 @@ The facts that the tasks lean on:
   PO-17, and #6 in Launch takes it.
 * The member wrote the report «Weekly delivery», and the member alone is on its
   list. Priya wrote «Board pack» (PO-21 to PO-25, WS-64 OP-6d).
+* Two agent runs wait for the member: an archive request on #12 and a question on
+  #7. A third run finished (PO-26 and PO-27, WS-64 OP-6e).
 * The member leads Launch and not Ops. Launch has one grant, to Priya (PO-18
   to PO-20, WS-64 OP-6b).
 
@@ -186,6 +188,12 @@ UPLOAD_BYTES = b"%PDF-1.4\n% the launch brief of the eval\n%%EOF\n"
 #: (PO-21 to PO-24). Priya wrote the board pack, so the route refuses the member (PO-25).
 REPORT_WEEKLY = "Weekly delivery"
 REPORT_BOARD = "Board pack"
+
+#: WS-64 OP-6e (D-OP-13). Two agent runs wait for the member (PO-26, PO-27). An agent asks to
+#: archive #12, and an agent asks a question on #7. The member answers on the task card only.
+AGENT_ARCHIVE = 12
+AGENT_QUESTION = 7
+AGENT_NAME = "Claude Code"
 
 MEMBER = Member("asha.iyer@eval.example", "Asha Iyer")
 #: A second member. PO-3's email comes from her.

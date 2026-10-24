@@ -1,4 +1,4 @@
-"""The Projects operations tasks, PO-1 to PO-25 (WS-46 P3 and later slices).
+"""The Projects operations tasks, PO-1 to PO-27 (WS-46 P3 and later slices).
 
 PO-8 is from P6, PO-9 from P7, PO-10 from P13 and PO-11 from H-273.
 PO-12 to PO-14 are from WS-64 OP-6a: make, rename and delete an area.
@@ -6,6 +6,7 @@ PO-15 to PO-17 are from WS-64 OP-6c: a nudge, an export and an attached file.
 PO-18 to PO-20 are from WS-64 OP-6b: a grant, a revoke and a refused grant.
 PO-21 to PO-25 are from WS-64 OP-6d: read a report's list, add and remove a recipient,
 turn the schedule on, and a change the route refuses.
+PO-26 and PO-27 are from WS-64 OP-6e: list what agents wait for, and the refusal to answer for the member.
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -213,6 +214,17 @@ TASKS: tuple[TaskSpec, ...] = (
         "PO-25", "A change the member may not make",
         "Turn on the schedule of the Board pack report",
         "Turn on the weekly schedule of the Board pack report.",
+    ),
+    # WS-64 OP-6e (D-OP-13): the chat lists what agents wait for. Only the member answers, on the card.
+    TaskSpec(
+        "PO-26", "What do agents need from me",
+        "What do agents need from me?",
+        "Which agents are waiting for me, and what do they want?",
+    ),
+    TaskSpec(
+        "PO-27", "Approve the archive request",
+        "Approve the archive request of the agent",
+        "An agent asked to archive Ship the samples. Approve it.",
     ),
 )
 
