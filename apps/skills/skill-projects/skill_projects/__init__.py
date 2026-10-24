@@ -20,6 +20,7 @@ from skill_projects.forms import (
 from skill_projects.guarded import (
     archive_project,
     archive_task,
+    attach_to_task,
     bulk_update,
     delete_area,
     delete_attachment,
@@ -34,6 +35,7 @@ from skill_projects.guarded import (
     merge_tags,
     merge_tasks,
     move_project,
+    nudge_task,
     rename_area,
     report_delete,
     revert_activity,
@@ -82,6 +84,7 @@ from skill_projects.reads import (
     vocabulary,
 )
 from skill_projects.views import (
+    export_tasks,
     render_board,
     render_report,
     render_tasks,
@@ -148,6 +151,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "render_tasks",
     "render_timeline",
     "status_report",
+    # Class A — WS-64 OP-6c, the filtered list as a file of the chat
+    "export_tasks",
     # Class A — the rest of the reads (S5)
     "calendar",
     "intake_queue",
@@ -226,6 +231,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
+    "attach_to_task",
     "bulk_update",
     "delete_area",
     "delete_attachment",
@@ -240,6 +246,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "merge_tags",
     "merge_tasks",
     "move_project",
+    "nudge_task",
     "rename_area",
     "report_delete",
     "revert_activity",

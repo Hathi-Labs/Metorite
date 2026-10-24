@@ -168,6 +168,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # catalogue and the subjects and then the preview.
     "render_report": [{"report_id": UUID}, {"template": "team pulse", "subject": "Design"}],
     "status_report": [{"project_id": UUID}, {}],
+    # WS-64 OP-6c — the filtered list as a CSV file of the chat.
+    "export_tasks": [{}, {"project_id": UUID, "overdue": True, "shown_fields": "status"}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
     "project_views": [{"project_id": UUID}],

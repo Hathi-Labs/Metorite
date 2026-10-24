@@ -20,6 +20,9 @@ The facts that the tasks lean on:
 * Launch has no saved view yet (PO-9, WS-46 P7).
 * The member has two areas of their own, Home and Finance (PO-12 to PO-14,
   WS-64 OP-6a). Finance holds two done tasks and no open one.
+* The member waits on Priya for #4 in Launch, a task they handed to her
+  (PO-15, WS-64 OP-6c). The member uploaded launch-brief.pdf to the chat of
+  PO-17, and #6 in Launch takes it.
 
 Today is the member's own date in :data:`TIMEZONE`. Since WS-46 P7 the tools
 take today from ``GET /projects/my/today``, which the stub answers with this
@@ -165,6 +168,12 @@ class Area:
 #: Home holds open work. Finance holds two finished tasks and no open one, so a
 #: delete ARCHIVES it, though the open count reads 0 (PO-14).
 AREAS: tuple[Area, ...] = (Area("Home", 2, 2), Area("Finance", 0, 2))
+
+#: WS-64 OP-6c. The task the member handed to Priya and waits on (PO-15).
+DELEGATED = 4
+#: The file the member uploaded to the chat of PO-17 (WS-64 OP-6c).
+UPLOAD_NAME = "launch-brief.pdf"
+UPLOAD_BYTES = b"%PDF-1.4\n% the launch brief of the eval\n%%EOF\n"
 
 MEMBER = Member("asha.iyer@eval.example", "Asha Iyer")
 #: A second member. PO-3's email comes from her.

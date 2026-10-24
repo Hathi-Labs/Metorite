@@ -765,6 +765,9 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: same PDF seam, the same writes and open_world=False.
 #: 2026-10-23 (WS-64 OP-6a, D-OP-9): create_area, rename_area and delete_area joined.
 #: Each writes only through the gateway, behind one card, and says open_world=False.
+#: 2026-10-23 (WS-64 OP-6c, D-OP-9): nudge_task, export_tasks and attach_to_task joined.
+#: nudge_task and attach_to_task write only through the gateway, behind one card.
+#: export_tasks reads through the gateway and saves one CSV into the chat, as render_report does.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -774,6 +777,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer",
     "create_area", "delete_area", "rename_area",
+    "nudge_task", "export_tasks", "attach_to_task",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",
