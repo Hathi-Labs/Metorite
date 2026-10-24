@@ -57,11 +57,13 @@ from gateway.routes.projects.core import (
     count_where,
     diff_changes,
     emit,
+    grant_personal_owner,
     insert_row,
     load_visible_project,
     node_kind,
     node_level,
     org_groups,
+    personal_tree_owner,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -808,6 +810,31 @@ async def create_node(
             # and inherit that department's grants for it.
             parent_row = await load_visible_project(db, vis, str(parent_id))
 
+        # WS-64, task #304. A child of a private tree is private too, so it
+        # takes the tree owner's `personal_owner`. Every read tests the node's
+        # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
+        # checks), so an unstamped child read as a team node: an orphan root
+        # in each `data:org:read` tree, open to an agent with
+        # `include_personal=false`, and free to move into a team space.
+        #
+        # Only the tree owner may add a node here. `/projects/my/areas` is
+        # the personal seam, but the Projects app's Personal space (OP-3)
+        # files through this route, so the owner is allowed. Anyone else,
+        # an org reader too, gets the same 404 as an unseen parent: a node
+        # filed in another member's private tree is a taking act, and a
+        # different answer would confirm that the tree exists.
+        #
+        # Fix round 2. `personal_tree_owner` is the one walk, with the stop
+        # rule of migration 297. A team node that 297 kept under a private
+        # tree answers None, so its team files nodes under it as team work.
+        tree_owner = (
+            await personal_tree_owner(db, str(parent_id)) if parent_id else None
+        )
+        if tree_owner is not None:
+            if tree_owner != actor(user).lower():
+                raise HTTPException(status_code=404, detail="Project not found")
+            values["personal_owner"] = tree_owner
+
         # The tree grammar (migration 193): space → [folder] → project →
         # [folder] → subproject, and stop. Checked before the org resolve so
         # a bad shape is refused as a shape, not as a permission.
@@ -856,6 +883,9 @@ async def create_node(
 
         row = await insert_row(db, "pm_projects", values)
         project_id = str(row.id)
+        if tree_owner is not None:
+            # The grant every personal node carries (`mint_personal_child`).
+            await grant_personal_owner(db, project_id, tree_owner)
 
         if parent_id is None:
             await _seed_root(db, project_id, actor(user))

@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-23.** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
-**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). OP-2 to OP-5, OP-6d and OP-6e are not built.
+**WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-2 to OP-5, OP-6d and OP-6e are not built.
 
 §7 holds **D-OP-1** to **D-OP-8**. The owner accepted every default on
 2026-10-23 (§8). Every slice in §9 is
@@ -497,6 +497,38 @@ The sidebar draws it with a lock. The Areas routes stay as they are.
 2. A move of the personal space, or of a folder in it, under a team node
    fails. Fence: the existing `assert_move_keeps_privacy` test, with the new
    shape.
+
+**A precondition, BUILT 2026-10-24 (task #304).** Each node of a private tree
+carries `personal_owner`, at every depth. `POST /projects/nodes` under a
+personal parent now stamps the child with the tree owner and the owner grant.
+Only the tree owner may file a node there, and anyone else gets 404. Migration
+297 stamps the children that the old route wrote without the owner.
+Fence: `tests/unit/test_personal_owner_stamp.py` (R8).
+
+Before this, such a child showed in each org reader's tree. An agent with
+`include_personal=false` could read it. A move could take it to a team space.
+
+**Fix round 1 of task #304, the migration.** Migration 297 does not stamp an
+unstamped node that carries a grant to a subject other than the tree owner.
+That node is team work, and the walk stops there. The old move check read
+only the direct parent, so a team root could sit under an unstamped personal
+child. 297 keeps that team node and its subtree as they are. A NOTICE names
+them in the deploy log.
+
+**Fix round 1 of task #304, the move guard.** The guard now walks up from the
+new parent. A team node cannot move under any node of a private tree. A node
+with its own `personal_owner` cannot leave. A team node that 297 left under a
+private tree can move out to a team space.
+
+**Fix round 2 of task #304, one walk.** `core.personal_tree_owner` is the
+one walk of a private tree, with the stop rule of 297. The nearest stamped
+ancestor names the owner. A team node between them makes the answer "team".
+The stamp of `create_node`, the move guard and the grant writes all call it.
+So the team of a node that 297 kept files, moves and shares work under it.
+
+**A known gap until OP-3.** After 297, a node two levels under a personal root
+is not in `/projects/tree`. Its URL and My Tasks still reach it. OP-3 shows
+the Personal space, and that closes the gap.
 
 ### OP-4 — capture, the tab bar, and the redirect · OWNER-GATE for the nav
 

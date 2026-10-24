@@ -124,7 +124,7 @@ async def test_the_flag_comes_from_the_one_rule_with_the_403_words() -> None:
 
         async def execute(self, statement, *_a, **_k):
             assert "personal_owner" in str(statement), "an admin needs no lead query"
-            return SimpleNamespace(first=lambda: None)
+            return SimpleNamespace(first=lambda: None, fetchone=lambda: None)
 
     admin = SimpleNamespace(email="boss@x.test", has_permission=lambda p: p == "projects:settings:write")
     row = await a.attach_can_write_grants(NotPersonal(), admin, {"id": PID})
@@ -132,7 +132,7 @@ async def test_the_flag_comes_from_the_one_rule_with_the_403_words() -> None:
 
     class NoLeads:
         async def execute(self, *_a, **_k):
-            return SimpleNamespace(fetchall=lambda: [], first=lambda: None)
+            return SimpleNamespace(fetchall=lambda: [], first=lambda: None, fetchone=lambda: None)
 
     viewer = SimpleNamespace(email="v@x.test", has_permission=lambda _p: False)
     row = await a.attach_can_write_grants(NoLeads(), viewer, {"id": PID})
@@ -238,7 +238,9 @@ async def test_a_personal_tree_is_refused_for_an_admin_too() -> None:
 
     class Personal:
         async def execute(self, *_a, **_k):
-            return SimpleNamespace(first=lambda: (1,))
+            # The one walk (`core.personal_tree_owner`) reads the owner.
+            return SimpleNamespace(
+                fetchone=lambda: SimpleNamespace(personal_owner="me@x.test"))
 
     class NoDb:
         async def execute(self, *_a, **_k):

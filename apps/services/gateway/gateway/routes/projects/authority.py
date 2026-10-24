@@ -62,6 +62,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from gateway.routes.projects.core import actor, can_manage_settings
+from gateway.routes.projects.core import personal_tree_owner as _tree_owner
 from sqlalchemy import text
 
 #: The 403 of a task delete. The chat (``skill_projects.guarded``) and the
@@ -123,26 +124,6 @@ _LED_SUBTREE_SQL = (
     "  UNION"
     "  SELECT p.id FROM pm_projects p JOIN led ON p.parent_project_id = led.id"
     ") SELECT id FROM led"
-)
-
-
-#: One row when the project, or any project above it, is in a personal tree.
-#: ``personal_owner`` is stamped on every node that the personal seam mints,
-#: and the walk up also finds a node that ``POST /nodes`` put under a personal
-#: parent without the stamp. ``UNION``, so a cycle in the tree ends the walk.
-_PERSONAL_TREE_SQL = (
-    "WITH RECURSIVE up AS ("
-    "  SELECT id, parent_project_id, personal_owner FROM pm_projects"
-    "   WHERE id = CAST(:pid AS uuid)"
-    "  UNION"
-    "  SELECT p.id, p.parent_project_id, p.personal_owner FROM pm_projects p"
-    "   JOIN up ON p.id = up.parent_project_id"
-    ") SELECT 1 FROM up WHERE personal_owner IS NOT NULL LIMIT 1"
-)
-
-#: The owner of the personal tree that holds the project, nearest first.
-_PERSONAL_OWNER_SQL = _PERSONAL_TREE_SQL.replace(
-    "SELECT 1 FROM up", "SELECT personal_owner FROM up"
 )
 
 
@@ -219,16 +200,11 @@ async def in_personal_tree(db: Any, project: Any) -> bool:
     """Is *project* a node of a member's personal tree? (WS-64 OP-6b.)
 
     The same line that ``core.assert_move_keeps_privacy`` holds for a move:
-    a personal tree is private, whoever acts. A row that carries
-    ``personal_owner`` answers without a query.
+    a personal tree is private, whoever acts. The answer is
+    :func:`personal_tree_owner`, so a team node that migration 297 kept
+    unstamped under a private tree is NOT in it (task #304, fix round 2).
     """
-    if str(_field(project, "personal_owner") or "").strip():
-        return True
-    pid = _field(project, "id")
-    if not pid:
-        return False
-    found = await db.execute(text(_PERSONAL_TREE_SQL), {"pid": str(pid)})
-    return found.first() is not None
+    return bool(await personal_tree_owner(db, project))
 
 
 async def grant_write_refusal(db: Any, user: Any, project: Any) -> str:
@@ -246,15 +222,19 @@ async def grant_write_refusal(db: Any, user: Any, project: Any) -> str:
 
 
 async def personal_tree_owner(db: Any, project: Any) -> str:
-    """The lower-case owner of the personal tree that holds *project*, or ``""``."""
+    """The lower-case owner of the personal tree that holds *project*, or ``""``.
+
+    A row that carries ``personal_owner`` answers without a query. Else
+    ``core.personal_tree_owner`` walks up, the ONE walk with the stop rule of
+    migration 297. This function only adapts a row to it.
+    """
     own = str(_field(project, "personal_owner") or "").strip()
     if own:
         return own.lower()
     pid = _field(project, "id")
     if not pid:
         return ""
-    found = (await db.execute(text(_PERSONAL_OWNER_SQL), {"pid": str(pid)})).first()
-    return str(found[0]).strip().lower() if found else ""
+    return await _tree_owner(db, str(pid)) or ""
 
 
 async def assert_may_revoke_grant(db: Any, user: Any, project: Any, subject: str) -> None:
