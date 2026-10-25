@@ -13,6 +13,11 @@ Both flags of KC-1a default to empty. Nobody tested it against live Google. The 
 the redirect URI and the `drive.readonly` scope. KC-1b, the Sources view, is
 open.
 
+The workbench route `/api/knowledge/sources/google_drive/callback` carries
+the consent back to the gateway, with one try and no followed redirect. A
+member purge deletes the member's Drive sources in its own transaction. Then
+it revokes each free Google grant once (§19).
+
 §20 holds the decisions **D-KC-1** to **D-KC-9**, and §21 holds the owner
 questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
@@ -959,7 +964,12 @@ a fixed fake model. The scored half runs on demand, through the Router.
 - **Offboarding.** When a member leaves, their member sources disconnect,
   their documents leave every space, and the facts that only their episodes
   supported expire. The member purge of `test_admin_member_purge.py` gains
-  the Knowledge tables.
+  the Knowledge tables. KC-1a built the source half. The purge deletes each
+  member-scope Knowledge connection through `store.delete`, and the cascade
+  takes the sources and the nodes. After the email teardown, it revokes each
+  free Google grant once. Fences: `test_kc_sources_purge.py` and, R8,
+  `test_kc_sources_r8.py`. The org purge does not revoke yet
+  (`hardening_backlog.md` K-19).
 - **Deletion at the provider** reaches Metorite within one reconcile (24 h).
   A member who needs it sooner uses "Remove from Knowledge" on the document.
 
