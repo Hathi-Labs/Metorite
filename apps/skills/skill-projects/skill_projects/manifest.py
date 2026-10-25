@@ -1089,42 +1089,9 @@ _TASK_PREFIX_REASON = (
     "(page.tsx saveSpaceSettings), and no route checks a prefix."
 )
 
-#: WS-66 RM-1. The reminder routes have no chat tool until RM-3 builds the
-#: four tools of `calendar_events_reminders.md` §5.8. ⚠️ These rows belong in
-#: FIELD_PLANNED, but that table needs a gap row in
-#: `projects_agent_parity.md` §3.3, and RM-1 does not edit that spec. RM-3
-#: moves each row to SENDS as it builds the tool that sends the field.
-_REMINDER_TOOLS_REASON = (
-    "No chat tool sends it until WS-66 RM-3 builds the reminder tools "
-    "(calendar_events_reminders.md §5.8). RM-3 moves this row to SENDS."
-)
-_REMINDER_BODY = (
-    "title", "fire_at", "tz", "kind", "notes", "subject_kind", "subject_id",
-    "estimate_minutes", "important",
-)
-
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
-    # ── reminders (WS-66 RM-1) ───────────────────────────────────────────
-    ("GET", "/projects/my/reminders"): {
-        name: _REMINDER_TOOLS_REASON for name in ("state", "start", "end", "limit")
-    },
-    ("POST", "/projects/my/reminders"): {
-        name: _REMINDER_TOOLS_REASON for name in _REMINDER_BODY
-    },
-    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
-        name: _REMINDER_TOOLS_REASON for name in _REMINDER_BODY
-    },
-    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {
-        "action": _REMINDER_TOOLS_REASON,
-    },
-    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
-        name: _REMINDER_TOOLS_REASON for name in ("fire_at", "tz")
-    },
-    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
-        name: _REMINDER_TOOLS_REASON for name in ("fire_at", "tz")
-    },
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
@@ -1298,7 +1265,15 @@ FIELD_GAPS: dict[str, str] = {
     # SENDS or FIELD_EXEMPT.
     # WS-55 EA-12a (EA12-9): the agent-run routes, for the chat in EA-12e.
     "G23": "EA-12e",
+    # WS-66 RM-1 (D114): the reminder routes, for the tools of RM-3.
+    "G24": "RM-3",
 }
+
+#: The body of a new reminder and of a PATCH, one decision each (G24).
+_REMINDER_BODY = (
+    "title", "fire_at", "tz", "kind", "notes", "subject_kind", "subject_id",
+    "estimate_minutes", "important",
+)
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
@@ -1325,6 +1300,23 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
+    # G24 (WS-66 RM-1, D114): the member's reminders. RM-3 builds the tools of
+    # calendar_events_reminders.md §5.8, and moves each row to SENDS as its
+    # tool starts to send the field. `/reopen` and `/promote` take no body.
+    ("GET", "/projects/my/reminders"): {
+        name: "G24" for name in ("state", "start", "end", "limit")
+    },
+    ("POST", "/projects/my/reminders"): {name: "G24" for name in _REMINDER_BODY},
+    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
+        name: "G24" for name in _REMINDER_BODY
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {"action": "G24"},
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
+        name: "G24" for name in ("fire_at", "tz")
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
+        name: "G24" for name in ("fire_at", "tz")
+    },
 }
 
 
