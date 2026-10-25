@@ -38,7 +38,7 @@ test.describe("The action row of a message", () => {
       await expect(r.getByRole("button", { name, exact: true })).toBeVisible();
     }
     // The big capture button left the header. It is the first menu item now.
-    await expect(page.getByRole("button", { name: /^Add to My Tasks/ }).filter({ hasText: "Add to My Tasks" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Add to My work/ }).filter({ hasText: "Add to My work" })).toHaveCount(0);
     await r.getByRole("button", { name: "Reply", exact: true }).click();
     await expect(page.getByPlaceholder("Write your reply…")).toBeVisible();
   });
@@ -51,13 +51,13 @@ test.describe("The action row of a message", () => {
     await page.keyboard.press("Enter");
     const menu = page.getByRole("menu", { name: "More actions" });
     await expect(menu).toBeVisible();
-    await expect(menu.getByRole("menuitem", { name: "Add to My Tasks" })).toBeFocused();
+    await expect(menu.getByRole("menuitem", { name: "Add to My work" })).toBeFocused();
     await page.keyboard.press("ArrowDown");
     await expect(menu.getByRole("menuitem", { name: "Archive" })).toBeFocused();
     await page.keyboard.press("End");
     await expect(menu.getByRole("menuitem", { name: "Report spam / phishing" })).toBeFocused();
     await page.keyboard.press("ArrowDown");
-    await expect(menu.getByRole("menuitem", { name: "Add to My Tasks" })).toBeFocused();
+    await expect(menu.getByRole("menuitem", { name: "Add to My work" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(menu).toBeHidden();
     await expect(more).toBeFocused();
@@ -379,7 +379,7 @@ test.describe("Fix round 1", () => {
   });
 
   // Verifier F1. Mutation caught: with the handlers pointed at the open email
-  // (`email ?? m`), Archive, Move, Delete, Label and Add to My Tasks of an
+  // (`email ?? m`), Archive, Move, Delete, Label and Add to My work of an
   // older card all acted on the open email, and only Flag was checked.
   test("every item of an older card's menu sends its request for that card", async ({ page }) => {
     await installEmailMocks(page, [IDS.threadNew]);
@@ -427,10 +427,10 @@ test.describe("Fix round 1", () => {
     await expect.poll(() => sent.length).toBe(4);
     expect(last()).toEqual({ method: "PATCH", path: OLD, body: { folder: "archive" } });
 
-    // Add to My Tasks opens the capture for this card, in its own mailbox.
+    // Add to My work opens the capture for this card, in its own mailbox.
     const preview = "/api/tasks/capture/from-email/preview";
     const beforeTasks = sent.length;
-    await pick("Add to My Tasks");
+    await pick("Add to My work");
     await expect.poll(() => sent.slice(beforeTasks).some((r) => r.path === preview)).toBe(true);
     expect(sent.slice(beforeTasks).find((r) => r.path === preview)).toEqual({
       method: "POST",
