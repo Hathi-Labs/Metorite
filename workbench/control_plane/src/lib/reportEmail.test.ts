@@ -931,6 +931,47 @@ describe("reportEmail · outlook (WS-27bn R3a)", () => {
     expect(got.html).not.toMatch(/\b(rgb|hsl)a?\(|style=/);
   });
 
+  it("prints the server's sentence first, and the 85% date (WS-27bn RA-6)", () => {
+    const got = withOutlook({
+      velocity: {
+        verdict: "converging",
+        finish_date: "2026-12-23",
+        p85_date: "2027-01-13",
+        remaining_tasks: 26,
+        summary:
+          "Half of 2,000 runs finish the 26 open tasks by 23 Dec 2026, and 85% finish by 13 Jan 2027.",
+      },
+      plan: { planned_finish: null, dated: 0, tasks: 26, slip_days: null },
+    });
+    const lines = got.text.split("\n");
+    const head = lines.findIndex((l) => l.startsWith("Forecast: converging"));
+    expect(lines[head + 1]).toContain("Half of 2,000 runs finish the 26 open tasks");
+    expect(got.text).toContain("Forecast finish: 23 Dec 2026");
+    expect(got.text).toContain("85% finish: 13 Jan 2027");
+  });
+
+  it("names Needs an owner first in Open work when it leads (WS-27bn RA-6)", () => {
+    const people = [
+      { assignee: null, open_tasks: 25, overdue: 0 },
+      { assignee: "ana@example.test", open_tasks: 1, overdue: 0 },
+    ];
+    const owner = { total: 25, leads: true, tasks: [] };
+    const first = reportEmail({
+      ...rendered,
+      sections: { load: { people, total_tasks: 26, needs_owner: owner } },
+    }).text.split("\n");
+    const at = first.findIndex((l) => l.includes("Needs an owner: 25"));
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(first.findIndex((l) => l.includes("Unassigned: 25")));
+    const last = reportEmail({
+      ...rendered,
+      sections: { load: { people, total_tasks: 26, needs_owner: { ...owner, total: 1, leads: false } } },
+    }).text.split("\n");
+    expect(last.findIndex((l) => l.includes("Needs an owner: 1"))).toBeGreaterThan(
+      last.findIndex((l) => l.includes("ana@example.test")),
+    );
+  });
+
   it("prints no date and no broken word when the verdict has no forecast", () => {
     for (const verdict of ["not_converging", "no_history", "nothing_left"]) {
       const got = withOutlook({

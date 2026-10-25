@@ -98,6 +98,11 @@ const OUTLOOK: NonNullable<Sections["outlook"]> = {
     weeks_remaining: 10,
     finish_date: "2027-03-12",
     verdict: "converging",
+    // WS-27bn RA-6. The forecast by count: the 50% and the 85% dates.
+    p50_weeks: 10,
+    p50_date: "2027-03-12",
+    p85_weeks: 13,
+    p85_date: "2027-04-02",
   },
   capacity: {
     hours_per_week: 60,
@@ -132,6 +137,10 @@ const NOT_CONVERGING: NonNullable<Sections["outlook"]> = {
     weeks_remaining: null,
     finish_date: null,
     verdict: "not_converging",
+    p50_weeks: null,
+    p50_date: null,
+    p85_weeks: null,
+    p85_date: null,
   },
   plan: { ...OUTLOOK.plan, planned_finish: null, dated: 0, slip_days: null },
 };
@@ -733,11 +742,13 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(html).not.toContain("No open work in this scope");
   });
 
-  it("outlook draws the slip as a range bar, with both dates and the slip in text", () => {
+  it("outlook draws the forecast band, with both dates, the plan and the slip in text", () => {
+    // WS-27bn RA-6. The band holds the 50% and 85% dates and the plan.
     const html = draw({ outlook: OUTLOOK });
-    expect(html).toContain("Plan 17 Feb 2027, forecast 12 Mar 2027: 23 days late.");
+    expect(html).toContain("50% by 12 Mar 2027, 85% by 2 Apr 2027. Plan 17 Feb 2027: 23 days late.");
     expect(html).toContain("Plan 17 Feb 2027");
-    expect(html).toContain("Forecast 12 Mar 2027");
+    expect(html).toContain("50% by 12 Mar 2027");
+    expect(html).toContain("85% by 2 Apr 2027");
     expect(html).toContain("23 days late");
   });
 
@@ -850,11 +861,11 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     expect(panel).not.toContain('role="img"');
   });
 
-  it("draws no slip bar and shows the verdict when the forecast has no date", () => {
+  it("draws no forecast band and shows the verdict when the forecast has no date", () => {
     const html = draw({ outlook: NOT_CONVERGING });
     expect(html).toContain("Not converging");
     expect(html).not.toContain("days late");
-    expect(html).not.toMatch(/aria-label="Plan /);
+    expect(html).not.toMatch(/aria-label="50% by /);
     // The folded table says each absent date as a dash.
     expect(html).toMatch(/>Forecast finish<\/dt><dd[^>]*>—</);
   });
@@ -1057,18 +1068,19 @@ describe("the Analytics panels render as before", () => {
     expect(html).not.toContain("Nothing in this scope yet");
   });
 
-  it("the Outlook panel draws the slip bar from the route's own body", () => {
-    // WS-27bn R3a. The Analytics app and the node dashboard share this panel.
+  it("the Outlook panel draws the forecast band from the route's own body", () => {
+    // WS-27bn R3a, and RA-6: the band holds the 50% and 85% dates and the
+    // plan. The Analytics app and the node dashboard share this panel.
     const html = renderToStaticMarkup(createElement(OutlookPanel, { data: OUTLOOK }));
     expect(html).toContain("23 days late");
     expect(html).toContain(
-      'aria-label="Plan 17 Feb 2027, forecast 12 Mar 2027: 23 days late."'
+      'aria-label="50% by 12 Mar 2027, 85% by 2 Apr 2027. Plan 17 Feb 2027: 23 days late."'
     );
     const none = renderToStaticMarkup(
       createElement(OutlookPanel, { data: NOT_CONVERGING })
     );
     expect(none).toContain("Not converging");
-    expect(none).not.toMatch(/aria-label="Plan /);
+    expect(none).not.toMatch(/aria-label="50% by /);
     for (const word of ["undefined", "NaN"]) expect(none).not.toContain(word);
   });
 

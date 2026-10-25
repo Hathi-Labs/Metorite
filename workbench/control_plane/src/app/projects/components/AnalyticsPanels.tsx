@@ -94,17 +94,28 @@ import {
   moreNote,
 } from "../lib/hygiene";
 import {
+  type ForecastBand,
   type OutlookLine,
-  type SlipRange,
   type Tone,
   capacityLine,
+  capacityShown,
+  forecastAccent,
+  forecastBand,
   forecastGap,
+  forecastRule,
   headlineVerdict,
   isDrawableOutlook,
   peopleLine,
-  slipRange,
   velocityLine,
 } from "../lib/outlook";
+import {
+  NEEDS_OWNER_RULE,
+  NEEDS_OWNER_TITLE,
+  needsOwnerLine,
+  needsOwnerOf,
+  needsOwnerRows,
+} from "../lib/needsOwner";
+import type { NeedsOwner } from "../lib/api";
 import {
   ACTOR_SEGMENTS,
   WHO_DID_THE_WORK,
@@ -650,6 +661,61 @@ function HiddenPeople({ n }: { n: number | null | undefined }) {
   );
 }
 
+/**
+ * WS-27bn RA-6 — "Needs an owner" (`projects_reports.md` §6.8 B and F): the
+ * open tasks with no assignee and no open run. It comes first when it leads
+ * the open work, and last when it does not. The server decides both.
+ *
+ * ⚠️ **No rank of people (E1).** It lists tasks, the soonest due first, as
+ * the server sends them. Each row opens its task, through `OpenTaskContext`.
+ */
+function NeedsOwnerGroup({
+  owner,
+  totalTasks,
+  first,
+}: {
+  owner: NeedsOwner;
+  totalTasks: number | undefined;
+  first: boolean;
+}) {
+  const open = useContext(OpenTaskContext);
+  const { shown, more } = needsOwnerRows(owner);
+  const flag = accentForHue("amber");
+  return (
+    <div className={first ? "mb-3 border-b border-border pb-2" : "mt-3 border-t border-border pt-2"}>
+      <div className="mb-1 flex items-center gap-1.5 text-[11px]">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${flag.dot}`} aria-hidden />
+        <span className="font-medium text-foreground">{NEEDS_OWNER_TITLE}</span>
+        <InfoTip label="How Needs an owner is counted" title={NEEDS_OWNER_TITLE}>
+          {NEEDS_OWNER_RULE}
+        </InfoTip>
+        <span
+          className="ml-auto font-medium tabular-nums text-foreground"
+          title={`${owner.total} open tasks with no assignee and no open run, the soonest due first`}
+        >
+          {owner.total}
+        </span>
+      </div>
+      <p className="mb-1 text-[11px] text-muted-foreground">
+        {needsOwnerLine(owner, totalTasks)}
+      </p>
+      <ul className="space-y-0.5">
+        {shown.map((r) => (
+          <WaitingTaskRow key={r.key} line={r} open={open} />
+        ))}
+      </ul>
+      {more > 0 && (
+        <p
+          className="mt-0.5 text-[10px] text-muted-foreground"
+          title={`${owner.total} in total, the soonest due first`}
+        >
+          …and {more} more
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** (b) Who is overloaded? */
 export function LoadPanel({ data }: { data: LoadReport }) {
   // ⚠️ `asList` at the boundary, not `Array.isArray` at each use site. Four
@@ -664,12 +730,17 @@ export function LoadPanel({ data }: { data: LoadReport }) {
   const overdue = accentForHue("red");
   const soon = accentForHue("amber");
   const later = accentForHue("gray");
+  // WS-27bn RA-6. First when it leads the open work (§6.8 B), else last.
+  const owner = needsOwnerOf(data);
 
   return (
     <Panel
       title={sectionName("load")}
       hint={PANEL_HINTS.load}
     >
+      {owner?.leads && (
+        <NeedsOwnerGroup owner={owner} totalTasks={data?.total_tasks} first />
+      )}
       {people.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
           {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.load)}
@@ -784,6 +855,9 @@ export function LoadPanel({ data }: { data: LoadReport }) {
           </p>
           <EffortLine data={data} />
         </>
+      )}
+      {owner && !owner.leads && (
+        <NeedsOwnerGroup owner={owner} totalTasks={data?.total_tasks} first={false} />
       )}
       <HiddenPeople n={data?.hidden_people} />
     </Panel>
@@ -2343,62 +2417,57 @@ const TONE: Record<Tone, string> = {
   quiet: "text-muted-foreground",
 };
 
-/** The filled segment of the slip bar, in the verdict's own tone. */
-const TONE_DOT: Record<Tone, string> = {
-  good: statusAccent({ category: "done" }).dot,
-  bad: statusAccent({ category: "cancelled" }).dot,
-  warn: accentForHue("amber").dot,
-  quiet: "bg-muted-foreground/60",
-};
-
 /**
- * WS-27bn R3a — the plan against the forecast, as one range.
- *
- * The track runs from today to the later date. The segment between the plan
- * and the forecast is the slip, in the verdict's tone. `slipRange` places
- * both ends, and the text below says both dates and the slip, because a bar
- * alone does not say which end is which.
+ * WS-27bn RA-6 — the forecast as one band from today: solid to the 50% date,
+ * lighter to the 85% date, and a tick at the plan (`forecastBand`). The text
+ * below says both dates and the slip, because a bar alone does not say
+ * which end is which.
  */
-function SlipBar({ range }: { range: SlipRange }) {
+function ForecastBandBar({ band }: { band: ForecastBand }) {
+  const hue = forecastAccent();
   return (
     <div className="mb-3">
       <div
         className="relative h-2 w-full rounded-full bg-muted"
         role="img"
-        aria-label={range.title}
-        title={range.title}
+        aria-label={band.title}
+        title={band.title}
       >
         <div
-          className={`absolute inset-y-0 rounded-full ${TONE_DOT[range.tone]}`}
-          style={{ left: `${range.start}%`, width: `${range.width}%` }}
+          className={`absolute inset-y-0 left-0 rounded-l-full ${hue.dot}`}
+          style={{ width: `${band.p50}%` }}
         />
-        <span
-          className="absolute -top-0.5 h-3 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
-          style={{ left: `${range.plan}%` }}
-          aria-hidden
+        <div
+          className={`absolute inset-y-0 opacity-40 ${hue.dot}`}
+          style={{ left: `${band.p50}%`, width: `${Math.max(1, band.p85 - band.p50)}%` }}
         />
-        <span
-          className={`absolute -top-0.5 size-3 -translate-x-1/2 rounded-full border-2 border-card ${TONE_DOT[range.tone]}`}
-          style={{ left: `${range.forecast}%` }}
-          aria-hidden
-        />
+        {band.plan !== null && (
+          <span
+            className="absolute -top-0.5 h-3 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+            style={{ left: `${band.plan}%` }}
+            aria-hidden
+          />
+        )}
       </div>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1">
-          <span className="h-3 w-0.5 rounded-full bg-foreground" aria-hidden />
-          Plan {range.planLabel}
-          {range.planPassed && " (passed)"}
+          <span className={`size-2 rounded-full ${hue.dot}`} aria-hidden />
+          50% by {band.p50Label}
         </span>
         <span className="flex items-center gap-1">
-          <span
-            className={`size-2 rounded-full ${TONE_DOT[range.tone]}`}
-            aria-hidden
-          />
-          Forecast {range.forecastLabel}
+          <span className={`size-2 rounded-full opacity-40 ${hue.dot}`} aria-hidden />
+          85% by {band.p85Label}
         </span>
-        <span className={`ml-auto font-medium ${TONE[range.tone]}`}>
-          {range.slip}
-        </span>
+        {band.planLabel && (
+          <span className="flex items-center gap-1">
+            <span className="h-3 w-0.5 rounded-full bg-foreground" aria-hidden />
+            Plan {band.planLabel}
+            {band.planPassed && " (passed)"}
+          </span>
+        )}
+        {band.slip && (
+          <span className={`ml-auto font-medium ${TONE[band.tone]}`}>{band.slip}</span>
+        )}
       </div>
     </div>
   );
@@ -2430,13 +2499,17 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
   // `isDrawableOutlook` carries the four times this has happened here.
   if (!isDrawableOutlook(data)) return null;
   const verdict = headlineVerdict(data);
-  // WS-27bn R3a. `null` when either date is absent, so the verdicts with no
-  // forecast date draw no bar. The headline above already says why.
-  const range = slipRange(data);
+  // WS-27bn RA-6. `null` unless the forecast converges with both dates, so
+  // the verdicts with no date draw no bar. The headline already says why.
+  const band = forecastBand(data);
+  const rule = forecastRule(data.velocity);
   const gap = forecastGap(data);
   const velocity = velocityLine(data.velocity);
   // WS-27bm S11. A reader without the HR grant is told leave is not counted.
-  const capacity = capacityLine(data.capacity, data.people?.absences_applied);
+  // WS-27bn RA-6. The estimates add this line only when they exist.
+  const capacity = capacityShown(data.capacity)
+    ? capacityLine(data.capacity, data.people?.absences_applied)
+    : null;
   const people = peopleLine(data);
 
   return (
@@ -2450,15 +2523,26 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
           set in the third quadrant at the same size as "3 people". BLUF, on
           a screen: the conclusion, then the evidence for whoever checks it. */}
       <div className="mb-3">
-        <p className={`text-2xl font-semibold leading-tight ${TONE[verdict.tone]}`}>
-          {verdict.headline}
-        </p>
+        <div className="flex items-start gap-1">
+          <p className={`text-2xl font-semibold leading-tight ${TONE[verdict.tone]}`}>
+            {verdict.headline}
+          </p>
+          {/* WS-27bn RA-6. The rule of what is on screen, for a keyboard
+              and a touch too (§6.8 E6). */}
+          {rule && (
+            <InfoTip label="How the forecast is counted" title={sectionName("outlook")}>
+              {rule}
+            </InfoTip>
+          )}
+        </div>
+        {/* WS-27bn RA-6. The server's sentence: the 50% and 85% dates, or
+            why there is no date (§6.8 E5). */}
         <p className="mt-1 max-w-2xl text-xs leading-snug text-muted-foreground">
           {verdict.detail}
         </p>
       </div>
 
-      {range && <SlipBar range={range} />}
+      {band && <ForecastBandBar band={band} />}
 
       {/* ⚠️ The two forecasts disagreed by five months on screen and nothing
           said so. Both were calm coloured dates in the same size, and the
@@ -2476,9 +2560,11 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-x-4 gap-y-2.5 border-t border-border pt-2.5 sm:grid-cols-3">
+      <div
+        className={`grid grid-cols-1 gap-x-4 gap-y-2.5 border-t border-border pt-2.5 ${capacity ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
+      >
         <Verdict label="At the current rate" line={velocity} />
-        <Verdict label="If the plan holds" line={capacity} />
+        {capacity && <Verdict label="If the plan holds" line={capacity} />}
         <Verdict label="Who is carrying it" line={people} />
       </div>
     </Panel>

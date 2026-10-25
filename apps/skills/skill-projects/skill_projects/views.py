@@ -345,6 +345,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("velocity.verdict", "Forecast"),
             ("plan.planned_finish", "Planned finish"),
             ("velocity.finish_date", "Forecast finish"),
+            # WS-27bn RA-6. The forecast by count: the finish above is the
+            # 50% date, and this is the 85% date.
+            ("velocity.p85_date", "85% finish"),
         ],
     },
     "stuck": {
@@ -426,7 +429,8 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
     "load": {
         "title": "Open work",
-        "stats": [("total_tasks", "Open tasks")],
+        # WS-27bn RA-6. The open tasks with no assignee and no open run.
+        "stats": [("total_tasks", "Open tasks"), ("needs_owner.total", "Need an owner")],
         "rows": "people",
         "columns": [("assignee", "Assignee"), ("open_tasks", "Open"), ("overdue", "Overdue")],
     },

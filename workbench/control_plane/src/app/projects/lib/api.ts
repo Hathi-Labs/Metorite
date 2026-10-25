@@ -326,15 +326,63 @@ export interface VelocityForecast {
   /** finished minus created. Zero or less and the backlog never empties. */
   net_per_week: number;
   remaining_tasks: number;
+  /** WS-27bn RA-6: the weeks of the 50% figure. */
   weeks_remaining: number | null;
-  /** ISO date, or null. Null is a FINDING — read `verdict` for which one. */
+  /**
+   * ISO date, or null. Null is a FINDING — read `verdict` for which one.
+   * WS-27bn RA-6: the 50% date of the forecast by count.
+   */
   finish_date: string | null;
   verdict:
     | "converging"
-    /** ⚠️ Scope is growing at least as fast as delivery. No date exists. */
+    /**
+     * ⚠️ Scope is growing at least as fast as delivery, or the runs do not
+     * finish within the cap. No date exists. `reason` says which.
+     */
     | "not_converging"
+    /** "Not enough history": too few weeks with a finished task. */
     | "no_history"
     | "nothing_left";
+  /*
+   * WS-27bn RA-6, the forecast by count (`projects_reports.md` §6.8 B). Each
+   * key below is optional: an older server sends none of them, and the panel
+   * then draws the old lines. The server computes each one.
+   */
+  weeks_with_finishes?: number;
+  /** The rule of "Not enough history": the fewest weeks with a finish. */
+  min_weeks_with_finishes?: number;
+  /** How many runs the forecast made. */
+  trials?: number;
+  /** The most weeks one run simulates. */
+  cap_weeks?: number;
+  /** Why it does not converge: work arrives as fast, or past the cap. */
+  reason?: "arrivals" | "cap" | null;
+  /** The finished tasks a week that would converge it. */
+  converge_per_week?: number | null;
+  p50_weeks?: number | null;
+  p50_date?: string | null;
+  p85_weeks?: number | null;
+  p85_date?: string | null;
+  /** The one plain sentence (§6.8 E5). The panel prints it first. */
+  summary?: string;
+}
+
+/**
+ * WS-27bn RA-6 — "Needs an owner" (`projects_reports.md` §6.8 F): the open
+ * tasks with no assignee and no open run. The server names 20 at most.
+ */
+export interface NeedsOwner {
+  total: number;
+  /** True when it is at least the open count of each holder (§6.8 B). */
+  leads: boolean;
+  max_rows: number;
+  tasks: {
+    id: string;
+    task_number: number | null;
+    title: string;
+    project_id: string;
+    due_at: string | null;
+  }[];
 }
 
 export interface CapacityForecast {
@@ -1155,6 +1203,8 @@ export interface LoadReport {
   effort?: EffortReport;
   /** People with a name on open work. Excludes the unassigned bucket. */
   people_named?: number;
+  /** WS-27bn RA-6. Optional: an older server sends none. */
+  needs_owner?: NeedsOwner;
 }
 
 export interface ThroughputWeek {
@@ -1425,6 +1475,8 @@ export interface RenderedReportBody {
       effort?: EffortReport;
       /** WS-27bn R5a. Sent for a reader who is not an admin only. */
       hidden_people?: number;
+      /** WS-27bn RA-6. The open tasks with no assignee and no open run. */
+      needs_owner?: NeedsOwner;
     };
     /** WS-27bm S7a. Opt-in: present only when the report asked for it. */
     capacity?: {

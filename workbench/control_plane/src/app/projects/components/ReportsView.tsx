@@ -710,6 +710,11 @@ export function RenderedBody({
                   <dd className="tabular-nums">
                     {shortDate(sections.outlook.velocity?.finish_date)}
                   </dd>
+                  {/* WS-27bn RA-6. The finish above is the 50% date. */}
+                  <dt className="text-muted-foreground">85% finish</dt>
+                  <dd className="tabular-nums">
+                    {shortDate(sections.outlook.velocity?.p85_date)}
+                  </dd>
                   <dt className="text-muted-foreground">Open tasks</dt>
                   <dd
                     className="tabular-nums"
@@ -922,6 +927,35 @@ export function RenderedBody({
                     />
                   ))}
                 </ul>
+                {/* WS-27bn RA-6. Every task that needs an owner the server
+                    named, the soonest due first, as the panel lists them. */}
+                {(sections.load.needs_owner?.total ?? 0) > 0 && (
+                  <div className="mt-2 text-xs">
+                    <span className="font-medium text-foreground">Needs an owner</span>
+                    <span
+                      className="text-muted-foreground"
+                      title="Open tasks with no assignee and no open run, the soonest due first"
+                    >
+                      {" "}
+                      · {sections.load.needs_owner?.total}
+                    </span>
+                    <ul className="mt-0.5 space-y-0.5">
+                      {(sections.load.needs_owner?.tasks ?? []).map((t) => (
+                        <li
+                          key={t.id}
+                          className="truncate pr-px text-muted-foreground"
+                          title={t.title}
+                        >
+                          <span className="text-foreground">
+                            {typeof t.task_number === "number" ? `#${t.task_number} ` : ""}
+                            {t.title}
+                          </span>
+                          {t.due_at ? ` · Due ${shortDate(t.due_at)}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </Table>
             }
           >
