@@ -24,7 +24,7 @@ export function AssistantPageBody({
 }: {
   state: ProfileState;
   onRetry: () => void;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   if (state === "on") return <div className="mx-auto max-w-3xl">{children}</div>;
   if (state === "pending") {
@@ -35,7 +35,7 @@ export function AssistantPageBody({
       </div>
     );
   }
-  if (state === ("x" as ProfileState)) {
+  if (state === "error") {
     return (
       <div className="mx-auto max-w-3xl">
         <div role="alert" className="space-y-3 rounded-lg border border-border bg-card p-4">

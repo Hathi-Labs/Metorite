@@ -13,7 +13,7 @@ import { AssistantPageBody } from "./AssistantPageBody";
 
 const PANE = createElement("section", { "data-pane": "" }, "the pane");
 const draw = (state: ProfileState, onRetry = () => {}) =>
-  renderToStaticMarkup(createElement(AssistantPageBody, { state, onRetry, children: PANE }));
+  renderToStaticMarkup(createElement(AssistantPageBody, { state, onRetry }, PANE));
 
 /** Each element of a tree, so a test can find the Retry button and press it. */
 function elements(node: ReactNode): ReactElement[] {
