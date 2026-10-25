@@ -469,33 +469,73 @@ Calendar read. No second gate applies.
 The tools go into `skill_projects` beside `create_personal_task`.
 `test_projects_chat_coverage.py` walks the `/projects` router, so each new
 route needs a manifest row in `skill_projects/manifest.py` in the PR that
-adds the route. RM-1 adds each row as a planned tool. RM-3 makes it real.
+adds the route. RM-1 added each row as a planned tool. RM-3 made it real.
 
 | Tool | Does | Confirm |
 |---|---|---|
-| `set_reminder` | Makes a reminder: `title`, `at` (ISO with an offset), `kind`, `subject`, `estimate_minutes`, `important` | None. It acts at once with Undo (D-CF-5) |
+| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | One card, until CF-6 |
 | `list_reminders` | Lists my reminders by state and window | A read |
-| `update_reminder` | Changes the text, the kind, the link, the estimate or `important` (PATCH) | None, with Undo |
-| `resolve_reminder` | Done or drop | None. Its Undo is `reopen_reminder` |
-| `reopen_reminder` | The Undo of a done or a drop (§5.3) | None |
-| `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One confirm. It cannot reopen |
-| `reschedule_reminder` | A snooze or a named time. `smart` (§5.5) comes with RM-2 | None, with Undo |
+| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | One card, until CF-6 |
+| `resolve_reminder` | Done or drop | One card, until CF-6. Its Undo is `reopen_reminder` |
+| `reopen_reminder` | The Undo of a done or a drop (§5.3) | One card, until CF-6 |
+| `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One card. It cannot reopen |
+| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | One card, until CF-6 |
 
-As built in RM-1, these are seven routes, each a planned tool in the
-manifest. Their request fields are planned under gap G24 of
-`projects_agent_parity.md` §3.3 (slice RM-3).
+**As built (RM-3, 2026-10-25).** RM-1 built eight routes, and RM-3 built
+the seven tools over them. `reschedule_reminder` reaches two routes:
+`/snooze` with `snooze=yes`, and `/reschedule` for a named time. The read is
+in `reads.py`, the five class B writes are in `writes.py`, and
+`promote_reminder` is class C in `guarded.py`. Each request field is now in
+`SENDS`, so RM-3 closes gap G24 of `projects_agent_parity.md` §3.3. The fence
+is `tests/unit/test_reminder_tools.py`.
 
-- **Time.** The model gets the member's zone and the current time in its
-  context. The tool refuses a time with no offset. "Tomorrow morning" reads
-  `day_start_hour`. "Later today" reads 3 hours on, inside working hours.
-- **Answer first.** On an unclear time, the tool saves the best guess, and
+- **Confirm.** One card for each write, until CF-6 exists. Then set,
+  update, resolve, reopen and reschedule act at once with Undo. RM-3 shows
+  each card through `writes._confirm`, the one door. It adds no second card
+  door and no act-at-once path (`chat_first_surface.md`, CF-6).
+- **Time.** The tool resolves the time itself. `at` is ISO 8601 with an
+  offset, or a wall time with no offset, such as `2026-10-31 17:00`. The tool
+  reads a wall time in the member's saved zone, `user_settings.timezone`,
+  through `GET /projects/my/today`. `in_minutes` sets a time from now.
+- **No zone, no guess.** When the member has no saved zone, or the saved
+  zone is not valid, the tool refuses a wall time and says why. It never
+  reads a wall time as UTC. A time with an offset still saves, and the
+  reply then shows UTC and says that the member has no saved zone.
+- **The route still refuses a time with no offset.** The tool attaches the
+  zone before it calls the route. So "remind me at 5" saves one row at
+  17:00 in the member's zone.
+- **A time in the past.** The tool refuses it, and the refusal states the
+  member's time now. The model then takes the next day and says so.
+- **The context of the model.** The executor gives the model the date only
+  (`today_line`). RM-3 did not change the executor. `list_reminders` and
+  each time refusal state the member's time now and the zone.
+- **"Tomorrow morning"** reads `day_start_hour`. No `/projects` route
+  carries that hour yet, so the tool cannot read it. Until a route does, the
+  model takes 07:00, the column default, and offers one correction.
+  "Later today" reads 3 hours on, inside working hours.
+- **`smart`.** `reschedule_reminder` sends `smart` to `/reschedule`. RM-2
+  adds the slot to the route. Until then the route answers 422, and the
+  reply says that nothing moved.
+- **Answer first.** On an unclear time, the model saves the best guess, and
   the reply states it with one correction: "09:00 tomorrow, or did you mean
-  tonight?" (the CRM rule of answering first).
+  tonight?" (the CRM rule of answering first). Each tool description says
+  this.
 - **The reply quotes the saved row.** It states the absolute time and the
-  zone, for example "Fri 31 Oct, 09:00 IST". It never says "done" for a row
-  that it did not save.
+  zone, for example "Fri 31 Oct, 09:00 IST". `reads.saved_when` reads the
+  route's `fire_at` and `tz`, and never the argument of the tool. A reply
+  with no reminder id tells the model not to say that the reminder is
+  saved.
+- **A reminder is not a task.** Each tool description says so, and
+  `create_personal_task` sends "remind me to" to `set_reminder`. A reminder
+  row prints `reminder_id:`, never `full_id:`, because a `full_id:` line opens
+  a task in the chat cards. Only the promote prints a `full_id:`, the one of
+  the task that it made.
 - **"Remind me to…" in the command bar.** The `capture` job stops taking it.
-  A new `set-reminder` job opens the composer of §6.1 filled.
+  A new `set-reminder` job opens the composer of §6.1 filled. This waits for
+  the composer (CE-3 and RM-5). RM-3 did not build the job or the `capture`
+  change.
+- **Not in RM-3.** Act at once and Undo (CF-6), the command-bar job and the
+  `capture` change (CE-3, RM-5), and WhatsApp (RM-9).
 
 ### 5.9 Web push on iOS and Android
 

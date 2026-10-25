@@ -25,9 +25,10 @@ Red first (R7), each run against the built code and then reverted:
 * M1. ``writes.set_reminder``: drop the ``_confirm`` call ->
   ``test_a_denied_card_writes_nothing[set_reminder]`` and
   ``test_every_class_b_tool_awaits_the_one_confirm_door`` fail.
-* M2. ``writes._reminder_receipt``: quote ``payload["fire_at"]`` instead of
-  ``saved_when(row)`` -> ``test_the_reply_quotes_the_route_answer_not_the_input``
-  fails.
+* M2. ``writes._reminder_receipt``: quote the time that the tool made from
+  its own argument (``when.shown``) instead of ``saved_when(row)`` ->
+  ``test_the_reply_quotes_the_route_answer_not_the_input`` and two more
+  fail.
 
 No database and no gateway process: the client is patched at httpx.
 """
