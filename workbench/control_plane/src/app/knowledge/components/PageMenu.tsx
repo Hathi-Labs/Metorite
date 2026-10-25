@@ -33,6 +33,7 @@ import ExportDialog from "./ExportDialog";
 import { useFavoriteToggle } from "./Favorites";
 import ImportDialog from "./ImportDialog";
 import MovePageDialog from "./MovePageDialog";
+import { ReviewEveryDialog, SetOwnerDialog } from "./PageCareDialogs";
 import { useRestorePage } from "./useRestorePage";
 
 export default function PageMenu({
@@ -56,6 +57,8 @@ export default function PageMenu({
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [settingOwner, setSettingOwner] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [busy, setBusy] = useState(false);
   const { restoring, restore } = useRestorePage();
   const favorite = useFavoriteToggle(page);
@@ -64,6 +67,7 @@ export default function PageMenu({
     canWrite: page.can_write,
     canManage: page.level === "manage",
     archived: page.state === "archived",
+    published: page.state === "published",
     editing,
     fullWidth,
     starred: favorite.starred,
@@ -115,6 +119,8 @@ export default function PageMenu({
     "full-width": () => setFullWidth(!fullWidth),
     favorite: () => void favorite.toggle(),
     move: () => setMoving(true),
+    "set-owner": () => setSettingOwner(true),
+    "review-every": () => setReviewing(true),
     archive: () => setArchiving(true),
     restore: () => void restore(page),
   };
@@ -177,6 +183,26 @@ export default function PageMenu({
             variant: "success",
             title: space ? `Moved to ${space.name}` : "Page moved",
           });
+        }}
+      />
+      <SetOwnerDialog
+        open={settingOwner}
+        page={page}
+        onClose={() => setSettingOwner(false)}
+        onSaved={(title) => {
+          setSettingOwner(false);
+          reread();
+          toast.show({ key: `kb-care:${page.id}`, variant: "success", title });
+        }}
+      />
+      <ReviewEveryDialog
+        open={reviewing}
+        page={page}
+        onClose={() => setReviewing(false)}
+        onSaved={(title) => {
+          setReviewing(false);
+          reread();
+          toast.show({ key: `kb-care:${page.id}`, variant: "success", title });
         }}
       />
       <ImportDialog

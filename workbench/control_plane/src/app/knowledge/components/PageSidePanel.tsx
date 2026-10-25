@@ -8,10 +8,16 @@
  * heading in view as the page scrolls. A click scrolls to the heading. The
  * tab is absent on a page with fewer than two headings, and Details shows
  * alone. Details shows the author, the last editor, the word and character
- * counts, the review date and the state.
+ * counts, the owner, the review date and the state. An overdue review
+ * wears an "Overdue" badge. A writer of the space sees "Verify" on a
+ * published page (KB-AI-4), which moves the review date forward.
  */
 
 import { useState } from "react";
+
+import { invalidate } from "@/lib/dataCache";
+import Button from "@/components/ui/Button";
+import { useToast } from "@/components/ui/Toast";
 
 import Tabs from "@/components/Tabs";
 import { PersonName } from "@/components/PersonName";
@@ -20,6 +26,8 @@ import Badge from "@/components/ui/Badge";
 import { bylineOf } from "../lib/byline";
 import { dayLabel, stateLabel, stateTone, STATE_LABELS } from "../lib/labels";
 import { formatCount, showsOutline, type OutlineHeading, type TextStats } from "../lib/outline";
+import { KNOWLEDGE_CACHE, KnowledgeError, verifyPage } from "../lib/api";
+import { isOverdue } from "../lib/maintenance";
 import type { PageDetail } from "../lib/types";
 
 type PanelTab = "outline" | "details";
@@ -31,7 +39,10 @@ export default function PageSidePanel({
   stats,
   onJump,
 }: {
-  page: Pick<PageDetail, "author_email" | "review_at" | "state" | "versions">;
+  page: Pick<
+    PageDetail,
+    "id" | "author_email" | "review_at" | "state" | "versions" | "owner_email" | "can_write"
+  >;
   headings: readonly OutlineHeading[];
   active: number;
   stats: TextStats;
@@ -42,6 +53,24 @@ export default function PageSidePanel({
   const [picked, setPicked] = useState<PanelTab | null>(null);
   const tab: PanelTab = hasOutline ? (picked ?? "outline") : "details";
   const lastEditor = bylineOf(page.versions)?.email ?? null;
+  const toast = useToast();
+  const [verifying, setVerifying] = useState(false);
+  const overdue = isOverdue(page.review_at);
+  const canVerify = Boolean(page.can_write) && page.state === "published";
+
+  async function verify() {
+    setVerifying(true);
+    try {
+      await verifyPage(page.id);
+      toast.show({ key: `kb-verify:${page.id}`, variant: "success", title: "Page verified" });
+    } catch (err) {
+      const reason = err instanceof KnowledgeError ? err.message : String(err);
+      toast.show({ key: `kb-verify:${page.id}`, variant: "error", title: "Could not verify the page", description: reason });
+    } finally {
+      setVerifying(false);
+      invalidate(KNOWLEDGE_CACHE);
+    }
+  }
 
   return (
     <section aria-label="Page outline and details" className="space-y-3">
@@ -91,7 +120,21 @@ export default function PageSidePanel({
           </Fact>
           <Fact label="Words">{formatCount(stats.words)}</Fact>
           <Fact label="Characters">{formatCount(stats.characters)}</Fact>
-          <Fact label="Review date">{page.review_at ? dayLabel(page.review_at) : "Set when the page is published"}</Fact>
+          {page.state === "published" ? (
+            <Fact label="Owner">
+              {page.owner_email ? <PersonName email={page.owner_email} className="block" /> : "No owner"}
+            </Fact>
+          ) : null}
+          <Fact label="Review date">
+            <span className="inline-flex items-center justify-end gap-1.5">
+              {overdue ? (
+                <Badge tone="warning" icon="CalendarClock">
+                  Overdue
+                </Badge>
+              ) : null}
+              {page.review_at ? dayLabel(page.review_at) : "Set when the page is published"}
+            </span>
+          </Fact>
           <Fact label="State">
             <Badge tone={stateTone(page.state)} icon={STATE_LABELS[page.state]?.icon}>
               {stateLabel(page.state)}
@@ -99,6 +142,20 @@ export default function PageSidePanel({
           </Fact>
         </dl>
       )}
+
+      {tab === "details" && canVerify ? (
+        <Button
+          size="sm"
+          variant="secondary"
+          icon="ShieldCheck"
+          className="w-full"
+          loading={verifying}
+          disabled={verifying}
+          onClick={() => void verify()}
+        >
+          Verify
+        </Button>
+      ) : null}
     </section>
   );
 }

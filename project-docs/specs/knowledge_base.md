@@ -2125,7 +2125,7 @@ Each AI call goes through the Router and writes one usage row with `module_slug=
 | **KB-4b and KB-10** | Citation chips in the answer (KB-4b), and `kb:read` on MCP (KB-10) | none | A chip opens the cited page. The MCP read uses the same clause |
 | **Later** | Server-side layout-aware parsing (Docling, MIT) and OCR on `tier-vision`, for scans and complex PDFs | `tier-vision` | Not scheduled |
 
-**KB-AI-4 is AGENT-SAFE. PR A is BUILT, 2026-10-25** (migration 303, no new flag). PR B, the UI, is open. These are the definitions.
+**KB-AI-4 is AGENT-SAFE. PR A is BUILT, 2026-10-25** (migration 303, no new flag). PR B, the UI, is BUILT, 2026-10-25. It is frontend only, with no flag and no backend change. The side panel gains an Owner fact, an "Overdue" badge and "Verify". The page menu gains "Set owner" and "Review every". A Maintenance view and rail row list the pages. These are the definitions.
 
 - **Expired.** A published page with `review_at` at or before now. This is the CX-1 rule, unchanged.
 - **Verified.** A published page with an owner and a `review_at` in the future. One SQL predicate, `core.VERIFIED_SQL`, serves search and the list. A page with no `review_at` is not verified, and it is not demoted. CX-1 keeps it at 1.0.
