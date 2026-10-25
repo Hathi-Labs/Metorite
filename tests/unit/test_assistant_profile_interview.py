@@ -27,6 +27,7 @@ import pytest
 from acb_common import assistant_profile as ap
 from gateway.routes.admin import assistant_profile as routes
 from orchestrator import executor as ex
+from pydantic import ValidationError
 
 from tests.unit import test_executor_profile_block as epb
 from tests.unit.test_executor_profile_block import run  # noqa: F401
@@ -259,9 +260,9 @@ def test_the_budget_ignores_the_interview() -> None:
 def test_the_route_model_takes_only_a_known_area() -> None:
     assert routes.FactIn(text="a", kind="work", area="goals").area == "goals"
     assert routes.FactIn(text="a", kind="work").area is None
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         routes.FactIn(text="a", kind="work", area="hobbies")
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         routes.InterviewMark(state="maybe")
     assert routes.FactPatch.model_fields.keys() == {"text", "kind"}
 

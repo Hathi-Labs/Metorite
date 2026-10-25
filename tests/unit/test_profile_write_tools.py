@@ -1820,7 +1820,7 @@ class TestRememberWithArea:
     def test_an_unknown_area_is_left_out_and_the_save_stands(self, own_chat) -> None:
         out = _run(pt.profile_remember("I like tea", "preference", area="hobbies"))
         assert _undo_of(out)["op"] == "delete"
-        post = [r for r in own_chat.writes() if r.url.path.endswith("/facts")][0]
+        post = next(r for r in own_chat.writes() if r.url.path.endswith("/facts"))
         assert "area" not in json.loads(post.content)
         assert own_chat.interview_calls == []
 
