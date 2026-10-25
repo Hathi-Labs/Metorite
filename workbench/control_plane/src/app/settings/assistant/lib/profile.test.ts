@@ -11,6 +11,10 @@ import {
   mergeAddress,
   mergeStyle,
   nearCap,
+  normalize,
+  resetArea,
+  resetInterview,
+  startInterview,
   saveAddress,
   saveLearning,
   shortDate,
@@ -156,5 +160,54 @@ describe("fetchExport", () => {
     await expect(fetchExport("json")).rejects.toBeInstanceOf(ProfileError);
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
     await expect(fetchExport("text")).rejects.toMatchObject({ status: 0 });
+  });
+});
+
+describe("the interview (PZ-27)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("normalize keeps the interview and a fact's area", () => {
+    const p = normalize({
+      interview: {
+        started_at: "2026-10-25T08:00:00Z",
+        areas: { role: { state: "answered", at: "2026-10-25T08:01:00Z" }, goals: { state: "skipped" } },
+      },
+      facts: [{ id: "f1", text: "x", kind: "work", area: "role" }],
+    });
+    expect(p.interview?.started_at).toBe("2026-10-25T08:00:00Z");
+    expect(p.interview?.areas.role).toEqual({ state: "answered", at: "2026-10-25T08:01:00Z" });
+    expect(p.interview?.areas.goals?.state).toBe("skipped");
+    expect(p.facts[0].area).toBe("role");
+  });
+
+  it("normalize drops an unknown area, an unknown state and an unknown fact area", () => {
+    const p = normalize({
+      interview: {
+        areas: { role: { state: "maybe" }, bogus: { state: "answered" }, people: { state: "never" } },
+      } as never,
+      facts: [{ id: "f1", text: "x", kind: "work", area: "bogus" } as never],
+    });
+    expect(Object.keys(p.interview?.areas ?? {})).toEqual(["people"]);
+    expect(p.facts[0]).not.toHaveProperty("area");
+  });
+
+  it("a profile with no interview has no interview key", () => {
+    expect(normalize({})).not.toHaveProperty("interview");
+    expect(EMPTY_PROFILE).not.toHaveProperty("interview");
+  });
+
+  it("startInterview, resetArea and resetInterview call their routes", async () => {
+    const calls: { url: string; method?: string; body?: unknown }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method, body: init?.body });
+      return new Response(null, { status: 204 });
+    }));
+    await startInterview();
+    await resetArea("good_day");
+    await resetInterview();
+    expect(calls).toEqual([
+      { url: "/api/auth/me/assistant-profile/interview", method: "POST", body: undefined },
+      { url: "/api/auth/me/assistant-profile/interview/good_day", method: "DELETE", body: undefined },
+      { url: "/api/auth/me/assistant-profile/interview", method: "DELETE", body: undefined },
+    ]);
   });
 });
