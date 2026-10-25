@@ -107,6 +107,10 @@ class FakeGoogle:
             body: dict[str, Any] = {"user": {"emailAddress": self.email,
                                              "permissionId": self.account_id,
                                              "displayName": "Ana"}}
+        elif url.endswith("/changes/startPageToken"):
+            # KC-3: discovery takes the change cursor before it lists the tree.
+            assert params["supportsAllDrives"] == "true"
+            body = {"startPageToken": f"spt-{self.account_id}"}
         elif url.endswith("/files/root"):
             body = {"id": f"root-{self.account_id}", "name": "My Drive"}
         elif url.endswith("/drives"):

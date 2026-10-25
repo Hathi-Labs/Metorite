@@ -426,6 +426,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
 
+    # Start the Knowledge sync loop (gateway/kb_sync/scheduler.py; spec
+    # knowledge_curation.md §7.2 and §22, WS-61 KC-3). It READS the Drive
+    # change feed of each ready source into kb_source_nodes, metadata only.
+    # Dark by default: with KNOWLEDGE_SYNC empty it starts no task and logs
+    # once. The gate lives inside the start function.
+    try:
+        from gateway.kb_sync.scheduler import start_kb_sync
+        kb_sync_started = await start_kb_sync()
+        _log.info("gateway.kb_sync", started=kb_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.kb_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -588,6 +600,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.crm_sync.scheduler import stop_crm_mirror_sync
         await stop_crm_mirror_sync()
+    except Exception:
+        pass
+
+    # Stop the Knowledge sync loop. Unconditional, like the CRM mirror stop.
+    try:
+        from gateway.kb_sync.scheduler import stop_kb_sync
+        await stop_kb_sync()
     except Exception:
         pass
 
