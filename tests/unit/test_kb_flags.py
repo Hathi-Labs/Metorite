@@ -59,6 +59,9 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
     ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
     ("POST", f"/knowledge/gaps/{OTHER}/reopen", None),
+    # KB-AI-4: the maintenance list and the verify.
+    ("GET", "/knowledge/maintenance", None),
+    ("POST", f"/knowledge/pages/{OTHER}/verify", None),
     # KC-8a: the entity registry.
     ("GET", "/knowledge/entities?type=person", None),
     ("GET", f"/knowledge/entities/{OTHER}", None),

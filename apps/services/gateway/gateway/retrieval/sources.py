@@ -49,7 +49,7 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -76,9 +76,17 @@ class Hit:
     when: str | None = None
     #: The date the record last changed in substance, as ISO text (CX-1, §3).
     stamp: str | None = None
+    #: The care flag of a Knowledge page (KB-AI-4): ``"expired"`` or
+    #: ``"unowned"``, from a closed list in code, or ``None``.
+    flag: str | None = None
+    #: The review date of a flagged page, as ISO text.
+    review_at: str | None = None
 
     def as_dict(self, *, stamp: bool = False) -> dict[str, Any]:
         """The hit for a consumer. *stamp* adds ``stamp`` as the ninth key.
+
+        A hit with a ``flag`` (KB-AI-4) also adds ``flag`` and ``review_at``.
+        A hit without one keeps its keys.
 
         ``GET /search/company`` asks for it with ``CONTEXT_RECENCY`` on. Off,
         the dict is the one of KR-1, byte for byte.
@@ -90,6 +98,9 @@ class Hit:
         }
         if stamp:
             out["stamp"] = self.stamp
+        if self.flag is not None:
+            out["flag"] = self.flag
+            out["review_at"] = self.review_at
         return out
 
 
@@ -133,6 +144,7 @@ class Source:
     async def find(
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
         after: datetime | None = None, reviewed: bool = False,
+        verified_only: bool = False,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -140,7 +152,8 @@ class Source:
         costs one embed call, so it is ``False`` unless the consumer asks.
         *after* asks a source with ``dated`` for records stamped on or after
         it. *reviewed* asks a source with ``reviewed`` for the review factor
-        of §4.2. A source ignores each option it does not declare, and the
+        of §4.2. *verified_only* (KB-AI-4) asks such a source for pages with an
+        owner and a review date in the future. A source ignores each option it does not declare, and the
         reader gets an option only when the consumer sets it.
         """
         if not holds(user, self.feature):
@@ -152,6 +165,8 @@ class Source:
             options["after"] = after
         if self.reviewed and reviewed:
             options["reviewed"] = True
+            if verified_only:
+                options["verified_only"] = True
         return (await self.read(user, q, k, **options))[:k]
 
 
@@ -426,8 +441,30 @@ async def _whatsapp(
 
 # ── knowledge ───────────────────────────────────────────────────────────────
 
+def _care_flag(row: dict[str, Any]) -> str | None:
+    """``"expired"``, ``"unowned"`` or None for one page hit (KB-AI-4).
+
+    Expired wins. A row with no ``owner_email`` key (an older answer) is never unowned. The value comes from a closed list here, never from page text.
+    """
+    due = row.get("review_at")
+    if isinstance(due, str) and due:
+        try:
+            due = datetime.fromisoformat(due)
+        except ValueError:
+            due = None
+    if isinstance(due, datetime):
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        if due <= datetime.now(UTC):
+            return "expired"
+    if "owner_email" in row and not str(row.get("owner_email") or "").strip():
+        return "unowned"
+    return None
+
+
 async def _knowledge(
     user: UserContext, q: str, k: int, *, hybrid: bool = False, reviewed: bool = False,
+    verified_only: bool = False,
 ) -> list[Hit]:
     """The published Knowledge pages the member can see (WS-61 KR-3, §20.3).
 
@@ -455,6 +492,7 @@ async def _knowledge(
     if reviewed:
         answer = await kb_search.search_pages(
             q=q, space=None, k=k, hybrid=bool(hybrid), user=user, reviewed=True,
+            verified_only=verified_only,
         )
     else:
         # ⚠️ Every parameter, by name: the route declares `Query(...)` defaults.
@@ -469,12 +507,14 @@ async def _knowledge(
         if page_id in seen:
             continue
         seen.add(page_id)
+        flag = _care_flag(row) if reviewed else None
         out.append(Hit(
             app="knowledge", kind="page", id=page_id, title=_title(row.get("title")),
             hint=f"Knowledge · {row.get('space_name') or 'Knowledge'}",
             href=f"/knowledge/pages/{quote(page_id)}",
             snippet=_clip(row.get("text")), when=_when(row.get("updated_at")),
             stamp=_when(row.get("updated_at")),
+            flag=flag, review_at=_when(row.get("review_at")) if flag else None,
         ))
     return out[:k]
 

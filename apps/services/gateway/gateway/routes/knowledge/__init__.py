@@ -30,6 +30,7 @@ from gateway.routes.knowledge import (  # noqa: F401 — registers routes
     gaps,
     history,
     home,
+    maintenance,
     pages,
     proposals,
     search,

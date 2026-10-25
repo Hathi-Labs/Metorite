@@ -3,7 +3,7 @@
 **Status: ACTIVE, 2026-10-15.** Owner directive of 2026-10-15, in chat.
 The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
-Verified against the code on 2026-10-15.
+Verified against the code on 2026-10-25.
 
 **KB-0 is BUILT, 2026-10-15** (PR #1058, migration 270). The
 feature `knowledge`, the capability `knowledge:manage`, the pane at
@@ -2101,6 +2101,24 @@ Each AI call goes through the Router and writes one usage row with `module_slug=
 | **KB-AI-6, rerank and "Ask this space"** | A rerank of the top hits, and chat that answers from one space | `tier-decide` | The rerank cannot add a page that the clause hides. The chat cites only pages of the space |
 | **KB-4b and KB-10** | Citation chips in the answer (KB-4b), and `kb:read` on MCP (KB-10) | none | A chip opens the cited page. The MCP read uses the same clause |
 | **Later** | Server-side layout-aware parsing (Docling, MIT) and OCR on `tier-vision`, for scans and complex PDFs | `tier-vision` | Not scheduled |
+
+**KB-AI-4 is AGENT-SAFE. PR A is BUILT, 2026-10-25** (migration 302, no new flag). PR B, the UI, is open. These are the definitions.
+
+- **Expired.** A published page with `review_at` at or before now. This is the CX-1 rule, unchanged.
+- **Verified.** A published page with an owner and a `review_at` in the future. One SQL predicate, `core.VERIFIED_SQL`, serves search and the list. A page with no `review_at` is not verified, and it is not demoted. CX-1 keeps it at 1.0.
+- **Unowned.** A published page with no `owner_email`.
+- **Stale.** A published page with `updated_at` older than 365 days (`core.STALE_DAYS`).
+- **Verify (the act).** `POST /knowledge/pages/{id}/verify` sets `review_at` to now plus `review_every_days` (180 when empty). It sets `owner_email` to the caller when it is empty. It writes no version, keeps `updated_at` and does not reindex. A writer of the space verifies. An agent never does, so the chat has no tool for it.
+- **Publish.** A publish sets `review_at` the same way. The route and the accept of a page proposal do this. A publish also sets `owner_email` to the author when it is empty.
+- **No backfill.** An old page reads as unowned until a person claims it.
+
+`PATCH /knowledge/pages/{id}` takes `owner_email` and `review_every_days` (1 to 3650). A PATCH of these two alone writes no version, as the icon alone does. `GET /knowledge/maintenance?reason=&limit=` lists the expired, unowned and stale pages to a holder of `knowledge:manage`. One SELECT builds the list, so a page that has three reasons is one row.
+
+The flag text follows.
+
+`GET /search/company` with `CONTEXT_RECENCY` on marks a Knowledge hit with `flag` set to `expired` or `unowned`, and with `review_at`. The tool prints "[review overdue since YYYY-MM-DD]" or "[no owner]". The flag values come from a closed list in code, never from page text.
+
+The dated tool takes `verified_only`, and the route takes `verified`. Both read only with `CONTEXT_RECENCY` on. A search with `verified` set writes no gap, because the filter hid the pages. Fences: `tests/unit/test_kb_verified.py`, `tests/unit/test_kb_verified_r8.py` and `tests/unit/test_company_search_recency.py`.
 
 **KB-AI-1 is BUILT, 2026-10-22** (branch `kb-docs-ingest`). It has no migration, no route, no model call and no new dependency. It reuses `mammoth`, the pdf.js of `react-pdf` and `fflate`. 
 

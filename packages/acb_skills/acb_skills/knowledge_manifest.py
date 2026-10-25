@@ -111,6 +111,11 @@ _ENTITY_REASON = (
     "maps to it yet, and KC-10 and KC-13 decide that (knowledge_curation.md §22)."
 )
 
+#: KB-AI-4: verifying a page is a person's act.
+_VERIFY_REASON = (
+    "A person verifies a page in the app. An agent never vouches for knowledge."
+)
+
 MANIFEST: tuple[Route, ...] = (
     # ── Spaces ──
     Route("GET", "/knowledge/spaces", "list_spaces", "A"),
@@ -149,6 +154,8 @@ MANIFEST: tuple[Route, ...] = (
     # ── Gaps (KB-9a, §8.4 door 3) ── the questions Knowledge could not
     # answer. A read may join the chat later. A person decides each close.
     Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
+    Route("GET", "/knowledge/maintenance", "", "A", planned="KB-AI-3 (§22)"),
+    Route("POST", "/knowledge/pages/{page_id}/verify", "", "X", reason=_VERIFY_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/reopen", "", "X", reason=_GAP_DECISION_REASON),

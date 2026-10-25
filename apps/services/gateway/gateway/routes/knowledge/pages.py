@@ -52,7 +52,7 @@ from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.kb_index import index as kb_index
 from gateway.routes.knowledge import backlinks, core, flags, icon
 from gateway.routes.knowledge.core import router
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 #: The longest body one page holds, in characters. The column allows more,
@@ -73,8 +73,21 @@ _TREE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 #: (``proposals.py``, KB-5a) both write it, so the two cannot drift.
 PUBLISH_SETS = (
     "state = 'published', published_at = now(), archived_at = NULL, "
-    f"review_at = now() + interval '{core.REVIEW_DAYS} days'"
+    f"review_at = now() + make_interval(days => COALESCE(p.review_every_days, {core.REVIEW_DAYS})), "
+    "owner_email = COALESCE(p.owner_email, p.author_email)"
 )
+
+#: The SET of a verify (KB-AI-4). It moves the review date by the interval
+#: of the page and claims an empty owner for the caller. It does not touch
+#: ``updated_at``, so a verify is no edit.
+VERIFY_SETS = (
+    f"review_at = now() + make_interval(days => COALESCE(p.review_every_days, {core.REVIEW_DAYS})), "
+    "owner_email = COALESCE(p.owner_email, :verifier)"
+)
+
+#: The PATCH fields that are metadata of care, not of substance. A PATCH of
+#: these alone writes no version (KB-AI-4), as the icon alone does (KB-2f).
+_CARE_FIELDS = frozenset({"owner_email", "review_every_days"})
 
 #: The SET of an archive. The right side reads the row as it was, so the
 #: prior state is kept. ``archive_page`` and the reject of a page proposal
@@ -97,6 +110,17 @@ class PagePatch(BaseModel):
     review_at: datetime | None = None
     #: One emoji, or empty or null to clear it (KB-2f, ``icon.clean_icon``).
     icon: str | None = Field(None, max_length=64)
+    #: The person who answers for the page (KB-AI-4). Null clears it.
+    owner_email: str | None = Field(None, max_length=320)
+    #: The days from a publish or a verify to the next review. Null clears it.
+    review_every_days: int | None = Field(None, ge=1, le=3650)
+
+    @field_validator("owner_email")
+    @classmethod
+    def _owner(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return core.clean_owner(value)
 
 
 class PageMove(BaseModel):
@@ -441,6 +465,32 @@ async def create_page(
         return await _written(db, user, row, "create")
 
 
+def _care_sets(body: PagePatch, given: set[str]) -> tuple[list[str], dict[str, Any]]:
+    """The SET parts and the parameters of the owner and the interval (KB-AI-4)."""
+    sets: list[str] = []
+    params: dict[str, Any] = {}
+    if "owner_email" in given:
+        sets.append("owner_email = :owner_email")
+        params["owner_email"] = body.owner_email
+    if "review_every_days" in given:
+        sets.append("review_every_days = :every")
+        params["every"] = body.review_every_days
+    return sets, params
+
+
+async def _write_care(
+    db: Any, user: UserContext, page_id: str, body: PagePatch, given: set[str],
+) -> Any:
+    """Set the owner or the interval of a locked page. No version, no reindex."""
+    sets, params = _care_sets(body, given)
+    return (await db.execute(
+        text(f"UPDATE kb_pages AS p SET {', '.join(sets)} "
+             "WHERE p.organization_id = CAST(:org AS uuid) "
+             f"AND p.id = CAST(:pid AS uuid) RETURNING {core.PAGE_COLUMNS}"),
+        {**params, "org": core.org_of(user), "pid": page_id},
+    )).first()
+
+
 @router.patch("/pages/{page_id}")
 async def update_page(
     page_id: str,
@@ -467,6 +517,11 @@ async def update_page(
         level = await core.space_level(db, user, space)
         if not core.can_write_page(level):
             raise core.forbidden("Editing this page needs a write grant on its space.")
+        if given <= _CARE_FIELDS:
+            # KB-AI-4: an owner or an interval is no change in substance. No
+            # version, no `updated_at`, no index, as the icon alone.
+            row = await _write_care(db, user, str(page.id), body, given)
+            return core.page_dict(row, position=await _rank(db, user, row))
         if given == {"icon"}:
             # KB-2f: an icon is not a change in substance. No version, no
             # `updated_at`, no index, as a move of the place only (KB-2e).
@@ -477,6 +532,9 @@ async def update_page(
         if "icon" in given:
             sets.append("icon = :icon")
             params["icon"] = new_icon
+        care_sets, care_params = _care_sets(body, given)
+        sets += care_sets
+        params.update(care_params)
         if "title" in given and body.title is not None:
             sets.append("title = :title")
             params["title"] = _title(body.title)
@@ -499,6 +557,38 @@ async def update_page(
             raise HTTPException(status_code=422, detail="Nothing to change.")
         row = await _update(db, user, str(page.id), ", ".join(sets), params)
         return await _written(db, user, row, "edit", background)
+
+
+@router.post("/pages/{page_id}/verify")
+async def verify_page(
+    page_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A person vouches that a published page is still right (KB-AI-4).
+
+    The review date moves forward by the interval of the page, and an empty
+    owner becomes the caller. It writes no version, keeps ``updated_at`` and
+    does not reindex, because a verify is no edit. A writer of the space
+    verifies.
+    """
+    async with core._tenant_session() as db:
+        page = await core.load_page(db, user, page_id, lock=True)
+        if page is None:
+            raise core.not_found()
+        if page.state != "published":
+            raise _conflict(f"Only a published page is verified. This page is {page.state}.")
+        space = await _space_of(db, user, page)
+        level = await core.space_level(db, user, space)
+        if not core.can_write_page(level):
+            raise core.forbidden("Verifying this page needs a write grant on its space.")
+        row = (await db.execute(
+            text(f"UPDATE kb_pages AS p SET {VERIFY_SETS} "
+                 "WHERE p.organization_id = CAST(:org AS uuid) "
+                 f"AND p.id = CAST(:pid AS uuid) RETURNING {core.PAGE_COLUMNS}"),
+            {"org": core.org_of(user), "pid": str(page.id),
+             "verifier": core.viewer_email(user) or None},
+        )).first()
+        return core.page_dict(row, position=await _rank(db, user, row))
 
 
 @router.post("/pages/{page_id}/publish")
