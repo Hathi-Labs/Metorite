@@ -20,8 +20,9 @@ import {
   withSubject,
 } from "./reportBuilder";
 
-// WS-27bn RA-3 adds `waiting`, the coordination panel of §6.8 C.
-const EIGHT = [
+// WS-27bn RA-3 adds `waiting`, the coordination panel of §6.8 C, and RA-4
+// adds `agent_runs`.
+const NINE = [
   "finished",
   "throughput",
   "outlook",
@@ -29,6 +30,7 @@ const EIGHT = [
   "capacity",
   "stuck",
   "waiting",
+  "agent_runs",
   "conflicts",
 ];
 
@@ -48,9 +50,9 @@ describe("(c) overviewState", () => {
     expect(periodKey(state)).toBe("last_12_weeks");
   });
 
-  it("holds the eight sections, in SECTIONS order", () => {
-    expect(state.sections).toEqual(EIGHT);
-    expect([...OVERVIEW_SECTIONS]).toEqual(EIGHT);
+  it("holds the nine sections, in SECTIONS order", () => {
+    expect(state.sections).toEqual(NINE);
+    expect([...OVERVIEW_SECTIONS]).toEqual(NINE);
     const order = REPORT_SECTIONS.map((s) => s.key);
     const at = state.sections.map((k) => order.indexOf(k));
     expect(at).toEqual([...at].sort((a, b) => a - b));
@@ -63,7 +65,7 @@ describe("(c) overviewState", () => {
       weeks: 12,
       skip_current_week: false,
       include_subtree: true,
-      sections: EIGHT,
+      sections: NINE,
     });
   });
 

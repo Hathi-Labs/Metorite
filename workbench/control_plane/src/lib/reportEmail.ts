@@ -28,7 +28,14 @@ import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT, REBALANCE_HR_HINT } from "@/app/pr
 import { asOfDay, periodFree, sectionName } from "@/app/projects/lib/reportBuilder";
 import { clearNote } from "@/app/projects/lib/sectionEmpty";
 import { answerLine, waitingLists } from "@/app/projects/lib/waiting";
-import type { WaitingReport } from "@/app/projects/lib/api";
+import {
+  longLines,
+  outcomeLine,
+  silentLines,
+  successFigure,
+  successTrend,
+} from "@/app/projects/lib/agentRunsReport";
+import type { AgentRunsReport, WaitingReport } from "@/app/projects/lib/api";
 import {
   type EmailOtpEnv,
   type ResendSender,
@@ -161,6 +168,12 @@ export interface RenderedReport {
      * answer time of the period. The summary is the server's sentence.
      */
     waiting?: WaitingReport;
+    /**
+     * WS-27bn RA-4. Opt-in. `agent_runs_body`: the outcomes and the sizes of
+     * its own 14 days, and the silent runs now. The summary and the flag of
+     * the long runs are the server's sentences.
+     */
+    agent_runs?: AgentRunsReport;
     /**
      * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
      * kind that it breaks, so the counts do not add up to `open_total`.
@@ -710,6 +723,46 @@ export function reportLayout(
     parts.push({
       head: {
         lead: clear.length ? sectionName("waiting") : `${sectionName("waiting")}: ${wait.summary}`,
+        strong: true,
+      },
+      items,
+      notes,
+    });
+  }
+
+  const runs = sections.agent_runs;
+  if (runs) {
+    // WS-27bn RA-4. The server's summary first, then the outcomes and the
+    // success rate, then each list with its rows up to `maxRows`. No colour
+    // and no bar: an email renders outside the theme.
+    const items: string[] = [];
+    const notes: string[] = [];
+    const clear = clearNote("agent_runs", runs);
+    if (!clear.length) {
+      const trend = successTrend(runs);
+      items.push(
+        `${outcomeLine(runs)} in ${runs.days} days · success rate ${successFigure(runs)}` +
+          (trend ? `, ${trend}` : "")
+      );
+      const lists = [
+        { heading: "Silent now", total: runs.silent_total, rows: silentLines(runs, (e) => personDisplayName(null, e)) },
+        { heading: "Runs of 4 hours or more", total: runs.long_total, rows: longLines(runs, (e) => personDisplayName(null, e)) },
+      ];
+      for (const list of lists) {
+        if (list.total === 0) continue;
+        items.push(`${list.heading}: ${list.total}`);
+        const shown = list.rows.slice(0, maxRows);
+        for (const r of shown) items.push(`  ${r.label} · ${r.detail}`);
+        if (list.total > shown.length && shown.length > 0) {
+          items.push(`  …and ${list.total - shown.length} more`);
+        }
+      }
+    }
+    // A clear section says its line once, in the note, as the others do.
+    notes.push(...clear);
+    parts.push({
+      head: {
+        lead: clear.length ? sectionName("agent_runs") : `${sectionName("agent_runs")}: ${runs.summary}`,
         strong: true,
       },
       items,

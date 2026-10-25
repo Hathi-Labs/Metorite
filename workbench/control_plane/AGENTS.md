@@ -123,6 +123,13 @@ Ten rules on top of the three above. Each one exists because it was broken:
    the page. A row is a `ControlLink` to `/projects?task=<id>`. Do not add a
    second way for a panel to open a task. Fence:
    `app/projects/components/waitingPanel.test.ts`.
+   **The "Agent runs" panel has one home** (WS-27bn RA-4).
+   `app/projects/lib/agentRunsReport.ts` holds its words, the rule of each
+   figure and the explicit ramp slot of each outcome. `AgentRunsPanel` draws
+   the server's figures, and an `InfoTip` gives each rule to a keyboard and
+   a touch. `overviewShown` hides the panel when the scope has no agent run,
+   by RA-3's rule. Fences: `app/projects/lib/agentRunsReport.test.ts` and
+   `app/projects/components/agentRunsPanel.test.ts`.
    Since WS-27bn R5f round 1, `app/projects/lib/sectionIcons.ts` is the one
    icon map of the report sections. `app/projects/lib/sectionEmpty.ts` holds
    the one friendly line of a clear section, and the app, the email and the

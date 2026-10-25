@@ -132,13 +132,22 @@ def is_silent_run(
     return now - since >= timedelta(seconds=SILENT_RUN_AFTER_S)
 
 
+def silent_since_sql(alias: str = "r") -> str:
+    """Since when the run ``alias`` has said nothing: its last agent act, or
+    its start, or its creation. The clock of :func:`silent_run_sql`.
+    WS-27bn RA-4 reads it for the age of each silent run."""
+    return (
+        f"coalesce({alias}.last_agent_activity_at, {alias}.started_at,"
+        f" {alias}.created_at)"
+    )
+
+
 def silent_run_sql(alias: str = "r") -> str:
     """The SQL twin of :func:`is_silent_run`, over the run alias. It binds
     ``:silent_s``. The database ``now()`` decides, as the run states do."""
     return (
         f"({alias}.status = '{SILENT_STATUS}'"
-        f" AND coalesce({alias}.last_agent_activity_at, {alias}.started_at,"
-        f" {alias}.created_at) <= now() - make_interval(secs => :silent_s))"
+        f" AND {silent_since_sql(alias)} <= now() - make_interval(secs => :silent_s))"
     )
 
 
@@ -627,20 +636,60 @@ def run_hours(
     return max(0.0, total) / 3600.0
 
 
-def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
-    """The agent time of each task done in the window (§6.8 D item 3).
+def run_time_joins_sql() -> str:
+    """The two joins that give the run ``r`` its agent time (§6.8 D item 3).
 
-    The SQL twin of :func:`run_hours`, summed over the runs of each task. A
-    run counts when it started, ended, and was made at or before the finish
-    that the window counts. Each wait on a person comes out:
-    `analytics_waiting.answered_at_sql` pairs a question with its answer, as
-    the answer time does. ``finished`` counts every done task of the
-    window, and ``run_tasks`` the ones with a measured run.
+    ``re.run_end`` is :data:`_RUN_END`, and ``w.wait_s`` is the seconds of
+    each wait on a person: `analytics_waiting.answered_at_sql` pairs a
+    question with its answer, as the answer time does. Read the agent time
+    of the run as :data:`RUN_AGENT_SECONDS_SQL`, and only where
+    :data:`RUN_MEASURED_SQL` holds.
+
+    ⚠️ **ONE text for the agent time of a run.** The KPI tile
+    (:func:`run_time_sql`) sums it for each finished task, and WS-27bn RA-4
+    (`analytics_agent_runs.py`) puts each completed run in a size. A second
+    copy would let the tile and the sizes measure two different times.
     """
     wait_end = (
         f"least(coalesce({answered_at_sql('e')}, re.run_end),"
         f" coalesce({_NEXT_AGENT_ACT}, re.run_end), re.run_end)"
     )
+    return (
+        f" CROSS JOIN LATERAL (SELECT {_RUN_END} AS run_end) re"
+        f" LEFT JOIN LATERAL ("
+        f"   SELECT sum(greatest(0, extract(epoch FROM ({wait_end} - e.created_at))))"
+        f"            AS wait_s"
+        f"     FROM pm_agent_run_activities e"
+        f"    WHERE e.run_id = r.id AND e.type = 'elicitation'"
+        f"      AND e.created_at >= r.started_at AND e.created_at < re.run_end"
+        f" ) w ON TRUE"
+    )
+
+
+#: The agent seconds of the run ``r``, over :func:`run_time_joins_sql`: from
+#: its start to its end, less the waits. The SQL twin of :func:`run_hours`.
+RUN_AGENT_SECONDS_SQL = (
+    "greatest(0, extract(epoch FROM (re.run_end - r.started_at))"
+    " - coalesce(w.wait_s, 0))"
+)
+
+#: The run ``r`` has an agent time: it started, it ended, and its end is not
+#: before its start. :func:`run_hours` gives None for the other runs.
+RUN_MEASURED_SQL = (
+    "(r.started_at IS NOT NULL AND r.ended_at IS NOT NULL"
+    " AND re.run_end >= r.started_at)"
+)
+
+
+def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
+    """The agent time of each task done in the window (§6.8 D item 3).
+
+    The SQL twin of :func:`run_hours`, summed over the runs of each task. A
+    run counts when it started, ended, and was made at or before the finish
+    that the window counts. Each wait on a person comes out, through
+    :func:`run_time_joins_sql`. ``finished`` counts every done task of the
+    window, and ``run_tasks`` the ones with a measured run.
+    """
     return (
         f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
         f" SELECT count(*) AS finished, count(x.hours) AS run_tasks,"
@@ -648,20 +697,11 @@ def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
         f"        sum(x.hours) AS total_hours"
         f"   FROM cyc c"
         f"   LEFT JOIN LATERAL ("
-        f"     SELECT sum(greatest(0, extract(epoch FROM (re.run_end - r.started_at))"
-        f"              - coalesce(w.wait_s, 0))) / 3600.0 AS hours"
+        f"     SELECT sum({RUN_AGENT_SECONDS_SQL}) / 3600.0 AS hours"
         f"       FROM pm_agent_runs r"
-        f"      CROSS JOIN LATERAL (SELECT {_RUN_END} AS run_end) re"
-        f"       LEFT JOIN LATERAL ("
-        f"         SELECT sum(greatest(0, extract(epoch FROM ({wait_end} - e.created_at))))"
-        f"                  AS wait_s"
-        f"           FROM pm_agent_run_activities e"
-        f"          WHERE e.run_id = r.id AND e.type = 'elicitation'"
-        f"            AND e.created_at >= r.started_at AND e.created_at < re.run_end"
-        f"       ) w ON TRUE"
+        f"      {run_time_joins_sql()}"
         f"      WHERE r.task_id = c.task_id"
-        f"        AND r.started_at IS NOT NULL AND r.ended_at IS NOT NULL"
-        f"        AND re.run_end >= r.started_at"
+        f"        AND {RUN_MEASURED_SQL}"
         f"        AND r.created_at <= c.finished_at"
         f"   ) x ON TRUE"
         f"  WHERE c.to_category = :done_cat"
