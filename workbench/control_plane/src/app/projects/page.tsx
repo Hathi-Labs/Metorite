@@ -71,7 +71,6 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
-import { CAPTURE_DO } from "./lib/tasksRedirect";
 import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
 import {
   MIXED_MOVE_HINT,
@@ -2820,13 +2819,9 @@ function ProjectsWorkspace() {
     }
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
-    // WS-64 OP-4 — `/tasks?do=capture` arrives as `?app=my-inbox&do=capture`.
-    // Open the capture once and take `do` out of the address. Any other `do`
-    // belongs to the shell job and stays.
-    if (MY_WORK_LIVE && live === "my-inbox" && rest.get("do") === CAPTURE_DO) {
-      useTaskStore.getState().openQuickCapture("single");
-      rest.delete("do");
-    }
+    // WS-64 OP-4 — `/tasks?do=capture&fill.*` arrives as `?app=my-inbox&do=capture&fill.*`.
+    // `do` and `fill.*` stay in the address: the `capture` ShellJob below
+    // reads them, opens the box, and takes them out (the one door).
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4697,6 +4692,16 @@ function ProjectsWorkspace() {
           }
           askRailSession(PROJECTS_AGENT, f.session);
           chooseApp("ai-chat");
+        }}
+      />
+      {/* WS-64 OP-4 — `/tasks?do=capture` lands here (also with NS-4b `fill.*`),
+          the same door `/tasks` uses. With My work live the box sits on the Inbox. */}
+      <ShellJob
+        id="capture"
+        ready={!loading && mountSettled}
+        onOpen={(f) => {
+          if (MY_WORK_LIVE) setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+          useTaskStore.getState().openQuickCapture("single", f.title ?? "", true);
         }}
       />
       <ShellJob

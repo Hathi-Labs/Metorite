@@ -153,3 +153,14 @@ test("/tasks lands on Today, and /tasks?item=<id> on the task", async ({ page })
   await page.goto("/tasks?item=abc-1");
   await expect(page).toHaveURL(/\/projects\?(.*&)?task=abc-1/, { timeout: 60_000 });
 });
+
+test("a shell-bar capture with fill.title lands on /projects with the title and the AI line", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  await page.goto("/tasks?do=capture&fill.title=call+the+vendor");
+  await expect(page).toHaveURL(/\/projects/, { timeout: 60_000 });
+  await expect(CAPTURE_INPUT(page)).toHaveValue("call the vendor", { timeout: 30_000 });
+  await expect(page.getByText("Filled by AI. Check it, then press Enter to add it.")).toBeVisible();
+  await expect.poll(() => new URL(page.url()).search, { timeout: 15_000 }).not.toContain("fill.");
+});

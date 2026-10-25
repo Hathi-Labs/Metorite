@@ -29,6 +29,16 @@ describe("tasksRedirectTarget, flag on", () => {
   it("a task id wins over a view, and is encoded", () => {
     expect(to("?item=a%20b&do=capture")).toBe("/projects?task=a%20b");
   });
+  it("capture keeps every NS-4b fill.* key", () => {
+    expect(to("?do=capture&fill.title=call+the+vendor")).toBe(
+      "/projects?app=my-inbox&do=capture&fill.title=call+the+vendor",
+    );
+  });
+  it("unknown query keys and another fragment pass through", () => {
+    expect(to("?x=1")).toBe("/projects?app=my-today&x=1");
+    expect(to("?task=t1&x=1", "#c2")).toBe("/projects?task=t1&x=1#c2");
+    expect(to("", "#today")).toBe("/projects?app=my-today");
+  });
   it("another shell job stays on /tasks", () => {
     expect(to("?do=open-chat&fill.session=s1")).toBeNull();
   });

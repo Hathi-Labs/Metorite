@@ -18,7 +18,6 @@
 
 import { NAV_SECTIONS, type NavSection } from "@/lib/nav";
 import { shellChatOn } from "@/lib/shell/chatFlag";
-import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
 
 /** The catch-all app: the general chat. */
 export const CHAT_HREF = "/chat";
@@ -327,8 +326,6 @@ export function chatLink(
   let href = appForAgent(agentName, sections);
   if (visibleHrefs && !visibleHrefs.has(href)) href = CHAT_HREF;
   if (!CHAT_IN_APP.has(href)) href = CHAT_HREF;
-  // WS-64 OP-4 — with My work live the tasks assistant is the Projects one.
-  if (href === "/tasks" && myWorkEnabled()) href = "/projects";
   // D99: with the chat bar on, the apps mount no rail, and every chat opens
   // in the one assistant, whose address is `/chat`.
   if (oneAssistant) href = CHAT_HREF;

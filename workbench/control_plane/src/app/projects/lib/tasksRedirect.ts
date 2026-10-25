@@ -20,6 +20,9 @@ import { myWorkEnabled } from "./myWorkFlag";
 /** The query value that asks the Projects page to open capture once. */
 export const CAPTURE_DO = "capture";
 
+/** Keys the redirect reads itself. Every other query key passes through. */
+const OWN_KEYS = new Set(["task", "item", "do", "app"]);
+
 /** The target of a `/tasks` address, or null when the address stays. */
 export function tasksRedirectTarget(
   url: { search?: string | null; hash?: string | null },
@@ -28,11 +31,21 @@ export function tasksRedirectTarget(
   if (!flag) return null;
   const params = new URLSearchParams(url.search ?? "");
   const task = params.get("task") || params.get("item");
-  if (task) return `/projects?task=${encodeURIComponent(task)}`;
   const action = params.get("do");
-  if (action === CAPTURE_DO) return `/projects?app=my-inbox&do=${CAPTURE_DO}`;
-  if (action) return null;
-  return "/projects?app=my-today";
+  if (!task && action && action !== CAPTURE_DO) return null;
+  // Unknown keys and every NS-4b `fill.*` key travel on, in their order.
+  const rest = new URLSearchParams();
+  for (const [k, v] of params) if (!OWN_KEYS.has(k)) rest.append(k, v);
+  const head = task
+    ? `task=${encodeURIComponent(task)}`
+    : action === CAPTURE_DO
+      ? `app=my-inbox&do=${CAPTURE_DO}`
+      : "app=my-today";
+  const tail = rest.toString();
+  const q = tail ? `${head}&${tail}` : head;
+  // `#today` names the view the target already opens. Another fragment stays.
+  const hash = url.hash && url.hash !== "#today" && url.hash !== "#" ? url.hash : "";
+  return `/projects?${q}${hash}`;
 }
 
 /**
