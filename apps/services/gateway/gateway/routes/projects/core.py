@@ -2037,9 +2037,12 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 
 # ── The write precondition — D-PM-20 / WS-27bi ───────────────────────────────
 #
-# ``If-Match: <updated_at>``. ``updated_at`` stays the ONE token and the ONE
-# feed stamp: a client reads it, sends it back, and the delta cursor pages on
-# it. There is no ``version`` column.
+# ``If-Match: <updated_at>``. No ``version`` column: ``update_row`` already moves
+# ``updated_at`` on every write that matters, and a second monotonic fact about
+# one row is the CLAUDE.md §5 defect.
+#
+# ``updated_at`` stays the ONE token and the ONE feed stamp: a client reads it,
+# sends it back, and the delta cursor pages on it.
 #
 # WS-55 MCP-G7 (spec §9.10.3, migration ``*_pm_tasks_fields_at.sql``).
 # ``touch_task`` moves ``updated_at`` for every comment, link, attachment and
@@ -2109,7 +2112,10 @@ def precondition_holds(row: Any, expected: datetime) -> bool:
 
 
 def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
-    """Enforce ``If-Match`` through :func:`precondition_holds`.
+    """Enforce ``If-Match`` against ``row.updated_at``.
+
+    Since WS-55 MCP-G7 the rule is :func:`precondition_holds`, which also reads
+    ``row.fields_at``.
 
     An ABSENT header still succeeds (D-PM-20): advisory now, mandatory in a later
     release. Made compulsory on day one it would break every existing caller at
@@ -2124,7 +2130,11 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     if not isinstance(if_match, str):
         return
     expected = parse_precondition(if_match)
-    if not precondition_holds(row, expected):   # rule 2: instants, never strings
+    # MCP-G7: the one rule. A token that it passes goes ahead, and each other
+    # token is a mismatch, so the check below always raises when it runs.
+    if precondition_holds(row, expected):
+        return
+    if row.updated_at != expected:          # rule 2: instants, never strings
         raise HTTPException(
             status_code=412,
             detail={
