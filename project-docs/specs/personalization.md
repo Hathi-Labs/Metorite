@@ -1073,9 +1073,10 @@ The first release needs one organization.
    The page, the nav entry and My Day also read `enabled` from
    `GET /auth/me/assistant-profile`. For an organization outside the list,
    that answer is `enabled: false` and the web app shows nothing.
-5. **The nav entry.** Settings gains the entry "Assistant", which opens
-   `/settings/assistant`. It is a Settings entry, not a new pane, so the
-   pane count of `launch_surface.md` §2 does not change.
+5. **The nav entry.** The account menu gains the row "Assistant", which
+   opens `/settings/assistant`. It is a static account link beside
+   My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
+   live set of `launch_surface.md` §2 and `nav.test.ts` does not change.
 
 ### 14.3 The interview areas
 
