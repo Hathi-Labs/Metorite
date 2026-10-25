@@ -8,7 +8,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { projectsPhoneTabs } from "./phoneTabs";
-import { tasksLink, tasksRedirectTarget } from "./tasksRedirect";
+import { tasksLink, tasksRedirectFor, tasksRedirectTarget } from "./tasksRedirect";
 
 describe("tasksRedirectTarget, flag on", () => {
   const to = (search: string, hash = "") => tasksRedirectTarget({ search, hash }, true);
@@ -106,6 +106,21 @@ describe("projectsPhoneTabs", () => {
   it("the /tasks page redirects through the one function", () => {
     const root = path.resolve(__dirname, "..", "..", "..");
     const page = fs.readFileSync(path.join(root, "app", "tasks", "page.tsx"), "utf-8");
-    expect(page).toContain("tasksRedirectTarget(");
+    expect(page).toContain("tasksRedirectFor(");
+  });
+});
+
+describe("tasksRedirectFor, the member may not hold Projects", () => {
+  const url = { search: "", hash: "" };
+  it("redirects when the flag is on and Projects is held", () => {
+    expect(tasksRedirectFor(url, true, true)).toBe("/projects?app=my-today");
+  });
+  it("stays when the flag is on and Projects is not held", () => {
+    expect(tasksRedirectFor(url, true, false)).toBeNull();
+    expect(tasksRedirectFor({ search: "?do=capture", hash: "" }, true, false)).toBeNull();
+  });
+  it("stays when the flag is off", () => {
+    expect(tasksRedirectFor(url, false, true)).toBeNull();
+    expect(tasksRedirectFor(url, false, false)).toBeNull();
   });
 });

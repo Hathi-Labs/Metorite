@@ -225,7 +225,7 @@ export function TaskCaptureModal({
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border flex-shrink-0">
           <div className="text-sm font-medium text-foreground">
-            {commitment ? "You committed to a task" : "Add to My Tasks"}
+            {commitment ? "You committed to a task" : "Add to My work"}
           </div>
           <button
             onClick={onClose}
@@ -250,10 +250,10 @@ export function TaskCaptureModal({
                   <Icon name="CheckCircle2" size={14} className="text-primary mt-0.5 flex-shrink-0" />
                   <div className="min-w-0">
                     <div className="text-foreground">
-                      This email is already in My Tasks: &ldquo;{already.title}&rdquo;
+                      This email is already in My work: &ldquo;{already.title}&rdquo;
                     </div>
                     <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
-                      Open My Tasks →
+                      Open My work →
                     </a>
                   </div>
                 </div>
