@@ -183,7 +183,7 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     settings = get_settings()
     mp = harness._mp
     mp.setattr(settings, "litellm_base_url", base, raising=False)
-    mp.setattr(settings, "llm_api_key", key, raising=False)
+    # ``llm_api_key`` is a property that reads this field.
     mp.setattr(settings, "litellm_master_key", key, raising=False)
     mp.setenv("LITELLM_BASE_URL", base)
     mp.setenv("LITELLM_MASTER_KEY", key)
@@ -316,6 +316,9 @@ def turn_totals(row: dict[str, Any]) -> dict[str, Any]:
         "cached": sum(c["cached"] for c in calls),
         "completion": sum(c["completion"] for c in calls),
         "cost_usd": sum(c["cost_usd"] for c in calls),
+        # The calls of one turn run one after the other, so this is the part
+        # of the turn that the model took. The rest is the platform's.
+        "model_s": sum(c["dur_s"] or 0.0 for c in calls),
     }
 
 
@@ -347,6 +350,9 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "first_text_s": {"mean": _mean(first), "median": _median(first), "p90": _p90(first),
                              "turns_with_text": len(first)},
             "total_s": {"mean": _mean(total), "median": _median(total), "p90": _p90(total)},
+            "model_s_per_turn": _mean([t["model_s"] for t in totals]),
+            "other_s_per_turn": _mean([(r["total_s"] or 0.0) - t["model_s"]
+                                       for r, t in zip(rs, totals, strict=True)]),
             "calls_per_turn": _mean([t["calls"] for t in totals]),
             "calls_orchestrator_per_turn": _mean([t["calls_orchestrator"] for t in totals]),
             "calls_email_per_turn": _mean([t["calls_email"] for t in totals]),
@@ -381,6 +387,8 @@ def report(data: dict[str, Any]) -> str:
     row("Turn total, median s", lambda v: v["total_s"]["median"])
     row("Turn total, mean s", lambda v: v["total_s"]["mean"])
     row("Turn total, p90 s", lambda v: v["total_s"]["p90"])
+    row("Of the total, in model calls, mean s", lambda v: v.get("model_s_per_turn"))
+    row("Of the total, outside the model, mean s", lambda v: v.get("other_s_per_turn"))
     row("Model calls per turn", lambda v: v["calls_per_turn"])
     row("Of them, the orchestrator", lambda v: v["calls_orchestrator_per_turn"])
     row("Of them, the email assistant", lambda v: v["calls_email_per_turn"])
@@ -488,6 +496,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=300.0, help="live: seconds a turn")
     parser.add_argument("--out", default=str(HERE / "results.json"))
     args = parser.parse_args(argv)
+    # An answer can hold a rupee sign, and a Windows console is cp1252.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="replace")
 
     arms = tuple(a for a in args.arms.split(",") if a in ARMS)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}

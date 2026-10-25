@@ -74,7 +74,7 @@ def email_calls_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, An
         cid = str(e.get("toolCallId") or "")
         if kind == "SUB_AGENT_TOOL_CALL_START" and e.get("agentName") == EA:
             key = f"s:{cid}:{len(order)}"
-            starts[key] = [str(e.get("toolCallName") or ""), e.get("args") or "", ""]
+            starts[key] = [str(e.get("toolCallName") or ""), e.get("args") or "", "", ""]
             order.append(key)
         elif kind == "SUB_AGENT_TOOL_CALL_RESULT" and e.get("agentName") == EA:
             for key in reversed(order):
@@ -83,13 +83,16 @@ def email_calls_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, An
                     break
         elif kind == "TOOL_CALL_START" and str(e.get("toolCallName") or "") in tools:
             key = f"t:{cid}"
-            starts[key] = [str(e.get("toolCallName")), e.get("args") or "", ""]
+            starts[key] = [str(e.get("toolCallName")), e.get("args") or "", "", ""]
             order.append(key)
         elif kind == "TOOL_CALL_ARGS" and f"t:{cid}" in starts:
-            starts[f"t:{cid}"][1] = str(starts[f"t:{cid}"][1] or "") + str(e.get("delta") or "")
+            # The start event can hold the whole arguments, and the deltas
+            # then repeat them. So the deltas count only when it holds none,
+            # as the harness's ``_take`` reads them.
+            starts[f"t:{cid}"][3] += str(e.get("delta") or "")
         elif kind == "TOOL_CALL_RESULT" and f"t:{cid}" in starts:
             starts[f"t:{cid}"][2] = str(e.get("content") or "")
-    return [(starts[k][0], _args(starts[k][1]), starts[k][2]) for k in order]
+    return [(starts[k][0], _args(starts[k][1] or starts[k][3]), starts[k][2]) for k in order]
 
 
 def tasks_of(tool_calls: list[tuple[str, str]]) -> list[str]:
