@@ -126,6 +126,7 @@ import {
   sidePanelFits,
 } from "@/lib/sidePanelFit";
 import { drawerStep } from "./lib/drawerOwner";
+import { moveFollowUp } from "./lib/moveRefresh";
 import { useLiveRefresh } from "./lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
@@ -3481,6 +3482,21 @@ function ProjectsWorkspace() {
       // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
       await refreshRef.current();
+      // WS-64 #11 — in My work nothing is selected, so the line above read no
+      // list. Read the task store again, and point an open panel at the moved
+      // task in its new project (its statuses are the new project's).
+      const follow = moveFollowUp({
+        myWork: isMyWorkId(app),
+        openTaskId: openTask?.id ?? null,
+        movedIds: ids,
+      });
+      if (follow.reloadMyWork) {
+        const store = useTaskStore.getState();
+        void store.reloadItems().then(() => {
+          if (useTaskStore.getState().selectedView === "done") void store.loadDone();
+        });
+      }
+      if (follow.reopenTaskId) void openTaskById(follow.reopenTaskId, isMyWorkId(app));
       // "Moved 4 tasks to Website relaunch" — the subtasks the move took
       // along are counted, from the server's answer.
       const moved = moveReceipt(
