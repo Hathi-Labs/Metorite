@@ -1484,7 +1484,7 @@ async def agent_delete_task(
         # merge into it. So with `subtasks_to_delete: all`, the fields rule
         # could delete a subtree the member never saw. Any change after the
         # read, a comment too, makes the member's yes stale.
-        # Fence: `test_task_precondition_fields_at.py`, the agent delete case.
+        # Fence: H2b and H2c of `test_mcp_edge_delete.py` (mutation D30).
         if doomed.updated_at != expected:
             raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
         if doomed.title != payload.confirm_title:

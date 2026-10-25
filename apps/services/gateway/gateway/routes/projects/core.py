@@ -2062,7 +2062,8 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 # write with no stamp, followed by ``touch_task`` in the same request, leaves
 # ``fields_at`` behind, and a stale token then passes. The promote paths
 # (``lift_subtasks_to_grandparent``, ``merge._reparent_children``, the kept
-# subtasks of ``tasks.delete_task_in``) stamp for this reason.
+# subtasks of ``tasks.delete_task_in``) stamp for this reason. Each one has
+# its own R8 case in ``test_task_precondition_fields_at.py`` (M5 to M8).
 #
 # ``tasks.agent_delete_task`` keeps STRICT equality and does not call
 # :func:`precondition_holds`. A delete is one-way, and ``fields_at`` does not

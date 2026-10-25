@@ -20,7 +20,9 @@ real ``apply_status_transition``. Each item below is a test:
   ``meta.via = github``, and one ``system`` row holds the reason.
 * **D9** a second delivery moves nothing.
 * **D10** open subtasks stay open.
-* **D11** ``core.py`` has no diff.
+* **D11** the merge rule reaches ``core.py`` only through its public helpers,
+  and patches nothing in it at run time. (Narrowed 2026-10-25, WS-55 MCP-G7:
+  the git diff against ``origin/main`` was the scope fence of the EA-13d/e PR.)
 * **D12** a person's later move through the chat (``chat:projects-assistant``)
   keeps the task.
 

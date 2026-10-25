@@ -37,6 +37,13 @@ Mutations (each must turn a named test red):
   ``test_a_subtask_promoted_by_a_parent_delete_gives_412``.
 * M6. ``merge._reparent_children``: drop ``updated_at = now()`` from the
   move of the children. ``test_a_subtask_moved_by_a_merge_gives_412``.
+* M7. ``tasks.delete_task_in``: drop ``updated_at = now()`` from the kept
+  moves. ``test_a_subtask_kept_by_a_partial_delete_gives_412``.
+* M8. ``merge._reparent_children``: drop ``updated_at = now()`` from the lift
+  of the target. ``test_a_target_lifted_by_a_merge_gives_412``.
+* B. The migration: the trigger treats ``description`` as a stamp (it drops it
+  from the comparison as well). ``test_a_field_change_by_someone_else_gives_412``
+  with ``description``. Each column of the parametrize has the same guard.
 
 The agent delete keeps strict equality on purpose. Its fences are H2b and
 H2c of ``test_mcp_edge_delete.py`` (mutation D30 there).
@@ -402,3 +409,86 @@ class TestTheVersionOnARealDatabase:
         after = _stamps(w.p, w.task_a)
         assert stamp < after.updated_at < ahead
         assert after.fields_at == after.updated_at
+
+    async def test_a_subtask_kept_by_a_partial_delete_gives_412(self, world):
+        """Read child K, delete its parent and only the OTHER subtask (K is
+        kept and moves up a level), PATCH K with the old token: 412. This is the
+        kept-move path of ``delete_task_in``, not the lift."""
+        w = world
+        kept = _second_task(w.p, w.task_a, number=3, title="Keep me", parent=w.task_a)
+        doomed = _second_task(w.p, w.task_a, number=4, title="Drop me", parent=w.task_a)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{kept}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            gone = await _as(call, w.me, "DELETE",
+                             f"/projects/tasks/{w.task_a}?delete_subtask_ids={doomed}")
+            assert gone.status_code == 200, gone.text
+            assert gone.json()["cascaded"]["subtasks_deleted"] == 1
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{kept}",
+                             {"title": "Keep me today"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] is None
+
+    async def test_a_target_lifted_by_a_merge_gives_412(self, world):
+        """Read T, a subtask of B. Merge B into T, so T is lifted out of B's
+        subtree first. PATCH T with the old token: 412. No task has a
+        description, tags, priority or estimate, so the merge writes no field
+        of T but its parent."""
+        w = world
+        target = _second_task(w.p, w.task_a, number=3, title="The whole of it",
+                              parent=w.task_b)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{target}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            merged = await _as(call, w.me, "POST", f"/projects/tasks/{target}/merge",
+                               {"sources": [w.task_b]})
+            assert merged.status_code == 200, merged.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{target}",
+                             {"title": "The whole of it, done"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] is None
+
+    @pytest.mark.parametrize("column", [
+        "title", "description", "importance", "leveraged", "estimate_mins",
+        "start_date", "due_at", "tags", "type_id", "custom_fields",
+    ])
+    async def test_a_field_change_by_someone_else_gives_412(self, world, column):
+        """Read A, somebody else changes ONE column, PATCH A with the old
+        token: 412. A guard on each user-visible column, so the trigger cannot
+        start to read one of them as a stamp."""
+        w = world
+        with w.p.admin_engine.begin() as c:
+            row = c.execute(text(
+                "SELECT project_id, organization_id FROM pm_tasks "
+                "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a}).one()
+            kind = str(uuid.uuid4())
+            c.execute(text(
+                "INSERT INTO pm_task_types (id, organization_id, project_id, name) "
+                "VALUES (:id, :o, :p, 'Bug')"),
+                {"id": kind, "o": row.organization_id, "p": row.project_id})
+            c.execute(text(
+                "INSERT INTO pm_custom_fields (organization_id, project_id, field_key, "
+                "name, field_type, created_by) VALUES (:o, :p, 'site', 'Site', 'text', :e)"),
+                {"o": row.organization_id, "p": row.project_id, "e": ME})
+        change = {
+            "title": "Somebody else's title",
+            "description": "Somebody else's notes",
+            "importance": 3,
+            "leveraged": True,
+            "estimate_mins": 90,
+            "start_date": "2026-11-01",
+            "due_at": "2026-11-02T10:00:00+00:00",
+            "tags": ["urgent"],
+            "type_id": kind,
+            "custom_fields": {"site": "Pune"},
+        }[column]
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            first = await _as(call, w.other, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {column: change})
+            assert first.status_code == 200, first.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+        assert late.status_code == 412, late.text
