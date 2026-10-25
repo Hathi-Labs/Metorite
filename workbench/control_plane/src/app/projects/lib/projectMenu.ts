@@ -139,6 +139,15 @@ export interface ProjectMenuHandlers {
    * not appear at all.
    */
   onDelete?: (project: ProjectRow, level: NodeLevel) => void;
+  /**
+   * WS-64 OP-10 (D-OP-16). Open the confirmation that turns this FOLDER
+   * into a project. It opens a dialog and does not convert.
+   *
+   * Offered only on a folder whose row says `can_convert: true`, because
+   * the server decides who may. Optional, so a tree that cannot write
+   * omits it.
+   */
+  onConvert?: (project: ProjectRow) => void;
 }
 
 /**
@@ -250,7 +259,9 @@ export function projectMenuItems(
     ];
     // Beside Rename, because both edit what the node IS rather than filing or
     // pausing it. A move is the second such act the product has.
-    if (ui.onMove) {
+    // WS-64 OP-3 — the personal root has nowhere to go: a private tree
+    // cannot sit under a team node, and there is no "top level" for it.
+    if (ui.onMove && !isPersonalRoot(project)) {
       edit.push({
         kind: "item",
         label: "Move to…",
@@ -259,6 +270,22 @@ export function projectMenuItems(
       });
     }
     groups.push(edit);
+  }
+
+  // WS-64 OP-10 — beside Rename and Move, because it too changes what the
+  // node IS. Only on a folder, and only where the server says yes: an
+  // explicit `true`, unlike Delete, since a row without the flag came from a
+  // read that did not ask the rule.
+  if (handlers.onConvert && level === "folder" && project.can_convert === true) {
+    const onConvert = handlers.onConvert;
+    const convert: ProjectMenuItem = {
+      kind: "item",
+      label: "Convert to project",
+      icon: "FolderKanban",
+      onSelect: () => onConvert(project),
+    };
+    if (groups.length > 0) groups[groups.length - 1].push(convert);
+    else groups.push([convert]);
   }
 
   // Create, from the same grammar the row's `+` button reads. A flat labelled
@@ -383,7 +410,8 @@ export function projectMenuItems(
     groups.push(states);
   }
 
-  groups.push(archiveItems(project, handlers, archived));
+  // WS-64 OP-3 — the personal root is not filed away; its Areas are.
+  if (!isPersonalRoot(project)) groups.push(archiveItems(project, handlers, archived));
 
   // LAST, and alone in its group, so a separator always stands between Delete
   // and the reversible act above it. Every other group here is conditional,
@@ -410,6 +438,16 @@ export function projectMenuItems(
     items.push(...group);
   }
   return items;
+}
+
+/**
+ * WS-64 OP-3 (D-OP-2) — the caller's personal root: a node of the private
+ * tree with no parent. The menu never offers it Move or Archive. Nothing on a
+ * personal node offers a share or access item either, because this menu has
+ * none to offer (`projectMenu.test.ts` fences it).
+ */
+function isPersonalRoot(project: ProjectRow): boolean {
+  return project.personal === true && !project.parent_project_id;
 }
 
 /**

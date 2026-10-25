@@ -235,6 +235,9 @@ ALLOWED: dict[str, str] = {
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
     "apps/agents/agent-email-assistant/agents.py::_one_line::' '.join(str(value or '').split())[:limit]":
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
+    'apps/skills/skill-projects/skill_projects/guarded.py::_convert_list::names[:CONVERT_LIST_LIMIT]':
+        "A confirm card's list of child names (WS-64 OP-10 fix round 1). It ends with "
+        "'and N more', the card states the full count, and the convert takes every child.",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -246,8 +249,9 @@ ALLOWED: dict[str, str] = {
 #: `join(...)[:N]`, so the three email entries that collapse one string's
 #: whitespace came back with their reason (64). Part 2 (2026-10-15) added
 #: one: the sandbox read cuts a single line that is longer than its window,
-#: and says so (65).
-ALLOWED_CEILING = 65
+#: and says so (65). WS-64 OP-10 fix round 1 capped the convert card's list
+#: of child names as the app's dialog caps it, and it says "and N more" (66).
+ALLOWED_CEILING = 66
 
 
 def _stringy(node: ast.AST) -> bool:

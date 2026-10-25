@@ -52,6 +52,7 @@ import {
   PROJECTS_CACHE,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
+import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
@@ -71,6 +72,16 @@ import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
+import {
+  MIXED_MOVE_HINT,
+  PERSONAL_ARCHIVED_FOLD_ID,
+  PERSONAL_SECTION_HINT,
+  PERSONAL_SECTION_LABEL,
+  lookupRoots,
+  moveDestinationRoots,
+  personalRoots,
+  splitPersonal,
+} from "./lib/personalTree";
 import MyWorkHost from "./components/MyWorkHost";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
@@ -385,8 +396,11 @@ function ProjectNav({
   onManageTags,
   onManageLifecycle,
   counts,
+  personal = NO_ROOTS,
 }: {
   roots: ProjectRow[];
+  /** WS-64 OP-3 — the caller's own tree, drawn under "Personal". Empty with the flag off. */
+  personal?: ProjectRow[];
   selectedId: string | null;
   /** The app-level destination, or null when a space/project is selected. */
   app: ProjectAppId | null;
@@ -425,6 +439,14 @@ function ProjectNav({
   // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
   const split = useMemo(() => splitArchived(roots), [roots]);
   const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
+  // A personal Area that is archived leaves the live Personal tree and waits in
+  // its own fold inside the Personal section (never in the team fold above).
+  const personalSplit = useMemo(() => splitPersonal(personal), [personal]);
+  const personalArchivedOpen = useFoldOpen(PERSONAL_ARCHIVED_FOLD_ID);
+  const personalArchivedGen = useMemo(
+    () => new Map(personalSplit.archived.map((entry) => [entry.node.id, entry.parentGen])),
+    [personalSplit.archived],
+  );
   const archivedGen = useMemo(
     () => new Map(split.archived.map((entry) => [entry.node.id, entry.parentGen])),
     [split.archived],
@@ -439,6 +461,15 @@ function ProjectNav({
           ? {
               onDelete: (project: ProjectRow, level: NodeLevel) => {
                 actions.onDelete?.(project, level);
+                onPicked?.();
+              },
+            }
+          : {}),
+        // WS-64 OP-10 — it raises a dialog too, so it closes the drawer.
+        ...(actions.onConvert
+          ? {
+              onConvert: (project: ProjectRow) => {
+                actions.onConvert?.(project);
                 onPicked?.();
               },
             }
@@ -509,6 +540,103 @@ function ProjectNav({
           </div>
         </div>
       ))}
+
+      {/* WS-64 OP-3 — Personal 🔒, between My work and Spaces (D-OP-2). The same
+          tree row and counts as Spaces. No "+" on the heading, because a
+          personal root is not a space, and no drag, so a private node cannot
+          be dropped into a team space. The row menu drops Share and Move-out
+          (`projectMenu.ts`). */}
+      {personal.length > 0 ? (
+        <div className="mb-2" data-testid="personal-section">
+          <p
+            className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+            title={PERSONAL_SECTION_HINT}
+          >
+            <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
+            <Icon name="Lock" className="h-3 w-3 shrink-0" />
+            <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
+          </p>
+          <ProjectTree
+            roots={personalSplit.active}
+            selectedId={app ? null : selectedId}
+            onSelect={(project) => {
+              onSelect(project);
+              onPicked?.();
+            }}
+            onAddChild={onAddChild}
+            onOpenSettings={(space) => {
+              onOpenSettings(space);
+              onPicked?.();
+            }}
+            onMove={(node) => {
+              onMove(node);
+              onPicked?.();
+            }}
+            creating={
+              creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
+                ? creating
+                : null
+            }
+            onCommitCreate={onCommitCreate}
+            onCancelCreate={onCancelCreate}
+            actions={navActions}
+            onManageStatuses={(space) => {
+              onManageStatuses(space);
+              onPicked?.();
+            }}
+            onManageFields={(space) => {
+              onManageFields(space);
+              onPicked?.();
+            }}
+            onManageTags={(space) => {
+              onManageTags(space);
+              onPicked?.();
+            }}
+            onManageLifecycle={(space) => {
+              onManageLifecycle(space);
+              onPicked?.();
+            }}
+          />
+          {personalSplit.count > 0 ? (
+            <div className="mt-1" data-testid="personal-archived-section">
+              <button
+                type="button"
+                aria-expanded={personalArchivedOpen}
+                aria-controls="projects-personal-archived-list"
+                onClick={() => toggleFold(PERSONAL_ARCHIVED_FOLD_ID)}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-muted-foreground tech-transition hover:bg-muted"
+              >
+                <Icon name={personalArchivedOpen ? "ChevronDown" : "ChevronRight"} className="h-3.5 w-3.5 shrink-0" />
+                <Icon name="Archive" className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider">
+                  Archived
+                </span>
+                <span
+                  className="shrink-0 text-xs tabular-nums"
+                  title="Archived personal projects and areas"
+                >
+                  {personalSplit.count}
+                  <span className="sr-only"> archived personal projects</span>
+                </span>
+              </button>
+              {personalArchivedOpen ? (
+                <div id="projects-personal-archived-list" className="opacity-75">
+                  <ProjectTree
+                    roots={personalSplit.archived.map((entry) => entry.node)}
+                    selectedId={app ? null : selectedId}
+                    onSelect={(project) => {
+                      onSelect(project);
+                      onPicked?.();
+                    }}
+                    actions={navActions}
+                    rootParentGen={(node) => personalArchivedGen.get(node.id) ?? 0}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* The Spaces section — its own heading, with the + that creates one. */}
       <div className="mb-1 flex items-center gap-1 px-2 py-1.5">
@@ -672,6 +800,11 @@ function ProjectsWorkspace() {
    */
   const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
   const roots = useMemo(() => tree.data?.rows ?? NO_ROOTS, [tree.data]);
+  // WS-64 OP-3 — the caller's own tree, empty with the flag off. `roots` stays
+  // the TEAM tree (Spaces, the grants fan-out, the drag). `allRoots` is where a
+  // node is looked up, so a selected personal node resolves like any project.
+  const personal = useMemo(() => personalRoots(tree.data, MY_WORK_LIVE), [tree.data]);
+  const allRoots = useMemo(() => lookupRoots(roots, personal), [roots, personal]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [selected, setSelected] = useState<ProjectRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
@@ -859,6 +992,11 @@ function ProjectsWorkspace() {
   //: SAME row leaves the id unchanged, so the id alone would not remount and
   //: the stale-armed frame would survive exactly where it is easiest to hit.
   const [deleteOpenedAt, setDeleteOpenedAt] = useState(0);
+  //: WS-64 OP-10 — the folder whose "Convert to project" dialog is open, the
+  //: call in flight, and the server's refusal, shown in the dialog.
+  const [convertingNode, setConvertingNode] = useState<ProjectRow | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
   //: WS-27bl — the tasks whose move card is open. One state for both entry
   //: points: a single row from its menu, and the whole bulk selection.
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
@@ -1152,6 +1290,21 @@ function ProjectsWorkspace() {
       const tab = (event as CustomEvent<string>).detail;
       if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
       else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
+      else if (tab === "projects-mywork") {
+        // WS-64 OP-4 — the phone's "My work" tab opens the Projects sheet
+        // (`ProjectNav`: My work on top, then Personal, then Spaces). The
+        // shell's "Menu" tab keeps the global drawer.
+        setSheet((s) => (s === "tree" ? null : "tree"));
+      } else if (tab === "projects-capture") {
+        // WS-64 OP-4 — Capture must work with no My work view open. The quick
+        // capture lives in the task store and `MyWorkHost` mounts it, so open
+        // the Inbox when no My work view shows, then set the store's flag. The
+        // flag survives until the host mounts. The smallest change: no
+        // second capture host.
+        setSheet(null);
+        setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+        useTaskStore.getState().openQuickCapture("single");
+      }
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
@@ -1299,7 +1452,7 @@ function ProjectsWorkspace() {
     (open: (node: ProjectRow) => void) => (node: ProjectRow) => {
       setApp(null);
       setSelected(node);
-      open(spaceOf(roots, node));
+      open(spaceOf(allRoots, node));
     };
 
   const projectMenuActions: ProjectMenuHandlers = useMemo(
@@ -1402,6 +1555,11 @@ function ProjectsWorkspace() {
         setDeleteOpenedAt((n) => n + 1);
         setDeletingNode({ project, level });
       },
+      // WS-64 OP-10. Raises the dialog and nothing else. `convertNode` writes.
+      onConvert: (project) => {
+        setConvertError(null);
+        setConvertingNode(project);
+      },
     }),
     [toast]
   );
@@ -1438,12 +1596,22 @@ function ProjectsWorkspace() {
     );
   }
 
-  const visibleRoots = useMemo(
+  const spaceRoots = useMemo(
     // ⚠️ `rootIds` gates the grants, so an empty tree can never be filtered by
     // the PREVIOUS tree's grants while the fan-out below has not run yet.
     () => filterByCenter(roots, rootIds === "" ? NO_GRANTS : grants, center),
     [roots, rootIds, grants, center]
   );
+  // The Spaces section draws `spaceRoots`; every lookup (selection, level,
+  // breadcrumb, deep link) reads this, which adds the personal tree (OP-3).
+  // The Move tasks card offers the side the selection sits on (the server
+  // refuses team to personal). A mixed selection gets none and a sentence.
+  const moveDestinations = useMemo(() => {
+    const byId = new Map(tasks.map((t) => [t.id, t.project_id]));
+    const projectIds = (movingTasks ?? []).map((id) => byId.get(id) ?? "");
+    return moveDestinationRoots(projectIds, roots, personal);
+  }, [movingTasks, tasks, roots, personal]);
+  const visibleRoots = useMemo(() => lookupRoots(spaceRoots, personal), [spaceRoots, personal]);
 
   // Which LEVEL the selection occupies, derived from the tree rather than
   // stored (owner directive 2026-08-31). It decides the whole surface: a
@@ -1601,7 +1769,8 @@ function ProjectsWorkspace() {
         )}
         {sheet === "tree" ? (
           <ProjectNav
-            roots={visibleRoots}
+            roots={spaceRoots}
+            personal={personal}
             selectedId={selected?.id ?? null}
             app={app}
             counts={myWorkNavCounts}
@@ -2181,8 +2350,8 @@ function ProjectsWorkspace() {
 
   const projectName = useCallback(
     (id: string) =>
-      flatten(roots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
-    [roots]
+      flatten(allRoots).find((entry) => entry.node.id === id)?.node.name ?? "Project",
+    [allRoots]
   );
 
   // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
@@ -2502,15 +2671,19 @@ function ProjectsWorkspace() {
   // Opening a task always resolves ITS project's statuses. From the board that
   // is the set already loaded; from a deep link it may be any project the
   // member can reach, so it is fetched.
+  // OP-2b — `stay` is an argument, so a failed open cannot leave it armed.
+  // A My work row passes it and the panel opens OVER the My work view. A link
+  // or a bell still leaves the destination for the task's board.
   const openWithStatuses = useCallback(
-    async (task: TaskRow) => {
+    async (task: TaskRow, stay = false) => {
+      const staying = stay && isMyWorkId(app);
       // Opened from one of the app's own destinations — the AI chat slot, most
       // often, where a card's "Open task" landed the panel beside a full-width
       // chat and never showed the project (owner report, 2026-09-23). Leave
       // the destination, select the task's project so its board shows, and
       // carry the conversation into the dock, where it comes back beside the
       // board when the task closes.
-      if (app !== null) {
+      if (app !== null && !staying) {
         const home = flatten(visibleRoots).find((e) => e.node.id === task.project_id);
         if (home) setSelected(home.node as ProjectRow);
         // Only where a dock can draw. Below 80rem, or on a phone, the dock is
@@ -2586,7 +2759,7 @@ function ProjectsWorkspace() {
   }
 
   const openTaskById = useCallback(
-    async (taskId: string) => {
+    async (taskId: string, stay = false) => {
       try {
         let task = await projectsApi.task(taskId);
         // ⚠️ Follow the merge, ONCE. A task folded into another has none of
@@ -2602,7 +2775,7 @@ function ProjectsWorkspace() {
         if (task.merged_into_task_id) {
           task = await projectsApi.task(task.merged_into_task_id);
         }
-        await openWithStatuses(task);
+        await openWithStatuses(task, stay);
       } catch (err) {
         setError(String((err as Error).message));
       }
@@ -2646,6 +2819,9 @@ function ProjectsWorkspace() {
     }
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
+    // WS-64 OP-4 — `/tasks?do=capture&fill.*` arrives as `?app=my-inbox&do=capture&fill.*`.
+    // `do` and `fill.*` stay in the address: the `capture` ShellJob below
+    // reads them, opens the box, and takes them out (the one door).
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2820,11 +2996,11 @@ function ProjectsWorkspace() {
       // Not while it is open: a re-seed remounts the pane and drops an edit.
       openSettings: () => {
         if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(roots, selected).id : null);
+        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode, selected, openSettings, roots, app],
+    [router, setPanelMode, selected, openSettings, allRoots, app],
   );
 
   const commandCtx: CommandContext = {
@@ -3034,7 +3210,7 @@ function ProjectsWorkspace() {
    * Undoable. The inverse is the parent it came from, read before the write.
    */
   async function moveNodeTo(node: ProjectRow, parentId: string | null) {
-    const path = pathTo(roots, node.id);
+    const path = pathTo(allRoots, node.id);
     const from = path.length > 1 ? path[path.length - 2].id : null;
     setMoving(true);
     setError(null);
@@ -3043,7 +3219,7 @@ function ProjectsWorkspace() {
       setMovingNode(null);
       setTreeKey((k) => k + 1);
       // The node lands in view: its new parent and that parent's path open.
-      if (parentId) openFolds(pathTo(roots, parentId).map((n) => n.id));
+      if (parentId) openFolds(pathTo(allRoots, parentId).map((n) => n.id));
       undoApi.record({
         label: `moved ${node.name}`,
         undo: async () => {
@@ -3085,11 +3261,32 @@ function ProjectsWorkspace() {
    * the cascade took every task under the node, so an open panel is closed
    * unconditionally.
    */
+  /**
+   * WS-64 OP-10 (D-OP-16) — a folder becomes a project. The tree refetches,
+   * because the level of every project inside it changed. A refusal stays in
+   * the dialog: the 422 names the projects that are too deep.
+   */
+  async function convertNode(node: ProjectRow) {
+    setConverting(true);
+    setConvertError(null);
+    try {
+      const res = await projectsApi.convertFolder(node.id);
+      setConvertingNode(null);
+      setSelected((prev) => (prev && prev.id === node.id ? { ...prev, ...res } : prev));
+      setTreeKey((k) => k + 1);
+      toast.show({ variant: "success", title: `${node.name} is a project now` });
+    } catch (err) {
+      setConvertError(String((err as Error).message));
+    } finally {
+      setConverting(false);
+    }
+  }
+
   async function deleteNode(node: ProjectRow) {
     const selectionIsInside =
       !!selected &&
       (selected.id === node.id ||
-        pathTo(roots, selected.id).some((row) => row.id === node.id));
+        pathTo(allRoots, selected.id).some((row) => row.id === node.id));
 
     setDeleting(true);
     setDeleteError(null);
@@ -3811,7 +4008,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                openSettings("general", spaceOf(roots, selected).id);
+                openSettings("general", spaceOf(allRoots, selected).id);
               }}
             >
               <Icon name="Settings" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -3898,14 +4095,17 @@ function ProjectsWorkspace() {
 
   const workArea = isMyWorkId(app) ? (
     // WS-64 OP-2 — a My work view: the task store's views, mounted once.
-    <MyWorkHost app={app} />
+    <MyWorkHost
+      app={app}
+      onOpenTask={(id) => void openTaskById(id, true)}
+    />
   ) : app === "settings" ? (
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
         key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
-        spaces={roots}
-        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(roots, selected).id : null)}
+        spaces={allRoots}
+        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(allRoots, selected).id : null)}
         initialSection={settingsSeed.section ?? null}
         mayImport={mayImport}
         onStartImport={() => {
@@ -4405,7 +4605,7 @@ function ProjectsWorkspace() {
   // node the Center filter hides cannot be selected, so that path is text.
   const openWhere = (task: TaskRow): TaskWhere => {
     const shown = taskWhere(visibleRoots, task.project_id);
-    if (!shown.length) return { path: taskWhere(roots, task.project_id) };
+    if (!shown.length) return { path: taskWhere(allRoots, task.project_id) };
     return {
       path: shown,
       onOpen: (id) => {
@@ -4421,6 +4621,7 @@ function ProjectsWorkspace() {
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
       where={openWhere(openTask)}
+      myWork={isMyWorkId(app)}
       personLabels={personLabels}
       me={me}
       /**
@@ -4446,12 +4647,15 @@ function ProjectsWorkspace() {
       onMode={isMobile ? undefined : setPanelMode}
       // WS-27p — opening a subtask or a linked task resolves ITS project's
       // statuses, which the panel has no tree to do.
-      onOpenTask={(id) => void openTaskById(id)}
+      onOpenTask={(id) => void openTaskById(id, isMyWorkId(app))}
       onClose={() => setOpenTask(null)}
       onTaskAdded={() => {
         if (selected) void loadProject(selected);
       }}
       onChanged={(fresh) => {
+        // OP-2b — the My work list reads the task store, so a change in the
+        // panel (status, fields) is read back into it. One source, no loop.
+        if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
         setOpenTask(fresh);
         setTasks((current) =>
           current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))
@@ -4488,6 +4692,16 @@ function ProjectsWorkspace() {
           }
           askRailSession(PROJECTS_AGENT, f.session);
           chooseApp("ai-chat");
+        }}
+      />
+      {/* WS-64 OP-4 — `/tasks?do=capture` lands here (also with NS-4b `fill.*`),
+          the same door `/tasks` uses. With My work live the box sits on the Inbox. */}
+      <ShellJob
+        id="capture"
+        ready={!loading && mountSettled}
+        onOpen={(f) => {
+          if (MY_WORK_LIVE) setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+          useTaskStore.getState().openQuickCapture("single", f.title ?? "", true);
         }}
       />
       <ShellJob
@@ -4587,7 +4801,8 @@ function ProjectsWorkspace() {
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
-        roots={roots}
+        roots={moveDestinations.roots}
+        unavailable={moveDestinations.mixed ? MIXED_MOVE_HINT : null}
         busy={movingTasksBusy}
         error={moveTasksError}
         onClose={() => {
@@ -4597,6 +4812,24 @@ function ProjectsWorkspace() {
         onConfirm={(destinationId, statusMap, acceptedDrops, _promote, includeSubtasks) =>
           void moveTasksTo(destinationId, statusMap, acceptedDrops, Boolean(includeSubtasks))
         }
+      />
+
+      <ConvertFolderDialog
+        project={convertingNode}
+        childNames={
+          convertingNode
+            ? (pathTo(roots, convertingNode.id).at(-1)?.children ?? []).map(
+                (child) => child.name,
+              )
+            : []
+        }
+        error={convertError}
+        busy={converting}
+        onClose={() => {
+          setConvertingNode(null);
+          setConvertError(null);
+        }}
+        onConfirm={(project) => void convertNode(project)}
       />
 
       <DeleteProjectDialog
@@ -4784,7 +5017,7 @@ function ProjectsWorkspace() {
           compact
           title={title}
           actions={projectActions(true)}
-          tools={dockOn ? undefined : <NotificationBell onOpenTask={openTaskById} />}
+          tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
 
         {workArea}
@@ -4826,7 +5059,7 @@ function ProjectsWorkspace() {
             <AppSearchButton onOpen={() => setSearching(true)} />
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
-            {dockOn ? null : <NotificationBell onOpenTask={openTaskById} />}
+            {dockOn ? null : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
             {/* The assistant sits at the right end of the top bar, where My
                 Tasks puts it (owner ask, 2026-09-24). One component for both
                 apps. It lived in the project header's action row until then,
@@ -4856,7 +5089,8 @@ function ProjectsWorkspace() {
         {railOpen ? (
           <nav ref={navRef} className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
             <ProjectNav
-              roots={visibleRoots}
+              roots={spaceRoots}
+              personal={personal}
               selectedId={selected?.id ?? null}
               app={app}
               counts={myWorkNavCounts}
@@ -5006,7 +5240,10 @@ function ProjectsWorkspace() {
         <MoveDialog
           open
           moving={movingNode}
-          roots={roots}
+          // OP-3: a personal node picks among the personal tree alone, with
+          // no "Top level" row, so it cannot leave for a team space.
+          roots={movingNode.personal ? personal : roots}
+          topLevel={!movingNode.personal}
           busy={moving}
           onClose={() => setMovingNode(null)}
           onMove={(parentId) => void moveNodeTo(movingNode, parentId)}

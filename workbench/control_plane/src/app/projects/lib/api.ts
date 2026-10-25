@@ -165,6 +165,23 @@ export interface ProjectRow {
    */
   can_delete?: boolean;
   /**
+   * WS-64 OP-3 (D-OP-2, D-OP-15). True on every node of the caller's own
+   * personal tree, which `GET /projects/tree` returns in its separate
+   * `personal` key. The sidebar draws those under "Personal" and the row
+   * menu offers them no access item. Absent on a team node.
+   */
+  personal?: boolean;
+  /** OP-3 — always false on a personal node, with the server's reason beside it. */
+  can_write_grants?: boolean;
+  grant_refusal?: string | null;
+  /**
+   * WS-64 OP-10 (D-OP-16). True when this member may turn this FOLDER into a
+   * project. `/tree` and `/nodes/{id}` carry it, from `authority.py`. A
+   * project row reads false. The menu offers "Convert to project" only on
+   * an explicit `true`.
+   */
+  can_convert?: boolean;
+  /**
    * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
    * tasks live at or under it, how many were delivered, and how many were
    * abandoned.
@@ -1669,7 +1686,13 @@ export function isReadOnlyPost(method: string, path: string): boolean {
 export { call as projectsCall };
 
 export const projectsApi = {
-  tree: () => call<{ rows: ProjectRow[]; total: number }>("tree"),
+  tree: () =>
+    call<{
+      rows: ProjectRow[];
+      total: number;
+      /** OP-3 — the caller's own personal tree, nested at every depth. Absent from an older gateway. */
+      personal?: ProjectRow[];
+    }>("tree"),
 
   /** The subtree roll-up behind every dashboard and every aggregate view. */
   summary: (nodeId: string) =>
@@ -2053,6 +2076,18 @@ export const projectsApi = {
    */
   deleteProject: (projectId: string) =>
     call<DeleteProjectResult>(`nodes/${projectId}`, { method: "DELETE" }),
+
+  /**
+   * WS-64 OP-10 (D-OP-16). A folder becomes a project, and the projects in it
+   * become its subprojects. Callers go through `ConvertFolderDialog`, which
+   * says so before the click. The server refuses a folder whose projects have
+   * subprojects of their own, and names them.
+   */
+  convertFolder: (projectId: string) =>
+    call<ProjectRow>(`nodes/${projectId}/convert`, {
+      method: "POST",
+      body: JSON.stringify({ to: "project" }),
+    }),
 
   /**
    * The directory-backed assignee picker (WS-28e, people_center_app.md §6.1).

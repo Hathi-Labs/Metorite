@@ -44,6 +44,8 @@ import { SearchPalette } from "../projects/components/SearchPalette";
 import { NotificationBell } from "../projects/components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { isOpenShortcut } from "../projects/lib/search";
+import { myWorkEnabled } from "../projects/lib/myWork";
+import { tasksRedirectTarget } from "../projects/lib/tasksRedirect";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -57,7 +59,30 @@ import { askRailSession } from "@/lib/railSessions";
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
 // UI-first: runs entirely on mock data (lib/mockData.ts); the gateway `/tasks`
 // API is wired later. See project-docs/specs/task_manager_app.md.
+/**
+ * WS-64 OP-4 — with My work live, `/tasks` is a redirect into Projects. The
+ * redirect reads the address on the client, behind the flag. While the flag is
+ * on and the address is unread, nothing draws, so the page does not flash
+ * before the redirect. A `/tasks` address that stays (the `open-chat` job)
+ * draws the page. With the flag off this wrapper is the page itself.
+ */
 export default function TasksPage() {
+  const router = useRouter();
+  const live = myWorkEnabled();
+  const [stays, setStays] = useState(!live);
+  useEffect(() => {
+    if (!live) return;
+    const to = tasksRedirectTarget(
+      { search: window.location.search, hash: window.location.hash },
+      true,
+    );
+    if (to) router.replace(to);
+    else setStays(true);
+  }, [live, router]);
+  return stays ? <TasksPageBody /> : null;
+}
+
+function TasksPageBody() {
   const { isMobile } = useViewMode();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in

@@ -15,17 +15,9 @@ import { viewCounts } from "@/app/tasks/lib/taskStore";
 import type { MyTask, ViewKey } from "@/app/tasks/lib/types";
 import { VIEW_TITLES } from "@/app/tasks/lib/viewTitles";
 
-/**
- * The flag. ⚠️ Only the LITERAL `process.env.NEXT_PUBLIC_PROJECTS_MY_WORK`
- * is inlined into the browser bundle, so the default reads it literally and a
- * test passes an explicit `env` instead. `publicFlags.test.ts` fences it.
- */
-export function myWorkEnabled(env?: Record<string, string | undefined>): boolean {
-  const raw = env
-    ? env.NEXT_PUBLIC_PROJECTS_MY_WORK
-    : process.env.NEXT_PUBLIC_PROJECTS_MY_WORK;
-  return ["1", "true", "on", "yes"].includes(String(raw ?? "").trim().toLowerCase());
-}
+// The flag lives in a leaf file (WS-64 OP-4), so `lib/centers.ts` and
+// `lib/runActivity.ts` can read it without importing the task store.
+export { myWorkEnabled } from "./myWorkFlag";
 
 /** The `?app=` keys of the six views. */
 export type MyWorkId =
@@ -126,4 +118,101 @@ export function landingApp(
  */
 export function projectsUndoScope(app: string | null | undefined, projectId: string | null | undefined): string {
   return isMyWorkId(app) ? "projects:my-work" : `projects:${projectId ?? "none"}`;
+}
+
+/**
+ * The open rule of OP-2b (§4.3). The task store raises `focusedItemId` for a
+ * row click, Enter on a row and the undo toast. In My work that opens the ONE
+ * Projects panel and not the My Tasks focus modal: the store focus is closed,
+ * and the panel opener is called. Returns true when it opened one.
+ */
+export function openFromFocus(
+  focusedItemId: string | null,
+  closeFocus: () => void,
+  openPanel: (taskId: string) => void,
+): boolean {
+  if (!focusedItemId) return false;
+  closeFocus();
+  openPanel(focusedItemId);
+  return true;
+}
+
+/**
+ * The strip rule of OP-2b (§4.3), fix round 1. The task store is one
+ * singleton, and a `/tasks` visit hydrates it, so "the store holds the task"
+ * proves nothing about this page. With the flag OFF nothing of My work shows.
+ */
+export function showMyWorkStrip(o: {
+  enabled: boolean;
+  stored: boolean;
+  myWork: boolean;
+  filedByMe: boolean;
+}): boolean {
+  return o.enabled && o.stored && (o.myWork || o.filedByMe);
+}
+
+/**
+ * The overlay the badge shows. The store's row wins only in My work, where
+ * the strip writes through the store. A company view keeps the server read.
+ */
+export function pickMine<T>(o: {
+  myWork: boolean;
+  enabled: boolean;
+  stored: unknown;
+  mine: T | null;
+  fromStore: () => T;
+}): T | null {
+  return o.enabled && o.myWork && o.mine && o.stored ? o.fromStore() : o.mine;
+}
+
+/**
+ * Where a chat card sends the member for a task (fix round 1). On `/projects`
+ * with My work on, the ONE Projects panel opens through its deep link. Any
+ * other place keeps the My Tasks modal. The store focus is raised only on the
+ * second path, because it is not a route change there.
+ */
+export function chatTaskTarget(
+  pathname: string | null | undefined,
+  enabled: boolean,
+  id: string,
+): { kind: "panel"; href: string } | { kind: "modal"; href: string } {
+  // OP-4: with My work on, every page opens the one Projects panel, because
+  // /tasks redirects there anyway. `pathname` is kept for the call sites.
+  void pathname;
+  if (enabled) {
+    return { kind: "panel", href: `/projects?task=${encodeURIComponent(id)}` };
+  }
+  return { kind: "modal", href: "/tasks" };
+}
+
+/** True when a write moved the task's status away from the panel's copy. */
+export function statusDrifted(
+  stored: { statusId?: string } | undefined,
+  taskStatusId: string | null | undefined,
+): boolean {
+  return !!stored?.statusId && !!taskStatusId && stored.statusId !== taskStatusId;
+}
+
+/**
+ * Watch the store's focus, and hand on only a focus raised from inside My
+ * work. A chat card, a search hit or any other caller raises the same field,
+ * and the host must not swallow it. `isInside` reads the gesture mark the
+ * host sets in the capture phase of a click or key press in its subtree.
+ * Returns the unsubscribe.
+ */
+export function watchInsideFocus(
+  store: {
+    subscribe: (
+      l: (s: { focusedItemId: string | null }, prev: { focusedItemId: string | null }) => void,
+    ) => () => void;
+    getState: () => { closeFocus: () => void };
+  },
+  isInside: () => boolean,
+  openPanel: (taskId: string) => void,
+): () => void {
+  return store.subscribe((s, prev) => {
+    if (s.focusedItemId && s.focusedItemId !== prev.focusedItemId && isInside()) {
+      openFromFocus(s.focusedItemId, store.getState().closeFocus, openPanel);
+    }
+  });
 }

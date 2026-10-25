@@ -293,7 +293,7 @@ def test_the_fill_rank_table_is_tenant_scoped() -> None:
     "table",
     ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
      "kb_chunks", "kb_favorites", "kb_page_proposals", "kb_gaps",
-     "kb_sources", "kb_source_nodes"],
+     "kb_sources", "kb_source_nodes", "kb_entities"],
 )
 def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
     """WS-61 KB-1, KB-3, KB-2f, KB-5a, KB-9a and KC-1a (``knowledge_base.md``

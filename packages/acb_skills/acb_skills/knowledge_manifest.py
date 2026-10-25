@@ -115,6 +115,12 @@ _SOURCE_DISCONNECT_REASON = (
     "included (knowledge_base.md §7.4). The member or a manager does it in "
     "the Knowledge app, never the chat."
 )
+#: KC-8a: the entity registry. No chat tool reads or writes it yet. KC-10 and
+#: KC-13 decide how the chat and an agent reach it (knowledge_curation.md §22).
+_ENTITY_REASON = (
+    "KC-8a builds the entity registry for the Knowledge app only. No chat tool "
+    "maps to it yet, and KC-10 and KC-13 decide that (knowledge_curation.md §22)."
+)
 
 MANIFEST: tuple[Route, ...] = (
     # ── Spaces ──
@@ -168,6 +174,13 @@ MANIFEST: tuple[Route, ...] = (
           planned="search_knowledge, deferred (§8.1)"),
     Route("DELETE", "/knowledge/sources/{source_id}", "", "X",
           reason=_SOURCE_DISCONNECT_REASON),
+    # ── Entities (KC-8a, knowledge_curation.md §6) ── the directory under the
+    # owner rule of each type. Not on the chat surface yet.
+    Route("GET", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),
+    Route("GET", "/knowledge/entities/{entity_id}", "", "X", reason=_ENTITY_REASON),
+    Route("POST", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),
+    Route("POST", "/knowledge/entities/by-ref", "", "X", reason=_ENTITY_REASON),
+    Route("POST", "/knowledge/entities/{entity_id}/page", "", "X", reason=_ENTITY_REASON),
 )
 
 
