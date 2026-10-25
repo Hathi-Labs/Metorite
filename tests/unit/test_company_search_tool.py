@@ -48,6 +48,11 @@ GROUNDING = (
     "   mail or its policies, call search_company first. Answer from what it\n"
     "   returns, and cite each item you used. When it returns nothing, say\n"
     "   that the company's records hold nothing on it.\n"
+    # Chat speed (2026-10-25): a write in one app delegates at once.
+    "   A request to change something in one app, such as an email to write\n"
+    "   or send, a task to make or a record to update, is work in that app.\n"
+    "   Give it to the app's specialist at once, with no search first. The\n"
+    "   specialist finds the email, the contact or the record itself.\n"
 )
 
 
