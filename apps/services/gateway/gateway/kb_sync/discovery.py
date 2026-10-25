@@ -85,6 +85,11 @@ _START_SQL = (
     "AND state <> 'disconnected' RETURNING now() AS started_at"
 )
 
+#: ⚠️ ``FOR KEY SHARE`` in the guard (review P2). A disconnect holds the source
+#: row ``FOR UPDATE`` while it deletes the nodes. The guard waits for that lock
+#: and then reads the row again, so it sees ``disconnected`` and the upsert
+#: writes nothing. Without the lock it read the old state and left orphan
+#: nodes. Fence, R8: ``test_an_upsert_that_waits_on_a_disconnect_writes_no_node``.
 UPSERT_NODES_SQL = (
     "INSERT INTO kb_source_nodes (organization_id, source_id, ext_id, parent_ext_id, "
     "drive_id, kind, name, mime, size, modified_at, web_url, state, explored, "
@@ -96,7 +101,8 @@ UPSERT_NODES_SQL = (
     "drive_id text, kind text, name text, mime text, size bigint, "
     "modified_at timestamptz, web_url text, explored boolean) "
     "WHERE EXISTS (SELECT 1 FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
-    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected') "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR KEY SHARE OF s) "
     "ON CONFLICT (organization_id, source_id, ext_id) DO UPDATE SET "
     "parent_ext_id = EXCLUDED.parent_ext_id, drive_id = EXCLUDED.drive_id, "
     "kind = EXCLUDED.kind, name = EXCLUDED.name, mime = EXCLUDED.mime, "

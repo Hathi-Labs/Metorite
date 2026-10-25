@@ -171,9 +171,13 @@ NODE_COLUMNS = (
     "AND c.parent_ext_id = n.ext_id AND c.state = 'live') AS has_children"
 )
 
+#: A node of a disconnected source never reaches an answer (review P2), also
+#: when it outlived the disconnect.
 _TREE_WHERE = (
     "n.organization_id = CAST(:org AS uuid) AND n.source_id = CAST(:source AS uuid) "
-    "AND n.state = 'live'"
+    "AND n.state = 'live' AND EXISTS (SELECT 1 FROM kb_sources live "
+    "WHERE live.id = n.source_id AND live.organization_id = n.organization_id "
+    "AND live.state <> 'disconnected')"
 )
 
 #: The roots: a node with no parent, or whose parent the source does not hold
@@ -502,7 +506,9 @@ async def source_tree(
         if src is None:
             raise HTTPException(status_code=404, detail="Source not found.")
         tree = {"org": params["org"], "source": sid, "limit": limit + 1}
-        if parent is None:
+        if src.state == discovery.STATE_DISCONNECTED:
+            rows = []
+        elif parent is None:
             rows = (await db.execute(text(_ROOTS_SQL), tree)).fetchall()
         else:
             rows = (await db.execute(text(_CHILDREN_SQL), {**tree, "parent": parent})).fetchall()
