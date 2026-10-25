@@ -53,6 +53,7 @@ describe("the spaces the form offers", () => {
   it("are those the member can write in, and no 'My notes' choice with no id", () => {
     expect(entitySpaces(mixed).map((c) => c.value)).toEqual(["t1", "t2"]);
     expect(entitySpaces([])).toEqual([]);
+    expect(entitySpaces([space("me1", "manage", "me"), space("t1", "write")]).map((c) => c.value)).toEqual(["t1"]);
     expect(entitySpaces([space("gone", "write", "team", { archived_at: "2026-01-01" })])).toEqual([]);
   });
 

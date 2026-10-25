@@ -14,12 +14,14 @@ export const ALIAS_MAX = 120;
 export const ALIASES_MAX = 50;
 
 /**
- * The spaces that the form offers: those the member can write in. ⚠️ Not
+ * The spaces that the form offers: those the member can write in, never the
+ * personal "me" space (a product or a topic is shared knowledge, and in "me"
+ * only its maker would see it). ⚠️ Not
  * `writableSpaces`: that adds the "My notes" choice with no id, and the route
  * needs a real `space_id`.
  */
 export function entitySpaces(spaces: readonly Space[]): Array<{ value: string; label: string }> {
-  return spaces.filter((s) => canWriteIn(s.level) && !s.archived_at).map((s) => ({ value: s.id, label: s.name }));
+  return spaces.filter((s) => canWriteIn(s.level) && !s.archived_at && s.kind !== "me").map((s) => ({ value: s.id, label: s.name }));
 }
 
 /** True when the member can write in at least one space. Hides every act when false. */
