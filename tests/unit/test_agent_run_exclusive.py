@@ -103,7 +103,7 @@ SW-7 (one key for each MCP session; spec §12.5):
 * K6. ``G`` ``_move_run``: no ``session_key = NULL`` for a terminal status.
   ``test_k8_a_terminal_status_clears_the_key`` (R8).
 * K7. ``G`` ``_move_run``: no reset on a person's answer or reopen.
-  ``test_k9_a_closed_terminal_leaves_no_key_and_a_sibling_adopts`` (R8).
+  ``test_k12_a_members_answer_clears_the_key_and_a_plain_prompt_keeps_it`` (R8).
 * K8. ``G`` ``_move_run``: ``COALESCE`` on a connection change too.
   ``test_k10_an_agent_move_adopts_keeps_and_replaces_the_key`` (R8).
 * K9 (M5). ``G`` ``_OPEN_RUN_SQL``: add ``OR CAST(:sk AS text) IS NULL``.
@@ -1327,14 +1327,52 @@ class TestOneAiForEachTask:
         async with _session(w.p) as call:
             run = (await _claim(call, w.alice, task)).json()["agent_run_id"]
             assert key() is None
+            # The same session keeps its key. A sibling session and a call
+            # with no session on the SAME connection do not move it (K4).
+            # A move from another connection writes that caller's key (K8).
+            b = _in_session(w.alice, "TerminalB_of-22chars__")
             for who, expected in ((a, "TerminalA_of-22chars__"),
                                   (a, "TerminalA_of-22chars__"),
+                                  (b, "TerminalA_of-22chars__"),
+                                  (w.alice, "TerminalA_of-22chars__"),
                                   (x, "MachineX_of-22chars___"), (y, None)):
                 beat = await call(who, "POST", f"/projects/agent-runs/{run}/activities",
                                   {"type": "thought", "body": "on it",
                                    "idempotency_key": _key()})
                 assert beat.status_code == 201, beat.text
                 assert key() == expected, (who.agent.connection_id, expected)
+
+    async def test_k12_a_members_answer_clears_the_key_and_a_plain_prompt_keeps_it(
+            self, w):
+        """Session A asks a question and its terminal may have closed. The
+        member's answer clears the key, so the next session adopts the run.
+        A plain prompt to a working run keeps the key, so a live session is
+        not handed to a sibling. Mutation K7."""
+        task = _fresh(w)
+        a = _in_session(w.alice, "TerminalA_of-22chars__")
+
+        def row() -> Any:
+            return _rows(w.p, "SELECT status, session_key FROM pm_agent_runs "
+                              "WHERE id = CAST(:i AS uuid)", i=run)[0]
+
+        async with _session(w.p) as call:
+            run = (await _claim(call, a, task)).json()["agent_run_id"]
+            plain = await call(w.alice_person, "POST", f"/projects/agent-runs/{run}/activities",
+                               {"type": "prompt", "body": "Also this", "idempotency_key": _key()})
+            assert plain.status_code == 201, plain.text
+            assert (row().status, row().session_key) == ("in_progress", "TerminalA_of-22chars__")
+            asked = await call(a, "POST", f"/projects/agent-runs/{run}/activities", {
+                "type": "elicitation", "body": "Which one?", "idempotency_key": _key(),
+                "options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]})
+            assert asked.status_code == 201 and asked.json()["run"]["status"] == "awaiting"
+            # A prompt with `selected` answers the open question (EA12-7).
+            answered = await call(w.alice_person, "POST", f"/projects/agent-runs/{run}/activities",
+                                  {"type": "prompt", "selected": ["a"], "idempotency_key": _key()})
+            assert answered.status_code == 201, answered.text
+            assert (row().status, row().session_key) == ("in_progress", None)
+            adopted = await _claim(call, _in_session(w.alice, "TerminalB_of-22chars__"), task)
+        assert adopted.status_code == 200 and adopted.json()["agent_run_id"] == run
+        assert row().session_key == "TerminalB_of-22chars__"
 
     async def test_k11_a_call_with_no_session_meets_a_keyed_run_as_a_holder(self, w):
         """The flip back of §12.5: a call outside a session owns only runs
