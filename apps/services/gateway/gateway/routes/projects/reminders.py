@@ -26,11 +26,15 @@ row run in one ``async with _tenant_session() as db:`` block. The session
 commits on a clean exit and rolls back on any exception, so a 409 after a
 partial write leaves nothing behind.
 
-**The ledger is the lifecycle of §5.3**: ``created``, each move of the time
-(``snoozed``, ``rescheduled``) and each answer (``done``, ``dropped``,
-``promoted``). A PATCH that changes only text, kind, link, estimate or
-``important`` moves no state and no time. The event list of §5.2 has no
-event for it, so it writes no ledger row. RM-1 does not widen that CHECK.
+**One ledger row for each change**: ``created``, each move of the time
+(``snoozed``, ``rescheduled``), each answer (``done``, ``dropped``,
+``promoted``) and each edit (``edited``). An edit changes the title, the
+notes, the kind, the link, the zone, the estimate or ``important``. It moves
+no state and no time, and its ``detail`` lists the NAMES of the fields that
+changed, never their values. A PATCH of ``fire_at`` writes ``rescheduled``,
+and a PATCH of both writes both. A field sent with its stored value is not
+a change. ``edited`` is the fifteenth event of migration 305: an engineering
+decision of 2026-10-25, taken before 305 shipped.
 
 **Who counts what** (§5.4). A move that the member asks for adds 1 to
 ``snoozes``: a snooze, a reschedule to a named time, and a PATCH of
@@ -352,11 +356,16 @@ async def _ledger(
     ``organization_id`` comes from the column default, the bound tenant. The
     ledger has no member column: a read of it must join ``reminders`` on
     ``member_email``.
+
+    ``at`` is ``clock_timestamp()``, not the column default ``now()``. One
+    PATCH can write two rows, and ``now()`` is the same instant for each row
+    of one transaction, so the order of the two would be lost.
     """
     await db.execute(
         text(
-            "INSERT INTO reminder_events (reminder_id, event, detail) "
-            "VALUES (CAST(:rid AS uuid), :event, CAST(:detail AS jsonb))"
+            "INSERT INTO reminder_events (reminder_id, event, detail, at) "
+            "VALUES (CAST(:rid AS uuid), :event, CAST(:detail AS jsonb), "
+            "clock_timestamp())"
         ),
         {"rid": str(reminder_id), "event": event, "detail": json.dumps(detail or {})},
     )
@@ -372,6 +381,9 @@ _PATCH_COLUMNS: tuple[str, ...] = (
     "title", "notes", "kind", "subject_kind", "subject_id", "fire_at", "tz",
     "estimate_minutes", "important",
 )
+#: The columns whose change is an ``edited`` row. Every PATCH column except
+#: ``fire_at``, which is a move. ``tz`` is here: a new zone moves no instant.
+_EDIT_COLUMNS: tuple[str, ...] = tuple(c for c in _PATCH_COLUMNS if c != "fire_at")
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -466,9 +478,12 @@ async def update_reminder(
     reminder_id: UUID, payload: ReminderPatch,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Change an open reminder. A new ``fire_at`` is a member move: the
-    reminder goes back to ``scheduled``, ``snoozes`` gains 1, and the ledger
-    gains a ``rescheduled`` row. A closed reminder is 409."""
+    """Change an open reminder. A closed reminder is 409.
+
+    A new ``fire_at`` is a member move: the reminder goes back to
+    ``scheduled``, ``snoozes`` gains 1, and the ledger gains a
+    ``rescheduled`` row. A change to any other field writes one ``edited``
+    row that names the fields. A PATCH of both writes both rows."""
     me = _member(user)
     changes = clean_payload(payload)
     if not changes:
@@ -515,6 +530,12 @@ async def update_reminder(
                 "from": _iso(row.fire_at), "to": _iso(values["fire_at"]),
                 "state_before": row.state, "by": "member",
             })
+        edited = [
+            c for c in _EDIT_COLUMNS
+            if c in values and values[c] != getattr(row, c, None)
+        ]
+        if edited:
+            await _ledger(db, row.id, "edited", {"fields": edited, "by": "member"})
         return _out(updated)
 
 

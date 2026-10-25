@@ -33,6 +33,8 @@ naive time is refused, and the flag off gives 404.
   ``test_r8_two_promotes_make_one_task``.
 * M4. ``reminders.py``: drop ``dependencies=_ON`` from a route.
   ``test_r8_the_flag_off_answers_404_on_every_route``.
+* M5. ``reminders.py`` ``update_reminder``: drop the ``edited`` ledger write.
+  ``test_r8_an_edit_writes_one_edited_row_that_names_the_fields``.
 """
 
 from __future__ import annotations
@@ -192,6 +194,18 @@ def _ledger(world: Any, reminder_id: str) -> list[str]:
         )]
 
 
+def _ledger_rows(world: Any, reminder_id: str) -> list[Any]:
+    """The ledger with its details, in order."""
+    with world.p.admin_engine.connect() as c:
+        return list(c.execute(
+            text(
+                "SELECT event, detail FROM reminder_events "
+                "WHERE reminder_id = CAST(:i AS uuid) ORDER BY at, id"
+            ),
+            {"i": reminder_id},
+        ))
+
+
 def _make_due(world: Any, reminder_id: str) -> None:
     """What the loop of RM-2 will do at ``fire_at``: the row is ``due``."""
     with world.p.admin_engine.begin() as c:
@@ -216,7 +230,7 @@ def test_the_migration_holds_the_lists_of_the_spec() -> None:
     assert "resolution IN ('done', 'dropped', 'evidence', 'promoted', 'gave_up')" in sql
     for event in ("created", "fired", "check_back", "briefed", "rescheduled", "snoozed",
                   "opened", "done", "dropped", "promoted", "gave_up", "evidence",
-                  "delivered", "failed"):
+                  "delivered", "failed", "edited"):
         assert f"'{event}'" in sql
     for index in ("(organization_id, state, fire_at)",
                   "(organization_id, state, next_check_at)",
@@ -252,7 +266,7 @@ async def test_r8_a_reminder_round_trip_writes_a_ledger_row_per_change(
         listed = (await c.get(BASE, headers=_as(ALICE))).json()
         assert [r["id"] for r in listed["rows"]] == [rid] and listed["total"] == 1
 
-        # A text edit moves no state and no time: no ledger row (module doc).
+        # A text edit moves no state and no time. It writes one `edited` row.
         resp = await c.patch(f"{BASE}/{rid}", json={"title": "Haircut"}, headers=_as(ALICE))
         assert resp.status_code == 200 and resp.json()["snoozes"] == 0
 
@@ -289,9 +303,57 @@ async def test_r8_a_reminder_round_trip_writes_a_ledger_row_per_change(
         closed = (await c.get(BASE, params={"state": "done"}, headers=_as(ALICE))).json()
         assert [r["id"] for r in closed["rows"]] == [rid]
 
-    assert _ledger(world, rid) == ["created", "rescheduled", "snoozed", "rescheduled", "done"]
+    assert _ledger(world, rid) == [
+        "created", "edited", "rescheduled", "snoozed", "rescheduled", "done",
+    ]
     row = _row(world, rid)
     assert str(row.organization_id) == world.org and row.member_email == ALICE
+
+
+async def test_r8_an_edit_writes_one_edited_row_that_names_the_fields(world) -> None:
+    task = str(uuid.uuid4())
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE))["id"]
+
+        # Text, the link and `important`: one row, the NAMES in column order.
+        resp = await c.patch(f"{BASE}/{rid}", json={
+            "important": True, "title": "Haircut at Ravi's", "notes": "Cash only",
+            "subject_kind": "task", "subject_id": task,
+        }, headers=_as(ALICE))
+        out = resp.json()
+        assert resp.status_code == 200 and out["state"] == "scheduled"
+        assert out["snoozes"] == 0 and out["fire_at"] == AT_UTC
+
+        # A move and an edit in one PATCH: both rows, the move first.
+        resp = await c.patch(f"{BASE}/{rid}", json={"fire_at": LATER, "kind": "notice"},
+                             headers=_as(ALICE))
+        assert resp.json()["snoozes"] == 1 and resp.json()["kind"] == "notice"
+
+        # A field sent with its stored value is not a change: no row.
+        resp = await c.patch(f"{BASE}/{rid}", json={"title": "Haircut at Ravi's"},
+                             headers=_as(ALICE))
+        assert resp.status_code == 200
+
+        # The zone alone moves no instant: an edit, not a move.
+        resp = await c.patch(f"{BASE}/{rid}", json={"tz": "Europe/Berlin"},
+                             headers=_as(ALICE))
+        assert resp.json()["snoozes"] == 1
+
+        # Bob's edit of Alice's reminder is a miss, and writes nothing.
+        resp = await c.patch(f"{BASE}/{rid}", json={"title": "Bob"}, headers=_as(BOB))
+        assert resp.status_code == 404
+
+    rows = _ledger_rows(world, rid)
+    assert [r.event for r in rows] == ["created", "edited", "rescheduled", "edited", "edited"]
+    assert rows[1].detail == {
+        "fields": ["title", "notes", "subject_kind", "subject_id", "important"],
+        "by": "member",
+    }
+    assert rows[2].detail["to"].startswith("2099-11-01T04:30:00")
+    assert rows[3].detail["fields"] == ["kind"]
+    assert rows[4].detail["fields"] == ["tz"]
+    # The detail carries names, never the text of a field.
+    assert all("Cash only" not in str(r.detail) for r in rows)
 
 
 async def test_r8_member_b_never_reads_changes_or_counts_member_a(world) -> None:
