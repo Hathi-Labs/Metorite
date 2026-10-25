@@ -1287,6 +1287,18 @@ ALTER TABLE pm_agent_run_activities ADD CONSTRAINT pm_agent_run_activities_org_f
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_agent_run_activities_org_idx ON pm_agent_run_activities (organization_id);
 
+-- pm_agent_run_strands
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_run_strands WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_run_strands still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_run_strands ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_run_strands ADD CONSTRAINT pm_agent_run_strands_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_run_strands_org_idx ON pm_agent_run_strands (organization_id);
+
 -- pm_agent_runs
 DO $$
 BEGIN

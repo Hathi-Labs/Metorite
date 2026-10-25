@@ -495,6 +495,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "meetings": 1,
         # WS-61 KB-5a: the fake holds no proposal of the member. It stays.
         "knowledge_proposals": 0,
+        # WS-55 SW-10a: the fake holds no strand of her agent runs. They stay.
+        "agent_run_strands": 0,
     }
 
 

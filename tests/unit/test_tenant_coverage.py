@@ -215,11 +215,13 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE pm_task_refs FORCE  ROW LEVEL SECURITY" in policies
 
 
-@pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities"])
+@pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities",
+                                   "pm_agent_run_strands"])
 def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
     """WS-55 EA-12a (``external_agent_access.md`` §12.1, EA12-1). The runs of
     an outside agent and their activities hold one organization's work. Neither
-    may be exempt, and the committed policy phase must carry each (R5)."""
+    may be exempt, and the committed policy phase must carry each (R5). SW-10a
+    (§12.6) adds the strands of a run: a nudge and a recovery record."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT
