@@ -63,6 +63,32 @@ async function stub(page: Page) {
   );
 }
 
+/**
+ * The Projects page loads empty. Since OP-4 (2026-10-25) Projects owns the
+ * "New task" job, and its Capture box opens only once the page has loaded.
+ */
+async function stubProjects(page: Page) {
+  await page.route("**/api/projects/**", (r) => {
+    const path = new URL(r.request().url()).pathname;
+    const task = {
+      id: "t1", title: "Vendor review", disposition: "INBOX", is_mine: true, project_id: "root-1",
+      created_at: "2026-10-01T09:00:00Z", updated_at: "2026-10-01T09:00:00Z", assignees: [], tags: [],
+    };
+    const body = path.includes("my/today")
+      ? { today: "2026-10-24", timezone: "UTC", stored: true, valid: true }
+      : path.includes("my/inbox")
+        ? { rows: [task], total: 1 }
+        : { rows: [], items: [], total: 0, links: [], subtasks: [], children: [], buckets: [] };
+    return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+}
+
+/**
+ * Capture inside Projects exists only with My work on (`NEXT_PUBLIC_PROJECTS_MY_WORK`,
+ * a build switch). With it off, the box lives on `/tasks` and Projects opens none.
+ */
+const MY_WORK_ON = ["1", "true", "on", "yes"].includes((process.env.NEXT_PUBLIC_PROJECTS_MY_WORK ?? "").toLowerCase());
+
 async function shellOn(page: Page) {
   await page.addInitScript(() => localStorage.setItem("cc-shell-bar", "1"));
 }
@@ -142,7 +168,7 @@ test.describe("desktop", () => {
     await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
     await stub(page);
     const shapes: string[] = [];
-    for (const path of ["/tasks", "/email", "/people", "/settings/appearance"]) {
+    for (const path of ["/projects", "/email", "/people", "/settings/appearance"]) {
       await page.goto(path);
       await expect(appBar(page)).toBeVisible();
       shapes.push(
@@ -175,15 +201,18 @@ test.describe("desktop", () => {
     await expect(commandBar(page)).toHaveCount(0);
   });
 
-  test("“new task” finds the job, and Enter opens Capture in My Tasks", async ({ page }) => {
+  // OP-4 (2026-10-25): the job's owner is Projects, since My Tasks left the nav.
+  test("“new task” finds the job, and Enter opens Capture in Projects", async ({ page }) => {
     await shellOn(page);
     await stub(page);
+    await stubProjects(page);
     await page.goto("/settings/appearance");
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
     await field(page).fill("new task");
     await expect(commandBar(page).getByRole("option").first()).toContainText("New task");
     await page.keyboard.press("Enter");
-    await page.waitForURL((u) => u.pathname === "/tasks");
+    await page.waitForURL((u) => u.pathname === "/projects");
+    if (!MY_WORK_ON) return; // the box below needs My work (see `MY_WORK_ON`)
     await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toBeVisible();
     // The job left the address, so a reload does not open Capture again.
     await expect.poll(() => new URL(page.url()).search).toBe("");
@@ -253,9 +282,11 @@ test.describe("desktop", () => {
   });
 
   test("a job opens again: New task, close, New task", async ({ page }) => {
+    test.skip(!MY_WORK_ON, "Capture opens in Projects only with NEXT_PUBLIC_PROJECTS_MY_WORK on");
     await shellOn(page);
     await stub(page);
-    await page.goto("/tasks");
+    await stubProjects(page);
+    await page.goto("/projects");
     const capture = page.getByRole("textbox", { name: "Capture to inbox" });
     for (let round = 0; round < 2; round++) {
       await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
@@ -267,10 +298,14 @@ test.describe("desktop", () => {
     }
   });
 
-  test("“Show all in the inbox” fills My Tasks' filter too, not only Email's", async ({ page }) => {
+  // OP-4 (2026-10-25): My Tasks left the nav, so the bar offers no scoped
+  // "Show all in" on `/tasks`. The same inbox list now sits in Projects' My work.
+  test("“Show all in the inbox” fills the My work inbox filter too, not only Email's", async ({ page }) => {
+    test.skip(!MY_WORK_ON, "the inbox filter sits in Projects only with NEXT_PUBLIC_PROJECTS_MY_WORK on");
     await shellOn(page);
     await stub(page);
-    await page.goto("/tasks");
+    await stubProjects(page);
+    await page.goto("/projects?app=my-inbox");
     const filter = page.locator('[data-page-filter="the inbox"]');
     await expect(filter).toBeVisible();
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();

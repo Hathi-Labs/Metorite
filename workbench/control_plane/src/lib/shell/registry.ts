@@ -87,7 +87,7 @@ export const JOBS: readonly ShellJob[] = [
     // The owning pane is Projects since the OP-4 flip (2026-10-25): My Tasks
     // left the nav, and its inbox is the My work section of Projects.
     app: "/projects",
-    href: "/projects?app=my-inbox&do=capture",
+    href: "/projects?do=capture",
     icon: "CirclePlus",
   },
   {
