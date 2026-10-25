@@ -78,3 +78,12 @@ export async function idSuffix(
   const { id } = await params;
   return ID.test(id) ? `/${kind}/${id}` : null;
 }
+
+/** An interview area id: lower-case letters and `_` (`AREAS` in `assistant_profile.py`). */
+const AREA = /^[a-z_]{1,32}$/;
+
+/** The path segment for one interview area, or `null` for an id of the wrong shape. */
+export async function areaSuffix(params: Promise<{ area: string }>): Promise<string | null> {
+  const { area } = await params;
+  return AREA.test(area) ? `/interview/${area}` : null;
+}

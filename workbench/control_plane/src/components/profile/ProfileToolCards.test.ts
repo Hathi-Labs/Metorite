@@ -242,6 +242,33 @@ describe("Undo calls the inverse route with the prior value", () => {
 describe("placement", () => {
   it("each profile write is a write receipt", () => {
     expect(PROFILE_CARD_TOOLS.map((n) => placementOf(n))).toEqual(
-      ["write", "write", "write", "write", "write"]);
+      ["write", "write", "write", "write", "write", "write"]);
+    expect(placementOf("profile_interview")).toBe("write");
+  });
+});
+
+describe("profile_interview (PZ-27)", () => {
+  const html = (result: string, status: ToolEvent["status"] = "done") =>
+    renderToStaticMarkup(
+      createElement(ProfileToolCards, { toolEvents: [{ ...ev("profile_interview", result), status }] }),
+    );
+  const SAVED = 'profile: {"status":"saved","v":1}\nMarked role as answered.';
+
+  it("parseStatus reads a saved line", () => {
+    expect(readProfileResult(SAVED)).toMatchObject({ status: "saved", reason: "" });
+  });
+  it("a saved write draws the Interview updated receipt, with no Undo and no machine line", () => {
+    const out = html(SAVED);
+    expect(out).toContain("Interview updated");
+    expect(out).toContain("Marked role as answered.");
+    expect(out).not.toContain("profile:");
+    expect(out).not.toContain("Undo");
+  });
+  it("a read (next, next_sitting) has no machine line and draws nothing", () => {
+    expect(html("Ask about: role. Question: What is your role?")).toBe("");
+    expect(html("No area is due.")).toBe("");
+  });
+  it("a failed call still draws", () => {
+    expect(html("boom", "error")).toContain("Not saved");
   });
 });
