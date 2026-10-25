@@ -160,6 +160,10 @@ ALLOWED: dict[str, str] = {
     'apps/skills/skill-projects/skill_projects/views.py::_card_section::rows[:rows_max]':
         'A chat card (25 rows). The text the model reads carries the count. The kept '
         'report (§14.10.9) passes a rows_max above every list and cuts with paged.',
+    'apps/skills/skill-projects/skill_projects/views.py::_card_section::joined[:rows_max]':
+        'The waiting card (WS-27bn RA-3, 25 rows of three lists). The text the model '
+        'reads beside it (reads._waiting_lines) prints every row the server sent and '
+        'each total. The kept report passes a rows_max above every list.',
     "apps/skills/skill-projects/skill_projects/views.py::status_report::[p for p in people if int(p.get('open_tasks') or 0)][:10]":
         'A written status report. analytics_load pages every person.',
     'apps/skills/skill-projects/skill_projects/views.py::status_report::blocked_rows[:20]':
@@ -251,7 +255,9 @@ ALLOWED: dict[str, str] = {
 #: one: the sandbox read cuts a single line that is longer than its window,
 #: and says so (65). WS-64 OP-10 fix round 1 capped the convert card's list
 #: of child names as the app's dialog caps it, and it says "and N more" (66).
-ALLOWED_CEILING = 66
+#: WS-27bn RA-3 added the waiting card's cut, the sibling of the card's
+#: `rows[:rows_max]`. Its text prints every row with no cut (67).
+ALLOWED_CEILING = 67
 
 
 def _stringy(node: ast.AST) -> bool:

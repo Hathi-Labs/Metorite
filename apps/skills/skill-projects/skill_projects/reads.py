@@ -1929,10 +1929,6 @@ _REPORT_LABELS: dict[str, str] = {
     "waiting:answer_time.unanswered": "questions with no answer in the period",
 }
 
-#: WS-27bn RA-3. The chat names this many rows of each waiting list. The
-#: section counts every row in `*_total`, so the line after says what it cut.
-WAITING_ROWS_PER_LIST = 5
-
 #: The three waiting lists, in the panel's order, with the words of each.
 _WAITING_LISTS: tuple[tuple[str, str], ...] = (
     ("questions", "question"),
@@ -1966,20 +1962,26 @@ def _waiting_row(kind: str, row: dict[str, Any]) -> str:
 
 
 def _waiting_lines(section: dict[str, Any]) -> list[str]:
-    """The summary of the panel, then each list, cut at
-    :data:`WAITING_ROWS_PER_LIST`. The summary is the server's sentence,
-    so the chat says the words that the panel says (§6.8 E5)."""
+    """The summary of the panel, then every row of each list.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server already names 20 rows at most of each list
+    (`analytics_waiting.MAX_NAMED`), so the text prints each row it got.
+    The line after a list says how many the server's cap left out, from the
+    list's own total, and the Reports app shows the same panel."""
     out: list[str] = []
     if isinstance(section.get("summary"), str):
         out.append(f"  {section['summary']}")
+    cap = section.get("max_rows")
+    past = f", past the {cap} the report names" if isinstance(cap, int) else ""
     for key, kind in _WAITING_LISTS:
         rows = [r for r in section.get(key) or [] if isinstance(r, dict)]
-        shown = rows[:WAITING_ROWS_PER_LIST]
-        out.extend(_waiting_row(kind, r) for r in shown)
+        out.extend(_waiting_row(kind, r) for r in rows)
         total = section.get(f"{key}_total")
-        more = (total if isinstance(total, int) else len(rows)) - len(shown)
+        more = (total if isinstance(total, int) else len(rows)) - len(rows)
         if more > 0:
-            out.append(f"  (and {more} more of the {key})")
+            out.append(f"  (and {more} more of the {key}{past})")
     return out
 
 
