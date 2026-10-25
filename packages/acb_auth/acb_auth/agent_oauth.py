@@ -132,6 +132,17 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+def mcp_sessions_enabled() -> bool:
+    """True when ``agent_mcp_sessions_enabled`` is on (SW-7, spec §12.5).
+
+    The ONE reader of the session flag. Only the edge reads it. While it is
+    false, ``initialize`` answers no ``Mcp-Session-Id``, an id that a client
+    sends is read as no session, and no ``X-Agent-Session`` is signed. The
+    gateway needs no flag: with no signed session it behaves as before SW-7.
+    """
+    return bool(get_settings().agent_mcp_sessions_enabled)
+
+
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
 #: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
 #: never to the MCP 401, so a client keeps its token and its reads.
@@ -769,6 +780,7 @@ __all__ = [
     "is_valid_challenge",
     "is_valid_verifier",
     "issuer",
+    "mcp_sessions_enabled",
     "org_allowed",
     "parse_scope",
     "pkce_matches",
