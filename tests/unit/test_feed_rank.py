@@ -51,6 +51,8 @@ class TestTheTable:
             "crm_open_questions": 22,
             # WS-61 KB-9a: a Knowledge gap, below every other kind.
             "kb_gap": 20,
+            # WS-61 KB-9b: the review above the gap, the new page below it.
+            "doc_needs_review": 21, "doc_shared_with_me": 19,
         }
 
     def test_the_needs_kinds_start_above_every_other_kind(self):
@@ -185,6 +187,8 @@ class TestTheGroupTable:
         ("crm_open_questions", {}, "fyi"),
         # WS-61 KB-9a: a Knowledge gap is a thing to know.
         ("kb_gap", {"askers": 3}, "fyi"),
+        ("doc_needs_review", {}, "fyi"),
+        ("doc_shared_with_me", {}, "fyi"),
     ])
     def test_each_row_of_section_4_3(self, kind, facts, group):
         assert feed_rank.group(kind, facts, NOW, TODAY) == group

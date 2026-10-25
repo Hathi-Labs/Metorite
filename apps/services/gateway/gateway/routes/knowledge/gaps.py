@@ -539,14 +539,23 @@ async def my_day_rows(user: UserContext, limit: int) -> list[dict[str, Any]]:
     if not core.is_manager(user):
         return []
     async with core._tenant_session() as db:
-        rows = (await db.execute(
-            text("SELECT g.id, g.sample_query, g.ask_count, g.last_asked_at FROM kb_gaps g "
-                 "WHERE g.organization_id = CAST(:org AS uuid) AND g.status = 'open' "
-                 "AND g.ask_count >= :askers "
-                 f"AND g.last_asked_at >= now() - interval '{WINDOW_DAYS} days' "
-                 "ORDER BY g.ask_count DESC, g.last_asked_at DESC, g.id DESC LIMIT :limit"),
-            {"org": core.org_of(user), "askers": CARD_ASKERS, "limit": limit},
-        )).fetchall()
+        return await my_day_rows_in(db, user, limit)
+
+
+async def my_day_rows_in(db: Any, user: UserContext, limit: int) -> list[dict[str, Any]]:
+    """:func:`my_day_rows` over a session that the caller holds. KB-9b's
+    ``my_day.read`` reads the gaps and the pages in ONE session, so it calls
+    this. The caller checks ``knowledge:manage``."""
+    if not core.is_manager(user):
+        return []
+    rows = (await db.execute(
+        text("SELECT g.id, g.sample_query, g.ask_count, g.last_asked_at FROM kb_gaps g "
+             "WHERE g.organization_id = CAST(:org AS uuid) AND g.status = 'open' "
+             "AND g.ask_count >= :askers "
+             f"AND g.last_asked_at >= now() - interval '{WINDOW_DAYS} days' "
+             "ORDER BY g.ask_count DESC, g.last_asked_at DESC, g.id DESC LIMIT :limit"),
+        {"org": core.org_of(user), "askers": CARD_ASKERS, "limit": limit},
+    )).fetchall()
     return [
         {"id": str(r.id), "question": r.sample_query, "ask_count": int(r.ask_count),
          "last_asked_at": r.last_asked_at}
