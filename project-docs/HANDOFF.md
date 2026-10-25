@@ -6160,14 +6160,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `projects_agent_parity.md` §3.3 G19 and G20, §12 P8
 - **Added:** 2026-10-23 · Projects chat parity session
 
-### H-382 · The Projects chat does not make tasks from email or CRM context (WS-46 P9, G10, G11) · [AGENT]
-- **Check:** `grep -n "G10\|G11" apps/skills/skill-projects/skill_projects/manifest.py`.
-  A hit in `FIELD_PLANNED` means `source` and `source_ref` are not sent.
-- **Why:** a task made from an email does not record where it came from.
-- **Do this:** build slice P9 of `projects_agent_parity.md` §12, then PO-3.
-- **Authority:** `projects_agent_parity.md` §3.3, §10, §12 P9
-- **Added:** 2026-10-23 · Projects chat parity session
-
 ### H-383 · The Projects chat has no agent-run tools (WS-55 EA-12e, G23) · [AGENT]
 - **Check:** `grep -n "EA-12e" apps/skills/skill-projects/skill_projects/manifest.py`.
   A hit in `PLANNED` means the four tools are not built.

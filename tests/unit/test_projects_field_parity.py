@@ -417,6 +417,9 @@ _SAMPLE: dict[str, Any] = {
     "reply_to": tw.LINK,
     "required": "yes",
     "skip_current_week": True,
+    # WS-46 P9 (G10, G11): the one mail source, and its message id.
+    "source": "email",
+    "source_ref": "msg-123",
     "source_task_ids": OTHER,
     "start": "2026-10-01",
     "status": "in progress",
