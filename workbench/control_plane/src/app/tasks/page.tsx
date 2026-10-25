@@ -59,7 +59,30 @@ import { askRailSession } from "@/lib/railSessions";
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
 // UI-first: runs entirely on mock data (lib/mockData.ts); the gateway `/tasks`
 // API is wired later. See project-docs/specs/task_manager_app.md.
+/**
+ * WS-64 OP-4 — with My work live, `/tasks` is a redirect into Projects. The
+ * redirect reads the address on the client, behind the flag. While the flag is
+ * on and the address is unread, nothing draws, so the page does not flash
+ * before the redirect. A `/tasks` address that stays (the `open-chat` job)
+ * draws the page. With the flag off this wrapper is the page itself.
+ */
 export default function TasksPage() {
+  const router = useRouter();
+  const live = myWorkEnabled();
+  const [stays, setStays] = useState(!live);
+  useEffect(() => {
+    if (!live) return;
+    const to = tasksRedirectTarget(
+      { search: window.location.search, hash: window.location.hash },
+      true,
+    );
+    if (to) router.replace(to);
+    else setStays(true);
+  }, [live, router]);
+  return stays ? <TasksPageBody /> : null;
+}
+
+function TasksPageBody() {
   const { isMobile } = useViewMode();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
@@ -82,16 +105,6 @@ export default function TasksPage() {
   const openFocus = useTaskStore((s) => s.openFocus);
   const router = useRouter();
   const { access, loading: accessLoading } = useAccess();
-  // WS-64 OP-4 — with My work live, `/tasks` is a redirect into Projects.
-  // Client side, behind the flag, from the address the member arrived on. With
-  // the flag off the effect does nothing and the page renders as it always did.
-  useEffect(() => {
-    const to = tasksRedirectTarget(
-      { search: window.location.search, hash: window.location.hash },
-      myWorkEnabled(),
-    );
-    if (to) router.replace(to);
-  }, [router]);
   // The lists rail folds itself below `lg`, so the pane beside it keeps a
   // usable width on a tablet. The toggle still opens it, and the member's
   // choice holds until the width changes band (`lib/railFold.ts`).

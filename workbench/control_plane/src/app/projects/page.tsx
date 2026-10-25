@@ -1292,9 +1292,10 @@ function ProjectsWorkspace() {
       if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
       else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
       else if (tab === "projects-mywork") {
-        // WS-64 OP-4 — the phone's "My work" tab opens Today.
-        setSheet(null);
-        setApp("my-today");
+        // WS-64 OP-4 — the phone's "My work" tab opens the Projects sheet
+        // (`ProjectNav`: My work on top, then Personal, then Spaces). The
+        // shell's "Menu" tab keeps the global drawer.
+        setSheet((s) => (s === "tree" ? null : "tree"));
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
         // capture lives in the task store and `MyWorkHost` mounts it, so open

@@ -7,7 +7,8 @@ import { expect, test, type Page } from "@playwright/test";
  * ## The rules
  *
  * 1. With the flag on, at 390 px, the bar reads Menu, My work, Capture,
- *    Search, Ask.
+ *    Search, Ask. Menu opens the global drawer. My work opens the Projects
+ *    sheet.
  * 2. Capture opens the quick capture, and a capture is written to the Inbox
  *    (`POST my/tasks`), with no My work view open first.
  * 3. `/tasks?do=capture` lands on the Inbox with capture open, and `do` leaves
@@ -105,15 +106,24 @@ test("Capture writes to the Inbox with no My work view open", async ({ page }) =
   await expect.poll(() => written, { timeout: 15_000 }).toEqual(["Buy printer toner"]);
 });
 
-test("My work opens Today", async ({ page }) => {
+test("Menu opens the global drawer, and My work opens the Projects sheet", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
   await page.goto("/projects?project=p-none");
   const bar = page.locator("nav").filter({ has: page.locator("[data-ask-tab]") }).last();
   await expect(bar.locator("[data-ask-tab]")).toBeVisible({ timeout: 60_000 });
+  // Menu stays the global drawer (supervisor decision 2026-10-25): the
+  // command-bar entry of the shell drawer shows, and the Projects sheet does not.
+  await bar.getByRole("button", { name: "Menu" }).click();
+  await expect(page.getByRole("button", { name: "Search or ask anything" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("My work", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Search or ask anything" })).toHaveCount(0);
+  // My work opens the Projects sheet, with the "My work" heading on top.
   await bar.getByRole("button", { name: "My work" }).click();
-  await expect(page.getByTestId("my-work-host")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("My work", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /^Today/ }).first()).toBeVisible();
 });
 
 test("/tasks?do=capture lands on the Inbox with capture open", async ({ page }) => {

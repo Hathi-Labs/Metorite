@@ -5,10 +5,11 @@
  * The shell draws the first tab of every bar, "Menu", and the Ask tab at the
  * right end. This list is what the Projects branch draws between them.
  *
- * Flag off: Projects, Views, Search, exactly as before, and "Menu" opens the
- * shell drawer. Flag on: My work, Capture, Search, and "Menu" fires
- * `projects-tree` (`projectsMenuEvent`), so the bar reads Menu, My work,
- * Capture, Search, Ask. Each `event` is the detail of a `cc-mobile-nav` event
+ * Flag off: Projects, Views, Search, exactly as before. Flag on: My work,
+ * Capture, Search, so the bar reads Menu, My work, Capture, Search, Ask.
+ * "Menu" opens the global drawer on every page, flag on or off (supervisor
+ * decision 2026-10-25), so a phone member always reaches the other apps. "My
+ * work" opens the Projects sheet. Each `event` is the detail of a `cc-mobile-nav` event
  * that `app/projects/page.tsx` answers. Fence: `tasksRedirect.test.ts`.
  */
 
@@ -18,11 +19,6 @@ export interface ProjectsPhoneTab {
   icon: string;
   /** Drawn in the primary colour, like Capture on `/tasks`. */
   accent?: boolean;
-}
-
-/** The event the shell's own "Menu" tab fires on `/projects`, or null for the drawer. */
-export function projectsMenuEvent(myWork: boolean): string | null {
-  return myWork ? "projects-tree" : null;
 }
 
 export function projectsPhoneTabs(myWork: boolean): ProjectsPhoneTab[] {

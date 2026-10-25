@@ -145,8 +145,9 @@ async function settled<T>(read: () => Promise<T>): Promise<T> {
 
 // WS-64 OP-4: with the flag on (the only way this file runs), `/tasks` is a
 // redirect into Projects, so the page this test compared against no longer
-// draws. `myWork.test.ts` ("myWorkCounts") fences the same equality on the two
-// functions both pages call.
+// draws and no flag-on equivalent exists. `myWork.test.ts` ("each count is the
+// one that /tasks draws") fences the same equality on `viewCounts` and
+// `inboxCount`, the shared count functions.
 test.fixme("each count equals the count that /tasks shows", async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1280, height: 800 });

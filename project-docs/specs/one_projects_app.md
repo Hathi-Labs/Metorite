@@ -269,8 +269,11 @@ more. Every other control opens in a bottom sheet.
    the actions. The tick to complete stays on the left of each row.
 9. **The tab bar.** Menu, My work, a capture button (＋), Search and Ask.
    The capture button opens quick add, which writes to the Inbox. "Projects"
-   and "Views" leave the tab bar: the tree opens from Menu, and the views
-   open from the View button.
+   and "Views" leave the tab bar. Decision (supervisor, 2026-10-25, owner-visible):
+   Menu stays the global drawer on every page, so a phone member always
+   reaches the other apps, the account and the theme. My work opens the
+   Projects sheet (My work, then Personal, then Spaces). The views open from
+   the View button.
 
 ### 5.3 What goes to the desktop
 
@@ -670,8 +673,9 @@ Done: the tab bar (`phoneTabs.ts`), the page listeners for `projects-mywork` and
 (`email/page.tsx`, `TaskCaptureModal.tsx`, `TaskToolCards.tsx`, `commands.ts`,
 `centers.ts`, `runActivity.ts`). Not done: the `nav.ts` entry, `nav.test.ts` and
 `launch_surface.md` §2. Two points the build settled. The shell draws the first
-tab of every bar, "Menu", so with the flag on that tab fires `projects-tree` on
-`/projects` and the Projects branch draws My work, Capture and Search. Capture
+tab of every bar, "Menu", and it keeps opening the global drawer on `/projects`.
+The Projects branch draws My work, Capture and Search, and My work opens the
+Projects sheet. Capture
 opens the Inbox and sets the store's capture flag, so no second capture host
 exists. `shell/search.py` keeps its `/tasks` scope key, because it is a scope
 token and not a link. Any other `?do=` (the `open-chat` job) stays on `/tasks`.
@@ -680,8 +684,8 @@ token and not a link. Any other `?do=` (the `open-chat` job) stays on `/tasks`.
 
 1. **The phone tab bar** (`components/AppShell.tsx`, the `isProjectsPage`
    branch). With the flag on it reads Menu, My work, Capture, Search, Ask.
-   Menu fires `projects-tree`. My work fires a new `projects-mywork`, which
-   opens `my-today`. Capture fires a new `projects-capture`, which opens the
+   Menu keeps opening the global drawer (supervisor decision 2026-10-25). My
+   work fires a new `projects-mywork`, which opens the Projects sheet. Capture fires a new `projects-capture`, which opens the
    quick capture of `MyWorkHost`. Ask keeps the D99 `data-ask-tab`. With the
    flag off the bar is exactly as before.
 2. **The redirect.** `/tasks` is one route with a query and fragment
