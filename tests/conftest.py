@@ -308,3 +308,15 @@ def _sweep_scratch_organizations():
         print(f"\nH-91 sweep could not run: {exc!r}")
     finally:
         eng.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_repo_refresh_clock():
+    """The loader pulls a repo at most once per TTL. That clock is module
+    state, so one test's pull would make the next test skip its own."""
+    import sys
+
+    loader = sys.modules.get("acb_skills.loader")
+    if loader is not None:
+        loader._REFRESHED_AT.clear()
+    yield
