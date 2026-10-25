@@ -125,6 +125,7 @@ import {
   SidePanelFitContext,
   sidePanelFits,
 } from "@/lib/sidePanelFit";
+import { drawerStep } from "./lib/drawerOwner";
 import { useLiveRefresh } from "./lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
@@ -785,6 +786,8 @@ function ProjectsWorkspace() {
   const [railOpen, setRailOpen] = useState(true);
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
   const [sheet, setSheet] = useState<Sheet>(null);
+  /** The page put a sheet in the shell drawer (WS-64 #8). Only then may it close it. */
+  const ownsDrawer = useRef(false);
 
   /**
    * ── The tree, read through the shared cache ────────────────────────────
@@ -1751,9 +1754,16 @@ function ProjectsWorkspace() {
   useEffect(() => {
     if (!isMobile) return;
     if (!sheet) {
-      closeDrawer();
+      // WS-64 #8 — close the drawer only when THIS page opened it. The shell's
+      // Menu tab opens the same drawer with `sheet` null, and a tree refetch
+      // changes a dependency below: closing then shut the Menu by itself.
+      if (drawerStep(false, ownsDrawer.current) === "close") {
+        ownsDrawer.current = false;
+        closeDrawer();
+      }
       return;
     }
+    ownsDrawer.current = true;
     openDrawer(
       <div className="p-2">
         {/* ⚠️ The tree sheet has NO header of its own (2026-10-10). It drew a
@@ -1829,6 +1839,7 @@ function ProjectsWorkspace() {
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
   useEffect(() => {
+    if (!drawerOpen) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!drawerOpen) setSheet(null);
   }, [drawerOpen]);
