@@ -178,16 +178,22 @@ export function returnMessage(code: string | null | undefined): string {
 }
 
 /** The words of the Disconnect dialog. The act deletes the tree and nothing else. */
-export function disconnectCopy(source: Pick<Source, "account_email" | "provider">): {
+export function disconnectCopy(
+  source: Pick<Source, "account_email" | "provider" | "owner_email">,
+  mine = true,
+): {
   title: string;
   subject: string | null;
   body: string;
 } {
   const account = source.account_email ?? "this account";
+  const tail = mine
+    ? "Your Gmail stays connected. You can connect the drive again later."
+    : `${source.owner_email}'s Gmail stays connected. ${source.owner_email} can connect it again.`;
   return {
     title: "Disconnect Google Drive?",
     subject: source.account_email,
-    body: `The folder tree of ${account} leaves Knowledge, and Metorite stops reading this drive. Your Gmail stays connected. You can connect the drive again later.`,
+    body: `The folder tree of ${account} leaves Knowledge, and Metorite stops reading this drive. ${tail}`,
   };
 }
 

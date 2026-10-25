@@ -138,6 +138,15 @@ describe("disconnectCopy", () => {
     expect(copy.body).toContain("stays connected");
     expect(copy.body).toContain("asha@example.com");
     expect(copy.body).toContain("folder tree");
+    expect(copy.body).toContain("Your Gmail stays connected");
+  });
+
+  it("names the owner when a manager disconnects another member's drive", () => {
+    const copy = disconnectCopy(source({ owner_email: "ravi@example.com", account_email: "ravi@example.com" }), false);
+    expect(copy.body).toContain("ravi@example.com's Gmail stays connected");
+    expect(copy.body).toContain("ravi@example.com can connect it again");
+    expect(copy.body).not.toContain("Your Gmail");
+    expect(copy.body).not.toContain("later");
   });
 });
 

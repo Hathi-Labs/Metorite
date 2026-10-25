@@ -85,18 +85,35 @@ export default function SourcesView() {
   useEffect(() => {
     refreshRef.current = read.refresh;
   });
+  const [gaveUp, setGaveUp] = useState(false);
   useEffect(() => {
     if (!polling) return;
     const started = Date.now();
     const timer = setInterval(() => {
       if (Date.now() - started >= POLL_LIMIT_MS) {
         clearInterval(timer);
+        setGaveUp(true);
         return;
       }
       refreshRef.current();
     }, POLL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      setGaveUp(false);
+    };
   }, [polling]);
+
+  // The browser's back-forward cache restores this page with the button still
+  // busy, so the busy state is cleared when the page comes back.
+  useEffect(() => {
+    const back = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      connectingRef.current = false;
+      setConnecting(false);
+    };
+    window.addEventListener("pageshow", back);
+    return () => window.removeEventListener("pageshow", back);
+  }, []);
 
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
@@ -140,7 +157,7 @@ export default function SourcesView() {
     }
   }
 
-  const copy = leaving ? disconnectCopy(leaving) : null;
+  const copy = leaving ? disconnectCopy(leaving, isMine(leaving, access.email)) : null;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -197,6 +214,8 @@ export default function SourcesView() {
                   me={access.email}
                   manager={manager}
                   connecting={connecting}
+                  stalled={gaveUp}
+                  onRefresh={read.refresh}
                   onReconnect={() => void connect()}
                   onDisconnect={() => setLeaving(source)}
                 />
@@ -228,6 +247,8 @@ function SourceCard({
   me,
   manager,
   connecting,
+  stalled,
+  onRefresh,
   onReconnect,
   onDisconnect,
 }: {
@@ -235,6 +256,8 @@ function SourceCard({
   me: string;
   manager: boolean;
   connecting: boolean;
+  stalled: boolean;
+  onRefresh: () => void;
   onReconnect: () => void;
   onDisconnect: () => void;
 }) {
@@ -289,12 +312,19 @@ function SourceCard({
       ) : null}
       {source.state === "failed" ? (
         <p className="border-t border-border px-3 py-2 text-sm text-muted-foreground">
-          {mine ? "Metorite could not read this drive." : `Waiting for ${owner} to reconnect.`}
+          {mine
+            ? "Metorite could not read this drive."
+            : `Metorite could not read this drive. ${owner} can connect it again.`}
         </p>
       ) : null}
       {source.state === "discovering" ? (
         <p className="border-t border-border px-3 py-2 text-sm text-muted-foreground">
-          Reading your folders. This page updates itself.
+          {stalled ? "Still reading. Refresh to see the latest." : "Reading your folders. This page updates itself."}
+          {stalled ? (
+            <Button size="sm" variant="ghost" icon="RefreshCw" className="ml-2" onClick={onRefresh}>
+              Refresh
+            </Button>
+          ) : null}
         </p>
       ) : null}
       {source.state === "ready" || source.state === "discovering" ? (

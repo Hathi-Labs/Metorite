@@ -197,6 +197,9 @@ const BUTTON_ONLY = [
   "value",
 ] as const;
 
+/** The attributes that belong to a link and never to a `<button>`. */
+const LINK_ONLY = ["target", "rel"] as const;
+
 function anchorAttributes(rest: Record<string, unknown>): React.AnchorHTMLAttributes<HTMLAnchorElement> {
   const out = { ...rest };
   for (const key of BUTTON_ONLY) delete out[key];
@@ -242,8 +245,10 @@ export default function Button({
       </Link>
     );
   }
+  const buttonRest: Record<string, unknown> = { ...rest };
+  for (const key of LINK_ONLY) delete buttonRest[key];
   return (
-    <button {...rest} aria-pressed={pressed} disabled={disabled || loading} className={classes}>
+    <button {...(buttonRest as React.ButtonHTMLAttributes<HTMLButtonElement>)} aria-pressed={pressed} disabled={disabled || loading} className={classes}>
       {content}
     </button>
   );

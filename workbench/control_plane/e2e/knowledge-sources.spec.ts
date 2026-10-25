@@ -283,6 +283,11 @@ test.describe("Knowledge sources", () => {
     await expect(card(page, "s-2").getByRole("button", { name: "Reconnect" })).toHaveCount(0);
     await expect(card(page, "s-2")).toContainText("Owner: ravi@example.com");
     await expect(card(page, "s-2").getByRole("button", { name: /^Disconnect/ })).toBeVisible();
+    await expect(card(page, "s-3")).toContainText("Metorite could not read this drive. ravi@example.com can connect it again.");
+    await card(page, "s-2").getByRole("button", { name: /^Disconnect/ }).click();
+    await expect(page.getByRole("dialog")).toContainText("ravi@example.com's Gmail stays connected");
+    await expect(page.getByRole("dialog")).toContainText("ravi@example.com can connect it again");
+    await page.getByRole("dialog").locator("[data-cancel]").click();
     await expect(card(page, "s-3").getByRole("button", { name: "Reconnect" })).toHaveCount(0);
 
     await card(page, "s-1").getByRole("button", { name: "Reconnect" }).click();
