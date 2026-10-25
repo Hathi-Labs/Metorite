@@ -49,7 +49,8 @@ def _flag(monkeypatch: pytest.MonkeyPatch, on: bool) -> None:
 
 def test_the_scope_rule_names_the_profile_exception_only_with_the_flag(monkeypatch) -> None:
     _flag(monkeypatch, True)
-    on = bot_run.build_payload("hi", [], MEMBER, native=True, writes=True)["system_context"]
+    on = bot_run.build_payload("hi", [], MEMBER, native=True, writes=True,
+                                org=epb.ORG)["system_context"]
     assert bot_run.PROFILE_EXCEPTION_RULE in on
     assert bot_run.PROFILE_CHANNEL_RULE in on
     assert "the member's own profile" in on
@@ -59,9 +60,11 @@ def test_the_scope_rule_names_the_profile_exception_only_with_the_flag(monkeypat
     assert on.startswith(bot_run.SCOPE_RULE_WRITES)
 
     _flag(monkeypatch, False)
-    off = bot_run.build_payload("hi", [], MEMBER, native=True, writes=True)["system_context"]
+    off = bot_run.build_payload("hi", [], MEMBER, native=True, writes=True,
+                                org=epb.ORG)["system_context"]
     assert off == bot_run.SCOPE_RULE_WRITES
-    off_plain = bot_run.build_payload("hi", [], MEMBER, native=True)["system_context"]
+    off_plain = bot_run.build_payload("hi", [], MEMBER, native=True,
+                                       org=epb.ORG)["system_context"]
     assert off_plain == bot_run.SCOPE_RULE_NATIVE
 
 
@@ -69,7 +72,8 @@ def test_with_writes_off_the_rule_adds_no_exception(monkeypatch) -> None:
     """Writes off: the run holds no profile write tool, so no exception."""
     _flag(monkeypatch, True)
     for native in (True, False):
-        rule = bot_run.build_payload("hi", [], MEMBER, native=native)["system_context"]
+        rule = bot_run.build_payload("hi", [], MEMBER, native=native,
+                                     org=epb.ORG)["system_context"]
         assert bot_run.PROFILE_EXCEPTION_RULE not in rule
         assert "You cannot change data from WhatsApp" in rule or "cannot change data" in rule
 

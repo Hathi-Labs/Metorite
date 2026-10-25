@@ -242,6 +242,8 @@ HOOKED: dict[str, set[str]] = {
     "activities.py": {"add_comment", "edit_comment"},
     "bulk.py": {"bulk_edit"},
     "personal.py": {"capture", "capture_batch", "add_my_steps", "organize_my_task"},
+    # WS-66 RM-1: "Make it a task" makes a task from the reminder's text.
+    "reminders.py": {"promote_reminder"},
 }
 
 

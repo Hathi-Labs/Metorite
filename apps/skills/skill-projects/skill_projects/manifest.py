@@ -292,6 +292,23 @@ MANIFEST: tuple[Route, ...] = (
     # WS-64 OP-6c (D-OP-9, 2026-10-23): a card names the person and the task, and
     # the route writes one in-app notification. It sends no mail.
     Route("POST", "/projects/tasks/{task_id}/nudge", "nudge_task", "C"),
+    # ── reminders.py (WS-66 RM-1, D114) ──────────────────────────────────
+    # The member's private reminders (calendar_events_reminders.md §5.8).
+    # Each tool is PLANNED for RM-3. A write acts at once with Undo, as
+    # D-CF-5 allows for a reversible write on the member's own record, so
+    # the writes are class B. `reopen` is the Undo of a done or a drop. The
+    # promote makes a task and has no undo, so it is class C. The route
+    # finds a reminder by its OWNER only.
+    Route("GET", "/projects/my/reminders", "list_reminders", "A"),
+    Route("POST", "/projects/my/reminders", "set_reminder", "B"),
+    Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/resolve", "resolve_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/reopen", "reopen_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/promote", "promote_reminder", "C"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/snooze", "reschedule_reminder", "B"),
+    Route(
+        "POST", "/projects/my/reminders/{reminder_id}/reschedule", "reschedule_reminder", "B"
+    ),
     # ── planning.py ──────────────────────────────────────────────────────
     Route("POST", "/projects/my/calendar/plan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
@@ -498,6 +515,16 @@ PLANNED: dict[str, str] = {
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
+    # WS-66 RM-1 (2026-10-25) added the reminder routes. RM-3 builds the
+    # tools of calendar_events_reminders.md §5.8. `reschedule_reminder`
+    # reaches both member moves, the snooze and the reschedule.
+    "list_reminders": "WS-66 RM-3, the reminder tools",
+    "set_reminder": "WS-66 RM-3, the reminder tools",
+    "update_reminder": "WS-66 RM-3, the reminder tools",
+    "resolve_reminder": "WS-66 RM-3, the reminder tools",
+    "reschedule_reminder": "WS-66 RM-3, the reminder tools",
+    "reopen_reminder": "WS-66 RM-3, the reminder tools",
+    "promote_reminder": "WS-66 RM-3, the reminder tools",
 }
 
 
@@ -1238,7 +1265,15 @@ FIELD_GAPS: dict[str, str] = {
     # SENDS or FIELD_EXEMPT.
     # WS-55 EA-12a (EA12-9): the agent-run routes, for the chat in EA-12e.
     "G23": "EA-12e",
+    # WS-66 RM-1 (D114): the reminder routes, for the tools of RM-3.
+    "G24": "RM-3",
 }
+
+#: The body of a new reminder and of a PATCH, one decision each (G24).
+_REMINDER_BODY = (
+    "title", "fire_at", "tz", "kind", "notes", "subject_kind", "subject_id",
+    "estimate_minutes", "important",
+)
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
@@ -1265,6 +1300,23 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
+    # G24 (WS-66 RM-1, D114): the member's reminders. RM-3 builds the tools of
+    # calendar_events_reminders.md §5.8, and moves each row to SENDS as its
+    # tool starts to send the field. `/reopen` and `/promote` take no body.
+    ("GET", "/projects/my/reminders"): {
+        name: "G24" for name in ("state", "start", "end", "limit")
+    },
+    ("POST", "/projects/my/reminders"): {name: "G24" for name in _REMINDER_BODY},
+    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
+        name: "G24" for name in _REMINDER_BODY
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {"action": "G24"},
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
+        name: "G24" for name in ("fire_at", "tz")
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
+        name: "G24" for name in ("fire_at", "tz")
+    },
 }
 
 

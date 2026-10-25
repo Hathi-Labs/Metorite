@@ -1472,7 +1472,8 @@ def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
 def build_payload(message: str, history: list[dict[str, str]],
                   member_email: str, *, native: bool = False,
                   writes: bool = False, documents: bool = False,
-                  memory_context: str = "") -> dict[str, Any]:
+                  memory_context: str = "",
+                  org: str | None = None) -> dict[str, Any]:
     """The event payload of one run.
 
     ``_history_loader`` makes the batch executor take its STRUCTURED path on
@@ -1482,6 +1483,9 @@ def build_payload(message: str, history: list[dict[str, str]],
     WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4. *documents*
     adds :data:`DOCUMENTS_RULE` (WAC-12). *memory_context* is the member's
     pre-read memory (WAC-P2, :func:`_memory_preread`), the web route's block.
+    *org* is the organization of the link row. The profile sentences come
+    only when ``assistant_profile.enabled_for(org)`` is true (PZ-25), so no
+    org gives none.
     """
     prior = [model_turn(m) for m in history]
     rule = (SCOPE_RULE_WRITES if native and writes
@@ -1489,7 +1493,7 @@ def build_payload(message: str, history: list[dict[str, str]],
     if native and documents:
         rule = f"{rule}\n{DOCUMENTS_RULE}"
     from acb_common import assistant_profile
-    if assistant_profile.enabled():
+    if assistant_profile.enabled_for(org):
         # WS-63 PZ-8. With writes off the run holds no profile write tool,
         # so only the channel sentence is added.
         if native and writes:
@@ -1729,7 +1733,9 @@ async def _model_answer(req: RunRequest, message: str,
     payload = build_payload(turn, history, req.member_email,
                             native=native, writes=writes, documents=documents,
                             memory_context=await _memory_preread(req, message,
-                                                                 shared=shared))
+                                                                 shared=shared),
+                            # PZ-25: the link row's org, never the message's.
+                            org=req.organization_id)
     if native:
         await _show_typing(req)
     _WAITING_ON_MODEL[req.message_id] = req

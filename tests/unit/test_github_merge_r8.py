@@ -20,7 +20,9 @@ real ``apply_status_transition``. Each item below is a test:
   ``meta.via = github``, and one ``system`` row holds the reason.
 * **D9** a second delivery moves nothing.
 * **D10** open subtasks stay open.
-* **D11** ``core.py`` has no diff.
+* **D11** the merge rule reaches ``core.py`` only through its public helpers,
+  and patches nothing in it at run time. (Narrowed 2026-10-25, WS-55 MCP-G7:
+  the git diff against ``origin/main`` was the scope fence of the EA-13d/e PR.)
 * **D12** a person's later move through the chat (``chat:projects-assistant``)
   keeps the task.
 
@@ -106,7 +108,6 @@ import hashlib
 import hmac
 import json
 import re
-import subprocess
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -134,7 +135,6 @@ SECRET = "r8-webhook-secret"
 INSTALL = 8101
 REPO = "acme/widgets"
 EMAIL = "dev@gh6-r8.test"
-_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")
@@ -491,23 +491,18 @@ async def test_an_open_agent_run_stays_open(world) -> None:
 
 
 def test_d11_core_py_has_no_diff() -> None:
-    """The merge rule leaves ``core.py`` alone. With git and ``origin/main`` at
-    hand the diff may ADD lines and must remove none. EA-13d and EA-13e add the
-    fields of ``TaskModel`` (``agent_note``, ``pr`` and ``agent_worked``), and
-    that is the only change that the spec allows (``external_agent_access.md``
-    §15, "``TaskModel`` fields only"). Without git, the rule still reaches the
-    core only through its public helpers."""
+    """The merge rule reaches ``core.py`` only through its public helpers, and
+    it patches nothing in the core at run time.
+
+    Until 2026-10-25 this test also ran ``git diff`` against ``origin/main``
+    and refused any removed line in ``core.py``. That was the scope fence of
+    the EA-13d and EA-13e PR (``external_agent_access.md`` §15, "``TaskModel``
+    fields only"), and that PR merged long ago. Left in place, it failed every
+    later branch that changed a line of ``core.py`` (WS-55 MCP-G7 met it). A
+    scope fence of one PR does not bind the next one, so only the source
+    checks stay. The name stays, so the D11 row still finds its test."""
     from gateway.routes.projects import github_merge
 
-    core = "apps/services/gateway/gateway/routes/projects/core.py"
-    base = subprocess.run(["git", "merge-base", "HEAD", "origin/main"], cwd=_ROOT,
-                          capture_output=True, text=True)
-    if base.returncode == 0 and base.stdout.strip():
-        diff = subprocess.run(["git", "diff", "-U0", base.stdout.strip(), "--", core],
-                              cwd=_ROOT, capture_output=True, text=True)
-        removed = [line for line in diff.stdout.splitlines()
-                   if line.startswith("-") and not line.startswith("---")]
-        assert diff.returncode == 0 and removed == [], removed
     source = Path(github_merge.__file__).read_text(encoding="utf-8")
     assert "apply_status_transition" in source and "load_default_status" in source
     # Nothing here patches the core at run time.

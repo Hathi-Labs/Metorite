@@ -2041,6 +2041,36 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 # ``updated_at`` on every write that matters, and a second monotonic fact about
 # one row is the CLAUDE.md §5 defect.
 #
+# ``updated_at`` stays the ONE token and the ONE feed stamp: a client reads it,
+# sends it back, and the delta cursor pages on it.
+#
+# WS-55 MCP-G7 (spec §9.10.3, migration ``*_pm_tasks_fields_at.sql``).
+# ``touch_task`` moves ``updated_at`` for every comment, link, attachment and
+# assignee, because the feed must see them. So equality alone gave 412 to an
+# agent whose task somebody had only commented on or mentioned. The trigger of
+# that migration keeps ``pm_tasks.fields_at``: the ``updated_at`` of the last
+# write that changed a FIELD of the row. It is not a second version. Nobody
+# sends it, no reply carries it, and it never refuses a token that equality
+# passes. It only narrows what a mismatch means: a token from ``fields_at`` up
+# to ``updated_at`` names a snapshot whose fields are still current, so the
+# write goes ahead. The trigger makes the ``now()`` stamp monotonic, so a
+# writer that waited on the row lock cannot stamp a field change OLDER than a
+# token a client already holds. A NULL ``fields_at`` narrows nothing.
+#
+# The trigger fires on every UPDATE. A field write that did not move
+# ``updated_at`` (a tag rename, a status remap, an FK ``SET NULL``) sets
+# ``fields_at`` ABOVE ``updated_at``. The range below is then empty, so only
+# equality passes: the token that was current still works, and after the next
+# bump it gets 412, as on main. The promote paths
+# (``lift_subtasks_to_grandparent``, ``merge._reparent_children``, the kept
+# subtasks of ``tasks.delete_task_in``) also stamp ``updated_at`` in the same
+# statement, as defence in depth. Each one has its own R8 case in
+# ``test_task_precondition_fields_at.py`` (M5 to M8).
+#
+# ``tasks.agent_delete_task`` keeps STRICT equality and does not call
+# :func:`precondition_holds`. A delete is one-way, and ``fields_at`` does not
+# see a subtask moved under the task, so any change after the read stales it.
+#
 # ⚠️ The two rules below are not stylistic — both were MEASURED against a real
 # database (spec §9.10.1), and both are cases where the obvious implementation
 # reports a safety it does not have:
@@ -2079,8 +2109,29 @@ def parse_precondition(token: str) -> datetime:
     return parsed
 
 
+def precondition_holds(row: Any, expected: datetime) -> bool:
+    """True when a write with the token *expected* may go ahead on *row*.
+
+    Two arms (see the block above). The token equals ``updated_at``: the rule
+    of WS-27bi, unchanged. Or the token lies from ``fields_at`` up to
+    ``updated_at``: only a satellite bump moved the stamp since the client read
+    the row. The upper bound refuses a made-up future token, which no read ever
+    gave. A ``fields_at`` above ``updated_at`` (a field write with no stamp)
+    leaves the range empty, so only equality passes. Rule 2 holds in both arms:
+    parsed instants, never strings.
+    """
+    stamp = row.updated_at
+    if stamp == expected:
+        return True
+    fields_at = getattr(row, "fields_at", None)
+    return fields_at is not None and fields_at <= expected <= stamp
+
+
 def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     """Enforce ``If-Match`` against ``row.updated_at``.
+
+    Since WS-55 MCP-G7 the rule is :func:`precondition_holds`, which also reads
+    ``row.fields_at``.
 
     An ABSENT header still succeeds (D-PM-20): advisory now, mandatory in a later
     release. Made compulsory on day one it would break every existing caller at
@@ -2095,15 +2146,18 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     if not isinstance(if_match, str):
         return
     expected = parse_precondition(if_match)
-    if row.updated_at != expected:          # rule 2: instants, never strings
-        raise HTTPException(
-            status_code=412,
-            detail={
-                "error": "precondition_failed",
-                "message": "This row changed since you loaded it.",
-                "current": current,
-            },
-        )
+    # MCP-G7: the one rule. A token that it passes goes ahead, and each other
+    # token is a mismatch. Rule 2 holds inside it: instants, never strings.
+    if precondition_holds(row, expected):
+        return
+    raise HTTPException(
+        status_code=412,
+        detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+            "current": current,
+        },
+    )
 
 
 async def count_where(db: Any, table: str, column: str, value: str) -> int:
@@ -3243,6 +3297,9 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
 
     Returns the ids that moved. The caller bumps them with :func:`touch_task`,
     because ``parent_task_id`` changes and ``updated_at`` does not.
+    (Since WS-55 MCP-G7 the UPDATE stamps ``updated_at`` itself, so the
+    trigger of migration 304 moves ``fields_at``. The caller's bump stays,
+    and it is a no-op at the same ``now()``.)
 
     ⚠️ **Why this exists.** The FK is ``ON DELETE SET NULL``, so until
     2026-09-26 deleting a subtask that had subtasks of its own made them
@@ -3270,6 +3327,11 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
     moved = (await db.execute(
         text(
             "UPDATE pm_tasks SET parent_task_id = CAST(:grandparent AS uuid) "
+            # WS-55 MCP-G7: the stamp makes the trigger see the parent change,
+            # so `fields_at` moves and an old token of a promoted task is 412.
+            # Without it the caller's touch came second, saw no field change,
+            # and the old token passed the `fields_at` arm.
+            "    , updated_at = now() "
             "WHERE parent_task_id = CAST(:tid AS uuid) RETURNING id"
         ),
         {

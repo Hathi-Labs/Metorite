@@ -31,6 +31,7 @@ import type {
   RenderedReportBody,
   StuckReport,
   ThroughputReport,
+  WaitingReport,
 } from "./api";
 import { asList } from "./analyticsRead";
 
@@ -233,6 +234,27 @@ export function hygienePanelData(
     ...section,
     by_kind: { ...(section.by_kind ?? {}) },
     rows: asList<HygieneReport["rows"][number]>(section.rows),
+  };
+}
+
+/**
+ * `waiting` as `WaitingPanel` takes it (WS-27bn RA-3).
+ *
+ * The section IS `waiting_body`, so this copies it. A list the body lacks
+ * reads as no rows, never as a figure. The period line is the frame's, for
+ * the answer time, which reads the report period.
+ */
+export function waitingPanelData(
+  section: NonNullable<Sections["waiting"]>,
+  frame: ReportFrame
+): WaitingReport & { period_start: string; period_end: string } {
+  return {
+    ...section,
+    questions: asList<WaitingReport["questions"][number]>(section.questions),
+    reviews: asList<WaitingReport["reviews"][number]>(section.reviews),
+    handoffs: asList<WaitingReport["handoffs"][number]>(section.handoffs),
+    period_start: frame.period_start,
+    period_end: frame.period_end,
   };
 }
 

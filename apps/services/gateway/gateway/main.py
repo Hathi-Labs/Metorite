@@ -1203,8 +1203,11 @@ if _HAS_MAF:
                 "",
             )
 
-            # Build per-request agent (cheap — tools are closures, no network I/O)
-            agent = build_orchestrator_agent(with_history=False)
+            # Build per-request agent (cheap — tools are closures, no network I/O).
+            # PZ-25: the org of the server-side UserContext decides the
+            # profile tools, because this build comes before run_detached binds.
+            agent = build_orchestrator_agent(
+                with_history=False, organization_id=_organization_id)
 
             # thread_id (also derived below for the Redis relay) — pass it into
             # memory enrichment so the memory block is session-cached and stays
@@ -1708,6 +1711,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-66 PN-1 — web push: `/push/public-key`, `/push/subscriptions` and
+    # `/push/test` (calendar_events_reminders.md §10.2). Gated on
+    # `feature:chat`, as `/reach` is. With WEB_PUSH_ENABLED off, each 404.
+    from gateway.push.routes import router as _push_router
+
+    app.include_router(_push_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.settings import router as _settings_router
 
     app.include_router(_settings_router)
@@ -2041,6 +2054,17 @@ class Version(BaseModel):
     #: Null when the box holds no readable marker.
     applied_sha: str | None = None
     applied_at: str | None = None
+    #: WS-66 PN-1. The gateway's `WEB_PUSH_ENABLED`, the ONE switch of web
+    #: push, so `curl` shows whether a box serves it. The browser has no
+    #: build-time flag: My Profile asks `/push/public-key`, which answers 404
+    #: with the switch off. It names the switch only, never a key
+    #: (calendar_events_reminders.md §10.2 item 2).
+    web_push: bool = False
+    #: WS-66 RM-1 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_REMINDERS` flag, the ONE switch of reminders, so `curl`
+    #: shows whether a box serves them. With it off, every reminder route
+    #: answers 404. Off by default.
+    calendar_reminders: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2132,7 +2156,13 @@ async def version() -> Version:
     visible with `curl`. Both flags are retired, and the one task store is the
     only store. The key stays for one release so the monitoring that reads it
     does not break. S9 may drop it.
+
+    `web_push` is the gateway's `WEB_PUSH_ENABLED` (WS-66 PN-1), through
+    its one reader, `gateway.push.flags`.
     """
+    from gateway.push import flags as push_flags
+    from gateway.routes.projects.reminders import reminders_enabled
+
     applied_sha, applied_at = applied_marker()
     return Version(
         sha=build_sha(),
@@ -2140,6 +2170,8 @@ async def version() -> Version:
         tasks_lens=True,
         applied_sha=applied_sha,
         applied_at=applied_at,
+        web_push=push_flags.enabled(),
+        calendar_reminders=reminders_enabled(),
     )
 
 
@@ -2382,7 +2414,10 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory
-        agent = build_orchestrator_agent(with_history=False)
+        # PZ-25: the org of the server-side UserContext, never of the body.
+        agent = build_orchestrator_agent(
+            with_history=False,
+            organization_id=getattr(_user, "organization_id", None))
         # Inject Mem0 + Graphiti context for this user + query (no-op if disabled)
         enriched = await enrich_instructions_with_memory(agent, user_id, req.query)
         opts = agent.default_options

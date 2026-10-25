@@ -69,6 +69,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/maintenance", None),
     ("POST", f"/knowledge/pages/{OTHER}/verify", None),
     # KC-8a: the entity registry.
+    ("GET", "/knowledge/entity-types", None),
     ("GET", "/knowledge/entities?type=person", None),
     ("GET", f"/knowledge/entities/{OTHER}", None),
     ("POST", "/knowledge/entities", {"type": "product", "name": "PX", "space_id": OTHER}),

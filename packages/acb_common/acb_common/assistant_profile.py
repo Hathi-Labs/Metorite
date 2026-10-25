@@ -20,8 +20,10 @@ connection and imports no web framework. :data:`READ_SQL` runs in the
 caller's session, which binds the tenant (R5).
 
 **The flag.** ``ASSISTANT_PROFILE_ENABLED`` (``assistant_profile_enabled``),
-default OFF. :func:`enabled` is its one reader. OFF gives no block, so the
-per-turn context stays as it was before PZ-2.
+default OFF, and the list ``ASSISTANT_PROFILE_ORGS``
+(``assistant_profile_orgs``), default empty. :func:`enabled_for` is their one
+reader, and it takes the organization (PZ-25, §14.2). OFF gives no block, so
+the per-turn context stays as it was before PZ-2.
 
 Fences: ``tests/unit/test_assistant_profile.py`` and
 ``tests/unit/test_executor_profile_block.py``.
@@ -31,11 +33,14 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
 import json
 import logging
 import re
 import unicodedata
+import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -66,6 +71,36 @@ GREETING: tuple[str, ...] = ("none", "brief", "warm")
 LENGTH: tuple[str, ...] = ("short", "default", "detailed")
 FACT_KINDS: tuple[str, ...] = ("about", "routine", "preference", "work", "relationship")
 FACT_SOURCES: tuple[str, ...] = ("chat", "whatsapp", "settings")
+
+#: The interview (PZ-26, ``personalization.md`` §14.3). One table: the id of
+#: each area and its starting question, in the order the interview asks. The
+#: model asks in its own words, so the question is an example.
+AREAS: dict[str, str] = {
+    "role": "What is your role, and what takes most of your week?",
+    "goals": "What are the one to three things you most want to move this quarter?",
+    "good_day": "What would make today a win for you?",
+    "decisions": "Do you want options with a recommendation, or only the answer?",
+    "detail": "Do you want the headline first, or the full reasoning?",
+    "rhythm": "When do you do deep work, and when must I not interrupt?",
+    "channels": "What must reach you on WhatsApp, and what can wait for the web?",
+    "energy": "Which part of your work do you enjoy most?",
+    "peeves": "Is there something that assistants do that annoys you?",
+    "people": "Who do you work with most?",
+}
+#: The state of an area (§14.3). An area with no entry is open.
+INTERVIEW_STATES: tuple[str, ...] = ("asked", "answered", "skipped", "never")
+#: The most hours between two questions (§14.4, limit 1).
+DUE_HOURS = 24
+#: The days that a skipped area, or an asked area with no answer, waits
+#: (§14.4, limit 2, D-PZ-13).
+WAIT_DAYS = 14
+#: The most areas that one sitting asks (§14.4).
+SITTING_AREAS = 5
+#: The hours that a sitting lasts after the member starts it. In a sitting
+#: the model may mark an area `asked` without a due line.
+SITTING_HOURS = 2
+#: The time format of the interview keys.
+INTERVIEW_TIME = "%Y-%m-%dT%H:%M:%SZ"
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
@@ -198,6 +233,10 @@ def _stored_fact(item: Any) -> dict[str, Any] | None:
         out["source"] = item["source"]
     if isinstance(item.get("at"), str):
         out["at"] = item["at"]
+    # PZ-26: the area of the question that this fact answers. A value that
+    # this build does not know drops, and the fact stays.
+    if item.get("area") in AREAS:
+        out["area"] = item["area"]
     return out
 
 
@@ -242,6 +281,9 @@ def stored_profile(raw: Any) -> dict[str, Any]:
         return out
     if isinstance(raw.get("learning"), bool):
         out["learning"] = raw["learning"]
+    interview = _stored_interview(raw.get("interview"))
+    if interview is not None:
+        out["interview"] = interview
     out["address"] = _stored_keys(raw.get("address"), _clean_address)
     out["style"] = _stored_keys(raw.get("style"), _clean_style)
     for key, one, cap in (("facts", _stored_fact, FACTS_MAX),
@@ -252,6 +294,43 @@ def stored_profile(raw: Any) -> dict[str, Any]:
     return out
 
 
+def _parse_time(value: Any) -> datetime | None:
+    """A stored time as an aware UTC datetime, or None when it does not parse."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _format_time(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime(INTERVIEW_TIME)
+
+
+def _stored_interview(raw: Any) -> dict[str, Any] | None:
+    """The valid part of a stored ``interview`` (§14.3), or None when nothing
+    valid is left. An unknown area, an unknown state and a time that does not
+    parse each drop alone."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in ("started_at", "last_asked_at", "sitting_at"):
+        if _parse_time(raw.get(key)) is not None:
+            out[key] = raw[key]
+    areas: dict[str, Any] = {}
+    stored = raw.get("areas")
+    for area, entry in (stored.items() if isinstance(stored, dict) else ()):
+        if (area in AREAS and isinstance(entry, dict)
+                and entry.get("state") in INTERVIEW_STATES
+                and _parse_time(entry.get("at")) is not None):
+            areas[area] = {"state": entry["state"], "at": entry["at"]}
+    if areas:
+        out["areas"] = areas
+    return out or None
+
+
 def profile_size(profile: Any) -> int:
     """The characters of a profile, as compact JSON. The §4.2 budget."""
     return len(json.dumps(profile, ensure_ascii=False, separators=(",", ":")))
@@ -260,12 +339,52 @@ def profile_size(profile: Any) -> int:
 # ── The flag ───────────────────────────────────────────────────────────────
 
 
-def enabled() -> bool:
-    """True when ``ASSISTANT_PROFILE_ENABLED`` is on. Fails closed."""
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The ids in *raw*, trimmed and in lower case. Cached on the raw value.
+
+    The precedent is ``gateway.routes.crm.flags._parse_orgs``. An empty
+    entry, as in ``"a,,b"``, is dropped. An entry that is not a uuid stays,
+    and no org id, which is a uuid, matches it. It logs one warning, and the
+    cache makes it one for each raw value. The list holds org ids only, never
+    a secret, so the warning names the entry.
+    """
+    orgs = frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+    for org in sorted(orgs):
+        try:
+            uuid.UUID(org)
+        except ValueError:
+            logger.warning("assistant_profile.orgs.not_a_uuid",
+                           extra={"entry": org[:64]})
+    return orgs
+
+
+def enabled_for(org_id: str | None) -> bool:
+    """True when the profile is on for the organization *org_id*. Fails closed.
+
+    The rule of ``personalization.md`` §14.2 (PZ-25, D113):
+
+    * The master switch ``ASSISTANT_PROFILE_ENABLED`` off gives False.
+    * The master switch on and an empty ``ASSISTANT_PROFILE_ORGS`` gives
+      True for each organization.
+    * The master switch on and a list gives True only for an id in it.
+    * No organization gives False, always.
+
+    The caller passes the organization of the bound run or the server-side
+    ``UserContext``, never an id from request input (R5). The settings
+    object is cached, so a change of the env needs a restart.
+    """
     try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
         from acb_common import get_settings
 
-        return getattr(get_settings(), "assistant_profile_enabled", False) is True
+        settings = get_settings()
+        if getattr(settings, "assistant_profile_enabled", False) is not True:
+            return False
+        orgs = _parse_orgs(str(getattr(settings, "assistant_profile_orgs", "") or ""))
+        return not orgs or org in orgs
     except Exception:
         return False
 
@@ -377,7 +496,7 @@ def channel_writes() -> bool:
 #: off holds none of them (``_tool_injection._whatsapp_withheld``).
 WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "profile_remember", "profile_forget", "profile_set", "profile_alias",
-    "profile_undo"})
+    "profile_undo", "profile_interview"})
 
 
 # ── The member's TYPED words (PZ-6a fix round 2, D-PZ-2) ───────────────────
@@ -855,6 +974,103 @@ def resolve_address_name(profile_name: Any, preferred: Any, display: Any) -> str
     # through to the next step, and is never cleaned into a name.
     return (_own_name(profile_name) or _directory_name(preferred)
             or _directory_name(display, first_word=True))
+
+
+# ── The interview (PZ-26, §14.4) ───────────────────────────────────────────
+
+
+def apply_interview_mark(interview: Any, area: str, state: str,
+                         now: datetime) -> dict[str, Any]:
+    """The interview after one mark. Pure: it takes the clock as *now*.
+
+    *interview* is the stored value, or None. It sets ``started_at`` on the
+    first mark, the entry of *area* to *state* at *now*, and ``last_asked_at``
+    when *state* is ``asked``. An unknown area or state is a ValueError.
+    """
+    if area not in AREAS:
+        raise ValueError(f"the area is one of {', '.join(AREAS)}")
+    if state not in INTERVIEW_STATES:
+        raise ValueError(f"the state is one of {', '.join(INTERVIEW_STATES)}")
+    out = _stored_interview(interview) or {}
+    stamp = _format_time(now)
+    out.setdefault("started_at", stamp)
+    if state == "asked":
+        out["last_asked_at"] = stamp
+    out["areas"] = {**out.get("areas", {}), area: {"state": state, "at": stamp}}
+    return out
+
+
+def start_interview(interview: Any, now: datetime, sitting: bool = False) -> dict[str, Any]:
+    """The interview with ``started_at`` set once. No area changes. With
+    *sitting*, ``sitting_at`` is *now*: the member starts a sitting."""
+    out = _stored_interview(interview) or {}
+    out.setdefault("started_at", _format_time(now))
+    if sitting:
+        out["sitting_at"] = _format_time(now)
+    return out
+
+
+def sitting_active(interview: Any, now: datetime) -> bool:
+    """True while a sitting the member started is under way (:data:`SITTING_HOURS`)."""
+    at = _parse_time((_stored_interview(interview) or {}).get("sitting_at"))
+    return at is not None and timedelta(0) <= now - at <= timedelta(hours=SITTING_HOURS)
+
+
+def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[str]:
+    """The ids of the open areas, in the order of :data:`AREAS`.
+
+    An area is open when it has no entry, or when it is ``skipped`` or
+    ``asked`` and the entry is :data:`WAIT_DAYS` days old or older. ``answered``
+    and ``never`` are never open. *limit* cuts the list.
+    """
+    areas = (_stored_interview(interview) or {}).get("areas", {})
+    wait = timedelta(days=WAIT_DAYS)
+    out: list[str] = []
+    for area in AREAS:
+        entry = areas.get(area)
+        if entry is not None:
+            if entry["state"] not in ("skipped", "asked"):
+                continue
+            at = _parse_time(entry["at"])
+            if at is None or now - at < wait:
+                continue
+        out.append(area)
+    return out if limit is None else out[:max(limit, 0)]
+
+
+def due_area(interview: Any, now: datetime) -> str:
+    """The open area that is due now, or ``""``. The rule of
+    :func:`interview_due_line`, without the words."""
+    stored = _stored_interview(interview) or {}
+    started = _parse_time(stored.get("started_at"))
+    last = _parse_time(stored.get("last_asked_at"))
+    if started is None or last is None or now - last <= timedelta(hours=DUE_HOURS):
+        return ""
+    return next(iter(open_areas(stored, now, 1)), "")
+
+
+def may_ask(interview: Any, now: datetime) -> bool:
+    """True when the model may mark an area ``asked`` from the chat: a
+    sitting is under way, or a question is due. A member who said no has
+    neither (§14.4)."""
+    return sitting_active(interview, now) or bool(due_area(interview, now))
+
+
+def interview_due_line(interview: Any, now: datetime) -> str:
+    """The one line of the block when a question is due, or ``""``.
+
+    A question is due when the sitting began (``started_at``), the last
+    question is more than :data:`DUE_HOURS` hours old (``last_asked_at``), and
+    an area is open. The line names the first open area and its starting
+    question. A member who said no to the offer has ``started_at`` and no
+    ``last_asked_at``, so no line ever comes (§14.4).
+    """
+    area = due_area(interview, now)
+    if not area:
+        return ""
+    return (f"Interview (one question is due): {area}: «{AREAS[area]}» "
+            "Ask it only at the end of a reply that fits. "
+            f'Then call profile_interview("asked", "{area}").')
 
 
 # ── The block (§5.1) ───────────────────────────────────────────────────────

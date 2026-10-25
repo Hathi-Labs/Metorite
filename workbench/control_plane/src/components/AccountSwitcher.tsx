@@ -49,6 +49,7 @@ import {
 import type { NavSection } from "@/lib/nav";
 import { accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
 import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 
 /**
  * The accounts this browser holds. `withOrgs` asks for each account's
@@ -494,6 +495,9 @@ export function AccountFoot({
   const { accounts: switcher, reload } = useAccounts();
   const { data: session } = useSession();
   const { access } = useAccess();
+  // WS-63 PZ-25: the "Assistant" row, only with the profile on for this org.
+  // Read here, where the foot always mounts, so the row is known at open.
+  const assistant = useAssistantProfileEnabled();
   // With the switcher off, the session names the account. Access answers
   // first in a fresh tab, so it stands in until the session does.
   const fallback = session?.user?.email ? session : access.email ? { user: { email: access.email } } : null;
@@ -606,6 +610,7 @@ export function AccountFoot({
               orgName={orgName}
               sections={sections}
               layout={layout}
+              assistant={assistant}
               onChanged={() => void reload(true)}
               onCover={setCover}
               onDone={close}
@@ -650,6 +655,7 @@ export function AccountFootMenu({
   onCover,
   onDone,
   pages = true,
+  assistant = false,
 }: {
   accounts: Accounts;
   orgName: string;
@@ -657,6 +663,8 @@ export function AccountFootMenu({
   layout: boolean;
   /** False drops You and Settings, for a member with no organization. */
   pages?: boolean;
+  /** True adds the "Assistant" row to You (PZ-25). `AccountFoot` reads it. */
+  assistant?: boolean;
   onChanged: () => void;
   /**
    * Raises and lowers the cover, which `AccountFoot` holds, outside this menu.
@@ -691,7 +699,7 @@ export function AccountFootMenu({
     }
   };
 
-  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages });
+  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant });
 
   const row = (item: AccountMenuItem) => {
     switch (item.kind) {

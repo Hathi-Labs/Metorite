@@ -4157,6 +4157,10 @@ function ProjectsWorkspace() {
           setSelected(row.node as ProjectRow);
         }
       }}
+      // WS-27bn RA-3. A row of "Waiting on people" opens its task as a deep
+      // link does: the `?task=` effect below leaves Reports for the task's
+      // board and opens the panel there.
+      onOpenTask={(taskId) => router.push(`/projects?task=${encodeURIComponent(taskId)}`)}
     />
   ) : dashboardOnly ? (
     // A SPACE IS NOT A PROJECT (owner directive 2026-08-31). It shows a

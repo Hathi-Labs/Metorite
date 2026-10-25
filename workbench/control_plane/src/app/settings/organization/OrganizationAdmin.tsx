@@ -141,8 +141,12 @@ const PURGE_LABELS: Record<string, string> = {
   crm_member_rules: "own CRM business rule",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
+  // WS-66 RM-1: the member's private reminders, with their ledger.
+  reminders: "private reminder",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.
   member_settings: "personal settings record",
+  // WS-66 PN-1: a browser or Home Screen app that gets the member's pushes.
+  push_devices: "notification device",
   audit_entries: "app audit entry",
   audit_events: "audit event",
   agent_runs: "agent run trace",

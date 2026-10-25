@@ -1391,6 +1391,27 @@ CREATE POLICY kb_source_nodes_tenant_isolation ON kb_source_nodes
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS push_subscriptions_tenant_isolation ON push_subscriptions;
+CREATE POLICY push_subscriptions_tenant_isolation ON push_subscriptions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reminders FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reminders_tenant_isolation ON reminders;
+CREATE POLICY reminders_tenant_isolation ON reminders
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reminder_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reminder_events FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reminder_events_tenant_isolation ON reminder_events;
+CREATE POLICY reminder_events_tenant_isolation ON reminder_events
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE kb_sync_cursors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_sync_cursors FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS kb_sync_cursors_tenant_isolation ON kb_sync_cursors;
