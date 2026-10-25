@@ -9,12 +9,16 @@ the SQL twin to the same cases on a real database.
 
 * A done task is ``agent_finished`` when its move to done came from an agent:
   ``meta.via`` = ``mcp:…``, or the actor is ``agent:<name>``.
-* It is ``agent_assisted`` when it held an agent run and a person moved it.
+* It is ``agent_assisted`` when an agent WORKED the task before the done move
+  (``agent_worked.AGENT_WORKED_SQL``: a run of any status, or an act through
+  MCP, created before that move), and a person, a workflow or GitHub moved it.
 * It is ``person`` in every other case. ``system:workflow:<id>`` is not an
   agent.
-* A reopened task takes the label of its LATEST move into done.
+* The label reads the latest move into done AT OR BEFORE the finish that the
+  window counts. A reopen and a new finish after it do not change it.
 * An open task's live holder is ``agent`` (a live run, or an ``agent:``
-  assignee), ``person`` (a person assignee), or None.
+  assignee), ``person`` (a person assignee), or None. A blank assignee is
+  no assignee.
 
 **The mutations (R7).** Each one turned the named test red. Each ran after a
 commit, and ``git checkout`` restored the file after it.
@@ -31,6 +35,10 @@ commit, and ``git checkout`` restored the file after it.
   -> ``test_the_split_has_every_key_and_zero_for_no_row``.
 * A6. a second ``->>'via'`` read in ``analytics.py``
   -> ``test_one_module_reads_via_for_the_label``.
+* A7. ``done_move`` drops the ``until`` bound (fix round 1)
+  -> ``test_the_label_is_the_finish_the_window_counts``.
+* A8. ``finish_actor_join`` drops ``fa.created_at <= {until}`` (fix round 1)
+  -> ``test_the_join_is_bounded_by_the_counted_finish``.
 """
 from __future__ import annotations
 
@@ -47,6 +55,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 
+from gateway.routes.projects import agent_worked as aw
 from gateway.routes.projects import analytics as ana
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -55,11 +64,19 @@ _T0 = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
 _VIA = "mcp:claude.ai:claude-code"
 
 
+def _at(minutes: int) -> datetime:
+    return _T0 + timedelta(minutes=minutes)
+
+
 def _move(
     minutes: int, by: str, *, via: str | None = None,
-    frm: str = "in_progress", to: str = "done",
+    frm: str = "in_progress", to: str = "done", id: str = "",
 ) -> ana.StatusMove:
-    return ana.StatusMove(_T0 + timedelta(minutes=minutes), by, via, frm, to)
+    return ana.StatusMove(_at(minutes), by, via, frm, to, id)
+
+
+#: Agent work (a run or an MCP act) ten minutes before `_move(0, …)`.
+_BEFORE = [_at(-10)]
 
 
 # ── The finish label ─────────────────────────────────────────────────────────
@@ -73,13 +90,13 @@ def test_the_labels_are_the_three_of_the_spec() -> None:
 def test_an_act_through_mcp_finishes_as_an_agent() -> None:
     """The member's address with the MCP stamp: the agent made the move."""
     moves = [_move(0, "ana@x.test", via=_VIA)]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_AGENT
-    assert ana.classify_finish(moves, had_run=True) == ana.FINISH_AGENT
+    assert ana.classify_finish(moves) == ana.FINISH_AGENT
+    assert ana.classify_finish(moves, agent_work=_BEFORE) == ana.FINISH_AGENT
 
 
 def test_an_in_app_agent_finishes_as_an_agent() -> None:
     moves = [_move(0, "agent:coder")]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_AGENT
+    assert ana.classify_finish(moves) == ana.FINISH_AGENT
 
 
 def test_the_stamp_is_case_blind() -> None:
@@ -87,22 +104,38 @@ def test_the_stamp_is_case_blind() -> None:
     assert ana.is_agent_act("ana@x.test", "MCP:claude.ai")
 
 
-def test_a_person_after_an_agent_run_is_agent_assisted() -> None:
-    """``meta.via`` absent, a person's address, and the task held a run."""
+def test_a_person_after_agent_work_is_agent_assisted() -> None:
+    """``meta.via`` absent, a person's address, and an agent worked first."""
     moves = [_move(0, "ana@x.test")]
-    assert ana.classify_finish(moves, had_run=True) == ana.FINISH_ASSISTED
+    assert ana.classify_finish(moves, agent_work=_BEFORE) == ana.FINISH_ASSISTED
 
 
-def test_a_person_with_no_run_is_a_person() -> None:
+def test_a_person_with_no_agent_work_is_a_person() -> None:
     moves = [_move(0, "ana@x.test")]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_PERSON
+    assert ana.classify_finish(moves) == ana.FINISH_PERSON
+
+
+def test_agent_work_after_the_finish_does_not_count() -> None:
+    """A run created after the done move, or at the same instant, did not
+    help that finish (``created_at < :aw_before`` in `agent_worked`)."""
+    moves = [_move(0, "ana@x.test")]
+    assert ana.classify_finish(moves, agent_work=[_at(5)]) == ana.FINISH_PERSON
+    assert ana.classify_finish(moves, agent_work=[_at(0)]) == ana.FINISH_PERSON
+
+
+def test_an_mcp_act_before_a_github_done_is_agent_assisted() -> None:
+    """The agent worked through MCP only (no run), and the merge moved the
+    task to done as ``system:github``. GitHub is not an agent."""
+    moves = [_move(0, "system:github", via="github")]
+    assert ana.classify_finish(moves, agent_work=_BEFORE) == ana.FINISH_ASSISTED
+    assert ana.classify_finish(moves) == ana.FINISH_PERSON
 
 
 def test_a_workflow_is_not_an_agent() -> None:
     """``system:workflow:<id>`` is an automation (D-PM-4), not an agent."""
     moves = [_move(0, "system:workflow:7f2c")]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_PERSON
-    assert ana.classify_finish(moves, had_run=True) == ana.FINISH_ASSISTED
+    assert ana.classify_finish(moves) == ana.FINISH_PERSON
+    assert ana.classify_finish(moves, agent_work=_BEFORE) == ana.FINISH_ASSISTED
     assert not ana.is_agent_act("system:workflow:7f2c", None)
 
 
@@ -113,20 +146,37 @@ def test_another_via_is_not_an_agent() -> None:
 
 
 def test_a_reopened_task_takes_its_latest_finish() -> None:
-    """Agent finished, a person reopened, a person finished again."""
+    """With no bound, the last finish decides."""
     moves = [
         _move(0, "ana@x.test", via=_VIA),
         _move(10, "ana@x.test", frm="done", to="todo"),
         _move(20, "bo@x.test", frm="todo"),
     ]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_PERSON
+    assert ana.classify_finish(moves) == ana.FINISH_PERSON
     # And the reverse: a person first, the agent last.
     flipped = [
         _move(0, "bo@x.test"),
         _move(10, "bo@x.test", frm="done", to="todo"),
         _move(20, "ana@x.test", via=_VIA, frm="todo"),
     ]
-    assert ana.classify_finish(flipped, had_run=False) == ana.FINISH_AGENT
+    assert ana.classify_finish(flipped) == ana.FINISH_AGENT
+
+
+def test_the_label_is_the_finish_the_window_counts() -> None:
+    """The agent finished in the window. A person reopened and finished it
+    after. The counted finish is the agent's, so the label stays."""
+    moves = [
+        _move(0, "ana@x.test", via=_VIA),
+        _move(10, "bo@x.test", frm="done", to="todo"),
+        _move(20, "bo@x.test", frm="todo"),
+    ]
+    assert ana.classify_finish(moves, until=_at(0)) == ana.FINISH_AGENT
+    assert ana.done_move(moves, until=_at(0)) == moves[0]
+    # The agent work is compared with the counted finish, not the later one.
+    assert ana.classify_finish(
+        [_move(0, "bo@x.test"), _move(30, "bo@x.test", frm="todo")],
+        agent_work=[_at(10)], until=_at(0),
+    ) == ana.FINISH_PERSON
 
 
 def test_the_order_of_the_list_does_not_decide() -> None:
@@ -134,7 +184,15 @@ def test_the_order_of_the_list_does_not_decide() -> None:
         _move(20, "bo@x.test", frm="todo"),
         _move(0, "ana@x.test", via=_VIA),
     ]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_PERSON
+    assert ana.classify_finish(moves) == ana.FINISH_PERSON
+
+
+def test_a_tie_of_time_goes_to_the_higher_id() -> None:
+    """``ORDER BY fa.created_at DESC, fa.id DESC`` in the SQL twin."""
+    low = _move(0, "bo@x.test", id="0a000000-0000-0000-0000-000000000000")
+    high = _move(0, "ana@x.test", via=_VIA, id="FF000000-0000-0000-0000-000000000000")
+    assert ana.done_move([high, low]) == high
+    assert ana.done_move([low, high]) == high
 
 
 def test_a_move_between_two_done_lanes_is_not_a_finish() -> None:
@@ -144,14 +202,15 @@ def test_a_move_between_two_done_lanes_is_not_a_finish() -> None:
         _move(10, "bo@x.test", frm="done", to="done"),
     ]
     assert ana.done_move(moves) == moves[0]
-    assert ana.classify_finish(moves, had_run=False) == ana.FINISH_AGENT
+    assert ana.classify_finish(moves) == ana.FINISH_AGENT
 
 
-def test_no_move_into_done_reads_the_runs_alone() -> None:
-    """A task born in a done lane has no move. No actor is no agent."""
+def test_no_move_into_done_is_a_person() -> None:
+    """A task born in a done lane has no move, so no time to compare work
+    with. No actor is no agent, and the SQL twin's NULL time agrees."""
     assert ana.done_move([]) is None
-    assert ana.classify_finish([], had_run=False) == ana.FINISH_PERSON
-    assert ana.classify_finish([], had_run=True) == ana.FINISH_ASSISTED
+    assert ana.classify_finish([]) == ana.FINISH_PERSON
+    assert ana.classify_finish([], agent_work=_BEFORE) == ana.FINISH_PERSON
 
 
 def test_a_cancel_is_not_a_finish() -> None:
@@ -183,6 +242,11 @@ def test_nobody_holds_an_unassigned_task_with_no_live_run() -> None:
     assert ana.classify_holder(["", None], run_holds=False) is None  # type: ignore[list-item]
 
 
+def test_a_blank_assignee_is_no_assignee_in_both_twins() -> None:
+    assert ana.classify_holder(["  "], run_holds=False) is None
+    assert "btrim(coalesce(hy.assignee, '')) <> ''" in ana.holder_label_sql()
+
+
 # ── The split ────────────────────────────────────────────────────────────────
 
 
@@ -210,7 +274,7 @@ class _FakeDb:
         body = str(sql)
         rows: list[Any] = []
         if "AS label, count(*) AS n" in body:
-            rows = _SPLIT_ROWS if "fh.had_run" in body else _HOLDER_ROWS
+            rows = _SPLIT_ROWS if "fh.worked" in body else _HOLDER_ROWS
         return SimpleNamespace(
             fetchall=lambda: rows,
             scalar=lambda: 0,
@@ -284,10 +348,31 @@ def test_the_sql_twin_names_the_same_prefixes_and_labels() -> None:
 
 
 def test_the_join_takes_the_latest_crossing_into_done() -> None:
-    join = ana.finish_actor_join("c.task_id")
+    join = ana.finish_actor_join("c.task_id", "c.finished_at")
     assert "ORDER BY fa.created_at DESC, fa.id DESC" in join
     assert "IS DISTINCT FROM :done_cat" in join
     assert "fa.deleted_at IS NULL" in join
+
+
+def test_the_join_is_bounded_by_the_counted_finish() -> None:
+    join = ana.finish_actor_join("c.task_id", "c.finished_at")
+    assert "fa.created_at <= c.finished_at" in join
+    assert "finish_actor_join('c.task_id', 'c.finished_at')" in Path(
+        ana.__file__).read_text(encoding="utf-8")
+
+
+def test_agent_assisted_reads_the_one_agent_worked_rule() -> None:
+    """The arm is `AGENT_WORKED_SQL` itself, by text swap, at the time of the
+    done move. No second, unbounded EXISTS over the runs."""
+    join = ana.finish_actor_join("c.task_id", "c.finished_at")
+    assert aw.agent_worked_sql("c.task_id", "fm.done_at") in join
+    assert "aw_task" not in join and "aw_before" not in join
+    assert "pm_agent_runs fr" not in join and "had_run" not in join
+    # The swap changes the two parameters and nothing else.
+    swapped = aw.agent_worked_sql("X_TASK", "X_BEFORE")
+    assert swapped == aw.AGENT_WORKED_SQL.replace(
+        "CAST(:aw_task AS uuid)", "X_TASK",
+    ).replace("CAST(:aw_before AS timestamptz)", "X_BEFORE")
 
 
 def test_the_labels_read_the_scope_of_the_counts() -> None:
@@ -305,3 +390,11 @@ def test_one_module_reads_via_for_the_label() -> None:
         text = path.read_text(encoding="utf-8")
         hits += [path.name] * len(re.findall(r"->>\s*'via'", text))
     assert hits == ["analytics.py"], hits
+
+
+def test_the_report_runs_the_split_once() -> None:
+    """`finished` and `throughput` share one split in `render_body`."""
+    from gateway.routes.projects import reports
+
+    src = Path(reports.__file__).read_text(encoding="utf-8")
+    assert src.count("await actor_split_body(") == 1

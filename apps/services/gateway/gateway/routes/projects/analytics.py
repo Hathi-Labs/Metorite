@@ -45,7 +45,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
 from gateway.capacity import absences_for, horizon_window
 from gateway.routes.projects.agent_dispatch import AGENT_PREFIX
-from gateway.routes.projects.agent_worked import MCP_VIA_PREFIX
+from gateway.routes.projects.agent_worked import MCP_VIA_PREFIX, agent_worked_sql
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -1058,7 +1058,9 @@ def _hours(value: Any) -> float | None:
 
 #: A done task whose move to done came from an agent.
 FINISH_AGENT = "agent_finished"
-#: A done task that held an agent run, and that a person moved to done.
+#: A done task that an agent worked BEFORE the done move (the one rule of
+#: `agent_worked.py`: a run of any status, or an act through MCP), and that a
+#: person, a workflow or GitHub moved to done.
 FINISH_ASSISTED = "agent_assisted"
 #: Every other done task.
 FINISH_PERSON = "person"
@@ -1076,13 +1078,18 @@ HOLDER_KEYS: tuple[str, ...] = (HOLDER_AGENT, HOLDER_PERSON, HOLDER_NONE)
 
 
 class StatusMove(NamedTuple):
-    """One `status_change` row of a task, as the Python twin reads it."""
+    """One `status_change` row of a task, as the Python twin reads it.
+
+    ``id`` breaks a tie of ``at``, as ``fa.id DESC`` does in SQL. A Postgres
+    uuid sorts by its bytes, and that is the order of its lower-case text.
+    """
 
     at: Any
     by: str | None
     via: str | None
     from_category: str | None
     to_category: str | None
+    id: str = ""
 
 
 def is_agent_act(created_by: str | None, via: str | None) -> bool:
@@ -1100,39 +1107,57 @@ def is_agent_act(created_by: str | None, via: str | None) -> bool:
 
 
 def done_move(
-    moves: Iterable[StatusMove], *, done_category: str = COMPLETED_CATEGORY,
+    moves: Iterable[StatusMove], *, until: Any = None,
+    done_category: str = COMPLETED_CATEGORY,
 ) -> StatusMove | None:
-    """The LATEST move into the done category, or None.
+    """The LATEST move into the done category at or before ``until``, or None.
 
-    A move between two done lanes is not a move into done, so a tidy-up after
-    the finish does not take the label. A reopened task that was finished
-    again takes the label of its last finish. :func:`finish_actor_join` is
-    the SQL twin.
+    ``until`` is the completion that the window counts (`cyc.finished_at`).
+    So a reopen and a new finish after it do not change the label of a
+    finish that a saved report already counted. ``None`` reads the whole
+    history. A move between two done lanes is not a move into done, so a
+    tidy-up does not take the label. :func:`finish_actor_join` is the SQL
+    twin, and a tie of time goes to the higher id in both.
     """
     into = [
         m for m in moves
         if m.to_category == done_category and m.from_category != done_category
+        and (until is None or m.at <= until)
     ]
-    return max(into, key=lambda m: m.at) if into else None
+    return max(into, key=lambda m: (m.at, str(m.id).lower())) if into else None
 
 
 def finish_label(
-    done_by: str | None, done_via: str | None, *, had_run: bool,
+    done_by: str | None, done_via: str | None, *, worked: bool,
 ) -> str:
-    """The label of a done task, from its done move and its runs (§6.8 F)."""
+    """The label of a done task, from its done move (§6.8 F).
+
+    ``worked`` is `agent_worked`'s rule at the time of that move.
+    """
     if is_agent_act(done_by, done_via):
         return FINISH_AGENT
-    if had_run:
+    if worked:
         return FINISH_ASSISTED
     return FINISH_PERSON
 
 
-def classify_finish(moves: Iterable[StatusMove], *, had_run: bool) -> str:
-    """The label of a done task, from its status moves and its runs."""
-    move = done_move(moves)
+def classify_finish(
+    moves: Iterable[StatusMove], *, agent_work: Iterable[Any] = (),
+    until: Any = None,
+) -> str:
+    """The label of a done task, from its status moves and its agent work.
+
+    ``agent_work`` holds the ``created_at`` of each run of the task (any
+    status, a queued run too) and of each of its acts through MCP. That is
+    the rule of `agent_worked.AGENT_WORKED_SQL`. Only work strictly BEFORE
+    the done move counts. A task with no move into done has no time to
+    compare, so it is ``person``, as the SQL twin gives.
+    """
+    move = done_move(moves, until=until)
     if move is None:
-        return finish_label(None, None, had_run=had_run)
-    return finish_label(move.by, move.via, had_run=had_run)
+        return FINISH_PERSON
+    worked = any(at < move.at for at in agent_work)
+    return finish_label(move.by, move.via, worked=worked)
 
 
 def classify_holder(assignees: Iterable[str], *, run_holds: bool) -> str | None:
@@ -1140,9 +1165,11 @@ def classify_holder(assignees: Iterable[str], *, run_holds: bool) -> str | None:
 
     An agent holds the task when an open run keeps it (the lease of
     `filters.holder_free`) or when an assignee is ``agent:<name>``. Else a
-    person holds it when it has an assignee. Else nobody holds it.
+    person holds it when it has an assignee. Else nobody holds it. A blank
+    assignee is no assignee, as Load's unassigned bucket reads it, and the
+    SQL twin skips it too.
     """
-    names = [str(a).lower() for a in assignees if a]
+    names = [str(a).lower() for a in assignees if a and str(a).strip()]
     if run_holds or any(n.startswith(AGENT_PREFIX) for n in names):
         return HOLDER_AGENT
     if names:
@@ -1159,33 +1186,40 @@ def _starts_with(column: str, prefix: str) -> str:
     return f"lower(coalesce({column}, '')) LIKE '{prefix}%'"
 
 
-def finish_actor_join(task: str) -> str:
-    """The done move and the runs of the task id ``task``, as two joins.
+def finish_actor_join(task: str, until: str) -> str:
+    """The done move of the task id ``task``, and the agent work before it.
 
-    It adds ``fm.done_by``, ``fm.done_via`` and ``fh.had_run``.
-    :func:`finish_label_sql` reads them. It binds ``:done_cat``.
+    It adds ``fm.done_by``, ``fm.done_via``, ``fm.done_at`` and
+    ``fh.worked``. :func:`finish_label_sql` reads them. It binds
+    ``:done_cat``.
 
-    ⚠️ **The LATEST move into done, over the whole history.** The window
-    decides WHICH tasks finished. This join decides WHO finished each one, by
-    the last finish of the task. A run of any status counts for ``had_run``.
+    ⚠️ **The LATEST move into done at or before ``until``.** ``until`` is the
+    completion that the window counts (`cyc.finished_at`). So the label is
+    the label of the finish the window counts. A reopen and a new finish
+    after it do not change a report that already counted the first finish.
+
+    ``fh.worked`` is `agent_worked.AGENT_WORKED_SQL` itself, by text swap
+    (:func:`agent_worked.agent_worked_sql`), with the time of the done move.
+    So a run or an act through MCP after the finish does not count, and no
+    second copy of the rule exists. No done move gives a NULL time, and then
+    ``worked`` is false.
     """
+    worked = agent_worked_sql(task, "fm.done_at")
     return (
         f" LEFT JOIN LATERAL ("
-        f"   SELECT fa.created_by AS done_by, fa.meta->>'via' AS done_via"
+        f"   SELECT fa.created_by AS done_by, fa.meta->>'via' AS done_via,"
+        f"          fa.created_at AS done_at"
         f"     FROM pm_activities fa"
         f"    WHERE fa.task_id = {task}"
         f"      AND fa.type = 'status_change'"
         f"      AND fa.deleted_at IS NULL"
         f"      AND fa.meta->>'to_category' = :done_cat"
         f"      AND fa.meta->>'from_category' IS DISTINCT FROM :done_cat"
+        f"      AND fa.created_at <= {until}"
         f"    ORDER BY fa.created_at DESC, fa.id DESC"
         f"    LIMIT 1"
         f" ) fm ON TRUE"
-        f" CROSS JOIN LATERAL ("
-        f"   SELECT EXISTS ("
-        f"     SELECT 1 FROM pm_agent_runs fr WHERE fr.task_id = {task}"
-        f"   ) AS had_run"
-        f" ) fh"
+        f" CROSS JOIN LATERAL (SELECT coalesce({worked}, false) AS worked) fh"
     )
 
 
@@ -1195,7 +1229,7 @@ def finish_label_sql() -> str:
         f"CASE WHEN {_starts_with('fm.done_via', MCP_VIA_PREFIX)}"
         f"       OR {_starts_with('fm.done_by', AGENT_PREFIX)}"
         f"     THEN '{FINISH_AGENT}'"
-        f"     WHEN fh.had_run THEN '{FINISH_ASSISTED}'"
+        f"     WHEN fh.worked THEN '{FINISH_ASSISTED}'"
         f"     ELSE '{FINISH_PERSON}' END"
     )
 
@@ -1207,11 +1241,14 @@ def finish_labels_sql(
 
     Built on :func:`cycle_cte_sql`, so the labels describe the tasks that
     Throughput and Finished count. A cancelled task gets no label.
+    ``finished_at`` is the completion the window counts, which bounds the
+    done move that the label reads.
     """
     return (
         f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
-        f" SELECT c.task_id AS task_id, {finish_label_sql()} AS label"
-        f"   FROM cyc c{finish_actor_join('c.task_id')}"
+        f" SELECT c.task_id AS task_id, c.finished_at AS finished_at,"
+        f"        {finish_label_sql()} AS label"
+        f"   FROM cyc c{finish_actor_join('c.task_id', 'c.finished_at')}"
         f"  WHERE c.to_category = :done_cat"
     )
 
@@ -1232,7 +1269,12 @@ def holder_label_sql() -> str:
         "EXISTS (SELECT 1 FROM pm_task_assignees hx WHERE hx.task_id = t.id"
         f" AND {_starts_with('hx.assignee', AGENT_PREFIX)})"
     )
-    any_assignee = "EXISTS (SELECT 1 FROM pm_task_assignees hy WHERE hy.task_id = t.id)"
+    # A blank assignee is no assignee (Load's unassigned bucket), as in the
+    # Python twin.
+    any_assignee = (
+        "EXISTS (SELECT 1 FROM pm_task_assignees hy WHERE hy.task_id = t.id"
+        " AND btrim(coalesce(hy.assignee, '')) <> '')"
+    )
     return (
         f"CASE WHEN NOT ({unheld_clause()}) OR {agent_assignee}"
         f"     THEN '{HOLDER_AGENT}'"

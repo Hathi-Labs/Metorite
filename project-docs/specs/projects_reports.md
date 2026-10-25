@@ -332,8 +332,8 @@ next to each status, as `classify` already does.
 | **Needs help** | NEW. A person with one or more of: a blocked task, a stale task in progress, a waiting item past its date, or the `behind` pill two runs in a row | The `pulse` section (R3) |
 | **Has room** | The `idle` pill, or spare hours above a threshold in the window, and not on leave | `capacity` — exists |
 | **Today's focus** | Tasks in progress, plus tasks due today or tomorrow, plus tasks that the person scheduled today (`scheduled_start`) | The `pulse` section (R3) |
-| **Agent-finished** | A done task whose latest move into done came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>`. `system:workflow:<id>` is not an agent. | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
-| **Agent-assisted** | A done task that held at least one agent run, and that a person finished | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
+| **Agent-finished** | A done task whose finish came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>`. `system:workflow:<id>` is not an agent. The finish is the finish the window counts. | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
+| **Agent-assisted** | A done task that an agent worked before its finish, and that a person, a workflow or GitHub finished. "Worked" is the rule of `agent_worked.AGENT_WORKED_SQL`: a run of any status, a queued run too, or an act through MCP, made before the finish. The finish is the finish the window counts. | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
 | **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since | RA-3, not built |
 | **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more | RA-4, not built |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
@@ -736,8 +736,8 @@ A figure with no known usage shows "unknown", never $0. The panel shows the shar
 
 | Word | Rule |
 |---|---|
-| **Agent-finished** | A done task whose move to done came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>` |
-| **Agent-assisted** | A done task that held at least one agent run, and that a person finished |
+| **Agent-finished** | A done task whose move to done came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>`. The move is the finish the window counts. |
+| **Agent-assisted** | A done task that an agent worked before its finish (a run, or an act through MCP, by the rule of `agent_worked.py`), and that a person, a workflow or GitHub finished. The finish is the finish the window counts. Changed 2026-10-25 in the RA-1 review: the PM replaced "held at least one agent run". |
 | **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since |
 | **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task |
@@ -2058,10 +2058,11 @@ first-name match.
 
 **Built.** The rule has two twins in `analytics.py`. The SQL twin is `finish_actor_join` with `finish_label_sql`, and `holder_label_sql`. The Python twin is `classify_finish` and `classify_holder`.
 
-1. The done label reads the LATEST move into the done category. A move between two done lanes is not a move into done.
-2. An agent holds an open task when a live run keeps it (`NOT filters.unheld_clause`) or when an assignee is `agent:<name>`. Else a person holds it when it has an assignee. Else nobody holds it.
-3. `actor_split` (`agent_finished`, `agent_assisted`, `person`) is on `GET /projects/analytics/throughput`, `GET /projects/analytics/finished` and the `finished` and `throughput` report sections. Its counts add up to the `completed` figure of the same window.
-4. `holder_split` (`agent`, `person`, `none`) is on `GET /projects/analytics/load` and the `load` report section. Its counts add up to `total_tasks`.
+1. The done label reads the latest move into the done category AT OR BEFORE the finish that the window counts (`cyc.finished_at` of `cycle_cte_sql`). So a saved report keeps its label when somebody reopens the task later. A move between two done lanes is not a move into done. A tie of time goes to the higher activity id, in both twins.
+2. `agent_assisted` reads `agent_worked.AGENT_WORKED_SQL` itself, through `agent_worked_sql(task, before)`, with the time of that done move. A run of any status counts, a queued run that never started too, and so does an act through MCP. Work at or after the done move does not count. So a task that GitHub moved to done after an agent worked it through MCP only is `agent_assisted`. A task with no move into done is `person`.
+3. An agent holds an open task when a live run keeps it (`NOT filters.unheld_clause`) or when an assignee is `agent:<name>`. Else a person holds it when it has an assignee that is not blank. Else nobody holds it.
+4. `actor_split` (`agent_finished`, `agent_assisted`, `person`) is on `GET /projects/analytics/throughput`, `GET /projects/analytics/finished` and the `finished` and `throughput` report sections. Its counts add up to the `completed` figure of the same window. A render runs the split query once for the two sections.
+5. `holder_split` (`agent`, `person`, `none`) is on `GET /projects/analytics/load` and the `load` report section. Its counts add up to `total_tasks`.
 
 Fences: `tests/unit/test_projects_analytics_actor.py` (hermetic) and `tests/unit/test_projects_analytics_actor_r8.py` (R8).
 

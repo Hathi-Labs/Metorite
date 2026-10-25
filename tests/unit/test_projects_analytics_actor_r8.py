@@ -9,8 +9,11 @@ database with the whole ladder and two organizations:
 
 * **D1** each seeded done task carries the label of the table ``DONE``: an
   agent through MCP (``meta.via``), an in-app agent (``agent:<name>``), a
-  person after an agent run, a person alone, a workflow, a reopened task and
-  a task tidied into a second done lane. The Python twin agrees on each task,
+  person after an agent run, a person after a queued run, a GitHub done after
+  an MCP act, a person with a run that came after the finish, a person alone,
+  a workflow, a task reopened from a finish before the window, a task that a
+  person reopened and finished again after the agent's counted finish, and a
+  task tidied into a second done lane. The Python twin agrees on each task,
   from the rows in the database.
 * **D2** ``actor_split`` of ``/analytics/finished`` and
   ``/analytics/throughput`` counts those labels, and adds up to the
@@ -40,6 +43,10 @@ suite.
   -> ``test_h1_each_open_task_carries_its_holder``.
 * R5. ``load_body`` passes ``scope_sql`` to ``holder_split_body`` in place of
   ``open_where`` -> ``test_v1_a_member_reads_only_what_they_see`` and H2.
+* R6. ``finish_actor_join`` drops ``fa.created_at <= {until}`` -> D1 (the
+  ``finished_again`` task) and D2.
+* R7. ``finish_actor_join`` passes ``now()`` as the time of
+  ``agent_worked_sql`` -> D1 (the ``run_after`` task).
 
 The class carries ``_DB_GATE`` through ``pytestmark``, so the suite skips
 where no ladder URL is set (the deploy run has no ladder database), and its
@@ -80,11 +87,20 @@ DONE = {
     "mcp": "agent_finished",
     "in_app": "agent_finished",
     "assisted": "agent_assisted",
+    "queued_run": "agent_assisted",
+    "github_after_mcp": "agent_assisted",
+    "run_after": "person",
     "person": "person",
     "workflow": "person",
-    "reopened": "person",
+    # The agent finished it before the window through MCP, so an agent
+    # worked it before the person's counted finish.
+    "reopened": "agent_assisted",
+    "finished_again": "agent_finished",
     "tidied": "agent_finished",
 }
+
+#: A finish before the 12-week window of the routes, in minutes.
+_BEFORE_WINDOW = 100 * 24 * 60
 
 #: Each open task and its live holder. None is nobody.
 OPEN = {
@@ -148,18 +164,47 @@ def _move(
              "m": json.dumps(meta), "ago": minutes_ago})
 
 
+def _mcp_act(w: Any, tid: str, *, minutes_ago: int) -> None:
+    """A comment that an agent wrote through MCP, at a chosen time."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_activities (organization_id, task_id, type, created_by, "
+            "body, meta, created_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), "
+            "'comment', :by, 'working', CAST(:m AS jsonb), "
+            "now() - make_interval(mins => :ago))"),
+            {"o": w.p.org_a, "t": tid, "by": A_EMAIL,
+             "m": json.dumps({"via": b.VIA}), "ago": minutes_ago})
+
+
 def _seed_done(w: Any) -> dict[str, str]:
     t = {name: _task(w, "done") for name in DONE}
+    hour_ago = "now() - interval '1 hour'"
     _move(w, t["mcp"], A_EMAIL, via=b.VIA)
     _move(w, t["in_app"], IN_APP)
-    b.run(w.p, w.p.org_a, t["assisted"], A_EMAIL, "completed")
+    b.run(w.p, w.p.org_a, t["assisted"], A_EMAIL, "completed", created=hour_ago)
     _move(w, t["assisted"], PERSON)
+    # A queued run that never started counts, as `AGENT_WORKED_SQL` reads it.
+    b.run(w.p, w.p.org_a, t["queued_run"], A_EMAIL, "created", created=hour_ago)
+    _move(w, t["queued_run"], PERSON)
+    # The agent worked through MCP only, and the merge moved the task to done.
+    _mcp_act(w, t["github_after_mcp"], minutes_ago=30)
+    _move(w, t["github_after_mcp"], "system:github", via="github")
+    # The run came after the finish, so it did not help that finish.
+    _move(w, t["run_after"], PERSON, minutes_ago=10)
+    b.run(w.p, w.p.org_a, t["run_after"], A_EMAIL, "completed")
     _move(w, t["person"], PERSON)
     _move(w, t["workflow"], WORKFLOW)
-    # The agent finished, a person reopened, a person finished again.
-    _move(w, t["reopened"], A_EMAIL, via=b.VIA, minutes_ago=30)
+    # The agent finished before the window, a person reopened and finished it
+    # in the window. The window counts the person's finish, and the agent's
+    # MCP finish before it is agent work, so the task is agent_assisted.
+    _move(w, t["reopened"], A_EMAIL, via=b.VIA, minutes_ago=_BEFORE_WINDOW)
     _move(w, t["reopened"], PERSON, frm="done", to="todo", minutes_ago=20)
     _move(w, t["reopened"], PERSON, minutes_ago=10)
+    # The agent finished in the window, a person reopened and finished it
+    # again after. The window counts the agent's finish, so the label stays.
+    _move(w, t["finished_again"], A_EMAIL, via=b.VIA, minutes_ago=30)
+    _move(w, t["finished_again"], PERSON, frm="done", to="todo", minutes_ago=20)
+    _move(w, t["finished_again"], PERSON, minutes_ago=10)
     # The agent finished, and a person moved it to a second done lane.
     _move(w, t["tidied"], A_EMAIL, via=b.VIA, minutes_ago=20)
     _move(w, t["tidied"], PERSON, frm="done", to="done", minutes_ago=10)
@@ -206,23 +251,29 @@ async def _get(w: Any, user: Any, path: str) -> dict[str, Any]:
     return got.json()
 
 
-def _python_finish(w: Any, tid: str) -> str:
-    """The Python twin, from the rows in the database."""
+def _python_finish(w: Any, tid: str, until: Any) -> str:
+    """The Python twin, from the rows in the database. ``until`` is the
+    finish that the window counts (the SQL row's ``finished_at``)."""
     from gateway.routes.projects import analytics as ana
 
     with w.p.admin_engine.begin() as c:
         moves = [
             ana.StatusMove(r.created_at, r.created_by, r.meta.get("via"),
-                           r.meta.get("from_category"), r.meta.get("to_category"))
+                           r.meta.get("from_category"), r.meta.get("to_category"),
+                           str(r.id))
             for r in c.execute(text(
-                "SELECT created_at, created_by, meta FROM pm_activities"
+                "SELECT id, created_at, created_by, meta FROM pm_activities"
                 " WHERE task_id = CAST(:t AS uuid) AND type = 'status_change'"
                 " AND deleted_at IS NULL"), {"t": tid})
         ]
-        had_run = c.execute(text(
-            "SELECT EXISTS (SELECT 1 FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid))"),
-            {"t": tid}).scalar_one()
-    return ana.classify_finish(moves, had_run=bool(had_run))
+        # The rows of `agent_worked`'s two halves: each run, and each act
+        # through MCP. The twin compares their times with the done move.
+        work = [r.created_at for r in c.execute(text(
+            "SELECT created_at FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)"
+            " UNION ALL SELECT created_at FROM pm_activities"
+            "  WHERE task_id = CAST(:t AS uuid) AND meta->>'via' LIKE 'mcp:%'"),
+            {"t": tid})]
+    return ana.classify_finish(moves, agent_work=work, until=until)
 
 
 def _python_holder(w: Any, tid: str) -> str | None:
@@ -251,12 +302,15 @@ class TestDoneLabels:
             rows = c.execute(text(ana.finish_labels_sql(
                 "t.project_id = CAST(:pid AS uuid)")), _params(w)).fetchall()
         labels = {str(r.task_id): r.label for r in rows}
+        counted = {str(r.task_id): r.finished_at for r in rows}
         assert _by_name(t, labels) == DONE
-        assert {name: _python_finish(w, tid) for name, tid in t.items()} == DONE
+        assert {
+            name: _python_finish(w, tid, counted[tid]) for name, tid in t.items()
+        } == DONE
 
     async def test_d2_the_routes_count_the_labels(self, w):
         _seed_done(w)
-        want = {"agent_finished": 3, "agent_assisted": 1, "person": 3}
+        want = {"agent_finished": 4, "agent_assisted": 4, "person": 3}
         pid = w.root["id"]
         fin = await _get(w, w.a, f"/projects/analytics/finished?project_id={pid}")
         assert fin["actor_split"] == want

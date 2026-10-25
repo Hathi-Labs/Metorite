@@ -934,7 +934,14 @@ async def render_body(
     ).one()
 
     sections: dict[str, Any] = {}
+    # WS-27bn RA-1. `finished` and `throughput` read ONE split: the same
+    # predicate, binds and window, so the render runs the query once.
+    actor_split: dict[str, int] | None = None
     for name in config["sections"]:
+        if name in ("finished", "throughput") and actor_split is None:
+            actor_split = await actor_split_body(
+                db, past_where, params, skip_current_week=skip,
+            )
         if name == "finished":
             rows = (
                 await db.execute(
@@ -967,9 +974,7 @@ async def render_body(
                 "total_completed": int(totals.completed or 0),
                 "total_cancelled": int(totals.cancelled or 0),
                 # WS-27bn RA-1. Who finished `total_completed`, by label.
-                "actor_split": await actor_split_body(
-                    db, past_where, params, skip_current_week=skip,
-                ),
+                "actor_split": dict(actor_split or {}),
             }
         elif name == "throughput":
             # ⚠️ `weekly_sql` has no `skip_current_week` arm, and that is
@@ -1011,9 +1016,7 @@ async def render_body(
                 "no_start": int(totals.no_start or 0),
                 "cancelled": int(totals.cancelled or 0),
                 # WS-27bn RA-1. Who finished `completed`, over the same window.
-                "actor_split": await actor_split_body(
-                    db, past_where, params, skip_current_week=skip,
-                ),
+                "actor_split": dict(actor_split or {}),
             }
         elif name == "load":
             # WS-27bn R5a. The Load route's OWN body, imported, as
