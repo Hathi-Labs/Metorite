@@ -890,10 +890,24 @@ The orchestrator's persona carries one paragraph for Knowledge:
 > When the member asks about the company, its work, its customers, its
 > mail or its policies, call `search_company` first. Answer from what it
 > returns, and cite each item you used. When it returns nothing, say that
-> the company's records hold nothing on it.
+> the company's records hold nothing on it. A request to change something
+> in one app, such as an email to write or send, a task to make or a record
+> to update, is work in that app. Give it at once to that app's specialist,
+> or to your own tool for it, with no search first. The specialist or the
+> tool finds the email, the contact or the record itself.
+
+"Your own tool" covers a write that the orchestrator holds itself, such as
+`propose_page` and `propose_edit` for a Knowledge page (KB-5a). Once WS-67
+loads tool packs (OA-7), every app's writes are such tools.
 
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
+
+The sentences on work in one app came from the chat speed review
+(owner go, 2026-10-25). Before them, a request to write an email searched
+first and then delegated, and the email agent searched again. In
+production that cost one model round and a search, about 8.7 s. §20
+already keeps delegation for writes and for deep work in one app.
 
 `search_company` asks Knowledge with the other apps (§20). A specialist
 that needs pages only calls `search_knowledge`.
