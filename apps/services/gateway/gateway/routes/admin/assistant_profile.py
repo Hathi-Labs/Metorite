@@ -87,9 +87,8 @@ from acb_auth import UserContext, get_current_user
 # models, the write SQL and the routes.
 from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     ALIAS_MAX,
-    AREAS,
-    INTERVIEW_STATES,
     ALIASES_MAX,
+    AREAS,
     EMAIL_MAX,
     FACT_KINDS,
     FACT_MAX,
@@ -97,6 +96,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     FACTS_MAX,
     FORMALITY,
     GREETING,
+    INTERVIEW_STATES,
     LANGUAGE_MAX,
     LAST_CHANGE,
     LENGTH,
