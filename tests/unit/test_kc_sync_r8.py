@@ -32,6 +32,12 @@ discovery stores a token taken before its listing in the transaction that
 sets ``ready``, a capped source skips a change inside an unexplored folder,
 a disconnect wins the race with a page and with a cursor write, and the
 migration replays with no change.
+
+KC-3h, the lock order of ``engine.py``: the ``test_the_lock_order_*`` tests run
+two real paths at the same time (a removal-only page, a run close, a
+disconnect and a re-consent, in four pairs). Each pair runs in both orders,
+and each proves no DeadlockDetected and the right end state. Each test went
+red on the old order before the fix.
 """
 
 from __future__ import annotations

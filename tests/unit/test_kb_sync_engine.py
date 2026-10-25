@@ -26,7 +26,10 @@ Mutations this file catches (R7):
 * the cursor write leaves the page transaction -> ``TestTheEnginePage``;
 * the forced refresh runs twice, or never -> ``TestTheUnauthorizedRetry``;
 * a state other than ``ready`` becomes due -> ``TestTheDueRule``;
-* the start function stops reading the flag -> ``TestTheSwitch``.
+* the start function stops reading the flag -> ``TestTheSwitch``;
+* a write transaction of the engine or of discovery takes a child row before
+  the source lock, the connection row after the source row, or a weak source
+  lock that becomes an UPDATE (KC-3h) -> ``TestTheLockOrder``.
 """
 from __future__ import annotations
 
