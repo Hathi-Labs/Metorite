@@ -27,9 +27,11 @@ and an absent source.
 **The mutations (R7).** Each turned the named test red. Commit before each.
 
 * M1. ``loop._CLAIM_SQL``: drop ``FOR UPDATE SKIP LOCKED``.
-  ``test_r8_two_workers_never_fire_one_row_twice``. (Drop ``SKIP LOCKED``
-  alone and it stays green, by design: the lock and the due predicate of
-  the one statement still hold the second worker, which then skips.)
+  ``test_r8_two_workers_never_fire_one_row_twice``: 6 rows fire 12 times.
+  Drop ``SKIP LOCKED`` alone and the same test fails on its other check:
+  the second worker waits on the lock, so the two workers never hold two
+  claims at once. No row fires twice then, because the lock and the due
+  predicate of the one statement still hold.
 * M2. ``slot.quiet``: answer False.
   ``test_r8_no_step_2_to_5_lands_in_quiet_hours``.
 * M3. ``loop.run_org``: skip no member (drop the ``_is_active`` check).
