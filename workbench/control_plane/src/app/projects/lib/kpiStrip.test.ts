@@ -171,7 +171,8 @@ describe("the six tiles", () => {
   it("the merge rate shows its trend and no 100% target (§6.8 E4)", () => {
     const t = overviewTiles(body())[4];
     expect(t.display).toBe("80%");
-    expect(t.detail).toEqual(["8 merged · 2 closed · up from 70%"]);
+    expect(t.label).toBe("Agent PR merge rate");
+    expect(t.detail).toEqual(["8 merged · 2 closed in 14 days · up from 70%"]);
     const words = `${t.label} ${t.title} ${t.detail.join(" ")}`;
     expect(words).not.toMatch(/100\s*%/);
     expect(words).not.toMatch(/\b(target|goal|aim)\b/i);

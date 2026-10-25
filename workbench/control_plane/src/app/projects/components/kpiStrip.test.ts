@@ -161,7 +161,7 @@ describe("the KPI strip in the live Overview", () => {
       "Finished this week",
       "Median cycle time",
       "Agents working now",
-      "Agent PR merge rate, 14 days",
+      "Agent PR merge rate",
       "Cost per finished task",
     ]) {
       expect(out).toContain(`aria-label="How ${label} is counted"`);

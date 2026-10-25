@@ -163,9 +163,13 @@ function mergeTile(kpis: KpisReport): KpiTile {
   const trend = trendLine(m);
   return {
     key: "merge",
-    label: `Agent PR merge rate, ${m.days} days`,
+    // The window sits in the split line, not the label. "Agent PR merge
+    // rate, 14 days" broke in two beside its help button at 390 px.
+    label: "Agent PR merge rate",
     display: m.rate === null ? "No PR closed" : percent(m.rate),
-    detail: [`${m.merged} merged · ${m.closed} closed${trend ? ` · ${trend}` : ""}`],
+    detail: [
+      `${m.merged} merged · ${m.closed} closed in ${m.days} days${trend ? ` · ${trend}` : ""}`,
+    ],
     title: TILE_RULES.merge(m.days),
   };
 }
