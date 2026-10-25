@@ -122,7 +122,9 @@ describe("OutlookPanel — the forecast by count", () => {
     // The explicit ramp slot, never a raw palette class. RA-6 fix round 1:
     // the 50% part is solid, and the 85% part an outline in the full hue.
     expect(out).toContain("bg-cat-10");
-    expect(out).toMatch(/border-2 border-current text-cat-10/);
+    // The bar's 85% part, and not only the legend dot (fix round 1).
+    expect(out).toContain('class="absolute inset-y-0 rounded-r-full border-2 border-current text-cat-10"');
+    expect(out).not.toMatch(/opacity-50 bg-cat-10/);
     // The rule is a button, so a keyboard and a touch reach it.
     expect(out).toContain('aria-label="How the forecast is counted"');
   });
