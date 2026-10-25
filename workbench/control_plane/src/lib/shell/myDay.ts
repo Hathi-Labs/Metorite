@@ -196,7 +196,7 @@ export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()
 
 /** The member-facing name of each source app. */
 export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
-  tasks: "My Tasks",
+  tasks: "My work",
   approvals: "Approvals",
   projects: "Projects",
   email: "Email",

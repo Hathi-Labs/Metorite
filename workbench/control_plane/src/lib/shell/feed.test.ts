@@ -248,7 +248,7 @@ describe("1. the answer of §14.1a", () => {
 
   it("names Calendar, which the needs view does not know", () => {
     expect(sourceLine({ app: "calendar", kind: "block_soon" })).toBe("Calendar · Starts soon");
-    expect(sourceLine({ app: "tasks", kind: "overdue" })).toBe("My Tasks · Overdue");
+    expect(sourceLine({ app: "tasks", kind: "overdue" })).toBe("My work · Overdue");
     expect(sourceLine({ app: "email", kind: "something_new" })).toBe("Email");
     expect(feedAppIcon("calendar")).toBe("Calendar");
     expect(feedFailedLines({ calendar: "failed", email: "failed" })).toEqual([
@@ -592,7 +592,7 @@ describe("4. the acts go through the owning app", () => {
     // link, `.cc-link` (visual review, item 7).
     expect(html).toMatch(/<h2[^>]*><a[^>]*href="\/projects\?task=9b2e"[^>]*>Send the Q3 BOM to purchase<\/a><\/h2>/);
     expect(html).toMatch(/<h2[^>]*><a class="cc-link[ "]/);
-    expect(html).toContain("My Tasks · Overdue");
+    expect(html).toContain("My work · Overdue");
     expect(html).toContain("Due Monday. 2 days late.");
     // The tap act is the house Button, marked as a row act.
     expect(html).toMatch(/<button[^>]*data-row-act=""[^>]*aria-label="Done: Send the Q3 BOM to purchase"/);
@@ -1140,7 +1140,7 @@ describe("9. the life of a card (MD-2b)", () => {
     const seen = html(card("tasks:s1", "needs_you", { ...STATE, state: "seen" }));
     expect(seen).not.toContain("data-feed-new");
     const updated = html(card("tasks:s1", "needs_you", { ...STATE, updated: true }));
-    expect(updated).toMatch(/My Tasks · Overdue · <span[^>]*data-feed-mark="">Updated<\/span>/);
+    expect(updated).toMatch(/My work · Overdue · <span[^>]*data-feed-mark="">Updated<\/span>/);
     const open = html(card("tasks:s1", "needs_you", { ...STATE, state: "seen", still_open: true }));
     expect(open).toMatch(/data-feed-mark="">Still open<\/span>/);
     expect(seen).not.toContain("data-feed-mark");
@@ -1281,8 +1281,8 @@ describe("9. the life of a card (MD-2b)", () => {
     }
     // A kind with no tap act has no entry, so a done keeps its card.
     expect(actLeavesCard({ kind: "overdue", folded: ["colleague_out"] }, { act: "done" })).toBe(false);
-    expect(sourceLine({ app: "tasks", kind: "waiting_quiet" })).toBe("My Tasks · Waiting too long");
-    expect(sourceLine({ app: "tasks", kind: "absent_on_due" })).toBe("My Tasks · Due while you are away");
+    expect(sourceLine({ app: "tasks", kind: "waiting_quiet" })).toBe("My work · Waiting too long");
+    expect(sourceLine({ app: "tasks", kind: "absent_on_due" })).toBe("My work · Due while you are away");
     expect(sourceLine({ app: "chat", kind: "agent_asks" })).toBe("Chat · Waiting for your answer");
   });
 
@@ -1301,7 +1301,7 @@ describe("9. the life of a card (MD-2b)", () => {
   it("(e) ends a capped group with Show all in the app", () => {
     const g = { cards: [card("tasks:t1", "needs_you"), card("calendar:b", "needs_you", { app: "calendar" })] };
     expect(cappedLinks(g, ["tasks", "calendar"])).toEqual([
-      { app: "tasks", label: "Show all in My Tasks", href: "/projects" },
+      { app: "tasks", label: "Show all in My work", href: "/projects?app=my-today" },
       { app: "calendar", label: "Show all in Calendar", href: "/calendar" },
     ]);
     expect(cappedLinks(g, [])).toEqual([]);
