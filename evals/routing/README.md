@@ -57,6 +57,21 @@ and a delegation loads two. `harness.py` is a harness for many agents. It reuses
   holds every pane. The real read is `acb_auth.resolve_access`. The harness
   also turns `CHAT_FIRST_TOOLS` on, because production ships the tool dark.
 
+WS-67 OA-5 adds three things to the harness, for the measure of tool packs
+(`evals/one_assistant_measure`). It is the one harness for that work too
+(H-412):
+
+- `model_calls`: a tap on each agent's client records each model request,
+  with its time, its tokens and the usage of the response.
+- `after_build`: a hook for each agent name. It changes the agents that the
+  real factory built, and never the factory.
+- `RoutingHarness(live=True, real_specialists=True)`: each specialist runs
+  and asks the real model. Each host send that does not start with a
+  prefix of `allow` fails, and `sent` records it.
+
+`drive` also gives the time to the first answer text and the total time of
+each turn.
+
 Two reads still try the database: the member's access and the tier
 overrides. With no database, as in CI, each one fails closed and logs a
 warning.

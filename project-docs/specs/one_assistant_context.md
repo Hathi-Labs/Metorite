@@ -1,10 +1,27 @@
 # One assistant: context that survives, and tool packs
 
 **Status:** ✅ ACTIVE (2026-10-25). Board: **WS-67**. Decision: **D116**.
-OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-3 to
-OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait for OA-6.
-Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1) to #455
-(OA-10).
+OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-5 is
+BUILT (2026-10-25, branch `ws67-oa5-measure-mt-4cd6b9f1`): the report is
+`docs/one_assistant_measure_2026-10-25.md`. OA-3 and OA-4 are dispatchable.
+
+OA-6 is an owner gate, and its input is now ready. OA-7 to OA-10 wait for
+OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1) to
+#455 (OA-10).
+
+**As built, OA-5.** `evals/one_assistant_measure` runs 13 email chats (18
+turns) through the one harness of the routing eval, two ways. One way
+delegates to the email assistant, as today. The other way is an eval-only
+tool pack. Fence: `tests/unit/test_one_assistant_measure.py`.
+
+The live run of 2026-10-25 ran 3 times on each arm. The arms passed 51 of
+54 turns (delegation) and 52 of 54 (pack). The median turn took 22.6 s and
+10.0 s, and the pack cost half as much. The Navy shape passed 6 of 6 on
+both arms, so no answer named CB6 or CB7 as a part.
+
+The measure did not read `agent.run_timing` or `usage_event`, because only
+the gateway and the Console write them. The harness timed each turn and
+priced each call instead.
 
 **As built, OA-1 and OA-2.** `acb_skills/handoff.py` owns what crosses a
 handoff. The top-level run binds `member_turns`: the member's typed words of
@@ -17,8 +34,8 @@ four batch sites call it. The tier question reads the task only
 (`task_of`). Fences: `tests/unit/test_handoff_words.py` and
 `evals/trajectories/test_handoff_words_trajectory.py`. Open: a steer that
 the gateway replays after a run died is in neither the history nor the
-typed words, so it does not reach the head. The live halves of the
-acceptance ("no CB6" in the answer, the reply marks) belong to OA-5.
+typed words, so it does not reach the head. OA-5 measured the live half of
+"no CB6" (above). It did not check the reply marks of OA-2.
 
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
 "specialists behind it" changes to "tool packs in it" for conversational

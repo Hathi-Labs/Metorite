@@ -514,6 +514,9 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     data = {k: v for k, v in parts[0].items() if k not in ("rows", "summary", "stopped")}
     data["rows"] = [r for p in parts for r in p["rows"]]
     data["dropped"] = [d for p in parts for d in p.get("dropped") or []]
+    # Rows that a person took out of a chunk, with the reason. The report
+    # names them, so a reader sees what the numbers do not hold.
+    data["replaced"] = [d for p in parts for d in p.get("replaced") or []]
     data["stopped"] = [p["stopped"] for p in parts if p.get("stopped")]
     data["chunks"] = len(parts)
     data["spent_usd"] = max(float(p.get("spent_usd") or 0.0) for p in parts)
