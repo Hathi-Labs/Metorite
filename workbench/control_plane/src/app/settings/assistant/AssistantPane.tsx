@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
+import { saveBlob } from "@/lib/export";
 
 import {
   CAPS,
@@ -41,6 +42,7 @@ import {
   deleteAlias,
   deleteFact,
   errorText,
+  fetchExport,
   fetchProfile,
   forgetAll,
   mergeAddress,
@@ -55,6 +57,7 @@ import {
   sourceLabel,
   type Address,
   type Alias,
+  type ExportFormat,
   type Fact,
   type FactKind,
   type Profile,
@@ -74,6 +77,8 @@ export interface PaneHandlers {
   onDeleteAlias: (id: string) => Promise<boolean>;
   onForget: () => void;
   onRetry: () => void;
+  /** Download the member's own profile (PZ-9). */
+  onExport: (format: ExportFormat) => Promise<boolean>;
 }
 
 export interface AssistantPaneViewProps extends PaneHandlers {
@@ -102,6 +107,7 @@ export const NO_HANDLERS: PaneHandlers = {
   onDeleteAlias: noop,
   onForget: () => {},
   onRetry: () => {},
+  onExport: noop,
 };
 
 function Section({
@@ -635,6 +641,32 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <FactsSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
       <Section
+        title="Download my profile"
+        description="A copy of everything on this page, for you to keep. It holds nothing about anybody else."
+      >
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Download"
+            loading={v.busy["export-json"]}
+            onClick={() => v.onExport("json")}
+          >
+            Download as JSON
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Download"
+            loading={v.busy["export-text"]}
+            onClick={() => v.onExport("text")}
+          >
+            Download as text
+          </Button>
+        </div>
+        <RowError text={v.errors["export-json"] || v.errors["export-text"]} />
+      </Section>
+      <Section
         title="Forget everything"
         description="Clears every setting, fact and name above at once. You cannot undo this."
       >
@@ -744,6 +776,11 @@ export default function AssistantPane() {
       }),
     onForget: () => setConfirmForget(true),
     onRetry: () => void load(),
+    onExport: (format) =>
+      run(`export-${format}`, async () => {
+        const file = await fetchExport(format);
+        saveBlob(file.body, file.filename);
+      }),
   };
 
   return (

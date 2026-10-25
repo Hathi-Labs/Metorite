@@ -160,4 +160,30 @@ describe("/api/auth/me/assistant-profile", () => {
     expect((await address.GET(req("/address", "GET"))).status).toBe(401);
     expect(asked).toHaveLength(0);
   });
+
+  // PZ-9. Mutation: drop the header pass-through in the relay, and the
+  // filename check fails. Forward the raw query, and the "evil" case fails.
+  it("GET /export forwards the format and passes the download headers through", async () => {
+    stub(() => new Response("Your assistant profile\n", {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="assistant-profile.txt"',
+        "Cache-Control": "no-store",
+      },
+    }));
+    const exp = await import("./export/route");
+    const res = await exp.GET(req("/export?format=text", "GET"));
+    expect(res.status).toBe(200);
+    expect(asked[0].url).toBe(`${GW}/export?format=text`);
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="assistant-profile.txt"');
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    expect(await res.text()).toBe("Your assistant profile\n");
+    await exp.GET(req("/export?format=evil&email=b@example.com", "GET"));
+    expect(asked[1].url).toBe(`${GW}/export`);
+    signedIn = false;
+    expect((await exp.GET(req("/export", "GET"))).status).toBe(401);
+    expect(asked).toHaveLength(2);
+  });
 });
