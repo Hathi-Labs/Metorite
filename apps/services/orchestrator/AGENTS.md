@@ -133,6 +133,14 @@ and streams chat responses as AG-UI events.
    - `_PROFILE_CACHE` keeps the block per org and member for 60 s, and caches a miss. `acb_common.assistant_profile` renders it, at most 6,000 characters.
    - Fences: `tests/unit/test_executor_profile_block.py` and `tests/unit/test_executor_profile_block_r8.py` (R8).
 
+25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (WS-67 OA-4, `project-docs/specs/one_assistant_context.md` §4).
+   - `run_agent_stream` awaits `_prime_chat_constraints` once, after `_prime_email_context`. Only the agent `orchestrator` gets it, and only with `CHAT_CONSTRAINTS` on.
+   - It needs a solo room and a verified member (`_email_ctx_member`), an org, and the member of the run binding. Then it binds the list and `chat_constraints.OPEN`, which opens `keep_correction` and `drop_correction` for this run.
+   - `_context_preamble_parts` puts the block after the email working set. The block reads the run binding and the process cache, never Redis.
+   - A delegated run inherits the list (`_inherited_chat_constraints`), as it inherits `member_turns`. It never opens the tools.
+   - The batch path (WhatsApp, D115) opens nothing, so there the tools refuse and no block shows.
+   - Fences: `tests/unit/test_chat_constraints.py` and `evals/trajectories/test_chat_constraints_trajectory.py`.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature
