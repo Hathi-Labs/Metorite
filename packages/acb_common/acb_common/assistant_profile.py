@@ -96,6 +96,9 @@ DUE_HOURS = 24
 WAIT_DAYS = 14
 #: The most areas that one sitting asks (§14.4).
 SITTING_AREAS = 5
+#: The hours that a sitting lasts after the member starts it. In a sitting
+#: the model may mark an area `asked` without a due line.
+SITTING_HOURS = 2
 #: The time format of the interview keys.
 INTERVIEW_TIME = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -313,7 +316,7 @@ def _stored_interview(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     out: dict[str, Any] = {}
-    for key in ("started_at", "last_asked_at"):
+    for key in ("started_at", "last_asked_at", "sitting_at"):
         if _parse_time(raw.get(key)) is not None:
             out[key] = raw[key]
     areas: dict[str, Any] = {}
@@ -997,11 +1000,20 @@ def apply_interview_mark(interview: Any, area: str, state: str,
     return out
 
 
-def start_interview(interview: Any, now: datetime) -> dict[str, Any]:
-    """The interview with ``started_at`` set once. No area changes."""
+def start_interview(interview: Any, now: datetime, sitting: bool = False) -> dict[str, Any]:
+    """The interview with ``started_at`` set once. No area changes. With
+    *sitting*, ``sitting_at`` is *now*: the member starts a sitting."""
     out = _stored_interview(interview) or {}
     out.setdefault("started_at", _format_time(now))
+    if sitting:
+        out["sitting_at"] = _format_time(now)
     return out
+
+
+def sitting_active(interview: Any, now: datetime) -> bool:
+    """True while a sitting the member started is under way (:data:`SITTING_HOURS`)."""
+    at = _parse_time((_stored_interview(interview) or {}).get("sitting_at"))
+    return at is not None and timedelta(0) <= now - at <= timedelta(hours=SITTING_HOURS)
 
 
 def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[str]:
@@ -1026,6 +1038,24 @@ def open_areas(interview: Any, now: datetime, limit: int | None = None) -> list[
     return out if limit is None else out[:max(limit, 0)]
 
 
+def due_area(interview: Any, now: datetime) -> str:
+    """The open area that is due now, or ``""``. The rule of
+    :func:`interview_due_line`, without the words."""
+    stored = _stored_interview(interview) or {}
+    started = _parse_time(stored.get("started_at"))
+    last = _parse_time(stored.get("last_asked_at"))
+    if started is None or last is None or now - last <= timedelta(hours=DUE_HOURS):
+        return ""
+    return next(iter(open_areas(stored, now, 1)), "")
+
+
+def may_ask(interview: Any, now: datetime) -> bool:
+    """True when the model may mark an area ``asked`` from the chat: a
+    sitting is under way, or a question is due. A member who said no has
+    neither (§14.4)."""
+    return sitting_active(interview, now) or bool(due_area(interview, now))
+
+
 def interview_due_line(interview: Any, now: datetime) -> str:
     """The one line of the block when a question is due, or ``""``.
 
@@ -1035,15 +1065,9 @@ def interview_due_line(interview: Any, now: datetime) -> str:
     question. A member who said no to the offer has ``started_at`` and no
     ``last_asked_at``, so no line ever comes (§14.4).
     """
-    stored = _stored_interview(interview) or {}
-    started = _parse_time(stored.get("started_at"))
-    last = _parse_time(stored.get("last_asked_at"))
-    if started is None or last is None or now - last <= timedelta(hours=DUE_HOURS):
+    area = due_area(interview, now)
+    if not area:
         return ""
-    open_ = open_areas(stored, now, 1)
-    if not open_:
-        return ""
-    area = open_[0]
     return (f"Interview (one question is due): {area}: «{AREAS[area]}» "
             "Ask it only at the end of a reply that fits. "
             f'Then call profile_interview("asked", "{area}").')

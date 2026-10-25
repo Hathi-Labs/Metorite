@@ -67,6 +67,12 @@ async def _mark(org: str, user: UserContext, area: str, state: str, via: str | N
             area, body={"state": state}, user=user, x_profile_via=via)
 
 
+async def _sit(org: str, user: UserContext):
+    """The member starts a sitting, so the chat may mark an area `asked`."""
+    with _tenant(org):
+        return await _ap().start_assistant_interview(body={"sitting": True}, user=user)
+
+
 def _column(db, email: str) -> dict:
     ((_org, stored),) = _stored(db, email)
     return stored if isinstance(stored, dict) else json.loads(stored)
@@ -77,10 +83,11 @@ async def test_the_first_mark_makes_the_row_and_sets_the_times(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         first = await _mark(db.org_a, user, "goals", "asked", "chat")
         second = await _mark(db.org_a, user, "goals", "answered", "chat")
         read = await _get(db.org_a, user)
-    assert set(first) == {"started_at", "last_asked_at", "areas"}
+    assert set(first) == {"started_at", "sitting_at", "last_asked_at", "areas"}
     assert first["areas"]["goals"]["state"] == "asked"
     assert second["started_at"] == first["started_at"]
     assert second["last_asked_at"] == first["last_asked_at"]
@@ -138,6 +145,7 @@ async def test_a_full_profile_still_takes_a_mark(db) -> None:
                 "UPDATE user_settings SET assistant_profile = CAST(:p AS jsonb) "
                 "WHERE user_id = :u"),
                 {"p": json.dumps({"v": 1, "learning": True, "facts": facts}), "u": email})
+        await _sit(db.org_a, user)
         for area in acp.AREAS:
             await _mark(db.org_a, user, area, "asked", "chat")
         stored = _column(db, email)
@@ -150,6 +158,7 @@ async def test_another_organization_never_sees_the_interview(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         await _mark(db.org_a, user, "goals", "asked", "chat")
         in_b = await _get(db.org_b, user)
         await _mark(db.org_b, user, "role", "never")
@@ -214,6 +223,7 @@ async def test_forget_all_clears_the_interview(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         await _mark(db.org_a, user, "goals", "asked", "chat")
         with _tenant(db.org_a):
             await _ap().delete_assistant_profile(user=user)
@@ -263,6 +273,7 @@ async def test_a_mark_moves_the_change_count(db) -> None:
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
+        await _sit(db.org_a, user)
         before = acp.generation(email)
         await _mark(db.org_a, user, "goals", "asked", "chat")
     assert acp.generation(email) == before + 1
@@ -280,7 +291,54 @@ async def test_an_org_outside_the_list_behaves_like_the_sibling_routes(
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
         fact = await _add_fact(db.org_a, user, "Ships Q4", "work")
+        await _sit(db.org_a, user)
         mark = await _mark(db.org_a, user, "goals", "asked", "chat")
         read = await _get(db.org_a, user)
     assert fact["text"] == "Ships Q4" and mark["areas"]["goals"]["state"] == "asked"
     assert read["interview"] == mark
+
+
+async def test_asked_from_the_chat_needs_a_sitting_or_a_due_question(db) -> None:
+    """A member who said no (started_at only) is never asked. A sitting, a due
+    question and Settings each allow the mark."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        with _tenant(db.org_a):
+            declined = await _ap().start_assistant_interview(user=user, x_profile_via="chat")
+        assert set(declined) == {"started_at"}
+        for state in ("asked",):
+            with pytest.raises(HTTPException) as exc:
+                await _mark(db.org_a, user, "goals", state, "chat")
+            assert exc.value.status_code == 422
+        assert _column(db, email)["interview"] == declined  # nothing changed
+        # Other states are not limited, and Settings is not limited.
+        await _mark(db.org_a, user, "goals", "skipped", "chat")
+        settings = await _mark(db.org_a, user, "role", "asked")
+        assert settings["areas"]["role"]["state"] == "asked"
+        # Settings `asked` set last_asked_at now, so nothing is due yet.
+        with pytest.raises(HTTPException):
+            await _mark(db.org_a, user, "people", "asked", "chat")
+        # A sitting allows it.
+        sat = await _sit(db.org_a, user)
+        assert "sitting_at" in sat and sat["started_at"] == declined["started_at"]
+        ok = await _mark(db.org_a, user, "people", "asked", "chat")
+        assert ok["areas"]["people"]["state"] == "asked"
+
+
+async def test_a_due_question_allows_an_asked_mark_from_the_chat(db) -> None:
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    old = "2026-01-01T10:00:00Z"
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, "learning", True)
+        with db.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE user_settings SET assistant_profile = CAST(:p AS jsonb) "
+                "WHERE user_id = :u"),
+                {"p": json.dumps({"v": 1, "learning": True, "interview": {
+                    "started_at": old, "last_asked_at": old}}), "u": email})
+        done = await _mark(db.org_a, user, "role", "asked", "chat")
+    assert done["areas"]["role"]["state"] == "asked"

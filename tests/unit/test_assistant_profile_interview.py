@@ -278,7 +278,9 @@ def _raw(**iv: Any) -> dict[str, Any]:
 def clock(monkeypatch: pytest.MonkeyPatch):
     state = {"now": NOW}
     monkeypatch.setattr(ex, "_interview_now", lambda: state["now"])
-    return state
+    ex._INTERVIEW_SHOWN.clear()
+    yield state
+    ex._INTERVIEW_SHOWN.clear()
 
 
 @pytest.fixture()
@@ -387,6 +389,7 @@ def test_a_mark_ends_the_cache_through_mark_changed(run, clock, writes) -> None:
     assert "Interview" in _entry()
     run["raw"] = _raw(**ap.apply_interview_mark(
         _iv(), "role", "asked", NOW))
+    ex._INTERVIEW_SHOWN.clear()
     assert "Interview" in _entry()  # stale: the cache still holds the old read
     ap.mark_changed(epb.MEMBER)
     assert "Interview" not in _entry()
@@ -402,3 +405,51 @@ def test_every_interview_write_goes_through_the_one_write_helper() -> None:
     assert 'await _write(uid, "interview", _run)' in inspect.getsource(routes._interview_write)
     assert 'await _write(uid, "interview_reset", _run)' in inspect.getsource(
         routes.reset_assistant_interview)
+
+
+# ── Fix round: once a day in this process, the sitting, stop and start ──────
+
+
+def test_the_line_shows_once_in_twenty_four_hours_in_this_process(run, clock, writes) -> None:  # noqa: F811
+    """The model may ask and never mark `asked`. The line must not repeat."""
+    run["raw"] = _raw()
+    assert "Interview (one question" in _entry()
+    clock["now"] = NOW + timedelta(hours=1)
+    assert _entry() == epb.GOLDEN
+    clock["now"] = NOW + timedelta(hours=23, minutes=59)
+    assert _entry() == epb.GOLDEN
+    clock["now"] = NOW + timedelta(hours=24, minutes=1)
+    assert "Interview (one question" in _entry()
+
+
+def test_the_once_a_day_map_is_per_member(run, clock, writes) -> None:  # noqa: F811
+    run["raw"] = _raw()
+    assert "Interview" in _entry()
+    run["member"] = "bo@alpha.example"
+    ex._PROFILE_CACHE.clear()
+    assert "Interview" in _entry()
+
+
+def test_the_line_needs_a_solo_room_inside_its_own_function(writes) -> None:
+    """Narrow fence: the guard sits in `_with_interview_line` itself."""
+    token = ex._RUN_SOLO_ROOM.set(False)
+    try:
+        assert ex._with_interview_line(epb.GOLDEN, _iv(), ("o", "m")) == epb.GOLDEN
+    finally:
+        ex._RUN_SOLO_ROOM.reset(token)
+
+
+def test_a_sitting_lasts_two_hours() -> None:
+    iv = ap.start_interview(None, NOW - timedelta(hours=1, minutes=59), sitting=True)
+    assert ap.sitting_active(iv, NOW) and ap.may_ask(iv, NOW)
+    old = ap.start_interview(None, NOW - timedelta(hours=2, minutes=1), sitting=True)
+    assert not ap.sitting_active(old, NOW) and not ap.may_ask(old, NOW)
+    assert "sitting_at" not in ap.start_interview(None, NOW)
+    assert ap.stored_profile({"interview": iv})["interview"]["sitting_at"] == iv["sitting_at"]
+
+
+def test_may_ask_for_a_due_question_but_not_after_a_decline() -> None:
+    assert ap.may_ask(_iv(), NOW)  # due
+    assert not ap.may_ask(ap.start_interview(None, NOW - timedelta(days=9)), NOW)
+    assert not ap.may_ask(None, NOW)
+    assert ap.due_area(_iv(), NOW) == "role"

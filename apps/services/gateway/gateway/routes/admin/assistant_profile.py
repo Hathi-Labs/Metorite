@@ -121,6 +121,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     apply_interview_mark,
     empty_profile,
     mark_changed,
+    may_ask,
     profile_size,
     stored_profile,
 )
@@ -184,6 +185,15 @@ class InterviewMark(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     state: InterviewState
+
+
+class InterviewStart(BaseModel):
+    """What ``POST .../interview`` accepts (PZ-26). ``sitting`` is true when
+    the member starts a sitting, and absent for a "no thanks"."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sitting: bool = False
 
 
 class FactPatch(BaseModel):
@@ -1032,6 +1042,9 @@ async def undo_assistant_profile(
 #: The 422 of a reset from the chat. The member resets in Settings.
 INTERVIEW_RESET_IN_SETTINGS = "reset the interview in Settings, not from the chat"
 
+#: The 422 of a chat mark ``asked`` with no sitting and no question due.
+NO_SITTING = "no sitting is under way and no question is due"
+
 #: DELETE the whole interview: only the one key goes, and the facts stay.
 _INTERVIEW_CLEAR_SQL = (
     "UPDATE user_settings SET assistant_profile = assistant_profile - 'interview', "
@@ -1075,16 +1088,24 @@ async def _interview_write(uid: str, via: str | None, build: Any) -> dict[str, A
 @me_router.post("/me/assistant-profile/interview",
                 summary="Start the assistant interview (PZ-26)")
 async def start_assistant_interview(
+    body: Any = Body(default=None),
     user: UserContext = Depends(get_current_user),
     x_profile_via: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Set ``started_at`` once. It marks no area, so no question is due
-    until the first sitting asks one. "No thanks" to the offer calls it."""
+    until a sitting asks one. "No thanks" to the offer calls it with no body.
+    Body ``{"sitting": true}`` also sets ``sitting_at``: the member starts a
+    sitting, and for two hours the chat may mark an area ``asked``."""
     from acb_common.assistant_profile import start_interview
 
     uid = _member(user)
     via = _via(x_profile_via)
-    return await _interview_write(uid, via, lambda cur: start_interview(cur, _now()))
+    # No body is a "no thanks". A direct call gets the `Body` default object,
+    # which is no body either.
+    raw = body if isinstance(body, (dict, list, str, int, float, bool)) else {}
+    sitting = _validate(InterviewStart, raw).sitting
+    return await _interview_write(
+        uid, via, lambda cur: start_interview(cur, _now(), sitting))
 
 
 @me_router.post("/me/assistant-profile/interview/{area}",
@@ -1102,8 +1123,16 @@ async def mark_assistant_interview(
     via = _via(x_profile_via)
     _area(area)
     mark = _validate(InterviewMark, body)
-    return await _interview_write(
-        uid, via, lambda cur: apply_interview_mark(cur, area, mark.state, _now()))
+
+    def _build(cur: Any) -> dict[str, Any]:
+        now = _now()
+        # A chat mark `asked` needs a sitting or a due question (§14.4). A
+        # member who declined has neither. Settings is not limited.
+        if via is not None and mark.state == "asked" and not may_ask(cur, now):
+            raise _refuse(NO_SITTING)
+        return apply_interview_mark(cur, area, mark.state, now)
+
+    return await _interview_write(uid, via, _build)
 
 
 @me_router.delete("/me/assistant-profile/interview/{area}", status_code=204,

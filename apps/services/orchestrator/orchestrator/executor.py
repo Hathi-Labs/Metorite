@@ -787,7 +787,7 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
-        return (_with_interview_line(hit[2], hit[5]), hit[3], hit[4])
+        return (_with_interview_line(hit[2], hit[5], key), hit[3], hit[4])
     block, zone, greeting, interview = "", "", "", None
     try:
         read = _read_member_profile(str(org), member)
@@ -808,7 +808,7 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
-    return (_with_interview_line(block, interview), zone, greeting)
+    return (_with_interview_line(block, interview, key), zone, greeting)
 
 
 def _interview_now() -> Any:
@@ -818,25 +818,46 @@ def _interview_now() -> Any:
     return datetime.now(UTC)
 
 
-def _with_interview_line(block: str, interview: Any) -> str:
+#: When the due line was last shown, by ``(org, member)``, in this process.
+#: If the model asks and never marks the area ``asked``, the stored
+#: ``last_asked_at`` stays old. This map keeps the line to one for each
+#: ``DUE_HOURS``. ADVISORY across processes (R7): a second process has its
+#: own map, so a rare second line can come after a restart or on another box.
+_INTERVIEW_SHOWN: dict[tuple[str, str], Any] = {}
+
+
+def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None) -> str:
     """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
 
     *interview* is the stored value of a member whose ``learning`` is on,
     else None. The line comes only in a run where the member can write from
-    the chat: the room is solo (the caller checked), ``WRITES_OPEN`` is open
-    and the channel's writes are on. A question that the member could not
-    answer with a save would be useless. A line that would push the block over
+    the chat: the room is solo, ``WRITES_OPEN`` is open and the channel's
+    writes are on. It comes at most once for each ``DUE_HOURS`` in this
+    process (:data:`_INTERVIEW_SHOWN`). A line that would push the block over
     ``RENDER_MAX`` is left out. No exception escapes."""
     if not block or not interview:
         return block
     try:
+        from datetime import timedelta
+
         from acb_common import assistant_profile
 
+        if _RUN_SOLO_ROOM.get() is not True:
+            return block
         if not (assistant_profile.writes_open() and assistant_profile.channel_writes()):
             return block
-        line = assistant_profile.interview_due_line(interview, _interview_now())
+        now = _interview_now()
+        shown = _INTERVIEW_SHOWN.get(key) if key is not None else None
+        if shown is not None and now - shown <= timedelta(hours=assistant_profile.DUE_HOURS):
+            return block
+        line = assistant_profile.interview_due_line(interview, now)
         if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
             return block
+        if key is not None:
+            _INTERVIEW_SHOWN.pop(key, None)
+            _INTERVIEW_SHOWN[key] = now
+            while len(_INTERVIEW_SHOWN) > _PROFILE_CACHE_MAX:
+                _INTERVIEW_SHOWN.pop(next(iter(_INTERVIEW_SHOWN)))
         return f"{block}\n{line}"
     except Exception:
         return block
