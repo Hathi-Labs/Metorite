@@ -125,7 +125,7 @@ import {
   SidePanelFitContext,
   sidePanelFits,
 } from "@/lib/sidePanelFit";
-import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { useLiveRefresh } from "./lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -2904,17 +2904,19 @@ function ProjectsWorkspace() {
   // the board reloads the selected project so the member sees the change
   // without a click. The chat never reaches the page's state; this event
   // is the one seam.
-  useEffect(() => {
-    const onChanged = () => {
-      // The app's own writes invalidate the family in `api.ts`; a chat write
-      // ran server-side, so this is where the same drop happens. It notifies
-      // the tree and the summaries too, not only the selected board.
-      invalidate(PROJECTS_CACHE);
-      if (selected) void loadProject(selected);
-    };
-    window.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-  }, [selected, loadProject]);
+  // WS-64 #128 — the same reload runs when the tab returns to sight or the
+  // window gets focus (throttled), so a write by an MCP client or an agent
+  // run in another process shows up too. `useLiveRefresh` owns the rule.
+  const myWorkOpen = isMyWorkId(app);
+  useLiveRefresh(() => {
+    // The app's own writes invalidate the family in `api.ts`; a chat write
+    // ran server-side, so this is where the same drop happens. It notifies
+    // the tree and the summaries too, not only the selected board.
+    invalidate(PROJECTS_CACHE);
+    // My work reloads itself (`MyWorkHost`). The board reloads here, in the
+    // mode the member is looking at.
+    if (!myWorkOpen) void refreshRef.current();
+  });
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,

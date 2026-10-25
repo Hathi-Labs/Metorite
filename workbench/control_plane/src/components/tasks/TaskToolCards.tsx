@@ -25,13 +25,14 @@
 import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { chatTaskTarget, myWorkEnabled } from "@/app/projects/lib/myWork";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { apiPatchItem, apiAgentPlanToday } from "@/app/tasks/lib/api";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
+import { announceChange, isFreshReceipt } from "@/components/projects/ProjectToolCards";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
@@ -245,6 +246,8 @@ function TaskRowView({ row }: { row: TaskRow }) {
     try {
       await apiPatchItem(row.id, { disposition: "DONE" });
       setState("done");
+      // WS-64 #128 — the open board and My work read the change at once.
+      announceChange(`task-row:${row.id}:${Date.now()}`);
     } catch {
       setState("idle");
     }
@@ -352,6 +355,7 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
         typeof args.energy_note === "string" ? args.energy_note : undefined,
       );
       setState("applied");
+      announceChange(`plan:${e.id}:${Date.now()}`);
     } catch {
       setState("failed");
     }
@@ -462,6 +466,12 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // long receipt folds like any long card instead.
   const detail = detailLines;
   const tone = failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success";
+  // WS-64 #128 — a fresh write receipt tells the open Projects page and My
+  // work to read again. `my_tasks_sync` writes nothing.
+  useEffect(() => {
+    if (!failed && e.name !== "my_tasks_sync" && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [failed, e.id]);
 
   // One look with the Projects receipts: a `RollupCard` whose title row is
   // the shared header, with the icon in the card's tone.
