@@ -1,5 +1,5 @@
 -- ============================================================================
--- 305_reminders.sql — the reminder store and its ledger (WS-66 RM-1, D114).
+-- 307_reminders.sql — the reminder store and its ledger (WS-66 RM-1, D114).
 --
 -- What: two new tables. `reminders` holds one private nudge of one member:
 --       a time, one line of text, a kind, an optional link to one object,
@@ -28,8 +28,9 @@
 -- ⚠️ RLS covers the org only. The member is a second axis: each read and each
 -- write of the routes also filters on `member_email`. Only the owner of a
 -- reminder reads it. A colleague and an admin do not (§5.1).
--- The number is taken at build time (R1). On 2026-10-25 origin/main held 303,
--- open branches held 300 and 302, and PN-1 reserved 304, so this takes 305.
+-- The number is taken at build time (R1). It was 305 at first. On 2026-10-25
+-- origin/main held 300 to 304, two open branches claimed 305 (kc-3-sync and
+-- sw10-stranded) and PN-1 held 306, so this file moved to 307 before merge.
 -- Check it again at merge. Pinned by tests/unit/test_reminders_r8.py, which
 -- finds this file by CONTENT, never by number (R1).
 -- ============================================================================
@@ -125,7 +126,7 @@ CREATE TABLE IF NOT EXISTS reminder_events (
     -- The fourteen events of §5.2, `edited` and `reopened`. An edit changes
     -- text, the kind, the link, the estimate or `important`, and moves no
     -- state and no time. A reopen undoes a done or a drop (D-CF-5).
-    -- Engineering decisions, 2026-10-25: 305 has not shipped, so the list
+    -- Engineering decisions, 2026-10-25: 307 has not shipped, so the list
     -- widens here and not in a second migration.
     CONSTRAINT reminder_events_event CHECK (
         event IN ('created', 'fired', 'check_back', 'briefed', 'rescheduled',

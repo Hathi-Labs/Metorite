@@ -18,7 +18,7 @@ the state that the answer's ledger row recorded as ``from_state``. A promote
 makes a task, so it has no undo, and it is its own route, ``/promote``.
 
 **A reminder is a nudge, not work** (D114.1), so it lives in its own table,
-``reminders`` (migration 305), and never in ``pm_tasks``. "Make it a task"
+``reminders`` (migration 307), and never in ``pm_tasks``. "Make it a task"
 promotes one into the member's personal project when it is work.
 
 **Private to one member.** RLS binds the ORGANIZATION only. The member is a
@@ -40,8 +40,8 @@ notes, the kind, the link, the zone, the estimate or ``important``. It moves
 no state and no time, and its ``detail`` lists the NAMES of the fields that
 changed, never their values. A PATCH of ``fire_at`` writes ``rescheduled``,
 and a PATCH of both writes both. A field sent with its stored value is not
-a change. ``edited`` is the fifteenth event of migration 305: an engineering
-decision of 2026-10-25, taken before 305 shipped.
+a change. ``edited`` is the fifteenth event of migration 307: an engineering
+decision of 2026-10-25, taken before 307 shipped.
 
 **Who counts what** (§5.4). A move that the member asks for adds 1 to
 ``snoozes``: a snooze, a reschedule to a named time, and a PATCH of
@@ -90,7 +90,7 @@ from gateway.routes.projects.text_links import link_from_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-#: Migration 305's state CHECK, in the order of §5.3.
+#: Migration 307's state CHECK, in the order of §5.3.
 STATES: tuple[str, ...] = (
     "scheduled", "due", "unconfirmed", "done", "dropped", "cancelled",
 )
@@ -300,7 +300,7 @@ def _title(value: str | None) -> str:
 
 
 def _subject(kind: str | None, subject_id: str | None) -> tuple[str | None, str | None]:
-    """The link of §5.1: both parts or neither. Migration 305 holds the pair."""
+    """The link of §5.1: both parts or neither. Migration 307 holds the pair."""
     kind = (kind or "").strip() or None
     subject_id = (subject_id or "").strip() or None
     if (kind is None) != (subject_id is None):
@@ -340,7 +340,7 @@ def _source(user: Any) -> str:
     if via.startswith("chat:"):
         return "chat"
     # No caller sends a WhatsApp stamp yet. RM-9 adds that arm, and the
-    # CHECK of migration 305 already holds `whatsapp` for it.
+    # CHECK of migration 307 already holds `whatsapp` for it.
     return "app"
 
 
