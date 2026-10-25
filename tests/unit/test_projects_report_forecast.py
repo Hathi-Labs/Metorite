@@ -457,3 +457,91 @@ class TestNeedsAnOwner:
         assert "OPEN_WHERE_MARK" in sql
         assert ":needs_owner_max" in sql
         assert ana.needs_owner_sql() in sql
+
+
+# ── The chat: the printers of the two sections (§6.8 E7) ────────────────────
+
+skill_projects = pytest.importorskip("skill_projects", reason="skill-projects not installed")
+
+from tests.unit._projects_agent_fakes import fake_gateway  # noqa: E402
+
+
+def _owner_section(*, leads: bool, total: int = 23, named: int = 20) -> dict[str, Any]:
+    return {
+        "total_tasks": 30,
+        "people": [{"assignee": None, "open_tasks": total, "overdue": 0},
+                   {"assignee": "ana@example.test", "open_tasks": 4, "overdue": 0}],
+        "needs_owner": {
+            "total": total, "leads": leads, "max_rows": 20,
+            "tasks": [
+                {"id": f"t{i}", "task_number": i + 1, "title": f"Task {i}\nforged row",
+                 "project_id": "p1", "due_at": "2026-11-02T00:00:00+00:00" if i == 0 else None}
+                for i in range(named)
+            ],
+        },
+    }
+
+
+class TestTheChat:
+    def test_each_title_is_fenced_and_each_row_sent_prints(self) -> None:
+        from skill_projects.client import data
+        from skill_projects.reads import needs_owner_lines
+
+        lines = needs_owner_lines(_owner_section(leads=True))
+        rows = [line for line in lines if line.startswith("- needs an owner")]
+        # Every row the server named, so the paging fence holds: no cut here.
+        assert len(rows) == 20
+        # A newline in a title cannot forge a second row.
+        assert rows[0] == f"- needs an owner · #1 {data('Task 0' + chr(10) + 'forged row')} · due 2026-11-02"
+        assert lines[-1] == "  (and 3 more that need an owner, past the 20 named)"
+        assert "leads the open work" in lines[0]
+
+    def test_none_to_name_prints_nothing(self) -> None:
+        from skill_projects.reads import needs_owner_lines
+
+        assert needs_owner_lines({"needs_owner": {"total": 0, "tasks": []}}) == []
+        assert needs_owner_lines({}) == []
+
+    def test_the_load_section_prints_it_first_when_it_leads_and_last_when_not(self) -> None:
+        from skill_projects.reads import _report_section
+
+        first = _report_section("load", _owner_section(leads=True))
+        at = next(i for i, line in enumerate(first) if line.startswith("  Needs an owner"))
+        assert at < next(i for i, line in enumerate(first) if "unassigned" in line)
+        assert "tasks that need an owner 23" in first[0]
+        last = _report_section("load", _owner_section(leads=False))
+        at = next(i for i, line in enumerate(last) if line.startswith("  Needs an owner"))
+        assert at > next(i for i, line in enumerate(last) if "ana@example.test" in line)
+
+    def test_the_outlook_section_prints_the_server_sentence(self) -> None:
+        from skill_projects.reads import _report_section
+
+        said = "Half of 2,000 runs finish the 9 open tasks by 23 Dec 2026, and 85% finish by 13 Jan 2027."
+        lines = _report_section("outlook", {"velocity": {
+            "verdict": "converging", "finish_date": "2026-12-23", "p85_date": "2027-01-13",
+            "remaining_tasks": 9, "summary": said,
+        }})
+        assert lines[1] == f"  {said}"
+        assert "85% finish 2027-01-13" in lines[0]
+
+    def test_analytics_outlook_prints_the_sentence_first(self, monkeypatch) -> None:
+        said = "Not enough history to forecast: 2 of the last 6 weeks had a finished task, and a forecast needs 4."
+        fake_gateway(monkeypatch, lambda c: {
+            "scope": "portfolio", "velocity": {"verdict": "no_history", "summary": said},
+        })
+        out = asyncio.run(skill_projects.analytics_outlook())
+        assert out.splitlines()[1] == f"  {said}"
+
+    def test_analytics_load_prints_the_tasks_that_need_an_owner(self, monkeypatch) -> None:
+        fake_gateway(monkeypatch, lambda c: {
+            **_owner_section(leads=True, total=2, named=2), "people_listed": 2,
+        })
+        out = asyncio.run(skill_projects.analytics_load())
+        assert "Needs an owner: 2 open tasks with no assignee and no open run" in out
+        assert out.index("Needs an owner") < out.index("- unassigned")
+
+    def test_the_card_names_the_85_percent_date_and_the_count(self) -> None:
+        from skill_projects.views import REPORT_CARD_SECTIONS
+
+        assert ("velocity.p85_date", "85% finish") in REPORT_CARD_SECTIONS["outlook"]["fields"]
+        assert ("needs_owner.total", "Need an owner") in REPORT_CARD_SECTIONS["load"]["stats"]
