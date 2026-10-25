@@ -485,6 +485,26 @@ class Settings(BaseSettings):
     reach_brief_template: str = ""
     reach_needs_you_template: str = ""
     reach_template_language: str = "en"
+
+    # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
+    #
+    # `web_push_enabled` is the switch of the `/push` routes and the sender,
+    # default OFF. Off, each `/push` route answers 404 and nothing sends.
+    # `vapid_public_key` is the base64url of the uncompressed P-256 public
+    # point (65 bytes), the `applicationServerKey` that a browser subscribes
+    # with. `vapid_private_key` is the base64url of the raw 32-byte private
+    # scalar. `vapid_subject` is the `mailto:` or `https:` contact that the
+    # push services read from the VAPID claim. The private key is a secret:
+    # `scripts/secrets.sh`, never chat, never the tree.
+    # The one reader is `gateway.push.flags`. A flip on a box is gate
+    # `enforcement-flip`, and a flip for a real member in production is the
+    # owner's (calendar_events_reminders.md §9). Spec:
+    # calendar_events_reminders.md §5.9 and §10.2. Fence:
+    # tests/unit/test_push_subscriptions.py.
+    web_push_enabled: bool = False
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
