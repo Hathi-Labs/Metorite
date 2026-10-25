@@ -88,6 +88,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     ALIAS_MAX,
     ALIASES_MAX,
+    AREAS,
     EMAIL_MAX,
     FACT_KINDS,
     FACT_MAX,
@@ -95,6 +96,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     FACTS_MAX,
     FORMALITY,
     GREETING,
+    INTERVIEW_STATES,
     LANGUAGE_MAX,
     LAST_CHANGE,
     LENGTH,
@@ -116,8 +118,10 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     _stored_fact,
     _stored_keys,
     _text,
+    apply_interview_mark,
     empty_profile,
     mark_changed,
+    may_ask,
     profile_size,
     stored_profile,
 )
@@ -129,6 +133,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, mo
 logger = logging.getLogger(__name__)
 
 FactKind = Literal["about", "routine", "preference", "work", "relationship"]
+#: The areas of the interview (PZ-26). ``AREAS`` is the one table.
+AreaId = Literal["role", "goals", "good_day", "decisions", "detail", "rhythm",
+                 "channels", "energy", "peeves", "people"]
+InterviewState = Literal["asked", "answered", "skipped", "never"]
 
 
 # ── Strict cleaning (the write) ────────────────────────────────────────────
@@ -162,11 +170,30 @@ class FactIn(BaseModel):
 
     text: str
     kind: FactKind
+    #: The interview area that this fact answers (PZ-26, §14.3).
+    area: AreaId | None = None
 
     @field_validator("text", mode="before")
     @classmethod
     def _t(cls, v: Any) -> str:
         return _text(v, FACT_MAX, "a fact")
+
+
+class InterviewMark(BaseModel):
+    """What ``POST .../interview/{area}`` accepts (PZ-26)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: InterviewState
+
+
+class InterviewStart(BaseModel):
+    """What ``POST .../interview`` accepts (PZ-26). ``sitting`` is true when
+    the member starts a sitting, and absent for a "no thanks"."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sitting: bool = False
 
 
 class FactPatch(BaseModel):
@@ -461,7 +488,11 @@ def _check_caps(stored: Any) -> None:
         items = stored.get(key)
         if isinstance(items, list) and len(items) > cap:
             raise _refuse(f"at most {cap} {key}")
-    if profile_size({k: v for k, v in stored.items() if k != LAST_CHANGE}) > PROFILE_MAX:
+    # The record of the last change and the interview state are not the
+    # member's words, so they stay out of the budget (PZ-26): a mark must
+    # never fail on a full profile.
+    if profile_size({k: v for k, v in stored.items()
+                     if k not in (LAST_CHANGE, "interview")}) > PROFILE_MAX:
         raise _refuse(f"profile exceeds {PROFILE_MAX} characters")
 
 
@@ -524,7 +555,16 @@ def undo_last_change(raw: Any, now: float) -> tuple[dict[str, Any] | None, str]:
         n = _item_index(items, last.get("id"))
         if n < 0 or not isinstance(last.get("after"), dict) or items[n] != last["after"]:
             return None, UNDO_CHANGED
-        del items[n]
+        gone = items.pop(n)
+        # PZ-26: an area that this fact answered opens again, so the
+        # interview asks it once more. A skip or a never stays.
+        area = gone.get("area") if isinstance(gone, dict) else None
+        marks = out.get("interview")
+        entry = marks.get("areas", {}).get(area) if isinstance(marks, dict) \
+            and isinstance(marks.get("areas"), dict) else None
+        if isinstance(entry, dict) and entry.get("state") == "answered":
+            out["interview"] = {**marks, "areas": {k: v for k, v in marks["areas"].items()
+                                                   if k != area}}
     elif op == "delete":
         prior = last.get("prior")
         if not isinstance(prior, dict) or _item_index(items, prior.get("id")) >= 0:
@@ -877,6 +917,8 @@ async def add_fact(
     item = {"id": _new_id("f"), "text": fact.text, "kind": fact.kind,
             "source": via or "settings",
             "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    if fact.area is not None:
+        item["area"] = fact.area
     return await _add(uid, "facts", item, via)
 
 
@@ -986,3 +1028,152 @@ async def undo_assistant_profile(
         return {k: last[k] for k in ("op", "key", "list") if k in last}
 
     return {"undone": await _write(uid, "undo", _run)}
+
+
+# ── The interview (PZ-26, personalization.md §14.3 and §14.4) ──────────────
+#
+# The state of the interview is the optional key ``interview`` of the column:
+# ``{started_at, last_asked_at, areas: {<area>: {state, at}}}``. The server
+# sets every time. A mark is not a change of the member's words, so it writes
+# no ``last_change`` and it does not count in the budget of the profile. The
+# routes take no flag, like their siblings: the org switch (PZ-25) governs
+# the block, the tools and the web app, and the write routes never read it.
+
+#: The 422 of a reset from the chat. The member resets in Settings.
+INTERVIEW_RESET_IN_SETTINGS = "reset the interview in Settings, not from the chat"
+
+#: The 422 of a chat mark ``asked`` with no sitting and no question due.
+NO_SITTING = "no sitting is under way and no question is due"
+
+#: DELETE the whole interview: only the one key goes, and the facts stay.
+_INTERVIEW_CLEAR_SQL = (
+    "UPDATE user_settings SET assistant_profile = assistant_profile - 'interview', "
+    "updated_at = now() WHERE organization_id = {org} AND user_id = :uid "
+    "AND jsonb_typeof(assistant_profile) = 'object'"
+)
+
+
+def _area(area: str) -> str:
+    if area not in AREAS:
+        raise _refuse(f"the area is one of {', '.join(AREAS)}")
+    return area
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _interview_write(uid: str, via: str | None, build: Any) -> dict[str, Any]:
+    """Change ``interview`` in one transaction. ``build(current)`` gives the
+    new value, and the row lock makes two marks of one member wait."""
+    params_where = _LEARNING_NOT_OFF if via is not None else ""
+
+    async def _run(db: Any) -> Any:
+        await _learning_gate(db, uid, via)
+        row = (await db.execute(_sql(_READ_LOCKED_SQL), {"uid": uid})).first()
+        current = stored_profile(row[0] if row is not None else None).get("interview")
+        new = build(current)
+        stored = await _upsert(
+            db, uid, _NEW_KEY, _MERGE_KEY,
+            {"pkey": "interview", "pval": json.dumps(new)}, params_where)
+        if stored is None:
+            raise HTTPException(status_code=409, detail=LEARNING_OFF)
+        _check_caps(stored)
+        return stored
+
+    stored = await _write(uid, "interview", _run)
+    return stored_profile(stored).get("interview") or {}
+
+
+@me_router.post("/me/assistant-profile/interview",
+                summary="Start the assistant interview (PZ-26)")
+async def start_assistant_interview(
+    body: Any = Body(default=None),
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Set ``started_at`` once. It marks no area, so no question is due
+    until a sitting asks one. "No thanks" to the offer calls it with no body.
+    Body ``{"sitting": true}`` also sets ``sitting_at``: the member starts a
+    sitting, and for two hours the chat may mark an area ``asked``."""
+    from acb_common.assistant_profile import start_interview
+
+    uid = _member(user)
+    via = _via(x_profile_via)
+    # No body is a "no thanks". A direct call gets the `Body` default object,
+    # which is no body either.
+    raw = body if isinstance(body, (dict, list, str, int, float, bool)) else {}
+    sitting = _validate(InterviewStart, raw).sitting
+    return await _interview_write(
+        uid, via, lambda cur: start_interview(cur, _now(), sitting))
+
+
+@me_router.post("/me/assistant-profile/interview/{area}",
+                summary="Mark one interview area (PZ-26)")
+async def mark_assistant_interview(
+    area: str,
+    body: Any = Body(default=None),
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Body ``{"state": asked|answered|skipped|never}``. The server sets the
+    time. ``asked`` also sets ``last_asked_at``, and the first mark sets
+    ``started_at``. A chat mark is a 409 while ``learning`` is off."""
+    uid = _member(user)
+    via = _via(x_profile_via)
+    _area(area)
+    mark = _validate(InterviewMark, body)
+
+    def _build(cur: Any) -> dict[str, Any]:
+        now = _now()
+        # A chat mark `asked` needs a sitting or a due question (§14.4). A
+        # member who declined has neither. Settings is not limited.
+        if via is not None and mark.state == "asked" and not may_ask(cur, now):
+            raise _refuse(NO_SITTING)
+        return apply_interview_mark(cur, area, mark.state, now)
+
+    return await _interview_write(uid, via, _build)
+
+
+@me_router.delete("/me/assistant-profile/interview/{area}", status_code=204,
+                  response_class=Response,
+                  summary="Reset one interview area (PZ-26)")
+async def reset_assistant_interview_area(
+    area: str,
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
+    """The area is open again. The facts stay. A Settings act: a chat call
+    (``X-Profile-Via``) is a 422."""
+    uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(INTERVIEW_RESET_IN_SETTINGS)
+    _area(area)
+
+    def _build(cur: Any) -> dict[str, Any]:
+        cur = dict(cur or {})
+        cur["areas"] = {k: v for k, v in (cur.get("areas") or {}).items() if k != area}
+        return cur
+
+    await _interview_write(uid, None, _build)
+    return Response(status_code=204)
+
+
+@me_router.delete("/me/assistant-profile/interview", status_code=204,
+                  response_class=Response,
+                  summary="Reset the whole interview (PZ-26)")
+async def reset_assistant_interview(
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
+    """The key ``interview`` goes, so the offer can come again. The facts
+    stay. A Settings act: a chat call is a 422."""
+    uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(INTERVIEW_RESET_IN_SETTINGS)
+
+    async def _run(db: Any) -> None:
+        await db.execute(_sql(_INTERVIEW_CLEAR_SQL), {"uid": uid})
+
+    await _write(uid, "interview_reset", _run)
+    return Response(status_code=204)

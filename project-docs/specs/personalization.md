@@ -12,12 +12,20 @@ cached block.
 organization: `ASSISTANT_PROFILE_ORGS` limits `ASSISTANT_PROFILE_ENABLED` to
 a list. A change of either name needs a restart. See §14.2 "PZ-25 as built".
 
+**PZ-26 BUILT 2026-10-25, dark** (D113). The `area` key of a fact, the
+`interview` key, the tool `profile_interview`, the four interview routes and
+the due line in the block. See §14.4 "PZ-26 as built".
+
+**PZ-27 BUILT 2026-10-25, dark** (D113). The button, the offer in the empty
+chat, the interview list in Settings → Assistant and the chat receipt. See
+§14.4 "PZ-27 as built". The visual review is UNVERIFIED.
+
 **PZ-8 BUILT 2026-10-25, dark.** The WhatsApp scope rule names the profile
 exception, and asks the model to keep the channel limits. See "PZ-8 as
 built" in §9.
 
 **PZ-7 BUILT 2026-10-23**, dark: the route `/settings/assistant`, behind
-`NEXT_PUBLIC_ASSISTANT_PROFILE` (off). A link row on Appearance is the way in.
+the server switch (off). A link row on Appearance is the way in.
 The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
 
 **PZ-5 BUILT 2026-10-24**, dark: the tool `resolve_person` and the route
@@ -28,7 +36,7 @@ must be a person or a member of the org, and the directory tiers need
 **PZ-3 and PZ-4 BUILT 2026-10-24, dark.** The block carries the style lines
 of §5.3 and the form of address of §5.2. `GET
 /auth/me/assistant-profile/address` gives My Day the same name, behind
-`NEXT_PUBLIC_ASSISTANT_PROFILE`.
+the server switch.
 
 **PZ-6a BUILT 2026-10-24, dark.** The write tools of §5.5, the Undo
 card, the refusal while `learning` is off, and the write-origin fence. Fix
@@ -47,7 +55,7 @@ them, for Hathi Labs only.
 row of the org, and a removal clears the profile. `GET
 /auth/me/assistant-profile/export` gives the member a download, as JSON or
 as text. A fence holds the profile out of every staff route. The page
-control is dark behind `NEXT_PUBLIC_ASSISTANT_PROFILE`. §9 "PZ-9 as built"
+control is dark behind the server switch. §9 "PZ-9 as built"
 holds the detail.
 
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
@@ -110,8 +118,8 @@ talks to, and how it uses that. That is five things:
    block, with no guess.
 5. **It is private.** No admin and no other member reads it. A shared room
    gets no profile block.
-6. **It ships dark,** behind `ASSISTANT_PROFILE_ENABLED` on the server and
-   `NEXT_PUBLIC_ASSISTANT_PROFILE` on the client.
+6. **It ships dark,** behind `ASSISTANT_PROFILE_ENABLED` on the server. The web app has no build switch
+   (owner, 2026-10-25).
 
 ---
 
@@ -755,7 +763,7 @@ uv run pytest tests/unit/test_profile_tools.py -q
 uv run pytest tests/unit/test_resolve_person_r8.py -q
 # PZ-7
 cd workbench/control_plane && npx tsc --noEmit
-cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/assistantProfileFlag.test.ts src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
+cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
 # PZ-9
 uv run pytest tests/unit/test_assistant_profile_offboarding_r8.py tests/unit/test_assistant_profile_private.py -q
 uv run pytest tests/unit/test_admin_member_purge.py tests/unit/test_admin_member_offboarding.py tests/unit/test_operator_door.py -q
@@ -1073,10 +1081,12 @@ The first release needs one organization.
    answer. Each gateway, executor and tool site that reads `enabled()`
    for a run or a request passes the bound organization. A site with no
    organization fails closed.
-4. **The web app.** `NEXT_PUBLIC_ASSISTANT_PROFILE` stays the build switch.
-   The page, the nav entry and My Day also read `enabled` from
-   `GET /auth/me/assistant-profile`. For an organization outside the list,
-   that answer is `enabled: false` and the web app shows nothing.
+4. **The web app.** The web app reads only `enabled` from
+   `GET /auth/me/assistant-profile`. The build switch is retired (owner,
+   2026-10-25). So turning the profile on needs only the two server settings
+   and a restart, with no rebuild. The page, the nav entry and My Day read
+   that answer. For an organization outside the list, the answer is
+   `enabled: false` and the web app shows nothing.
 5. **The nav entry.** The account menu gains the row "Assistant", which
    opens `/settings/assistant`. It is a static account link beside
    My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
@@ -1091,8 +1101,9 @@ The first release needs one organization.
 3. `build_payload` takes the org of the WhatsApp link.
 4. The GET route answers `enabled`. `/address` answers an empty name when
    the org is off. The writes take no flag.
-5. The web hook `useAssistantProfileEnabled` needs the build switch and
-   `enabled`.
+5. The web hook `useAssistantProfileEnabled` needs only `enabled`. It stays
+   closed while the read is out and after a fault. A fence refuses any read
+   of the retired build switch in the web source.
 6. The fence is `tests/unit/test_assistant_profile_org_rollout.py`.
 
 ### 14.3 The interview areas
@@ -1137,11 +1148,13 @@ unknown area.
 
 **The first sitting.** The member starts it in one of two ways:
 
-- The button "Get to know me" on Settings → Assistant opens the chat with a
-  fixed first message.
-- In the first solo chat of a member with no `interview.started_at`, the
-  block offers it once. The member can say no, and the offer does not come
-  back.
+- The button "Get to know me" on Settings → Assistant opens a fresh chat and
+  sends a fixed first message at once.
+- In the empty chat of a member with no `interview.started_at`, the web app
+  shows the offer. The offer is client-side, so the block carries no offer
+  line. "No thanks" posts `/interview` with no body, which sets `started_at`
+  only, and the offer does not come back. "Not now" hides the offer for the
+  browser session only.
 
 In the sitting, the model asks up to five open areas, one question at a
 time. It saves each answer with the tools of §5.5, with the area set. The
@@ -1157,11 +1170,16 @@ starting question. The model asks it only at the end of a reply that fits.
    when `last_asked_at` is more than 24 hours old. The model marks the
    area `asked` when it asks.
 2. **A skip waits 14 days** (D-PZ-13). After that, the area is open again.
+   An area marked `asked` with no answer waits 14 days too, as a skip does.
 3. **"Don't ask again" sets `never`.** That area never comes back, unless
    the member resets it in Settings.
 4. **No question in a shared room**, the same rule as the block (§5.1).
 5. **No outbound question.** On WhatsApp, a question comes only inside a
    chat that the member started. Reach stays the only sender (D-PZ-14).
+
+If the member says no to the first-chat offer, the web app sets `started_at`
+and leaves `last_asked_at` empty. The due line needs both keys, so no due
+line ever comes. This is intended.
 
 **The writes.** An interview answer is the member's own typed words, so it
 is an explicit write (D-PZ-2), with Undo. The sensitive rule of D-PZ-16
@@ -1171,13 +1189,67 @@ needs a second yes. An opinion is never saved.
 **Settings → Assistant.** The pane shows each area and its state, and the
 member can reset one area or the whole interview. A fact shows its area.
 
+**PZ-26 as built (2026-10-25).**
+
+1. `acb_common.assistant_profile` holds the one table `AREAS`, the states, and
+   the numbers `DUE_HOURS` (24) and `WAIT_DAYS` (14). Three pure functions
+   take the clock as an argument: `apply_interview_mark`, `open_areas` and
+   `interview_due_line`. The parser keeps a valid `interview`. It drops an
+   unknown area, state or time. It also drops a fact `area` that it does not
+   know.
+2. The routes are under `/auth/me/assistant-profile`. `POST .../interview`
+   starts it. `POST .../interview/{area}` marks it. The two `DELETE` routes
+   reset one area or all. The server sets every time. A mark writes no
+   `last_change`, and it does not count in the 6,000-character budget.
+   A reset from the chat is a 422. The routes take no org flag, as the other
+   write routes take none.
+3. `profile_interview` reads the open areas (`next`, `next_sitting` with five)
+   and marks one area. `profile_remember` takes `area` and marks the area
+   `answered` after the save. The undo of that fact opens the area again.
+4. The executor keeps the stored `interview` in its 60 second cache. It
+   computes the due line on each turn. The line comes only in a solo run with
+   open profile writes, WhatsApp writes on and `learning` on.
+5. `profile_interview(next)` gives only the area that is due now. A member
+   who said no gets nothing. `next_sitting` starts a sitting: it sets
+   `sitting_at`, and for two hours the chat may mark an area `asked`. Outside
+   a sitting, the route refuses `asked` from the chat unless a question is
+   due. Settings is not limited.
+6. `profile_interview(stop)` marks `never` each area that is not `answered`.
+   `profile_interview(start)` sets `started_at` only. It is the "no thanks"
+   said in the chat. A learning switch that is off refuses both.
+7. The model may ask and never mark `asked`. So the executor shows the due
+   line at most once in `DUE_HOURS` for each member in one process.
+   This limit is ADVISORY across processes (R7). A restart, or a second box,
+   can show the line once more. `profile_remember` with `replaces` and an
+   area marks the area `answered` too.
+8. The fences are `tests/unit/test_assistant_profile_interview.py` and
+   `tests/unit/test_assistant_profile_interview_r8.py`.
+
+**PZ-27 as built (2026-10-25).**
+
+1. `openAssistant({ fresh: true, text })` sends the fixed message. The text is
+   "Let's do the Get to know me interview." and it names no tool. The orchestrator
+   persona (`_PROFILE_SWAP`) tells the model to call `profile_interview` with
+   `next_sitting` when the member asks for it.
+2. `InterviewOffer` draws in the empty chat of the dock and of `/chat`, above
+   the starter pills. The pure rule `shouldOffer` needs the org switch, the
+   orchestrator, an empty chat, `learning` on and no `started_at`.
+3. The pane lists the ten areas with a state Badge. Reset of one area needs no
+   confirm. Reset of the whole interview asks first, and the facts stay.
+4. The BFF routes are `interview` (POST, DELETE) and `interview/[area]`
+   (DELETE). A bad area id is a 404.
+5. A `profile_interview` write draws the receipt "Interview updated". A read
+   (`next`, `next_sitting`) draws nothing.
+6. The fences are `interviewAreas.test.ts` (the TS table equals `AREAS`),
+   `InterviewOffer.test.ts` and `AssistantPane.test.ts`.
+
 ### 14.5 The slices
 
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
 | **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block). **BUILT 2026-10-25, dark** |
-| **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM |
-| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW |
+| **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM. **BUILT 2026-10-25, dark** |
+| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 
 ### 14.6 How this fits phase 2

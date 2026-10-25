@@ -5,9 +5,11 @@
 - **Status:** PROPOSED, 2026-10-15, for events (§3, §4, §8). **Reminders
   (§5) are DECIDED, 2026-10-25 (D114).** **PN-1 (the web push platform) is
   BUILT, 2026-10-25, dark behind `WEB_PUSH_ENABLED`** (migration 306,
-  `gateway/push/`, `public/sw.js`). Verified against code on 2026-10-25
-  (`origin/main` `894ddad27`): no `reminders` table and no `remind_at`
-  existed then.
+  `gateway/push/`, `public/sw.js`). **RM-1 (the reminder store and API) is
+  BUILT, 2026-10-25, dark behind `CALENDAR_REMINDERS`** (migration 307,
+  `routes/projects/reminders.py`). RM-2 to RM-10 are not built. Verified
+  against code on 2026-10-25 (`origin/main` `894ddad27`): no `reminders`
+  table and no `remind_at` existed then.
 - **Board row:** **WS-66** for reminders and web push. Events still wait on
   CE-0 for a row.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -243,7 +245,11 @@ own.
 Take the migration number at build time and check it again at merge (R1).
 Both tables are tenant-scoped under FORCE ROW LEVEL SECURITY at the
 `get_db()` seam, and `organization_id` defaults to `app.tenant_id` (R5).
-Every column is nullable or has a default (R6).
+As built (migration 307), five columns are NOT NULL with no default:
+`member_email`, `title` and `fire_at` of `reminders`, and `reminder_id` and
+`event` of `reminder_events`. R6 binds a column added to a live table, and
+no running code wrote these new tables, so this is safe. Migrations 290 and
+296 use the same shape.
 
 `reminders`
 
@@ -273,13 +279,23 @@ Every column is nullable or has a default (R6).
 |---|---|
 | `id`, `organization_id`, `reminder_id` | The row, the tenant, the reminder |
 | `at` | TIMESTAMPTZ, default `now()` |
-| `event` | `created`, `fired`, `check_back`, `briefed`, `rescheduled`, `snoozed`, `opened`, `done`, `dropped`, `promoted`, `gave_up`, `evidence`, `delivered` or `failed` |
+| `event` | 16 values: `created`, `fired`, `check_back`, `briefed`, `rescheduled`, `snoozed`, `opened`, `done`, `dropped`, `promoted`, `gave_up`, `evidence`, `delivered`, `failed`, `edited` and `reopened` |
 | `channel` | `feed`, `push`, `chat` or `whatsapp`, for a delivery |
-| `detail` | JSONB. For example the old and the new `fire_at` |
+| `detail` | JSONB. For example the old and the new `fire_at`, or `from_state` |
+
+- **`edited`** (added in review, 2026-10-25). A PATCH of any field except
+  `fire_at` writes one `edited` row. Its `detail` names the changed fields,
+  never their values. A PATCH of `fire_at` writes `rescheduled`. A field
+  sent with its stored value is not a change, so a PATCH with no real change
+  writes nothing.
+- **`reopened`** (added in review, 2026-10-25). It records the Undo of
+  §5.3.
 
 Index `reminders (organization_id, state, fire_at)` and
 `reminders (organization_id, state, next_check_at)` for the loop, and
-`reminders (organization_id, member_email, state)` for the lists.
+`reminders (organization_id, member_email, state)` for the lists. As built,
+a fourth index `reminder_events (reminder_id, at)` serves the ledger read and
+the cascade.
 
 ### 5.3 The states
 
@@ -305,6 +321,12 @@ A promote is an answer. It ends in state `done` with `resolution` set to
 
 A `notice` reminder goes from `due` to `done` when the member opens it. Every
 change writes one `reminder_events` row in the same transaction.
+
+**Undo of an answer (reopen).** A reminder in state `done` with resolution
+`done`, or in state `dropped`, can reopen. It goes back to the state that it
+had before the answer, which the `done` or `dropped` ledger row records as
+`from_state`. A reopen writes `reopened`. A promote cannot reopen, because it
+made a task.
 
 ### 5.4 The loop: fire, check back, reschedule, give up
 
@@ -353,6 +375,14 @@ sets `promoted_task_id`, and ends the reminder in state `done` with
 **Who counts what.** Every move that the member asks for adds 1 to
 `snoozes`: a snooze, a named time and "Not yet". Only a move that Metorite
 makes with no answer adds 1 to `cycles`. The give-up limit reads `cycles`.
+
+**Two rules for RM-2, decided in the RM-1 review (2026-10-25).**
+
+- **A member move out of `unconfirmed` is a fresh start.** It sets `cycles`
+  to 0 and clears `first_fired_at`, because the member is engaged again.
+  Otherwise the give-up limit trips again at once.
+- **The loop skips a member who is not active in the org.** A removed member
+  who is not purged keeps their rows, but no step fires and no push goes.
 
 **Words.** The check-back names the thing and gives every exit in one line.
 Each try uses different words. No guilt, and no "you missed".
@@ -413,9 +443,11 @@ AI about what to do next."
    Did you do it?" It shows the linked object in one line. For a task, that
    is the title and the status. For an email thread, it is the subject and
    the last sender.
-3. **The chips.** Done · Not yet · Later · Drop · Make it a task. A chip
-   acts at once with Undo (D-CF-5), because each is a reversible write on the
-   member's own record. The chat says the result: "Moved to Sat 10:00".
+3. **The chips.** Done · Not yet · Later · Drop · Make it a task. Done, Not
+   yet, Later and Drop act at once with Undo (D-CF-5), because each is a
+   reversible write on the member's own record. The Undo of Done and Drop is
+   the reopen of §5.3. "Make it a task" makes a task, so it cannot reopen, and
+   it asks one confirm. The chat says the result: "Moved to Sat 10:00".
 4. **A typed answer.** It goes to the model with a `reminder` context block.
    The block holds the row and its ledger. It also holds a summary of the
    linked object, when the member can read that object. The tools of §5.8 are in scope. The model can then help
@@ -443,8 +475,15 @@ adds the route. RM-1 adds each row as a planned tool. RM-3 makes it real.
 |---|---|---|
 | `set_reminder` | Makes a reminder: `title`, `at` (ISO with an offset), `kind`, `subject`, `estimate_minutes`, `important` | None. It acts at once with Undo (D-CF-5) |
 | `list_reminders` | Lists my reminders by state and window | A read |
-| `resolve_reminder` | Done, drop, or promote to a task | None, with Undo |
-| `reschedule_reminder` | A named time, or `smart` for §5.5 | None, with Undo |
+| `update_reminder` | Changes the text, the kind, the link, the estimate or `important` (PATCH) | None, with Undo |
+| `resolve_reminder` | Done or drop | None. Its Undo is `reopen_reminder` |
+| `reopen_reminder` | The Undo of a done or a drop (§5.3) | None |
+| `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One confirm. It cannot reopen |
+| `reschedule_reminder` | A snooze or a named time. `smart` (§5.5) comes with RM-2 | None, with Undo |
+
+As built in RM-1, these are seven routes, each a planned tool in the
+manifest. Their request fields are planned under gap G24 of
+`projects_agent_parity.md` §3.3 (slice RM-3).
 
 - **Time.** The model gets the member's zone and the current time in its
   context. The tool refuses a time with no offset. "Tomorrow morning" reads
@@ -678,7 +717,7 @@ Every flag is OFF by default. Off gives today's behaviour.
 | Flag | Where | Ticket | Off means |
 |---|---|---|---|
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
-| `CALENDAR_REMINDERS` and `NEXT_PUBLIC_CALENDAR_REMINDERS` | Both | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
+| `CALENDAR_REMINDERS` | Gateway. As for web push, the client has no flag of its own: RM-5 draws reminders only when the reminder routes answer | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
 | `WEB_PUSH_ENABLED` | Gateway. The client has no flag of its own: the Notifications section shows only when `/push/public-key` answers | PN-1, RE-9 | Every `/push` route answers 404, so the section draws nothing, and nothing registers or sends. ✅ ON for every org is approved (D114.8) |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
@@ -722,7 +761,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 |---|---|---|---|---|
 | **RM-0** The spec, D114 and the board row | First | This section, §5, D114, WS-66, INDEX | The spec-auditor gives GO for PN-1 and RM-1 | — |
 | **PN-1** The push platform (S7's transport) — ✅ **BUILT 2026-10-25, dark** (migration 306) | Now, beside RM-1 | §10.2 | The agent proves: no prompt shows without a tap, org B reads no subscription of org A, a 410 deletes the row, and a sign-out deletes the row of that device. 🔴 The owner checks, through a HANDOFF entry on dev.metorite.com: a test push reaches an installed iPhone app and Android Chrome | `tests/unit/test_push_subscriptions.py` (R8, two orgs), `src/lib/push.test.ts`, `src/proxy.test.ts` |
-| **RM-1** The store and the API | Now, beside PN-1 | §10.3 | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members), `test_projects_chat_coverage.py` |
+| **RM-1** The store and the API — ✅ **BUILT 2026-10-25, dark** (migration 307) | Now, beside PN-1 | §10.3 | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members), `test_projects_chat_coverage.py` |
 | **RM-2** The loop and the smart slot | After RM-1 | §5.4 and §5.5. The three card kinds in `feed.py` and in `REACH_CLASS`. The D114.3 exception in the Reach budget | A reminder for 15:00 fires at 15:00, and its check-back comes at 16:00. No answer moves it to the brief, then to one new slot. After 2 cycles it is `unconfirmed`. No step 2 to 5 lands in quiet hours. Two workers never fire one row twice | `tests/unit/test_reminder_loop.py` (R8, frozen clock), `tests/unit/test_reminder_slot.py`, `test_reach_plan.py` |
 | **RM-3** The chat tools | After RM-1 | §5.8 in `skill_projects`. The `set-reminder` job in `routes/shell/intent.py` and `src/lib/shell/registry.ts`. `capture` stops taking "remind me" | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `test_shell_intent.py`, `tests/unit/test_reminder_tools.py` |
 | **RE-9** Push as a Reach channel | After PN-1, RM-2 | `proactive_reach.md` RE-9 on the PN-1 sender. The reminder payload of D114.4 and "Hide details on the lock screen". Settle the case of one browser with several accounts (§5.9) first | A `reminder_due` card reaches the device within 90 s of `fire_at`. A hidden-details member gets no title in the payload | `test_reach_plan.py` and `tests/unit/test_reach_push.py` |
@@ -815,8 +854,9 @@ content, as `test_email_send_later.py` does. The fence is
 2. **The module.** `routes/projects/reminders.py`, mounted at
    `/projects/my/reminders` (§5.8). The routes are `GET` (the list, by state,
    which also serves Unconfirmed), `POST`, `PATCH /{id}`, `POST
-   /{id}/resolve` (done, drop, promote), `POST /{id}/snooze` and `POST
-   /{id}/reschedule`.
+   /{id}/resolve` (done, drop), `POST /{id}/promote`, `POST /{id}/reopen`,
+   `POST /{id}/snooze` and `POST /{id}/reschedule`. As built, a snooze
+   target must be after now and within 366 days.
 3. **The member.** `member_email` comes from `actor(user).lower()`, as in
    `routes/projects/core.py`. Every query also filters on `member_email`,
    because RLS covers the org only.
@@ -826,7 +866,8 @@ content, as `test_email_send_later.py` does. The fence is
    only. The `smart` slot is RM-2.
 6. **Promote.** Call `ensure_personal_project`, `load_default_status` and
    `create_personal_task` from `personal.py` in that one session. The
-   `capture` route is the model.
+   `capture` route is the model, so after the commit a promote also calls
+   `link_from_text`.
 7. **The manifest.** One row for each new route in
    `skill_projects/manifest.py`, as a planned tool, in this PR.
 8. **The flag.** With `CALENDAR_REMINDERS` off, each route answers 404.

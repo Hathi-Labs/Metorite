@@ -152,6 +152,9 @@ EXPECTED_SCOPED = {
     "pm_task_refs",
     # WS-55 EA-12a (2026-10-14): agent runs on a task and their activities.
     "pm_agent_runs", "pm_agent_run_activities",
+    # WS-55 SW-10a (2026-10-25): the strands of agent runs (the fingerprint
+    # of a nudge, and the recovery record).
+    "pm_agent_run_strands",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
