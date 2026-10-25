@@ -1116,6 +1116,23 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "Promote-and-assign is the Clarify card's one transaction. The chat "
             "assigns through assign."
         ),
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
+            "write reads the row first."
+        ),
+    },
+    # WS-55 MCP-G2: the two fields an outside agent sends and the chat does not.
+    ("POST", "/projects/tasks"): {
+        "assignees": (
+            "An outside agent assigns in the create's own transaction. The chat "
+            "assigns through assign, after the create."
+        ),
+    },
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
+            "write reads the row first."
+        ),
     },
     ("POST", "/projects/tasks/move/preview"): {
         "status_map": _MAPPING_CARD_REASON,

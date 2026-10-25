@@ -629,9 +629,12 @@ class TestUpdateTask:
                                          "points": None}
         assert task["status"]["name"] == {"untrusted_text": "To do"}
 
+    # MCP-G2 made `parent_task_id` and `importance` inputs of the tool
+    # (`test_mcp_edge_assignees.py`). The status and the assignees keep tools
+    # of their own.
     @pytest.mark.parametrize("name", [
-        "status_id", "project_id", "parent_task_id", "assignees", "archived_at",
-        "source", "importance", "include_subtasks"])
+        "status_id", "project_id", "assignees", "archived_at",
+        "source", "include_subtasks"])
     async def test_it_cannot_change_anything_else(self, edge, name):
         result = await _tool("update_task", _update_args(title="x", **{name: "v"}))
         assert _text(result) == f"The input {name!r} is not known."
@@ -1122,9 +1125,11 @@ class TestTheGatewayNarrowsAnAgentWrite:
 
     pytestmark = _DB_GATE
 
+    # MCP-G2: `importance` and `estimate_mins` are keys of an agent create
+    # now, so their rows send a value outside the limits of §9.2.
     @pytest.mark.parametrize("extra", [
         {"source": "manual"}, {"importance": 3}, {"custom_fields": {}},
-        {"estimate_mins": 30}])
+        {"estimate_mins": -1}])
     async def test_a_create_with_another_key_is_422(self, live, extra):
         title = f"narrow {sorted(extra)[0]}"
         r = await _send(live, "POST", "/projects/tasks",
@@ -1177,9 +1182,11 @@ class TestTheGatewayNarrowsAnAgentWrite:
         assert r.status_code == 201, r.text
         assert _row(live, r.json()["id"]).source == "mcp"
 
+    # MCP-G2: the planning fields are keys of an agent PATCH now, so their
+    # rows send a value outside the limits of §9.2.
     @pytest.mark.parametrize("body,query", [
         ({"importance": 3}, ""),
-        ({"leveraged": True}, ""),
+        ({"start_date": "2026-02-30"}, ""),
         ({"source": "manual"}, ""),
         ({"title": "x"}, "include_subtasks=true"),
     ])
