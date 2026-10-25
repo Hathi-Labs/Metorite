@@ -1,13 +1,12 @@
 # One assistant: context that survives, and tool packs
 
 **Status:** ✅ ACTIVE (2026-10-25). Board: **WS-67**. Decision: **D116**.
-OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-5 is
-BUILT (2026-10-25, branch `ws67-oa5-measure-mt-4cd6b9f1`): the report is
-`docs/one_assistant_measure_2026-10-25.md`. OA-3 and OA-4 are dispatchable.
-
-OA-6 is an owner gate, and its input is now ready. OA-7 to OA-10 wait for
-OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1) to
-#455 (OA-10).
+OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
+built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
+is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
+OA-3 is dispatchable. OA-6 is an owner gate, and its input is now ready.
+OA-7 to OA-10 wait for OA-6. Metorite: epic #445 in *AI Chat Interface*,
+with slices #446 (OA-1) to #455 (OA-10).
 
 **As built, OA-5.** `evals/one_assistant_measure` runs 13 email chats (18
 turns) through the one harness of the routing eval, two ways. One way
@@ -36,6 +35,31 @@ four batch sites call it. The tier question reads the task only
 the gateway replays after a run died is in neither the history nor the
 typed words, so it does not reach the head. OA-5 measured the live half of
 "no CB6" (above). It did not check the reply marks of OA-2.
+
+**As built, OA-4.** `acb_skills/chat_constraints.py` owns the list. It
+ships dark behind `CHAT_CONSTRAINTS`, default off.
+- Two tools belong to the orchestrator only: `keep_correction` and
+  `drop_correction`.
+- The list lives in tenant Redis at
+  `cc:<org>:chat-limits:<session>:<member hash>`. It holds 10 items at
+  most, each of 300 characters at most.
+- A keep stores only whole sentences that the member typed in this turn.
+  Only ". ! and a line break" end a sentence. An ellipsis and the dot of a
+  common abbreviation (`e.g.`) end nothing. A text with a strike mark is
+  refused.
+- By design, a line break and "!" end a sentence, so a keep can hold part
+  of the member's own words. "Use tables! No way." can keep "Use tables!".
+  That is the member's text, never a stranger's. The tool's reply line
+  names each kept item, so the member sees it and can drop it.
+- A drop removes an item only after the member approves a card that shows
+  the exact item. A run with no card channel drops nothing.
+- The per-turn context of the orchestrator shows the list after the email
+  working set. `head_task()` puts it after the reply rules of each task.
+- The tools open only for the member's own chat, on the web. They keep
+  nothing on the WhatsApp batch path (D115) or in a shared room.
+- Fences: `tests/unit/test_chat_constraints.py` and
+  `evals/trajectories/test_chat_constraints_trajectory.py`.
+- Open: the visible chip in the chat is a later slice.
 
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
 "specialists behind it" changes to "tool packs in it" for conversational

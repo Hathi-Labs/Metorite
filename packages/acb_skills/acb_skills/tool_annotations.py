@@ -190,6 +190,11 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-67 OA-4: the member's corrections and limits of one chat
+    # (`chat_constraints.py`). Each writes a short list of the member's own
+    # words in tenant Redis, and nothing leaves the platform.
+    "keep_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
+    "drop_correction":       {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
 }
 
 #: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
@@ -260,6 +265,11 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "profile_alias",
     "profile_undo",
     "profile_interview",
+    # WS-67 OA-4: the two correction tools, on the same terms. Only the
+    # orchestrator holds them, behind CHAT_CONSTRAINTS. So every risk block
+    # stays byte-identical.
+    "keep_correction",
+    "drop_correction",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
