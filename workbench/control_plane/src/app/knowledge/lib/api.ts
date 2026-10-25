@@ -108,6 +108,11 @@ export function updatePage(id: string, body: PagePatchBody): Promise<PageWritten
   });
 }
 
+/** Vouch that a published page is still right (KB-AI-4). A writer of the space may. */
+export function verifyPage(id: string): Promise<PageWritten> {
+  return call<PageWritten>(`/pages/${encodeURIComponent(id)}/verify`, { method: "POST" });
+}
+
 /** Publish a draft. */
 export function publishPage(id: string): Promise<PageWritten> {
   return call<PageWritten>(`/pages/${encodeURIComponent(id)}/publish`, { method: "POST" });
