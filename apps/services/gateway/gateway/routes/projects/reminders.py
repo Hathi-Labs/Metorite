@@ -62,7 +62,7 @@ before the body is read (:func:`_require_on`, a route dependency).
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -103,6 +103,12 @@ SUBJECT_KINDS: tuple[str, ...] = (
 _UUID_SUBJECTS = frozenset({"task", "crm_contact", "project"})
 _SUBJECT_ID_MAX = 200
 TITLE_MAX = 200
+#: The longest act a reminder sizes its grace for (§5.4): one week, in
+#: minutes. A larger guess is a mistake, not an estimate.
+ESTIMATE_MAX = 7 * 24 * 60
+#: How far ahead a snooze ("Later") may move a reminder: a time after now,
+#: within this. A time past it is a new time, which `/reschedule` takes.
+SNOOZE_MAX = timedelta(days=366)
 
 #: The two answers of ``/resolve`` (§5.4) -> (state, resolution, ledger
 #: event). ``/reopen`` undoes either. A promote is ``/promote``.
@@ -150,7 +156,7 @@ class ReminderIn(BaseModel):
     notes: str | None = None
     subject_kind: str | None = None
     subject_id: str | None = None
-    estimate_minutes: int | None = Field(None, ge=1)
+    estimate_minutes: int | None = Field(None, ge=1, le=ESTIMATE_MAX)
     important: bool = False
 
 
@@ -165,7 +171,7 @@ class ReminderPatch(BaseModel):
     notes: str | None = None
     subject_kind: str | None = None
     subject_id: str | None = None
-    estimate_minutes: int | None = Field(None, ge=1)
+    estimate_minutes: int | None = Field(None, ge=1, le=ESTIMATE_MAX)
     important: bool | None = None
 
 
@@ -252,7 +258,14 @@ def _instant(value: Any, field: str) -> datetime:
             status_code=422,
             detail=f"{field} needs a UTC offset, such as 2026-10-31T09:00:00+05:30.",
         )
-    return when.astimezone(UTC)
+    try:
+        # A time at the edge of the calendar, such as year 1 with a positive
+        # offset or year 9999 with a negative one, has no UTC form.
+        return when.astimezone(UTC)
+    except OverflowError:
+        raise HTTPException(
+            status_code=422, detail=f"{field} is out of range: {raw!r}.",
+        ) from None
 
 
 def _zone(value: str | None) -> str | None:
@@ -262,7 +275,9 @@ def _zone(value: str | None) -> str | None:
         return None
     try:
         ZoneInfo(clean)
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: a key that names a directory of the zone database, such as
+        # "America", fails to open as a file, and is not a zone.
         raise HTTPException(
             status_code=422, detail=f"tz is not an IANA zone: {clean!r}.",
         ) from None
@@ -567,6 +582,16 @@ async def _move(
     """
     me = _member(user)
     fire_at = _instant(payload.fire_at, "fire_at")
+    if event == "snoozed":
+        now = datetime.now(UTC)
+        if not now < fire_at <= now + SNOOZE_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "A snooze moves a reminder to a time after now and within "
+                    f"{SNOOZE_MAX.days} days. Use reschedule for another time."
+                ),
+            )
     tz_sent = "tz" in payload.model_fields_set
     tz = _zone(payload.tz) if tz_sent else None
     async with _tenant_session() as db:

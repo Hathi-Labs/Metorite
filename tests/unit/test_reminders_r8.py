@@ -43,6 +43,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -78,7 +79,8 @@ BASE = "/projects/my/reminders"
 AT = "2099-10-31T09:00:00+05:30"
 AT_UTC = "2099-10-31T03:30:00+00:00"
 LATER = "2099-11-01T10:00:00+05:30"
-LATEST = "2099-11-02T10:00:00+05:30"
+#: A snooze must land after now and within 366 days, so it is relative.
+SNOOZE_TO = (datetime.now(UTC) + timedelta(days=2)).replace(microsecond=0).isoformat()
 PR_URL = "https://github.com/acme/site/pull/7"
 NOTES = f"Before Friday. See {PR_URL}"
 
@@ -279,7 +281,7 @@ async def test_r8_a_reminder_round_trip_writes_a_ledger_row_per_change(
         assert moved["state"] == "scheduled" and moved["snoozes"] == 1
         assert moved["next_check_at"] is None and moved["cycles"] == 0
 
-        resp = await c.post(f"{BASE}/{rid}/snooze", json={"fire_at": LATEST},
+        resp = await c.post(f"{BASE}/{rid}/snooze", json={"fire_at": SNOOZE_TO},
                             headers=_as(ALICE))
         assert resp.json()["snoozes"] == 2
         resp = await c.post(f"{BASE}/{rid}/reschedule",
@@ -295,7 +297,7 @@ async def test_r8_a_reminder_round_trip_writes_a_ledger_row_per_change(
         # A closed reminder stays closed.
         for method, path, body in (
             ("POST", f"{BASE}/{rid}/resolve", {"action": "drop"}),
-            ("POST", f"{BASE}/{rid}/snooze", {"fire_at": LATER}),
+            ("POST", f"{BASE}/{rid}/snooze", {"fire_at": SNOOZE_TO}),
             ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": LATER}),
             ("PATCH", f"{BASE}/{rid}", {"title": "again"}),
         ):
@@ -400,7 +402,7 @@ async def test_r8_member_b_never_reads_changes_or_counts_member_a(world) -> None
             for method, path, body in (
                 ("PATCH", f"{BASE}/{rid}", {"title": "Bob was here"}),
                 ("PATCH", f"{BASE}/{rid}", {"fire_at": LATER}),
-                ("POST", f"{BASE}/{rid}/snooze", {"fire_at": LATER}),
+                ("POST", f"{BASE}/{rid}/snooze", {"fire_at": SNOOZE_TO}),
                 ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": LATER}),
                 ("POST", f"{BASE}/{rid}/resolve", {"action": "drop"}),
                 ("POST", f"{BASE}/{rid}/promote", None),
@@ -436,7 +438,7 @@ async def test_r8_org_b_reads_no_row_of_org_a(world, app_engine) -> None:  # noq
         assert [r["id"] for r in seen["rows"]] == [ours] and seen["total"] == 1
         for method, path, body in (
             ("PATCH", f"{BASE}/{theirs}", {"title": "crossed"}),
-            ("POST", f"{BASE}/{theirs}/snooze", {"fire_at": LATER}),
+            ("POST", f"{BASE}/{theirs}/snooze", {"fire_at": SNOOZE_TO}),
             ("POST", f"{BASE}/{theirs}/resolve", {"action": "done"}),
         ):
             resp = await c.request(method, path, json=body, headers=_as(ALICE))
@@ -689,6 +691,59 @@ async def _purge_and_check(
     assert _row(world, theirs).title == "Org A only" and _ledger(world, theirs) == ["created"]
 
 
+@pytest.mark.parametrize("edge", ["0001-01-01T00:00:00+05:30", "9999-12-31T23:59:59-05:00"])
+async def test_r8_a_time_at_the_edge_of_the_calendar_is_a_422(world, edge: str) -> None:
+    """Year 1 with a positive offset and year 9999 with a negative one have
+    no UTC form. Each is a 422 on every route that takes a time, never a 500."""
+    async with _client(world, world.org) as c:
+        resp = await c.post(BASE, json={"title": "x", "fire_at": edge}, headers=_as(ALICE))
+        assert resp.status_code == 422 and "out of range" in resp.json()["detail"]
+        rid = (await _create(c, ALICE))["id"]
+        for method, path in (("PATCH", f"{BASE}/{rid}"), ("POST", f"{BASE}/{rid}/snooze"),
+                             ("POST", f"{BASE}/{rid}/reschedule")):
+            resp = await c.request(method, path, json={"fire_at": edge}, headers=_as(ALICE))
+            assert resp.status_code == 422, (method, path, resp.text)
+        for param in ("start", "end"):
+            resp = await c.get(BASE, params={param: edge}, headers=_as(ALICE))
+            assert resp.status_code == 422, (param, resp.text)
+    assert _ledger(world, rid) == ["created"]
+
+
+async def test_r8_a_bad_zone_estimate_or_snooze_is_a_422(world) -> None:
+    async with _client(world, world.org) as c:
+        # "America" names a directory of the zone database, not a zone.
+        for extra in ({"tz": "America"}, {"tz": "../etc/passwd"},
+                      {"estimate_minutes": 0}, {"estimate_minutes": 10081}):
+            resp = await c.post(BASE, json={"title": "x", "fire_at": AT, **extra},
+                                headers=_as(ALICE))
+            assert resp.status_code == 422, (extra, resp.text)
+        week = await c.post(BASE, json={"title": "A week", "fire_at": AT,
+                                        "estimate_minutes": 10080}, headers=_as(ALICE))
+        assert week.status_code == 201
+        rid = week.json()["id"]
+        for body in ({"tz": "America"}, {"estimate_minutes": 10081}):
+            resp = await c.patch(f"{BASE}/{rid}", json=body, headers=_as(ALICE))
+            assert resp.status_code == 422, (body, resp.text)
+        resp = await c.post(f"{BASE}/{rid}/reschedule", json={"fire_at": AT, "tz": "America"},
+                            headers=_as(ALICE))
+        assert resp.status_code == 422
+
+        now = datetime.now(UTC)
+        for when in (now - timedelta(hours=1), now + timedelta(days=367)):
+            resp = await c.post(f"{BASE}/{rid}/snooze", json={"fire_at": when.isoformat()},
+                                headers=_as(ALICE))
+            assert resp.status_code == 422 and "within 366 days" in resp.json()["detail"]
+        ok = await c.post(f"{BASE}/{rid}/snooze",
+                          json={"fire_at": (now + timedelta(days=365)).isoformat()},
+                          headers=_as(ALICE))
+        assert ok.status_code == 200 and ok.json()["snoozes"] == 1
+    assert _ledger(world, rid) == ["created", "snoozed"]
+    with world.p.admin_engine.connect() as c:
+        assert c.execute(
+            text("SELECT count(*) FROM reminders WHERE member_email = :e"), {"e": ALICE},
+        ).scalar_one() == 1
+
+
 async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) -> None:
     async with _client(world, world.org) as c:
         rid = (await _create(c, ALICE))["id"]
@@ -703,7 +758,7 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
             ("POST", BASE, {"nonsense": True}),
             ("PATCH", f"{BASE}/{rid}", {"title": "off"}),
             ("POST", f"{BASE}/{rid}/resolve", {"action": "done"}),
-            ("POST", f"{BASE}/{rid}/snooze", {"fire_at": LATER}),
+            ("POST", f"{BASE}/{rid}/snooze", {"fire_at": SNOOZE_TO}),
             ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": LATER}),
             ("POST", f"{BASE}/{other}/promote", None),
             ("POST", f"{BASE}/{rid}/reopen", None),
