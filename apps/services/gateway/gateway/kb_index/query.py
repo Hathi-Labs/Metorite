@@ -211,6 +211,7 @@ def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
     }
     if reviewed:
         hit["review_at"] = _iso(row.get("review_at"))
+        hit["owner_email"] = row.get("owner_email")
     if "icon" in row:
         # KB-2f: the page icon, for `GET /knowledge/search` and its view. The
         # company retrieval builds its own `Hit` and never reads this key.
@@ -227,7 +228,7 @@ def _hit(row: dict[str, Any], *, reviewed: bool = False) -> dict[str, Any]:
 _COLUMNS = (
     "c.id AS chunk_id, p.id AS page_id, p.space_id, s.name AS space_name, "
     "p.title, c.heading_path, c.raw, c.valid_from, p.updated_at, p.review_at, "
-    "c.source_kind, p.icon, p.author_email"
+    "c.source_kind, p.icon, p.author_email, p.owner_email"
 )
 
 
@@ -245,6 +246,7 @@ async def query(
     author: str | None = None,
     updated_after: datetime | None = None,
     title_only: bool = False,
+    verified_only: bool = False,
 ) -> dict[str, Any]:
     """The fused hits for *q* over the member's visible published pages.
 
@@ -254,6 +256,8 @@ async def query(
     KB-3d. They add to the visibility clause and never replace it. With
     *title_only* the lexical half matches the page title and the semantic
     half does not run.
+    *verified_only* (KB-AI-4) adds ``core.VERIFIED_SQL`` to both halves, so only
+    a page with an owner and a review date in the future is found.
     *reviewed* applies the review factor of CX-1 in the fusion. It returns
     ``{"hits": [...], "degraded": bool}``.
     """
@@ -273,6 +277,8 @@ async def query(
     if updated_after is not None:
         extra += " AND p.updated_at >= :f_after"
         params["f_after"] = updated_after
+    if verified_only:
+        extra += f" AND {core.VERIFIED_SQL('p')}"
     if title_only:
         match = "to_tsvector('english', p.title) @@ websearch_to_tsquery('english', :q)"
         rank = "ts_rank_cd(to_tsvector('english', p.title), websearch_to_tsquery('english', :q))"
