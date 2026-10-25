@@ -242,8 +242,12 @@ describe("My work and the shared stores (fix round 1)", () => {
   });
 
   it("the host reads the date again when the tab returns", () => {
-    expect(host).toContain('"visibilitychange"');
-    expect(host).toContain('"focus"');
+    // WS-64 #128: through the one live-refresh hook, which owns both events.
+    expect(host).toContain("useLiveRefresh(");
+    expect(host).toContain("loadMyToday()");
+    const hook = fs.readFileSync(path.join(PROJECTS, "lib", "liveRefresh.ts"), "utf8");
+    expect(hook).toContain('"visibilitychange"');
+    expect(hook).toContain('"focus"');
   });
 
   it("the page uses the scope rule, not a project-only scope", () => {
