@@ -1369,3 +1369,10 @@ DROP POLICY IF EXISTS email_mailbox_member_prefs_tenant_isolation ON email_mailb
 CREATE POLICY email_mailbox_member_prefs_tenant_isolation ON email_mailbox_member_prefs
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_entities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_entities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_entities_tenant_isolation ON kb_entities;
+CREATE POLICY kb_entities_tenant_isolation ON kb_entities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

@@ -276,22 +276,34 @@ def _activity_check_values() -> set[str]:
     """The vocabulary as the DATABASE will enforce it.
 
     Assembled from every migration that constrains `pm_activities.type`, taking
-    the LAST one in file order — 146 creates the CHECK and later migrations
+    the LAST one in ladder order — 146 creates the CHECK and later migrations
     replace it wholesale, so the newest definition is the one that survives a
     full replay.
+
+    ⚠️ Only a statement that creates or alters ``pm_activities`` counts. Other
+    tables carry a ``CHECK (type IN (...))`` too (``kb_entities``, migration
+    301), and the last such CHECK in the tree is not this table's vocabulary.
+    The order is numeric, because ``sorted()`` on names puts ``217_`` before
+    ``48_``.
     """
+    owns = re.compile(
+        r"\b(?:CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?|ALTER\s+TABLE)\s+pm_activities\b",
+        re.I,
+    )
+    numbered = [p for p in MIGRATIONS.glob("*.sql") if re.match(r"\d+_", p.name)]
     latest: str | None = None
-    for path in sorted(MIGRATIONS.glob("*.sql"), key=lambda p: p.name):
-        if path.name == "schema.generated.sql":
-            continue
+    for path in sorted(numbered, key=lambda p: int(p.name.split("_", 1)[0])):
         text = "\n".join(
             re.sub(r"--.*$", "", line)
             for line in path.read_text(encoding="utf-8").splitlines()
         )
-        for match in re.finditer(
-            r"CHECK\s*\(\s*type\s+IN\s*\((.*?)\)\s*\)", text, re.I | re.S,
-        ):
-            latest = match.group(1)
+        for statement in text.split(";"):
+            if not owns.search(statement):
+                continue
+            for match in re.finditer(
+                r"CHECK\s*\(\s*type\s+IN\s*\((.*?)\)\s*\)", statement, re.I | re.S,
+            ):
+                latest = match.group(1)
     assert latest is not None, "no migration constrains pm_activities.type"
     return set(re.findall(r"'([a-z_]+)'", latest))
 

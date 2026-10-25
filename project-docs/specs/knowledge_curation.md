@@ -8,6 +8,11 @@ question of §21 the same day, as the spec recommends them. `work_plan.md` §3 r
 questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
 
+**KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
+under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
+and person resolvers, and the directory routes under the rule of §6.4.
+KC-8b and KC-8c stay open.
+
 The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
 epics, #361 to #366, and one task for each slice, #368 to #411 (§23).
 
@@ -313,9 +318,20 @@ The name and the role stay in `people`, and the People app stays their owner.
   "the Penrose", "PX-1", "Penrose Pellet Extruder". The resolver reads them
   first. `personalization.md` §5.4 `resolve_person` keeps owning the member
   aliases, and this resolver calls it for a person.
-- **A page per entity, made lazily.** An entity gets a page in its space the
-  first time a fact about it is accepted, or when a person opens "Write the
-  page". No empty page is made in bulk.
+- **A page per entity, made lazily.** An entity gets a page the first time a
+  fact about it is accepted, or when a person opens "Write the page". No
+  empty page is made in bulk. One entity has one page for the whole org.
+- **Where the page lives** (supervisor decision, 2026-10-25). A product, a
+  topic or a written workflow keeps its page in its own space. The page of a
+  person, a customer, a workstream, a workflow or the company goes into the
+  org's `company` space by default. The caller may name another space that
+  they can write in. The page never goes into a `me` space.
+- **The pointer comes first.** A directory row of another app's record has
+  no entity id until something needs one. "Write the page" calls
+  `POST /knowledge/entities/by-ref` with the type and the owner id. The route
+  reads the owner row under the rule of §6.4, then calls `ensure_entity`.
+  The page route then takes the entity id. A row that the caller cannot see
+  gets 404, and nothing is written.
 
 ### 6.3 The directories
 
@@ -342,7 +358,7 @@ four tests pass.
    | Type | The rule |
    |---|---|
    | `person` | `feature:people`, active people only. The row returns the name only, never an email, skills or HR fields |
-   | `customer` | `require_crm_enabled` for the org and `require_crm_access(user)` (`routes/crm/access.py`) |
+   | `customer` | `feature:crm`, `require_crm_enabled` for the org and `require_crm_access(user)` (`routes/crm/access.py`) |
    | `workstream` | `feature:projects`, `resolve_visibility(db, user).project_clause("p.id")`, and `p.personal_owner IS NULL`. A personal project of another member never shows |
    | `workflow` (a row of `workflows`) | `feature:workflows`. The name only, never the graph or a hook token |
    | `company` | Any member who passes test 1 |
@@ -995,7 +1011,7 @@ keeps the brain current.
 | **KC-8a** | The entity registry, backend: `kb_entities`, the page types, aliases, `ensure_entity`, the resolver, the directory routes under the rule of §6.4, lazy entity pages. It does not depend on KC-1 to KC-7 | Each person in `people` resolves to one entity. A second insert for one record fails. A member without the owning app's access gets no row of that type, and a GET by id is 404. A project the member cannot see, another member's personal project, and a CRM company outside `crm_settings.access` never show in a list, a get or an alias hit. Org B sees no entity of org A | AGENT-SAFE. HIGH tier |
 | **KC-8b** | The Directories group in the rail, after KC-8a | A rail row shows only for a type with a visible entity. The visual review passes | AGENT-SAFE |
 | **KC-8c** | After KC-6: a filing makes a product entity | The Products directory lists an entity made from a filing | AGENT-SAFE |
-| **KC-9** | Facts and episodes: `kb_episodes`, `kb_facts`, `kb_fact_episodes`, extraction from documents and pages, the update step, the quote check, fact chunks | A datasheet v3 that changes a value closes the v2 fact and keeps it in history. A fact with no quote in its episode is dropped. `test_kc_fact_audience.py`: a private fact and an org fact never merge. The eval precision is 90% or more | AGENT-SAFE to build. HIGH tier. The flip: owner |
+| **KC-9** | Facts and episodes: `kb_episodes`, `kb_facts`, `kb_fact_episodes`, extraction from documents and pages, the update step, the quote check, fact chunks | A datasheet v3 that changes a value closes the v2 fact and keeps it in history. A fact with no quote in its episode is dropped. `test_kc_fact_audience.py`: a private fact and an org fact never merge. The eval precision is 90% or more. **The rule of a restricted record (KC-8a re-verify, 2026-10-25):** the page of a person, a customer or a workstream defaults to the `company` space, which every member reads. So a fact about a record that its own app hides from a member must not reach that member through the page. KC-9 gates each fact and the page title of such a record by the owner rule of §6.4, or it files the page in a space whose readers all pass that rule. An R8 test proves that a member without CRM access reads no fact and no title of a customer page | AGENT-SAFE to build. HIGH tier. The flip: owner |
 | **KC-10** | The brief zone: drawn per reader, Confirm, Correct, Hide, the confidence floor, the history | Two members with different access see two briefs, and neither sees a fact outside their audience (R8). Correct closes the old fact and adds the new one | AGENT-SAFE. Showing learned facts before a click: §21 Q3 |
 | **KC-11** | "Draft this page" for an entity, STORM-shaped, as a KB-5a proposal | A product with 12 facts gets a cited draft. Each line of the draft cites a fact the author can see | AGENT-SAFE |
 
