@@ -204,13 +204,27 @@ async def member_day(db: Any, member: str) -> Any:
     return settings_day(await member_settings(db, member))
 
 
-async def member_busy(db: Any, member: str, now: datetime) -> slot.Busy:
-    """The member's open blocks around *now*, on *db*: the planner's own
-    read of a window (``planning.LENS_SOURCE.busy_window``)."""
+async def member_busy(db: Any, member: str, now: datetime,
+                      base: datetime | None = None) -> slot.Busy:
+    """The member's open blocks on *db*, for ``slot.next_slot``: the
+    planner's own read of a window (``planning.LENS_SOURCE.busy_window``).
+
+    Option 3 of the slot looks from *now*, and option 2 from *base*, the
+    reminder's own time. So the read covers the days after each, in one
+    window when they meet and in two when *base* is far from *now*."""
     from gateway.routes.projects.planning import LENS_SOURCE
 
-    rows = await LENS_SOURCE.busy_window(
-        db, member, now - slot.BUSY_BEFORE, now + slot.BUSY_AFTER)
+    start, end = now - slot.BUSY_BEFORE, now + slot.BUSY_AFTER
+    windows = [(start, end)]
+    if base is not None:
+        low, high = base - slot.BUSY_BEFORE, base + slot.BUSY_AFTER
+        if low > end or high < start:
+            windows.append((low, high))
+        else:
+            windows = [(min(start, low), max(end, high))]
+    rows: list[Any] = []
+    for low, high in windows:
+        rows.extend(await LENS_SOURCE.busy_window(db, member, low, high))
     return slot.busy_blocks(rows)
 
 
@@ -274,7 +288,7 @@ async def _check_back(db: Any, row: Any, day: Any, now: datetime, done: int) -> 
 async def _brief_and_move(db: Any, row: Any, day: Any, now: datetime) -> str:
     """Steps 3 and 4: the brief, then one new slot. The brief line says the
     new time ("Moved to Sat 10:00"), so both rows go in one transaction."""
-    busy = await member_busy(db, row.member_email, now)
+    busy = await member_busy(db, row.member_email, now, row.fire_at)
     new_at = slot.next_slot(slot.MemberDay(day, busy), row, now)
     await _ledger(db, row, "briefed", {"at": _iso(now)})
     await db.execute(text(

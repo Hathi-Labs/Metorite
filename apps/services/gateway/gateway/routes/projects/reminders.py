@@ -616,7 +616,7 @@ async def _smart_slot(db: Any, row: Any, me: str) -> datetime:
 
     now = datetime.now(UTC)
     day = await member_day(db, me)
-    busy = await member_busy(db, me, now)
+    busy = await member_busy(db, me, now, row.fire_at)
     return slot.next_slot(slot.MemberDay(day, busy), row, now)
 
 

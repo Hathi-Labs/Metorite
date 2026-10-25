@@ -172,6 +172,9 @@ def test_option_3_starts_at_the_next_quarter_after_now():
     member = slot.MemberDay(DAY)
     got = slot.next_slot(member, _reminder(_ist(10, 23)), _ist(11, 10, 7))
     assert got == _ist(11, 10, 15)
+    # At the brief, now is the day start: the slot is a quarter later that
+    # day, never now and never the day after.
+    assert slot.next_slot(member, _reminder(_ist(10, 23)), _ist(11, 8)) == _ist(11, 8, 15)
 
 
 def test_with_no_gap_in_14_days_the_slot_is_the_day_start_after_them():

@@ -151,14 +151,23 @@ def _first_gap(member: MemberDay, need: timedelta, now: datetime) -> datetime | 
     from gateway.routes.tasks.calendar import _free_intervals
 
     first = member.day.feed_day(now)
+    soonest = _next_quarter(now)
     for step in range(SLOT_DAYS):
         start, end = _day_window(member.day, first + timedelta(days=step))
         if end <= now:
             continue
         for gap_start, gap_end in _free_intervals(start, end, list(member.busy), now):
-            if gap_end - gap_start >= need and _fits(member, gap_start, now):
-                return gap_start
+            # A gap that opens at now exactly (a day start) starts a quarter later.
+            at = gap_start if gap_start > now else soonest
+            if gap_end - at >= need and _fits(member, at, now):
+                return at
     return None
+
+
+def _next_quarter(now: datetime) -> datetime:
+    """The first quarter of an hour strictly after *now*."""
+    base = now.replace(second=0, microsecond=0)
+    return base + timedelta(minutes=15 - base.minute % 15)
 
 
 def next_slot(member: MemberDay, reminder: Any, now: datetime, *,
