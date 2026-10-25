@@ -493,9 +493,13 @@ export function RenderedBody({
       )}
 
       {strip.length > 0 ? (
-        // Six tiles divide by 2, 3 and 6, so no tile sits alone on a row.
+        // Six tiles divide by 2 and by 3, so no tile sits alone on a row.
+        // `@container`: the columns follow the width of the pane, not of the
+        // window, because the rails take most of a tablet (the visual
+        // review). Six in one row wrapped each split line in three.
+        <div className="@container">
         <div
-          className="grid grid-cols-2 gap-2 sm:grid-cols-3 2xl:grid-cols-6"
+          className="grid grid-cols-2 gap-2 @2xl:grid-cols-3"
           role="group"
           aria-label="Key figures"
         >
@@ -509,6 +513,7 @@ export function RenderedBody({
               title={t.title}
             />
           ))}
+        </div>
         </div>
       ) : tiles.length > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
