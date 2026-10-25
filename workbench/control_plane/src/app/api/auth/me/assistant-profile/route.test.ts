@@ -52,6 +52,14 @@ describe("/api/auth/me/assistant-profile", () => {
     expect(asked[0].init?.method).toBe("GET");
   });
 
+  it("GET passes enabled through, for each org's answer (PZ-25)", async () => {
+    const { GET } = await import("./route");
+    for (const enabled of [true, false]) {
+      stub(() => new Response(JSON.stringify({ v: 1, learning: true, enabled }), { status: 200 }));
+      expect((await (await GET(req("", "GET"))).json()).enabled).toBe(enabled);
+    }
+  });
+
   it("PUT forwards the body", async () => {
     stub(() => new Response("{}", { status: 200 }));
     const { PUT } = await import("./route");

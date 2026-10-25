@@ -618,7 +618,14 @@ async def get_assistant_profile(
 
     A failed read answers 503, never the empty profile, so a database fault
     never reads as "the member set nothing".
+
+    PZ-25 (§14.2): the answer adds ``enabled``, which is
+    ``enabled_for`` of the org of the server-side ``UserContext``. The web
+    app shows the page, the account row and the My Day name only when it is
+    true. The key is not part of the stored shape, and no write takes it.
     """
+    from acb_common.assistant_profile import enabled_for
+
     uid = _member(user)
     try:
         async with _tenant_session() as db:
@@ -627,7 +634,9 @@ async def get_assistant_profile(
         logger.warning("auth.assistant_profile.read_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return stored_profile(row[0] if row is not None else None)
+    out: dict[str, Any] = stored_profile(row[0] if row is not None else None)
+    out["enabled"] = enabled_for(getattr(user, "organization_id", None))
+    return out
 
 
 @me_router.get("/me/assistant-profile/address",
@@ -642,9 +651,18 @@ async def get_assistant_profile_address(
     word of ``app_user.display_name``. My Day greets with it. The member
     comes from the session and the org from the bound session (R5). A
     failed read answers 503, never a name that may be wrong.
-    """
-    from acb_common.assistant_profile import ADDRESS_SQL_TEMPLATE, resolve_address_name
 
+    PZ-25 (§14.2): with the profile off for the caller's org, the answer is
+    ``""`` and the route reads nothing.
+    """
+    from acb_common.assistant_profile import (
+        ADDRESS_SQL_TEMPLATE,
+        enabled_for,
+        resolve_address_name,
+    )
+
+    if not enabled_for(getattr(user, "organization_id", None)):
+        return {"name": ""}
     uid = _member(user)
     try:
         async with _tenant_session() as db:

@@ -657,9 +657,15 @@ class Settings(BaseSettings):
     # ON adds the member's own profile block to the orchestrator's per-turn
     # context, for a solo run with a verified member
     # (`personalization.md` §5.1). OFF leaves the context byte-identical.
-    # The one reader is `acb_common.assistant_profile.enabled`. Fence:
-    # tests/unit/test_executor_profile_block.py.
+    # `assistant_profile_orgs` (PZ-25, §14.2) is a list of organization ids,
+    # separated by commas. Empty means each organization while the switch is
+    # on. A list means only those organizations. The switch off wins.
+    # The one reader of both is `acb_common.assistant_profile.enabled_for`,
+    # and it takes the bound organization. Restart after a change. Fences:
+    # tests/unit/test_executor_profile_block.py and
+    # tests/unit/test_assistant_profile_org_rollout.py.
     assistant_profile_enabled: bool = False
+    assistant_profile_orgs: str = ""
 
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #

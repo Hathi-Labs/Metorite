@@ -142,10 +142,28 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     return db
 
 
-def _user(email: str = "ana@alpha.example") -> UserContext:
+#: The org of the session (PZ-25). The routes read it from the UserContext.
+_ORG = "11111111-1111-4111-8111-111111111111"
+
+
+def _user(email: str = "ana@alpha.example", org: str | None = _ORG) -> UserContext:
     # No feature at all: the routes need none, as `/auth/me/shell` needs none.
-    return UserContext(email=email, role=UserRole.EMPLOYEE,
+    return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=org,
                        access=build_access([], roles=["member"]))
+
+
+def _stored(res: Any) -> dict[str, Any]:
+    """The GET body without ``enabled`` (PZ-25), which is not stored."""
+    body = res.json()
+    assert isinstance(body.pop("enabled"), bool)
+    return body
+
+
+def _profile_on(monkeypatch: pytest.MonkeyPatch, orgs: str = "") -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "assistant_profile_enabled", True, raising=False)
+    monkeypatch.setattr(get_settings(), "assistant_profile_orgs", orgs, raising=False)
 
 
 def _client(user: UserContext | None = None) -> TestClient:
@@ -488,7 +506,7 @@ class TestTheForget:
         assert "current_setting('app.tenant_id', true)" in sql
         assert params == {"uid": "ana@alpha.example"}
         assert fake.row is None
-        assert _client().get(_URL).json() == ap.empty_profile()
+        assert _stored(_client().get(_URL)) == ap.empty_profile()
 
 
 # ── The read ───────────────────────────────────────────────────────────────
@@ -499,9 +517,9 @@ class TestTheRead:
         empty = {"v": 1, "learning": True, "address": {}, "style": {},
                  "aliases": [], "facts": []}
         fake.row = _NO_ROW
-        assert _client().get(_URL).json() == empty
+        assert _stored(_client().get(_URL)) == empty
         fake.row = None
-        assert _client().get(_URL).json() == empty
+        assert _stored(_client().get(_URL)) == empty
 
     def test_the_read_drops_what_it_does_not_know(self, fake: _FakeDB) -> None:
         fake.row = {
@@ -514,7 +532,7 @@ class TestTheRead:
             "aliases": [{"id": "a1", "alias": "Raj", "email": "bad"},
                         {"id": "a2", "alias": "Mo", "email": "mo@a.b"}],
         }
-        assert _client().get(_URL).json() == {
+        assert _stored(_client().get(_URL)) == {
             "v": 1, "learning": True,
             "address": {"name": "VJ"}, "style": {"length": "short"},
             "facts": [{"id": "f1", "text": "ok", "kind": "about"},
@@ -681,6 +699,11 @@ class TestTheAddress:
 
     URL = f"{_URL}/address"
 
+    @pytest.fixture(autouse=True)
+    def _on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # PZ-25: the route answers a name only with the profile on for the org.
+        _profile_on(monkeypatch)
+
     @pytest.mark.parametrize(("stored", "row", "name"), [
         ({"address": {"name": "VJ"}}, ("Viju", "Asia/Kolkata", "Vijay Varada"), "VJ"),
         ({"address": {}}, ("Viju", None, "Vijay Varada"), "Viju"),
@@ -720,7 +743,8 @@ class TestTheAddress:
     def test_the_profile_get_is_unchanged(self, fake: _FakeDB) -> None:
         fake.address = ("Viju", "Asia/Kolkata", "Vijay Varada")
         body = _client().get(_URL).json()
-        assert set(body) == {"v", "learning", "address", "style", "aliases", "facts"}
+        assert set(body) == {"v", "learning", "address", "style", "aliases", "facts",
+                             "enabled"}
         assert body["address"] == {"name": "VJ"}
         assert [s for s, _ in fake.sql] == [s for s, _ in fake.sql
                                             if s.startswith("SELECT assistant_profile")]
@@ -753,3 +777,115 @@ def test_no_jsonb_cast_sits_beside_a_bind_name() -> None:
         assert "::" not in value, name
     assert {"_READ_SQL", "_PATCH_ITEM_SQL", "_DELETE_ITEM_SQL", "_MERGE_KEY",
             "_APPEND_ITEM", "_FORGET_SQL"} <= set(checked)
+
+
+# ── PZ-25: the switch per organization (§14.2, D113) ───────────────────────
+
+
+_IN = "AAAAAAAA-1111-4111-8111-111111111111"
+_OUT = "bbbbbbbb-2222-4222-8222-222222222222"
+
+
+@pytest.mark.parametrize(("master", "orgs", "org", "want"), [
+    # The master switch off wins over each list.
+    (False, "", _ORG, False),
+    (False, _IN, _IN, False),
+    (False, "", None, False),
+    # On, with an empty list: each organization, but never no organization.
+    (True, "", _ORG, True),
+    (True, "", _OUT, True),
+    (True, "", None, False),
+    (True, "", "", False),
+    (True, "", "   ", False),
+    # On, with a list: only the listed organizations.
+    (True, _IN, _IN, True),
+    (True, _IN, _OUT, False),
+    (True, _IN, None, False),
+    # Case and spaces do not matter, on either side.
+    (True, f"  {_IN.lower()} ", _IN, True),
+    (True, _IN, f" {_IN.lower()}  ", True),
+    # An empty entry drops, and the rest still counts.
+    (True, f" , ,{_IN},,", _IN, True),
+    (True, f" , ,{_IN},,", _OUT, False),
+    # A list of only empty entries is the empty list.
+    (True, " , , ", _OUT, True),
+    # Two organizations.
+    (True, f"{_OUT},{_IN}", _OUT, True),
+])
+def test_enabled_for_follows_the_rule(monkeypatch: pytest.MonkeyPatch, master: bool,
+                                      orgs: str, org: str | None, want: bool) -> None:
+    from acb_common import assistant_profile as shared
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "assistant_profile_enabled", master, raising=False)
+    monkeypatch.setattr(get_settings(), "assistant_profile_orgs", orgs, raising=False)
+    assert shared.enabled_for(org) is want
+
+
+def test_enabled_for_fails_closed_on_a_settings_fault(monkeypatch: pytest.MonkeyPatch) -> None:
+    import acb_common
+    from acb_common import assistant_profile as shared
+
+    def boom() -> Any:
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr(acb_common, "get_settings", boom)
+    assert shared.enabled_for(_ORG) is False
+
+
+class TestTheRoutesPerOrg:
+    """PZ-25: ``enabled`` on the GET, and no name outside the list."""
+
+    def test_the_get_says_enabled_by_the_session_s_org(self, fake: _FakeDB,
+                                                       monkeypatch) -> None:
+        _profile_on(monkeypatch, orgs=_IN)
+        assert _client(_user(org=_IN)).get(_URL).json()["enabled"] is True
+        assert _client(_user(org=_OUT)).get(_URL).json()["enabled"] is False
+        assert _client(_user(org=None)).get(_URL).json()["enabled"] is False
+
+    def test_the_get_says_disabled_with_the_master_off(self, fake: _FakeDB,
+                                                       monkeypatch) -> None:
+        _profile_on(monkeypatch, orgs="")
+        assert _client(_user(org=_OUT)).get(_URL).json()["enabled"] is True
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "assistant_profile_enabled", False)
+        assert _client(_user(org=_OUT)).get(_URL).json()["enabled"] is False
+
+    def test_the_address_is_empty_outside_the_list_and_reads_nothing(
+        self, fake: _FakeDB, monkeypatch,
+    ) -> None:
+        _profile_on(monkeypatch, orgs=_IN)
+        fake.row = {"address": {"name": "VJ"}}
+        fake.address = ("Viju", "Asia/Kolkata", "Vijay Varada")
+        res = _client(_user(org=_OUT)).get(f"{_URL}/address")
+        assert res.status_code == 200
+        assert res.json() == {"name": ""}
+        assert fake.sql == []
+        assert _client(_user(org=_IN)).get(f"{_URL}/address").json() == {"name": "VJ"}
+
+    def test_a_write_does_not_take_enabled(self, fake: _FakeDB) -> None:
+        """``enabled`` is an answer, never a stored key."""
+        res = _put({"key": "enabled", "value": True})
+        assert res.status_code == 422
+        assert _writes(fake) == []
+
+
+def test_an_entry_that_is_not_a_uuid_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from acb_common import assistant_profile as shared
+    from acb_common import get_settings
+
+    shared._parse_orgs.cache_clear()
+    raw = f"{_IN}, hathi-labs ,"
+    monkeypatch.setattr(get_settings(), "assistant_profile_enabled", True, raising=False)
+    monkeypatch.setattr(get_settings(), "assistant_profile_orgs", raw, raising=False)
+    with caplog.at_level(logging.WARNING, logger=shared.__name__):
+        assert shared.enabled_for(_IN) is True
+        assert shared.enabled_for(_OUT) is False
+    warned = [r for r in caplog.records if r.getMessage() == "assistant_profile.orgs.not_a_uuid"]
+    assert [getattr(r, "entry", None) for r in warned] == ["hathi-labs"]
+    shared._parse_orgs.cache_clear()
