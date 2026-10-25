@@ -707,10 +707,11 @@ MEMBER_NO_NAME_LINE = (
 _PROFILE_AGENT = "orchestrator"
 #: The rendered block by ``(org, member)``, with the time it was read, the
 #: member's write count (``assistant_profile.generation``), the member's zone
-#: (``people.timezone``) and the greeting of the block. A miss is cached
+#: (``people.timezone``), the greeting of the block and the stored interview
+#: (PZ-26), so the due line is computed per turn with the clock. A miss is cached
 #: too, so a member with no profile costs one read a minute. A write in this
 #: process moves the count, so the next turn reads again.
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str]] = {}
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
 
@@ -786,8 +787,8 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
-        return (hit[2], hit[3], hit[4])
-    block, zone, greeting = "", "", ""
+        return (_with_interview_line(hit[2], hit[5]), hit[3], hit[4])
+    block, zone, greeting, interview = "", "", "", None
     try:
         read = _read_member_profile(str(org), member)
         if read is not None:
@@ -797,15 +798,48 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
                 stored["address"].get("name"), preferred, display)
             block = assistant_profile.render_block(raw, name)
             greeting = assistant_profile.effective_greeting(raw) if block else ""
+            if stored["learning"] is True:
+                interview = stored.get("interview")
     except Exception:
-        block, zone, greeting = "", "", ""
+        block, zone, greeting, interview = "", "", "", None
     if not block:
-        zone, greeting = "", ""
+        zone, greeting, interview = "", "", None
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
-    return (block, zone, greeting)
+    return (_with_interview_line(block, interview), zone, greeting)
+
+
+def _interview_now() -> Any:
+    """The clock of the due line. A seam for the tests."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+def _with_interview_line(block: str, interview: Any) -> str:
+    """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
+
+    *interview* is the stored value of a member whose ``learning`` is on,
+    else None. The line comes only in a run where the member can write from
+    the chat: the room is solo (the caller checked), ``WRITES_OPEN`` is open
+    and the channel's writes are on. A question that the member could not
+    answer with a save would be useless. A line that would push the block over
+    ``RENDER_MAX`` is left out. No exception escapes."""
+    if not block or not interview:
+        return block
+    try:
+        from acb_common import assistant_profile
+
+        if not (assistant_profile.writes_open() and assistant_profile.channel_writes()):
+            return block
+        line = assistant_profile.interview_due_line(interview, _interview_now())
+        if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
+            return block
+        return f"{block}\n{line}"
+    except Exception:
+        return block
 
 
 def _member_profile_block(agent_name: str) -> str:
