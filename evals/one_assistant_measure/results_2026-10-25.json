@@ -1,6 +1,5 @@
 {
  "date": "2026-10-25",
- "sha": "382641bd6",
  "tier": "tier-balanced",
  "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
  "repeat": 3,
@@ -13,6 +12,178 @@
  "dropped": [],
  "spent_before_usd": 0.08,
  "spent_usd": 0.9066,
+ "chunks_run": [
+  {
+   "chunk": "chunk_r1_a",
+   "sha": "382641bd6",
+   "rows": 10,
+   "repeats": [
+    1
+   ],
+   "scenarios": [
+    "five_turns"
+   ]
+  },
+  {
+   "chunk": "chunk_r1_b",
+   "sha": "382641bd6",
+   "rows": 8,
+   "repeats": [
+    1
+   ],
+   "scenarios": [
+    "find_priya",
+    "navy_fresh",
+    "navy_replay",
+    "read_invoice"
+   ]
+  },
+  {
+   "chunk": "chunk_r1_c",
+   "sha": "382641bd6",
+   "rows": 8,
+   "repeats": [
+    1
+   ],
+   "scenarios": [
+    "count_invoices",
+    "needs_reply",
+    "summarise_unread",
+    "thread_summary"
+   ]
+  },
+  {
+   "chunk": "chunk_r1_d_kept",
+   "sha": "382641bd6",
+   "rows": 6,
+   "repeats": [
+    1
+   ],
+   "scenarios": [
+    "exact_reply",
+    "reference_file",
+    "scanned_file"
+   ]
+  },
+  {
+   "chunk": "chunk_r1_e",
+   "sha": "3bac947df",
+   "rows": 4,
+   "repeats": [
+    1
+   ],
+   "scenarios": [
+    "reply_correction"
+   ]
+  },
+  {
+   "chunk": "chunk_r2_a",
+   "sha": "3bac947df",
+   "rows": 10,
+   "repeats": [
+    2
+   ],
+   "scenarios": [
+    "five_turns"
+   ]
+  },
+  {
+   "chunk": "chunk_r2_b",
+   "sha": "3bac947df",
+   "rows": 8,
+   "repeats": [
+    2
+   ],
+   "scenarios": [
+    "find_priya",
+    "navy_fresh",
+    "navy_replay",
+    "read_invoice"
+   ]
+  },
+  {
+   "chunk": "chunk_r2_c",
+   "sha": "3bac947df",
+   "rows": 8,
+   "repeats": [
+    2
+   ],
+   "scenarios": [
+    "count_invoices",
+    "needs_reply",
+    "summarise_unread",
+    "thread_summary"
+   ]
+  },
+  {
+   "chunk": "chunk_r2_d",
+   "sha": "3bac947df",
+   "rows": 10,
+   "repeats": [
+    2
+   ],
+   "scenarios": [
+    "exact_reply",
+    "reference_file",
+    "reply_correction",
+    "scanned_file"
+   ]
+  },
+  {
+   "chunk": "chunk_r3_a",
+   "sha": "3bac947df",
+   "rows": 10,
+   "repeats": [
+    3
+   ],
+   "scenarios": [
+    "five_turns"
+   ]
+  },
+  {
+   "chunk": "chunk_r3_b",
+   "sha": "3bac947df",
+   "rows": 8,
+   "repeats": [
+    3
+   ],
+   "scenarios": [
+    "find_priya",
+    "navy_fresh",
+    "navy_replay",
+    "read_invoice"
+   ]
+  },
+  {
+   "chunk": "chunk_r3_c",
+   "sha": "3bac947df",
+   "rows": 8,
+   "repeats": [
+    3
+   ],
+   "scenarios": [
+    "count_invoices",
+    "needs_reply",
+    "summarise_unread",
+    "thread_summary"
+   ]
+  },
+  {
+   "chunk": "chunk_r3_d",
+   "sha": "3bac947df",
+   "rows": 10,
+   "repeats": [
+    3
+   ],
+   "scenarios": [
+    "exact_reply",
+    "reference_file",
+    "reply_correction",
+    "scanned_file"
+   ]
+  }
+ ],
+ "sha": "mixed",
  "rows": [
   {
    "scenario": "five_turns",
@@ -140,7 +311,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -391,7 +563,8 @@
     "GET http://localhost:8080/crm/deals?q=Sagar&page=1&page_size=25",
     "GET http://localhost:8080/crm/deals?q=clinic&page=1&page_size=25"
    ],
-   "router_sends": 11
+   "router_sends": 11,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -496,7 +669,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -621,7 +795,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -665,7 +840,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -732,7 +908,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -839,7 +1016,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -904,7 +1082,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -969,7 +1148,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "382641bd6"
   },
   {
    "scenario": "five_turns",
@@ -1013,7 +1193,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "382641bd6"
   },
   {
    "scenario": "navy_fresh",
@@ -1141,7 +1322,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "navy_fresh",
@@ -1229,7 +1411,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "382641bd6"
   },
   {
    "scenario": "navy_replay",
@@ -1317,7 +1500,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "382641bd6"
   },
   {
    "scenario": "navy_replay",
@@ -1445,7 +1629,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "read_invoice",
@@ -1572,7 +1757,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "read_invoice",
@@ -1659,7 +1845,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "382641bd6"
   },
   {
    "scenario": "find_priya",
@@ -1746,7 +1933,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "382641bd6"
   },
   {
    "scenario": "find_priya",
@@ -1873,7 +2061,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "summarise_unread",
@@ -2006,7 +2195,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "summarise_unread",
@@ -2072,7 +2262,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "382641bd6"
   },
   {
    "scenario": "needs_reply",
@@ -2137,7 +2328,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "382641bd6"
   },
   {
    "scenario": "needs_reply",
@@ -2264,7 +2456,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "count_invoices",
@@ -2393,7 +2586,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "382641bd6"
   },
   {
    "scenario": "count_invoices",
@@ -2460,7 +2654,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "382641bd6"
   },
   {
    "scenario": "thread_summary",
@@ -2567,7 +2762,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "382641bd6"
   },
   {
    "scenario": "thread_summary",
@@ -2714,7 +2910,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "382641bd6"
   },
   {
    "scenario": "reference_file",
@@ -2800,7 +2997,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "382641bd6"
   },
   {
    "scenario": "reference_file",
@@ -2946,7 +3144,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "382641bd6"
   },
   {
    "scenario": "scanned_file",
@@ -3094,7 +3293,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "382641bd6"
   },
   {
    "scenario": "scanned_file",
@@ -3201,7 +3401,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "382641bd6"
   },
   {
    "scenario": "exact_reply",
@@ -3287,7 +3488,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "382641bd6"
   },
   {
    "scenario": "exact_reply",
@@ -3434,7 +3636,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "382641bd6"
   },
   {
    "scenario": "reply_correction",
@@ -3600,7 +3803,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 7
+   "router_sends": 7,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -3727,7 +3931,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -3833,7 +4038,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -3920,7 +4126,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -3987,7 +4194,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4074,7 +4282,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4139,7 +4348,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4204,7 +4414,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4248,7 +4459,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4375,7 +4587,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4543,7 +4756,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 7
+   "router_sends": 7,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4648,7 +4862,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4814,7 +5029,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 7
+   "router_sends": 7,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -4858,7 +5074,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_fresh",
@@ -4945,7 +5162,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_fresh",
@@ -5093,7 +5311,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_replay",
@@ -5221,7 +5440,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_replay",
@@ -5309,7 +5529,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "read_invoice",
@@ -5415,7 +5636,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "read_invoice",
@@ -5542,7 +5764,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "find_priya",
@@ -5669,7 +5892,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "find_priya",
@@ -5756,7 +5980,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "summarise_unread",
@@ -5822,7 +6047,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "summarise_unread",
@@ -5952,7 +6178,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "needs_reply",
@@ -6079,7 +6306,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "needs_reply",
@@ -6144,7 +6372,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "count_invoices",
@@ -6233,7 +6462,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "count_invoices",
@@ -6389,7 +6619,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "thread_summary",
@@ -6517,7 +6748,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "thread_summary",
@@ -6623,7 +6855,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -6728,7 +6961,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -6814,7 +7048,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -6858,7 +7093,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -7124,7 +7360,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 12
+   "router_sends": 12,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reference_file",
@@ -7251,7 +7488,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reference_file",
@@ -7337,7 +7575,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "scanned_file",
@@ -7348,11 +7587,11 @@
    "checks": {
     "ran": true,
     "admits_unreadable": true,
-    "no_content_claim": true,
+    "no_content_claim": false,
     "tried_the_file": true,
     "no_email_delegation": true
    },
-   "passed": true,
+   "passed": false,
    "answer": "I can't read what the drawing shows. The attachment is `Gearbox_GB-40_rev3.pdf`, and it's a scanned page (an image), so there's no text for me to extract.\n\nWhat I can tell you: Ravi Kumar sent it in [Drawings for review](/email?email=7a5e0000-0000-4000-8000-000000000008) on 24 Oct. It's a revision-3 drawing of a gearbox, model GB-40, and he wants your comments by Monday (tomorrow). To read the drawing itself, open the PDF in the email and look at the image.",
    "error": null,
    "email_tools": [
@@ -7444,7 +7683,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "scanned_file",
@@ -7592,7 +7832,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "exact_reply",
@@ -7739,7 +7980,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "exact_reply",
@@ -7825,7 +8067,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -7953,7 +8196,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8313,7 +8557,8 @@
     "GET http://localhost:8080/projects/search?q=clinic&limit=10",
     "GET http://localhost:8080/crm/pipeline?per_lane=5"
    ],
-   "router_sends": 16
+   "router_sends": 16,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8357,7 +8602,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8482,7 +8728,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8526,7 +8773,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8613,7 +8861,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8776,7 +9025,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 7
+   "router_sends": 7,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8841,7 +9091,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8906,7 +9157,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "five_turns",
@@ -8950,7 +9202,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_fresh",
@@ -9099,7 +9352,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_fresh",
@@ -9186,7 +9440,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_replay",
@@ -9274,7 +9529,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "navy_replay",
@@ -9401,7 +9657,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "read_invoice",
@@ -9568,7 +9825,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 7
+   "router_sends": 7,
+   "sha": "3bac947df"
   },
   {
    "scenario": "read_invoice",
@@ -9655,7 +9913,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "find_priya",
@@ -9741,7 +10000,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "find_priya",
@@ -9888,7 +10148,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "summarise_unread",
@@ -10021,7 +10282,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "summarise_unread",
@@ -10087,7 +10349,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "needs_reply",
@@ -10152,7 +10415,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "needs_reply",
@@ -10280,7 +10544,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "count_invoices",
@@ -10411,7 +10676,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "count_invoices",
@@ -10477,7 +10743,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "thread_summary",
@@ -10583,7 +10850,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "thread_summary",
@@ -10729,7 +10997,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -10773,7 +11042,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 1
+   "router_sends": 1,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -10919,7 +11189,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -10982,7 +11253,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 2
+   "router_sends": 2,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reply_correction",
@@ -11088,7 +11360,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reference_file",
@@ -11174,7 +11447,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "reference_file",
@@ -11301,7 +11575,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 5
+   "router_sends": 5,
+   "sha": "3bac947df"
   },
   {
    "scenario": "scanned_file",
@@ -11448,7 +11723,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   },
   {
    "scenario": "scanned_file",
@@ -11555,7 +11831,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 4
+   "router_sends": 4,
+   "sha": "3bac947df"
   },
   {
    "scenario": "exact_reply",
@@ -11641,7 +11918,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 3
+   "router_sends": 3,
+   "sha": "3bac947df"
   },
   {
    "scenario": "exact_reply",
@@ -11788,7 +12066,8 @@
     }
    ],
    "sent": [],
-   "router_sends": 6
+   "router_sends": 6,
+   "sha": "3bac947df"
   }
  ],
  "replaced": [
@@ -11946,8 +12225,8 @@
   },
   "pack": {
    "turns": 54,
-   "turns_passed": 52,
-   "checks_passed": 205,
+   "turns_passed": 51,
+   "checks_passed": 204,
    "checks": 207,
    "errors": 0,
    "first_text_s": {
@@ -11979,7 +12258,7 @@
     "names_the_mailbox": "3/3",
     "names_the_sender": "3/3",
     "names_the_senders": "3/3",
-    "no_content_claim": "3/3",
+    "no_content_claim": "2/3",
     "no_email_delegation": "54/54",
     "no_file_name_as_part": "6/6",
     "no_write": "1/3",
@@ -12014,10 +12293,26 @@
     "count_invoices": "3/3",
     "thread_summary": "3/3",
     "reference_file": "3/3",
-    "scanned_file": "3/3",
+    "scanned_file": "2/3",
     "exact_reply": "3/3",
     "reply_correction": "4/6"
    }
   }
+ },
+ "rescored": {
+  "when": "2026-10-25",
+  "sha": "f93c93939",
+  "checks": [
+   "admits_unreadable",
+   "answer_all",
+   "answer_some",
+   "no_content_claim",
+   "no_name_claim",
+   "no_reference_subject",
+   "task_no_guess"
+  ],
+  "changes": [
+   "pack scanned_file#1 r2: no_content_claim True -> False"
+  ]
  }
 }
