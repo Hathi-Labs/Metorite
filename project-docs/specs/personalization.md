@@ -1201,7 +1201,20 @@ member can reset one area or the whole interview. A fact shows its area.
 4. The executor keeps the stored `interview` in its 60 second cache. It
    computes the due line on each turn. The line comes only in a solo run with
    open profile writes, WhatsApp writes on and `learning` on.
-5. The fences are `tests/unit/test_assistant_profile_interview.py` and
+5. `profile_interview(next)` gives only the area that is due now. A member
+   who said no gets nothing. `next_sitting` starts a sitting: it sets
+   `sitting_at`, and for two hours the chat may mark an area `asked`. Outside
+   a sitting, the route refuses `asked` from the chat unless a question is
+   due. Settings is not limited.
+6. `profile_interview(stop)` marks `never` each area that is not `answered`.
+   `profile_interview(start)` sets `started_at` only. It is the "no thanks"
+   said in the chat. A learning switch that is off refuses both.
+7. The executor shows the due line at most once in `DUE_HOURS` for each
+   member in one process, because the model may ask and never mark `asked`.
+   This limit is ADVISORY across processes (R7). A restart, or a second box,
+   can show the line once more. `profile_remember` with `replaces` and an
+   area marks the area `answered` too.
+8. The fences are `tests/unit/test_assistant_profile_interview.py` and
    `tests/unit/test_assistant_profile_interview_r8.py`.
 
 ### 14.5 The slices
