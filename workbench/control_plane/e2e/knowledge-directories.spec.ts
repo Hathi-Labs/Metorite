@@ -217,8 +217,23 @@ test.describe("Knowledge directories", () => {
     await expect(rail(page).getByRole("button", { name: "Spaces" })).toBeVisible({ timeout: 60_000 });
     await expect(rail(page).getByText("Directories")).toHaveCount(0);
     await expect(rail(page).locator("[data-directory-type]")).toHaveCount(0);
+    // KC-8d: a refused read hides the "+" with the group.
+    await expect(rail(page).getByRole("button", { name: "Add to Directories" })).toHaveCount(0);
     await rail(page).getByRole("button", { name: "Spaces" }).click();
     await expect(page.getByRole("tab", { name: "Recently updated" })).toBeVisible();
+  });
+
+  test("with an EMPTY types answer, a writer still gets the heading and the + menu (KC-8d)", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupDirectories(page, { types: [] });
+    await page.goto("/knowledge");
+    await expect(rail(page).getByText("Directories")).toBeVisible({ timeout: 60_000 });
+    await expect(rail(page).locator("[data-directory-type]")).toHaveCount(0);
+    await rail(page).getByText("Directories").hover();
+    await rail(page).getByRole("button", { name: "Add to Directories" }).click();
+    await expect(page.getByRole("menuitem", { name: "Add a product" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Add a topic" })).toBeVisible();
   });
 
   test("a row with a page links to it and has no Write button", async ({ page }) => {

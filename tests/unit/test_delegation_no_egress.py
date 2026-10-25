@@ -791,6 +791,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: task card and answers nothing.
 #: 2026-10-24 (WS-64 OP-10, D-OP-16): convert_folder_to_project joined. It writes only through
 #: the gateway, behind one card, and says open_world=False.
+#: 2026-10-25 (WS-55 SW-11a, external_agent_access.md §12.7): needs_attention (a read) joined.
+#: It reads one gateway route, writes nothing and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -803,7 +805,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "nudge_task", "export_tasks", "attach_to_task",
     "grant_access", "revoke_access",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
-    "waiting_agent_requests",
+    "waiting_agent_requests", "needs_attention",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",

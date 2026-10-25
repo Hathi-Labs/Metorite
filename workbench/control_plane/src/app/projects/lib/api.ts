@@ -15,6 +15,13 @@ import {
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import {
+  ATTENTION_LIMIT,
+  type AttentionPage,
+  type ResumeResult,
+  attentionPage,
+  resumeBody,
+} from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
 
 /**
@@ -2936,6 +2943,18 @@ export const agentRunsApi = {
     ),
 
   /**
+   * WS-55 SW-11a. Hand a stalled run back to an agent: one member prompt with
+   * the server's text, so the run reads `needs_agent` `answered`. The rule
+   * of Release decides who may. 409 when no open recovery record fits the
+   * run, or when its task is closed. A retry with the same key writes once.
+   */
+  resume: (runId: string, idempotencyKey?: string) =>
+    call<ResumeResult & { run: AgentRun }>(
+      `agent-runs/${encodeURIComponent(runId)}/resume`,
+      { method: "POST", body: JSON.stringify(resumeBody(idempotencyKey)) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -2965,6 +2984,22 @@ export const agentRunsApi = {
    */
   summary: (projectId: string) =>
     call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
+};
+
+/**
+ * WS-55 SW-11a — Needs attention (`external_agent_access.md` §12.7). The
+ * stalled runs, the open runs of closed tasks and the tasks blocked by parked
+ * work of one project and its subprojects, over the tasks the caller can see.
+ * The rules and the words are in `needsAttention.ts`.
+ */
+export const attentionApi = {
+  /** The whole list of one project, the oldest first inside each kind. */
+  list: async (projectId: string): Promise<AttentionPage> =>
+    attentionPage(
+      await call<unknown>(
+        `needs-attention?project_id=${encodeURIComponent(projectId)}&limit=${ATTENTION_LIMIT}`,
+      ),
+    ),
 };
 
 export interface NotificationRow {

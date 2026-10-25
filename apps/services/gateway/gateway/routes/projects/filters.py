@@ -796,19 +796,34 @@ async def attach_parent_context(
             row["parent"] = seen.get(str(parent), {"hidden": True})
     return rows
 
+def open_block_sql(link: str, blocker_status: str) -> str:
+    """The ONE SQL text of an open ``blocks`` link: the link *link* is a
+    ``blocks`` link, and the status *blocker_status* of its SOURCE task is not
+    in a closed category. A finished blocker blocks nothing (WS-27p).
+
+    ``blocked_by_count`` (:data:`_BLOCKER_COUNTS_SQL`) and the "blocked by
+    parked work" kind of Needs attention (``needs_attention.py``, WS-55
+    SW-11a, spec §12.7) read it, so a card and the list cannot disagree about
+    what blocks. It binds ``:closed``, a list of :data:`CLOSED_CATEGORIES`.
+    """
+    return (
+        f"({link}.link_type = 'blocks'"
+        f" AND NOT ({blocker_status}.category = ANY(:closed)))"
+    )
+
+
 #: How many still-OPEN tasks block each of these.
 #:
 #: Filtered to open blockers in SQL rather than counted and filtered after: a
 #: finished blocker blocks nothing (WS-27p), and a card that stays marked
 #: blocked after its dependency shipped is a card people learn to ignore.
-_BLOCKER_COUNTS_SQL = """
+_BLOCKER_COUNTS_SQL = f"""
 SELECT l.target_task_id AS blocked, count(*) AS blockers
   FROM pm_task_links l
   JOIN pm_tasks t ON t.id = l.source_task_id
   JOIN pm_task_statuses s ON s.id = t.status_id
- WHERE l.link_type = 'blocks'
+ WHERE {open_block_sql('l', 's')}
    AND l.target_task_id = ANY(CAST(:ids AS uuid[]))
-   AND NOT (s.category = ANY(:closed))
  GROUP BY l.target_task_id
 """
 
@@ -1123,6 +1138,22 @@ def open_strand_sql(alias: str) -> str:
         "EXISTS (SELECT 1 FROM pm_agent_run_strands fs"
         f" WHERE {strand_fits_sql('fs', alias)})"
     )
+
+
+def open_recovery_sql(strand: str, run: str) -> str:
+    """True in SQL when the strand row *strand* is an OPEN RECOVERY RECORD of
+    the run *run* (WS-55 SW-11a, spec §12.7): the second miss of SW-10a
+    happened (``recovered_at``), and the strand still fits the run
+    (:func:`strand_fits_sql`: not cleared, the run is ``in_progress``, and no
+    activity came after it).
+
+    ONE text for the "stalled" kind of Needs attention and for the check of
+    the Resume route (``agent_runs.resume_agent_run``). So a row that the list
+    shows is a row that Resume takes, and a row that left the list is one
+    that Resume refuses. A new activity ends it at once, before the next tick
+    of the sweep writes ``cleared_at``.
+    """
+    return f"({strand}.recovered_at IS NOT NULL AND {strand_fits_sql(strand, run)})"
 
 _OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 

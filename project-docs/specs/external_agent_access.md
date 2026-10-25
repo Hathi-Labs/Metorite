@@ -2,6 +2,10 @@
 
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-16 (EA-6e and EA-6g are MERGED and live). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
+**MCP-G2 is BUILT 2026-10-25 and not merged (branch `g2-agent-fields-mt-61131dc3`, task #356).** `create_task` and `update_task` take the planning fields of the app: `importance`, `leveraged`, `estimate_mins` and `start_date`. `create_task` also takes `assignees`, and the new tool `set_assignees` replaces the assignee set (§9.2, EA3-52). `update_task` takes `parent_task_id`, which moves a task inside its project. The PUT of the assignees and the task move join `MCP_WRITE_ROUTES`, and each route takes `If-Match`, with no migration. The fence is `tests/unit/test_mcp_edge_assignees.py`, and each rule is red under a named mutation.
+
+**Fix rounds 1 and 2 (2026-10-25).** An agent may assign only a person who can already open the task through a project grant or the admin read right. The PUT of an agent keeps strict equality on `updated_at`.
+
 **MCP-G7 is BUILT and not merged (2026-10-25, branch `g7-link-version-mt-baa82d19`, task #367).** A comment, a link or an attachment on a task no longer stales the `version` that an agent holds. A field change still gives 412. `delete_task` keeps strict equality, so any change after the read gives 409. `project_management_app.md` §9.10.3 holds the decision, and migration 304 adds `pm_tasks.fields_at`.
 
 **EA-6h is BUILT and not merged (2026-10-23, branch `ea6h-delete-mt-709eaf47`).** An agent may delete a task after the member says yes in the agent (EA3-51). The member's switch is off by default, and migration 295 adds it. The member picks each subtask to delete or keep (D-OP-10, the owner, 2026-10-23). H1 to H14 pass on R8, and each is red under a named mutation in `test_mcp_edge_delete.py`.
@@ -25,6 +29,8 @@ The EA-13a stamp is `mcp:<host>:<slug>`, so Claude Code reads "Claude Code". The
 **SW-7 is BUILT, not merged, and dark (2026-10-25, branch `sw7-session-key-mt-5eab8fde`, PR #1312).** One key for each MCP session, behind `agent_mcp_sessions_enabled`, default off (§12.5). Migration 302.
 
 **SW-10a is BUILT 2026-10-25, not merged, dark (branch `sw10-stranded-mt-c6156bf6`, Metorite task #341).** Stranded runs: nudge once, then hand it to a person (§12.6). Three fixes go live at the merge: an answer that no agent reads turns `stale` after five minutes, an approved archive closes its run, and the agent of a run that the server closed may still leave one late summary. The sweep ships dark behind `agent_run_sweep_enabled`, default off. Migration 305.
+
+**SW-11a is BUILT 2026-10-25, not merged (branch `sw11-attention-mt-eb3949d0`, Metorite task #342).** Needs attention: stalled runs, open runs of closed tasks and tasks blocked by parked work (§12.7). A lens of the Projects board shows them, and a count on the project header opens it. Resume and Close the run are its two acts. It goes live at the merge with no flag of its own, and it adds no migration.
 
 **Verified against code on 2026-10-15 at `7512100f5`.** The sixth audit read the anchors of EA-6e and EA-6g at that commit: `mcp.py` (`instructions` and `_dispatch`), `archive_task` at `tasks.py:1160`, `_write_activity` at `agent_runs.py:619`, `TestTheInstructions` at `test_mcp_edge_agent_runs.py:299`, and the class C row of the archive at `manifest.py:161`. The EA-6 audit read §6.1, §9.2, §9.5, §9.6 and §15 on 2026-10-14 at `2295c9bf9`.
 
@@ -427,6 +433,7 @@ The orchestrator took the two engineering decisions below from the audit. Neithe
 | EA3-49 | **"Agent work" is the agent-worked rule of `github_integration.md` §12.2,** the one copy of that SQL (`routes/projects/agent_worked.py`). The merge-to-Done rule and the filter cannot disagree | §12.2 item 4 |
 | EA3-50 | **"Needs you" names the viewer.** An `awaiting` run reads "Needs you" to the run's member, and "Waiting for <first name>" to anyone else, as EA-12c does now | §12.2 item 2 |
 | EA3-51 | **Owner, 2026-10-23. A connected agent may delete a task after the member says yes in the agent.** Verbatim: "a permission gated thing on Claude itself, that the connected LLM can delete [the task] after taking permission from the user". This amends EA3-33 ("the agent never deletes a task") for the MCP door only. D-PM-35 still binds the in-product chat. The gate has four layers. (1) The member's own switch "Let my AI agents delete tasks", default OFF, in Integrations → AI agents. With it off, `tools/list` leaves out the tool and the route refuses. (2) The tool `delete_task` carries `destructiveHint: true`, so the client asks the person before each call, and its description tells the agent to get an explicit yes in the conversation first. (3) The call sends `expected_version` and `confirm_title`, the exact current title, so the agent must read the task and name it. (4) The server deletes through `delete_task_in`, the one core: the subtasks move up one level (D-PM-38), the tombstone trigger of migration 168 records it, and `pm.task.deleted` carries the client stamp. `request_task_archive` stays the reversible path. EA-6h builds it | §15 (EA-6h) |
+| EA3-52 | **The audit of MCP-G2, 2026-10-25 (task #356), changed by fix round 1 on the same day. `set_assignees` shows no confirmation card, because an agent may only assign people who can already open the task.** It cannot widen access. Assigning someone outside the audience of the task stays a member's act in the app. Each NEW person gets one bell that names the client, so the person sees `assigned by <member> via Claude Code`. This amends the line of §9.2 that an unassign of another person needs a human confirmation step. The owner can overrule it | §9.2 |
 
 ## 7. The connection model
 
@@ -509,7 +516,7 @@ Scopes are coarse on purpose. A member must be able to read the consent page in 
 | Scope | Lets the agent | Tools |
 |---|---|---|
 | `projects:read` | Read projects, tasks, comments and the timeline the member can see | `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline`, `search_tasks` |
-| `projects:write` | Create tasks, change fields and status, comment, assign to the member, and add references | `create_task`, `update_task`, `set_task_status`, `add_comment`, `claim_task`, `add_task_reference` |
+| `projects:write` | Create tasks, change fields and status, comment, assign members, and add references | `create_task`, `update_task`, `set_task_status`, `add_comment`, `claim_task`, `set_assignees`, `add_task_reference` |
 | `context:read` | Read the company context of D-EA-6 | `get_company_context`, plus the matching resources |
 | `offline_access` | Receive a refresh token | none. Per the MCP spec the server does not advertise this scope as a resource need |
 
@@ -605,23 +612,24 @@ On `attachment`, `system`, `agent_run` and `sync` rows the edge keeps only `via`
 - `whoami`, `list_projects`, `get_task_timeline` and `search_tasks` make one request each.
 - `get_task` makes four: the task, its relations, its references, and the `/statuses` of its project. It made three before EA-6a.
 - `get_project` makes five.
-- `create_task` (EA-6d) makes three: the statuses, the POST and the re-read of the task. It makes one more for a parent and one more for a `type_id`. A call whose key holds a `done` record makes two reads and no write. `update_task` makes three: the PATCH, the re-read and the statuses.
+- `create_task` (EA-6d) makes three: the statuses, the POST and the re-read of the task. It makes one more for a parent and one more for a `type_id`. A call whose key holds a `done` record makes two reads and no write. `update_task` makes three: the PATCH, the re-read and the statuses. MCP-G2: a move of `update_task` makes four, the read of the new parent, the POST, the re-read and the statuses. `set_assignees` makes two, the PUT and the re-read.
 - `list_tasks` makes at most 1 + N. N is the count of distinct projects on the page, and the edge caps N at 10. The 10 are the first 10 distinct `project_id` values, in page order. The edge reads those statuses at most four at a time. A task in a project past the cap gets a status `name` of null, as a task in a project that the member cannot open does.
 
 `get_company_context` is not in EA-3. EA-5 adds it, with the `context:read` scope (§13).
 
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
-EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
+EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). MCP-G2 builds `set_assignees`, and it adds inputs to `create_task` and `update_task` (EA3-52). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
 
 | Tool | Class | Input | Gateway route | Returns |
 |---|---|---|---|---|
 | `set_task_status` | B | `task_id`, `status_id`, `expected_version` | First `GET /projects/tasks/{task_id}` and `GET /projects/nodes/{project_id}/statuses`, to find the category of the target status. Then `PATCH /projects/tasks/{task_id}` (`tasks.py:619`) with the body `{status_id}` only and `If-Match: <expected_version>`. It never sends `include_subtasks` | `id`, `status` (an object with `id` and `name` (U)) and `version` |
 | `add_task_reference` | B | `task_id`, `url`, `title?` | `POST /projects/tasks/{task_id}/refs?refresh=false` (`refs.py:418`) with the body `{url, title?}` | `id`, `kind`, `provider`, `ref` (S), `url` (S), `label` (S), `title` (U), `state` and `created` |
-| `create_task` (EA-6d) | B | `project_id`, `title`, `description?`, `parent_task_id?`, `type_id?`, `status_id?`, `tags?`, `due_at?`, `idempotency_key?` | First `GET /projects/nodes/{project_id}/statuses`, `GET /projects/tasks/{parent_task_id}` when a parent is sent, and `GET /projects/nodes/{project_id}/types` when a type is sent. Then `POST /projects/tasks` with the sent keys of the input, except `idempotency_key`, and no other key. Then `GET /projects/tasks/{task_id}`, the re-read | `task`, the task of `get_task` (§9.1), and `created` |
-| `update_task` (EA-6d) | B | `task_id`, `expected_version`, and one or more of `title`, `description`, `tags`, `due_at` and `custom_fields` | `PATCH /projects/tasks/{task_id}` with the sent fields only and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task` without `assignees`, because the PATCH answer does not carry them |
+| `create_task` (EA-6d) | B | `project_id`, `title`, `description?`, `parent_task_id?`, `type_id?`, `status_id?`, `tags?`, `due_at?`, `idempotency_key?`, and since MCP-G2 `importance?`, `leveraged?`, `estimate_mins?`, `start_date?` and `assignees?` | First `GET /projects/nodes/{project_id}/statuses`, `GET /projects/tasks/{parent_task_id}` when a parent is sent, and `GET /projects/nodes/{project_id}/types` when a type is sent. Then `POST /projects/tasks` with the sent keys of the input, except `idempotency_key`, and no other key. Then `GET /projects/tasks/{task_id}`, the re-read | `task`, the task of `get_task` (§9.1), and `created` |
+| `update_task` (EA-6d) | B | `task_id`, `expected_version`, and one or more of `title`, `description`, `tags`, `due_at`, `custom_fields`, `importance`, `leveraged`, `estimate_mins` and `start_date`. Or `parent_task_id` alone (MCP-G2) | `PATCH /projects/tasks/{task_id}` with the sent fields only and `If-Match: <expected_version>`. No query. For `parent_task_id`, first `GET /projects/tasks/{parent_task_id}`, then `POST /projects/tasks/{task_id}/move` with `{parent_task_id}` and `If-Match`. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task` without `assignees`, because the PATCH answer does not carry them |
 | `add_comment` (EA-6c) | B | `task_id`, `body`, `parent_id?`, `idempotency_key` | `POST /projects/tasks/{task_id}/comments` (`activities.py:231`) with the body `{body, parent_id?}` only. No read before or after it | `id`, `task_id`, `parent_id`, `body` (U), `created_by`, `created_at` and `created`. A replay returns `id`, `task_id` and `created` only |
 | `claim_task` (EA-6b) | B | `task_id`, `expected_version` | `POST /projects/tasks/{task_id}/claim` with the body `{}` and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task`, and `moved` |
+| `set_assignees` (MCP-G2) | B | `task_id`, `assignees` (at most 50), `expected_version` | `PUT /projects/tasks/{task_id}/assignees` with the body `{assignees}` and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read | `id`, `assignees` (S) and `version` |
 
 **Rules of `set_task_status`.**
 
@@ -649,7 +657,14 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - The rules of `set_task_status` hold for `status_id`. A status outside the set of the project gets the bad-request text of §9.6. A status in `done` or `cancelled` gets "A new task cannot start in a done or cancelled status." (EA3-32 keeps both refused on a create.) Both refusals come before the POST. With no `status_id`, the route takes the default status, or the open lane of the parent (D-PM-38).
 - A parent must be a task of the same project. The edge reads the parent first. A parent that the member cannot see gets "Parent task not found." A parent of another project gets "The parent task is in another project. Send the project_id of the parent task." The route does not check this rule for a member, so the rule is the agent's only.
 - **The type (fix round 1).** A `type_id` must be a type of the project. The edge reads `GET /projects/nodes/{project_id}/types`, the read of `get_project`, before the POST. An id outside that set gets the bad-request text of §9.6, and a key stays free. The gateway checks the same rule for an agent create against `pm_task_types` in the vocabulary of the root (`core.vocabulary_scope`). So a made-up id gets 422 and never the 500 of the foreign key. The route does not check this rule for a member.
-- The tool has no assignee input, so the member cannot assign other people through it. The new task has no assignee.
+- **The planning fields (MCP-G2).** `importance`, `leveraged`, `estimate_mins` and `start_date` have the names and the types of `TaskIn`. Their limits follow the app:
+  - `importance` takes 0 or 2. These are the two values that the app writes for not Important and for Important (D78, `acb_common.priority.importance_for`). The matrix reads Important as 2 or more. The retired 0-4 scale of H-173 gets a refusal.
+  - `leveraged` takes true or false.
+  - `estimate_mins` takes whole minutes, from 0 to 2,147,483,647, the limit of the INT column.
+  - `start_date` takes a calendar date, such as 2026-10-31. The edge refuses a day that does not exist, such as 2026-02-30, before any request.
+  - The gateway holds its own copy of each limit for a signed agent write (`tasks._refuse_agent_values`). The gateway does not check a member's write.
+  - The edge cannot clear a planning field with a null, because the input check drops a null.
+- **The first assignees (MCP-G2).** `assignees` takes at most 50 member addresses or `agent:<name>` values. The gateway assigns in the transaction of the create, through `tasks._write_assignees`, the one writer of `set_assignees`. So a refused assignee leaves no task, and an `idempotency_key` stays free. The rules of `set_assignees` below hold, and the bell names the client.
 - **The re-read (fix round 1).** After the POST, the edge reads the task again with `GET /projects/tasks/{task_id}` and returns that task. The gateway adds links from the new text after the commit (`text_links.link_from_text`), and that touches the task again. So the version of the POST answer can be stale, and the version of the re-read works as the next `expected_version`. When the re-read fails, the tool returns the POST answer, because the write happened.
 - **A landed write is never busy (fix round 2).** These rules hold for each write tool, and the order is fixed:
   1. When a write answers 2xx, the tool limit moves out to at least 8 seconds from that moment (`POST_WRITE_GRACE_S`). It never moves in.
@@ -673,11 +688,18 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 
 **Rules of `update_task` (EA-6d).**
 
-- The edge builds the body from `title`, `description`, `tags`, `due_at` and `custom_fields` only, and only from the fields that the call sent. The input schema refuses every other input, so the tool cannot change the status, the project, the parent, the assignees or the archive state. A call with no field gets "Send one or more fields to change: title, description, tags, due_at or custom_fields." and no request.
+- The edge builds the PATCH body from the keys of `UPDATE_BODY_KEYS` only, and only from the fields that the call sent. The keys are `title`, `description`, `tags`, `due_at` and `custom_fields`, and since MCP-G2 the four planning fields of `create_task`. The input schema refuses every other input, so the tool cannot change the status, the project, the assignees or the archive state. A call with no field gets `TEXT_UPDATE_EMPTY` and no request.
 - `tags` replaces the whole tag list. `custom_fields` merges: a `field_key` with `null` clears that field, and the other fields stay (`custom_fields.apply_values`). The edge accepts at most 50 keys, each key-shaped. The gateway checks each value against its definition.
 - `expected_version` goes out as `If-Match`. A stale version gets 412, and the edge gives "The task changed. Read it again."
 - After the PATCH, the edge reads the task again and returns that version, as `create_task` does (fix round 1). When the re-read fails, the tool returns the PATCH answer.
 - The edge cannot clear `due_at` or `description` with a null, because the input check drops a null. A later slice can add that.
+- **A move inside the project (MCP-G2).** `parent_task_id` moves the task under another task of its project, and a null moves it to the top level. The PATCH refuses `parent_task_id`, so the edge sends the move route. The tool record names that route in `alt_writes` (§9.5 rule 4).
+  - The edge reads a new parent first. A parent that the member cannot see gets "Parent task not found." and no write.
+  - Then the edge sends `POST /projects/tasks/{task_id}/move` with the body `{parent_task_id}` and `If-Match`, and reads the task again.
+  - `parent_task_id` goes in a call of its own. A call that sends it with another field gets `TEXT_MOVE_ALONE` and no request. So one call is one write and one transaction.
+  - The rules of the move route hold: the cycle check, the epic rule and the depth limit. Each refusal gets its own fixed text (`tools._MOVE_DETAILS`).
+  - A move to another project stays a step in the app. For a signed agent, the route takes `parent_task_id` only (`tasks.AGENT_MOVE_FIELDS`). A new parent in another project gets 422 (`_refuse_agent_parent`). The edge then gives "The new parent task is in another project. Move a task to another project in the Metorite app."
+  - **The version.** The move route takes `If-Match` through `core.require_precondition`, so its rule is `precondition_holds` (MCP-G7). An absent header passes (D-PM-20), so no call of the app changes. A move changes `parent_task_id`, so a move stales a version.
 - `record_activity` stamps `meta.via` with `mcp:<slug>` on the field change, as for `set_task_status`.
 
 **Rules of `add_comment` (EA-6c, EA3-35).**
@@ -730,19 +752,40 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - After the POST, the edge reads the task again and returns that version, as `update_task` does. A failed re-read gives the POST answer, because the write happened.
 - `expected_version` goes out as `If-Match`. A stale version gets "The task changed. Read it again."
 
+**Rules of `set_assignees` (MCP-G2, EA3-52).**
+
+- **The route.** `PUT /projects/tasks/{task_id}/assignees` replaces the set. The edge sends `{assignees}` and `If-Match`, and no other key. Then it reads the task again, and returns `id`, `assignees` (S) and `version`. A failed re-read gives the set of the PUT and a null `version`.
+- **No confirmation card (EA3-52).** An agent may assign only a person who can already open the task, so an assignment never widens who can see the task. Assigning a person outside the audience of the task stays a member's act in the app. So the write goes straight through, as each other write tool does.
+- **Who may be an assignee (fix round 1).** Each NEW person must already open the task through the GRANT arm. The seam is `notifications.grant_holders`, which reads `Visibility.project_clause` under the tenant of the task. The check runs BEFORE the insert (`tasks._refuse_agent_assignees`). The assignee arm does not count, because an assignment opens the task to its assignee. So untrusted text in a task cannot make an agent show the task to a colleague with no grant.
+  - A grant counts when it names the person, an `org` subject or a `group:<slug>` of the person, on the project or a parent. The admin read right `data:org:read` counts too.
+  - The rule refuses a made-up address, a suspended member and a member of another organization. It also refuses a member with no grant on the project and no admin read right.
+  - The gateway does not check again a person who stays on the task. It does not check a removal, as in the app.
+  - The gateway does not check a member's own PUT. The app assigns such an address and names it in `not_notified`.
+- **One text for each refusal.** The gateway answers 422 `assignee_refused` with the refused entries. The edge names only the entries of the call's own list, so no text of the gateway reaches the agent. The text is the same for a hidden member, a member with no grant and a made-up address. So it does not tell whether a member exists. Nothing changes.
+- **`agent:<name>`.** The app takes any `agent:<name>`, so the gateway does too. The edge checks only the shape of the name (`AGENT_NAME_RE`). An agent gets no bell. The `pm.task.assigned` event starts the run of that agent, as for the assignment of a member (WS-27f).
+- **The bell.** Each NEW person gets exactly one `assigned` notification, through `notify`. A re-assert notifies nobody. For a signed agent write, the excerpt of the notification is `via <client>`, the label of the stamp of the connection (`agent_oauth.client_label`). So the bell shows `<member> assigned you` and the line `via Claude Code`. The timeline row of the assignment carries `meta.via` with `mcp:<host>:<slug>`.
+- **A personal project.** `assert_assignable_here` holds, so a task in a personal project takes only its owner. For a signed agent the 422 carries the code `assignee_personal_project`, and the edge gives `TEXT_ASSIGNEES_PERSONAL` for a create and for a PUT.
+- **The version (fix round 1).** For a signed agent, `If-Match` is strict equality on `updated_at` (`tasks._require_exact_version`), as for `agent_delete_task`. An assignment moves `updated_at` and not `fields_at`, so `precondition_holds` would pass a version from before the assignment of another person. The replaced set would then drop that person in silence. So any change after the read, a comment too, gives 412, and the agent reads the task again and sends the full set. The gateway reads the stamp after the current set, so an assignment that this read saw stales the version. A member's PUT follows `precondition_holds`, and an absent header passes (D-PM-20).
+- **Authority.** It is a write of `projects:write`. Branch 0 checks the nonce, the scope, the writes flag and the cap of EA3-30, as for each pair of `MCP_WRITE_ROUTES`. The edge refuses a connection without the scope at check 8. The gateway caps an agent at 50 assignees (`AGENT_MAX_ASSIGNEES`), the cap of the edge too. The record of each change is the timeline row with `meta.via`, as for each other write tool. Nobody has built EA-8 yet.
+- **Runs.** The hold of a task is its agent run (§12.3), not the assignee row. So a `set_assignees` that removes the caller does not end the run of the caller. The agent calls `release_task` to give the task back. A removed person who holds an open run keeps the run. The run holds the task until it ends or its lease runs out.
+
 **The gateway narrows an agent write (EA-6d).** This closes the follow-up of §17. For a request with `UserContext.agent` set, `routes/projects/tasks.py` answers 422 to each of these:
 
-- A body key of `POST /projects/tasks` outside `AGENT_CREATE_FIELDS`. The set is `project_id`, `title`, `description`, `parent_task_id`, `type_id`, `status_id`, `tags` and `due_at`.
-- A body key of `PATCH /projects/tasks/{task_id}` outside `AGENT_PATCH_FIELDS`, the union of the two PATCH tools. The set is `status_id`, `title`, `description`, `tags`, `due_at` and `custom_fields`.
+- A body key of `POST /projects/tasks` outside `AGENT_CREATE_FIELDS`. The set is `project_id`, `title`, `description`, `parent_task_id`, `type_id`, `status_id`, `tags` and `due_at`. MCP-G2 adds `importance`, `leveraged`, `estimate_mins`, `start_date` and `assignees`.
+- A body key of `PATCH /projects/tasks/{task_id}` outside `AGENT_PATCH_FIELDS`, the union of the two PATCH tools. The set is `status_id`, `title`, `description`, `tags`, `due_at` and `custom_fields`. MCP-G2 adds the four planning fields.
 - The query `include_subtasks=true` on that PATCH.
 - A stated status in `done` or `cancelled` on a create (`AGENT_CREATE_REFUSED`, the detail "A new task cannot start in a done or cancelled status.").
 - A move into `cancelled` on a PATCH (`AGENT_MOVE_REFUSED`, the detail "Cancelling a task stays a human step."). EA-6f allows a move into `done`. The PATCH refusal comes inside the transaction, so it rolls back the whole PATCH.
 - A parent of another project on a create.
 - A `type_id` outside the vocabulary of the project on a create (fix round 1).
+- A value of a planning field outside the limits of `create_task` above (MCP-G2, `_refuse_agent_values`).
+- A body key of `POST /projects/tasks/{task_id}/move` other than `parent_task_id`, and a new parent in another project (MCP-G2).
+- A NEW assignee without a project grant or the admin read right (`assignee_refused`, MCP-G2 fix round 1).
+- More than 50 assignees in one agent write (MCP-G2, fix round 1).
 
 A member's request is not narrowed. The narrowing lives in the route, not in branch 0, so the digest of §10.1 does not change.
 
-**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. `set_task_status`, `add_task_reference`, `update_task` and `claim_task` are idempotent: a second call with the same input changes nothing more. `add_comment` (EA-6c) is idempotent, because the tool requires an `idempotency_key`. A second `update_task` with the same `expected_version` gets 412. **`create_task` has `idempotentHint: false`** (EA-6d). The hint is one value for every call, and a call with no `idempotency_key` makes a new task each time.
+**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. `set_task_status`, `add_task_reference`, `update_task`, `claim_task` and `set_assignees` are idempotent: a second call with the same input changes nothing more. `add_comment` (EA-6c) is idempotent, because the tool requires an `idempotency_key`. A second `update_task` with the same `expected_version` gets 412. **`create_task` has `idempotentHint: false`** (EA-6d). The hint is one value for every call, and a call with no `idempotency_key` makes a new task each time. `set_assignees` also has `destructiveHint: true` (fix round 1), because an empty list removes every assignee.
 
 **A NUL character in a write (EA-6c fix round 1).** Postgres refuses a NUL (`\x00`) in text. So a write that carried one made the route answer 500, and the edge answered busy. With a key, `create_task` then marked its slot `unknown`, although no task existed. Now each write tool refuses a NUL in a body input first, before any claim and any request, with the text "The input '<name>' holds a character that Metorite cannot store." (`tools.text_nul`). `claim_task` (EA-6b) needs no such check, because its two inputs must match a UUID and a version pattern. The check reads the body keys of each tool: `CREATE_BODY_KEYS`, `UPDATE_BODY_KEYS` (also each string inside `custom_fields`, its keys too), `ADD_REF_BODY_KEYS` and `COMMENT_BODY_KEYS`. A refusal sends nothing, so a key stays free. The gateway has no NUL check of its own. A signed write that skips the edge still gets the 500, which changes nothing.
 
@@ -752,7 +795,7 @@ A member's request is not narrowed. The narrowing lives in the route, not in bra
 
 EA-6b moved `claim_task` into the table above (EA3-34), and EA-6c moved `add_comment` (EA3-35). The later rows of EA3-31 are all built. EA-6d moved `create_task` and `update_task` into the table above. The spec named the inputs `type?` and `status?`, and the build names them `type_id` and `status_id`, as the route does.
 
-The edge has **no class C tool**. A move across projects, an unassign of another person and a bulk change are not exposed. A slice that adds one must add a human confirmation step too.
+The edge has **no class C tool**. A move across projects and a bulk change are not exposed. A slice that adds one must add a human confirmation step too. MCP-G2 exposes the unassign of another person through `set_assignees`, and EA3-52 records why it needs no confirmation card. An agent may assign only a person who can already open the task, so it cannot widen access. `set_assignees` has `destructiveHint: true`, so a client may ask the person before a call.
 
 The archive is the one class C act that an agent can reach, and only through a request (EA3-40). The tool `request_task_archive` is class B, because it only writes a question. The class C act is the archive itself, and only the member does it, on a route that the edge cannot call.
 
@@ -813,6 +856,8 @@ EA-6b adds one write pair, `POST /projects/tasks/{task_id}/claim`, the route of 
 
 EA-6g adds one write pair, `POST /projects/tasks/{task_id}/archive-request`, the route of `request_task_archive` (EA3-40). The approval route `POST /projects/agent-runs/{run_id}/archive-approval` stays OUT of `MCP_ROUTES` and `MCP_WRITE_ROUTES`, and so does `POST /projects/tasks/{task_id}/archive`. Branch 0 refuses a signed request to either with 401. EA-6g does not change branch 0, so the digest of §10.1 does not change.
 
+MCP-G2 adds two write pairs. `PUT /projects/tasks/{task_id}/assignees` is the route of `set_assignees`, and it is the first `PUT` of the set. `POST /projects/tasks/{task_id}/move` is the route of the `parent_task_id` of `update_task`. The manifest holds both as class B already. Neither pair changes branch 0, so the digest of §10.1 does not change. The tool `set_assignees` has `destructiveHint: true` (fix round 1), and its pair stays class B.
+
 **What stays untouched.** Do not edit `apps/skills/skill-projects/skill_projects/manifest.py`, with one exception. Do not edit `tests/unit/test_projects_chat_coverage.py` or `tests/unit/test_projects_field_parity.py`.
 
 **The one exception (EA-6b).** A new `/projects` route needs a row in the manifest, or `test_projects_chat_coverage.py` fails. So the claim route has one class B row with the tool `claim_task`, a `PLANNED` entry, and an entry for `If-Match` in `FIELD_EXEMPT`. The in-product chat has no claim tool yet. EA-12a added its six rows in the same way (EA12-9).
@@ -821,19 +866,22 @@ EA-6g adds one write pair, `POST /projects/tasks/{task_id}/archive-request`, the
 
 **The third exception (EA-6h, EA3-51).** `POST /projects/tasks/{task_id}/agent-delete` is the one destructive pair of `MCP_WRITE_ROUTES`. Its manifest row is class X, because the chat never reaches it. The chat deletes through `delete_task` and its card. `CLASS_X_WRITES` of `test_mcp_edge_coverage.py` names it as the one class X pair that rule 2 allows. `GET /auth/me/agent-access` is a named exception, as `GET /auth/me` is. Its `PUT` and the plain `DELETE /projects/tasks/{task_id}` stay out of `MCP_ROUTES`.
 
+**The fourth exception (MCP-G2).** The move and the PUT of the assignees gain `If-Match`, and the create gains `assignees`. Each field needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends none of the three.
+
 **The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". A read has the annotations `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. A write (EA-6a) declares its `method`, and it has `readOnlyHint: false` with the other three the same.
 
 `create_task` (EA-6d) is the one named exception, with `idempotentHint: false` (§9.2). `NON_IDEMPOTENT_WRITES` in the fence names it.
 
 **The fence.** `tests/unit/test_mcp_edge_coverage.py` fails when any of these rules breaks:
 
-1. Each pair in `MCP_ROUTES` is a route that the gateway serves. Its method is `GET`, or it is `PATCH` or `POST` for a pair in `MCP_WRITE_ROUTES`. `MCP_WRITE_ROUTES` holds no GET pair.
+1. Each pair in `MCP_ROUTES` is a route that the gateway serves. Its method is `GET`, or it is `PATCH`, `POST` or `PUT` (MCP-G2) for a pair in `MCP_WRITE_ROUTES`. `MCP_WRITE_ROUTES` holds no GET pair.
 2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. A pair in `MCP_WRITE_ROUTES` may be class B. No class C or X route appears.
 3. Each tool declares a `required_scope` key, the four annotations, an `inputSchema` and an `outputSchema`. A write tool has `readOnlyHint: false` and needs `projects:write`.
 4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does: the path, query and header parameters, and the fields of each model in `dependant.body_params`. The tool record declares each map, such as `text` to `q` and `expected_version` to `If-Match`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. A new edge input needs a spec amendment.
    - EA-6d adds a fifth, `idempotency_key` of `create_task`. The edge keeps the key in its own slot, and the route takes no such field (§9.2).
    - EA-6c adds a sixth, `idempotency_key` of `add_comment` (EA3-35). The same slot keeps it, with the tool name in the slot key. The comment route takes no such field either.
    - EA-15b adds a seventh, `limit` of `my_work` (§12.4). The edge cuts its merged rows to that length. No route of `my_work` takes it.
+   - MCP-G2 adds `alt_writes` to the tool record: a write that the tool sends in place of its own write. Rule 4 reads the parameters of that route too, and each pair is in `MCP_WRITE_ROUTES`. Only `update_task` has one, the move of `parent_task_id`.
 
 This is R7. The rule names its fence.
 
@@ -1684,13 +1732,98 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 
 **Not built here.**
 
-- SW-11, the Needs attention view, reads the recovery records. It also owns a way for the member to close one.
+- SW-11, the Needs attention view, reads the recovery records. It also owns a way for the member to act on one. SW-11a builds it (§12.7).
 - SW-9, a named path for a run that waits on another person or on a system, is not built. Today only `awaiting` is a live path.
 - A `created` run that no agent picks up, and a `stopping` run that no agent stops, are not stranded by this rule.
 - The Projects bell has no verb for `nudge` (`notifications.ts`), so it reads "updated". The shell bell reads "nudged you about".
 - HANDOFF H-409 item 1, the task side: the end of a run at the moment a member moves its task to done, cancels it or archives it. The sweep closes such a run once its lease ended (step 2), and only while its flag is on.
 
 **Fence.** `tests/unit/test_agent_run_sweep_r8.py`, with an R8 test for each rule and hermetic tests for the flag, the loop and the edge. The fix round adds `TestTheFixRound` (s9 to s13) and `TestTheLoopSurvives`. Part 1 changed two fences on purpose: `test_r4_answered_and_stale_are_derived` in `test_agent_runs_r8.py`, and G3 and G14 in `test_mcp_edge_archive.py`.
+
+### 12.7 Needs attention (SW-11a)
+
+**BUILT 2026-10-25, not merged (Metorite task #342, branch `sw11-attention-mt-eb3949d0`).** It is live at the merge and has no flag of its own. The list only reads, and its two actions use member writes that exist. The supervisor's audit gave GO-NARROWED, with the product decisions below.
+
+**The answer.** A list in the Projects app shows the work that stopped and that waits for a person. It holds three kinds. A count on the project header opens it. Each row shows the task, its owner, the kind, the age and one next action.
+
+**It does not copy the Overview.** The Overview of Reports already has "Stuck work" and "Waiting on people" (`projects_reports.md` §6.8). Those panels count and explain. This list names each item on the board of one project, and it gives the action that ends it.
+
+**Rollout: prospective only.** The list sends no bell and no notification, and it writes no backfill (Paperclip §3, "no needs_attention storm on deploy"). The read writes nothing. A row shows when its rule holds, and it goes when the rule stops.
+
+**The three kinds.** Each kind joins rules that exist. Do not write a second copy of any of them.
+
+1. **Stalled.** An open recovery record of SW-10a (§12.6) that still fits its run. The record has `recovered_at` and no `cleared_at`. `filters.strand_fits_sql` holds: the run is `in_progress`, and no activity came after the record. `filters.open_recovery_sql` is the one text of this rule, and the Resume route reads it too. The task is not closed (`filters.task_closed_sql`), so a run of a closed task shows only as dangling. The owner is the run's member. The age counts from the last activity of the run. The action is Resume, and Close the run is the second action. A run can lose its agent connection: a member revoked it, or it expired (`filters.connection_gone_sql`). Then the row offers Close the run only. No session of that client can come back.
+2. **Blocked by parked work.** An open task that an open `blocks` link blocks, where the blocker is parked. The link rule is `filters.open_block_sql`, the one text that `blocked_by_count` reads too: a finished blocker blocks nothing. A parked blocker has a status in the `backlog` category. RA-1's holder rule (`analytics.holder_label_sql`) gives nobody for it: no assignee, and no open run that keeps it. Both tasks pass the open-work predicate of Load (`analytics.load_open_where`), as the handoffs of RA-3 do. The owner is the earliest assignee of the blocked task (`assigned_at`, then the address), or nobody. The age counts from the link. The action is "Open the blocker", a link.
+3. **Dangling run.** An open run (`created`, `in_progress`, `awaiting` or `stopping`) of a closed task. `filters.task_closed_sql` decides: the task is archived, or its status is `done` or `cancelled`. The owner is the run's member. The age counts from the last activity of the run. The action is Close the run. SW-10a's sweep closes an `in_progress` one of these after its lease, and only while `agent_run_sweep_enabled` is on. It never closes the other three statuses. So this list is how a person sees and closes them.
+
+**"Waiting on no one" moves to SW-9.** It needs the named waiting path of SW-9, a run that waits on another person or on a system. SW-9 is not built (§12.6). SW-11a builds the three kinds above only.
+
+**The route.** `GET /projects/needs-attention`, in `routes/projects/needs_attention.py`.
+
+- `project_id` names a project, and the list reads that project and its subprojects (`analytics.scope_clause`). With no `project_id`, it reads every task that the reader can see. A project that the reader cannot see answers 404.
+- `mine=true` keeps the rows that the caller owns: the caller is the run's member, or an assignee of the blocked task. Each row carries `yours`.
+- `offset` and `limit` (0 to 200, default 100) page the rows. Each kind reads at most `MAX_PER_KIND` (200) rows, the oldest first. Its count is exact, and `capped` is true when a kind holds more rows than the cap.
+- The answer holds `rows`, `counts` (`stalled`, `blocked` and `dangling`), `total`, `listed` (the rows before the page), `offset`, `limit` and `capped`. The rows come in the order stalled, dangling, blocked, and the oldest first inside each kind.
+
+**A row.** A field that does not apply to the kind is null.
+
+- `kind`, and the task: `task_id`, `task_number`, `title`, `project_id`, `project_name`, `category`, `archived` and `parent_task_id`.
+- `owner`, `owner_name`, `since` and `age_hours`.
+- The run: `run_id`, `run_status`, `client_via`, `client_name` and `reason`. On a stalled row, `reason` is the strand reason (`agent_quiet` or `answer_unread`). On a dangling row, it says why the task is closed (`archived`, `done` or `cancelled`).
+- The blocker: `blocker_id`, `blocker_number` and `blocker_title`.
+- `action`, `actions`, `can_act` and `yours`.
+- `connection_gone` and `can_resume` on a run row. `can_resume` is true for a stalled row whose caller may act and whose connection is live.
+
+**The rules that bind the route.**
+
+1. **§7 rule 1.** A reader sees only the rows of tasks they can open. Each query carries `task_visibility_clause`, the blocker too. A blocked row prints the blocker's title, so a hidden blocker gives no row.
+2. **The tenant and the caller come from the session.** The caller's tenant session runs each query. Nothing that names a tenant or a person comes from the request (R5, R11).
+3. **The runs flag.** While `agent_runs_enabled` is off, the stalled and dangling kinds read nothing, as `agent_summary.py` does. The routes of their two actions answer 404 then. The blocked kind still reads.
+4. **`can_act` is the rule of Release (EA-14a).** A person may end a run when they are its member, an assignee of its task, or hold `admin:members:read`. `agent_runs.person_may_end_sql` is the SQL of the first two, and the release route reads it too. So the list and the route cannot disagree. A blocked row needs no right, because its action only opens a task.
+
+**H-409 item 2 is still open.** The Release button of the run panel reads `access.is_admin`, and the server reads `admin:members:read`. This list reads the server's answer through `can_act`, so it adds no third rule. The owner still decides whether a read permission may end the run of another member.
+
+**The two actions.** Both are member writes on a run that the member can see, with the rule of Release. An agent caller gets 403. Neither changes the task.
+
+**Which one to press (supervisor's decision, fix round).** Resume asks the SAME agent client to continue, and the run keeps the task, because Resume renews the lease. Close the run frees the task for anyone. The tooltip of each button says this, and so does the line under the stalled heading.
+
+1. **Resume** (stalled rows): `POST /projects/agent-runs/{run_id}/resume`, with an `idempotency_key`. It writes ONE member `prompt` with a fixed server text, through `_write_activity`, the one write path of an activity. The run then reads `needs_agent` `answered`. So `list_agent_runs` with `needs_agent=true` lists it, and `my_work` offers it as `run_answered` to the connection that owns it. The prompt also renews the lease.
+   - It also clears the SW-7 session key of the run (§12.5). The session that held the run went quiet past its lease, so the key names nobody. A run with no key is the own run of any session of its connection, so the next session adopts it.
+   - The strand stops fitting at once, so the row leaves the list and `needs_agent` stops reading `stranded`. At its next tick the sweep clears the strand with `new_activity`, which is SW-10a's clear path. The sweep stays the only writer of `pm_agent_run_strands`.
+   - It refuses with 404 when the reader cannot see the task, and with 403 for an agent or a person with no right. It refuses with 409 when no open recovery record fits the run, and with 409 when the task is closed. It refuses with 409 when the run's agent connection is revoked or expired, and the text says to close the run. A replay of the key returns 200 and writes nothing.
+   - It sends no bell and no `pm.task.comment_added` event. It is a note to the agent, not a comment to people. The task timeline keeps the comment row as the record.
+2. **Close the run** (stalled and dangling rows): `POST /projects/agent-runs/{run_id}/release`, the route of EA-14a, with no change. The run moves to `released`, with the system line "Released by <name>/the app". The task keeps its status and its assignees. A stalled strand stops fitting, because the run left `in_progress`, and the sweep clears it with `run_moved`.
+
+**A recorded deviation: Resume writes a prompt, and it does not clear the record.** The audit asked for a clear (`cleared_at` with a reason such as `resumed_by_member`), so that the run returns to `needs_agent=true`. The code says otherwise. An open strand IS the `stranded` reason of `needs_agent` (`agent_runs._NEEDS_AGENT_REASON_SQL`). A bare clear removes the run from `needs_agent=true` until the next tick writes a new fingerprint and sends a new bell.
+
+A clear also needs a change to the CHECK of `cleared_reason` and a second writer of the table. The member prompt gives the outcome that the decision asked for, at once, through paths that exist.
+
+**The surface.** The list is a lens, not a canvas: page state, as "Waiting on me" is. `ViewMode` does not change.
+
+- The action row of the project header holds a "Needs attention" toggle beside the view switch, with the count. The title row holds a small badge, "3 need attention", while the count is above zero. A click on the badge opens the lens. On a phone, a one-line button above the canvas opens it.
+- While the lens is on, the filter bar, the strip, the bulk bar and the composer hide, as on the Overview. None of them acts on this list. A pick in either view switch goes back to the board, on a desktop and on a phone. So do the toggle and the "Back to the board" button. While the lens is on, the view switch selects no mode.
+- The list groups the rows by kind, each kind with one plain line that says what it means. A row shows the task, the owner, the age and its actions. A click on the title opens the task panel.
+- Close the run asks first, with the words of Release. Resume asks nothing, because the agent can answer it and a person can reply. Each action reads the list again.
+- A row whose action the caller may not take shows no button. It says who can act.
+
+**Chat first.** `needs_attention` is a class A read in `skill_projects/reads.py`, over the same route, with `project_id`, `mine` and `offset`. It pages through the offset of the route, and `acb_common.paging.page_line` writes its line. The assistant answers "what is stuck?" and "what needs my attention?" from it. It asks nothing. The resume route is class B, and its tool `resume_agent_run` is `PLANNED` for EA-12e, as `release_agent_run` is.
+
+**Fences.**
+
+- `tests/unit/test_needs_attention_r8.py` holds one fixture for each kind, and the near misses of each kind. Each R8 class carries `@_DB_GATE`. The hermetic classes need no database. It also holds `mine`, the runs flag and both actions.
+- The same file holds the fence "a list read writes nothing". It counts the bells, the timeline rows, the run activities and the strands before and after three readers read the list. A dead connection and a quiet Resume have their own tests.
+- The same file holds the visibility. A restricted member sees only what they can open, and organization B sees nothing.
+- Resume clears the row, and the run reads `needs_agent` `answered`. Close ends the run and leaves the task. A member with no right gets 403.
+- `test_projects_chat_coverage.py`, `test_projects_field_parity.py` and `test_projects_ui_actions.py` for the two routes, the read tool and the two client methods. `test_read_tool_paging.py` for the tool. `test_chat_placement_classes.py` for its place in the chat.
+- vitest: `app/projects/lib/needsAttention.test.ts` for the rules of the list, the badge and the actions.
+
+**What SW-11a does not build.**
+
+- "Waiting on no one" (SW-9).
+- A bell, a notification or a Home card.
+- A server rule that ends a run when its task closes (H-409 item 1, the task side).
+- The fix of H-409 item 2.
+- The lens chip in the compact chrome (`ViewSheet.tsx`). The header badge opens the lens there.
 
 ## 13. The landing-page scenario
 
@@ -1759,6 +1892,8 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | SW-13c | **MERGED (#1300, 2026-10-25).** **The gate's own run is of one connection, and a dead connection frees its task (§12.3).** No migration | A live run of another connection of the same stamp gives 409 `task_held`. A revoked or expired holder is taken over at once. `unheld` and `held_by` agree with the gate. A person keeps the old rule. `test_agent_run_exclusive.py` (R8) | AGENT-SAFE |
 | SW-7 | **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged, dark (PR #1312).** **One key for each MCP session (§12.5)**, behind `agent_mcp_sessions_enabled`. Migration 302 | With the flag off, the edge mints, reads and signs no session, and every text says that two terminals on one connection are not told apart. With it on, two sessions of one connection are two owners: B gets 409 on A's live task, and A gets its own run back. A keyless run is adopted by one session. A terminal status clears the key. Branch 0 reads the key from the signed header only. `test_mcp_edge_session.py`, `test_mcp_edge_signing.py`, `test_agent_run_exclusive.py` (R8) and `test_mcp_edge_context.py`, each red under a named mutation. **Before the flag goes on:** a check on staging with a real Claude Code (two terminals, a resume, a 404 after a key change) | AGENT-SAFE. A flip is gate `enforcement-flip` |
 | SW-10a | **BUILT 2026-10-25 on `sw10-stranded-mt-c6156bf6`, not merged, dark (Metorite task #341).** **Stranded runs (§12.6).** Part 1 goes live at the merge: `stale` before `answered` in `AGENT_RUN_STATE_SQL`, the reason `needs_agent` on the runs wire, and an approved archive that closes its run. Part 2 is the sweep `gateway/agent_run_sweep.py` behind `agent_run_sweep_enabled`, and the table `pm_agent_run_strands` (migration 305) | An answer that no agent reads reads `stale` after five minutes, and `my_work` still offers it as `run_answered`. An approve closes its run with a system line. With the flag on, a stranded run gets ONE bell and a fingerprint, `needs_agent=true` returns it, and one lease later ONE recovery record with a line on the run and on the task. A third tick adds nothing. A new activity starts over. A live lease, an `awaiting` run and a `created` run are never swept. A tick binds one org for each session. With the flag off, the loop starts no task. Each rule has an R8 test in `test_agent_run_sweep_r8.py` that a named mutation turns red | AGENT-SAFE. The flip of `agent_run_sweep_enabled` is gate `enforcement-flip` |
+| SW-11a | **BUILT 2026-10-25 on `sw11-attention-mt-eb3949d0`, not merged (Metorite task #342).** **Needs attention (§12.7).** `GET /projects/needs-attention`, `POST /projects/agent-runs/{run_id}/resume`, the lens of the board, the header badge and the read `needs_attention`. Live at the merge. No migration | Each kind lists its fixture and none of its near misses. A restricted member sees only what they can open, and organization B sees nothing. Resume hands the run back with `needs_agent` `answered`, and Close ends it with the task unchanged. A member with no right gets 403. `test_needs_attention_r8.py` (R8), each rule red under a named mutation. The manifest, UI-action and paging fences pass, and vitest `needsAttention.test.ts` passes. A visual review at four widths, in light mode, at compact density and under a changed accent | AGENT-SAFE |
+| MCP-G2 | **BUILT 2026-10-25, not merged (branch `g2-agent-fields-mt-61131dc3`, task #356). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **More fields, and `set_assignees` (§9.2, EA3-52).** `create_task` and `update_task` take `importance`, `leveraged`, `estimate_mins` and `start_date`. `create_task` takes `assignees`. `update_task` takes `parent_task_id` for a move inside the project. The new tool `set_assignees` replaces the set. The PUT of the assignees and the task move join `MCP_WRITE_ROUTES`, and both routes take `If-Match`. **Files:** `routes/projects/tasks.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (three `FIELD_EXEMPT` entries), `agent_edge/tools.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_assignees.py`, R8 through the real gateway app, each red under a named mutation (A1 to A29). **R1** a create with an assignee, `importance` and `estimate_mins` stores them, and the assignee gets one bell that names the client. **R2** a swap of one person gives one bell to the added person only. **R3** a hidden member, a suspended member and a made-up address get one text, and nothing changes. **R4** and **R5** the PUT and the move refuse a stale version. **R6** the move refuses a parent in another project. **R7** the move refuses a cycle. **R9** the edge and branch 0 refuse a connection without `projects:write` **Fix round 1:** **R13** an agent cannot assign a member with no grant. Its text is the text of a made-up address. **R14** the PUT of an agent refuses any change after its read. **R15** holds the gateway cap, and **R16** the estimate ceiling. **R17** holds a person who stays, and **R18** the text of a personal project. **R19** holds the seam `notifications.grant_holders`. **Fix round 2:** **R20** holds each way in, through a grant or the admin read right. **R21** holds a stored row in another case. | AGENT-SAFE |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
 
@@ -1775,6 +1910,12 @@ Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2
 The EA-3 slices create four test files: `tests/unit/test_mcp_edge_protocol.py`, `test_mcp_edge_signing.py`, `test_mcp_edge_coverage.py` and `test_mcp_edge_authority.py`.
 
 **The R8 database.** Run `eval "$(bash scripts/dev_db.sh --export)"`, or export the DSN of a private container. The shared scratch database holds rows from other branches. Use one private pgvector container for each R8 run, and never run two R8 runs at once.
+
+**MCP-G2 (§9.2).** The new suite, with the edge suites whose texts and lists MCP-G2 changes. Export the R8 database first:
+
+```
+uv run pytest tests/unit/test_mcp_edge_assignees.py tests/unit/test_mcp_edge_task_writes.py tests/unit/test_mcp_edge_writes.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_projects_field_parity.py tests/unit/test_projects_chat_coverage.py -v -rs
+```
 
 **EA-15 (§12.4).** The new suite, with the three fences whose text EA-15c changes. Export the R8 database first:
 
@@ -2377,3 +2518,18 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   EA-13a, EA-13b and EA-13c read MERGED now (#1137, `88c411492`). The run pill `<client_name> · <host>` is built.
 - 2026-10-23 — EA-6h is built on the branch `ea6h-delete-mt-709eaf47`, and it is not merged. Migration 295 adds `user_settings.agent_delete_enabled`. The owner added D-OP-10: the member picks each subtask to delete or keep. The EA-6h row gains H10 to H14, and §9.5 gains the third exception. No `Switch` primitive exists in `src/components/ui/`, so the card uses `Checkbox`.
 - 2026-10-20 — H-356 closed the one-release window of EA-13a fix round 1. Production serves `2bbfa2c44` on the gateway and on the edge, and `pm_agent_runs` held 0 rows. Branch 0 (§10.1 step 5) now gives 401 to the legacy host stamp of the row. The open-run read (§12.2 item 1) matches the caller's stamp only. The branch-0 digests go back to their values from before fix round 1, because the AST is the same. The label `Claude` of an old `mcp:claude.ai` row stays (N6), because it reads history and not the deploy window.
+- 2026-10-25 — MCP-G2 is built on `g2-agent-fields-mt-61131dc3`, and it is not merged (task #356). The spec audit gave GO-NARROWED. Five choices of the build follow.
+  1. `importance` takes 0 or 2, the two values that the app writes (D78). A stored 1 or 3 is from before D78, and an agent cannot write one.
+  2. `create_task` assigns in the transaction of the create. `POST /projects/tasks` takes `TaskCreateIn`, which is `TaskIn` with `assignees`. A member's create may send it too, through the same writer.
+  3. The assignee rule runs after the insert, through `notifications.deliverable`. So an agent may delegate outward to an active member with no grant on the project, as a member may.
+  4. `parent_task_id` goes in a call of its own, so one call of `update_task` is one write.
+  5. The bell names the client through the excerpt of the notification. The bell already shows an excerpt, so no screen changes.
+- 2026-10-25 — MCP-G2 fix round 1, after the review (APPROVE-WITH-FIXES) and the verification (PASS).
+  1. P1. An agent may assign only a person who can already open the task through a project grant or the admin read right. The check runs before the insert, through `notifications.grant_holders`. `deliverable` keeps both arms. EA3-52 changes to say so. A member keeps the old rule and can still delegate outward.
+  2. P2. The PUT of an agent keeps strict equality on `updated_at`. So it never drops a person that somebody added after its read.
+  3. P3. `set_assignees` has `destructiveHint: true`. A personal project gets its own text on a create too. The gateway caps an agent at 50 assignees.
+  4. R7. A new test holds the estimate ceiling of the gateway. Another holds the rule that a person who stays is not checked or notified. The mutations are A1 to A26, and each one is red.
+- 2026-10-25 — MCP-G2 fix round 2, after the second verification (PASS, no P0 to P2).
+  1. P3-1. Test r20 holds each way in. These are a `group:<slug>` grant, an `org` grant, `data:org:read` with no grant, and a grant on a parent project. The mutation that drops the groups of `grant_holders` is red now (A27).
+  2. P3-2. The writer compares the wanted set and the stored rows in lower case. A legacy row in another case is the same person, and test r21 holds it (A29).
+  3. P3-3 to P3-6. The texts say "a project grant or the admin read right", and the long sentences are split.
