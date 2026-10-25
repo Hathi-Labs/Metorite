@@ -23,6 +23,11 @@
  * "Write a page" (KB-12) arrives as `?do=write-page`, and `ShellJob` opens
  * the New page form through the leave guard. The form saves nothing by itself.
  *
+ * KC-8b: the rail gets a Directories group, one row for each type that
+ * `GET /knowledge/entity-types` answers. A 404, a 403 or a network error
+ * hides the group and shows nothing else. The open directory keeps its row,
+ * even when its type has emptied.
+ *
  * KB-9a: a manager of Knowledge (`knowledge:manage`) gets the Gaps row in the
  * rail when the gaps read answers. A New page made from a gap marks the gap
  * answered with the new page, after the page is made.
@@ -57,6 +62,7 @@ import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
 import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
+import { ENTITY_TYPES, ENTITY_TYPES_KEY, directoryTypeOf, listEntityTypes, type EntityType } from "./lib/entities";
 import {
   GAPS_KEY,
   KNOWLEDGE_GAPS,
@@ -211,6 +217,15 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
 
+  // KC-8b: the Directories group. Any failure of the read hides it.
+  const typesRead = useCachedResource<EntityType[]>(ENTITY_TYPES_KEY, listEntityTypes);
+  const openType = directoryTypeOf(pathname);
+  const directoryTypes = useMemo(() => {
+    const seen = new Set<EntityType>(typesRead.data ?? []);
+    if (openType) seen.add(openType);
+    return ENTITY_TYPES.filter((t) => seen.has(t));
+  }, [typesRead.data, openType]);
+
   const setPageFocus = useCallback((next: PageFocus | null) => setFocus(next), []);
   const openNewPage = useCallback((next?: NewPageAsk) => setAsk(next ?? {}), []);
 
@@ -285,6 +300,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     atSearch,
     atReview,
     reviewCount,
+    directories: { types: directoryTypes, selected: openType },
     gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
     onArchive: setArchiving,
   };

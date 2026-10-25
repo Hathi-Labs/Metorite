@@ -6,6 +6,11 @@
  *
  * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a),
  * and Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org.
+ * After Spaces and the space tree comes the Directories group (KC-8b): a
+ * heading, then one row for each type of entity that the gateway says the
+ * member can see (Company, Products, People, Customers, Workstreams,
+ * Workflows, Topics, in that order). The group is absent when the list is
+ * empty. The rail holds no rule about which types show.
  * Review shows only while a proposal of the assistant waits (with the
  * count) or while the member is on it. Files and Sources join them with
  * KB-2c and KB-7a, and each is ABSENT until then, never a stub. Search sits first, above the tree, so it stays in one
@@ -48,6 +53,7 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
+import { directoryHref, typeIcon, typeLabel, type EntityType } from "../lib/entities";
 import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
@@ -85,6 +91,12 @@ export interface KnowledgeRailProps {
    * of Knowledge whose gaps read answered. `count` is the open gaps.
    */
   gaps?: { selected: boolean; count: string | null } | null;
+  /**
+   * The Directories group (KC-8b). `types` are the types the gateway says the
+   * member can see, in order, and `selected` is the open directory. Absent or
+   * empty: no group.
+   */
+  directories?: { types: readonly EntityType[]; selected: EntityType | null };
   /** True on `/knowledge/review` (KB-5b). */
   atReview?: boolean;
   /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
@@ -109,6 +121,7 @@ export default function KnowledgeRail({
   atHome,
   atSearch,
   gaps = null,
+  directories,
   atReview = false,
   reviewCount = 0,
   onNavigate,
@@ -170,6 +183,29 @@ export default function KnowledgeRail({
           onArchive={onArchive}
         />
       ))}
+      {directories && directories.types.length > 0 ? (
+        <div className="mt-2 flex flex-col gap-0.5" data-knowledge-directories="">
+          {/* A heading, not a link: no onSelect, and out of the tab order. */}
+          <RailRow
+            label="Directories"
+            tier="group"
+            icon={<Icon name="BookUser" className={ICON} />}
+            buttonProps={{ tabIndex: -1, "aria-disabled": true }}
+          />
+          {directories.types.map((type) => (
+            <RailRow
+              key={type}
+              label={typeLabel(type)}
+              depth={1}
+              selected={directories.selected === type}
+              icon={<Icon name={typeIcon(type)} className={ICON} />}
+              buttonProps={{ "aria-current": directories.selected === type ? "page" : undefined }}
+              rowProps={{ "data-directory-type": type }}
+              onSelect={() => onNavigate(directoryHref(type))}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
