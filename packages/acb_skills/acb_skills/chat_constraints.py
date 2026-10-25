@@ -23,10 +23,11 @@ The words come from ``acb_common.assistant_profile.typed_words``, which the
 chat route binds before any server note changes the message. A pasted mail
 grounds nothing there. So a tool result, an email, a file or a guess of the
 model cannot plant an item, and a cut cannot drop the "not" of a sentence.
-A drop needs the member's typed words of this turn to name the item
-(``assistant_profile.grounded``), with one key word that the item holds too
-(:func:`_names_item`). So "the" or "that rule" in a stranger's text cannot
-remove one.
+Only ". ! and a line break" end a sentence, so a cut at "?", ":" or an
+ellipsis is refused too. An item with a combining strike mark is refused.
+A drop needs the member's typed words of this turn to WITHDRAW the item: a
+withdrawal ("forget", "no longer", "you can use") and a reference to it
+(:func:`withdraws`). A message that only names the topic withdraws nothing.
 
 R5. The key is ``cc:<org>:chat-limits:<session>:<member hash>`` through the
 tenant Redis wrapper. The org is the run's bound tenant, and the session and
@@ -85,8 +86,15 @@ BLOCK_HEAD = CONSTRAINTS_MARK
 #: The bound of the process cache.
 _CACHE_MAX = 4096
 
-#: The marks that end a sentence or a clause of the member's words.
-_STOPS = ".!?;:"
+#: The marks that end a sentence of the member's words, when a space or the
+#: line end follows. A run of dots (an ellipsis) is no end. "?", ":" and ";"
+#: are no end either: "Use the file names? No, read the body." is ONE
+#: sentence, and a cut at "?" turns its meaning around (fix round 1).
+_ENDS = ".!"
+#: The combining strike and overlay marks, U+0334 to U+0338. A model can put
+#: them over "not". An item that holds one is refused. Other combining marks
+#: stay, because Indian scripts need them.
+_STRIKES = frozenset(chr(c) for c in range(0x0334, 0x0339))
 #: The marks that may start a line before its first word: a list bullet.
 _BULLETS = " -*" + chr(0x2022)
 #: Typographic quote marks, as their plain forms, so a model's quote matches.
@@ -111,19 +119,26 @@ def chat_constraints_enabled() -> bool:
 
 
 def one_line(value: Any) -> str:
-    """*value* as one line: no control or format character, one space."""
+    """*value* as one line in NFC: no control or format character, one space."""
     text = "".join(
         " " if unicodedata.category(ch).startswith("C") else ch
-        for ch in str(value or "")
+        for ch in unicodedata.normalize("NFC", str(value or ""))
     )
     return " ".join(text.split())
 
 
-def _folded(value: Any) -> str:
-    """*value* for a comparison: the profile's fold, with plain quotes."""
-    from acb_common.assistant_profile import fold
+def struck(value: Any) -> bool:
+    """True when *value* holds a combining strike or overlay mark."""
+    return any(ch in _STRIKES for ch in unicodedata.normalize("NFC", str(value or "")))
 
-    return fold(str(value or "").translate(_QUOTES))
+
+def _folded(value: Any) -> str:
+    """*value* for a comparison: NFC, case folded, plain quotes, one space.
+
+    It keeps every combining mark, so a struck "not" never reads as "not",
+    and a word of an Indian script keeps its signs."""
+    text = unicodedata.normalize("NFC", str(value or "").translate(_QUOTES).casefold())
+    return " ".join(text.split())
 
 
 def clean(items: Any) -> list[str]:
@@ -137,7 +152,8 @@ def clean(items: Any) -> list[str]:
         if not isinstance(raw, str):
             continue
         text = one_line(raw)
-        if not (MIN_CHARS <= len(text) <= ITEM_CHARS) or not _LETTER.search(text):
+        if (not (MIN_CHARS <= len(text) <= ITEM_CHARS) or not _LETTER.search(text)
+                or struck(text)):
             continue
         key = _folded(text)
         out = [i for i in out if _folded(i) != key]
@@ -145,29 +161,54 @@ def clean(items: Any) -> list[str]:
     return out[-MAX_ITEMS:]
 
 
+def _sentence_edges(line: str) -> tuple[set[int], set[int]]:
+    """The starts and the ends of the sentences of one folded *line*.
+
+    A sentence ends after "." or "!" when a space or the line end follows. A
+    dot with another dot next to it, spaces between them or not, is part of
+    an ellipsis (". . ." too), and it ends nothing. The line start, after a
+    list bullet, is a start. An end may leave out its last marks, so "No
+    tables" ends where "No tables." ends.
+    """
+    starts = {len(line) - len(line.lstrip(_BULLETS))}
+    ends = {len(line)}
+    for i, ch in enumerate(line):
+        if ch not in _ENDS or (i + 1 < len(line) and line[i + 1] != " "):
+            continue
+        if ch == "." and (line[:i].rstrip()[-1:] == "." or line[i + 1:].lstrip()[:1] == "."):
+            continue
+        ends.add(i + 1)
+        nxt = i + 1
+        while nxt < len(line) and line[nxt] == " ":
+            nxt += 1
+        starts.add(nxt)
+    for end in list(ends):
+        while end > 0 and line[end - 1] in _ENDS:
+            end -= 1
+            ends.add(end)
+    return starts, ends
+
+
 def said_by_member(text: Any, words: Any) -> bool:
     """True when *text* is whole sentences of the member's typed *words*.
 
-    Both sides are folded, so case, accents and spaces do not count. *text*
-    must lie inside one line of *words*. It must start where a sentence of
-    that line starts (the line start, after a bullet, or after one of
-    ". ! ? ; :" and a space), and end where one ends (the line end, or at
-    one of those marks). So the model cannot keep "use the file names" from
-    "Do not use the file names". An empty side holds nothing.
+    Both sides are folded, so case and spaces do not count, and every
+    combining mark counts. *text* must lie inside one line of *words*. It
+    must start where a sentence of that line starts, and end where one ends
+    (:func:`_sentence_edges`). Only ". ! and a line break" end a sentence.
+    So the model cannot keep "use the file names" from "Do not use the file
+    names", "Use the file names" from "Use the file names? No.", or "use
+    tables" from "Don't... use tables.". An empty side holds nothing.
     """
     want = _folded(text)
     if not want or not _LETTER.search(want):
         return False
     for line in str(words or "").splitlines():
         said = _folded(line)
+        starts, ends = _sentence_edges(said)
         start = said.find(want)
         while start != -1:
-            before, after = said[:start], said[start + len(want):]
-            opens = (not before.strip(_BULLETS)
-                     or (before.endswith(" ") and before.rstrip()[-1:] in _STOPS))
-            closes = (not after or after[0] in _STOPS
-                      or (want[-1] in _STOPS and after.startswith(" ")))
-            if opens and closes:
+            if start in starts and start + len(want) in ends:
                 return True
             start = said.find(want, start + 1)
     return False
@@ -187,42 +228,57 @@ def _typed_words() -> str:
         return ""
 
 
-def _named_by_member(text: str, words: str) -> bool:
-    """True when the member's typed *words* hold the words of *text*
-    (``assistant_profile.grounded``, the profile's one rule)."""
-    if not text or not words:
-        return False
-    try:
-        from acb_common.assistant_profile import grounded
-
-        return grounded(text, words)
-    except Exception:
-        return False
-
-
 #: A key word: four letters or more.
 _KEY_WORD = re.compile(r"[^\W\d_]{4,}")
 #: Common words of four letters or more that name no item. Almost every
-#: message holds one, so a drop that only they name could come from any
-#: text that tells the model what to call.
+#: message holds one, so they never point at an item.
 _COMMON = frozenset({
     "about", "again", "also", "been", "best", "could", "does", "done", "drop",
-    "each", "even", "ever", "every", "forget", "from", "have", "here", "into",
-    "just", "keep", "kept", "like", "more", "much", "must", "never", "only", "please", "remove", "rule", "said", "should", "some", "that",
-    "thanks", "their", "them", "then", "there", "these", "they", "this",
-    "those", "very", "want", "were", "what", "when", "where", "which",
-    "will", "with", "would", "your",
+    "each", "even", "ever", "every", "fine", "forget", "from", "have", "here",
+    "into", "just", "keep", "kept", "like", "longer", "more", "much", "must",
+    "need", "never", "okay", "only", "please", "remove", "rule", "said",
+    "should", "some", "that", "thanks", "their", "them", "then", "there",
+    "these", "they", "this", "those", "very", "want", "were", "what", "when",
+    "where", "which", "will", "with", "would", "your",
 })
+#: The words by which a member withdraws a correction or a limit, matched as
+#: whole words of the folded typed words of the turn.
+_WITHDRAW = re.compile(
+    r"(?<!\w)(?:forget|drop|remove|delete|cancel|undo|scrap"
+    r"|ignore (?:that|it|this|the)|no longer|never ?mind|not needed|no need"
+    r"|you can (?:now |again )?(?:use|show|add|include|send|read|write|go back)"
+    r"|(?:it is|it's|that is|that's) (?:fine|ok|okay|alright) to"
+    r"|go back to|back to normal)(?!\w)"
+)
+#: The words that point at the one kept item in a short reply ("forget that").
+_POINTER = re.compile(r"(?<!\w)(?:that|it|this)(?!\w)")
+#: A short reply holds this many words at most.
+SHORT_REPLY_WORDS = 10
 
 
 def _key_words(value: Any) -> set[str]:
     return {w for w in _KEY_WORD.findall(_folded(value)) if w not in _COMMON}
 
 
-def _names_item(text: str, item: str, words: str) -> bool:
-    """True when one key word of *text* is in the *item* and in the
-    member's typed *words* too. So "the" or "that rule" names no item."""
-    return bool(_key_words(text) & _key_words(item) & _key_words(words))
+def withdraws(item: str, words: Any, kept: int) -> bool:
+    """True when the member's typed *words* of this turn withdraw *item*.
+
+    Both parts are needed (fix round 1). A withdrawal: "forget", "drop",
+    "no longer", "never mind", "you can use", "it is fine to", "go back to"
+    and the like (:data:`_WITHDRAW`). And a reference to the item: one key
+    word of the item, or "that", "it" or "this" in a reply of
+    :data:`SHORT_REPLY_WORDS` words at most when the chat keeps one item
+    only (*kept*). So a member who only names the topic ("Summarise the
+    email about the tables order") withdraws nothing, whatever a stranger's
+    text asks the model to call.
+    """
+    said = _folded(words)
+    if not said or not _WITHDRAW.search(said):
+        return False
+    if _key_words(item) & _key_words(said):
+        return True
+    return (kept == 1 and len(said.split()) <= SHORT_REPLY_WORDS
+            and _POINTER.search(said) is not None)
 
 
 # ── The store ───────────────────────────────────────────────────────────────
@@ -428,11 +484,15 @@ NOT_SAID = ("Not kept. These words are not whole sentences that the member typed
 #: The answer of a text that is too short or too long.
 BAD_LENGTH = (f"Not kept. An item has {MIN_CHARS} to {ITEM_CHARS} characters. Keep "
               "the member's sentence that sets the limit.")
+#: The answer of a text with a strike or overlay mark over its letters.
+STRUCK = ("Not kept. The text holds a strike mark over its letters. Keep the "
+          "member's sentence as they typed it.")
 #: The answers of a drop.
 DROP_CLOSED = "Nothing dropped. This chat keeps no corrections."
 DROP_EMPTY = "Nothing dropped. No correction or limit is kept in this chat."
-DROP_NOT_NAMED = ("Nothing dropped. Name the item with the words that the member "
-                  "used in this message. Ask the member which one to drop:")
+DROP_NOT_WITHDRAWN = ("Nothing dropped. In this message the member did not withdraw "
+                      "that item. Drop an item only when the member says that it no "
+                      "longer holds, and names it.")
 DROP_NO_MATCH = "Nothing dropped. No kept item matches those words. The kept items:"
 DROP_MANY = ("Nothing dropped. More than one kept item matches those words. Ask the "
              "member which one to drop:")
@@ -471,6 +531,9 @@ async def keep_correction(text: str) -> str:
     item = one_line(text)
     if not (MIN_CHARS <= len(item) <= ITEM_CHARS) or not _LETTER.search(item):
         return BAD_LENGTH
+    if struck(item):
+        _log.info("chat_constraints.keep_refused", reason="struck")
+        return STRUCK
     if not said_by_member(item, _typed_words()):
         _log.info("chat_constraints.keep_refused", reason="not_said")
         return NOT_SAID
@@ -489,13 +552,14 @@ async def keep_correction(text: str) -> str:
 async def drop_correction(text: str) -> str:
     """Drop a correction or a limit that the member withdrew in this chat.
 
-    Call it when the member says that a kept item no longer holds ("you can
-    use the file names now"). Pass the words that the member used to name
-    it. They must be in the member's message, and they must match one kept
-    item. Tell the member in one short line what you dropped.
+    Call it only when the member says, in this message, that a kept item no
+    longer holds ("you can use the file names now", "forget the rule about
+    tables"). A message that only names the topic withdraws nothing, and the
+    call refuses it. Pass words that match one kept item. Tell the member
+    in one short line what you dropped.
 
     Args:
-        text: How the member named the item, in their words.
+        text: Words that match the kept item, for example its key word.
     """
     ctx = _context(None)
     if not chat_constraints_enabled() or ctx.get(OPEN) is not True or _slot(ctx) is None:
@@ -503,12 +567,7 @@ async def drop_correction(text: str) -> str:
     items = await load_constraints(ctx)
     if not items:
         return DROP_EMPTY
-    named = one_line(text)
-    typed = _typed_words()
-    if not _named_by_member(named, typed):
-        _log.info("chat_constraints.drop_refused", reason="not_named")
-        return f"{DROP_NOT_NAMED}\n{_listed(items)}"
-    want = _folded(named)
+    want = _folded(one_line(text))
     hits = [i for i in items if _folded(i) == want]
     if not hits:
         hits = [i for i in items if want and want in _folded(i)]
@@ -517,10 +576,9 @@ async def drop_correction(text: str) -> str:
     if len(hits) > 1:
         return f"{DROP_MANY}\n{_listed(hits)}"
     gone = hits[0]
-    if not _names_item(named, gone, typed):
-        # Only common words name it ("the", "that rule"): any text can say so.
-        _log.info("chat_constraints.drop_refused", reason="no_key_word")
-        return f"{DROP_NOT_NAMED}\n{_listed(items)}"
+    if not withdraws(gone, _typed_words(), len(items)):
+        _log.info("chat_constraints.drop_refused", reason="not_withdrawn")
+        return DROP_NOT_WITHDRAWN
     after = [i for i in items if i != gone]
     await save_constraints(after, ctx)
     _log.info("chat_constraints.dropped", count=len(after))
@@ -554,4 +612,6 @@ __all__ = [
     "orchestrator_block",
     "said_by_member",
     "save_constraints",
+    "struck",
+    "withdraws",
 ]

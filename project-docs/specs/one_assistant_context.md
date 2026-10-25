@@ -1,10 +1,11 @@
 # One assistant: context that survives, and tool packs
 
 **Status:** ✅ ACTIVE (2026-10-25). Board: **WS-67**. Decision: **D116**.
-OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-3 to
-OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait for OA-6.
-Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1) to #455
-(OA-10).
+OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
+built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-3
+and OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait for
+OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1)
+to #455 (OA-10).
 
 **As built, OA-1 and OA-2.** `acb_skills/handoff.py` owns what crosses a
 handoff. The top-level run binds `member_turns`: the member's typed words of
@@ -19,6 +20,26 @@ four batch sites call it. The tier question reads the task only
 the gateway replays after a run died is in neither the history nor the
 typed words, so it does not reach the head. The live halves of the
 acceptance ("no CB6" in the answer, the reply marks) belong to OA-5.
+
+**As built, OA-4.** `acb_skills/chat_constraints.py` owns the list. It
+ships dark behind `CHAT_CONSTRAINTS`, default off.
+- Two tools belong to the orchestrator only: `keep_correction` and
+  `drop_correction`.
+- The list lives in tenant Redis at
+  `cc:<org>:chat-limits:<session>:<member hash>`. It holds 10 items at
+  most, each of 300 characters at most.
+- A keep stores only whole sentences that the member typed in this turn.
+  Only ". ! and a line break" end a sentence. A text with a strike mark is
+  refused.
+- A drop needs the member's words of this turn to withdraw the item and to
+  name it.
+- The per-turn context of the orchestrator shows the list after the email
+  working set. `head_task()` puts it after the reply rules of each task.
+- The tools open only for the member's own chat, on the web. They keep
+  nothing on the WhatsApp batch path (D115) or in a shared room.
+- Fences: `tests/unit/test_chat_constraints.py` and
+  `evals/trajectories/test_chat_constraints_trajectory.py`.
+- Open: the visible chip in the chat is a later slice.
 
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
 "specialists behind it" changes to "tool packs in it" for conversational

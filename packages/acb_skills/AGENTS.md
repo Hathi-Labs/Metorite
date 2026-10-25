@@ -529,8 +529,13 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    - A keep stores a text only when it is whole sentences that the member
      typed in this turn (`said_by_member` over
      `assistant_profile.typed_words`). Never use `member_message` for it.
-     A drop needs the member's words of this turn
-     (`assistant_profile.grounded`).
+     Only ". ! and a line break" end a sentence, and an ellipsis ends
+     nothing. An item with a combining strike mark is refused.
+   - A drop needs the member's words of this turn to withdraw the item
+     (`withdraws`): a withdrawal phrase and a key word of the item. A short
+     "forget that" counts only when the chat keeps one item.
+   - The list goes after the reply rules of a task head, so `task_of`
+     strips it with the head. A task never vouches for a list.
    - The tools act only in a run that the executor opened
      (`chat_constraints.OPEN`). The orchestrator's per-turn context shows
      the list (`orchestrator_block`), and `head_task` puts it in each task.
