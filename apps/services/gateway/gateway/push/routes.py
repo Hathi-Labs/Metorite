@@ -30,13 +30,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gateway.push import endpoints, flags, sender, store
 
+NOT_FOUND = "Not found"
+
+
+async def _push_on() -> None:
+    """404 while ``WEB_PUSH_ENABLED`` is off. A router dependency runs before
+    FastAPI reads the body, so a bad body also gets the 404, never a 422."""
+    if not flags.enabled():
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+
+
 router = APIRouter(
     prefix="/push",
     tags=["push"],
-    dependencies=[require_feature_router("chat")],
+    dependencies=[Depends(_push_on), require_feature_router("chat")],
 )
-
-NOT_FOUND = "Not found"
 NOT_CONFIGURED = "Web push is not set up on this server"
 
 #: The longest user agent we keep, as the column CHECK holds it.
