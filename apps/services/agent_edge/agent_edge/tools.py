@@ -176,13 +176,15 @@ TEXT_MOVE_TOO_DEEP = "That move makes the task tree too deep."
 TEXT_MOVE_EPIC = "An epic is the top level, so it cannot have a parent task."
 TEXT_ASSIGNEES_REFUSED = (
     "Metorite cannot assign the task to {names}. An agent can assign only a"
-    " person who can already open the task through its project. A person must"
+    " person who can already open the task through a project grant or an admin"
+    " read right. A person must"
     " assign anybody else in the Metorite app. Nothing changed.")
 TEXT_ASSIGNEES_PERSONAL = (
     "This task is in a personal project, so only its owner can hold it. Move the"
     " task to a team project in the Metorite app first. Nothing changed.")
 #: The code of the gateway's 422 for a new assignee who cannot already open
-#: the task through its grants (fix round 1). A copy of
+#: the task through a project grant or an admin read right (fix round 1).
+#: A copy of
 #: ``tasks.AGENT_ASSIGNEE_REFUSED``, and ``test_mcp_edge_assignees.py`` pins
 #: the two equal.
 ASSIGNEE_REFUSED_CODE = "assignee_refused"
@@ -3371,8 +3373,9 @@ _CREATE_INPUT: dict[str, Any] = {
         "assignees": {
             **_ASSIGNEES_INPUT,
             "description": "The first assignees: member addresses, or agent:<name>."
-                           " Each person must already open the project of the task"
-                           " through its grants. Each one gets one notification"
+                           " Each person must already open the task through a"
+                           " project grant or an admin read right. Each one gets"
+                           " one notification"
                            " that names this agent."},
         "idempotency_key": {
             "type": "string", "pattern": idempotency.KEY_PATTERN,
@@ -3731,8 +3734,9 @@ CREATE_TASK = Tool(
         " cancelled status. importance is 2 for Important or 0 for not"
         " Important. estimate_mins is whole minutes, 0 or more. start_date is a"
         " date such as 2026-10-31. assignees are member addresses or"
-        " agent:<name>. Each person must already open the project through its"
-        " grants: an agent cannot show a task to anybody new. Each person gets"
+        " agent:<name>. Each person must already open the task through a project"
+        " grant or an admin read right: an agent cannot show a task to anybody"
+        " new. Each person gets"
         " one notification that names this agent. When one person is refused,"
         " no task is made. A person assigns anybody else in the app. Send"
         " an idempotency_key when you may retry: the same key gives back the"
@@ -4185,7 +4189,8 @@ async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     The gateway's ``set_assignees`` replaces the set in one transaction. For
     a signed agent it refuses a new person who cannot already open the task
-    through its grants, and the edge names the refused entries of the call's
+    through a project grant or an admin read right, and the edge names the
+    refused entries of the call's
     own list (:func:`_assignee_codes`). The personal-project guard has its
     own code. Each NEW person gets one notification, with ``via <client>``.
     The version rule is strict equality (fix round 1): any change after the
@@ -4219,8 +4224,9 @@ SET_ASSIGNEES = Tool(
         "Replace the whole assignee set of one task this member can see. Send"
         " every assignee that must stay, and leave out each one to remove. An"
         " empty list removes every assignee. An assignee is a member address or"
-        " agent:<name>. Each new person must already open the project of the"
-        " task through its grants: an agent cannot show a task to anybody new."
+        " agent:<name>. Each new person must already open the task through a"
+        " project grant or an admin read right: an agent cannot show a task to"
+        " anybody new."
         " A person assigns anybody else in the Metorite app. When one entry is"
         " refused, nothing changes, and the text names the refused entries."
         " Each new person gets one notification in Metorite that names this"

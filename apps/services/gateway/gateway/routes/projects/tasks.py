@@ -187,7 +187,8 @@ AGENT_MAX_ESTIMATE_MINS = 2_147_483_647
 #: input sends it.
 _START_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 #: The code of the 422 when an agent names a new assignee who cannot already
-#: open the task through the grants of its project (MCP-G2, fix round 1).
+#: open the task through a project grant or the admin read right (MCP-G2,
+#: fix round 1).
 #: The detail names the refused entries of the caller's own list, and says
 #: nothing more, so it does not tell a hidden member from a made-up address.
 AGENT_ASSIGNEE_REFUSED = "assignee_refused"
@@ -296,7 +297,8 @@ async def _refuse_agent_assignees(db: Any, user: UserContext, task_id: str,
     """An agent never widens who can open a task (MCP-G2, fix round 1).
 
     Each person that an agent ADDS must already open the task through the
-    GRANT arm (``notifications.grant_holders``), and the
+    GRANT arm (``notifications.grant_holders``: a project grant of any
+    subject, a grant on a parent project, or ``data:org:read``), and the
     check runs BEFORE the insert. The assignee arm does not count: an
     assignment opens the task to its assignee, so an agent that leaned on it
     could show the title and the task to anybody whom text in a task named.
@@ -304,7 +306,8 @@ async def _refuse_agent_assignees(db: Any, user: UserContext, task_id: str,
     the app, where the member can still delegate outward.
 
     So the rule refuses a made-up address, a suspended member, a member of
-    another organization and a member with no grant, all with one text. A
+    another organization and a member with no grant and no admin read
+    right, all with one text. A
     person who stays on the task is not checked again, and a removal is not
     checked. ``agent:<name>`` is not checked, as in the app. A no-op for a
     member.
@@ -1926,15 +1929,23 @@ async def _write_assignees(
       leaves the set as it was. Removals are not guarded.
     * A signed agent call names at most :data:`AGENT_MAX_ASSIGNEES` people,
       and it refuses a NEW person who cannot already open the task through
-      its grants (:func:`_refuse_agent_assignees`). Both checks come before
-      the first write (fix round 1), so an agent never widens who can open a
-      task.
+      a project grant or the admin read right (:func:`_refuse_agent_assignees`).
+      Both checks come before the first write (fix round 1), so an agent
+      never widens who can open a task.
     * Each NEW person gets one ``assigned`` notification. A signed agent
       call writes ``via <client>`` as its excerpt (:func:`_agent_via_note`).
+    * *wanted* is lower case. A stored row may not be (a legacy row, or a
+      copy that ``recurrence.py`` made as it found it), so the two sides
+      compare in lower case. A person whose row differs only in case stays,
+      keeps the row as it is, and is neither checked nor notified again.
 
     The caller emits ``pm.task.assigned`` after the commit.
     """
-    added, removed = wanted - current, current - wanted
+    stored: dict[str, list[str]] = {}
+    for raw in current:
+        stored.setdefault(str(raw).strip().lower(), []).append(raw)
+    added = wanted - set(stored)
+    removed = {raw for low, raws in stored.items() if low not in wanted for raw in raws}
     if getattr(user, "agent", None) is not None and len(wanted) > AGENT_MAX_ASSIGNEES:
         raise HTTPException(
             status_code=422,

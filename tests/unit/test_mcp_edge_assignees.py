@@ -59,6 +59,12 @@ Fix round 1 adds these.
 * A24. ``G/tasks.py``: ``_write_assignees`` drops the cap of an agent. ``test_r15_the_gateway_caps_an_agent_at_50_assignees``.
 * A25. ``G/tasks.py``: ``_refuse_agent_values`` drops the upper bound of ``estimate_mins``. ``test_r16_the_gateway_holds_the_estimate_ceiling``.
 * A26. ``G/tasks.py``: ``_refuse_agent_assignees`` checks ``wanted``, not ``added``. ``test_r17_a_person_who_stays_is_not_checked_or_notified``.
+
+Fix round 2 adds these.
+
+* A27 (the verifier's M2). ``G/notifications.py``: ``grant_holders`` resolves no groups (``groups=()``). ``test_r20_each_grant_path_lets_an_agent_assign``.
+* A28. ``G/notifications.py``: ``grant_holders`` resolves every person as restricted. ``test_r20_each_grant_path_lets_an_agent_assign``.
+* A29. ``G/tasks.py``: ``_write_assignees`` compares ``wanted`` with the stored rows as they are. ``test_r21_a_row_in_another_case_is_the_same_person``.
 """
 from __future__ import annotations
 
@@ -469,6 +475,11 @@ MEMBER = w.MEMBER
 ANN = "ann@mcpwrites.test"
 BOB = "bob@mcpwrites.test"
 CAROL = "carol@mcpwrites.test"  # a grant on the team project only
+GRETA = "greta@mcpwrites.test"  # reaches a project through a group grant only
+OLGA = "olga@mcpwrites.test"    # reaches a project through an org grant only
+ADA = "ada@mcpwrites.test"      # data:org:read, and no grant at all
+SUE = "sue@mcpwrites.test"      # a grant on a parent project only
+GROUP_SLUG = "g2crew"
 SAM = "sam@mcpwrites.test"     # a suspended member of this organization
 EVE = "eve@mcpwrites.test"     # an active member of ANOTHER organization
 GHOST = "ghost@mcpwrites.test"  # no member at all
@@ -518,8 +529,9 @@ def world():
                            "VALUES (:id, :s, :s)"), {"id": oid, "s": slug})
     a = w._Seeder(eng, org)
     a.number = 100_000
-    for who in (MEMBER, ANN, BOB, CAROL, SAM):
+    for who in (MEMBER, ANN, BOB, CAROL, SAM, GRETA, OLGA, SUE):
         a.member(who, ["feature:projects"])
+    a.member(ADA, ["feature:projects", "data:org:read"])
     a.one("UPDATE app_user SET status = 'suspended' WHERE email = :e RETURNING id", e=SAM)
     w._Seeder(eng, org2).member(EVE, ["feature:projects"])
     team, other = a.project("Team"), a.project("Other team")
@@ -527,6 +539,21 @@ def world():
         a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
               " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
               " RETURNING project_id", p=team, s=who, a=w.OWNER, o=org)
+    # Fix round 2: one project for each other way in (P3-1).
+    group = a.one("INSERT INTO org_group (organization_id, slug, display_name)"
+                  " VALUES (CAST(:o AS uuid), :s, :s) RETURNING id", o=org, s=GROUP_SLUG)
+    a.one("INSERT INTO org_group_member (group_id, user_id, organization_id)"
+          " SELECT CAST(:g AS uuid), id, CAST(:o AS uuid) FROM app_user WHERE email = :e"
+          " RETURNING group_id", g=str(group), o=org, e=GRETA)
+    grouped, everyone = a.project("Grouped"), a.project("Everyone")
+    parent, child = a.project("Parent"), a.project("Child")
+    a.one("UPDATE pm_projects SET parent_project_id = CAST(:p AS uuid)"
+          " WHERE id = CAST(:c AS uuid) RETURNING id", p=parent, c=child)
+    for project, subject in ((grouped, f"group:{GROUP_SLUG}"), (everyone, "org"),
+                             (parent, SUE)):
+        a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+              " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
+              " RETURNING project_id", p=project, s=subject, a=w.OWNER, o=org)
     mine = a.project("Mine")
     a.one("UPDATE pm_projects SET personal_owner = :m WHERE id = CAST(:p AS uuid)"
           " RETURNING id", m=MEMBER, p=mine)
@@ -535,9 +562,13 @@ def world():
         doing=a.status(team, "Doing", "in_progress", 1),
         other=a.status(other, "To do", "todo", 0),
         mine=a.status(mine, "To do", "todo", 0),
+        grouped=a.status(grouped, "To do", "todo", 0),
+        everyone=a.status(everyone, "To do", "todo", 0),
+        child=a.status(child, "To do", "todo", 0),
     )
     world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other,
-                             mine=mine, s=s, c={}, tok={}, task=a.task)
+                             mine=mine, grouped=grouped, everyone=everyone, child=child,
+                             s=s, c={}, tok={}, task=a.task)
     for name, scopes in (("write", w.WRITE_SCOPES), ("read", ("projects:read",))):
         world_.c[name], world_.tok[name] = a.connection(scopes=scopes)
     world_.app_dsn = admin_url.set(
@@ -945,3 +976,52 @@ class TestTheRulesOnARealDatabase:
         default, grants = await _in_scope(live, both)
         assert default == [ANN, MEMBER]
         assert grants == [MEMBER]
+
+
+    async def test_r20_each_grant_path_lets_an_agent_assign(self, live):
+        """Fix round 2 (P3-1, the verifier's mutation M2). The rule counts
+        every way in that a grant gives, and the admin read right: a
+        ``group:<slug>`` grant, an ``org`` grant, ``data:org:read`` with no
+        grant, and a grant on a parent project. Each person here has exactly
+        one of them. The control: none of the three without the admin right
+        reaches the other project, so each one is refused there."""
+        cases = (
+            (live.grouped, live.s.grouped, GRETA),
+            (live.everyone, live.s.everyone, OLGA),
+            (live.other, live.s.other, ADA),
+            (live.child, live.s.child, SUE),
+        )
+        for project, status, who in cases:
+            task = live.task(project, status, f"g2 path {who}")
+            result = await _mcp(live, "write", "set_assignees", {
+                "task_id": task, "assignees": [who],
+                "expected_version": await _version(live, task)})
+            assert result["isError"] is False, (who, result)
+            assert _assignees(live, task) == [who]
+            assert len(_bells(live, task, who)) == 1, who
+        hidden = live.task(live.other, live.s.other, "g2 path control")
+        refused = await _mcp(live, "write", "set_assignees", {
+            "task_id": hidden, "assignees": [GRETA, OLGA, SUE],
+            "expected_version": await _version(live, hidden)})
+        assert _text(refused) == tools.TEXT_ASSIGNEES_REFUSED.format(
+            names=", ".join(sorted([GRETA, OLGA, SUE])))
+        assert _assignees(live, hidden) == []
+
+    async def test_r21_a_row_in_another_case_is_the_same_person(self, live):
+        """Fix round 2 (P3-2). A legacy row, or a copy that ``recurrence.py``
+        made as it found it, can hold an address in another case. A re-send
+        of the same set keeps that person: no check, no bell, and the row
+        stays as it is. Before the fix the address read as a NEW person and
+        the agent got the refusal."""
+        task = live.task(live.team, live.s.todo, "g2 legacy case")
+        legacy = "Ghost@McpWrites.Test"
+        _assign(live, task, legacy)
+        result = await _mcp(live, "write", "set_assignees", {
+            "task_id": task, "assignees": [GHOST, BOB],
+            "expected_version": await _version(live, task)})
+        assert result["isError"] is False, result
+        assert sorted(_assignees(live, task)) == sorted([legacy, BOB])
+        assert _bells(live, task, GHOST) == [] and len(_bells(live, task, BOB)) == 1
+        meta = _scalar(live, "SELECT meta FROM pm_activities WHERE task_id ="
+                       " CAST(:t AS uuid) AND type = 'assignment'", t=task)
+        assert (meta["added"], meta["removed"]) == ([BOB], [])
