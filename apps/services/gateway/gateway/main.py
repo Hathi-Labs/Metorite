@@ -1692,6 +1692,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-66 PN-1 — web push: `/push/public-key`, `/push/subscriptions` and
+    # `/push/test` (calendar_events_reminders.md §10.2). Gated on
+    # `feature:chat`, as `/reach` is. With WEB_PUSH_ENABLED off, each 404.
+    from gateway.push.routes import router as _push_router
+
+    app.include_router(_push_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.settings import router as _settings_router
 
     app.include_router(_settings_router)
@@ -2025,6 +2035,12 @@ class Version(BaseModel):
     #: Null when the box holds no readable marker.
     applied_sha: str | None = None
     applied_at: str | None = None
+    #: WS-66 PN-1. The gateway's `WEB_PUSH_ENABLED`, the ONE switch of web
+    #: push, so `curl` shows whether a box serves it. The browser has no
+    #: build-time flag: My Profile asks `/push/public-key`, which answers 404
+    #: with the switch off. It names the switch only, never a key
+    #: (calendar_events_reminders.md §10.2 item 2).
+    web_push: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2116,7 +2132,12 @@ async def version() -> Version:
     visible with `curl`. Both flags are retired, and the one task store is the
     only store. The key stays for one release so the monitoring that reads it
     does not break. S9 may drop it.
+
+    `web_push` is the gateway's `WEB_PUSH_ENABLED` (WS-66 PN-1), through
+    its one reader, `gateway.push.flags`.
     """
+    from gateway.push import flags as push_flags
+
     applied_sha, applied_at = applied_marker()
     return Version(
         sha=build_sha(),
@@ -2124,6 +2145,7 @@ async def version() -> Version:
         tasks_lens=True,
         applied_sha=applied_sha,
         applied_at=applied_at,
+        web_push=push_flags.enabled(),
     )
 
 

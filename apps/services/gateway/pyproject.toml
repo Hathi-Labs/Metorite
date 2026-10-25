@@ -45,6 +45,7 @@ dependencies = [
     # It was already in uv.lock through `mcp`. This line makes it a direct
     # dependency, so the App auth does not rest on another package's choice.
     "pyjwt[crypto]>=2.8",
+    "pywebpush>=2.0",
 ]
 
 [build-system]
