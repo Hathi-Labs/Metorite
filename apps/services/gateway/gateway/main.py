@@ -1203,8 +1203,11 @@ if _HAS_MAF:
                 "",
             )
 
-            # Build per-request agent (cheap — tools are closures, no network I/O)
-            agent = build_orchestrator_agent(with_history=False)
+            # Build per-request agent (cheap — tools are closures, no network I/O).
+            # PZ-25: the org of the server-side UserContext decides the
+            # profile tools, because this build comes before run_detached binds.
+            agent = build_orchestrator_agent(
+                with_history=False, organization_id=_organization_id)
 
             # thread_id (also derived below for the Redis relay) — pass it into
             # memory enrichment so the memory block is session-cached and stays
@@ -2382,7 +2385,10 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory
-        agent = build_orchestrator_agent(with_history=False)
+        # PZ-25: the org of the server-side UserContext, never of the body.
+        agent = build_orchestrator_agent(
+            with_history=False,
+            organization_id=getattr(_user, "organization_id", None))
         # Inject Mem0 + Graphiti context for this user + query (no-op if disabled)
         enriched = await enrich_instructions_with_memory(agent, user_id, req.query)
         opts = agent.default_options

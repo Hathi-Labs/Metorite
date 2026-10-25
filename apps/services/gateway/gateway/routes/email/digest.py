@@ -131,11 +131,11 @@ async def _digest_top_senders(
 # An ARCHIVED last message is out too: archive is the member saying "dealt
 # with", and Reply Zero (`replyzero.reply_zero`) also hides an archived thread
 # from its active buckets. So the digest and the shell's needs feed
-# (`needs_reply_threads`) agree on every rule here. ⚠️ Reply Zero's list does
-# NOT agree on two: it hides only trash and archive, so it still lists a junk
-# thread and a snoozed thread as needing a reply (HANDOFF H-286). Every user
-# of this predicate reads an ACTIVE bucket (NEEDS_REPLY, AWAITING). A read of
-# DONE, where an archived thread belongs, must not reuse it.
+# (`needs_reply_threads`) agree on every rule here. Reply Zero's active
+# buckets read this predicate too (HANDOFF H-286), so the Reply list, the
+# digest count and My Day agree. Every user of this predicate reads an ACTIVE
+# bucket (NEEDS_REPLY, AWAITING). A read of DONE, where an archived thread
+# belongs, must not reuse it.
 _LIVE_THREAD = ("NOT EXISTS (SELECT 1 FROM email_messages tem "
                 "WHERE tem.id = ts.last_message_id "
                 "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk', 'archive') "

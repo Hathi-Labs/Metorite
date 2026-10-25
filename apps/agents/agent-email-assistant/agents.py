@@ -3652,9 +3652,12 @@ async def get_rules_and_settings(account_id: str) -> str:
         f"about set={'yes' if settings_obj.get('about') else 'no'}."
     )
     # §21.16: the always-copy rules, which update_assistant_settings takes whole.
-    copy = (await _get("/email/assistant/always-copy", {"account_id": account_id})
-            or {}).get("rules") or []
-    lines.append(f"Always copy: {_copy_rules_text(copy)}.")
+    got = await _get("/email/assistant/always-copy", {"account_id": account_id}) or {}
+    copy = got.get("rules") or []
+    # H-411: the model passes this version back as always_copy_version, so a
+    # change in the settings screen after this read refuses the write.
+    lines.append(f"Always copy: {_copy_rules_text(copy)}. "
+                 f"Always-copy version: {got.get('version') or ''}.")
     return "\n".join(lines)
 
 
@@ -4570,6 +4573,7 @@ async def update_assistant_settings(
     morning_brief_enabled: bool | None = None,
     org_domains: list[str] | None = None,
     always_copy: list[dict[str, Any]] | None = None,
+    always_copy_version: str | None = None,
 ) -> str:
     """Update assistant settings. Only the fields you pass change; every other
     setting is preserved.
@@ -4610,6 +4614,9 @@ async def update_assistant_settings(
             never sends on its own. Only a colleague or a person the member
             wrote to before can be in ``cc``. Read the list with
             get_rules_and_settings first, and pass it whole. [] removes each.
+        always_copy_version: the "Always-copy version" that
+            get_rules_and_settings showed. Pass it with ``always_copy``. When
+            the list changed after that read, nothing changes.
 
     No model or tier is a setting. The platform picks it (D-EM-7, D-EM-61).
 
@@ -4634,6 +4641,7 @@ async def update_assistant_settings(
             "morning_brief_enabled": morning_brief_enabled,
             "org_domains": org_domains,
             "always_copy": always_copy,
+            "always_copy_version": always_copy_version,
         })
     if always_copy is not None:
         always_copy, bad = _copy_rules_problem(always_copy)
@@ -4649,12 +4657,17 @@ async def update_assistant_settings(
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
-    copy_version = ""
+    copy_version = str(always_copy_version or "").strip()
     if always_copy is not None:
-        # §21.16: the rules live apart from the settings body. The PUT takes
-        # the version that this read saw, so a change in between sends 409.
+        # §21.16: the rules live apart from the settings body. H-411: the PUT
+        # takes the version that THE MODEL read, not the version of this read.
+        # So a change in the settings screen after the model read the list
+        # refuses the write, here or with the 409 of the PUT.
+        if not copy_version:
+            return _COPY_VERSION_MISSING
         got = await _get("/email/assistant/always-copy", {"account_id": account_id}) or {}
-        copy_version = str(got.get("version") or "")
+        if str(got.get("version") or "") != copy_version:
+            return _COPY_VERSION_CHANGED
         cur = {**(cur or {}), "always_copy": got.get("rules") or []}
     # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
     # A change that turns one off, or any other setting, asks nothing.
@@ -4730,13 +4743,24 @@ async def update_assistant_settings(
     return f"Assistant settings updated for {await _named(account_id)}."
 
 
+#: H-411: the answers of ``update_assistant_settings`` when the model sends
+#: no version of the always-copy list, or the version of an old list.
+_COPY_VERSION_MISSING = (
+    "Nothing changed. Read the always-copy rules with get_rules_and_settings first, "
+    "and pass their Always-copy version as always_copy_version.")
+_COPY_VERSION_CHANGED = (
+    "Nothing changed. The always-copy rules changed after you read them. Read them "
+    "again with get_rules_and_settings, and make the change on the new list.")
+
+
 def _other_settings(scope: dict[str, Any]) -> bool:
     """True when ``update_assistant_settings`` changes a setting other than
     ``always_copy`` (§21.16), so the settings body is written too."""
     import inspect
 
     names = set(inspect.signature(update_assistant_settings).parameters)
-    return any(scope.get(k) is not None for k in names - {"account_id", "always_copy"})
+    return any(scope.get(k) is not None
+               for k in names - {"account_id", "always_copy", "always_copy_version"})
 
 
 #: The settings that ``apply_settings_to_mailboxes`` changes in several

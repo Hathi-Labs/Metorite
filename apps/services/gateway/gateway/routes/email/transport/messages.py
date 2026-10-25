@@ -4,6 +4,7 @@ hydration, and the full-body endpoint."""
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -237,6 +238,10 @@ async def list_messages(
     assistant's inbox-query tools leave it off so their counts stay per-message.
     Ignored when ``thread_id`` is set (the conversation view wants every message).
     """
+    # Chat speed (2026-10-25): the assistant's `query_inbox` waited a median
+    # 7.5 s on this route, and the page itself reads in about 0.1 s. One log
+    # line splits the time, so the next fix aims at the slow part.
+    _started = time.monotonic()
     async with _tenant_session() as db:
         # "all", an address or garbage never reach the SQL as a UUID.
         account_id = await resolve_account_filter(
@@ -383,6 +388,7 @@ async def list_messages(
         )
         count_result = await db.execute(text(count_sql), params)
         total = count_result.scalar() or 0
+        _counted = time.monotonic()
 
         _COLS = """em.id, em.provider_message_id, em.thread_id,
                    em.account_id, em.folder, em.labels,
@@ -417,6 +423,7 @@ async def list_messages(
                     LIMIT :limit OFFSET :offset""")
         result = await db.execute(text(page_sql), params)
         rows = result.fetchall()
+        _paged = time.monotonic()
 
         messages = [_row_to_message(row) for row in rows]
 
@@ -468,6 +475,16 @@ async def list_messages(
             d["also_in"] = also_in.get(str(m.id), [])
             emails_out.append(d)
 
+        _done = time.monotonic()
+        _log.info(
+            "email.list_messages_ms", rows=len(emails_out),
+            # The session, the account filter and the COUNT.
+            count_ms=round((_counted - _started) * 1000),
+            page_ms=round((_paged - _counted) * 1000),
+            # Thread counts, "also in" and the row models.
+            rest_ms=round((_done - _paged) * 1000),
+            total_ms=round((_done - _started) * 1000),
+        )
         return {
             "emails": emails_out,
             "total": total,
