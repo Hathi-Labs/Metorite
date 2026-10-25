@@ -30,10 +30,11 @@ import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
 import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
-import { isInAppPath } from "@/components/ui/EntityPill";
+import EntityPill, { isInAppPath } from "@/components/ui/EntityPill";
 import { announceInAppLink, externalHost } from "@/lib/inAppLink";
 import { workspaceFileOfHref } from "@/lib/artifactKind";
 import ArtifactFileLink from "@/components/ArtifactLink";
+import { chipForHref, type LinkChipIndex } from "@/lib/linkChips";
 import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
 import ProjectLinkPill from "@/components/ProjectLinkPill";
 import type { TaskRefMode } from "@/lib/projectsAgent";
@@ -81,6 +82,8 @@ export interface ToolEvent {
 
 interface MarkdownMessageProps {
   content: string;
+  /** The hrefs the tools printed; see `MarkdownBody` (KB-4b). */
+  linkChips?: LinkChipIndex;
   streaming?: boolean;
   toolEvents?: ToolEvent[];
   /** Live tool-name status lines for the ThinkingContainer. */
@@ -386,6 +389,7 @@ export function MarkdownBody({
   taskRefResolver,
   projectPills = false,
   textOnly = false,
+  linkChips,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -411,6 +415,9 @@ export function MarkdownBody({
   /** No image and no link: each link draws as its words, on the parsed tree
    *  (`lib/remarkTextOnly.ts`). A report's text sets it. */
   textOnly?: boolean;
+  /** The hrefs this message's tools printed (KB-4b). A link in the index
+   *  draws as a chip. Absent: no link chips. */
+  linkChips?: LinkChipIndex;
 }) {
   // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
   // The Router turns it into real tool calls. This catches a message stored
@@ -534,6 +541,10 @@ export function MarkdownBody({
           }
           const project = projectPills ? projectIdOfHref(href) : null;
           if (project) return <ProjectLinkPill id={project} text={nodeText(children)} href={href} />;
+          const chip = linkChips ? chipForHref(linkChips, href, nodeText(children)) : null;
+          if (chip) {
+            return <EntityPill kind="unknown" label={chip.label} href={href} icon={chip.icon} app={chip.app} />;
+          }
           return <MarkdownLink href={href}>{children}</MarkdownLink>;
         },
 
@@ -662,6 +673,7 @@ export default function MarkdownMessage({
   fences = false,
   taskRefs,
   evidenceFor,
+  linkChips,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
   const entityIndex = useMemo(
@@ -729,6 +741,7 @@ export default function MarkdownMessage({
         entityIndex={entityIndex}
         fences={fences}
         taskRefs={taskRefs}
+        linkChips={linkChips}
         // The streaming caret, only once text streams. It draws INSIDE the
         // last line of words. A span here, after the body, drew a lone "|"
         // on its own line between the answer and the next card (2026-10-07).
