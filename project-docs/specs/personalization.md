@@ -1089,14 +1089,18 @@ The first release needs one organization.
    My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
    live set of `launch_surface.md` §2 and `nav.test.ts` does not change.
 
-**PZ-25 as built (2026-10-25).** `enabled_for(org)` replaces `enabled()`.
-The executor reads the run org first. `build_orchestrator_agent` takes the
-org from its caller, then the bound tenant, and a build with no org gets no
-profile tool. `build_payload` takes the org of the WhatsApp link. The GET
-route answers `enabled`, and `/address` answers an empty name when the org
-is off. The writes take no flag. The web hook
-`useAssistantProfileEnabled` needs the build switch and `enabled`. The
-fence is `tests/unit/test_assistant_profile_org_rollout.py`.
+**PZ-25 as built (2026-10-25).**
+
+1. `enabled_for(org)` replaces `enabled()`. The executor reads the run org
+   first.
+2. `build_orchestrator_agent` takes the org from its caller, then the bound
+   tenant. A build with no org gets no profile tool.
+3. `build_payload` takes the org of the WhatsApp link.
+4. The GET route answers `enabled`. `/address` answers an empty name when
+   the org is off. The writes take no flag.
+5. The web hook `useAssistantProfileEnabled` needs the build switch and
+   `enabled`.
+6. The fence is `tests/unit/test_assistant_profile_org_rollout.py`.
 
 ### 14.3 The interview areas
 
