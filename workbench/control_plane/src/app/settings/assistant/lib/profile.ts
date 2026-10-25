@@ -335,3 +335,27 @@ export async function fetchExport(format: ExportFormat): Promise<{ body: Blob; f
     filename: filenameFromDisposition(res.headers.get("content-disposition"), EXPORT_FALLBACK[format]),
   };
 }
+
+// ── The interview list (PZ-27) ────────────────────────────────────────────
+
+/** The profile with one area back to open. The facts stay. */
+export function withoutArea(p: Profile, id: InterviewAreaId): Profile {
+  if (!p.interview) return p;
+  const { [id]: _gone, ...areas } = p.interview.areas;
+  return { ...p, interview: { ...p.interview, areas } };
+}
+
+/** The profile with no interview, so the offer can come again. The facts stay. */
+export function withoutInterview(p: Profile): Profile {
+  const { interview: _gone, ...rest } = p;
+  return rest;
+}
+
+/** What the list shows for one area: its label and the state words. */
+export const STATE_LABELS: Record<InterviewState | "open", string> = {
+  open: "Open",
+  asked: "Asked",
+  answered: "Answered",
+  skipped: "Skipped",
+  never: "Never ask",
+};
