@@ -46,6 +46,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_email_purge_wiring import recorder  # noqa: F401
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _APP_ROLE,
     _DB_GATE,
@@ -53,7 +54,6 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
     promoted,
 )
-from tests.unit.test_email_purge_wiring import recorder  # noqa: F401
 from tests.unit.test_kb_pages_r8 import (  # noqa: F401
     CAPABILITY,
     _address,
