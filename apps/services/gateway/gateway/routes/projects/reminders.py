@@ -483,7 +483,12 @@ async def update_reminder(
     A new ``fire_at`` is a member move: the reminder goes back to
     ``scheduled``, ``snoozes`` gains 1, and the ledger gains a
     ``rescheduled`` row. A change to any other field writes one ``edited``
-    row that names the fields. A PATCH of both writes both rows."""
+    row that names the fields. A PATCH of both writes both rows.
+
+    Only a REAL change counts. A ``fire_at`` that names the stored instant
+    is not a move, in any offset. A field sent with its stored value is not
+    an edit. A PATCH with no real change writes nothing, not even
+    ``updated_at``, and answers with the row as it is."""
     me = _member(user)
     changes = clean_payload(payload)
     if not changes:
@@ -510,8 +515,16 @@ async def update_reminder(
                 changes.get("subject_id", row.subject_id),
             )
             values["subject_kind"], values["subject_id"] = kind, subject_id
-        moved = "fire_at" in values
-        assignments = [f"{c} = :{c}" for c in _PATCH_COLUMNS if c in values]
+        # Two aware datetimes compare as instants, so +05:30 and Z agree.
+        moved = "fire_at" in values and values["fire_at"] != row.fire_at
+        edited = [
+            c for c in _EDIT_COLUMNS
+            if c in values and values[c] != getattr(row, c, None)
+        ]
+        if not moved and not edited:
+            return _out(row)
+        changed = [*(["fire_at"] if moved else []), *edited]
+        assignments = [f"{c} = :{c}" for c in _PATCH_COLUMNS if c in changed]
         if moved:
             assignments += [
                 "state = 'scheduled'", "next_check_at = NULL",
@@ -523,17 +536,13 @@ async def update_reminder(
                 f"UPDATE reminders SET {', '.join(assignments)} "
                 "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
             ),
-            {**values, "id": str(reminder_id), "me": me},
+            {**{c: values[c] for c in changed}, "id": str(reminder_id), "me": me},
         )).fetchone()
         if moved:
             await _ledger(db, row.id, "rescheduled", {
                 "from": _iso(row.fire_at), "to": _iso(values["fire_at"]),
-                "state_before": row.state, "by": "member",
+                "from_state": row.state, "by": "member",
             })
-        edited = [
-            c for c in _EDIT_COLUMNS
-            if c in values and values[c] != getattr(row, c, None)
-        ]
         if edited:
             await _ledger(db, row.id, "edited", {"fields": edited, "by": "member"})
         return _out(updated)
@@ -566,7 +575,7 @@ async def _move(
         )).fetchone()
         await _ledger(db, row.id, event, {
             "from": _iso(row.fire_at), "to": _iso(fire_at),
-            "state_before": row.state, "by": "member",
+            "from_state": row.state, "by": "member",
         })
         return _out(updated)
 

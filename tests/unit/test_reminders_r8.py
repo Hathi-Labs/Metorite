@@ -356,6 +356,31 @@ async def test_r8_an_edit_writes_one_edited_row_that_names_the_fields(world) -> 
     assert all("Cash only" not in str(r.detail) for r in rows)
 
 
+async def test_r8_a_patch_with_no_real_change_writes_nothing(world) -> None:
+    """The same instant in another offset is not a move, and a PATCH that
+    changes nothing writes no row and leaves ``updated_at`` as it was."""
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE))["id"]
+        _make_due(world, rid)
+        before = _row(world, rid)
+
+        # 09:00 in Kolkata, sent as 03:30 UTC: the stored instant.
+        resp = await c.patch(f"{BASE}/{rid}", json={"fire_at": AT_UTC}, headers=_as(ALICE))
+        out = resp.json()
+        assert resp.status_code == 200 and out["snoozes"] == 0 and out["state"] == "due"
+
+        # The stored title and the stored instant, together: still nothing.
+        resp = await c.patch(f"{BASE}/{rid}", json={
+            "title": "Get a haircut", "fire_at": AT, "tz": "Asia/Kolkata",
+        }, headers=_as(ALICE))
+        assert resp.status_code == 200 and resp.json()["snoozes"] == 0
+
+    after = _row(world, rid)
+    assert after.updated_at == before.updated_at and after.state == "due"
+    assert after.next_check_at == before.next_check_at and after.snoozes == 0
+    assert _ledger(world, rid) == ["created"]
+
+
 async def test_r8_member_b_never_reads_changes_or_counts_member_a(world) -> None:
     async with _client(world, world.org) as c:
         first = (await _create(c, ALICE))["id"]
