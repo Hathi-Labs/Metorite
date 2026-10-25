@@ -115,15 +115,19 @@ test("Menu opens the global drawer, and My work opens the Projects sheet", async
   await expect(bar.locator("[data-ask-tab]")).toBeVisible({ timeout: 60_000 });
   // Menu stays the global drawer (supervisor decision 2026-10-25): the
   // command-bar entry of the shell drawer shows, and the Projects sheet does not.
-  await bar.getByRole("button", { name: "Menu" }).click();
+  // The dev server's "N" indicator sits over the Menu tab and takes the
+  // pointer, so the click is sent to the button itself.
+  await page.waitForLoadState("networkidle");
+  await bar.getByRole("button", { name: "Menu" }).dispatchEvent("click");
   await expect(page.getByRole("button", { name: "Search or ask anything" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("My work", { exact: true })).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  // The tab "My work" is on the bar. The sheet entries (Today, Inbox) are not.
+  await expect(page.getByRole("button", { name: /^Today/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Close", exact: true }).first().click();
   await expect(page.getByRole("button", { name: "Search or ask anything" })).toHaveCount(0);
   // My work opens the Projects sheet, with the "My work" heading on top.
   await bar.getByRole("button", { name: "My work" }).click();
-  await expect(page.getByText("My work", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("button", { name: /^Today/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Today/ }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("My work", { exact: true })).toHaveCount(2); // the tab and the sheet heading
 });
 
 test("/tasks?do=capture lands on the Inbox with capture open", async ({ page }) => {
