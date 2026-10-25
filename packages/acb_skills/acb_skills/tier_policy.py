@@ -345,6 +345,18 @@ def tier_for_kind(kind: str, default: str) -> str:
     return default if target is None else _at_least(default, target)
 
 
+def kind_can_move(default: str) -> bool:
+    """True when the turn's kind can change the tier of an agent whose
+    default is *default*.
+
+    :func:`choose` never goes below *default*. So the top rung cannot move,
+    and a tier off the ladder (an admin's ``provider/model``) cannot move
+    either. For such an agent the System-1 question buys nothing.
+    """
+    rank = _rank(default)
+    return rank is not None and rank < len(LADDER) - 1
+
+
 @dataclass(frozen=True)
 class Choice:
     """The tier of one model request, with the kind and the reason."""
@@ -400,9 +412,10 @@ def choose(*, default: str, kind: str, effort: str | None,
 class TurnKind:
     """The kind of one turn, and how it was found.
 
-    ``source`` is ``system_one``, ``short``, ``max``, ``unsure``,
+    ``source`` is ``system_one``, ``short``, ``max``, ``pinned``, ``unsure``,
     ``timeout``, ``unavailable`` or ``error``. ``latency_ms`` is the time of
-    the System-1 question, or ``None`` when no question went out.
+    the System-1 question, or ``None`` when no question went out. ``pinned``
+    means the agent's default tier cannot move (:func:`kind_can_move`).
 
     ``effort`` is :data:`TEXT_EFFORT` when the member's words explicitly ask
     for deep work, else ``None`` (the run keeps its effort). ``effort_source``
@@ -430,6 +443,7 @@ async def turn_kind(
     effort: str | None,
     *,
     read_effort: bool = False,
+    default: str | None = None,
 ) -> TurnKind:
     """Ask System 1 the kind of this turn. ONE ``tier-fast`` request, or none.
 
@@ -449,6 +463,12 @@ async def turn_kind(
     ``effort`` to :data:`TEXT_EFFORT`. A short message sends no request, and
     :func:`asks_for_depth` reads it instead. A timeout or a failure reads as
     no effort.
+
+    *default* is the agent's default tier. When the kind cannot move it
+    (:func:`kind_can_move`) and no effort item is asked, no question goes
+    out, and the source is ``pinned``. A sub-agent run of the email
+    assistant (``tier-powerful``) asked one for 1.4 to 2.6 s in production
+    and could not use the answer (chat speed review, 2026-10-25).
     """
     mode = normalise_effort(effort)
     if mode == "max":
@@ -459,6 +479,8 @@ async def turn_kind(
         if wants_effort and asks_for_depth(message):
             return TurnKind("chat", "short", effort=TEXT_EFFORT, effort_source="keyword")
         return TurnKind("chat", "short")
+    if default is not None and not wants_effort and not kind_can_move(default):
+        return TurnKind("chat", "pinned")
     from acb_skills import system_one
 
     item = system_one.Item(
