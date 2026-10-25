@@ -1,5 +1,5 @@
 -- ============================================================================
--- 302_kb_page_verification.sql — the owner and the review interval of a page.
+-- 303_kb_page_verification.sql — the owner and the review interval of a page.
 --
 -- What: two new columns on `kb_pages` and two indexes.
 --       `owner_email` — the person who answers for the page. NULL means the

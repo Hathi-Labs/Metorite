@@ -16,7 +16,7 @@ router, as the NON-privileged role of the phase-4 rehearsal:
   empty owner, and writes no version and no ``updated_at``;
 - a publish through the route and through the proposals accept both set the
   owner to the author and the review date to now plus the interval;
-- migration 302 replays.
+- migration 303 replays.
 
 The ``COALESCE`` in the publish SET, the ``make_interval`` call, the partial
 index and the one SELECT of the list are each SQL that a hermetic fake would
@@ -357,10 +357,10 @@ async def test_a_publish_sets_the_owner_and_the_date_on_both_paths(
     assert 44.5 < _days_ahead(kb, made["id"]) < 45.5
 
 
-# ── Migration 302 ───────────────────────────────────────────────────────────
+# ── Migration 303 ───────────────────────────────────────────────────────────
 
 def _migration() -> Path:
-    """Migration 302, found by content (R1)."""
+    """Migration 303, found by content (R1)."""
     found = [
         p for p in sorted(_MIGRATIONS.glob("*.sql"))
         if p.name != "schema.generated.sql"
