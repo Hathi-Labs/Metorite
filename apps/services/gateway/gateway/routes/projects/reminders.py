@@ -6,9 +6,16 @@ and §10.3 · **D114** · board WS-66 RM-1.
     GET   /projects/my/reminders                          → my reminders, by state and window
     POST  /projects/my/reminders                          → set one, in state ``scheduled``
     PATCH /projects/my/reminders/{reminder_id}            → change its text, kind, link or time
-    POST  /projects/my/reminders/{reminder_id}/resolve    → done, drop or promote
+    POST  /projects/my/reminders/{reminder_id}/resolve    → done or drop, which reopen undoes
+    POST  /projects/my/reminders/{reminder_id}/reopen     → undo a done or a drop
+    POST  /projects/my/reminders/{reminder_id}/promote    → make it a task, with no undo
     POST  /projects/my/reminders/{reminder_id}/snooze     → a member move to a named time
     POST  /projects/my/reminders/{reminder_id}/reschedule → a member move to a named time
+
+**Undo (D-CF-5).** A chip acts at once and offers Undo, so each answer that
+it gives needs a way back. ``/reopen`` undoes a done or a drop: it puts back
+the state that the answer's ledger row recorded as ``from_state``. A promote
+makes a task, so it has no undo, and it is its own route, ``/promote``.
 
 **A reminder is a nudge, not work** (D114.1), so it lives in its own table,
 ``reminders`` (migration 305), and never in ``pm_tasks``. "Make it a task"
@@ -96,11 +103,11 @@ _UUID_SUBJECTS = frozenset({"task", "crm_contact", "project"})
 _SUBJECT_ID_MAX = 200
 TITLE_MAX = 200
 
-#: §5.1 and the answer of §5.4 -> (state, resolution, ledger event).
+#: The two answers of ``/resolve`` (§5.4) -> (state, resolution, ledger
+#: event). ``/reopen`` undoes either. A promote is ``/promote``.
 RESOLUTIONS: dict[str, tuple[str, str, str]] = {
     "done": ("done", "done", "done"),
     "drop": ("dropped", "dropped", "dropped"),
-    "promote": ("done", "promoted", "promoted"),
 }
 
 
@@ -170,9 +177,10 @@ class MoveIn(BaseModel):
 
 
 class ResolveIn(BaseModel):
-    """The member's answer: done, drop, or promote to a task."""
+    """The member's answer: done or drop. ``/reopen`` undoes either. A
+    promote is ``/promote``, so ``promote`` here is a 422."""
 
-    action: Literal["done", "drop", "promote"]
+    action: Literal["done", "drop"]
 
 
 class ReminderModel(BaseModel):
@@ -603,47 +611,144 @@ async def resolve_reminder(
     reminder_id: UUID, payload: ResolveIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """The member's answer. A closed reminder is 409.
+    """The member's answer, done or drop. A closed reminder is 409.
 
-    ``done`` and ``drop`` close the row. ``promote`` makes exactly one private
-    task in the member's personal project through the capture path
-    (``ensure_personal_project``, ``load_default_status``,
-    ``create_personal_task``, as ``POST /projects/my/tasks`` does), in this
-    same session, and ends the reminder in ``done`` with resolution
-    ``promoted``. A failure anywhere rolls the task back with the reminder.
+    The ledger row records ``from_state`` and ``from_next_check_at``, the
+    state and the check time before the answer, so ``/reopen`` can put both
+    back. That is the Undo of the chip (D-CF-5).
     """
     me = _member(user)
     state, resolution, event = RESOLUTIONS[payload.action]
     async with _tenant_session() as db:
         row = await _load_mine(db, reminder_id, me)
         _require_open(row)
-        task_id: str | None = None
-        if payload.action == "promote":
-            project = await ensure_personal_project(db, me)
-            project_id = str(project.id)
-            status = await load_default_status(db, project_id)
-            task = await create_personal_task(
-                db, me, project_id, project_id, str(status.id), {
-                    "title": row.title,
-                    "description": row.notes,
-                    "source": "manual",
-                })
-            task_id = str(task.id)
+        updated = await _close(db, reminder_id, me, state, resolution)
+        await _ledger(db, row.id, event, {
+            "from_state": row.state,
+            "from_next_check_at": _iso(row.next_check_at),
+            "by": "member",
+        })
+        return _out(updated)
+
+
+async def _close(
+    db: Any, reminder_id: UUID, me: str, state: str, resolution: str,
+    task_id: str | None = None,
+) -> Any:
+    """End an open reminder in ``state`` with ``resolution``."""
+    return (await db.execute(
+        text(
+            "UPDATE reminders SET state = :state, resolution = :resolution, "
+            "resolved_at = now(), next_check_at = NULL, "
+            "promoted_task_id = COALESCE(CAST(:task AS uuid), promoted_task_id), "
+            "updated_at = now() "
+            "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
+        ),
+        {
+            "state": state, "resolution": resolution, "task": task_id,
+            "id": str(reminder_id), "me": me,
+        },
+    )).fetchone()
+
+
+#: What ``/reopen`` may undo: (state, resolution). A promote made a task, and
+#: evidence (RM-6) or a cleared condition (RM-7) is not the member's answer.
+_REOPENABLE: frozenset[tuple[str, str]] = frozenset({
+    ("done", "done"), ("dropped", "dropped"),
+})
+
+#: The answer's own ledger row, the newest one, for the state to put back.
+_LAST_ANSWER_SQL = (
+    "SELECT detail FROM reminder_events "
+    "WHERE reminder_id = CAST(:id AS uuid) AND event IN ('done', 'dropped') "
+    "ORDER BY at DESC, id DESC LIMIT 1"
+)
+
+
+@router.post("/my/reminders/{reminder_id}/reopen", dependencies=_ON)
+async def reopen_reminder(
+    reminder_id: UUID, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Undo a done or a drop (D-CF-5): the reminder is open again.
+
+    It puts back the state and the check time that the answer's ledger row
+    recorded, clears ``resolution`` and ``resolved_at``, and writes a
+    ``reopened`` row. Only state ``done`` with resolution ``done``, or state
+    ``dropped``, may reopen. A promoted reminder, an open one, or any other
+    end is 409. A row with no usable record reopens as ``scheduled``.
+    """
+    me = _member(user)
+    async with _tenant_session() as db:
+        row = await _load_mine(db, reminder_id, me)
+        if (row.state, row.resolution) not in _REOPENABLE:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Only a reminder that is done or dropped can reopen. "
+                    f"This one is {row.state}"
+                    + (f" ({row.resolution})." if row.resolution else ".")
+                ),
+            )
+        # The ledger has no member column. The row above is mine, and the
+        # read names only its id, so it reads only my ledger.
+        found = (await db.execute(
+            text(_LAST_ANSWER_SQL), {"id": str(reminder_id)},
+        )).scalar()
+        record = found if isinstance(found, dict) else json.loads(found or "{}")
+        to_state = record.get("from_state")
+        if to_state not in OPEN_STATES:
+            to_state = "scheduled"
+        check_at: datetime | None = None
+        raw_check = record.get("from_next_check_at") if to_state == "due" else None
+        if isinstance(raw_check, str):
+            try:
+                check_at = datetime.fromisoformat(raw_check)
+            except ValueError:
+                check_at = None
         updated = (await db.execute(
             text(
-                "UPDATE reminders SET state = :state, resolution = :resolution, "
-                "resolved_at = now(), next_check_at = NULL, "
-                "promoted_task_id = COALESCE(CAST(:task AS uuid), promoted_task_id), "
+                "UPDATE reminders SET state = :state, resolution = NULL, "
+                "resolved_at = NULL, next_check_at = :check, "
                 "updated_at = now() "
                 "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
             ),
-            {
-                "state": state, "resolution": resolution, "task": task_id,
-                "id": str(reminder_id), "me": me,
-            },
+            {"state": to_state, "check": check_at, "id": str(reminder_id), "me": me},
         )).fetchone()
-        detail: dict[str, Any] = {"state_before": row.state}
-        if task_id is not None:
-            detail["task_id"] = task_id
-        await _ledger(db, row.id, event, detail)
+        await _ledger(db, row.id, "reopened", {
+            "from_state": row.state, "to_state": to_state, "by": "member",
+        })
+        return _out(updated)
+
+
+@router.post("/my/reminders/{reminder_id}/promote", dependencies=_ON)
+async def promote_reminder(
+    reminder_id: UUID, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """"Make it a task". A closed reminder is 409, and there is no undo.
+
+    It makes exactly one private task in the member's personal project
+    through the capture path (``ensure_personal_project``,
+    ``load_default_status``, ``create_personal_task``, as
+    ``POST /projects/my/tasks`` does), in this same session. Then it ends
+    the reminder in ``done`` with resolution ``promoted``. A failure
+    anywhere rolls the task back with the reminder.
+    """
+    me = _member(user)
+    async with _tenant_session() as db:
+        row = await _load_mine(db, reminder_id, me)
+        _require_open(row)
+        project = await ensure_personal_project(db, me)
+        project_id = str(project.id)
+        status = await load_default_status(db, project_id)
+        task = await create_personal_task(
+            db, me, project_id, project_id, str(status.id), {
+                "title": row.title,
+                "description": row.notes,
+                "source": "manual",
+            })
+        task_id = str(task.id)
+        updated = await _close(db, reminder_id, me, "done", "promoted", task_id)
+        await _ledger(db, row.id, "promoted", {
+            "from_state": row.state, "task_id": task_id, "by": "member",
+        })
         return _out(updated)

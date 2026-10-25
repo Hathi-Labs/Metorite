@@ -401,7 +401,8 @@ async def test_r8_member_b_never_reads_changes_or_counts_member_a(world) -> None
                 ("POST", f"{BASE}/{rid}/snooze", {"fire_at": LATER}),
                 ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": LATER}),
                 ("POST", f"{BASE}/{rid}/resolve", {"action": "drop"}),
-                ("POST", f"{BASE}/{rid}/resolve", {"action": "promote"}),
+                ("POST", f"{BASE}/{rid}/promote", None),
+                ("POST", f"{BASE}/{rid}/reopen", None),
             ):
                 resp = await c.request(method, path, json=body, headers=_as(BOB))
                 assert resp.status_code == 404, (method, path, resp.text)
@@ -464,14 +465,14 @@ async def test_r8_org_b_reads_no_row_of_org_a(world, app_engine) -> None:  # noq
 async def test_r8_a_promote_makes_one_private_task_and_ends_the_reminder(world) -> None:
     async with _client(world, world.org) as c:
         rid = (await _create(c, ALICE, title="Renew the lease", notes="Before Friday"))["id"]
-        resp = await c.post(f"{BASE}/{rid}/resolve", json={"action": "promote"},
+        resp = await c.post(f"{BASE}/{rid}/promote",
                             headers=_as(ALICE))
         assert resp.status_code == 200, resp.text
         out = resp.json()
         assert out["state"] == "done" and out["resolution"] == "promoted"
         task_id = out["promoted_task_id"]
         assert task_id
-        again = await c.post(f"{BASE}/{rid}/resolve", json={"action": "promote"},
+        again = await c.post(f"{BASE}/{rid}/promote",
                              headers=_as(ALICE))
         assert again.status_code == 409
 
@@ -505,7 +506,7 @@ async def test_r8_two_promotes_make_one_task(world) -> None:
     async with _client(world, world.org) as c:
         rid = (await _create(c, ALICE, title="Book the venue"))["id"]
         answers = await asyncio.gather(*(
-            c.post(f"{BASE}/{rid}/resolve", json={"action": "promote"}, headers=_as(ALICE))
+            c.post(f"{BASE}/{rid}/promote", headers=_as(ALICE))
             for _ in range(2)
         ))
     assert sorted(a.status_code for a in answers) == [200, 409], [a.text for a in answers]
@@ -515,6 +516,65 @@ async def test_r8_two_promotes_make_one_task(world) -> None:
             {"e": ALICE, "t": "Book the venue"},
         ).scalar_one() == 1
     assert _ledger(world, rid) == ["created", "promoted"]
+
+
+async def test_r8_reopen_undoes_a_done_and_a_drop(world) -> None:
+    """D-CF-5: the Undo of a chip. A done goes back to the state it left,
+    the check time too, and a drop does the same."""
+    async with _client(world, world.org) as c:
+        rid = (await _create(c, ALICE))["id"]
+        _make_due(world, rid)
+        due = _row(world, rid)
+        await c.post(f"{BASE}/{rid}/resolve", json={"action": "done"}, headers=_as(ALICE))
+        resp = await c.post(f"{BASE}/{rid}/reopen", headers=_as(ALICE))
+        assert resp.status_code == 200, resp.text
+        back = resp.json()
+        assert back["state"] == "due" and back["resolution"] is None
+        assert back["resolved_at"] is None
+        assert _row(world, rid).next_check_at == due.next_check_at
+
+        other = (await _create(c, ALICE, title="Call the bank"))["id"]
+        await c.post(f"{BASE}/{other}/resolve", json={"action": "drop"}, headers=_as(ALICE))
+        resp = await c.post(f"{BASE}/{other}/reopen", headers=_as(ALICE))
+        assert resp.json()["state"] == "scheduled" and resp.json()["resolution"] is None
+        assert _row(world, other).next_check_at is None
+
+        # A reopened reminder is open, so a second reopen is 409.
+        resp = await c.post(f"{BASE}/{other}/reopen", headers=_as(ALICE))
+        assert resp.status_code == 409
+
+    rows = _ledger_rows(world, rid)
+    assert [r.event for r in rows] == ["created", "done", "reopened"]
+    assert rows[1].detail["from_state"] == "due"
+    assert rows[2].detail == {"from_state": "done", "to_state": "due", "by": "member"}
+    assert _ledger(world, other) == ["created", "dropped", "reopened"]
+
+
+async def test_r8_reopen_refuses_a_promote_an_open_one_and_another_member(world) -> None:
+    async with _client(world, world.org) as c:
+        promoted_one = (await _create(c, ALICE, title="Renew the lease"))["id"]
+        assert (await c.post(f"{BASE}/{promoted_one}/promote",
+                             headers=_as(ALICE))).status_code == 200
+        resp = await c.post(f"{BASE}/{promoted_one}/reopen", headers=_as(ALICE))
+        assert resp.status_code == 409 and "promoted" in resp.json()["detail"]
+
+        still_open = (await _create(c, ALICE, title="Open"))["id"]
+        resp = await c.post(f"{BASE}/{still_open}/reopen", headers=_as(ALICE))
+        assert resp.status_code == 409
+
+        done = (await _create(c, ALICE, title="Done"))["id"]
+        await c.post(f"{BASE}/{done}/resolve", json={"action": "done"}, headers=_as(ALICE))
+        resp = await c.post(f"{BASE}/{done}/reopen", headers=_as(BOB))
+        assert resp.status_code == 404
+        # `/resolve` no longer promotes.
+        resp = await c.post(f"{BASE}/{still_open}/resolve", json={"action": "promote"},
+                            headers=_as(ALICE))
+        assert resp.status_code == 422
+
+    assert _row(world, promoted_one).state == "done"
+    assert _row(world, done).state == "done" and _row(world, done).resolution == "done"
+    assert _ledger(world, done) == ["created", "done"]
+    assert _ledger(world, still_open) == ["created"]
 
 
 async def test_r8_a_naive_time_is_refused_and_writes_nothing(world) -> None:
@@ -637,7 +697,8 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
             ("POST", f"{BASE}/{rid}/resolve", {"action": "done"}),
             ("POST", f"{BASE}/{rid}/snooze", {"fire_at": LATER}),
             ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": LATER}),
-            ("POST", f"{BASE}/{other}/resolve", {"action": "promote"}),
+            ("POST", f"{BASE}/{other}/promote", None),
+            ("POST", f"{BASE}/{rid}/reopen", None),
         ):
             resp = await c.request(method, path, json=body, headers=_as(ALICE))
             assert resp.status_code == 404, (method, path, resp.text)

@@ -2253,7 +2253,7 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-66 RM-1 (D114): the reminder routes. RM-3 builds the tools of
     # calendar_events_reminders.md §5.8.
     rm_3 = {"list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
-            "reschedule_reminder"}
+            "reschedule_reminder", "reopen_reminder", "promote_reminder"}
     assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e | rm_3, m.PLANNED
 
 

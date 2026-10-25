@@ -117,18 +117,21 @@ CREATE TABLE IF NOT EXISTS reminder_events (
     event            TEXT NOT NULL,
     -- The channel of a delivery. NULL for a change.
     channel          TEXT NULL,
-    -- For example the old and the new `fire_at`, or the names of the fields
-    -- that an edit changed.
+    -- For example the old and the new `fire_at`, the names of the fields
+    -- that an edit changed, or the state before an answer (`from_state`),
+    -- which a reopen reads back.
     detail           JSONB NOT NULL DEFAULT '{}'::jsonb,
     PRIMARY KEY (id),
-    -- The fourteen events of §5.2, and `edited`. An edit changes text, the
-    -- kind, the link, the estimate or `important`, and moves no state and no
-    -- time. Engineering decision, 2026-10-25: 305 has not shipped, so the
-    -- list widens here and not in a second migration.
+    -- The fourteen events of §5.2, `edited` and `reopened`. An edit changes
+    -- text, the kind, the link, the estimate or `important`, and moves no
+    -- state and no time. A reopen undoes a done or a drop (D-CF-5).
+    -- Engineering decisions, 2026-10-25: 305 has not shipped, so the list
+    -- widens here and not in a second migration.
     CONSTRAINT reminder_events_event CHECK (
         event IN ('created', 'fired', 'check_back', 'briefed', 'rescheduled',
                   'snoozed', 'opened', 'done', 'dropped', 'promoted',
-                  'gave_up', 'evidence', 'delivered', 'failed', 'edited')),
+                  'gave_up', 'evidence', 'delivered', 'failed', 'edited',
+                  'reopened')),
     CONSTRAINT reminder_events_channel CHECK (
         channel IS NULL OR channel IN ('feed', 'push', 'chat', 'whatsapp'))
 );

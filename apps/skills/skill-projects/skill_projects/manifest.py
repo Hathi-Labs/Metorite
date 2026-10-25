@@ -296,11 +296,15 @@ MANIFEST: tuple[Route, ...] = (
     # The member's private reminders (calendar_events_reminders.md §5.8).
     # Each tool is PLANNED for RM-3. A write acts at once with Undo, as
     # D-CF-5 allows for a reversible write on the member's own record, so
-    # the writes are class B. The route finds a reminder by its OWNER only.
+    # the writes are class B. `reopen` is the Undo of a done or a drop. The
+    # promote makes a task and has no undo, so it is class C. The route
+    # finds a reminder by its OWNER only.
     Route("GET", "/projects/my/reminders", "list_reminders", "A"),
     Route("POST", "/projects/my/reminders", "set_reminder", "B"),
     Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B"),
     Route("POST", "/projects/my/reminders/{reminder_id}/resolve", "resolve_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/reopen", "reopen_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/promote", "promote_reminder", "C"),
     Route("POST", "/projects/my/reminders/{reminder_id}/snooze", "reschedule_reminder", "B"),
     Route(
         "POST", "/projects/my/reminders/{reminder_id}/reschedule", "reschedule_reminder", "B"
@@ -519,6 +523,8 @@ PLANNED: dict[str, str] = {
     "update_reminder": "WS-66 RM-3, the reminder tools",
     "resolve_reminder": "WS-66 RM-3, the reminder tools",
     "reschedule_reminder": "WS-66 RM-3, the reminder tools",
+    "reopen_reminder": "WS-66 RM-3, the reminder tools",
+    "promote_reminder": "WS-66 RM-3, the reminder tools",
 }
 
 
