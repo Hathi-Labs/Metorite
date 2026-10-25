@@ -1271,7 +1271,6 @@ def _ensure_repo(
     lock = _get_repo_lock(local_name)
     with lock:
         clone_dir = cache_root / local_name
-        _refreshed_now = False
         # H-363: record the repo from the registry, in gateway memory. A push
         # goes to this repo, never to an ``origin`` that a run rewrote.
         try:
@@ -1285,7 +1284,6 @@ def _ensure_repo(
                 _refresh_remote_auth(clone_dir, org, repo_name)
                 _pull_latest(clone_dir)
                 _mark_refreshed(local_name)
-                _refreshed_now = True
         else:
             # First use — full clone. The URL holds no token (H-363).
             _log.info("loader.clone_new", repo=repo_name, org=org, local=local_name)
@@ -1294,14 +1292,13 @@ def _ensure_repo(
             _configure_bot_identity(clone_dir, settings)
             _install_push_guard(clone_dir)
             _mark_refreshed(local_name)
-            _refreshed_now = True
         # Keep generated workspace dirs untracked (idempotent) so a mutation
         # reset can't wipe them and outputs/ persists across redeploys.
         _ensure_workspace_gitignore(clone_dir)
-        # After every pull/clone, auto-sync any new skill scripts into agents.py.
-        # Nothing new can have arrived when the pull was skipped (TTL).
-        if _refreshed_now:
-            _sync_new_skills(clone_dir, settings)
+        # On every load, auto-sync any new skill scripts into agents.py. The
+        # scan reads the working tree, so a script that a coding session
+        # committed locally is wired without waiting for the next fetch.
+        _sync_new_skills(clone_dir, settings)
         # Install the repo's declared deps into agent-site (WS-49 BH-7). Agents
         # are imported in-process, and agent-site is on the gateway's sys.path.
         _install_agent_deps(clone_dir, settings)

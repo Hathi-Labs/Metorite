@@ -1865,8 +1865,20 @@ async def _load_agent_off_loop(agent_name: str, **kwargs: Any) -> Any:
     """
     import time as _t  # noqa: PLC0415
     started = _t.monotonic()
+    task = asyncio.ensure_future(
+        asyncio.to_thread(load_agent, agent_name, **kwargs)
+    )
     try:
-        return await asyncio.to_thread(load_agent, agent_name, **kwargs)
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # A Stop during the load leaves the thread running. When it ends, it
+        # holds a LoadedAgent that nobody owns, with its sys.path entries.
+        def _release(done: "asyncio.Future[Any]") -> None:
+            if not done.cancelled() and done.exception() is None:
+                done.result().cleanup()
+
+        task.add_done_callback(_release)
+        raise
     finally:
         _log.info(
             "executor.load_agent_ms", agent=agent_name,

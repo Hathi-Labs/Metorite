@@ -28,6 +28,20 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+# Mem0 keeps five database connections for the whole process, and it refuses a
+# sixth caller at once, which reads as "no memory" and the block is cached for
+# ten minutes. So all the Mem0 searches of every turn share two slots.
+# One semaphore for each event loop, because a semaphore binds to one loop.
+_MEM0_SLOTS = 2
+_gates: dict[int, asyncio.Semaphore] = {}
+
+
+async def _limited(coro: Any) -> Any:
+    loop_id = id(asyncio.get_running_loop())
+    gate = _gates.setdefault(loop_id, asyncio.Semaphore(_MEM0_SLOTS))
+    async with gate:
+        return await coro
+
 
 async def _private_parts(user_id: str, message: str, has_user: bool) -> list[str]:
     """Mem0: this user's private episodic facts. Never in a room — not the
@@ -38,7 +52,7 @@ async def _private_parts(user_id: str, message: str, has_user: bool) -> list[str
 
     if not has_user:
         return []
-    mem_ctx = await get_memory_context(user_id, message)
+    mem_ctx = await _limited(get_memory_context(user_id, message))
     return ["## Memory from past conversations\n" + mem_ctx] if mem_ctx else []
 
 
@@ -52,14 +66,14 @@ async def _scoped_parts(clearance: Any, agent_name: str, message: str) -> list[s
         return ""
 
     room, prefs, agent_ctx, org_ctx = await asyncio.gather(
-        get_scoped_context(clearance.room, message, header="Room memory")
+        _limited(get_scoped_context(clearance.room, message, header="Room memory"))
         if clearance.room else _none(),
-        get_scoped_context(clearance.prefs, message, header="Preferences")
+        _limited(get_scoped_context(clearance.prefs, message, header="Preferences"))
         if clearance.prefs else _none(),
-        get_scoped_context(
-            scope_key(agent=agent_name), message, header="Agent memory"),
-        get_scoped_context(
-            scope_key(org=True), message, header="Organisation memory"),
+        _limited(get_scoped_context(
+            scope_key(agent=agent_name), message, header="Agent memory")),
+        _limited(get_scoped_context(
+            scope_key(org=True), message, header="Organisation memory")),
     )
     parts: list[str] = []
     # What this room has established. Replaces the personal compartment
