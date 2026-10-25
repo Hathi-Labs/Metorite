@@ -5,8 +5,16 @@ Spec ``project-docs/specs/external_agent_access.md`` §5.3, §7.1 and §9.6.
 **Written by hand, not the SDK server.** One ``POST /mcp`` that answers in
 ``application/json`` only. It serves ``initialize``, ``ping``, ``tools/list``
 and ``tools/call``. EA-6e adds ``prompts/list`` and ``prompts/get``, and
-:mod:`agent_edge.prompts` holds the prompt. It never sends ``Mcp-Session-Id``
-and it ignores ``Accept``.
+:mod:`agent_edge.prompts` holds the prompt. It ignores ``Accept``.
+
+**The session (SW-7, spec §12.5).** ``initialize`` answers with an
+``Mcp-Session-Id`` that ``agent_signing.mint_mcp_session`` makes: a random
+session key and an HMAC that binds it to the connection. The edge keeps no
+state. Each later request that echoes the id is read back with
+``agent_signing.read_mcp_session``, and the key goes into each gateway call
+as the signed ``X-Agent-Session``. An id that does not verify answers 404,
+so the client starts a new session. A request with no id is served with no
+session.
 
 **The order of the checks (EA3-12, EA3-18).** The first check that fails
 gives the answer, and no later check runs:
@@ -22,6 +30,9 @@ gives the answer, and no later check runs:
    ``Retry-After: 2`` for a database outage (EA3-10).
 7. Version: after ``initialize``, ``MCP-Protocol-Version`` must be absent
    (served as ``2025-03-26``) or one of :data:`SUPPORTED_VERSIONS`, or 400.
+7b. Session (SW-7): after ``initialize``, an ``Mcp-Session-Id`` must be
+   absent or one that this connection's session minted. Two of them are
+   400. One that does not verify is 404.
 8. Scope: a ``tools/call`` of a known tool that the effective scopes do not
    cover is 403 ``insufficient_scope``. ONLY this check sends that error. A
    write tool while the writes flag is off skips it, and the call answers a
@@ -66,6 +77,9 @@ LATEST_VERSION = "2025-11-25"
 #: This is the cap of ``/mcp`` only. ``token`` and ``revoke`` use
 #: ``agent_oauth_max_body_bytes``.
 MAX_BODY_BYTES = 1024 * 1024
+
+#: The header of the MCP session (SW-7, spec §12.5).
+SESSION_HEADER = "Mcp-Session-Id"
 
 #: The ``Retry-After`` of a missing signing key (EA3-18).
 NO_KEY_RETRY_AFTER_S = 30
@@ -120,10 +134,11 @@ _PROTOCOL_RUNS_ON = (
     " call claim_task with the task_id and the version of the row."
     " 3. A 409 task_held means that another session holds the task. Do not try"
     " it again. Take the next row. A run of another connection, such as one"
-    " on another machine, is never yours, and my_work does not list it. Two"
-    " terminals on ONE connection share one stamp, and Metorite does not tell"
-    " them apart (SW-7). So a claim does not refuse a task that another"
-    " terminal of your connection holds. Take only a row that my_work lists."
+    " on another machine, is never yours, and my_work does not list it. Each"
+    " terminal is its own session (SW-7), so a run of another terminal on"
+    " your connection is never yours either: the claim refuses it, and the"
+    " refusal names release_task for a session that has ended. Take only a"
+    " row that my_work lists."
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
     " 5. Post a thought with post_agent_activity at least once a minute."
@@ -301,6 +316,36 @@ def _kind(message: Any) -> str | None:
     return None
 
 
+def _session_of(request: Request, caller: bearer.Caller,
+                method: str | None) -> tuple[str | None, Response | None]:
+    """Checks 7 and 7b: ``(session key, None)``, or ``(None, refusal)``.
+
+    Check 7, the version: after ``initialize``, ``MCP-Protocol-Version``
+    must be absent or one of :data:`SUPPORTED_VERSIONS`, or 400.
+
+    Check 7b, the session (SW-7). ``initialize`` reads no session, because
+    it starts one. Any other
+    message with no ``Mcp-Session-Id`` has no session. Two ids are 400. An
+    id that no usable key minted for THIS connection is 404, so the client
+    starts a new session (the transport rule of 2025-03-26 and later).
+    """
+    if method == "initialize":
+        return None, None
+    versions = request.headers.getlist("mcp-protocol-version")
+    if len(versions) > 1 or (versions and versions[0] not in SUPPORTED_VERSIONS):
+        return None, http_error(400, INVALID_REQUEST, "Unsupported protocol version")
+    sent = request.headers.getlist(SESSION_HEADER)
+    if len(sent) > 1:
+        return None, http_error(400, INVALID_REQUEST, "Send one Mcp-Session-Id.")
+    if not sent:
+        return None, None
+    session = agent_signing.read_mcp_session(
+        sent[0], str(caller.lookup.connection_id), agent_signing.usable_keys().values())
+    if session is None:
+        return None, http_error(404, INVALID_REQUEST, "Session not found. Initialize again.")
+    return session, None
+
+
 # ── The endpoint ────────────────────────────────────────────────────────────
 
 
@@ -345,10 +390,10 @@ async def endpoint(request: Request) -> Response:
         return challenge_401(sent=refused.sent)
 
     method = message.get("method") if kind != "response" else None
-    if method != "initialize":
-        versions = request.headers.getlist("mcp-protocol-version")
-        if len(versions) > 1 or (versions and versions[0] not in SUPPORTED_VERSIONS):
-            return http_error(400, INVALID_REQUEST, "Unsupported protocol version")
+    # 7. The version, and 7b. the session (SW-7).
+    session, refused = _session_of(request, caller, method)
+    if refused is not None:
+        return refused
 
     params: dict[str, Any] = message.get("params") or {}
     tool = None
@@ -365,30 +410,36 @@ async def endpoint(request: Request) -> Response:
 
     if kind != "request":
         return Response(status_code=202)
-    return await _dispatch(message["id"], str(method), params, tool, caller, key)
+    return await _dispatch(message["id"], str(method), params, tool, caller, key,
+                           session)
 
 
 async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                     tool: tools.Tool | None, caller: bearer.Caller,
-                    key: str) -> Response:
+                    key: str, session: str | None = None) -> Response:
     if method not in SERVED_METHODS:
         return _rpc_error(request_id, METHOD_NOT_FOUND, "Method not found")
     if method == "initialize":
         asked = params.get("protocolVersion")
         version = asked if asked in SUPPORTED_VERSIONS else LATEST_VERSION
-        return _result(request_id, {
+        answer = _result(request_id, {
             "protocolVersion": version,
             "capabilities": {name: dict(value) for name, value in CAPABILITIES.items()},
             "serverInfo": dict(SERVER_INFO),
             "instructions": instructions(caller.scopes),
         })
+        # SW-7: each `initialize` starts a new session, with a new key.
+        answer.headers[SESSION_HEADER] = agent_signing.mint_mcp_session(
+            key, str(caller.lookup.connection_id))
+        return answer
     if method == "ping":
         return _result(request_id, {})
     if method == "tools/list":
         # EA-6h: one signed read of the member's switch, so `delete_task`
         # shows only while the member turned it on. The instructions and the
         # prompt never name a delete, so they need no read.
-        listed = await tools.listed_for(tools.Context(caller=caller, key=key))
+        listed = await tools.listed_for(tools.Context(caller=caller, key=key,
+                                                      session=session))
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
         return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
@@ -405,8 +456,9 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
     _log.info("agent_edge.tool_call", tool=tool.name,
               connection_id=caller.lookup.connection_id)
     try:
-        result = await tools.call(tool, tools.Context(caller=caller, key=key),
-                                  params.get("arguments"))
+        result = await tools.call(
+            tool, tools.Context(caller=caller, key=key, session=session),
+            params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
     return _result(request_id, result)
@@ -419,6 +471,7 @@ __all__ = [
     "MAX_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
     "ROUTE_METHODS",
+    "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
     "challenge_401",
     "challenge_403",

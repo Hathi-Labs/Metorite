@@ -84,11 +84,25 @@ SW-13c fix round 1:
   ``test_z7_a_person_start_never_writes_into_a_dead_run`` (R8).
 * Z11. ``F`` ``connection_gone_sql``: drop the ``organization_id`` arm.
   ``test_a_dead_run_is_nobodys_own_and_the_org_arm_holds``.
+
+SW-7 (one key for each MCP session; spec §12.5):
+
+* K1. ``G`` ``_OPEN_RUN_SQL``: drop the ``session_key`` arm.
+  ``test_k1_two_sessions_of_one_connection_are_two_owners`` and
+  ``test_k5_a_second_terminal_gets_409_and_the_first_its_own_run`` (R8).
+* K2. ``G`` ``_gate_task``: skip the adoption of a run with no key.
+  ``test_k2_the_first_session_adopts_a_run_with_no_key`` and
+  ``test_k6_a_run_from_before_sw7_is_adopted_by_one_session`` (R8).
+* K3. ``G`` ``_same_client``: drop the session arm.
+  ``test_k3_the_409_names_another_session_of_the_same_connection``.
+* K4. ``G`` ``_move_run``: set ``session_key = :sk`` with no ``COALESCE``.
+  ``test_k4_an_agent_move_adopts_and_never_moves_a_key``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 import uuid
@@ -232,8 +246,8 @@ class TestOneConnectionOneOwner:
     def test_the_own_run_read_has_one_connection_arm(self) -> None:
         assert "CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)" in (
             agent_runs._OPEN_RUN_SQL)
-        assert agent_runs._open_run_args("t", "m", VIA, None)["cid"] is None
-        assert agent_runs._open_run_args("t", "m", VIA, "c")["cid"] == "c"
+        assert agent_runs._open_run_args("t", "m", VIA, None, None)["cid"] is None
+        assert agent_runs._open_run_args("t", "m", VIA, "c", None)["cid"] == "c"
 
     async def test_the_gate_binds_the_agents_connection_in_the_own_run_read(self) -> None:
         """Z1, hermetic half. The fake answers the own-run read only when it
@@ -243,9 +257,10 @@ class TestOneConnectionOneOwner:
         run = _FakeRun(conn_a)
         db = _FakeGateDb(run)
         assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
-                                           connection=conn_a) is run
+                                           connection=conn_a, session=None) is run
         with pytest.raises(HTTPException) as held:
-            await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA, connection=conn_b)
+            await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA, connection=conn_b,
+                                        session=None)
         assert held.value.status_code == 409
         assert held.value.detail["error"] == "task_held"
         # Fix round 1: machine B learns that the holder is its own client's run.
@@ -253,7 +268,7 @@ class TestOneConnectionOneOwner:
         assert held.value.detail["run_id"] == run.id
         # A person binds no connection and keeps the old rule.
         assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
-                                           connection=None) is run
+                                           connection=None, session=None) is run
 
     async def test_a_holder_of_a_dead_connection_is_free_and_a_live_one_holds(
             self, monkeypatch) -> None:
@@ -268,12 +283,14 @@ class TestOneConnectionOneOwner:
         run = _FakeRun(str(uuid.uuid4()), gone=True)
         db = _FakeGateDb(run)
         assert await agent_runs._gate_task(
-            db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4())) is None
+            db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4()),
+            session=None) is None
         assert taken == [run]
         run.connection_gone = False
         with pytest.raises(HTTPException):
             await agent_runs._gate_task(
-                db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4()))
+                db, run.task_id, ALICE, via=VIA, connection=str(uuid.uuid4()),
+                session=None)
 
 
 class TestTheOwnRunOfAnotherConnection:
@@ -318,21 +335,102 @@ class TestTheOwnRunOfAnotherConnection:
         assert "gc.organization_id = x.organization_id" in filters.connection_gone_sql("x")
 
 
+class TestOneSessionOneOwner:
+    """SW-7 (spec §12.5), hermetic. Two terminals of ONE connection are two
+    MCP sessions. The gate counts a run as the own run of an agent only in
+    its own session, or a run with no key, which the first session adopts."""
+
+    SA, SB = "SessionA_of-22chars___", "SessionB_of-22chars___"
+
+    async def test_k1_two_sessions_of_one_connection_are_two_owners(self) -> None:
+        conn = str(uuid.uuid4())
+        run = _FakeRun(conn, session=self.SA)
+        db = _FakeGateDb(run)
+        assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
+                                           connection=conn, session=self.SA) is run
+        for other in (self.SB, None):
+            with pytest.raises(HTTPException) as held:
+                await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
+                                            connection=conn, session=other)
+            assert held.value.detail["error"] == "task_held"
+            assert held.value.detail["same_client"] is True
+            assert held.value.detail["run_id"] == run.id
+        sql = " ".join(agent_runs._OPEN_RUN_SQL.split())
+        assert ("(CAST(:cid AS uuid) IS NULL OR r.session_key IS NULL"
+                " OR r.session_key = CAST(:sk AS text))") in sql
+        assert agent_runs._open_run_args("t", "m", VIA, conn, self.SA)["sk"] == self.SA
+
+    async def test_k2_the_first_session_adopts_a_run_with_no_key(self) -> None:
+        """A member start and a run from before SW-7 have no key. The first
+        agent session that the gate finds it for stamps its key. The next
+        session of the same connection then meets a holder."""
+        conn = str(uuid.uuid4())
+        run = _FakeRun(conn)
+        db = _FakeGateDb(run)
+        assert await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
+                                           connection=conn, session=self.SA) is run
+        assert run.session_key == self.SA
+        with pytest.raises(HTTPException):
+            await agent_runs._gate_task(db, run.task_id, ALICE, via=VIA,
+                                        connection=conn, session=self.SB)
+
+    def test_k3_the_409_names_another_session_of_the_same_connection(self) -> None:
+        conn = str(uuid.uuid4())
+        run = _FakeRun(conn, session=self.SA)
+        sibling = agent_runs._task_held(run, me=ALICE, via=VIA, connection=conn,
+                                        session=self.SB).detail
+        assert sibling["same_client"] is True and sibling["run_id"] == run.id
+        assert "another terminal" in sibling["hint"] and "release_task" in sibling["hint"]
+        mine = agent_runs._task_held(run, me=ALICE, via=VIA, connection=conn,
+                                     session=self.SA).detail
+        assert mine["same_client"] is False and "run_id" not in mine
+
+    def test_k4_an_agent_move_adopts_and_never_moves_a_key(self) -> None:
+        import inspect
+
+        source = inspect.getsource(agent_runs._move_run)
+        assert "session_key = COALESCE(session_key, CAST(:sk AS text))" in source
+
+    def test_the_session_of_a_caller_comes_from_the_agent_scope(self) -> None:
+        from acb_auth import AgentScope
+
+        agent = _agent(ALICE, str(uuid.uuid4()), str(uuid.uuid4()), VIA)
+        assert agent_runs._agent_session(agent) is None
+        scoped = dataclasses.replace(agent, agent=dataclasses.replace(
+            agent.agent, session_key=self.SA))
+        assert isinstance(scoped.agent, AgentScope)
+        assert agent_runs._agent_session(scoped) == self.SA
+        assert agent_runs._agent_session(_person(ALICE, str(uuid.uuid4()))) is None
+
+    def test_the_migration_adds_the_column_and_its_shape(self) -> None:
+        found = [p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
+                 if "ADD COLUMN IF NOT EXISTS session_key" in p.read_text(encoding="utf-8")]
+        assert len(found) == 1, found
+        sql = found[0].read_text(encoding="utf-8")
+        assert "session_key TEXT NULL" in sql
+        assert "'^[A-Za-z0-9_-]{22}$'" in sql
+        assert "DROP INDEX" not in sql and "CREATE UNIQUE INDEX" not in sql
+        number = found[0].name.split("_", 1)[0]
+        assert [p.name for p in _MIGRATIONS.glob(f"{number}_*.sql")] == [found[0].name]
+
+
 class _FakeRun(SimpleNamespace):
     """One open run of Alice under :data:`VIA`, fresh, on *connection*."""
 
-    def __init__(self, connection: str, *, gone: bool = False) -> None:
+    def __init__(self, connection: str, *, gone: bool = False,
+                 session: str | None = None) -> None:
         super().__init__(
             id=str(uuid.uuid4()), task_id=str(uuid.uuid4()), member_email=ALICE,
             member_name="Alice Archer", client_via=VIA, connection_id=connection,
             status="in_progress", idle_s=5.0, connection_gone=gone,
-            started_at=None, created_at=None, last_activity_at=None)
+            started_at=None, created_at=None, last_activity_at=None,
+            session_key=session)
 
 
 class _FakeGateDb:
-    """Answers the two reads of ``_gate_task`` as the SQL would: the own-run
-    read by member, stamp and (when bound) connection, the holder read with
-    the one open run."""
+    """Answers the reads of ``_gate_task`` as the SQL would: the own-run read
+    by member, stamp and (when bound) connection and session key, the holder
+    read with the one open run, and the adoption of SW-7."""
 
     def __init__(self, run: _FakeRun) -> None:
         self.run = run
@@ -340,9 +438,15 @@ class _FakeGateDb:
     async def execute(self, statement: Any, params: dict[str, Any]) -> Any:
         sql, run = str(statement), self.run
         if sql == agent_runs._OPEN_RUN_SQL:
+            agent = params["cid"] is not None
             mine = (params["me"] == run.member_email and params["via"] == run.client_via
-                    and params["cid"] in (None, run.connection_id))
+                    and (not agent or (params["cid"] == run.connection_id
+                                       and run.session_key in (None, params["sk"]))))
             return SimpleNamespace(fetchone=lambda: run if mine else None)
+        if sql == agent_runs._ADOPT_SQL:
+            if run.session_key is None:
+                run.session_key = params["sk"]
+            return SimpleNamespace(fetchone=lambda: None)
         if sql == agent_runs._HOLDER_SQL:
             return SimpleNamespace(fetchone=lambda: run)
         raise AssertionError(sql)
@@ -475,12 +579,13 @@ class TestTheEdge:
         assert free["held_by"] is None
 
     def test_the_tools_say_own_run_means_this_connection(self) -> None:
-        """SW-13c, Z7. The own run is of this connection, not of this client."""
+        """SW-13c, Z7, then SW-7. The own run is of this session (this
+        terminal on this connection), not of this client."""
         for tool in (tools.START_AGENT_RUN, tools.ASK_ON_TASK):
-            assert "from this connection" in tool.description, tool.name
+            assert "from this session" in tool.description, tool.name
             assert "from this client" not in tool.description, tool.name
-        assert "another machine" in tools.START_AGENT_RUN.description
-        assert "own open run from this connection" in tools.CLAIM_TASK.description
+        assert "another terminal or another machine" in tools.START_AGENT_RUN.description
+        assert "own open run from this session" in tools.CLAIM_TASK.description
 
     def test_list_tasks_takes_unheld_and_sends_it_as_a_query_flag(self) -> None:
         assert "unheld" in tools._LIST_TASKS_INPUT["properties"]
@@ -515,6 +620,12 @@ def _agent(email: str, org: str, connection: str, via: str) -> Any:
             connection_id=connection, scopes=("projects:read", "projects:write"),
             include_personal=False, client_origin=ORIGIN, actor_via=via),
     )
+
+
+def _in_session(user: Any, session: str) -> Any:
+    """*user*, an agent, in the MCP session *session* (SW-7): the key that
+    branch 0 reads from the signed ``X-Agent-Session``."""
+    return dataclasses.replace(user, agent=dataclasses.replace(user.agent, session_key=session))
 
 
 def _person(email: str, org: str, *, admin: bool = False, sees_all: bool = True) -> Any:
@@ -1055,6 +1166,50 @@ class TestOneAiForEachTask:
                       i=dead_run)
         assert row.status == "abandoned"
         assert [str(r.id) for r in _open_runs(w, task)] == [new_run["id"]]
+
+    # ── SW-7: two sessions of ONE connection ─────────────────────────────
+
+    async def test_k5_a_second_terminal_gets_409_and_the_first_its_own_run(self, w):
+        """Two terminals on one machine share one connection and one stamp,
+        and each has its own MCP session key. Terminal B is refused with
+        ``task_held`` and the run id, and terminal A gets its own run back.
+        Mutation K1."""
+        task = _fresh(w)
+        a = _in_session(w.alice, "TerminalA_of-22chars__")
+        b = _in_session(w.alice, "TerminalB_of-22chars__")
+        async with _session(w.p) as call:
+            run = (await _claim(call, a, task)).json()["agent_run_id"]
+            refused = await _claim(call, b, task)
+            started = await _start(call, b, task)
+            again = await _claim(call, a, task)
+        for answer in (refused, started):
+            assert answer.status_code == 409, answer.text
+            detail = _detail(answer)
+            assert detail["error"] == "task_held" and detail["same_client"] is True
+            assert detail["run_id"] == run
+        assert again.status_code == 200 and again.json()["agent_run_id"] == run
+        [row] = _rows(w.p, "SELECT session_key FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                      i=run)
+        assert row.session_key == "TerminalA_of-22chars__"
+        assert [str(r.id) for r in _open_runs(w, task)] == [run]
+
+    async def test_k6_a_run_from_before_sw7_is_adopted_by_one_session(self, w):
+        """The transition rule. A run with no key (a member start, or a run
+        from before SW-7) is the own run of the first session that claims,
+        which adopts it. The next terminal meets a holder. Mutation K2."""
+        task = _fresh(w)
+        async with _session(w.p) as call:
+            run = (await _claim(call, w.alice, task)).json()["agent_run_id"]  # no session
+            [row] = _rows(w.p, "SELECT session_key FROM pm_agent_runs "
+                               "WHERE id = CAST(:i AS uuid)", i=run)
+            assert row.session_key is None
+            adopted = await _claim(call, _in_session(w.alice, "TerminalA_of-22chars__"), task)
+            refused = await _claim(call, _in_session(w.alice, "TerminalB_of-22chars__"), task)
+        assert adopted.status_code == 200 and adopted.json()["agent_run_id"] == run
+        assert refused.status_code == 409 and _detail(refused)["same_client"] is True
+        [row] = _rows(w.p, "SELECT session_key FROM pm_agent_runs WHERE id = CAST(:i AS uuid)",
+                      i=run)
+        assert row.session_key == "TerminalA_of-22chars__"
 
     # ── The reopen of a completed run ───────────────────────────────────
 

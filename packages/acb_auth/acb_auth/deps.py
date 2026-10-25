@@ -477,7 +477,7 @@ def _one_header(request: Request, name: str) -> str | None:
 #: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature", "method", "nonce",
+    "signature", "method", "nonce", "session",
 })
 
 
@@ -490,9 +490,15 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 def _verify_signed_request(
     request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
-) -> tuple[str, str, str] | str:
-    """Step 2 of branch 0: ``(organization, connection, actor stamp)`` of a
-    well-signed, fresh request, or the reason to refuse it.
+) -> tuple[str, str, str, str | None] | str:
+    """Step 2 of branch 0: ``(organization, connection, actor stamp,
+    session key)`` of a well-signed, fresh request, or the reason to
+    refuse it.
+
+    SW-7 (spec §12.5): ``X-Agent-Session`` is optional. Once and in its
+    shape, it is the last line of the signed string. Twice, or in another
+    shape, it is a refusal. The session key comes ONLY from this signed
+    header, never from a body or a query.
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
     ``_agent_user`` read and the nonce it checked, and both are signed.
@@ -507,6 +513,12 @@ def _verify_signed_request(
     organization_id, _, connection_id = connection_header.partition(".")
     if not organization_id or not connection_id:
         return "connection_header"
+    sessions = request.headers.getlist(agent_signing.HEADER_SESSION)
+    session = sessions[0] if sessions else None
+    if len(sessions) > 1 or (
+        session is not None and not agent_signing.session_key_is_well_formed(session)
+    ):
+        return "session"
     # A GET has no nonce and a write has one. Anything else never signs.
     if (request.method.upper() == "GET") != (nonce is None):
         return "nonce"
@@ -536,12 +548,13 @@ def _verify_signed_request(
         query=pairs,
         body=body,
         nonce=nonce,
+        session=session,
     )
     if not agent_signing.verify(signature, canonical, keys):
         return "signature"
     if not agent_signing.timestamp_is_fresh(timestamp):
         return "timestamp"
-    return organization_id, connection_id, actor_via
+    return organization_id, connection_id, actor_via, session
 
 
 async def _read_connection(
@@ -714,7 +727,7 @@ async def _agent_user(request: Request) -> UserContext:
     signed = _verify_signed_request(request, keys, body, nonce)
     if isinstance(signed, str):
         return _refuse_agent(signed)
-    organization_id, connection_id, actor_via = signed
+    organization_id, connection_id, actor_via, session = signed
 
     # 3. The matched route template is in MCP_ROUTES.
     if pair not in agent_oauth.MCP_ROUTES:
@@ -790,6 +803,7 @@ async def _agent_user(request: Request) -> UserContext:
             include_personal=connection.include_personal,
             client_origin=connection.client_origin,
             actor_via=expected_via,
+            session_key=session,
         ),
     )
 

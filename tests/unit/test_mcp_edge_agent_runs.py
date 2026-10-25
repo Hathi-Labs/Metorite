@@ -203,10 +203,10 @@ class TestTheLongPoll:
         real = tools.gateway_get
 
         async def spy(key, lookup, template, *, path_params=None, query=(),
-                      timeout_s=None):
+                      timeout_s=None, session=None):
             seen.append((template, timeout_s, list(query)))
             return await real(key, lookup, template, path_params=path_params,
-                              query=query, timeout_s=timeout_s)
+                              query=query, timeout_s=timeout_s, session=session)
 
         monkeypatch.setattr(tools, "gateway_get", spy)
         _structured(await _tool("get_agent_run",

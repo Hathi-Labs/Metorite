@@ -53,6 +53,12 @@ SW-13b (one member, two machines, one stamp):
 * Y14. ``E`` ``_my_runs``: drop the check of ``_run_connection``. ``test_y14_a_stale_run_of_another_connection_is_not_listed`` and ``test_y15_an_answered_run_of_another_connection_is_not_listed``.
 * Y16. ``E`` ``_my_runs``: keep a run with no ``connection_id`` (``_run_connection(r) in (mine, None)``). ``test_y16_a_run_with_no_connection_is_not_this_agents``.
 * Y17. ``E`` ``_my_runs``: keep a ``queued`` run of any connection. ``test_y17_member_queued_work_for_this_connection_still_shows``.
+
+SW-7 (one key for each MCP session, spec §12.5):
+
+* Y18. ``E`` ``_this_session``: always ``True``. ``test_y18_a_run_of_another_terminal_is_not_listed``.
+* Y19. ``E`` ``_my_work``: drop the ``lease_expired`` arm of the held group. ``test_y19_a_sibling_run_whose_lease_ended_is_offered``.
+* Y20. ``E`` ``_this_session``: drop the ``key is None`` arm. ``test_y20_a_run_with_no_key_shows_to_each_session``.
 """
 from __future__ import annotations
 
@@ -71,6 +77,7 @@ from agent_edge import gateway_client, tools
 from tests.unit.test_mcp_edge_writes import (  # noqa: F401 — fixtures
     CONN,
     GOOD,
+    KEY,
     PROJECT,
     TASK,
     VIA,
@@ -105,9 +112,11 @@ OTHER_CONN = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
 
 
 def _run(run_id: str, task_id: str, *, state: str = "working", status: str = "in_progress",
-         via: str = VIA, connection: str | None = CONN) -> dict[str, Any]:
+         via: str = VIA, connection: str | None = CONN, session: str | None = None,
+         lease_expired: bool = False) -> dict[str, Any]:
     return {"id": run_id, "task_id": task_id, "member_email": ME, "client_via": via,
-            "status": status, "state": state, "connection_id": connection}
+            "status": status, "state": state, "connection_id": connection,
+            "session_key": session, "lease_expired": lease_expired}
 
 
 def _blocks(other: str, direction: str, category: str) -> dict[str, Any]:
@@ -628,6 +637,80 @@ class TestOneMemberTwoMachines:
         rows = await _work()
         assert [(r["task_id"], r["reason"], r["run_id"]) for r in rows] == [
             (mine, "run_queued", _uuid(6431))]
+
+
+class TestOneSessionOfAConnection:
+    """SW-7. Two terminals of one machine share one connection, and each is
+    its own MCP session. ``my_work`` keeps the runs of THIS session, and a
+    run with no key (a member start, or a run from before SW-7)."""
+
+    MINE, SIBLING = "TerminalA_of-22chars__", "TerminalB_of-22chars__"
+
+    async def _work_in(self, session: str) -> list[dict[str, Any]]:
+        from agent_edge import app as edge_app_module
+        from agent_edge import mcp
+
+        sid = _session_id(session)
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=edge_app_module.create_app()),
+                base_url="https://mcp.metorite.com") as client:
+            r = await client.post("/mcp", content=json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "my_work", "arguments": {}}}), headers={
+                "authorization": f"Bearer {GOOD}", "content-type": "application/json",
+                "mcp-protocol-version": "2025-11-25", mcp.SESSION_HEADER: sid})
+        assert r.status_code == 200, r.text
+        return _structured(r.json()["result"])["rows"]
+
+    async def test_y18_a_run_of_another_terminal_is_not_listed(self, board):
+        mine, theirs = _uuid(8501), _uuid(8502)
+        for task_id in (mine, theirs):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6501), mine, state="answered", session=self.MINE),
+            _run(_uuid(6502), theirs, state="answered", session=self.SIBLING),
+            _run(_uuid(6503), theirs, state="stale", session=self.SIBLING),
+        ]
+        rows = await self._work_in(self.MINE)
+        assert [(r["task_id"], r["reason"]) for r in rows] == [(mine, "run_answered")]
+
+    async def test_y19_a_sibling_run_whose_lease_ended_is_offered(self, board):
+        """A quiet sibling may still be alive, so only its lease frees it, as
+        the gate takes a sibling's run over only after the lease."""
+        quiet, gone = _uuid(8511), _uuid(8512)
+        for task_id in (quiet, gone):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6511), quiet, state="stale", session=self.SIBLING),
+            _run(_uuid(6512), gone, state="stale", session=self.SIBLING, lease_expired=True),
+        ]
+        rows = await self._work_in(self.MINE)
+        assert [(r["task_id"], r["reason"]) for r in rows] == [(gone, "held_by_you")]
+
+    async def test_y20_a_run_with_no_key_shows_to_each_session(self, board):
+        queued = _uuid(8521)
+        board.tasks[queued] = _task_row(queued)
+        board.runs = [_run(_uuid(6521), queued, state="queued", status="created")]
+        for session in (self.MINE, self.SIBLING):
+            rows = await self._work_in(session)
+            assert [(r["task_id"], r["reason"]) for r in rows] == [(queued, "run_queued")]
+
+    async def test_a_call_outside_a_session_sees_only_runs_with_no_key(self, board):
+        keyed, plain = _uuid(8531), _uuid(8532)
+        for task_id in (keyed, plain):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [_run(_uuid(6531), keyed, state="answered", session=self.MINE),
+                      _run(_uuid(6532), plain, state="answered")]
+        rows = await _work()
+        assert [r["task_id"] for r in rows] == [plain]
+
+
+def _session_id(session: str) -> str:
+    """An ``Mcp-Session-Id`` of the key *session* for the connection of the
+    fake token row, as ``agent_signing.mint_mcp_session`` builds one."""
+    from acb_auth import agent_signing
+
+    return f"s1.{session}.{agent_signing._session_mac(KEY, CONN, session)}"
 
 
 def _replace_origin(lookup: Any, origin: str) -> Any:

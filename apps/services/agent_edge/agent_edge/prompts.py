@@ -182,10 +182,9 @@ def _queued_text() -> str:
         " step 2 again. When claim_task refuses for another reason, tell me"
         " why, and take the next row. A waiting run of another connection, such"
         " as one on another machine, is never yours, and my_work does not list"
-        " it. Two terminals on one connection share one stamp, and Metorite"
-        " does not tell them apart. So a claim does not refuse a task that"
-        " another terminal of your connection holds. Take only a row that"
-        " my_work lists.",
+        " it. Each terminal is its own session, so a run of another terminal on"
+        " your connection is never yours either, and the claim refuses it. Take"
+        " only a row that my_work lists.",
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]
@@ -225,8 +224,8 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         " and tell me why. When get_task shows held_by and held_by.stale is"
         " false, another AI session holds the task. That is true also when"
         " held_by names your own client, because the run can belong to another"
-        " machine or another terminal, and a claim does not refuse a session of"
-        " the same client. Stop, and tell me. Do not work on a held task.",
+        " machine or another terminal. Stop, and tell me. Do not work on a held"
+        " task.",
         "Call claim_task with that version as expected_version. When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",

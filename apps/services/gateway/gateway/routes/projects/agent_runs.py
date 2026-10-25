@@ -531,6 +531,10 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
                 and lease_expired(row.status, float(row.idle_s))
             ),
             "connection_id": wire(row.connection_id),
+            # SW-7: the MCP session key, so `my_work` keeps this session's
+            # runs. The key alone is no credential: the edge verifies the HMAC
+            # of the session id before it signs a key in (spec §12.5).
+            "session_key": getattr(row, "session_key", None),
             "client_via": row.client_via,
             # EA-13d: the curated name and the verified host of the stamp, for
             # the run pill "<client_name> · <host>". The name comes from the one
@@ -984,6 +988,10 @@ async def _move_run(
         sets.append("last_agent_activity_at = :ts")
         sets.append("connection_id = CAST(:cid AS uuid)")
         params["cid"] = str(agent.connection_id) if agent is not None else None
+        # SW-7: the first agent session that touches a run with no session
+        # key adopts it. A run of another session keeps its key.
+        sets.append("session_key = COALESCE(session_key, CAST(:sk AS text))")
+        params["sk"] = getattr(agent, "session_key", None) if agent is not None else None
     if new_status == "in_progress" and run.started_at is None:
         sets.append("started_at = :ts")
     if new_status in TERMINAL_STATUSES:
@@ -1082,28 +1090,31 @@ async def _member_name(db: Any, email: str) -> str:
     return str(found or email)
 
 
-#: SW-13c fix round 1 (P2-a). The hint of a 409 whose holder is the caller's
-#: OWN run from another connection of the same client. A new sign-in on the
-#: same machine leaves the old connection live, so its run holds the task.
-#: The release checks the member and the stamp only, so the agent may end it.
+#: SW-13c fix round 1 (P2-a), and SW-7. The hint of a 409 whose holder is the
+#: caller's OWN run from another session of the same client: another
+#: terminal (SW-7), another machine, or an earlier sign-in (SW-13c). The
+#: release checks the member and the stamp only, so the agent may end it.
 SAME_CLIENT_HINT = (
-    "This is your own run from another connection of the same client (another"
-    " machine, or an earlier sign-in). If that session has ended, release it"
-    " with release_task and this run_id, then claim again."
+    "This is your own run from another session of the same client (another"
+    " terminal, another machine, or an earlier sign-in). If that session has"
+    " ended, release it with release_task and this run_id, then claim again."
 )
 
 
 def _same_client(holder: Any, me: str | None, via: str | None,
-                 connection: str | None) -> bool:
-    """True when *holder* is of the caller's member and stamp, on ANOTHER
-    connection (SW-13c). Only an agent caller passes a connection."""
+                 connection: str | None, session: str | None = None) -> bool:
+    """True when *holder* is of the caller's member and stamp, in ANOTHER
+    session: another connection (SW-13c), or another MCP session of the same
+    connection (SW-7). Only an agent caller passes a connection."""
     return (connection is not None and holder.member_email == me
             and holder.client_via == via
-            and str(holder.connection_id or "") != connection)
+            and (str(holder.connection_id or "") != connection
+                 or getattr(holder, "session_key", None) != session))
 
 
 def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
-               connection: str | None = None) -> HTTPException:
+               connection: str | None = None,
+               session: str | None = None) -> HTTPException:
     """The 409 ``task_held``. The message names the holder, the client, the
     start and the last activity, and tells the caller to pick another task.
 
@@ -1121,7 +1132,7 @@ def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
         f"The run began at {since}. The last activity was at {last}. "
         "Pick another task. Do not try this task again."
     )
-    own = _same_client(holder, me, via, connection)
+    own = _same_client(holder, me, via, connection, session)
     detail: dict[str, Any] = {
         "error": TASK_HELD, "message": message, "same_client": own,
         "held_by": {
@@ -1186,6 +1197,15 @@ def _free(holder: Any) -> bool:
                        getattr(holder, "connection_gone", False) is True)
 
 
+def _agent_session(user: UserContext) -> str | None:
+    """SW-7 (spec §12.5). The MCP session key of an AGENT caller, from
+    ``UserContext.agent``, which branch 0 fills from the SIGNED
+    ``X-Agent-Session``. Never from a body. ``None`` for a person, and for an
+    agent call outside an MCP session."""
+    agent = getattr(user, "agent", None)
+    return getattr(agent, "session_key", None) if agent is not None else None
+
+
 def _agent_connection(user: UserContext) -> str | None:
     """SW-13c. The connection of an AGENT caller, from ``UserContext.agent``,
     which branch 0 builds from the signed ``X-Agent-Connection`` and the token
@@ -1195,7 +1215,7 @@ def _agent_connection(user: UserContext) -> str | None:
 
 
 async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
-                     connection: str | None) -> Any | None:
+                     connection: str | None, session: str | None) -> Any | None:
     """The ONE gate of EA-14a, before any run opens on *task_id*.
 
     * The caller's own open run (same member, same client, EA12-6): that run.
@@ -1203,6 +1223,11 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
       the run must carry it too. Two machines of one member share the stamp,
       so a run of the same member and stamp on ANOTHER connection is a
       holder like any other. A person passes ``None`` and keeps the old rule.
+      SW-7: an agent's own run is of its own MCP *session* too. A run with no
+      session key (a member start, or a run from before SW-7) counts as the
+      own run of any session of its connection, and the gate stamps the
+      caller's key on it (adoption). A sibling session that loses the race
+      to adopt reads the run again and finds a holder.
     * No open run: None. The caller may insert.
     * Another run whose lease ended (and, for a question, three leases), or
       whose connection is revoked or expired (SW-13c): the run moves to
@@ -1217,10 +1242,11 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
     So the gate never takes the task row before a run, which keeps the lock
     order of ``open_run_for_claim`` (run, then task row).
     """
-    own = (await db.execute(
-        text(_OPEN_RUN_SQL),
-        _open_run_args(task_id, me, via, connection),
-    )).fetchone()
+    args = _open_run_args(task_id, me, via, connection, session)
+    own = (await db.execute(text(_OPEN_RUN_SQL), args)).fetchone()
+    if own is not None and session is not None and own.session_key is None:
+        await db.execute(text(_ADOPT_SQL), {"rid": str(own.id), "sk": session})
+        own = (await db.execute(text(_OPEN_RUN_SQL), args)).fetchone()
     if own is not None:
         return own
     for _ in range(3):
@@ -1230,7 +1256,8 @@ async def _gate_task(db: Any, task_id: str, me: str, *, via: str,
         if holder is None:
             return None
         if not _free(holder):
-            raise _task_held(holder, me=me, via=via, connection=connection)
+            raise _task_held(holder, me=me, via=via, connection=connection,
+                             session=session)
         if await _take_over(db, holder, me=me, via=via):
             return None
     raise HTTPException(status_code=409, detail="Try the call again.")
@@ -1249,16 +1276,17 @@ async def _clear_for_reopen(db: Any, run: Any, user: UserContext) -> None:
     via = _agent_via(user)
     if not _free(holder) or not await _take_over(db, holder, me=_member(user), via=via):
         raise _task_held(holder, me=_member(user), via=via,
-                         connection=_agent_connection(user))
+                         connection=_agent_connection(user),
+                         session=_agent_session(user))
 
 
 _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
-    " idempotency_key) "
+    " idempotency_key, session_key) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
-    "        :started, :link, :ts, :agent_ts, :key) "
+    "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -1281,21 +1309,38 @@ _INSERT_RUN_SQL = (
 #: next claim abandons: the gate takes it over, and a new run opens on the
 #: live connection that the person names. An agent's own connection is live
 #: (branch 0 refuses a dead one), so the arm changes nothing for an agent.
+#:
+#: SW-7 (spec §12.5): an agent also binds its MCP session key ``:sk``. Its
+#: own run carries that key, or no key (the transition rule: a member start
+#: and a run from before SW-7). An agent with no session owns only runs with
+#: no key, so leaving the header out never reaches the run of a session. A
+#: person binds NULL connection and skips the arm.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
     "   AND r.status = ANY(:open) AND r.client_via = :via "
     "   AND (CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)) "
+    "   AND (CAST(:cid AS uuid) IS NULL OR r.session_key IS NULL "
+    "        OR r.session_key = CAST(:sk AS text)) "
     f"   AND NOT {connection_gone_sql('r')} "
     " ORDER BY r.created_at DESC LIMIT 1"
 )
 
 
 def _open_run_args(task_id: str, me: str, via: str,
-                   connection: str | None) -> dict[str, Any]:
-    """The binds of :data:`_OPEN_RUN_SQL`. *connection* has no default, so
-    each caller names it (SW-13c)."""
-    return {"tid": task_id, "me": me, "via": via, "cid": connection,
+                   connection: str | None, session: str | None) -> dict[str, Any]:
+    """The binds of :data:`_OPEN_RUN_SQL`. *connection* (SW-13c) and
+    *session* (SW-7) have no default, so each caller names them."""
+    return {"tid": task_id, "me": me, "via": via, "cid": connection, "sk": session,
             "open": list(AGENT_RUN_OPEN_STATUSES)}
+
+
+#: SW-7: the adoption of a run with no session key by the first agent
+#: session that the gate finds it for. The guard on NULL makes a race of two
+#: sibling sessions give the run to ONE of them.
+_ADOPT_SQL = (
+    "UPDATE pm_agent_runs SET session_key = :sk "
+    " WHERE id = CAST(:rid AS uuid) AND session_key IS NULL"
+)
 
 
 async def _replay_start(db: Any, me: str, key: str | None, task_id: str) -> dict | None:
@@ -1380,8 +1425,9 @@ async def start_agent_run(
         # start keeps the old rule (member and stamp), so it binds no
         # connection here, though its insert stores the one it names.
         own_connection = _agent_connection(user)
+        own_session = _agent_session(user)
         existing = await _gate_task(db, task_id, me, via=client_via,
-                                    connection=own_connection)
+                                    connection=own_connection, session=own_session)
         if existing is None:
             ts = await _clock(db)
             made = (await db.execute(text(_INSERT_RUN_SQL), {
@@ -1390,7 +1436,7 @@ async def start_agent_run(
                 "by": via if via is not None else me,
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
-                "key": payload.idempotency_key,
+                "key": payload.idempotency_key, "sk": own_session,
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
                 # A retry with the same key that lost the race replays the
@@ -1400,7 +1446,8 @@ async def start_agent_run(
                     response.status_code = 200
                     return replay
                 existing = await _gate_task(db, task_id, me, via=client_via,
-                                            connection=own_connection)
+                                            connection=own_connection,
+                                            session=own_session)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
         if existing is not None:
@@ -1719,7 +1766,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     # EA-14a: the gate returns the caller's own open run, None for a free
     # task, or raises 409 `task_held`. A lease that ended is taken over.
     existing = await _gate_task(db, task_id, me, via=via,
-                                connection=_agent_connection(user))
+                                connection=_agent_connection(user),
+                                session=_agent_session(user))
     if existing is not None:
         return str(existing.id), False
     ts = await _clock(db)
@@ -1727,13 +1775,15 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
         "link": None, "ts": ts, "agent_ts": ts, "key": None,
+        "sk": _agent_session(user),
     })).fetchone()
     if made is not None:
         return str(made.id), True
     # A concurrent start won the open-run index. Its run is the answer when it
     # is this caller's own. Another member's run is `task_held`.
     existing = await _gate_task(db, task_id, me, via=via,
-                                connection=_agent_connection(user))
+                                connection=_agent_connection(user),
+                                session=_agent_session(user))
     return (str(existing.id) if existing is not None else None), False
 
 

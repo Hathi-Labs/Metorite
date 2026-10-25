@@ -847,9 +847,14 @@ class TestTheProtocolRules:
         r = await _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, token=None)
         assert r.status_code == 401
 
-    async def test_no_answer_carries_a_session_id(self, armed):
+    async def test_only_initialize_carries_a_session_id(self, armed):
+        """SW-7 (spec §12.5) changed the rule "the edge never sends
+        ``Mcp-Session-Id``": ``initialize`` starts a session and answers its
+        id. No other answer carries one."""
+        first = await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}),
+                            version=None)
+        assert first.headers["mcp-session-id"].startswith("s1.")
         answers = [
-            await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}), version=None),
             await _post(_rpc("tools/list")),
             await _post({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             await _post(_rpc("ping"), token=None),

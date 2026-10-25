@@ -851,7 +851,7 @@ After the eight checks, the edge dispatches the method. A notification, or a JSO
 **The transport.**
 
 1. One `POST /mcp`. Each answer is `application/json`. The edge ignores the `Accept` header.
-2. The edge never sends `Mcp-Session-Id`.
+2. ~~The edge never sends `Mcp-Session-Id`.~~ SW-7 (§12.5) changed this rule. `initialize` answers an `Mcp-Session-Id` that the edge signs, and the edge keeps no state. A later request may echo it. An id that does not verify gets 404, so the client starts a new session. A request with no id is served with no session.
 
 **The error body (EA3-13).** A 400, 401 or 403 answer carries a JSON-RPC error with `id: null`. The `code` is `-32700` for a body that is not JSON, and `-32600` for every other case. A 503 carries the same shape with the code `-32603`. A 404 from the flag and a 405 carry no rule for the body.
 
@@ -957,6 +957,7 @@ v1
 - The gateway refuses a query that is not ASCII, or whose `%XX` sequences do not decode as UTF-8. Then `%FF` and `%FE` cannot share one signature.
 - A GET has an empty body, so its hash is the SHA-256 of zero bytes.
 - A write (EA-6a, EA3-28) adds a 9th line, the value of `X-Agent-Nonce`, after the body hash. A GET has no 9th line, so its signed string is the eight lines above, byte for byte. The body line of a write is the SHA-256 of the body bytes as sent.
+- A call in an MCP session (SW-7, §12.5) adds a last line, `session:<key>`, after the body hash or the nonce. The key goes out as `X-Agent-Session`. A call with no session has no such line, so its string is byte for byte the string before SW-7.
 
 **The keys.**
 
@@ -1475,7 +1476,7 @@ Owner directive, 2026-10-20. If one AI session holds a task, no other AI session
   - **Known gap.** `AgentRunPanel.tsx` reads `lease_expired`, so for a dead holder it does not say that the next claim can take the task. The card and `held_by.stale` do say it.
 - **A person keeps the old rules.** "Ask an agent" binds no connection in the gate, so the own run of a person stays member and stamp. The insert still stores the connection that the person names. The dead-connection rule applies to every caller, because it is a fact of the holder.
 - **No migration.** The per-task index `pm_agent_runs_one_open_per_task` already refuses a second open run beside the run of another machine.
-- **Not changed.** A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too, not the connection. An agent move stamps its own connection on the run. SW-7 owns two terminals on one connection.
+- **Not changed.** A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too, not the connection. An agent move stamps its own connection on the run. SW-7 (§12.5) closes two terminals on one connection.
 
 **Fence.** `tests/unit/test_agent_run_exclusive.py`.
 
@@ -1518,13 +1519,13 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
 
-**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this connection does not hold. An agent takes new work only by assignment or by an explicit claim. One residual stays: two terminals that share ONE connection. They have one stamp and one connection id, so `my_work` and the claim cannot tell them apart. SW-7 of the swarm plan (a session key) closes that.
+**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this connection does not hold. An agent takes new work only by assignment or by an explicit claim. SW-7 (§12.5) closed the last residual, two terminals that share ONE connection. Each terminal is its own MCP session, and `my_work` keeps the runs of this session and the runs with no key.
 
 **EA-15c. The protocol.** The server instructions (`mcp.py`) and the prompt `work_on_task` (`prompts.py`) give one order of steps:
 
 1. At the start of a session, call `my_work`. It replaces "call `list_agent_runs` with `needs_agent`, and continue each run".
 2. Take the top row. For `run_stopping`, call `finish_agent_run` at once, with no activity before it. For another waiting run, read it with `get_agent_run`. For a task, call `claim_task`.
-3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. A run of another connection, such as one on another machine, is never yours. Two terminals on one connection share one stamp, and the claim does not tell them apart (SW-7). So the agent takes only a row that `my_work` lists.
+3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. A run of another connection, such as one on another machine, is never yours. Each terminal is its own session (SW-7, §12.5). So a run of another terminal on your connection is not yours either. The refusal names `release_task` for a session that ended. The agent takes only a row that `my_work` lists.
 4. Call `get_task_context`, then `start_agent_run` when the claim opened no run.
 5. Post a thought at least once a minute.
 6. End with exactly one disposition: the task moves to review or done, or a question waits on a named member (`ask_on_task`), or `release_task` gives it back. A comment is evidence, never a disposition.
@@ -1538,6 +1539,49 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 **Fence.** `tests/unit/test_mcp_edge_context.py`. Each rule above has a test, and each test fails under a named mutation. `test_mcp_edge_coverage.py` lists the two new tools, and rule 4 lists `limit` of `my_work` as an edge input. `test_mcp_edge_prompts.py` pins that the instructions and the prompt name `my_work`, `get_task_context` and the 409 rule.
 
 *Verified against code: 2026-10-25, at `ffc09bb68` (the routes and parameters of `agent_oauth.MCP_ROUTES`, `activities.get_timeline`, `tasks.list_tasks`, `agent_runs.list_agent_runs` and `tools._get_task`).*
+
+### 12.5 One key for each agent session (SW-7)
+
+**BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged (Metorite task #338, which takes in the SW-6 design #337 and MCP-G4).**
+
+**The gap.** Two Claude Code terminals on ONE machine share one `agent_connection` and one stamp. After SW-13c the own run of an agent was member + stamp + connection. So terminal B got the run of terminal A back as its own, and worked its task.
+
+**The finding (feasible, no new state).** Each Claude Code process sends its own `initialize`. The MCP transport lets a server answer `initialize` with an `Mcp-Session-Id`, and the client then sends it on each request. So the edge can tell two sessions apart without a store.
+
+- **The id.** `agent_signing.mint_mcp_session` makes `s1.<key>.<hex HMAC>`. The key is 16 random bytes in base64url, 22 characters. The HMAC of the signing key covers the version, the connection id and the key. So the id binds its connection, and a client cannot make up the id of another session. It can only steal one, which is the trust level of the bearer token.
+- **No state.** The edge reads an id back with `agent_signing.read_mcp_session` and the usable keys. These are the current key and the key before it, so a key rotation keeps the sessions. The edge keeps nothing between requests, as EA3-2 wants.
+- **The check.** Check 7b of §9.6 comes after the version. An id that does not verify for THIS connection gets 404, so the client starts a new session. Two ids get 400. No id means no session.
+
+**The gateway.**
+
+- **The signed header.** The edge signs the key into each gateway call as `X-Agent-Session`, and the signed string ends with `session:<key>` (§10.1). Branch 0 reads the key ONLY from that signed header, once and in its shape, and never from a body or an unsigned header (R5). It puts the key on `AgentScope.session_key`. A header that the edge did not sign breaks the signature.
+- **The column.** Migration 302 adds `pm_agent_runs.session_key TEXT NULL`, with a CHECK on its shape. It changes no index. The per-task index already allows one open run for each task, and `pm_agent_runs_one_open` stays.
+- **The own run.** For an agent, the own run is member + stamp + connection + session key. One read, `_OPEN_RUN_SQL`, holds it. A person binds no connection and keeps the old rule.
+- **The transition rule.** A run with NO key counts as the own run of any session of its connection. These are a member start ("Ask an agent") and a run from before SW-7, so a run in flight keeps working. The first agent session that the gate finds such a run for adopts it: the gate stamps its key, guarded on NULL. A sibling that loses the race reads the run again and meets a holder. An agent move (`_move_run`) adopts too, with `COALESCE`, and never moves a key that is set.
+- **A call outside a session** owns only runs with no key. So leaving the header out never reaches the run of a session.
+- **The 409.** A sibling session on the same connection that holds the task gives the 409 of SW-13c. It carries `same_client: true`, the `run_id` and the hint, which now names another terminal. The release checks member and stamp only, so the agent can end the run of a session that ended.
+
+**`my_work`.**
+
+- **Groups 1 and 2** keep the runs of this session, and the runs with no key. A waiting run of a sibling session is that session's, and it is not listed.
+- **A quiet run of a sibling session** shows in group 2 only when its LEASE ended. Five quiet minutes do not show that a session ended: a session whose subagents work for a long time posts nothing (the SW-13b incident). The gate takes a sibling's run over only after the lease, so `my_work` offers only what the claim can take.
+- The runs wire carries `session_key`. The key alone is no credential, because the edge verifies the HMAC of the id before it signs a key in.
+
+**What stays.**
+
+- `agent_label`, a display name for a session, is not built. It is display only.
+- A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too. It does not check the session.
+- A client that sends no `Mcp-Session-Id`, and the 2026-07-28 revision when EA-3c accepts it, run with no session. Such a call keeps the transition rule only.
+- **The deploy order.** The deploy restarts the gateway before the edge (`vps_apply.sh`). The new gateway accepts an old edge, because a call with no session signs the old string. The edge starts to send `X-Agent-Session` only after its own restart.
+
+**Fence.**
+
+- `tests/unit/test_mcp_edge_session.py`: the id and the transport.
+- `tests/unit/test_mcp_edge_signing.py`: branch 0 reads the signed header only.
+- `tests/unit/test_agent_run_exclusive.py`: the gate, the adoption, the migration, and R8 with two sessions of one connection.
+- `tests/unit/test_mcp_edge_context.py`: `my_work`.
+
+ The digest of branch 0 in `test_tenant_request_binding.py` changed, and its comment says why.
 
 ## 13. The landing-page scenario
 

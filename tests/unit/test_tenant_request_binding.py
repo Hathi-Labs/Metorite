@@ -252,10 +252,11 @@ _ALLOWED_CHAINS = frozenset({
 #: ``query_string`` are the signed path and query (§10.1).
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, and the nonce of a write (EA-6a, EA3-28).
+#: GET, the nonce of a write (EA-6a, EA3-28), and the signed MCP session key
+#: (SW-7, spec §12.5).
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
-    "content-length", "transfer-encoding", "x-agent-nonce",
+    "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
 })
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
@@ -1105,9 +1106,16 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: stamp again. The AST is the one of EA-13a before fix round 1, so the pins
 #: are the same values as before that round. The pins of the legacy arm were
 #: 3.12 ``5987a23f…c6a0876e`` and 3.13 ``8d9596ed…5afd4e3c``.
+#:
+#: SW-7 (2026-10-25, spec §12.5) adds the optional signed ``X-Agent-Session``:
+#: step 2 reads it once and in its shape, the canonical string ends with
+#: ``session:<key>`` only when it is present, and the scope carries it as
+#: ``session_key``. ``agent_signing.py`` gains the edge's session id helpers.
+#: The tripwire and the scan allow the one new header. The pins before it
+#: were 3.12 ``781888b3…5dbbb29`` and 3.13 ``17748943…ad2a1c44``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "781888b3124bd8e6eb9b5aabc83a69f3af67aa22e5664efa077a855885dbbb29",
-    (3, 13): "17748943ef887e1c2efb9f99b127573e5b5a89dc875b4731ad7909d7ad2a1c44",
+    (3, 12): "9b8e2e6de448013b71fab5c06df9aaf1d016009d33c3722d7bcff609b85d7b88",
+    (3, 13): "92e125e9532a2863b1371757fcad284df8aeccd579de19485eb4532e7b2b2a70",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

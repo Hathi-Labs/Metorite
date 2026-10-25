@@ -127,10 +127,14 @@ def actor_via(caller: TokenLookup) -> str:
 
 def signed_request_headers(
     key: str, caller: TokenLookup, path: str, query: Sequence[tuple[str, str]],
-    *, method: str = _GET, body: bytes = b"",
+    *, method: str = _GET, body: bytes = b"", session: str | None = None,
 ) -> dict[str, str]:
     """The signed headers of one gateway request: four for a read, and five
-    for a write, whose fifth is a fresh ``X-Agent-Nonce`` (EA3-28)."""
+    for a write, whose fifth is a fresh ``X-Agent-Nonce`` (EA3-28).
+
+    SW-7: *session* is the MCP session key that ``mcp.py`` read from a
+    verified ``Mcp-Session-Id``. It goes out as the signed
+    ``X-Agent-Session``, and ``None`` sends no such header."""
     return agent_signing.signed_headers(
         key,
         organization_id=caller.organization_id,
@@ -140,6 +144,7 @@ def signed_request_headers(
         path=path,
         query=list(query),
         body=body,
+        session=session,
     )
 
 
@@ -151,6 +156,7 @@ async def get(
     path_params: Mapping[str, str] | None = None,
     query: Sequence[tuple[str, str]] = (),
     timeout_s: float | None = None,
+    session: str | None = None,
 ) -> Answer:
     """One signed ``GET`` to the gateway, or raise :class:`GatewayUnreachable`.
 
@@ -163,7 +169,7 @@ async def get(
     path = _path(template, path_params or {})
     pairs = [(str(k), str(v)) for k, v in query]
     try:
-        headers = signed_request_headers(key, caller, path, pairs)
+        headers = signed_request_headers(key, caller, path, pairs, session=session)
         url = _url(path, pairs)
     except Exception as exc:  # nothing here may become a 500
         # A value the signed string or the URL cannot carry, such as a lone
@@ -185,6 +191,7 @@ async def write(
     path_params: Mapping[str, str] | None = None,
     query: Sequence[tuple[str, str]] = (),
     if_match: str | None = None,
+    session: str | None = None,
 ) -> Answer:
     """One signed write to the gateway (EA-6a), or raise
     :class:`GatewayUnreachable`.
@@ -202,7 +209,7 @@ async def write(
         body = json.dumps(dict(json_body), ensure_ascii=False,
                           separators=(",", ":")).encode("utf-8")
         headers = signed_request_headers(key, caller, path, pairs,
-                                         method=method, body=body)
+                                         method=method, body=body, session=session)
         headers["Content-Type"] = "application/json"
         if if_match is not None:
             headers["If-Match"] = if_match

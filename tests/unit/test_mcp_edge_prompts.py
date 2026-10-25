@@ -646,32 +646,37 @@ class TestTheProtocol:
         _in_order(text, ("2. Take the top row", "For run_stopping, call finish_agent_run"
                          " at once, with no activity before it", "claim_task", "3. A 409"))
 
-    async def test_the_409_rule_says_that_one_client_is_not_told_apart(self, armed):
-        """Fix round 1 (P1). Two sessions of one client share one stamp, so
-        the agent takes only a row that my_work lists. Mutation M35: drop the
-        sentence from step 3 of ``_PROTOCOL_RUNS_ON``, and this test fails."""
+    async def test_the_409_rule_says_each_terminal_is_its_own_session(self, armed):
+        """Fix round 1 (P1), then SW-7. Each terminal is its own MCP session,
+        so the claim refuses the run of another terminal, and the refusal
+        names release_task. The agent takes only a row that my_work lists.
+        Mutation M35: drop the sentence from step 3 of ``_PROTOCOL_RUNS_ON``,
+        and this test fails."""
         text = await _instructions()
-        _in_order(text, ("3. A 409 task_held", "share one stamp",
-                         "Take only a row that my_work lists", "4. Call get_task_context"))
+        _in_order(text, ("3. A 409 task_held", "Each terminal is its own session (SW-7)",
+                         "release_task", "Take only a row that my_work lists",
+                         "4. Call get_task_context"))
         assert "Never work on a held task" in text
         assert "reason held_by_you" in text
+        assert "does not tell them apart" not in text
         queued = await _prompt_text()
-        _in_order(queued, ("409", "share one", "Take only a row that my_work lists"))
+        _in_order(queued, ("409", "Each terminal is its own session",
+                           "Take only a row that my_work lists"))
 
     async def test_a_run_of_another_connection_is_never_yours(self, armed):
         """SW-13b. Two machines of one member share one stamp, and each has
         its own connection. The text says that a run of another connection is
-        never yours, and that only two terminals of ONE connection stay
-        unseparated (SW-7). Mutation M36: drop the sentence from step 3 of
-        ``_PROTOCOL_RUNS_ON``, and this test fails."""
+        never yours, and SW-7 adds another terminal of the same connection.
+        Mutation M36: drop the sentence from step 3 of ``_PROTOCOL_RUNS_ON``,
+        and this test fails."""
         text = await _instructions()
         _in_order(text, ("3. A 409 task_held", "A run of another connection",
-                         "is never yours", "Two terminals on ONE connection",
+                         "is never yours", "Each terminal is its own session",
                          "4. Call get_task_context"))
         assert "A waiting run of another connection or another machine is never yours" in text
         queued = await _prompt_text()
         _in_order(queued, ("A waiting run of another connection", "is never yours",
-                           "Two terminals on one connection"))
+                           "Each terminal is its own session"))
 
     async def test_a_read_only_connection_gets_no_protocol(self, armed):
         """The protocol claims, so it shows on the test of the routine."""
