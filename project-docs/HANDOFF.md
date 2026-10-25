@@ -6393,6 +6393,13 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** the final check of #1288, 2026-10-24.
 - **Added:** 2026-10-24 · email single-mailbox session
 
+### H-412 · Blank the assistant profile in the staging copy · [AGENT]
+- **Check:** `grep -c "assistant_profile" infra/staging/minimise.sql` → `0` means STILL PENDING.
+- **Why:** The staging copy keeps each member's assistant profile. That is the member's own words, and `personalization.md` §7 point 5 says that no copy holds it.
+- **Do this:** add `UPDATE public.user_settings SET assistant_profile = NULL;` to `infra/staging/minimise.sql`. Fence it in `tests/unit/test_staging_export.py`.
+- **Authority:** `specs/personalization.md` §7 point 5, and the PZ-9 row of §9.
+- **Added:** 2026-10-25 · WS-63 PZ-9 build
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

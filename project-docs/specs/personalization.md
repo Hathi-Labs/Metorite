@@ -31,6 +31,13 @@ an address, a link or a long number. Only the typed words ground a write.
 
 **PZ-6b BUILT 2026-10-24, dark.**
 
+**PZ-9 BUILT 2026-10-25.** A purge deletes the member's `user_settings`
+row of the org, and a removal clears the profile. `GET
+/auth/me/assistant-profile/export` gives the member a download, as JSON or
+as text. A fence holds the profile out of every staff route. The page
+control is dark behind `NEXT_PUBLIC_ASSISTANT_PROFILE`. §9 "PZ-9 as built"
+holds the detail.
+
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
 `origin/main` `e3336f46d`. Board row **WS-63**. The Metorite project
 "Personalization & Memory System" holds one task for each slice (§9).
@@ -613,9 +620,13 @@ conversation (WS-47). That org's profile applies.
    profile is the member's own words, and the member asked to remove them.
 5. **Private.** No admin route reads another member's profile. No export
    includes it. A shared room gets no block.
-6. **Leaving the org.** When a member's access ends, their `user_settings`
-   row and so their profile goes with it. PZ-9 verifies this and adds the
-   delete if it is missing.
+6. **Leaving the org.** When a member's access ends, the assistant forgets
+   them. A purge deletes their `user_settings` row of that org, and so the
+   profile. A removal can be reversed, so it keeps the row and sets the
+   profile to NULL. An org purge removes every row of the org by cascade.
+   **Retention.** The live column clears at once. A database backup keeps
+   its copy until its own rotation deletes it. The staging copy blanks the
+   column (HANDOFF H-412).
 7. **The profile is never sent outside.** It goes to the model through the
    Router, as every turn does. No tool sends it to a third party.
 
@@ -656,9 +667,32 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value **PZ-6a BUILT 2026-10-24, dark** **PZ-6b BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call | AGENT-SAFE · MEDIUM |
-| **PZ-9** | #259 | Forget one, forget all, the switch, and the purge when access ends | A real-database test for each. A removed member leaves no profile | AGENT-SAFE · **HIGH** (a member write) |
+| **PZ-9** | #259 | Forget one, forget all and the switch were built in PZ-1 and PZ-6a. PZ-9 adds the three gaps: the profile when access ends, the privacy fence, and the export of §13.3 item 7 | A real-database test for each. A removed member leaves no profile. **BUILT 2026-10-25** | AGENT-SAFE · **HIGH** (a member write) |
 | **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text | AGENT-SAFE · LOW |
 | **PZ-11** | #261 | Web and WhatsApp give the same answer from the same profile. Staging test | Verified on staging. Turning the flags on in production is an owner act | **OWNER-GATE** for the production flip |
+
+**PZ-9 as built (2026-10-25).**
+
+1. **The purge.** `members._PURGE_DELETES` holds `member_settings`, the
+   `user_settings` row of the member in the bound org. The clause names
+   the org beside RLS, so a role that bypasses RLS keeps the rows of the
+   other orgs. The operator door runs the same body. The Members page names
+   the row in its count and in the confirm.
+2. **The removal.** `remove_member_rows` runs
+   `CLEAR_FOR_MEMBER_SQL_TEMPLATE` from `acb_common.assistant_profile`. The
+   column becomes NULL, and the row and its other columns stay.
+3. **The privacy fence.** `tests/unit/test_assistant_profile_private.py`
+   reads the admin, operator, console, CRM and People sources. No string
+   there names the column, and only `members.py` imports from the parser,
+   one name. The model of `/tasks/settings` does not carry the column. No
+   profile route takes a person in its path or its query.
+4. **The export.** `GET /auth/me/assistant-profile/export` answers
+   `{exported_at, member, profile, text}`, and `?format=text` answers the
+   text. Each answer is an attachment with `Cache-Control: no-store`.
+   `render_export` writes the address, the style, each fact with its source
+   and date, and each alias. The switch does not stop the export. A member
+   with no profile gets the empty profile. Settings → Assistant has the
+   control "Download my profile".
 
 **Tasks that this spec does not use.** #248 (short-term session memory) is
 built: the chat history window and the Redis memory block. #250 (semantic
@@ -683,6 +717,9 @@ uv run pytest tests/unit/test_resolve_person_r8.py -q
 # PZ-7
 cd workbench/control_plane && npx tsc --noEmit
 cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/assistantProfileFlag.test.ts src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
+# PZ-9
+uv run pytest tests/unit/test_assistant_profile_offboarding_r8.py tests/unit/test_assistant_profile_private.py -q
+uv run pytest tests/unit/test_admin_member_purge.py tests/unit/test_admin_member_offboarding.py tests/unit/test_operator_door.py -q
 # PZ-10
 uv run python -m evals.personalization --offline
 ```
