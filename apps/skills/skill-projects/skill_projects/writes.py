@@ -3315,11 +3315,11 @@ async def update_project(
 
 #: The route's `reports.SECTIONS`, held equal by
 #: `tests/unit/test_projects_report_sections_lockstep.py`. `outlook`,
-#: `capacity`, `pulse`, `hygiene`, `conflicts` and `rebalance` are opt-in:
-#: a report carries one only when the member asks.
+#: `capacity`, `pulse`, `waiting`, `hygiene`, `conflicts` and `rebalance` are
+#: opt-in: a report carries one only when the member asks.
 REPORT_SECTIONS = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse", "stuck",
-    "hygiene", "conflicts", "rebalance",
+    "waiting", "hygiene", "conflicts", "rebalance",
 )
 
 #: WS-27bn R5d (§9 Q13). The words of the server's 403, in
@@ -3375,9 +3375,9 @@ async def report_save(
     """Save a report definition, or change one (pass report_id). A report
     stores the question: scope (project_id, or empty for the portfolio),
     sections (comma-separated from finished, throughput, outlook, load,
-    capacity, pulse, stuck, hygiene, conflicts, rebalance; outlook,
-    capacity, pulse, hygiene, conflicts and rebalance are never there
-    unless asked for) and
+    capacity, pulse, stuck, waiting, hygiene, conflicts, rebalance; outlook,
+    capacity, pulse, waiting, hygiene, conflicts and rebalance are never
+    there unless asked for) and
     weeks. Render it
     with report_render. Delivery and schedules stay in the Reports app."""
     label = str(name or "").strip()

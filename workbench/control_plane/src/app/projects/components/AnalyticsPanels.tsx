@@ -33,9 +33,11 @@
  */
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 
+import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
 import { PersonName } from "@/components/PersonName";
 import Button from "@/components/ui/Button";
+import { personDisplayName } from "@/lib/personName";
 
 import {
   type AccentHue,
@@ -56,6 +58,7 @@ import type {
   RebalanceReport,
   StuckReport,
   ThroughputReport,
+  WaitingReport,
 } from "../lib/api";
 import { asList, bandCount, staleBands } from "../lib/analyticsRead";
 import {
@@ -116,6 +119,13 @@ import {
   pulseRows,
   statusMark,
 } from "../lib/pulse";
+import {
+  type WaitingKind,
+  type WaitingLine,
+  answerLine,
+  listRows,
+  waitingLists,
+} from "../lib/waiting";
 import {
   REBALANCE_HR_HINT,
   helpersLine,
@@ -1184,6 +1194,123 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
           </p>
         </>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn RA-3 — what a plain click on a report row does with a task id.
+ *
+ * `ReportsView` provides it from the page, which opens the task as a deep
+ * link does. A row is a real link to `/projects?task=<id>` either way
+ * (`ControlLink`), so a modified click opens a tab. With no provider, as in
+ * a static render, a plain click follows the link.
+ */
+export const OpenTaskContext = createContext<((taskId: string) => void) | null>(null);
+
+/** The deep link of a task: the shape the board and the bell read. */
+function taskHref(taskId: string): string {
+  return `/projects?task=${encodeURIComponent(taskId)}`;
+}
+
+/** The dot of each waiting list: a tone, through the one hue vocabulary. */
+const WAITING_HUE: Readonly<Record<WaitingKind, AccentHue>> = {
+  questions: "amber",
+  reviews: "blue",
+  handoffs: "red",
+};
+
+/** One row of the waiting panel: the task as a link, then who and how long. */
+function WaitingTaskRow({
+  line,
+  open,
+}: {
+  line: WaitingLine;
+  open: ((taskId: string) => void) | null;
+}) {
+  const href = taskHref(line.id);
+  return (
+    <li>
+      <ControlLink
+        href={href}
+        onActivate={() => (open ? open(line.id) : window.location.assign(href))}
+        className="-mx-1 block rounded px-1 py-0.5 hover:bg-muted"
+        title={`Open ${line.label}`}
+      >
+        <span className="block truncate pr-px text-[11px] text-foreground">{line.label}</span>
+        {/* A phone wraps the detail, so "why it waits" never clips. */}
+        <span className="block pr-px text-[10px] text-muted-foreground sm:truncate">
+          {line.detail}
+        </span>
+      </ControlLink>
+    </li>
+  );
+}
+
+/**
+ * WS-27bn RA-3 — "Waiting on people", the coordination panel (§6.8 C).
+ *
+ * ⚠️ **Draws the server's rows and decides nothing.** The rows, the totals,
+ * the answer time and the summary sentence are `waiting_body`'s.
+ * `lib/waiting.ts` holds the words. The summary comes first (§6.8 E5).
+ *
+ * ⚠️ **No rank of people (E1).** The rows keep the server's order, the
+ * longest wait first. **Each row names the agent and its member (E2).**
+ *
+ * Each row opens its task. The Overview hides the panel when the scope has
+ * no agent run (`overviewShown`).
+ */
+export function WaitingPanel({ data }: { data: WaitingReport }) {
+  const open = useContext(OpenTaskContext);
+  const answer = answerLine(data);
+  const lists = waitingLists(data, (email) => personDisplayName(null, email));
+
+  return (
+    <Panel title={sectionName("waiting")} hint={PANEL_HINTS.waiting}>
+      <p className="text-xs text-foreground">{data.summary}</p>
+      {answer && (
+        <p
+          className="mt-1 text-[11px] text-muted-foreground"
+          title="From an agent's question to the answer of its member, over the questions of this period. A question with no answer is left out of both figures and counted."
+        >
+          {answer}
+        </p>
+      )}
+      {lists
+        .filter((l) => l.total > 0)
+        .map((l) => {
+          const { shown, more } = listRows(l.rows, l.total);
+          return (
+            <div key={l.kind} className="mt-3 border-t border-border pt-2">
+              <p className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${accentForHue(WAITING_HUE[l.kind]).dot}`}
+                  aria-hidden
+                />
+                <span>{l.heading}</span>
+                <span
+                  className="ml-auto font-medium tabular-nums text-foreground"
+                  title={`${l.total} in total, the longest wait first`}
+                >
+                  {l.total}
+                </span>
+              </p>
+              <ul className="space-y-0.5">
+                {shown.map((r) => (
+                  <WaitingTaskRow key={`${l.kind}:${r.id}`} line={r} open={open} />
+                ))}
+              </ul>
+              {more > 0 && (
+                <p
+                  className="mt-0.5 text-[10px] text-muted-foreground"
+                  title="The table under this panel names up to twenty of each list."
+                >
+                  …and {more} more
+                </p>
+              )}
+            </div>
+          );
+        })}
     </Panel>
   );
 }

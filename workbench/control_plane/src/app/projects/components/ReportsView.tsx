@@ -79,6 +79,7 @@ import {
   kindTitle,
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
+import { answerLine, waitingLists, waitingRowCount } from "../lib/waiting";
 import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
@@ -107,6 +108,7 @@ import {
   reportTiles,
   stuckPanelData,
   throughputPanelData,
+  waitingPanelData,
 } from "../lib/reportPanels";
 import {
   AS_OF_TODAY,
@@ -183,6 +185,7 @@ import {
   createPreviewController,
   gridSpans,
   overviewFilterCount,
+  overviewShown,
   overviewSummary,
   previewRequest,
   readFiltersOpen,
@@ -199,6 +202,7 @@ import {
   FinishedPanel,
   HygienePanel,
   LoadPanel,
+  OpenTaskContext,
   OutlookPanel,
   PanelChromeContext,
   PulsePanel,
@@ -206,6 +210,7 @@ import {
   Stat,
   StuckPanel,
   ThroughputPanel,
+  WaitingPanel,
 } from "./AnalyticsPanels";
 import { ReportFileButtons } from "./ReportFileButtons";
 import SpaceSummary from "./SpaceSummary";
@@ -433,10 +438,12 @@ export function RenderedBody({
 }) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
-  const { sections } = body;
+  const grid = layout === "grid";
+  // WS-27bn RA-3. The live Overview hides "Waiting on people" when the scope
+  // has no agent run and nothing waits. A report and the builder keep it.
+  const sections = grid ? overviewShown(body.sections) : body.sections;
   // The Load table names people as the Load panel does (owner, 2026-10-10).
   const loadNames = usePersonNames(sections.load?.people.map((p) => p.assignee) ?? []);
-  const grid = layout === "grid";
   // R5g rule 1. Which panels take the full row. `gridSpans` leaves no row
   // with one panel alone.
   const drawn = BODY_ORDER.filter((k) => (sections as Record<string, unknown>)[k]);
@@ -684,6 +691,60 @@ export function RenderedBody({
           >
             <LayoutBoundary layout="stuck work">
               <StuckPanel data={stuckPanelData(sections.stuck, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {/* WS-27bn RA-3. The coordination panel (§6.8 C). The lists read the
+          state now, and the answer time reads the period. The table names
+          every row the server sent, list by list. */}
+      {sections.waiting &&
+        cell(
+          "waiting",
+          sectionIsClear("waiting", sections.waiting) ? (
+          <ClearRow sectionKey="waiting" title="Waiting on people" />
+        ) : (
+          <SectionFrame
+            sectionKey="waiting"
+            fill={grid}
+            table={
+              <Table title="Waiting on people" count={waitingRowCount(sections.waiting)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.waiting.summary}</p>
+                {answerLine(sections.waiting) && (
+                  <p className="mb-1 text-xs text-muted-foreground">
+                    {answerLine(sections.waiting)}
+                  </p>
+                )}
+                <ul className="space-y-1.5">
+                  {waitingLists(sections.waiting, (e) => personDisplayName(null, e)).map((l) => (
+                    <li key={l.kind} className="text-xs">
+                      <span className="font-medium text-foreground">{l.heading}</span>
+                      <span
+                        className="text-muted-foreground"
+                        title={`${l.total} in total, the longest wait first`}
+                      >
+                        {" "}
+                        · {l.total}
+                      </span>
+                      <ul className="mt-0.5 space-y-0.5">
+                        {l.rows.map((r) => (
+                          <li
+                            key={`${l.kind}:${r.id}`}
+                            className="truncate pr-px text-muted-foreground"
+                            title={r.label}
+                          >
+                            <span className="text-foreground">{r.label}</span> · {r.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="waiting on people">
+              <WaitingPanel data={waitingPanelData(sections.waiting, body)} />
             </LayoutBoundary>
           </SectionFrame>
         ))}
@@ -2477,9 +2538,15 @@ type Pane =
  */
 export default function ReportsView({
   onOpenNode,
+  onOpenTask,
 }: {
   /** Open a row of Overview's space table in the Projects page. */
   onOpenNode?: (id: string) => void;
+  /**
+   * WS-27bn RA-3. Open a task that a report row names, in the Projects page.
+   * Each panel reads it through `OpenTaskContext`.
+   */
+  onOpenTask?: (taskId: string) => void;
 }) {
   const [rows, setRows] = useState<ReportRow[] | null>(null);
   /** The finished total of Overview's last preview, for the Home line. */
@@ -2651,7 +2718,9 @@ export default function ReportsView({
       : undefined;
 
   return (
-    // §6.6 E item 1. No heading here: the page header names the app.
+    // WS-27bn RA-3. A row of a panel opens its task through the page.
+    <OpenTaskContext.Provider value={onOpenTask ?? null}>
+    {/* §6.6 E item 1. No heading here: the page header names the app. */}
     <div className="flex-1 overflow-y-auto p-4">
       {/* §6.5 item 1. While the member builds a report the rail leaves, and
           the builder takes the width for its preview. R5f rule 16: Home is
@@ -2785,5 +2854,6 @@ export default function ReportsView({
         </div>
       </div>
     </div>
+    </OpenTaskContext.Provider>
   );
 }
