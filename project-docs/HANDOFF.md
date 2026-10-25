@@ -158,6 +158,17 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-412 · The chat-speed work: build the delegated-path slices for the paths that stay after WS-67 · [AGENT]
+- **Check:** the next chat-speed PR after #1323 names WS-67 and `specs/one_assistant_context.md` §7. When it does, delete this entry.
+- **Why:** WS-67 (D116) may remove delegation for email conversation (OA-7). #1323 lists two next slices on the delegated path: "a delegated agent still loads twice and streams no text", and "skip the orchestrator rewrite of a delegated answer". Built for email conversation, that work can be thrown away after OA-7.
+- **Do this:**
+  1. Build those two slices for the paths that stay: the heavy-job sub-agent (OA-9), scheduled jobs and workflows. Or wait for OA-6.
+  2. "Fewer model rounds per email run" needs evals first. Use the OA-5 harness, and do not build a second one.
+  3. Keep the names and fields of `agent.run_timing` and `executor.run_setup_ms` stable. OA-5 reads them.
+  4. Expect OA-1 to add input tokens to a delegated run, and OA-3 (OCR) to add time to `read_attachment`.
+- **Authority:** `specs/one_assistant_context.md` §7 · D116 · board WS-67.
+- **Added:** 2026-10-25 · email single-mailbox session
+
 ### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
 - **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
 - **Why:** owner rule of 2026-10-19, build first and harden later. Four PRs
