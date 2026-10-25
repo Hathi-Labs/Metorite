@@ -984,26 +984,100 @@ def holder_free(status: str, idle_s: float, connection_gone: bool) -> bool:
     ``held_by.stale``. :func:`unheld_clause` is its SQL twin."""
     return connection_gone is True or lease_expired(status, idle_s)
 
+
+#: SW-10a (spec §12.6). The RAW answered rule over the alias ``r``: the newest
+#: activity of the run is a member's prompt, and no agent activity followed
+#: it. ONE text: the derived state, the ``needs_agent`` filter
+#: (``agent_runs._NEEDS_AGENT_SQL``) and the strand reason all read it.
+AGENT_RUN_ANSWER_WAITS_SQL = (
+    "(r.last_agent_activity_at IS NULL"
+    " OR r.last_activity_at > r.last_agent_activity_at)"
+)
+
 #: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
 #: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
 #: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
 #:
-#: * ``answered`` comes BEFORE ``stale`` (EA12-5): the newest activity is a
-#:   member's prompt when ``last_activity_at`` is later than the agent's.
 #: * Only ``in_progress`` goes ``stale``. ``created`` reads ``queued``, and an
 #:   ``awaiting`` run waits for a person, not for the agent.
+#: * SW-10a (spec §12.6): ``stale`` comes BEFORE ``answered``. An answer is
+#:   the newest activity of its run, so an answered run reads ``answered``
+#:   for :data:`AGENT_RUN_STALE_AFTER_S` after the answer, and ``stale``
+#:   after that, while no agent activity follows. Before SW-10a an answer
+#:   that no agent read stayed ``answered`` for ever (EA12-5 as amended).
+#:   The age limit is the stale band and not the lease: the state says
+#:   whether an agent works on the task NOW, and the lease is read from the
+#:   environment, which this import-time constant cannot follow.
 #: * Every other status reads as itself.
 AGENT_RUN_STATE_SQL = (
     "CASE r.status"
     " WHEN 'created' THEN 'queued'"
     " WHEN 'in_progress' THEN CASE"
-    "   WHEN r.last_agent_activity_at IS NULL"
-    "     OR r.last_activity_at > r.last_agent_activity_at THEN 'answered'"
     f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
     "     THEN 'stale'"
+    f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
     "   ELSE 'working' END"
     " ELSE r.status END"
 )
+
+# ── WS-55 SW-10a: stranded runs (external_agent_access.md §12.6) ───────────
+
+#: The two reasons of a strand. ``answer_unread``: a member answered and no
+#: agent read it. ``agent_quiet``: the agent sent nothing. The CHECK of the
+#: ``pm_agent_run_strands`` migration lists the same two.
+STRAND_REASONS: tuple[str, ...] = ("agent_quiet", "answer_unread")
+
+#: The reason of a stranded run, in SQL, over the alias ``r``.
+STRAND_REASON_SQL = (
+    f"(CASE WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answer_unread'"
+    " ELSE 'agent_quiet' END)"
+)
+
+
+def stranded_clause() -> str:
+    """The ONE SQL text of a stranded run, over the alias ``r`` (SW-10a).
+
+    A run is stranded when its status is ``in_progress``, its derived state
+    is ``stale`` (a quiet run, or an answer older than the stale band), and
+    it has no live path: its lease ended, or its connection is revoked or
+    expired. That last part is the SQL twin of :func:`holder_free` for an
+    ``in_progress`` run. An ``awaiting`` run waits on a person and never
+    matches, and neither does a ``created`` or a ``stopping`` run.
+
+    The lease is read when the clause is built, never at import, as
+    :func:`unheld_clause` reads it.
+    """
+    lease = agent_run_lease_s()
+    return (
+        "(r.status = 'in_progress'"
+        f" AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
+        f" AND (r.last_activity_at < now() - {lease} * interval '1 second'"
+        f"      OR {connection_gone_sql('r')}))"
+    )
+
+
+def strand_fits_sql(strand: str, run: str) -> str:
+    """True in SQL when the strand row *strand* still fits the run *run*
+    (SW-10a): the strand is not cleared, the run is still ``in_progress``,
+    and no activity came on the run since the first miss. ONE text for
+    ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
+    wire (``agent_runs._OPEN_STRANDS_SQL``)."""
+    return (
+        f"({strand}.run_id = {run}.id AND {strand}.organization_id = {run}.organization_id"
+        f" AND {strand}.cleared_at IS NULL AND {run}.status = 'in_progress'"
+        f" AND {strand}.seen_activity_at = {run}.last_activity_at)"
+    )
+
+
+def open_strand_sql(alias: str) -> str:
+    """True in SQL when the run *alias* has an open strand that still fits
+    it (:func:`strand_fits_sql`). ``needs_agent`` reads it, so a strand stops
+    at once when an activity comes, before the next tick writes
+    ``cleared_at``."""
+    return (
+        "EXISTS (SELECT 1 FROM pm_agent_run_strands fs"
+        f" WHERE {strand_fits_sql('fs', alias)})"
+    )
 
 _OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 

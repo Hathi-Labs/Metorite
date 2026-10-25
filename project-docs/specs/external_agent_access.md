@@ -22,6 +22,8 @@ The EA-13a stamp is `mcp:<host>:<slug>`, so Claude Code reads "Claude Code". The
 
 **SW-7 is BUILT, not merged, and dark (2026-10-25, branch `sw7-session-key-mt-5eab8fde`, PR #1312).** One key for each MCP session, behind `agent_mcp_sessions_enabled`, default off (§12.5). Migration 302.
 
+**SW-10a is BUILT 2026-10-25, not merged, dark (branch `sw10-stranded-mt-c6156bf6`, Metorite task #341).** Stranded runs: nudge once, then hand it to a person (§12.6). Two fixes go live at the merge: an answer that no agent reads turns `stale` after five minutes, and an approved archive closes its run. The sweep ships dark behind `agent_run_sweep_enabled`, default off. Migration 305.
+
 **Verified against code on 2026-10-15 at `7512100f5`.** The sixth audit read the anchors of EA-6e and EA-6g at that commit: `mcp.py` (`instructions` and `_dispatch`), `archive_task` at `tasks.py:1160`, `_write_activity` at `agent_runs.py:619`, `TestTheInstructions` at `test_mcp_edge_agent_runs.py:299`, and the class C row of the archive at `manifest.py:161`. The EA-6 audit read §6.1, §9.2, §9.5, §9.6 and §15 on 2026-10-14 at `2295c9bf9`.
 
 **EA-6, 2026-10-14.** The spec audit of EA-6 gave NO-GO, and it narrowed the dispatch to EA-6a. The decisions EA3-28 to EA3-31 (§6.1) answer it. EA-6 now splits into EA-6a, EA-6b, EA-6c and EA-6d. The fifth audit (2026-10-15) adds EA-6e, EA-6f and EA-6g.
@@ -1231,10 +1233,11 @@ The answer stays in the database, so the same session or a later session reads i
 | A member presses Stop (a `prompt` with signal `stop`) | `created`, `in_progress`, `awaiting` | `stopping` |
 | The agent writes any activity on a `stopping` run | `stopping` | `stopped` |
 | No activity for 5 minutes | `in_progress` | `stale`, computed on read only |
+| The member approves a typed archive request (SW-10a, §12.6) | `in_progress`, right after the answer | `completed` |
 
 `completed`, `stopped` and `failed` are terminal for the agent. A member `prompt` on a `completed` run opens it again, as a reply does in Plane. An `awaiting` run never goes `stale`, because it waits for a person and not for the agent.
 
-**"Answered" is a derived state.** A run is `answered` when its status is `in_progress` and its newest activity is a member `prompt`. The pill shows it until the agent writes the next activity. That next activity is the acknowledgement, so no separate acknowledge tool exists.
+**"Answered" is a derived state.** A run is `answered` when its status is `in_progress` and its newest activity is a member `prompt`. The pill shows it until the agent writes the next activity. That next activity is the acknowledgement, so no separate acknowledge tool exists. **SW-10a (§12.6):** the state has an age limit. Five minutes after the answer, with no agent activity since, the run reads `stale`. `needs_agent` still lists it with the reason `answered`.
 
 **The tables.** Migration number taken at build time (R1). Both tables are tenant-scoped, under FORCE ROW LEVEL SECURITY, in the house shape of `pm_task_refs` (migration 255).
 
@@ -1349,7 +1352,7 @@ The member's agent session finds it with `list_agent_runs(needs_agent=true)`. Th
 | EA12-2 | `pm_agent_run_activities` gains `seq BIGINT GENERATED ALWAYS AS IDENTITY`. The cursor `after` is a `seq`, and reads order by `seq`. A timestamp can tie, and the cap of 20 deletes rows |
 | EA12-3 | The routes live in the new module `routes/projects/agent_runs.py`, imported in `projects/__init__.py` beside `refs`. The setting `agent_runs_enabled: bool = False` goes in `acb_common` settings. A route dependency gives 404 while it is off, as `agent_access._require_enabled` does |
 | EA12-4 | **The long poll.** Each read opens and closes its own `_tenant_session()`. `asyncio.sleep(2)` runs with no session open, as `notes/events.py` does. Each read checks the task again with `load_visible_task`. A revoke takes effect at the next call, at most 20 seconds later. Fence R11: a test fails if a session is open while the route sleeps |
-| EA12-5 | **The status machine, in full.** Each write locks the run row with `SELECT ... FOR UPDATE`. A `thought`, `action` or `response` on `in_progress` or `awaiting` keeps the status, and that is not a 409. An agent `elicitation` on `awaiting` gives 409. A Stop wins: an `error` or a `finish` on `stopping` gives `stopped`. A member `prompt` on `stopping`, `failed` or `stopped` gives 409. Any agent write on a terminal run gives 409. `answered` comes before `stale`, and a `created` run never goes `stale` |
+| EA12-5 | **The status machine, in full.** Each write locks the run row with `SELECT ... FOR UPDATE`. A `thought`, `action` or `response` on `in_progress` or `awaiting` keeps the status, and that is not a 409. An agent `elicitation` on `awaiting` gives 409. A Stop wins: an `error` or a `finish` on `stopping` gives `stopped`. A member `prompt` on `stopping`, `failed` or `stopped` gives 409. Any agent write on a terminal run gives 409. `answered` comes before `stale`, and a `created` run never goes `stale`. **Amended by SW-10a (§12.6):** `stale` now comes before `answered`, so an answer that no agent reads turns `stale` after five minutes |
 | EA12-6 | A run is **open** when its status is `created`, `in_progress`, `awaiting` or `stopping`. A partial unique index allows one open run for each task, member and `client_via`. A second start returns that run with 200 and `created: false` |
 | EA12-7 | **The payloads.** An `elicitation` with `options` sets the signal `select`, with `signal_metadata` of `options` and `allow_multiple`. Without options it is a free question with a null signal. The server sets the `in_reply_to` of a `prompt` to the newest unanswered elicitation, and never takes it from input. A `prompt` needs `selected`, `body` or both. `selected` is valid only on a `select`. The signal `continue` is the default, and Stop is the signal `stop` |
 | EA12-8 | **The notifications.** An `elicitation` calls `notify(kind="agent_question")` for the run's member and `task_audience()`, with `actor_id` set to the run's `client_via`. With the member as the actor, `notifiable()` drops the member, and the person that the agent asks gets nothing. A `response`, `error` or `prompt` sends the `comment` kind to `task_audience()`, as `add_comment` does, with no mention pass. Each write emits `pm.task.comment_added` after the commit. Fence R12: the run's member gets the `agent_question` row. **Sixth audit (EA3-40):** a typed archive request notifies the run's member only, and not `task_audience()`, because nobody else may answer it |
@@ -1509,7 +1512,7 @@ The result holds `task` (the shape of `get_task`), `ancestors` (root first, each
 
 It returns rows in this order:
 
-1. **Runs that wait for this connection.** A run with the state `queued`, `answered` or `stopping`. It belongs to the caller's member, the caller's `client_via` and the caller's own connection. A waiting run of another client is not listed. This is the first half of MCP-G4: a session no longer takes over the runs of another client.
+1. **Runs that wait for this connection.** A run whose `needs_agent` reason is `queued`, `answered` or `stopping` (SW-10a, §12.6). Before SW-10a the edge read the state, and an answer older than five minutes now reads the state `stale`. It belongs to the caller's member, the caller's `client_via` and the caller's own connection. A waiting run of another client is not listed. This is the first half of MCP-G4: a session no longer takes over the runs of another client.
 2. **Tasks this client may take back.** The task of each run of this client whose derived state is `stale`. The member need not be an assignee. A `stale` run is `in_progress` with no activity for five minutes, so its session most likely ended. A task that is already in the first group is not listed twice.
    - **A live run of this client is not listed (fix round 1).** Two sessions of one client share the stamp. A claim of session B finds the live run of session A as its own, and gives no 409. So both sessions would work the task.
    - **A run of another connection is not listed (SW-13b).** This rule holds for groups 1 and 2. Each run carries `connection_id` on the runs wire. The edge keeps a run only when that id equals the connection of the caller's token row.
@@ -1603,6 +1606,84 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
  The digest of branch 0 in `test_tenant_request_binding.py` changed, and its comment says why.
 
+### 12.6 Stranded runs (SW-10a)
+
+**BUILT 2026-10-25, not merged, dark (Metorite task #341, branch `sw10-stranded-mt-c6156bf6`).** Part 1 below is two fixes that go live at the merge, under `agent_runs_enabled`. Part 2, the sweep, ships dark behind `agent_run_sweep_enabled` (default off).
+
+**The problem.** A run can lose its agent. The session ends, the machine sleeps, or the agent stops with no disposition. Nothing tells the member. Two production runs, on tasks #129 and #248, showed the worst shape. The member approved the archive request of the agent. The run then read `answered` for 29 hours, because no agent came back. A later session closed both runs by hand on 2026-10-24.
+
+**Part 1, item 1: `answered` has an age limit (live at the merge).**
+
+- `AGENT_RUN_STATE_SQL` (`filters.py`) now tests `stale` before `answered`. An answered run reads `answered` for `AGENT_RUN_STALE_AFTER_S` (300 seconds) after the answer. After that, with no agent activity since the answer, it reads `stale`. The answer is the newest activity of the run, so the five-minute band of §12.1 measures from the answer.
+- **Why the stale band and not the lease.** The state tells whether an agent works on the task now. The lease tells whether the run still keeps the task. Five quiet minutes after an answer mean that no agent read it, and that is the meaning of `stale` in §12.1. The lease also comes from the environment, and the state SQL is a constant that the run reads build at import. So the state keeps one constant with one owner, `filters.AGENT_RUN_STALE_AFTER_S`.
+- **One text for the raw rule.** `filters.AGENT_RUN_ANSWER_WAITS_SQL` holds the rule "the newest activity is a member's prompt, and no agent activity followed it". The state SQL, the `needs_agent` filter and the strand reason all read it.
+- **`needs_agent` keeps its rows.** Its filter reads the raw rule and not the state. So `list_agent_runs` with `needs_agent=true` still lists an answered run after five minutes.
+- **The runs wire gains `needs_agent`.** It is the reason that the run waits for an agent: `queued`, `stopping`, `answered` or `stranded`. It is null when the run waits for no agent. `my_work` reads it for group 1, so an answer older than five minutes still comes back as `run_answered`, and the agent reads it with `get_agent_run`. An edge that finds no such key falls back to `state`.
+- **The readers.** The pill and the board lane read "<client> idle" after five minutes. The summary strip counts `answered` and `stale` as `working` (`agent_summary.WORKING_STATES`), so its counts do not change. The run panel offers a reply on a `stale` run, as before. No Python copy of the state rule exists, and the client reads `state` from the server.
+
+**Part 1, item 2: an approved archive closes its run (live at the merge).**
+
+- `approve_task_archive` archives the task and writes the answer in one transaction (EA3-40). It now also closes the run in that transaction. The run moves to `completed` (the move `archive_close` of `transition`), and it gets one system line: "Closed: the member approved the archive, and the task is archived." A decline keeps the run open, because the agent works on.
+- An agent that writes to the closed run gets 409. `finish_agent_run` with no summary returns the run. The edge already reads a 409 of a finish as the result when the run is `completed`.
+- The sweep also closes an open run of the old shape, as its first step. The newest prompt of the run approved an archive, the task is archived, and no agent activity followed. The two production runs are closed already, so this step finds a run only from the deploy window.
+
+**Part 2: the sweep (dark).**
+
+`gateway/agent_run_sweep.py` is a supervised loop in the gateway lifespan, beside `github_reconcile_loop.py`. It lives at the root of the gateway and not in `routes/projects/`, because that package is H2-converted and refuses the one unbound read of the org list (`test_db_engine_seam.py`). It runs every `SWEEP_EVERY_SECS` (300 seconds). The flag `agent_run_sweep_enabled` gates the start, and each tick reads that flag and `agent_runs_enabled` again. A tick reads the organizations from the RLS-exempt `organization` table. Each org runs in its own `tenant_session(org)`, and one session never binds a second org. The model is `routes/knowledge/proposal_expiry.py`. Do not copy `workflows/scheduler.py`, which runs on the unbound `get_db()`.
+
+**Stranded.** A run is stranded when both of these are true. `filters.stranded_clause()` is the one SQL text of the rule.
+
+- Its status is `in_progress`, and its derived state is `stale`. So a quiet run counts, and so does an answer that is older than five minutes.
+- It has no live path. Its lease ended (`AGENT_RUN_LEASE_SECONDS`, two hours), or the member revoked its connection, or the connection expired. That is the SQL twin of `filters.holder_free`. An `awaiting` run waits on a person, so it is never stranded. A `created` run and a `stopping` run are not stranded either.
+
+The reason is `answer_unread` when the raw rule of item 1 holds. Else it is `agent_quiet`.
+
+**One tick, for each org, in this order.**
+
+1. Close each open run of the old archive shape (item 2).
+2. Clear each open fingerprint that no longer fits its run. A newer activity on the run clears it with `new_activity`. A run that left `in_progress` clears it with `run_moved`.
+3. Read the stranded runs, at most `MAX_PER_ORG` (200), the oldest first. Each run gets its own savepoint, so one failure does not undo the others.
+   - **First miss.** No open fingerprint exists for `(run_id, reason)`. The sweep writes one, and it sends ONE bell notification to the run's member through `notify()`. The kind is `nudge`, so no CHECK changes. The actor is the client stamp, as EA12-8 does for a question, so `notifiable()` keeps the member. The excerpt says how long the run was quiet and what the member can do.
+   - **Second miss.** The fingerprint is older than one lease, and no activity came since. The sweep turns it into a recovery record ONCE, with `recovered_at` and `evidence`. It writes one system line on the run and one `system` row on the task timeline, by `system:agent-runs`.
+   - Any other state writes nothing.
+
+**What the sweep never does.** It never reassigns the task, and it never picks another agent. It never moves the task, and it never ends the run at either miss. The one run that it ends is a run of the old archive shape, whose task the member archived.
+
+**The fingerprint and the recovery record are one table.** The migration takes the next free number at build time (R1). It was 305 on 2026-10-25, because the open PR #1317 holds 304. It adds `pm_agent_run_strands`, tenant-scoped under FORCE RLS in the shape of `pm_agent_runs`.
+
+| Column | Holds |
+|---|---|
+| `id`, `organization_id`, `run_id`, `task_id` | The keys. `run_id` and `task_id` cascade |
+| `member_email` | The run's member. The owner of the nudge and of the recovery record |
+| `reason` | A CHECK of `agent_quiet` and `answer_unread` |
+| `seen_activity_at` | The `last_activity_at` of the run at the first miss |
+| `nudged_at` | The first miss |
+| `recovered_at`, `evidence` | The second miss. The evidence holds the run, the task, the client, the last activity, the last agent activity, the reason and the quiet minutes |
+| `cleared_at`, `cleared_reason` | A CHECK of `new_activity` and `run_moved` |
+
+- The partial unique index on `(organization_id, run_id, reason) WHERE cleared_at IS NULL` is the fingerprint. Two gateway processes that run one tick send one bell, because the insert of the second finds the row (`ON CONFLICT DO NOTHING`). The second miss is an `UPDATE` guarded on `recovered_at IS NULL`.
+- A row with `recovered_at` and no `cleared_at` is an open recovery record. SW-11 (Needs attention) reads it through the index `pm_agent_run_strands_open_recovery` on `(organization_id, member_email)`. The sweep is the only writer of the table.
+
+**A new activity starts over.** Any activity on the run after the first miss clears the fingerprint. An agent activity makes the run live again. A member's reply restarts the lease, so the run has a live path again too. A later strand then starts at the first miss, with one new bell. The `needs_agent` rule checks `seen_activity_at` too, so a cleared strand stops at once, also before the next tick writes `cleared_at`.
+
+**`needs_agent` returns a stranded run.** A run with an open fingerprint that still fits it reads `needs_agent` `stranded`. So `list_agent_runs` with `needs_agent=true` lists it for the member's next session. The table gives the rule, and `pm_agent_runs` gains no column. `my_work` already lists a quiet run of this connection as `held_by_you` (group 2), so its groups do not change. A stranded run of a revoked connection stays out of `my_work`, by the rule of SW-13b.
+
+**The edge.** Each run on the edge gains `stranded`: null, or `reason`, `idle_minutes` and a fixed `note`. An example note is "Stranded: no agent activity for 130 minutes." The edge builds the note from the reason and the number, so it holds no member text. `list_agent_runs`, `get_agent_run`, `get_task` and `get_task_context` carry it. No tool is new.
+
+**The constants.** `agent_run_sweep.SWEEP_EVERY_SECS` is 300. `agent_run_sweep.MAX_PER_ORG` is 200. The first-miss window is one lease (`filters.agent_run_lease_s()`), two hours by default, so a run gets one lease to show life after its nudge.
+
+**The flag.** `agent_run_sweep_enabled`, default off. Only the gateway reads it, through `agent_run_sweep.sweep_enabled`. A flip on a box is gate `enforcement-flip`. While it is off, the loop starts no task and no fingerprint exists, so `needs_agent` and `stranded` read as before. Part 1 does not depend on the flag.
+
+**Not built here.**
+
+- SW-11, the Needs attention view, reads the recovery records. It also owns a way for the member to close one.
+- SW-9, a named path for a run that waits on another person or on a system, is not built. Today only `awaiting` is a live path.
+- A `created` run that no agent picks up, and a `stopping` run that no agent stops, are not stranded by this rule.
+- The Projects bell has no verb for `nudge` (`notifications.ts`), so it reads "updated". The shell bell reads "nudged you about".
+- HANDOFF H-409 item 1: a task that a member moves to done, cancels or archives while a run holds it.
+
+**Fence.** `tests/unit/test_agent_run_sweep_r8.py`, with an R8 test for each rule and hermetic tests for the flag and the edge. Part 1 changed two fences on purpose: `test_r4_answered_and_stale_are_derived` in `test_agent_runs_r8.py`, and G3 and G14 in `test_mcp_edge_archive.py`.
+
 ## 13. The landing-page scenario
 
 The member connects Claude with `context:read` only. Claude calls `get_company_context` and reads the resource `metorite://company/context`. Claude writes the page in its own window. Metorite stores nothing and holds no Claude key. A second connection with `projects:read` is needed to let Claude read the product backlog. The consent page makes that second grant a separate choice.
@@ -1669,6 +1750,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | SW-13b | **MERGED (#1299, 2026-10-25).** **`my_work` keeps the runs of the caller's own connection (§12.4).** Edge only. No migration | A stale or answered run of the same member and stamp on another connection is not listed. Member-queued work for this connection shows. `test_mcp_edge_context.py` (`TestOneMemberTwoMachines`), each red under a named mutation | AGENT-SAFE |
 | SW-13c | **MERGED (#1300, 2026-10-25).** **The gate's own run is of one connection, and a dead connection frees its task (§12.3).** No migration | A live run of another connection of the same stamp gives 409 `task_held`. A revoked or expired holder is taken over at once. `unheld` and `held_by` agree with the gate. A person keeps the old rule. `test_agent_run_exclusive.py` (R8) | AGENT-SAFE |
 | SW-7 | **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged, dark (PR #1312).** **One key for each MCP session (§12.5)**, behind `agent_mcp_sessions_enabled`. Migration 302 | With the flag off, the edge mints, reads and signs no session, and every text says that two terminals on one connection are not told apart. With it on, two sessions of one connection are two owners: B gets 409 on A's live task, and A gets its own run back. A keyless run is adopted by one session. A terminal status clears the key. Branch 0 reads the key from the signed header only. `test_mcp_edge_session.py`, `test_mcp_edge_signing.py`, `test_agent_run_exclusive.py` (R8) and `test_mcp_edge_context.py`, each red under a named mutation. **Before the flag goes on:** a check on staging with a real Claude Code (two terminals, a resume, a 404 after a key change) | AGENT-SAFE. A flip is gate `enforcement-flip` |
+| SW-10a | **BUILT 2026-10-25 on `sw10-stranded-mt-c6156bf6`, not merged, dark (Metorite task #341).** **Stranded runs (§12.6).** Part 1 goes live at the merge: `stale` before `answered` in `AGENT_RUN_STATE_SQL`, the reason `needs_agent` on the runs wire, and an approved archive that closes its run. Part 2 is the sweep `gateway/agent_run_sweep.py` behind `agent_run_sweep_enabled`, and the table `pm_agent_run_strands` (migration 305) | An answer that no agent reads reads `stale` after five minutes, and `my_work` still offers it as `run_answered`. An approve closes its run with a system line. With the flag on, a stranded run gets ONE bell and a fingerprint, `needs_agent=true` returns it, and one lease later ONE recovery record with a line on the run and on the task. A third tick adds nothing. A new activity starts over. A live lease, an `awaiting` run and a `created` run are never swept. A tick binds one org for each session. With the flag off, the loop starts no task. Each rule has an R8 test in `test_agent_run_sweep_r8.py` that a named mutation turns red | AGENT-SAFE. The flip of `agent_run_sweep_enabled` is gate `enforcement-flip` |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
 
