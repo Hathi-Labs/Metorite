@@ -15,7 +15,7 @@ import {
   isOverdue,
   listMaintenance,
   orderRows,
-  reasonsText,
+  chipLabel,
   type MaintenancePage,
 } from "./maintenance";
 
@@ -43,14 +43,15 @@ describe("the row order", () => {
   });
 });
 
-describe("the reasons text", () => {
-  it("names each reason once, in order", () => {
-    const text = reasonsText(row("p", ["expired", "unowned", "stale"], "2026-03-03T00:00:00Z"), dayLabel);
-    expect(text).toBe("Review overdue since 3 Mar 2026. No owner. Not edited for a year.");
+describe("the chip words", () => {
+  it("puts the date on the overdue chip and keeps the fixed label of the others", () => {
+    expect(chipLabel("expired", "2026-03-03T00:00:00Z", dayLabel)).toBe("Overdue since 3 Mar 2026");
+    expect(chipLabel("unowned", null, dayLabel)).toBe("No owner");
+    expect(chipLabel("stale", null, dayLabel)).toBe("Not edited for a year");
   });
 
   it("drops the date when the page has none", () => {
-    expect(reasonsText(row("p", ["expired"]), dayLabel)).toBe("Review overdue.");
+    expect(chipLabel("expired", null, dayLabel)).toBe("Overdue");
   });
 });
 

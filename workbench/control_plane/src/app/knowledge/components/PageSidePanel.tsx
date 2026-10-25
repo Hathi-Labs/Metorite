@@ -57,6 +57,9 @@ export default function PageSidePanel({
   const [verifying, setVerifying] = useState(false);
   const overdue = isOverdue(page.review_at);
   const canVerify = Boolean(page.can_write) && page.state === "published";
+  // A page that needs care shows Verify above the tabs, so a long page that opens on
+  // Outline does not hide it. Any other page keeps it under Details.
+  const verifyUp = canVerify && (overdue || !page.owner_email);
 
   async function verify() {
     setVerifying(true);
@@ -72,8 +75,23 @@ export default function PageSidePanel({
     }
   }
 
+  const verifyButton = (
+    <Button
+      size="sm"
+      variant="secondary"
+      icon="ShieldCheck"
+      className="w-full"
+      loading={verifying}
+      disabled={verifying}
+      onClick={() => void verify()}
+    >
+      Verify
+    </Button>
+  );
+
   return (
     <section aria-label="Page outline and details" className="space-y-3">
+      {verifyUp ? verifyButton : null}
       {hasOutline ? (
         <Tabs
           chrome="inline"
@@ -143,19 +161,7 @@ export default function PageSidePanel({
         </dl>
       )}
 
-      {tab === "details" && canVerify ? (
-        <Button
-          size="sm"
-          variant="secondary"
-          icon="ShieldCheck"
-          className="w-full"
-          loading={verifying}
-          disabled={verifying}
-          onClick={() => void verify()}
-        >
-          Verify
-        </Button>
-      ) : null}
+      {tab === "details" && canVerify && !verifyUp ? verifyButton : null}
     </section>
   );
 }

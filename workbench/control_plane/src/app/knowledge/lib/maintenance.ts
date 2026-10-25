@@ -89,18 +89,17 @@ export const REASON_CHIPS: Record<MaintenanceReason, { label: string; tone: "war
 };
 
 /**
- * The words under a row: what is wrong, in the order of the reasons.
- * "Review overdue since 3 Mar 2026. No owner."
+ * The words on a chip. The overdue chip carries the date: "Overdue since 27 Jul 2026".
+ * The other reasons use their fixed label.
  */
-export function reasonsText(page: Pick<MaintenancePage, "reasons" | "review_at">, day: (iso: string | null) => string): string {
-  const parts = page.reasons.map((r) => {
-    if (r === "expired") {
-      const since = day(page.review_at);
-      return since ? `Review overdue since ${since}.` : "Review overdue.";
-    }
-    return r === "unowned" ? "No owner." : "Not edited for a year.";
-  });
-  return parts.join(" ");
+export function chipLabel(
+  reason: MaintenanceReason,
+  reviewAt: string | null,
+  day: (iso: string | null) => string,
+): string {
+  if (reason !== "expired") return REASON_CHIPS[reason].label;
+  const since = day(reviewAt);
+  return since ? `Overdue since ${since}` : REASON_CHIPS.expired.label;
 }
 
 /** The count a rail row shows: the expired pages, "99+" past 99, and none at 0. */

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { COMPANY, OPS, chromePages, mockKnowledge, member, signIn, type Level, type MockPage } from "./knowledge-chrome.mock";
+import { COMPANY, OPS, chromePages, longBody, mockKnowledge, member, signIn, type Level, type MockPage } from "./knowledge-chrome.mock";
 
 /**
  * The verified pages of Knowledge (WS-61 KB-AI-4, `knowledge_base.md` §22.3).
@@ -25,6 +25,8 @@ function carePages(): MockPage[] {
     { ...base, id: "kp-exp", title: "Expense policy", body_md: "Claims.", owner: "ravi@example.com", review_at: past(30), versions: v("Expense policy") },
     // Overdue, no owner and stale: three reasons on ONE row.
     { ...base, id: "kp-all", title: "Travel rules", body_md: "Trips.", owner: null, review_at: past(90), stale: true, versions: v("Travel rules") },
+    // Overdue, with three headings: the panel opens on Outline.
+    { ...base, id: "kp-long", title: "Refund rules", body_md: longBody(), owner: "ravi@example.com", review_at: past(10), versions: v("Refund rules") },
     // In good care: not on the list.
     { ...base, id: "kp-ok", title: "Holiday list", body_md: "Days off.", owner: "ravi@example.com", versions: v("Holiday list") },
     ...chromePages().filter((p) => p.id === "kp-ops").map((p) => ({ ...p, owner: "ravi@example.com" })),
@@ -72,17 +74,17 @@ test.describe("Knowledge maintenance", () => {
     const kb = await setup(page);
     await page.goto("/knowledge");
     await expect(railRow(page)).toBeVisible({ timeout: 60_000 });
-    await expect(railRow(page)).toContainText("2");
+    await expect(railRow(page)).toContainText("3");
     await railRow(page).click();
     await expect(page).toHaveURL(/\/knowledge\/maintenance$/, { timeout: 60_000 });
     await expect(page.getByRole("heading", { level: 2, name: "Maintenance" })).toBeVisible({ timeout: 60_000 });
 
     // Each page once, the reasons as chips on that one row.
-    await expect(page.locator("[data-maintenance-id]")).toHaveCount(2);
+    await expect(page.locator("[data-maintenance-id]")).toHaveCount(3);
     const all = page.locator('[data-maintenance-id="kp-all"]');
     await expect(all).toHaveCount(1);
-    await expect(all.getByText("Overdue", { exact: true })).toBeVisible();
-    await expect(all.getByText("No owner", { exact: true }).first()).toBeVisible();
+    await expect(all.getByText(/^Overdue since \d+ \w+ \d{4}$/)).toBeVisible();
+    await expect(all.getByText("No owner", { exact: true })).toHaveCount(2);
     await expect(all.getByText("Not edited for a year", { exact: true })).toBeVisible();
     await expect(page.locator('[data-maintenance-id="kp-ok"]')).toHaveCount(0);
 
@@ -99,8 +101,8 @@ test.describe("Knowledge maintenance", () => {
     // The list no longer holds the page, and the count drops.
     await railRow(page).click();
     await expect(page.locator('[data-maintenance-id="kp-exp"]')).toHaveCount(0, { timeout: 15_000 });
-    await expect(page.locator("[data-maintenance-id]")).toHaveCount(1);
-    await expect(railRow(page)).toContainText("1");
+    await expect(page.locator("[data-maintenance-id]")).toHaveCount(2);
+    await expect(railRow(page)).toContainText("2");
   });
 
   test("a writer sets the owner from the menu, and an outside address shows the refusal inline", async ({ page }) => {
@@ -138,6 +140,15 @@ test.describe("Knowledge maintenance", () => {
     await dialog.getByRole("button", { name: "Save" }).click();
     await expect(dialog).toHaveCount(0, { timeout: 15_000 });
     expect(kb.writes.filter((w) => w.method === "PATCH").map((w) => w.body)).toEqual([{ review_every_days: 90 }]);
+  });
+
+  test("a long overdue page shows Verify without a click on Details", async ({ page }) => {
+    test.setTimeout(120_000);
+    await setup(page);
+    await page.goto("/knowledge/pages/kp-long");
+    const panel = page.getByRole("region", { name: "Page outline and details" });
+    await expect(panel.getByRole("navigation", { name: "Outline" })).toBeVisible({ timeout: 60_000 });
+    await expect(panel.getByRole("button", { name: "Verify" })).toBeVisible();
   });
 
   test("a reader sees no Verify, no Set owner and no Review every", async ({ page }) => {

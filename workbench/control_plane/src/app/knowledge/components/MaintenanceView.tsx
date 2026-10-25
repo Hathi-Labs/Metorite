@@ -28,7 +28,7 @@ import {
   MAINTENANCE_KEY,
   REASON_CHIPS,
   listMaintenance,
-  reasonsText,
+  chipLabel,
   type MaintenanceList,
 } from "../lib/maintenance";
 
@@ -97,10 +97,9 @@ export default function MaintenanceView() {
                   <span className="flex flex-wrap items-center gap-1.5 pl-7">
                     {p.reasons.map((r) => (
                       <Badge key={r} tone={REASON_CHIPS[r].tone} icon={REASON_CHIPS[r].icon}>
-                        {REASON_CHIPS[r].label}
+                        {chipLabel(r, p.review_at, dayLabel)}
                       </Badge>
                     ))}
-                    <span className="text-xs text-muted-foreground">{reasonsText(p, dayLabel)}</span>
                   </span>
                 </li>
               ))}
