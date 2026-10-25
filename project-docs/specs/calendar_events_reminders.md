@@ -356,8 +356,8 @@ claims two sets of rows:
 |---|---|---|
 | Grace before the check-back | `estimate_minutes` plus 30 minutes, kept between 30 minutes and 3 hours. 60 minutes when there is no estimate | A check-back before the act can end reads as nagging. Habitify checks at +30 minutes, Medisafe at +1 hour |
 | Check-backs in one day | 1 for each reminder. No second ping that day | The clinical data on volume |
-| Quiet hours | 21:00 to `day_start_hour`, in the member's current zone | Steps 2 to 5 never land there. A step that would land there waits for the brief |
-| Weekends | A check-back on a reminder linked to work waits for the next workday. A personal one does not | Work and personal time |
+| Quiet hours | Outside `day_start_hour` to `day_end_hour`, in the member's `user_settings.timezone`. This is the Reach rule (`reach.plan.in_quiet_hours`). Reach and the loop read the same function (decision of 2026-10-25) | Steps 2 to 5 never land there. A step that would land there waits for the next `day_start_hour` |
+| Weekends | No weekend rule in RM-2. The work and personal rule moves to RM-2c (decision of 2026-10-25) | Work and personal time |
 | The member's snoozes | They do not count toward the limit. After 3 snoozes, the chat offers "Make it a task, or drop it?" once | The member is engaged, but the item keeps moving |
 | `important` | Check back after 15 minutes, then every hour, at most 4 times, inside the cap | For the few items that need it |
 | Escalating to another person | Off. Not in WS-66 | It reaches a real person (CLAUDE.md §3a rule 3) |
@@ -384,6 +384,36 @@ makes with no answer adds 1 to `cycles`. The give-up limit reads `cycles`.
 - **The loop skips a member who is not active in the org.** A removed member
   who is not purged keeps their rows, but no step fires and no push goes.
 
+**As built (RM-2, 2026-10-25).** The worker is `gateway/reminders/loop.py`.
+`gateway/main.py` starts it beside the send-later job, and it starts no task
+while `CALENDAR_REMINDERS` is off.
+
+- **One transaction for each step.** The loop claims one row by its id and
+  its due predicate, with `FOR UPDATE SKIP LOCKED`. In the same transaction
+  it moves the row and writes the ledger row. So two workers never fire one
+  row twice.
+- **Step 1** sets `first_fired_at` on the first fire only. The fire time is
+  the tick, so a late tick does not move the check-back into the past.
+- **Step 2.** The check time is the fire plus the grace. A check time in
+  quiet hours moves to the next `day_start_hour`. A step that comes due in
+  quiet hours writes nothing and waits.
+- **Steps 3 and 4 are one transaction.** At the next `day_start_hour` after
+  the check-back, the loop writes `briefed`. Then it calls `next_slot`, sets
+  the new `fire_at`, adds 1 to `cycles`, and writes `rescheduled` with
+  `{"by": "metorite"}`. The brief line says the new time, so the two rows
+  belong together.
+- **Step 5.** At the brief, a reminder that Metorite moved twice gives up. At
+  any step of the ladder, a reminder that first fired 72 hours ago or more
+  gives up. The `gave_up` row names the reason, `cycles` or `72h`.
+- **`important`.** The loop checks back after 15 minutes, then every hour, 4
+  times in all. The brief comes after the fourth check-back.
+- **The member check** is `my_day_loop.departed`, read once for each member
+  in a tick. A failed read skips the member for that tick only.
+- **The member's day** is `tasks.settings.member_settings`, the read of
+  `GET /tasks/settings` with an address in any case, through
+  `state.settings_day`, the rule of the feed. The loop has the lower-case
+  address of the row, and the settings row has the spelling of the session.
+
 **Words.** The check-back names the thing and gives every exit in one line.
 Each try uses different words. No guilt, and no "you missed".
 
@@ -398,11 +428,42 @@ It is code, with no model call, so a test can hold it. It picks, in order:
    `estimate_minutes`. The read holds task blocks today, and busy events
    after CE-4.
 
-It never returns a time in quiet hours. For a reminder linked to work, it
-keeps inside working hours and skips the weekend. For a personal reminder, it
+It never returns a time in quiet hours. The chat may propose another slot,
+and the member's answer wins.
+
+**Moved to RM-2c (decision of 2026-10-25).** The rules for work, personal
+time, weekends and pinned blocks wait for RM-2c. RM-2 treats every reminder
+the same.
+
+The RM-2c rules are these. For a reminder linked to work, the slot keeps
+inside working hours and skips the weekend. For a personal reminder, it
 prefers time outside working hours. An errand never lands inside a block that
-the member pinned. The chat may propose another slot, and the member's answer
-wins.
+the member pinned.
+
+**As built (RM-2, 2026-10-25).** `gateway/reminders/slot.py` is pure. The
+caller gives the member's day, the busy blocks and `now`.
+
+- **The order.** A named time wins when it is after now, outside quiet hours
+  and outside every busy block. Then the time of day of `fire_at` on the
+  first later day that is free at that time, up to 14 days. Then the first
+  free gap of the member's day hours that is long enough for
+  `estimate_minutes`, or for 15 minutes with no estimate. The gaps come from
+  `tasks.calendar._free_intervals`, the rule of the planner.
+- **Never now.** A gap that opens at now, such as a day start, gives the
+  next quarter of an hour.
+- **The last resort.** With no gap in 14 days, the slot is the next day
+  start after them, moved past each busy block that covers it.
+- **One zone.** The slot reads the member's current zone in
+  `user_settings.timezone`, for the time of day and for quiet hours.
+- **The busy blocks** are the member's task blocks, from
+  `planning.LENS_SOURCE.busy_window`, the read of a window of the planner. It
+  covers the days after now and the days after the reminder's own time. CE-4
+  adds busy events. `my_calendar` is a route with a session, so the loop
+  cannot call it.
+- **`/reschedule` takes `"smart"`** as its `fire_at` (RM-2). It is a member
+  move, so it adds 1 to `snoozes`, and its `rescheduled` row holds
+  `{"slot": "smart", "by": "member"}`. A snooze and a PATCH still refuse
+  `smart` with a 422.
 
 ### 5.6 Delivery
 
@@ -415,18 +476,57 @@ row makes a card. Reach plans the card like any other.
 | `reminder_check` | Step 2 | `interrupt`, inside the cap, never in quiet hours. An overflow goes to the brief | Done · Not yet · Drop · Open |
 | `reminder_unconfirmed` | Step 5 | `brief` | Make it a task · Pick a time · Drop |
 
-- **The bell and the feed.** The shell bell counts the open reminder cards,
-  because it reads the one feed (`/api/shell/needs`).
+The Reach class column is the target of RE-9. **In RM-2 each of the three
+kinds has the class `none`** in `reach/classes.py` (decision B1 of
+2026-10-25). Today Reach sends only on WhatsApp, to members on its
+allowlist, and D114.7 keeps reminders off WhatsApp. RE-9 raises the three
+kinds to `urgent`, `interrupt` and `brief` on web push. RE-9 also adds the
+D114.3 exception to the Reach budget.
+
+- **The bell does not show reminders yet** (decision B2 of 2026-10-25). That
+  is ticket RM-2b. The bell reads `/api/shell/needs`, so RM-2b needs a needs
+  provider and a `KIND_ORDER` row for each kind.
+- **The feed in RM-2.** Steps 1, 2 and 5 each give their card. Steps 3 and 4
+  write their ledger rows, and the feed keeps the card until step 4 moves the
+  row (decision B4 of 2026-10-25). The words of a Reach brief line belong to
+  RE-9.
 - **Web push.** Reach sends the card through RE-9 on the S7 transport. The
   payload holds the title and the time (D114.4), unless the member turned on
   "Hide details on the lock screen". Then it reads "Metorite: a reminder".
   The `url` is `/chat?reminder=<id>`.
 - **On the minute.** A reminder must go at its minute, not at the next
-  member pass. Accept a push within 90 seconds of `fire_at`. RM-2 measures
-  Reach's pass rate and, if it is slower, adds the `not_before` of the old
-  ask to WS-59. `proactive_reach.md` owns how.
+  member pass. RE-9 owns the test that accepts a push within 90 seconds of
+  `fire_at`. If Reach is slower, RE-9 adds the `not_before` of the old ask to
+  WS-59. `proactive_reach.md` owns how.
 - **Closed before it goes.** Reach reads the row again at send time. A
   reminder that is done, dropped or moved sends nothing.
+
+**As built (RM-2, 2026-10-25).** The cards come from the feed source
+`reminders` in `routes/shell/feed.py`. Code computes each card from the row
+when the feed reads it, and nothing stores a card.
+
+- **The kind.** A `due` row gives `reminder_due` until its check-back, and
+  `reminder_check` after it. An `unconfirmed` row gives
+  `reminder_unconfirmed`. A `scheduled` row gives no card.
+- **The read.** `reminders.my_open_cards` reads the member's rows and the
+  last ladder step of each, in one tenant session. The source needs
+  `feature:projects`. With `CALENDAR_REMINDERS` off, the source is `absent`
+  before any read.
+- **The gate of the feed.** The source runs only while `MY_DAY_PROVIDERS`
+  lists `reminders`, as each feed source since MD-3b does.
+  `test_shell_feed.py` holds the feed answer the same while that list is
+  empty. So the flip of reminders sets `CALENDAR_REMINDERS` AND adds
+  `reminders` to `MY_DAY_PROVIDERS`.
+- **The card.** The app is the Calendar, and the client calls the three kinds
+  "Reminder", "Check-back" and "Unconfirmed". The one act is a link to
+  `/chat?reminder=<id>` (§5.7). RM-4 makes the chat read it. The actions in
+  place of the table wait for the client (D101).
+- **The order.** `reminder_due` is in the group `now`. The other two are in
+  `needs_you`. Each kind has its row in `feed_rank.BASE`, below every needs
+  kind.
+- **The refresh.** After each write, the loop bumps the member's My Day
+  version (`cache.bump_member_safe`). The next `fire_at` or `next_check_at`
+  is the edge of the read cache.
 
 ### 5.7 A tap opens the chat
 
