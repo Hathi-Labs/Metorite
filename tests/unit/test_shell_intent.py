@@ -124,7 +124,7 @@ class TestOff:
 
 class TestTheModelSeesOnlyWhatTheMemberCanOpen:
     def test_a_job_behind_a_missing_feature_is_absent(self, world):
-        ask("write to priya about march", member("tasks"))
+        ask("write to priya about march", member("tasks", "projects"))
         options = offered(world)
         assert "compose" not in options
         assert "find-person" not in options

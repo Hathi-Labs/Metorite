@@ -828,5 +828,9 @@ export function switchTarget(a: {
   const here = paneAt(a.pathname, a.sections);
   if (here?.href === pane.href) return null;
   if (here && pane.agent && (ALSO_SERVES[pane.agent] ?? []).includes(here.href)) return null;
+  // A served app that is not in the nav (My Tasks is `preview` since the OP-4
+  // flip, and still routes) is not found by `paneAt`, so read the path itself.
+  const path = a.pathname ?? "";
+  if (pane.agent && (ALSO_SERVES[pane.agent] ?? []).some((h) => path === h || path.startsWith(`${h}/`))) return null;
   return pane;
 }

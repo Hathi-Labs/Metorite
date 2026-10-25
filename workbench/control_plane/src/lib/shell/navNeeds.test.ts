@@ -87,7 +87,7 @@ describe("the one map from a source to its app's row", () => {
   });
 
   it("maps each source to the app the owner named", () => {
-    expect(NEEDS_APP_HREF).toEqual({ tasks: "/tasks", approvals: "/approvals", projects: "/projects", email: "/email" });
+    expect(NEEDS_APP_HREF).toEqual({ tasks: "/projects", approvals: "/approvals", projects: "/projects", email: "/email" });
   });
 
   it("names live panes only", () => {
@@ -109,7 +109,7 @@ describe("the count per app", () => {
     const f = feed({ sources: { tasks: "ok", email: "ok" }, totals: { tasks: 15, email: 3 }, capped: ["tasks"] });
     expect(countsByApp(f, [], false)).toEqual({ tasks: 15, email: 3 });
     expect([...floorApps(f, false)]).toEqual(["tasks"]);
-    expect([...floorHrefs(floorApps(f, false))]).toEqual(["/tasks"]);
+    expect([...floorHrefs(floorApps(f, false))]).toEqual(["/projects"]);
     expect(rowMeta(undefined, 15, true)).toEqual({ kind: "needs", text: "15+", label: "15 or more need you" });
     expect(rowName("My Tasks", 15, undefined, true)).toBe("My Tasks, 15 or more need you");
   });
@@ -118,7 +118,7 @@ describe("the count per app", () => {
     const f = feed({ sources: { email: "failed", approvals: "ok" }, totals: { approvals: 15 }, capped: ["email", "approvals"] });
     expect([...floorApps(f, false)]).toEqual([]);
     expect([...floorApps(f, true)]).toEqual(["approvals"]);
-    expect([...floorHrefs(new Set(["approvals"] as const), new Set(["/tasks"]))]).toEqual([]);
+    expect([...floorHrefs(new Set(["approvals"] as const), new Set(["/projects"]))]).toEqual([]);
     expect(readFeed({ items: [], sources: {} }).capped).toEqual([]);
   });
 
@@ -130,7 +130,7 @@ describe("the count per app", () => {
     });
     const counts = countsByApp(f, f.items, false);
     expect(counts).not.toHaveProperty("email");
-    expect(needsByHref(counts)).toEqual({ "/tasks": 1 });
+    expect(needsByHref(counts)).toEqual({ "/projects": 1 });
   });
 
   it("an absent source has no number either", () => {
@@ -171,8 +171,8 @@ describe("the count per app", () => {
 
   it("puts a count on the app's row, and none on an app the member cannot open", () => {
     const counts = { tasks: 2, email: 3, approvals: 1 };
-    expect(needsByHref(counts)).toEqual({ "/tasks": 2, "/email": 3, "/approvals": 1 });
-    expect(needsByHref(counts, new Set(["/tasks", "/email"]))).toEqual({ "/tasks": 2, "/email": 3 });
+    expect(needsByHref(counts)).toEqual({ "/projects": 2, "/email": 3, "/approvals": 1 });
+    expect(needsByHref(counts, new Set(["/projects", "/email"]))).toEqual({ "/projects": 2, "/email": 3 });
   });
 });
 
@@ -236,9 +236,9 @@ describe("one slot, one rule", () => {
 describe("a hidden app's count goes to Add apps", () => {
   it("adds the count of each app the sidebar does not show", () => {
     const byHref = needsByHref({ tasks: 2, email: 3 });
-    const rail = new Set(["/email", "/projects"]);
+    const rail = new Set(["/email"]);
     expect(strayCount(byHref, rail)).toBe(2);
-    expect(strayCount(byHref, new Set(["/email", "/tasks"]))).toBe(0);
+    expect(strayCount(byHref, new Set(["/email", "/projects"]))).toBe(0);
     expect(strayNeedsLabel(2)).toBe("2 need you in hidden apps");
   });
 

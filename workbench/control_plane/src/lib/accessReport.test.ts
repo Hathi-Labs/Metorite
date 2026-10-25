@@ -60,7 +60,7 @@ describe("paneReport", () => {
   });
 
   it("marks a granted pane as reachable", () => {
-    expect(find(signedIn(), "/tasks").status).toBe("granted");
+    expect(find(signedIn(), "/calendar").status).toBe("granted");
   });
 
   it("treats an ungated pane as open to everyone", () => {

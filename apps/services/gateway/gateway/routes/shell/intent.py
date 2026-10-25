@@ -101,7 +101,7 @@ ADMIN_PERMISSION = "admin:members:read"
 #: other way round, is two answers to "what can I do here".
 JOBS: tuple[Job, ...] = (
     Job("capture", "New task", "add a task, a to-do or a reminder for themselves",
-        "tasks", "/tasks?do=capture",
+        "projects", "/projects?app=my-inbox&do=capture",
         {"title": "the task itself, in the member's own words, without 'remind me to'"}),
     Job("compose", "Write an email", "write, send or reply to an email",
         "email", "/email?do=compose",

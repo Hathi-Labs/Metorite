@@ -84,8 +84,10 @@ export const JOBS: readonly ShellJob[] = [
     id: "capture",
     label: "New task",
     words: ["task", "todo", "to-do", "capture", "add", "remind", "reminder", "note"],
-    app: "/tasks",
-    href: "/tasks?do=capture",
+    // The owning pane is Projects since the OP-4 flip (2026-10-25): My Tasks
+    // left the nav, and its inbox is the My work section of Projects.
+    app: "/projects",
+    href: "/projects?app=my-inbox&do=capture",
     icon: "CirclePlus",
   },
   {

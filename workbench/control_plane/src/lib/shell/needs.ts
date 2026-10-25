@@ -78,11 +78,12 @@ export interface NeedsFeed {
 /**
  * The app that owns each source's rows: the sidebar row that counts them.
  * THE one map. A new provider adds one line here, and its rows count on its
- * app's row. The `tasks` rows open in Projects (`href`), but they are the
- * member's due tasks, so they count on My Tasks.
+ * app's row. The `tasks` rows are the member's due tasks. My Tasks left the
+ * nav at the OP-4 flip (2026-10-25) and its work is the My work section of
+ * Projects, so they count on the Projects row, beside the `projects` rows.
  */
 export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
-  tasks: "/tasks",
+  tasks: "/projects",
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",

@@ -504,7 +504,9 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     for (const path of ["https://evil.example", "//evil.example", "/\\evil.example", "/api/x", "", undefined]) {
       expect(navigateAct({ ...live, path }), String(path)).toEqual(none);
     }
-    expect(navigateAct({ ...live, path: "/tasks#today" }).push).toBe(true);
+    expect(navigateAct({ ...live, path: "/projects#today" }).push).toBe(true);
+    // My Tasks is a preview pane since the OP-4 flip, so the allowlist refuses it.
+    expect(navigateAct({ ...live, path: "/tasks#today" })).toEqual(none);
   });
 
   it("refuses a dot segment that walks out of the pane (review of #1197, P0)", () => {

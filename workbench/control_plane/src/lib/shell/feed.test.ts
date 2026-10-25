@@ -1301,7 +1301,7 @@ describe("9. the life of a card (MD-2b)", () => {
   it("(e) ends a capped group with Show all in the app", () => {
     const g = { cards: [card("tasks:t1", "needs_you"), card("calendar:b", "needs_you", { app: "calendar" })] };
     expect(cappedLinks(g, ["tasks", "calendar"])).toEqual([
-      { app: "tasks", label: "Show all in My Tasks", href: "/tasks" },
+      { app: "tasks", label: "Show all in My Tasks", href: "/projects" },
       { app: "calendar", label: "Show all in Calendar", href: "/calendar" },
     ]);
     expect(cappedLinks(g, [])).toEqual([]);

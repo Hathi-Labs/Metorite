@@ -110,7 +110,6 @@ describe("(a) nothing renders into the shell bar", () => {
  * does.
  */
 const APP_BAR_HOME: Record<string, string> = {
-  "/tasks": "app/tasks/page.tsx",
   "/calendar": "app/calendar/CalendarView.tsx",
   // `/people/me` sits under the People layout, which names its bar from the
   // pane that owns the route (`appBarPane`): "My Profile" here.
@@ -140,8 +139,10 @@ const APP_BAR_HOME: Record<string, string> = {
  * When a pane goes live, its row moves to `APP_BAR_HOME`.
  */
 const PREVIEW_BAR_HOME: Record<string, string> = {
-  // Empty since 2026-10-18: Knowledge went live (WS-61 KB-12), and its row
-  // moved to `APP_BAR_HOME`.
+  // Knowledge went live (WS-61 KB-12), and its row moved to `APP_BAR_HOME`.
+  // My Tasks left the nav at the OP-4 flip (2026-10-25). The page still
+  // routes, and still draws its bar until the OP-4 retire.
+  "/tasks": "app/tasks/page.tsx",
 };
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */

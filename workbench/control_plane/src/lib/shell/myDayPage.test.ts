@@ -330,7 +330,7 @@ describe("/ with the My Day feed flag", () => {
     expect(html).not.toContain("Card folded1");
     expect(html).toContain("Card open1");
     expect(html).toContain("Show all in My Tasks");
-    expect(html).toMatch(/<a\b(?=[^>]*data-feed-show-all="tasks")(?=[^>]*href="\/tasks")/);
+    expect(html).toMatch(/<a\b(?=[^>]*data-feed-show-all="tasks")(?=[^>]*href="\/projects")/);
     expect(html).toContain('aria-label="New"');
     // A card the client may write carries the observer's mark, and its menu.
     expect(html).toContain('data-feed-seen="tasks:open1"');
