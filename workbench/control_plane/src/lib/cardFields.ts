@@ -221,6 +221,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "visible to": { label: "Visible to" },
   "waiting since": { label: "Waiting since" },
   "waiting_on": { label: "Waiting on" },
+  // WS-66 RM-3: the time of a reminder, as the member reads it.
+  "when": { label: "When" },
   // `file_tasks`: a subtask that moves with its parent's row, not on its own.
   "with parent N": { label: "With parent", plural: "With parent" },
 };

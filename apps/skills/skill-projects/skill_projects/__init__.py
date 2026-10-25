@@ -39,6 +39,7 @@ from skill_projects.guarded import (
     merge_tasks,
     move_project,
     nudge_task,
+    promote_reminder,
     remove_report_recipient,
     rename_area,
     report_delete,
@@ -74,6 +75,7 @@ from skill_projects.reads import (
     find_conflicts,
     find_tasks,
     fit_for_task,
+    list_reminders,
     list_tasks,
     my_task,
     my_work,
@@ -119,13 +121,18 @@ from skill_projects.writes import (
     link_tasks_batch,
     move_task,
     remove_task_ref,
+    reopen_reminder,
     report_save,
+    reschedule_reminder,
+    resolve_reminder,
     set_my_overlay,
     set_recurrence,
+    set_reminder,
     unarchive_task,
     unlink_tasks,
     update_field,
     update_project,
+    update_reminder,
     update_status,
     update_tag,
     update_task,
@@ -185,6 +192,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "rebalance",
     "find_conflicts",
     "task_dataset",
+    # Class A — WS-66 RM-3 (D114), the member's own reminders
+    "list_reminders",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",
@@ -238,6 +247,13 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "mark_notifications_read",
     "save_view",
     "triage_intake",
+    # Class B — WS-66 RM-3 (D114), the member's reminders. One card each
+    # until CF-6 gives them an act-at-once door with Undo.
+    "set_reminder",
+    "update_reminder",
+    "resolve_reminder",
+    "reopen_reminder",
+    "reschedule_reminder",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
@@ -268,4 +284,6 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "revert_activity",
     "set_status_set",
     "unarchive_project",
+    # Class C — WS-66 RM-3: a reminder becomes a task, and it cannot reopen
+    "promote_reminder",
 ]

@@ -163,6 +163,13 @@
     "revert_activity",
     "set_report_schedule",
     "set_status_set",
-    "unarchive_project"
+    "unarchive_project",
+    "list_reminders",
+    "set_reminder",
+    "update_reminder",
+    "resolve_reminder",
+    "reopen_reminder",
+    "reschedule_reminder",
+    "promote_reminder"
   ]
 }
