@@ -42,12 +42,18 @@ Each row lock has, at its FIRST touch, the strongest strength that the
 transaction needs. A lock that starts as ``FOR KEY SHARE`` and becomes an
 UPDATE later is a deadlock of its own. The transactions:
 
-* **Each write transaction of this module and of** ``discovery.py`` starts
-  with ``discovery.lock_source``. It takes ``FOR NO KEY UPDATE`` when the
-  transaction writes the source row too: :meth:`_SourceRun.close_ok`,
+* **Each write transaction of this module and of** ``discovery.py`` takes
+  the source row before any child row. Most take it with
+  ``discovery.lock_source``. A few take it another way: step (a) reads it
+  ``FOR SHARE``, and the start and ``_mark`` of a discovery UPDATE it. A run
+  close that writes only the run row takes no source lock.
+  ``discovery.lock_source`` takes ``FOR NO KEY UPDATE`` when the transaction
+  writes the source row too: :meth:`_SourceRun.close_ok`,
   :meth:`_SourceRun.close`, the end of a discovery, and a node upsert, which
   can stamp ``last_new_at``. Else it takes ``FOR KEY SHARE``, as a page with
-  removals only does. Here, no live row raises :class:`_Disconnected`.
+  removals only does. In a page write of this module, no live row raises
+  :class:`_Disconnected`. ``close_ok`` and ``close`` ignore that answer,
+  because each of their writes has its own ``state <> 'disconnected'`` guard.
 * **close_ok** locks the connection row first (``store.lock_by_id``, with
   the ``connection_id`` of step (a)), then the source row, then the run row.
 * **The disconnect** (``routes/knowledge/sources.py``) reads the source row

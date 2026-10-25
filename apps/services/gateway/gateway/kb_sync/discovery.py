@@ -37,10 +37,11 @@ that sets ``ready``. So a change made during the listing is read again by
 the loop, and none is lost.
 
 **The lock order (KC-3h).** The module doc of ``kb_sync/engine.py`` holds the
-one lock order of the source rows. Each write transaction here starts with
-:func:`lock_source`, so the source row comes before the nodes, the cursors
-and the run row. Discovery keeps its rule for a disconnected source: a write
-writes nothing, and the run goes on to its end state.
+one lock order of the source rows. Each write transaction here takes the
+source row before the nodes, the cursors and the run row. Most take it with
+:func:`lock_source`. The start of a discovery and ``_mark`` take it with
+their UPDATE of ``kb_sources``. Discovery keeps its rule for a disconnected
+source: a write writes nothing, and the run goes on to its end state.
 
 **The engine reuses two parts.** ``kb_sync/engine.py`` relists an uncapped
 source with :func:`_flat` and its own *read* and *write*, and writes each
