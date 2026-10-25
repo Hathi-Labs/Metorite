@@ -60,6 +60,7 @@ def _replay() -> RoutingHarness:
         }
         record = asyncio.run(harness.drive(
             CORRECTION, PAGE, member=ds.MEMBER, org=ds.ORG, history=history,
+            typed=CORRECTION,
             timeout=60.0,
         ))
         assert record.error is None, record.error

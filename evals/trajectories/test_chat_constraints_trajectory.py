@@ -9,7 +9,7 @@ The REAL orchestrator runs each turn through ``evals.routing.harness``, and
 turn N+1 delegates to the REAL email-assistant factory. Only the model wire
 is scripted, and the chat's list lives in the in-memory tenant Redis of the
 harness. Each turn binds the member's typed words, as the chat route does
-(``assistant_profile.member_typed``).
+(``drive(typed=...)``, which binds ``assistant_profile.member_typed``).
 
 1. N: the member corrects the assistant, and the model keeps the correction.
 2. N+1: the orchestrator's model request holds the block and the
@@ -32,7 +32,6 @@ import pytest
 
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
-from acb_common.assistant_profile import member_typed
 from acb_skills import chat_constraints as cc
 
 from evals.routing import dataset as ds
@@ -63,10 +62,10 @@ def _request(model: ReplyModel, index: int) -> str:
 
 def _turn(harness: RoutingHarness, words: str, thread: str | None) -> RunRecord:
     """One chat turn, with the member's typed words bound as the route binds them."""
-    with member_typed(words):
-        record = asyncio.run(harness.drive(
-            words, PAGE, member=ds.MEMBER, org=ds.ORG, thread_id=thread, timeout=60.0,
-        ))
+    record = asyncio.run(harness.drive(
+        words, PAGE, member=ds.MEMBER, org=ds.ORG, thread_id=thread, timeout=60.0,
+        typed=words,
+    ))
     assert record.error is None, record.error
     return record
 

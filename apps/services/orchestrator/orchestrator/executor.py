@@ -1162,19 +1162,6 @@ def _chat_constraints_block(agent_name: str) -> str:
         return ""
 
 
-def _chat_constraints_for_task() -> list[str]:
-    """The kept corrections for the head of a delegated task, read on the
-    PARENT's frame (WS-67 OA-4). With the flag off or none kept, ``[]``."""
-    try:
-        from acb_skills.chat_constraints import kept_for_run
-    except ImportError:
-        return []
-    try:
-        return kept_for_run()
-    except Exception:
-        return []
-
-
 def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
     """The parent's kept corrections, for a DELEGATED run's own binding.
 
@@ -2051,14 +2038,11 @@ async def _run_sub_agent_streaming(
     # WS-67 OA-1 and OA-2: the member's own words, verbatim, and the reply
     # rules (quoted or inferred) head every delegated task. The executor adds
     # them, so no prompt and no model can leave them out. Read from the
-    # PARENT's binding, on the parent's frame. WS-67 OA-4: the member's kept
-    # corrections and limits of the chat follow the words.
-    from acb_skills.handoff import MEMBER_TURNS, task_with_member_words
+    # PARENT's binding, on the parent's frame. WS-67 OA-4: `head_task` puts
+    # the member's kept corrections and limits of the chat after the words.
+    from acb_skills.handoff import head_task
     from acb_skills.write_artifact import artifact_context
-    message_str = task_with_member_words(
-        message_str, artifact_context().get(MEMBER_TURNS),
-        constraints=_chat_constraints_for_task(),
-    )
+    message_str = head_task(message_str)
     _repo_name: str | None = None
     _local_path: str | None = None
     _runtime: str = "maf"
@@ -8876,6 +8860,10 @@ async def _tier_policy_for_run(
         message = str(
             event_payload.get("message") or event_payload.get("user_query") or ""
         )
+    # WS-67: the question reads the task only. The head of a delegated task
+    # (the member's words and the reply rules) would make every task look long.
+    from acb_skills.handoff import task_of
+    message = task_of(message)
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
         read_effort=effort_from_text,

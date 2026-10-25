@@ -687,10 +687,12 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
             return f"Agent {agent_name!r} failed: {exc}"
 
     try:
+        from acb_skills.handoff import head_task  # noqa: PLC0415
         from orchestrator.executor import run_agent  # noqa: PLC0415
         result = await run_agent(
             agent_name,
-            {"message": message, "mode": "chat"},
+            # WS-67 OA-1: the batch path heads the task as the stream does.
+            {"message": head_task(message), "mode": "chat"},
             run_id=run_id,
             model=_parent_model,
         )

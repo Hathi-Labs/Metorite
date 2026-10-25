@@ -15,7 +15,7 @@ kept no correction. This module keeps them:
   list outranks anything said earlier in the chat, the assistant's own
   earlier answers included.
 * Each delegated task carries the list in its head block
-  (``acb_skills.handoff.task_with_member_words``).
+  (``acb_skills.handoff.head_task``, the one call of every delegation site).
 
 THE GUARD. A keep stores a text only when the member TYPED it in this turn,
 as whole sentences, with case and spaces ignored (:func:`said_by_member`).

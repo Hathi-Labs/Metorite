@@ -359,6 +359,29 @@ class TestTheBlocks:
         assert once.startswith(h.CONSTRAINTS_MARK)
         assert h.task_with_member_words(once, ["more"], [ITEM]) == once
 
+    def test_the_tier_question_reads_the_task_under_the_list(self) -> None:
+        assert h.task_of(h.task_with_member_words("List the parts.", [], [ITEM])) == (
+            "List the parts.")
+
+    def test_head_task_carries_the_list_at_every_delegation_site(self, chat) -> None:
+        """``head_task`` is the one call of the streaming seam and the batch
+        sites (``call_agent`` and the rest), so each one gets the list."""
+        _keep(ITEM)
+        bind_artifact_context(**OPEN_CTX, **{h.MEMBER_TURNS: [SAID]})
+        task = h.head_task("List the parts.")
+        assert task.index(h.HEAD_MARK) < task.index(h.CONSTRAINTS_MARK)
+        assert f"- {ITEM}\n" in task and h.task_of(task) == "List the parts."
+
+    def test_head_task_with_the_flag_off_is_the_oa1_head(self, tenant, store) -> None:
+        bind_artifact_context(**OPEN_CTX, **{h.MEMBER_TURNS: [SAID]})
+        try:
+            asyncio.run(cc.save_constraints([ITEM]))
+            task = h.head_task("List the parts.")
+        finally:
+            bind_artifact_context()
+        assert task == h.task_with_member_words("List the parts.", [SAID])
+        assert h.CONSTRAINTS_MARK not in task
+
 
 # ── the orchestrator's tools and persona ────────────────────────────────────
 
