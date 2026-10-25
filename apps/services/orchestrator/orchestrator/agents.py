@@ -207,8 +207,9 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         # search, about 8.7 s, before the work began (knowledge_base.md §8.2).
         "   A request to change something in one app, such as an email to write\n"
         "   or send, a task to make or a record to update, is work in that app.\n"
-        "   Give it to the app's specialist at once, with no search first. The\n"
-        "   specialist finds the email, the contact or the record itself.\n",
+        "   Give it at once to that app's specialist, or to your own tool for it,\n"
+        "   with no search first. The specialist or the tool finds the email, the\n"
+        "   contact or the record itself.\n",
     ),
     (
         "5. Every factual claim from retrieval must cite [entity:uuid] tokens exactly as returned.\n",

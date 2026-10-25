@@ -51,8 +51,9 @@ GROUNDING = (
     # Chat speed (2026-10-25): a write in one app delegates at once.
     "   A request to change something in one app, such as an email to write\n"
     "   or send, a task to make or a record to update, is work in that app.\n"
-    "   Give it to the app's specialist at once, with no search first. The\n"
-    "   specialist finds the email, the contact or the record itself.\n"
+    "   Give it at once to that app's specialist, or to your own tool for it,\n"
+    "   with no search first. The specialist or the tool finds the email, the\n"
+    "   contact or the record itself.\n"
 )
 
 

@@ -892,9 +892,13 @@ The orchestrator's persona carries one paragraph for Knowledge:
 > returns, and cite each item you used. When it returns nothing, say that
 > the company's records hold nothing on it. A request to change something
 > in one app, such as an email to write or send, a task to make or a record
-> to update, is work in that app. Give it to the app's specialist at once,
-> with no search first. The specialist finds the email, the contact or the
-> record itself.
+> to update, is work in that app. Give it at once to that app's specialist,
+> or to your own tool for it, with no search first. The specialist or the
+> tool finds the email, the contact or the record itself.
+
+"Your own tool" covers a write that the orchestrator holds itself, such as
+`propose_page` and `propose_edit` for a Knowledge page (KB-5a). Once WS-67
+loads tool packs (OA-7), every app's writes are such tools.
 
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
