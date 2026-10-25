@@ -41,6 +41,8 @@ Run::
   ``test_r2_resume_refuses_what_it_may_not_take``.
 * A11. ``R`` ``resume_agent_run``: write no prompt (only the answer).
   ``test_r1_resume_hands_the_run_back_to_an_agent``.
+* A14. ``R`` ``resume_agent_run``: no clear of the session key.
+  ``test_r1_resume_hands_the_run_back_to_an_agent``.
 * A12. ``R`` ``person_may_end_sql``: no assignee arm.
   ``test_v7_can_act_is_the_rule_of_release`` and
   ``test_r3_an_assignee_and_an_admin_may_resume``.
@@ -579,6 +581,10 @@ class TestResume:
         proj = _project(w)
         task = _task(w, proj)
         rid = await _stalled(w, task)
+        # SW-7: the quiet session's key names nobody, and Resume clears it.
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_agent_runs SET session_key = :k"
+                           " WHERE id = CAST(:r AS uuid)"), {"k": "A" * 22, "r": rid})
         before = _task_state(w, task)
         key = _key()
         got = await _post(w, w.alice, f"/projects/agent-runs/{rid}/resume",
@@ -591,6 +597,7 @@ class TestResume:
         assert body["activity"]["type"] == "prompt"
         assert body["activity"]["content"]["resume"] is True
         assert body["activity"]["content"]["body"] == agent_runs.RESUME_BODY
+        assert body["run"]["session_key"] is None
         # The row leaves the list at once, before any tick.
         assert (await _list(w, w.alice, proj))["rows"] == []
         # The member's next session finds it with needs_agent=true.

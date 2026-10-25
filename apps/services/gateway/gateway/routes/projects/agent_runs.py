@@ -1912,6 +1912,9 @@ _OPEN_RECOVERY_SQL = (
     " LIMIT 1"
 )
 
+#: SW-7: Resume hands the run to the next session of its connection.
+_RESUME_KEY_SQL = "UPDATE pm_agent_runs SET session_key = NULL WHERE id = CAST(:rid AS uuid)"
+
 #: True when the task of the run is closed (``filters.task_closed_sql``).
 _RUN_TASK_CLOSED_SQL = (
     f"SELECT {task_closed_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
@@ -1972,6 +1975,12 @@ async def resume_agent_run(
                 db, run, user, kind="prompt", key=payload.idempotency_key,
                 body=RESUME_BODY, extra={"resume": True},
             )
+            # SW-7 (spec §12.5). The session that held the run went quiet past
+            # its lease, so its key names nobody. A run with no key is the own
+            # run of any session of its connection, so the next one adopts it.
+            # A person's prompt keeps the key (`_move_run`), so Resume clears
+            # it here, once, in the same transaction.
+            await db.execute(text(_RESUME_KEY_SQL), {"rid": run_id})
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         activity = written.activity if written is not None else replay
         out_activity = _activity_out(activity)
