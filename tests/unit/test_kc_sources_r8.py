@@ -53,6 +53,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
     promoted,
 )
+from tests.unit.test_email_purge_wiring import recorder  # noqa: F401
 from tests.unit.test_kb_pages_r8 import (  # noqa: F401
     CAPABILITY,
     _address,
@@ -607,6 +608,91 @@ async def test_a_lone_drive_grant_is_revoked_once(kc, app_engine) -> None:  # no
     await _ok(kc, ana, "DELETE", f"/knowledge/sources/{sid}")
     await _ok(kc, ana, "DELETE", f"/knowledge/sources/{sid}")
     assert kc.fakes[ana.email].revokes() == 1
+
+
+# ── The member purge takes the leaver's Drive (review P1) ───────────────────
+
+def _knowledge_rows(admin: Any, member: str) -> dict[str, Any]:
+    with admin.connect() as c:
+        conns = c.execute(text(
+            "SELECT status, credentials_encrypted FROM integration_connections "
+            "WHERE owning_app = 'knowledge' AND lower(member_email) = lower(:m)"),
+            {"m": member}).fetchall()
+        sources = c.execute(text(
+            "SELECT id, state FROM kb_sources WHERE lower(owner_email) = lower(:m)"),
+            {"m": member}).fetchall()
+        nodes = c.execute(text(
+            "SELECT count(*) FROM kb_source_nodes n JOIN kb_sources s ON s.id = n.source_id "
+            "WHERE lower(s.owner_email) = lower(:m)"), {"m": member}).scalar()
+    return {"conns": conns, "sources": sources, "nodes": nodes}
+
+
+async def test_a_purge_of_gmail_and_drive_on_one_account_revokes_once(
+    kc, app_engine, recorder,  # noqa: F811
+) -> None:
+    from tests.unit.test_email_purge_wiring import TOKEN as GMAIL_TOKEN
+    from tests.unit.test_email_purge_wiring import member_purge, seed_member, wipe
+
+    _assert_non_priv(app_engine)
+    _grant_both_to_app_role(kc.admin_engine)
+    keeper, leaver, stayer = _address("keeper"), _address("leaver"), _address("stayer")
+    for email, owner in ((keeper, True), (leaver, False), (stayer, False)):
+        seed_member(kc.admin_engine, kc.org_b, email, owner=owner)
+    shared = "leaver-one@kc1a-g.test"
+    m = _principal(leaver, kc.org_b)
+    s = _principal(stayer, kc.org_b)
+    a = _principal(_address("ana"), kc.org_a)
+    try:
+        await _connect(kc, m, email=shared, account_id="P1")
+        await _connect(kc, s, email="stayer-own@kc1a-g.test", account_id="P2")
+        await _connect(kc, a, email="ana-org-a@kc1a-g.test", account_id="P3")
+        with kc.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_accounts (user_id, provider, email_address, "
+                "credentials_encrypted, is_default, organization_id) VALUES "
+                "(:u, 'gmail', :e, 'blob-kc1a', true, CAST(:o AS uuid))"),
+                {"u": leaver, "e": shared, "o": kc.org_b})
+        assert _knowledge_rows(kc.admin_engine, leaver)["nodes"] == 6
+        await member_purge(kc, leaver.lower())
+        gone = _knowledge_rows(kc.admin_engine, leaver)
+        assert gone == {"conns": [], "sources": [], "nodes": 0}, gone
+        gmail_revokes = [e for e in recorder.events if e[0] == "revoke"]
+        assert gmail_revokes == [("revoke", GMAIL_TOKEN)], (
+            "the Gmail teardown did not revoke the leaver's grant, or revoked twice")
+        assert sum(f.revokes() for f in kc.fakes.values()) == 0, (
+            "one Google grant got a second revoke, or another grant got one")
+        # The other member of org B, on another Google account, is untouched.
+        kept = _knowledge_rows(kc.admin_engine, stayer)
+        assert [(r.status, r.credentials_encrypted is not None) for r in kept["conns"]] == [
+            ("connected", True)]
+        assert [r.state for r in kept["sources"]] == ["ready"] and kept["nodes"] == 6
+        # Org A is untouched.
+        other = _knowledge_rows(kc.admin_engine, a.email)
+        assert other["nodes"] == 6 and [r.state for r in other["sources"]] == ["ready"]
+    finally:
+        wipe(kc.admin_engine, keeper, leaver, stayer)
+
+
+async def test_a_purge_of_a_drive_only_member_revokes_its_grant_once(
+    kc, app_engine, recorder,  # noqa: F811
+) -> None:
+    from tests.unit.test_email_purge_wiring import member_purge, seed_member, wipe
+
+    _grant_both_to_app_role(kc.admin_engine)
+    keeper, leaver = _address("keeper"), _address("drive-only")
+    seed_member(kc.admin_engine, kc.org_b, keeper, owner=True)
+    seed_member(kc.admin_engine, kc.org_b, leaver)
+    m = _principal(leaver, kc.org_b)
+    try:
+        await _connect(kc, m, email="drive-only@kc1a-g.test", account_id="P4")
+        kc.current["member"] = m.email
+        await member_purge(kc, leaver.lower())
+        assert _knowledge_rows(kc.admin_engine, leaver) == {
+            "conns": [], "sources": [], "nodes": 0}
+        assert kc.fakes[m.email].revokes() == 1
+        assert [e for e in recorder.events if e[0] == "revoke"] == []
+    finally:
+        wipe(kc.admin_engine, keeper, leaver)
 
 
 # ── The migration replays ───────────────────────────────────────────────────
