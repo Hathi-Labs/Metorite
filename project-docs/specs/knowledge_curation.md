@@ -22,6 +22,17 @@ it revokes each free Google grant once (§19).
 questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
 
+**KC-3 BUILT 2026-10-25, dark** (branch `kc-3-sync`, migration 305,
+`KNOWLEDGE_SYNC` empty). The loop reads the Drive change feed every 15
+minutes for each ready source, and relists it slim once a day. It keeps
+`kb_source_nodes` current as metadata, and reads no text. KC-5 compares
+`content_hash` with its own hash.
+
+A discovery ends a live loop run of its source, so a consent never leaves a
+source in `discovering`. Two checks against a live Google account are open.
+The first is the HTTP code of a dead page token. The second is the order of
+the change feed on a real drive.
+
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
 and person resolvers, and the directory routes under the rule of §6.4.
@@ -1116,6 +1127,7 @@ node .claude/hooks/ste-lint.test.mjs
 
 # The fences each slice adds. Each exists from the slice named after it.
 uv run pytest tests/unit/test_kc_sources_read_only_scopes.py tests/unit/test_kb_sources_no_global_creds.py -q  # KC-1
+uv run pytest tests/unit/test_kb_sync_engine.py tests/unit/test_kb_sync_tenancy.py -q   # KC-3
 uv run pytest tests/unit/test_kc_document_visibility.py -q   # KC-4
 uv run pytest tests/unit/test_kc_entities.py -q              # KC-8a
 uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
@@ -1123,6 +1135,7 @@ uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
 # The R8 suites. A skip is not a pass.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_kc_sources_r8.py -p no:xdist -rs -q    # KC-1, KC-3
+uv run pytest tests/unit/test_kc_sync_r8.py -p no:xdist -rs -q       # KC-3
 uv run pytest tests/unit/test_kc_access_r8.py -p no:xdist -rs -q     # KC-4
 uv run pytest tests/unit/test_kc_entities_r8.py -p no:xdist -rs -q   # KC-8a
 uv run pytest tests/unit/test_kc_facts_r8.py -p no:xdist -rs -q      # KC-9, KC-10, KC-13
