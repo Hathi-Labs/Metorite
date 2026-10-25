@@ -255,6 +255,23 @@ SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
     "app, and add a link button.\n"
 ))
 
+#: What a run with the profile tools adds to its scope rule (WS-63 PZ-8). It
+#: states the one exception to "no change from WhatsApp": the member's own
+#: profile. Advisory, like ``SCOPE_RULE``: the profile write gate, not this
+#: text, keeps every other write out. The flag-off rule stays byte-for-byte.
+PROFILE_EXCEPTION_RULE = (
+    "One change needs no web app: the member's own profile. Save what they "
+    "say about themselves, how to address or answer them, an alias, or an "
+    "undo, with the profile tools. For a sensitive or address-like fact, "
+    "Metorite sends the Confirm buttons itself. No other change is allowed."
+)
+#: The channel limits win over the member's Answer length line. Advisory
+#: (R7): no test can read the model's choice, and the 4096-character split
+#: in ``split_reply`` is the hard limit.
+PROFILE_CHANNEL_RULE = (
+    "Keep the limits of this rule over any Answer length line."
+)
+
 #: What a run with documents on adds to its scope rule (WAC-12, §15).
 #: Advisory, like ``SCOPE_RULE``: ``whatsapp_ui`` checks every spec.
 DOCUMENTS_RULE = (
@@ -1471,6 +1488,13 @@ def build_payload(message: str, history: list[dict[str, str]],
             else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
     if native and documents:
         rule = f"{rule}\n{DOCUMENTS_RULE}"
+    from acb_common import assistant_profile
+    if assistant_profile.enabled():
+        # WS-63 PZ-8. With writes off the run holds no profile write tool,
+        # so only the channel sentence is added.
+        if native and writes:
+            rule = f"{rule}\n{PROFILE_EXCEPTION_RULE}"
+        rule = f"{rule}\n{PROFILE_CHANNEL_RULE}"
     payload: dict[str, Any] = {
         "mode": "chat",
         "message": message,
