@@ -913,11 +913,15 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
     :func:`_verified_run_member`, both from the run boundary and never from
     the payload or the model (R5).
 
-    The member must also be the identity the tools act as, the run's memory
-    id. In a shared room the chat route binds the member who typed as the
-    verified member, and the memory id is ``room:<thread>``. That member's
-    spaces must not reach the room, so a room gets no block (review of
-    KB-4a, P1-a).
+    The run boundary must also say the room is solo (:data:`_RUN_SOLO_ROOM`,
+    WS-63 PZ-2, fails closed). In a shared room the chat route binds the
+    member who typed as the verified member. That member's spaces must not
+    reach the room, so a room gets no block (review of KB-4a, P1-a).
+
+    H-406: the memory id is NOT the signal. ``_bind_run_identity`` can rebind
+    it from ``payload.user_email``, a client field, so a member in a shared
+    room could send their own email and match. Fence:
+    ``tests/unit/test_knowledge_index_block.py``.
     """
     if agent_name != _KB_INDEX_AGENT:
         return None
@@ -931,13 +935,7 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
     member = _verified_run_member()
     if not org or not member:
         return None
-    try:
-        from acb_skills.memory_tools import _get_memory_user_id
-
-        acting = str(_get_memory_user_id() or "").strip().lower()
-    except Exception:
-        return None
-    if acting != member:
+    if _RUN_SOLO_ROOM.get() is not True:
         return None
     if not _knowledge_org_allowed(org):
         return None
@@ -1002,21 +1000,16 @@ _EMAIL_CTX_AGENT = "orchestrator"
 def _email_ctx_member() -> str:
     """The member whose mail the email context may name, or ``""``.
 
-    The run's verified member, and only when the run's tools act as that
-    member. A shared room acts as ``room:<thread>``, so it gets no mailbox
-    list and no working set (the KB-4a rule, P1-a). From the run boundary,
-    never from the payload or the model (R5).
+    The run's verified member, and only when the run boundary says the room
+    is solo (:data:`_RUN_SOLO_ROOM`, fails closed). A shared room gets no
+    mailbox list and no working set (the KB-4a rule, P1-a). From the run
+    boundary, never from the payload or the model (R5). The memory id is not
+    the signal, because a client field can rebind it (H-406).
     """
     member = _verified_run_member()
-    if not member:
+    if not member or _RUN_SOLO_ROOM.get() is not True:
         return ""
-    try:
-        from acb_skills.memory_tools import _get_memory_user_id
-
-        acting = str(_get_memory_user_id() or "").strip().lower()
-    except Exception:
-        return ""
-    return member if acting == member else ""
+    return member
 
 
 async def _prime_email_context(agent_name: str) -> None:

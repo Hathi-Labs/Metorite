@@ -8,15 +8,16 @@ reversed Q4 that day. P1 is BUILT (2026-10-06, branch
 reaches the model as text, and an unknown argument is refused by name.
 P3 is BUILT (2026-10-06): `evals/projects_ops/` runs PO-1 to PO-7, and the
 scripted run passes six tasks in six, uncovered and covered. PO-3 is
-`xfail` until P8 and P9. P4 is BUILT (2026-10-06): the field fence F2 holds
+`xfail` until P8 (P9 is built). P4 is BUILT (2026-10-06): the field fence F2 holds
 each of the 313 request fields of a mapped route to one decision. P5 is
 BUILT (2026-10-06): the UI action fence F3 holds each of the 104 Projects
 UI client methods to one decision. P6 is BUILT (2026-10-06). The chat now
 sets each task field of the screen (G5 to G9). P7 is BUILT (2026-10-06).
 The chat sets the project and personal fields of the screen (G12 to G18),
 and a guessed day is the member's own today. P13 is BUILT (2026-10-06):
-`create_tasks` makes several new tasks in one project as one batch. P8 and
-P9 are open. P10 is BUILT (2026-10-23, as WS-64 OP-6c): `attach_to_task`
+`create_tasks` makes several new tasks in one project as one batch. P9 is BUILT
+(2026-10-25): the chat sends `source` and `source_ref`, and a task from a
+mail shows the mailbox line on its card. P8 is open. P10 is BUILT (2026-10-23, as WS-64 OP-6c): `attach_to_task`
 sends a chat file to a task.** Written
 2026-10-05.
 
@@ -215,8 +216,8 @@ the chat does part of it, or does it in a way that fails in practice.
 | G7 | Custom field values on a task | `CustomFieldValues.tsx:69` | `PATCH /projects/tasks/{id}` `custom_fields` | None | Closed by P6: `fields` on `create_task` and `update_task` | P6 |
 | G8 | Required fields of the target project on a move | `PromoteFields.tsx:142` | `MoveTask.custom_fields` (`tasks.py:126-143`) | `move_task` does not send them | Closed by P6: `move_task.fields` | P6 |
 | G9 | Close or archive the subtasks too (D-PM-38) | Asked once in the panel and the bulk bar | `include_subtasks` on `PATCH`, move and bulk (`tasks.py:467`, `bulk.py:122`) | Never sent | Closed by P6: `include_subtasks` on five tools | P6 |
-| G10 | Where a task came from | Set by the capture paths | `TaskIn.source` (`core.py:370`: `manual`, `import`, `email`, `agent`, `automation`) | Never set | Partial | P9 |
-| G11 | Intake with its source and reference | Email capture in the Tasks app | `IntakeIn.source`, `source_ref` (`intake.py:99-100`) | `capture_intake` sends neither | Partial | P9 |
+| G10 | Where a task came from | Set by the capture paths | `TaskIn.source` (`core.py:370`: `manual`, `import`, `email`, `agent`, `automation`) | Never set | Closed by P9: `source` on `create_task` and on each row of `create_tasks`. A node takes none (exempt) | P9 |
+| G11 | Intake with its source and reference | Email capture in the Tasks app | `IntakeIn.source`, `source_ref` (`intake.py:99-100`) | `capture_intake` sends neither | Closed by P9: `source` and `source_ref` on `capture_intake` | P9 |
 | G12 | Project settings: icon, task prefix, timezone, lifecycle months | `saveSpaceSettings` (`page.tsx:1271`), `LifecyclePolicy.tsx:53` | `PATCH /projects/nodes/{id}` (`ProjectIn`, `core.py:615-634`) | `update_project` sends name, description, status and lead only | Closed by P7: `icon`, `icon_slot`, the two months and `timezone` on `update_project`. No screen sets the prefix, so it is exempt | P7 |
 | G13 | Order of a node among its siblings | Tree drag (`page.tsx:3075-3091`) | `POST …/nodes/{id}/move` `position` (`tree.py:1015`) | `move_project` re-parents only | Closed by P7: `move_project.place` | P7 |
 | G14 | A saved view with its filters | `page.tsx:2188` | `ViewIn.config` (`views.py:59-63`) | `save_view` sends name and type only | Closed by P7: `filters`, `group_by` and `subtasks` on `save_view` | P7 |
@@ -929,8 +930,9 @@ does.
 | **PO-8** | "Add a bug to Launch that starts next Monday, for the customer Acme" (P6) | One card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. No other write. No setting in the title or the description. The answer names Acme |
 | **PO-9** | "Save a board of the overdue work in Launch, grouped by owner" (P7) | One card. One `POST …/views` on Launch, a board, with `filters` `{"overdue": true}` and `group_by` assignee. The route's own normaliser keeps every key. No other write. The answer names the view |
 
-PO-3 needs P8 (subprojects in a plan) and P9. Until both ship, PO-3 is
-`xfail` with the slice ids, and the runner reports it as such.
+PO-3 needs P8 (subprojects in a plan) and P9. P9 is built (2026-10-25).
+Until P8 ships, PO-3 is `xfail` with the slice id, and the runner reports it
+as such.
 
 ### 11.3 How it runs
 
@@ -969,7 +971,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P6 · Task fields** ✅ BUILT 2026-10-06 | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
 | **P7 · Project and personal fields** ✅ BUILT 2026-10-06 | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
-| **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
+| **P9 · Context from email and CRM** ✅ BUILT 2026-10-25 | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
 | **P10 · Attach a chat file to a task** ✅ BUILT 2026-10-23 | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
 | **P11 · Filter the board** ✅ BUILT 2026-10-22 | `show_view`: the canvas, a saved view by name, the filters in `save_view`'s words, `group_by` and `sub_group_by`. It writes nothing and shows no card. The page reads the filters through `fromConfig`. Fences: `test_projects_show_view.py`, `chatView.test.ts` | G22 | AGENT-SAFE. The owner reversed Q4 on 2026-10-22 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
@@ -1339,6 +1341,29 @@ as the answer. The slices build to these answers.
     - `GET /projects/my/today` answers `valid: false` for a saved zone that
       is not valid. The card then says "UTC, no valid zone saved".
     - The working trail of the chat names `my_areas` (`toolSteps.ts`).
+- 2026-10-25 — P9 is built (H-382). These facts are as built:
+  - `create_task` and each row of `create_tasks` take `source` (`manual`,
+    `import`, `email`, `agent`, `automation`). `capture_intake` takes
+    `source` and `source_ref`. Both rows moved from `FIELD_PLANNED` to
+    `SENDS`. G10 and G11 left `FIELD_GAPS`, so `FIELD_PLANNED` holds the
+    G23 rows only.
+  - G10 on `POST /projects/nodes`: decided as exempt. No space or project
+    comes from a mail, and the route's `agent` value names no origin that
+    the chat can claim.
+  - A card for a task with `source` email starts with a `mailbox` line:
+    "This text leaves your mailbox. Everyone who can see <project> will see
+    it." A batch card and an intake card do the same.
+  - Q2 holds: `pm_tasks` gains no `source_ref`, and no migration is added.
+    The "From email: <subject>, <date>" line goes in the task description,
+    so the card shows it.
+  - The instructions gain a section on work from another app (§9.4). The
+    eval gains the stub email agent: a `call_agent` to `email-assistant`
+    answers with a fixed synthetic mail, and any other agent is refused.
+  - `tests/unit/test_projects_context_sources.py` holds the vocabulary equal
+    to the route's, the mailbox line, the intake words and the rule that no
+    `save_memory` call carries the callee's text.
+  - PO-3 stays `xfail`, now for P8 only. Its recorded sequence runs in the
+    test file with the `xfail` removed.
 - 2026-10-06 — P13 is built. The cause is a production run of the same
   day. A member asked for nine tasks from an email, in a project that
   existed. No tool took several top-level tasks. So the model called

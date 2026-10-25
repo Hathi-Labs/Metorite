@@ -307,6 +307,44 @@ def test_real_text_still_passes(text: str) -> None:
     assert rcard.lookalike_words(text) == []
 
 
+@pytest.mark.parametrize("text", [
+    "N\u01d0 h\u01ce\u006f, l\u01dc s\u0101",          # Pinyin "Nǐ hǎo, lǜ sā"
+    "Az\u0259rbaycan, \u018fli",                          # Azerbaijani "Azərbaycan, Əli"
+], ids=["pinyin", "azerbaijani"])
+def test_pinyin_and_azerbaijani_pass(text: str) -> None:
+    """H-410: a Latin Extended-B or IPA letter with no ASCII twin is real
+    text. Mutation: drop ``_REAL_EXTENDED`` and each word is named."""
+    assert rcard.lookalike_words(text) == []
+    assert rcard.lookalike_refusal({"text": text}) is None
+
+
+def test_the_handoff_check_of_h410() -> None:
+    assert rcard.lookalike_words("N\u01d0 h\u01ceo") == []
+    assert rcard.lookalike_words("Az\u0259rbaycan") == []
+
+
+@pytest.mark.parametrize("letter", [
+    "\u0251",   # IPA alpha, looks like a
+    "\u0261",   # IPA script g
+    "\u0269",   # IPA iota, looks like i
+    "\u0280",   # small capital R
+    "\u026a",   # small capital I
+    "\u01c0",   # dental click, looks like l
+])
+def test_a_twin_of_extended_b_or_ipa_stays_named(letter: str) -> None:
+    """H-410: the new letters do not open the two blocks. A twin, and each
+    letter of the blocks that ``_REAL_EXTENDED`` does not name, stays odd."""
+    [hit] = rcard.lookalike_words(f"p{letter}y")
+    assert hit.kind == "odd" and hit.letter == letter
+
+
+def test_no_entry_of_the_one_table_is_a_real_extended_letter() -> None:
+    """H-410: ``_REAL_EXTENDED`` never lets a ``_CONFUSABLE`` entry pass."""
+    for lo, hi in rcard._REAL_EXTENDED:
+        for cp in range(lo, hi + 1):
+            assert hcard.confusable_of(chr(cp)) == "", hex(cp)
+
+
 def test_the_new_lookalikes_join_the_one_table() -> None:
     for ch, like in (("\u0251", "a"), ("\u0261", "g"), ("\u0131", "i"), ("\u01c0", "l"),
                      ("\u217c", "l")):
