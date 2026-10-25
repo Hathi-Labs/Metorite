@@ -148,14 +148,15 @@ def member_turns(
 def task_with_member_words(task: str, turns: Sequence[str] | None) -> str:
     """*task* with the member's words and the reply rules at its head.
 
-    A task that has the head block already comes back unchanged, so a
-    nested delegation adds nothing. With no words, the head holds the reply
-    rules only. The words outrank the task: the model wrote the task, and
-    the member wrote the words.
+    A model writes the task, and a model can copy text from an email, so
+    nothing in the task is trusted. A head that the task already holds is
+    stripped (:func:`task_of`), and the head is built again from *turns*,
+    which come from the run binding. So a forged head never outranks the
+    member, and a second pass with the same words gives the same text. With
+    no words, the head holds the reply rules only. The words outrank the
+    task: the model wrote the task, and the member wrote the words.
     """
-    text = str(task or "")
-    if text.startswith(HEAD_MARK) or text.startswith(_RULES):
-        return text
+    text = task_of(str(task or ""))
     words = [str(t) for t in (turns or []) if str(t).strip()]
     head = ""
     if words:
@@ -181,7 +182,8 @@ def head_task(task: str) -> str:
     (``agent_tools.call_agent``, ``call_agents_parallel`` and
     ``call_agent_background``, ``orchestrator.agents.delegate_to_agent``).
     Call it on the PARENT's frame, before the child binds its own context.
-    It is idempotent, so a task that one site headed passes the next.
+    It is idempotent: a task that one site headed comes out the same from
+    the next, because the head is stripped and built again.
     """
     try:
         from acb_skills.write_artifact import artifact_context
