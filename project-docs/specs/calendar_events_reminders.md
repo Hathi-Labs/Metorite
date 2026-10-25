@@ -282,19 +282,23 @@ Index `reminders (organization_id, state, fire_at)` and
 ### 5.3 The states
 
 ```
-scheduled ──fire──▶ due ──answer──▶ done | dropped | promoted
+scheduled ──fire──▶ due ──answer──▶ done | dropped
     ▲                │
     │                ├─check back (once)─▶ due (next_check_at = the brief)
     └──reschedule────┤
-                     └─limit reached───▶ unconfirmed ──answer──▶ done | dropped | promoted | scheduled
+                     └─limit reached───▶ unconfirmed ──answer──▶ done | dropped | scheduled
 ```
+
+A promote is an answer. It ends in state `done` with `resolution` set to
+`promoted`. So the state CHECK holds six values: `scheduled`, `due`,
+`unconfirmed`, `done`, `dropped` and `cancelled`.
 
 | State | Meaning | Open? |
 |---|---|---|
 | `scheduled` | Waits for `fire_at` | Yes |
 | `due` | Fired, and waits for the member | Yes |
 | `unconfirmed` | Metorite stopped chasing it. It shows in the Unconfirmed list | Yes |
-| `done`, `dropped` | The member closed it, or evidence did (`resolution` says which) | No |
+| `done`, `dropped` | The member closed it, or evidence did. `resolution` says which: `done`, `evidence` or `promoted` for state `done`, and `dropped` for state `dropped` | No |
 | `cancelled` | The condition of a conditional reminder cleared (RM-7) | No |
 
 A `notice` reminder goes from `due` to `done` when the member opens it. Every
@@ -341,7 +345,12 @@ A `notice` reminder has step 1 only.
 
 "Later" or a named time snoozes it to that time. It adds 1 to `snoozes`.
 "Make it a task" makes a private task in the member's personal project. It
-sets `promoted_task_id` and ends the reminder as `promoted`.
+sets `promoted_task_id`, and ends the reminder in state `done` with
+`resolution` `promoted`.
+
+**Who counts what.** Every move that the member asks for adds 1 to
+`snoozes`: a snooze, a named time and "Not yet". Only a move that Metorite
+makes with no answer adds 1 to `cycles`. The give-up limit reads `cycles`.
 
 **Words.** The check-back names the thing and gives every exit in one line.
 Each try uses different words. No guilt, and no "you missed".
@@ -417,8 +426,16 @@ AI about what to do next."
 
 ### 5.8 The chat tools
 
-The tools go into `skill_projects` beside `create_personal_task`, so
-`test_projects_chat_coverage.py` maps each one to its route.
+**The routes** live in a new module, `routes/projects/reminders.py`, under
+`/projects/my/reminders`. The Calendar already reads `/projects/my/calendar`,
+and the promote helpers are in `routes/projects/personal.py`. The
+`/projects` router gives the gate, `feature:projects`, as it does for the
+Calendar read. No second gate applies.
+
+The tools go into `skill_projects` beside `create_personal_task`.
+`test_projects_chat_coverage.py` walks the `/projects` router, so each new
+route needs a manifest row in `skill_projects/manifest.py` in the PR that
+adds the route. RM-1 adds each row as a planned tool. RM-3 makes it real.
 
 | Tool | Does | Confirm |
 |---|---|---|
@@ -460,8 +477,15 @@ and its item 5 (for reminder pushes, D113.4).
   `notificationclick` it focuses an open Metorite window and navigates it,
   or opens a new one at the payload's `url`.
 - **Every notification.** Push is the channel for every card that Reach
-  delivers (RE-9), and for S7's two chat events. The member picks the main
-  channel in Settings → Notifications (RE-7).
+  delivers (RE-9), and for S7's two chat events.
+- **Where the member turns it on.** A Notifications section on My Profile
+  (`/people/me`), beside the Reach section. It adds no pane and no nav
+  entry. RE-7 later adds the choice of the main channel to that section.
+- **One browser, several accounts.** The account switcher lets one browser
+  hold several accounts. A reminder title of account A can then show while
+  account B is in use. RE-9 must settle this before a reminder push holds
+  text. The default: the payload names the org, and "Hide details" covers a
+  shared device.
 
 ### 5.10 What the other docs gain
 
@@ -648,10 +672,10 @@ Every flag is OFF by default. Off gives today's behaviour.
 | Flag | Where | Ticket | Off means |
 |---|---|---|---|
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
-| `CALENDAR_REMINDERS` and `NEXT_PUBLIC_CALENDAR_REMINDERS` | Both | RM-1 to RM-5 | No reminder routes, no loop, no cards, no tools, no pins. `/version` reports a mismatch |
+| `CALENDAR_REMINDERS` and `NEXT_PUBLIC_CALENDAR_REMINDERS` | Both | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
 | `WEB_PUSH_ENABLED` and `NEXT_PUBLIC_WEB_PUSH` | Both | PN-1, RE-9 | No service worker, no toggle, no push. 🔴 Owner flip for a real member in production |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
-| `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` reports a mismatch, as for `TASKS_LENS` |
+| `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
 | `CALENDAR_SYNC_WRITE` | Gateway | CE-11 | No write-out. 🔴 Owner flip |
 
@@ -690,11 +714,11 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | Ticket | Order | Scope | Done when | Fence (R7) |
 |---|---|---|---|---|
 | **RM-0** The spec, D113 and the board row | First | This section, §5, D113, WS-66, INDEX | The spec-auditor gives GO for PN-1 and RM-1 | — |
-| **PN-1** The push platform (S7's transport) | Now, beside RM-1 | The VAPID pair through `scripts/secrets.sh`. The table `push_subscriptions` (S7 item 6). `GET /push/public-key`, `POST` and `DELETE /push/subscriptions`, `POST /push/test`. One sender module, with `pywebpush`, that deletes a subscription on 404 or 410. `public/sw.js` (§5.9). The toggle and the iOS steps in My Profile → Notifications. Sign-out deletes the device's row | A test push reaches an installed iPhone app and an Android Chrome. No prompt shows without a tap. Org B reads no subscription of org A. A 410 deletes the row | `tests/unit/test_push_subscriptions.py` (R8, two orgs) and `src/lib/push.test.ts` |
-| **RM-1** The store and the API | Now, beside PN-1 | The two tables of §5.2. `GET`, `POST`, `PATCH` on `/calendar/reminders`, and `POST /calendar/reminders/{id}/resolve` (done, drop, promote), `/snooze` and `/reschedule`. The ledger row in the same transaction. The Unconfirmed list read | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members) |
+| **PN-1** The push platform (S7's transport) | Now, beside RM-1 | §10.2 | The agent proves: no prompt shows without a tap, org B reads no subscription of org A, a 410 deletes the row, and a sign-out deletes the row of that device. 🔴 The owner checks, through a HANDOFF entry on dev.metorite.com: a test push reaches an installed iPhone app and Android Chrome | `tests/unit/test_push_subscriptions.py` (R8, two orgs), `src/lib/push.test.ts`, `src/proxy.test.ts` |
+| **RM-1** The store and the API | Now, beside PN-1 | §10.3 | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members), `test_projects_chat_coverage.py` |
 | **RM-2** The loop and the smart slot | After RM-1 | §5.4 and §5.5. The three card kinds in `feed.py` and in `REACH_CLASS`. The D113.3 exception in the Reach budget | A reminder for 15:00 fires at 15:00, and its check-back comes at 16:00. No answer moves it to the brief, then to one new slot. After 2 cycles it is `unconfirmed`. No step 2 to 5 lands in quiet hours. Two workers never fire one row twice | `tests/unit/test_reminder_loop.py` (R8, frozen clock), `tests/unit/test_reminder_slot.py`, `test_reach_plan.py` |
 | **RM-3** The chat tools | After RM-1 | §5.8 in `skill_projects`. The `set-reminder` job in `routes/shell/intent.py` and `src/lib/shell/registry.ts`. `capture` stops taking "remind me" | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `test_shell_intent.py`, `tests/unit/test_reminder_tools.py` |
-| **RE-9** Push as a Reach channel | After PN-1, RM-2 | `proactive_reach.md` RE-9 on the PN-1 sender. The reminder payload of D113.4 and "Hide details on the lock screen" | A `reminder_due` card reaches the device within 90 s of `fire_at`. A hidden-details member gets no title in the payload | `test_reach_plan.py` and `tests/unit/test_reach_push.py` |
+| **RE-9** Push as a Reach channel | After PN-1, RM-2 | `proactive_reach.md` RE-9 on the PN-1 sender. The reminder payload of D113.4 and "Hide details on the lock screen". Settle the case of one browser with several accounts (§5.9) first | A `reminder_due` card reaches the device within 90 s of `fire_at`. A hidden-details member gets no title in the payload | `test_reach_plan.py` and `tests/unit/test_reach_push.py` |
 | **RM-4** A tap opens the chat | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.tsx` (new) and `tests/unit/test_reminder_context.py` |
 | **RM-5** The Calendar UI | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. The bell glyph of §6.5 | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at` | Vitest for the pin and the panel, the conformance suite, and a visual review |
 | **RM-6** Closed by evidence | Later | The linked task goes to done, or the member sends an email on the linked thread. The reminder closes and says so | A done task closes its reminder, with an `evidence` ledger row | `test_reminder_evidence.py` |
@@ -708,8 +732,84 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 
 ```
 uv run pytest tests/unit/test_push_subscriptions.py tests/unit/test_reminders_r8.py tests/unit/test_reminder_loop.py tests/unit/test_reminder_slot.py tests/unit/test_reminder_tools.py tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/push.test.ts src/app/manifest.test.ts
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/push.test.ts src/app/manifest.test.ts src/proxy.test.ts src/lib/publicFlags.test.ts
 ```
+
+Add `test_tenancy_boundary.py`, `test_migration_prefixes.py`,
+`test_secrets_drop.py` and `test_projects_chat_coverage.py` to the pytest
+line for the ticket that touches each.
+
+**Migration numbers (R1).** PN-1 and RM-1 each add one migration. Take the
+next free number at build time and scan the origin branches again before
+merge. The second ticket to merge renumbers. A test finds its migration by
+content, as `test_email_send_later.py` does. The fence is
+`test_migration_prefixes.py`.
+
+### 10.2 PN-1 scope (narrowed by the spec-auditor, 2026-10-25)
+
+1. **The migration.** `push_subscriptions` with the W3C fields: `endpoint`,
+   `p256dh`, `auth`, `expiration_time`, plus `member_email`, `user_agent`,
+   `created_at` and `last_success_at`. Copy the RLS block of
+   `290_email_scheduled_sends.sql`. The unique key is `(organization_id,
+   member_email, endpoint)`. Never key on `endpoint` alone, because an
+   insert in org B then fails on a row that org B cannot see. Regenerate
+   `infra/postgres/generated/` with `scripts/gen_tenant_migration.py`, and add
+   the table to `test_tenant_coverage.py`.
+2. **The settings.** `web_push_enabled`, `vapid_public_key`,
+   `vapid_private_key` and `vapid_subject` in
+   `packages/acb_common/acb_common/settings.py`. One module reads them, as
+   `gateway/reach/flags.py` does. `/version` carries `web_push`.
+3. **The router.** `/push`, gated on `feature:chat`, as `/reach` is. The
+   routes are `GET /push/public-key`, `POST` and `DELETE /push/subscriptions`
+   and `POST /push/test`. The member and the org come from the session only.
+   With the flag off, each route answers 404.
+4. **The sender.** One module on `pywebpush`, which is a new dependency. Its
+   send blocks, so it runs in `asyncio.to_thread`. On a 404 or a 410, it
+   deletes the row in the same tenant session. The test payload holds a
+   fixed title and no content (S7 item 5).
+5. **The service worker.** `public/sw.js` at scope `/` (§5.9). Add `/sw.js`
+   to `PUBLIC_PAGES` in `src/proxy.ts`, with a `proxy.test.ts` case.
+   Otherwise a signed-out update fetch of the script gets a redirect.
+6. **The BFF.** `src/app/api/push/[...path]/route.ts`, a copy of
+   `api/tasks/[...path]/route.ts` with `refuseUnsafePath`.
+7. **The UI.** `src/lib/push.ts` and a `NotificationsSection` on
+   `app/people/me/page.tsx`, beside `ReachSection`. The prompt shows only
+   after a tap on the toggle. In a Safari tab on iOS, the section shows the
+   three Home Screen steps.
+8. **Sign-out.** Delete the row and unsubscribe before the session ends, on
+   all four paths: `signOutThis` and `signOutAll` in `lib/accountSwitch.ts`,
+   `components/Sidebar.tsx`, and `app/signup/SignUpForm.tsx`.
+9. **The keys.** The agent makes one P-256 pair. Add `VAPID_*` to
+   `app-env.allowed_keys` in `deploy/secrets/manifest.json`. Push to staging
+   first (`metorite-dev`), and report the act with its evidence (CLAUDE.md
+   §3a rule 2).
+10. **Out of scope.** The device check (the owner's HANDOFF entry), the
+    production flip, S7's two chat events, and RE-9.
+
+### 10.3 RM-1 scope (narrowed by the spec-auditor, 2026-10-25)
+
+1. **The migration.** `reminders` and `reminder_events` of §5.2, with the
+   CHECK lists of §5.2 and §5.3 and the three indexes. Copy the RLS block of
+   migration 290, and regenerate `generated/`.
+2. **The module.** `routes/projects/reminders.py`, mounted at
+   `/projects/my/reminders` (§5.8). The routes are `GET` (the list, by state,
+   which also serves Unconfirmed), `POST`, `PATCH /{id}`, `POST
+   /{id}/resolve` (done, drop, promote), `POST /{id}/snooze` and `POST
+   /{id}/reschedule`.
+3. **The member.** `member_email` comes from `actor(user).lower()`, as in
+   `routes/projects/core.py`. Every query also filters on `member_email`,
+   because RLS covers the org only.
+4. **One transaction.** Each change writes its ledger row in the same
+   `async with _tenant_session() as db:` block.
+5. **Time.** Refuse a time with no offset. `/reschedule` takes a named time
+   only. The `smart` slot is RM-2.
+6. **Promote.** Call `ensure_personal_project`, `load_default_status` and
+   `create_personal_task` from `personal.py` in that one session. The
+   `capture` route is the model.
+7. **The manifest.** One row for each new route in
+   `skill_projects/manifest.py`, as a planned tool, in this PR.
+8. **The flag.** With `CALENDAR_REMINDERS` off, each route answers 404.
+   `/version` carries `calendar_reminders`.
 
 ## 11. Owner questions
 
