@@ -218,6 +218,9 @@ function useOpenTask() {
   const router = useRouter();
   const pathname = usePathname();
   return (id: string) => {
+    // WS-64 OP-2b and OP-4: one rule (`chatTaskTarget`). With My work on, the
+    // task opens in the one Projects panel (`?task=`) from any page, because
+    // /tasks redirects there; the store focus is not raised for a route change.
     const target = chatTaskTarget(pathname, myWorkEnabled(), id);
     if (target.kind === "modal") {
       try {

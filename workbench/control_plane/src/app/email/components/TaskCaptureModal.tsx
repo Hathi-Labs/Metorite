@@ -2,6 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 import { useCallback, useEffect, useState } from "react";
 import {
   createEmailCapture, createReplyCommitment, detectReplyCommitment,
@@ -251,7 +252,7 @@ export function TaskCaptureModal({
                     <div className="text-foreground">
                       This email is already in My Tasks: &ldquo;{already.title}&rdquo;
                     </div>
-                    <a href="/tasks" className="text-primary font-medium hover:opacity-80">
+                    <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
                       Open My Tasks →
                     </a>
                   </div>

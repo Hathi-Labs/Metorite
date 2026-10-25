@@ -39,7 +39,7 @@ describe("myWorkEnabled", () => {
   });
 
   it("reads the literal member expression that Next inlines", () => {
-    const source = fs.readFileSync(path.join(__dirname, "myWork.ts"), "utf8");
+    const source = fs.readFileSync(path.join(__dirname, "myWorkFlag.ts"), "utf8");
     expect(source).toContain("process.env.NEXT_PUBLIC_PROJECTS_MY_WORK");
     expect(source).not.toMatch(/env: Record<string, string \| undefined> = process\.env/);
   });

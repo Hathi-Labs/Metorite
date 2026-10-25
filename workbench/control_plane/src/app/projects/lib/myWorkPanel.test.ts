@@ -132,7 +132,7 @@ describe("fix round 1", () => {
       href: "/projects?task=a%20b",
     });
     expect(chatTaskTarget("/projects", false, "t1").kind).toBe("modal");
-    expect(chatTaskTarget("/chat", true, "t1")).toEqual({ kind: "modal", href: "/tasks" });
+    expect(chatTaskTarget("/chat", true, "t1")).toEqual({ kind: "panel", href: "/projects?task=t1" });
     const cards = code(read(__dirname, "..", "..", "..", "components", "tasks", "TaskToolCards.tsx"));
     expect(cards).toMatch(/target\.kind === "modal"[\s\S]*?openFocus\(id\)/);
   });

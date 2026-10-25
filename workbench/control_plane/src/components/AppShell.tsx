@@ -83,6 +83,8 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
 import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
+import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
+import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
@@ -716,6 +718,7 @@ function MobileBottomNavInner({
   // stay in the page's own title row: the bell is self-anchored and has no
   // external open control, so a tab could not raise it.
   const isProjectsPage = pathname?.startsWith("/projects") ?? false;
+  const projectsTabs = projectsPhoneTabs(myWorkEnabled());
   // CRM (CRM-U10): the page names the lists of the bar and the one on screen,
   // because it knows the mode, the source's labels and the rows Zoho turned
   // off. It emits `cc-crm-nav`, and `null` when it unmounts.
@@ -835,21 +838,15 @@ function MobileBottomNavInner({
         )}
         {isProjectsPage && (
           <>
-            <TaskTab
-              onClick={() => dispatchNav("projects-tree")}
-              icon={themedIcon("FolderKanban")}
-              label="Projects"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("projects-views")}
-              icon={themedIcon("LayoutGrid")}
-              label="Views"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("projects-search")}
-              icon={themedIcon("Search")}
-              label="Search"
-            />
+            {projectsTabs.map((tab) => (
+              <TaskTab
+                key={tab.event}
+                onClick={() => dispatchNav(tab.event)}
+                icon={themedIcon(tab.icon)}
+                label={tab.label}
+                accent={tab.accent}
+              />
+            ))}
           </>
         )}
         {isCrmPage && crmNav && (
