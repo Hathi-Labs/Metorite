@@ -9,9 +9,9 @@ could save ``https://10.0.0.5/admin`` and make the gateway POST there with
 for ANY host. A push endpoint is not any host. It is one of the few push
 services that a browser uses, so this rule is narrower: ``https`` on port
 443, no user name, and a host of :data:`PUSH_SERVICE_HOSTS` or a subdomain of
-:data:`PUSH_SERVICE_SUFFIXES`. The big providers own those names, so a DNS
-answer of a private address is not a real risk here, and the sender refuses
-each redirect (``sender._session``).
+:data:`PUSH_SERVICE_SUFFIXES`. This rule runs first, and the guard second:
+``sender._post`` sends only through ``outbound_guard.request_https``, which
+refuses a private address and each redirect.
 
 An endpoint of another push service gets a 422 at subscribe, and the sender
 skips a stored one. To add a browser, add its push service host here, with

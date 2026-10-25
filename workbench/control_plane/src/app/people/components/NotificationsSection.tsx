@@ -38,15 +38,11 @@ import {
   sendTestPush,
   webPushOn,
 } from "@/lib/push";
-import { fetchAccounts } from "@/lib/accountSwitch";
+// The STRICT read: it throws on a failed read, and `push.ts` then keeps the
+// browser subscription, so one failed read never ends another account's pushes.
+import { otherAccountsStay } from "@/lib/accountSwitch";
 
 type Note = { ok: boolean; message: string } | null;
-
-/** True when another account of the switcher stays on this browser, so the
- * toggle keeps the browser subscription for it. */
-async function otherAccountsStay(): Promise<boolean> {
-  return (await fetchAccounts(false)).others.length > 0;
-}
 
 export function NotificationsSection() {
   const [view, setView] = useState<PushView>({ kind: "hidden" });

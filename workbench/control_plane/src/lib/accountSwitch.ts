@@ -179,6 +179,26 @@ export async function fetchAccounts(withOrgs: boolean): Promise<Accounts> {
   }
 }
 
+/**
+ * True when another account of the switcher stays on this browser (WS-66
+ * PN-1). Only then must the web push toggle keep the browser subscription,
+ * because every account shares that one subscription.
+ *
+ * ⚠️ **STRICT, unlike `fetchAccounts`.** That read answers `NO_ACCOUNTS` for
+ * every fault, and "no other account" makes the caller UNSUBSCRIBE, which
+ * would end the pushes of every other account after one failed read. So this
+ * read THROWS on a network fault, a non-2xx answer or a body that is not
+ * JSON, and the caller keeps the subscription. It answers false only for a
+ * good answer: the switcher is off, or it lists no other account.
+ */
+export async function otherAccountsStay(): Promise<boolean> {
+  const res = await fetch("/api/accounts", { cache: "no-store" });
+  if (!res.ok) throw new Error(`the accounts read answered ${res.status}`);
+  const body = (await res.json()) as Partial<Accounts> | null;
+  if (!body || body.enabled !== true) return false;
+  return Array.isArray(body.others) && body.others.length > 0;
+}
+
 async function act(action: string, body?: unknown): Promise<Response> {
   return fetch(`/api/accounts/${action}`, {
     method: "POST",
@@ -234,7 +254,10 @@ export async function addAccount(
   go: (url: string) => void = (u) => window.location.assign(u),
   callbackUrl?: string,
 ) {
-  const res = await act("stash");
+  // WS-66 PN-1: with 4 full slots the stash overwrites the oldest one. The
+  // server deletes that account's push row first, as that account, so it
+  // sends this browser's endpoint as `remove` does.
+  const res = await act("stash", await pushEndpointBody());
   if (!res.ok) return false;
   clearOrgScopedStorage();
   go(callbackUrl === undefined ? "/signin?add=1" : signInUrl(callbackUrl, true));
@@ -242,15 +265,21 @@ export async function addAccount(
 }
 
 /**
- * The body of a `remove`: the slot, and this browser's push endpoint when it
- * has one (WS-66 PN-1). The server deletes the removed account's row of that
- * endpoint AS that account, with the slot's own session, because after the
- * remove nothing can act for it any more. The subscription itself stays: the
- * active account still uses it.
+ * `{push_endpoint}` of this browser, or `{}` when it holds no subscription
+ * (WS-66 PN-1). A `remove` and a `stash` send it. Each of them can take a
+ * slot account off this browser, and the server then deletes that account's
+ * row of the endpoint AS that account, with the slot's own session, because
+ * after it nothing can act for that account any more. The subscription itself
+ * stays: the active account still uses it.
  */
-async function removeBody(slot: number): Promise<{ slot: number; push_endpoint?: string }> {
+async function pushEndpointBody(): Promise<{ push_endpoint?: string }> {
   const endpoint = await thisDeviceEndpoint().catch(() => null);
-  return endpoint ? { slot, push_endpoint: endpoint } : { slot };
+  return endpoint ? { push_endpoint: endpoint } : {};
+}
+
+/** The body of a `remove`: the slot, and `pushEndpointBody`. */
+async function removeBody(slot: number): Promise<{ slot: number; push_endpoint?: string }> {
+  return { slot, ...(await pushEndpointBody()) };
 }
 
 export async function removeAccount(slot: number): Promise<boolean> {

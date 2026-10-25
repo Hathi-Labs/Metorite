@@ -25,7 +25,14 @@ vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
 import { signOut } from "next-auth/react";
 
-import { removeAccount, resetLeaving, signOutAll, signOutThis } from "@/lib/accountSwitch";
+import {
+  addAccount,
+  otherAccountsStay,
+  removeAccount,
+  resetLeaving,
+  signOutAll,
+  signOutThis,
+} from "@/lib/accountSwitch";
 import {
   FORGET_TIMEOUT_MS,
   base64UrlToBytes,
@@ -268,6 +275,73 @@ describe("no permission prompt without a tap", () => {
     const alone = fakeBrowser({ subscribed: true });
     await disablePush(async () => false);
     expect(alone.order).toEqual(["fetch DELETE /api/push/subscriptions", "unsubscribe"]);
+  });
+
+  describe("the switcher's list, read strictly (otherAccountsStay, the real read)", () => {
+    /** The accounts read answers `accounts`, and every push call answers 200. */
+    const browserWhere = (accounts: () => Promise<Response>) =>
+      fakeBrowser({
+        subscribed: true,
+        fetchImpl: async (url) => (url === "/api/accounts" ? accounts() : Response.json({ ok: true })),
+      });
+
+    it.each([
+      ["a 401 of the read's second lock", async () => Response.json({ detail: "not signed in" }, { status: 401 })],
+      ["a 500", async () => new Response("boom", { status: 500 })],
+      ["a network fault", async (): Promise<Response> => {
+        throw new TypeError("Failed to fetch");
+      }],
+      ["a body that is not JSON", async () => new Response("<html>", { status: 200 })],
+    ])("a failed read (%s) keeps the subscription for the other accounts", async (_why, accounts) => {
+      const b = browserWhere(accounts);
+      await expect(otherAccountsStay()).rejects.toBeDefined();
+      await disablePush(otherAccountsStay);
+      // The read above, then the toggle: my row goes, and the read fails again.
+      expect(b.order).toEqual([
+        "fetch GET /api/accounts",
+        "fetch DELETE /api/push/subscriptions",
+        "fetch GET /api/accounts",
+      ]);
+      expect(b.unsubscribe).not.toHaveBeenCalled();
+    });
+
+    it("a refused enable keeps the subscription it made when the read fails", async () => {
+      const b = fakeBrowser({
+        fetchImpl: async (url) => {
+          if (url.endsWith("/public-key")) return Response.json({ public_key: KEY });
+          if (url === "/api/accounts") throw new TypeError("Failed to fetch");
+          return Response.json({ detail: "no" }, { status: 503 });
+        },
+      });
+      expect((await enablePush(otherAccountsStay)).ok).toBe(false);
+      expect(b.unsubscribe).not.toHaveBeenCalled();
+    });
+
+    it("a good read decides: no other account unsubscribes, another account keeps it", async () => {
+      const off = browserWhere(async () => Response.json({ enabled: false }));
+      expect(await otherAccountsStay()).toBe(false);
+      await disablePush(otherAccountsStay);
+      expect(off.unsubscribe).toHaveBeenCalled();
+      vi.unstubAllGlobals();
+      const alone = browserWhere(async () => Response.json({ enabled: true, active: { email: "a@one.test" }, others: [] }));
+      await disablePush(otherAccountsStay);
+      expect(alone.unsubscribe).toHaveBeenCalled();
+      vi.unstubAllGlobals();
+      const shared = browserWhere(async () =>
+        Response.json({ enabled: true, active: { email: "a@one.test" }, others: [{ slot: 1, email: "b@two.test" }] }),
+      );
+      expect(await otherAccountsStay()).toBe(true);
+      await disablePush(otherAccountsStay);
+      expect(shared.unsubscribe).not.toHaveBeenCalled();
+    });
+
+    it("the section passes the strict read, never the lenient fetchAccounts", () => {
+      const section = code(read("app/people/components/NotificationsSection.tsx"));
+      expect(section).toMatch(/import\s*\{\s*otherAccountsStay\s*\}\s*from\s*"@\/lib\/accountSwitch"/);
+      expect(section).not.toMatch(/fetchAccounts/);
+      expect(section).toContain("enablePush(otherAccountsStay)");
+      expect(section).toContain("disablePush(otherAccountsStay)");
+    });
   });
 
   it("in the source, only enablePush calls requestPermission, and only the tap calls enablePush", () => {
@@ -614,8 +688,12 @@ describe("a sign-out forgets this device first", () => {
     const removes = [...switchSrc.matchAll(/act\(\s*"remove"\s*,\s*([^)]*\)?)/g)].map((m) => m[1]);
     expect(removes.length).toBe(2); // removeAccount and the retry helper of signOutThis
     for (const arg of removes) expect(arg).toMatch(/^await removeBody\(/);
-    const body = switchSrc.slice(switchSrc.indexOf("async function removeBody("));
-    expect(body.slice(0, body.indexOf("\n}\n"))).toContain("thisDeviceEndpoint(");
+    const fnBody = (name: string) => {
+      const from = switchSrc.slice(switchSrc.indexOf(`async function ${name}(`));
+      return from.slice(0, from.indexOf("\n}\n"));
+    };
+    expect(fnBody("removeBody")).toContain("pushEndpointBody(");
+    expect(fnBody("pushEndpointBody")).toContain("thisDeviceEndpoint(");
     // No other file reaches the remove action by itself.
     const direct = walk(SRC)
       .map((f) => ({ rel: rel(f), text: code(fs.readFileSync(f, "utf8")) }))
@@ -628,6 +706,34 @@ describe("a sign-out forgets this device first", () => {
     expect(branch.indexOf("forgetSlotDevice(target.account.email")).toBeGreaterThan(-1);
     expect(branch.indexOf("forgetSlotDevice(")).toBeLessThan(branch.indexOf("clearSlot("));
     expect(branch).toContain("!same(target.account.email, s.account.email)");
+  });
+
+  it("the sixth path: a stash that overwrites the oldest full slot forgets that account's row", () => {
+    // "Add another account" with every slot full overwrites the oldest one,
+    // and that account leaves this browser.
+    const switchSrc = code(read("lib/accountSwitch.ts"));
+    const stashes = [...switchSrc.matchAll(/act\(\s*"stash"\s*(,\s*([^)]*\)?))?\)/g)].map((m) => m[2] ?? "");
+    expect(stashes).toEqual(["await pushEndpointBody()"]);
+    const direct = walk(SRC)
+      .map((f) => ({ rel: rel(f), text: code(fs.readFileSync(f, "utf8")) }))
+      .filter((f) => f.rel !== "lib/accountSwitch.ts" && /\/api\/accounts\/stash|act\(\s*"stash"/.test(f.text))
+      .map((f) => f.rel);
+    expect(direct).toEqual([]);
+    const route = code(read("app/api/accounts/[action]/route.ts"));
+    const branch = route.slice(route.indexOf('action === "stash"'), route.indexOf('action === "switch"'));
+    expect(branch.indexOf("forgetSlotDevice(overwritten.account.email")).toBeGreaterThan(-1);
+    expect(branch.indexOf("forgetSlotDevice(")).toBeLessThan(branch.indexOf("setSlot("));
+    expect(branch).toContain("!same(overwritten.account.email, s.account.email)");
+  });
+
+  it("Add another account names this device's endpoint, and never unsubscribes", async () => {
+    const b = fakeBrowser({ subscribed: true });
+    vi.stubGlobal("localStorage", { removeItem: () => undefined, getItem: () => null, setItem: () => undefined, key: () => null, length: 0 });
+    expect(await addAccount(vi.fn())).toBe(true);
+    const [url, init] = b.fetch.mock.calls[0];
+    expect(url).toBe("/api/accounts/stash");
+    expect(JSON.parse(String(init!.body))).toEqual({ push_endpoint: ENDPOINT });
+    expect(b.unsubscribe).not.toHaveBeenCalled();
   });
 });
 

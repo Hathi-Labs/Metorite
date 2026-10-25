@@ -279,3 +279,65 @@ describe("remove forgets the removed account's push row of this browser (WS-66 P
     expect(setCookies(res)).toEqual({ "__Host-mt-acct-2": "" });
   });
 });
+
+describe("a stash that overwrites the oldest full slot forgets that account's push row (WS-66 PN-1)", () => {
+  const ENDPOINT = "https://fcm.googleapis.com/fcm/send/device-1";
+
+  function gatewayCalls() {
+    return vi.mocked(fetch).mock.calls.map(([url, init]) => ({
+      method: init?.method ?? "GET",
+      url: String(url),
+      who: new Headers(init?.headers).get("X-User-Email"),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    }));
+  }
+
+  /** Four full slots. Slot 2 holds the token that ends first, so it is the oldest. */
+  async function fullSlots() {
+    return {
+      "__Host-mt-acct-0": await token("b@two.test", 4 * DAY),
+      "__Host-mt-acct-1": await token("c@three.test", 3 * DAY),
+      "__Host-mt-acct-2": await token("d@four.test", DAY),
+      "__Host-mt-acct-3": await token("e@five.test", 2 * DAY),
+    };
+  }
+
+  it("deletes the overwritten account's row AS that account, then stashes", async () => {
+    authed.email = "a@one.test";
+    const a = await token("a@one.test");
+    const res = await post("stash", { [SESSION]: a, ...(await fullSlots()) }, { body: { push_endpoint: ENDPOINT } });
+    expect(res.status).toBe(200);
+    expect(setCookies(res)).toEqual({ "__Host-mt-acct-2": a });
+    const calls = gatewayCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "DELETE", who: "d@four.test", body: { endpoint: ENDPOINT } });
+    expect(calls[0].url).toMatch(/\/push\/subscriptions$/);
+  });
+
+  it("forgets nobody for an empty slot, the active account's own slot, or no endpoint", async () => {
+    authed.email = "a@one.test";
+    const a = await token("a@one.test");
+    const b = await token("b@two.test");
+    // A free slot: nobody leaves.
+    await post("stash", { [SESSION]: a, "__Host-mt-acct-0": b }, { body: { push_endpoint: ENDPOINT } });
+    // A slot that already holds the active email: the row is mine, and I stay.
+    await post("stash", { [SESSION]: a, "__Host-mt-acct-0": a, "__Host-mt-acct-1": b }, {
+      body: { push_endpoint: ENDPOINT },
+    });
+    // Full slots, but no endpoint (the browser holds no subscription), or no body at all.
+    await post("stash", { [SESSION]: a, ...(await fullSlots()) }, { body: {} });
+    await post("stash", { [SESSION]: a, ...(await fullSlots()) });
+    expect(gatewayCalls()).toEqual([]);
+  });
+
+  it("still stashes when the gateway call fails", async () => {
+    authed.email = "a@one.test";
+    const a = await token("a@one.test");
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("gateway down");
+    }));
+    const res = await post("stash", { [SESSION]: a, ...(await fullSlots()) }, { body: { push_endpoint: ENDPOINT } });
+    expect(res.status).toBe(200);
+    expect(setCookies(res)).toEqual({ "__Host-mt-acct-2": a });
+  });
+});

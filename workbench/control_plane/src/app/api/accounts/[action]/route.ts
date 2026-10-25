@@ -1,9 +1,12 @@
 /**
  * POST /api/accounts/{stash|switch|remove|signout-all} (MT-1k A2).
  *
- * - `stash` keeps the active session in a slot, before "Add another account"
- *   sends the member to /signin. The new sign-in then replaces the active
- *   cookie, and the old account waits in its slot.
+ * - `stash {push_endpoint?}` keeps the active session in a slot, before "Add
+ *   another account" sends the member to /signin. The new sign-in then
+ *   replaces the active cookie, and the old account waits in its slot. With
+ *   every slot full it overwrites the oldest one, and with a `push_endpoint`
+ *   it first deletes that account's web push row of this browser, as that
+ *   account (WS-66 PN-1, `forgetSlotDevice`).
  * - `switch {slot}` swaps the active session and the slot.
  * - `remove {slot, push_endpoint?}` forgets one other account. With a
  *   `push_endpoint`, it first deletes that account's web push row of this
@@ -34,7 +37,9 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
  * Delete the web push row of `endpoint` for the account in a slot, AS that
- * account (WS-66 PN-1, "Remove from this browser").
+ * account (WS-66 PN-1). Two acts take a slot account off this browser:
+ * "Remove from this browser" (`remove`) and a `stash` that overwrites the
+ * oldest of the full slots.
  *
  * ⚠️ The second place this tier acts as an email that is not the active
  * session's. `GET /api/accounts` is the first, and its note gives the proof:
@@ -42,8 +47,8 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
  * verified with the session secret. The act is one DELETE of that member's
  * own row, so it can touch no other member and no other org.
  *
- * It never blocks the remove: the active session must still resolve, the
- * call has 3 seconds, and a refusal or a fault changes nothing.
+ * It never blocks the remove or the stash: the active session must still
+ * resolve, the call has 3 seconds, and a refusal or a fault changes nothing.
  */
 async function forgetSlotDevice(email: string, endpoint: string): Promise<void> {
   if (!(await currentIdentity())) return;
@@ -68,8 +73,18 @@ export async function POST(
   if (s instanceof NextResponse) return s;
 
   if (action === "stash") {
+    const index = stashIndex(s.slots, s.account.email);
+    const overwritten = s.slots[index];
+    const endpoint = pushEndpointOf(await jsonBody(req));
+    // WS-66 PN-1: with every slot full, the stash overwrites the oldest one,
+    // and that account leaves this browser. Its push row of this browser goes
+    // first, as that account. A slot of the ACTIVE email is the active
+    // member's own, and an empty slot holds nobody: both are skipped.
+    if (overwritten && endpoint && !same(overwritten.account.email, s.account.email)) {
+      await forgetSlotDevice(overwritten.account.email, endpoint);
+    }
     const res = NextResponse.json({ ok: true });
-    setSlot(res, s, stashIndex(s.slots, s.account.email), s.active.value, s.account.exp);
+    setSlot(res, s, index, s.active.value, s.account.exp);
     return res;
   }
 
