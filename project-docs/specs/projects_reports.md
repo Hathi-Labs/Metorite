@@ -45,6 +45,11 @@ built.
 Overview draws its panels across the page. One toolbar holds the choices
 behind "Filters", and Overview refreshes itself while the tab is visible.
 
+**RA-1 BUILT 2026-10-25, not merged** (§6.8 F, §8 RA-1). One rule in
+`analytics.py` labels each done task and each open task's live holder. The
+Throughput and Finished reads carry `actor_split`, and the Load read carries
+`holder_split`. No panel changes. RA-2 to RA-8 are not built.
+
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
@@ -327,6 +332,12 @@ next to each status, as `classify` already does.
 | **Needs help** | NEW. A person with one or more of: a blocked task, a stale task in progress, a waiting item past its date, or the `behind` pill two runs in a row | The `pulse` section (R3) |
 | **Has room** | The `idle` pill, or spare hours above a threshold in the window, and not on leave | `capacity` — exists |
 | **Today's focus** | Tasks in progress, plus tasks due today or tomorrow, plus tasks that the person scheduled today (`scheduled_start`) | The `pulse` section (R3) |
+| **Agent-finished** | A done task whose latest move into done came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>`. `system:workflow:<id>` is not an agent. | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
+| **Agent-assisted** | A done task that held at least one agent run, and that a person finished | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
+| **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since | RA-3, not built |
+| **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more | RA-4, not built |
+| **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
+| **Needs an owner** | An open task with no assignee and no open run | RA-2, not built. The `none` count of RA-1's `holder_split` is near it, but it reads the lease of a run. |
 
 ⚠️ **"Needs help" is a flag, not a sixth pill.** `PILLS` is a closed vocabulary
 that the People dashboard also draws. A sixth pill changes two apps. So the
@@ -2039,11 +2050,20 @@ first-name match.
 
 ---
 
-### RA-1 — Who did it: people, agents and agent-assisted · AGENT-SAFE
+### RA-1 — Who did it: people, agents and agent-assisted · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** one server rule in `analytics.py` that labels each done task as agent-finished, agent-assisted or person, and each open task's live holder (§6.8 F). Every later RA slice reads this rule. Nothing reads `meta.via` twice.
 
 **Done when:** a pure test pins each label, and an R8 test pins the SQL on a real ladder. No panel changes yet.
+
+**Built.** The rule has two twins in `analytics.py`. The SQL twin is `finish_actor_join` with `finish_label_sql`, and `holder_label_sql`. The Python twin is `classify_finish` and `classify_holder`.
+
+1. The done label reads the LATEST move into the done category. A move between two done lanes is not a move into done.
+2. An agent holds an open task when a live run keeps it (`NOT filters.unheld_clause`) or when an assignee is `agent:<name>`. Else a person holds it when it has an assignee. Else nobody holds it.
+3. `actor_split` (`agent_finished`, `agent_assisted`, `person`) is on `GET /projects/analytics/throughput`, `GET /projects/analytics/finished` and the `finished` and `throughput` report sections. Its counts add up to the `completed` figure of the same window.
+4. `holder_split` (`agent`, `person`, `none`) is on `GET /projects/analytics/load` and the `load` report section. Its counts add up to `total_tasks`.
+
+Fences: `tests/unit/test_projects_analytics_actor.py` (hermetic) and `tests/unit/test_projects_analytics_actor_r8.py` (R8).
 
 ### RA-2 — The KPI strip and "Who did the work" · AGENT-SAFE
 
@@ -2190,7 +2210,8 @@ uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_analytics_load.py \
   tests/unit/test_projects_analytics_capacity.py \
   tests/unit/test_projects_analytics_rebalance.py \
-  tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py -q -rs
+  tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py \
+  tests/unit/test_projects_analytics_actor.py tests/unit/test_projects_analytics_actor_r8.py -q -rs
 
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
@@ -2218,6 +2239,8 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_scope_r5.py` is R5a's file.
 - `test_projects_report_scope_r5b.py` is R5b's file.
 - `test_projects_report_chat_rfinal.py` is R-final's file.
+- `test_projects_analytics_actor.py` and `test_projects_analytics_actor_r8.py`
+  are RA-1's files.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 - R5g has no server file. Its files are `overviewLive.test.ts` and

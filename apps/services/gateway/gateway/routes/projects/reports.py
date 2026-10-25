@@ -46,6 +46,7 @@ from gateway.routes.projects.analytics import (
     MAX_WEEKS,
     STALE_BANDS,
     _hours,
+    actor_split_body,
     blocked_body,
     cycle_summary_sql,
     finished_period_sql,
@@ -965,6 +966,10 @@ async def render_body(
                 ],
                 "total_completed": int(totals.completed or 0),
                 "total_cancelled": int(totals.cancelled or 0),
+                # WS-27bn RA-1. Who finished `total_completed`, by label.
+                "actor_split": await actor_split_body(
+                    db, past_where, params, skip_current_week=skip,
+                ),
             }
         elif name == "throughput":
             # ⚠️ `weekly_sql` has no `skip_current_week` arm, and that is
@@ -1005,6 +1010,10 @@ async def render_body(
                 "p90_hours": _hours(totals.p90_hours),
                 "no_start": int(totals.no_start or 0),
                 "cancelled": int(totals.cancelled or 0),
+                # WS-27bn RA-1. Who finished `completed`, over the same window.
+                "actor_split": await actor_split_body(
+                    db, past_where, params, skip_current_week=skip,
+                ),
             }
         elif name == "load":
             # WS-27bn R5a. The Load route's OWN body, imported, as
@@ -1038,6 +1047,8 @@ async def render_body(
                 "total_tasks": found["total_tasks"],
                 "people_total": found["people_total"],
                 "effort": found["effort"],
+                # WS-27bn RA-1. Who holds the open tasks now.
+                "holder_split": found["holder_split"],
             }
             sections[name] = _with_hidden(section, hidden, allowed)
         elif name == "outlook":

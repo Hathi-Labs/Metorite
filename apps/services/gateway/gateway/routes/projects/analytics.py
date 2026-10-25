@@ -36,13 +36,16 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable
 from datetime import date, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
 from gateway.capacity import absences_for, horizon_window
+from gateway.routes.projects.agent_dispatch import AGENT_PREFIX
+from gateway.routes.projects.agent_worked import MCP_VIA_PREFIX
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -56,7 +59,7 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
-from gateway.routes.projects.filters import attach_parent_context
+from gateway.routes.projects.filters import attach_parent_context, unheld_clause
 from gateway.routes.projects.report_scope import (
     filter_person_rows,
     reportable_people,
@@ -718,6 +721,10 @@ async def load_body(
         await db.execute(text(effort_sql(open_where)), params)
     ).one()
 
+    # WS-27bn RA-1. Who holds the `total_tasks` open tasks now, over the SAME
+    # `open_where`, so the three counts add up to that total.
+    holder_split = await holder_split_body(db, open_where, params)
+
     # "Spent" is DONE work only. Cancelled work consumed effort too, and
     # counting it here would say the team delivered it — the same
     # exclusion the Progress card already footnotes.
@@ -787,6 +794,7 @@ async def load_body(
         # not a person, and counting it would report one extra worker on
         # every project that has a backlog.
         "people_named": sum(1 for p in people if p["assignee"]),
+        "holder_split": holder_split,
     }
 
 
@@ -1034,6 +1042,264 @@ def _hours(value: Any) -> float | None:
     return None if value is None else round(float(value), 2)
 
 
+# ── Who did it: people, agents and agent-assisted — WS-27bn RA-1 ────────────
+#
+# Spec: `projects_reports.md` §6.8 F and §8 RA-1. ONE rule labels each done
+# task and each open task's live holder. RA-2 to RA-8 read these labels, and
+# no other module reads `meta.via` to decide who did the work. The fence in
+# `test_projects_analytics_actor.py` finds the SQL read of `meta.via` once in
+# the analytics modules and `reports.py`, in :func:`finish_actor_join`.
+#
+# Two twins, as `filters.py` pairs `AGENT_RUN_STATE_SQL` with `holder_free`:
+# the SQL builders below label the rows in the database, and the pure
+# functions say the same rule in Python. `test_projects_analytics_actor.py`
+# pins the Python twin, and `test_projects_analytics_actor_r8.py` pins the SQL
+# twin to the same table of cases on a real database.
+
+#: A done task whose move to done came from an agent.
+FINISH_AGENT = "agent_finished"
+#: A done task that held an agent run, and that a person moved to done.
+FINISH_ASSISTED = "agent_assisted"
+#: Every other done task.
+FINISH_PERSON = "person"
+#: The three labels of a done task, in the order a split prints them.
+FINISH_LABELS: tuple[str, ...] = (FINISH_AGENT, FINISH_ASSISTED, FINISH_PERSON)
+
+#: An open task that an agent holds now.
+HOLDER_AGENT = "agent"
+#: An open task that a person holds now, and no agent.
+HOLDER_PERSON = "person"
+#: The split key of an open task that nobody holds. The label itself is None.
+HOLDER_NONE = "none"
+#: The keys of `holder_split`, in the order a split prints them.
+HOLDER_KEYS: tuple[str, ...] = (HOLDER_AGENT, HOLDER_PERSON, HOLDER_NONE)
+
+
+class StatusMove(NamedTuple):
+    """One `status_change` row of a task, as the Python twin reads it."""
+
+    at: Any
+    by: str | None
+    via: str | None
+    from_category: str | None
+    to_category: str | None
+
+
+def is_agent_act(created_by: str | None, via: str | None) -> bool:
+    """True when an agent made the act (§6.8 F).
+
+    Two ways. An act through MCP carries ``meta.via`` = ``mcp:…``, the stamp
+    that `record_activity` writes. The in-app dispatch sink writes
+    ``created_by`` = ``agent:<name>``. ⚠️ ``system:workflow:<id>`` is an
+    automation, not an agent, so it is not an agent act.
+    """
+    return (
+        str(via or "").lower().startswith(MCP_VIA_PREFIX)
+        or str(created_by or "").lower().startswith(AGENT_PREFIX)
+    )
+
+
+def done_move(
+    moves: Iterable[StatusMove], *, done_category: str = COMPLETED_CATEGORY,
+) -> StatusMove | None:
+    """The LATEST move into the done category, or None.
+
+    A move between two done lanes is not a move into done, so a tidy-up after
+    the finish does not take the label. A reopened task that was finished
+    again takes the label of its last finish. :func:`finish_actor_join` is
+    the SQL twin.
+    """
+    into = [
+        m for m in moves
+        if m.to_category == done_category and m.from_category != done_category
+    ]
+    return max(into, key=lambda m: m.at) if into else None
+
+
+def finish_label(
+    done_by: str | None, done_via: str | None, *, had_run: bool,
+) -> str:
+    """The label of a done task, from its done move and its runs (§6.8 F)."""
+    if is_agent_act(done_by, done_via):
+        return FINISH_AGENT
+    if had_run:
+        return FINISH_ASSISTED
+    return FINISH_PERSON
+
+
+def classify_finish(moves: Iterable[StatusMove], *, had_run: bool) -> str:
+    """The label of a done task, from its status moves and its runs."""
+    move = done_move(moves)
+    if move is None:
+        return finish_label(None, None, had_run=had_run)
+    return finish_label(move.by, move.via, had_run=had_run)
+
+
+def classify_holder(assignees: Iterable[str], *, run_holds: bool) -> str | None:
+    """The live holder of an open task: ``agent``, ``person`` or None.
+
+    An agent holds the task when an open run keeps it (the lease of
+    `filters.holder_free`) or when an assignee is ``agent:<name>``. Else a
+    person holds it when it has an assignee. Else nobody holds it.
+    """
+    names = [str(a).lower() for a in assignees if a]
+    if run_holds or any(n.startswith(AGENT_PREFIX) for n in names):
+        return HOLDER_AGENT
+    if names:
+        return HOLDER_PERSON
+    return None
+
+
+def _starts_with(column: str, prefix: str) -> str:
+    """``column`` starts with ``prefix``, case blind, in SQL.
+
+    The prefixes hold no ``_`` and no ``%``, so no character of them is a
+    wildcard of LIKE.
+    """
+    return f"lower(coalesce({column}, '')) LIKE '{prefix}%'"
+
+
+def finish_actor_join(task: str) -> str:
+    """The done move and the runs of the task id ``task``, as two joins.
+
+    It adds ``fm.done_by``, ``fm.done_via`` and ``fh.had_run``.
+    :func:`finish_label_sql` reads them. It binds ``:done_cat``.
+
+    ⚠️ **The LATEST move into done, over the whole history.** The window
+    decides WHICH tasks finished. This join decides WHO finished each one, by
+    the last finish of the task. A run of any status counts for ``had_run``.
+    """
+    return (
+        f" LEFT JOIN LATERAL ("
+        f"   SELECT fa.created_by AS done_by, fa.meta->>'via' AS done_via"
+        f"     FROM pm_activities fa"
+        f"    WHERE fa.task_id = {task}"
+        f"      AND fa.type = 'status_change'"
+        f"      AND fa.deleted_at IS NULL"
+        f"      AND fa.meta->>'to_category' = :done_cat"
+        f"      AND fa.meta->>'from_category' IS DISTINCT FROM :done_cat"
+        f"    ORDER BY fa.created_at DESC, fa.id DESC"
+        f"    LIMIT 1"
+        f" ) fm ON TRUE"
+        f" CROSS JOIN LATERAL ("
+        f"   SELECT EXISTS ("
+        f"     SELECT 1 FROM pm_agent_runs fr WHERE fr.task_id = {task}"
+        f"   ) AS had_run"
+        f" ) fh"
+    )
+
+
+def finish_label_sql() -> str:
+    """The SQL twin of :func:`finish_label`, over :func:`finish_actor_join`."""
+    return (
+        f"CASE WHEN {_starts_with('fm.done_via', MCP_VIA_PREFIX)}"
+        f"       OR {_starts_with('fm.done_by', AGENT_PREFIX)}"
+        f"     THEN '{FINISH_AGENT}'"
+        f"     WHEN fh.had_run THEN '{FINISH_ASSISTED}'"
+        f"     ELSE '{FINISH_PERSON}' END"
+    )
+
+
+def finish_labels_sql(
+    scope_where: str, *, skip_current_week: bool = False,
+) -> str:
+    """One row for each task DONE in the window, with its label.
+
+    Built on :func:`cycle_cte_sql`, so the labels describe the tasks that
+    Throughput and Finished count. A cancelled task gets no label.
+    """
+    return (
+        f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
+        f" SELECT c.task_id AS task_id, {finish_label_sql()} AS label"
+        f"   FROM cyc c{finish_actor_join('c.task_id')}"
+        f"  WHERE c.to_category = :done_cat"
+    )
+
+
+def actor_split_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
+    """The count of each finish label over :func:`finish_labels_sql`."""
+    inner = finish_labels_sql(scope_where, skip_current_week=skip_current_week)
+    return f"SELECT l.label AS label, count(*) AS n FROM ({inner}) l GROUP BY 1"
+
+
+def holder_label_sql() -> str:
+    """The SQL twin of :func:`classify_holder`, over the task alias ``t``.
+
+    ⚠️ The run arm is ``NOT`` `filters.unheld_clause`, so the lease and the
+    revoked connection decide here as they decide the claim gate.
+    """
+    agent_assignee = (
+        "EXISTS (SELECT 1 FROM pm_task_assignees hx WHERE hx.task_id = t.id"
+        f" AND {_starts_with('hx.assignee', AGENT_PREFIX)})"
+    )
+    any_assignee = "EXISTS (SELECT 1 FROM pm_task_assignees hy WHERE hy.task_id = t.id)"
+    return (
+        f"CASE WHEN NOT ({unheld_clause()}) OR {agent_assignee}"
+        f"     THEN '{HOLDER_AGENT}'"
+        f"     WHEN {any_assignee} THEN '{HOLDER_PERSON}' END"
+    )
+
+
+def holder_labels_sql(open_where: str) -> str:
+    """One row for each open task, with its live holder (None for nobody).
+
+    ``open_where`` is :func:`load_open_where`, so the visibility and the
+    D-PM-32 clause are the ones Load uses.
+    """
+    return (
+        f"SELECT t.id AS task_id, {holder_label_sql()} AS label"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+    )
+
+
+def holder_split_sql(open_where: str) -> str:
+    """The count of each holder over :func:`holder_labels_sql`."""
+    return (
+        f"SELECT coalesce(l.label, '{HOLDER_NONE}') AS label, count(*) AS n"
+        f"  FROM ({holder_labels_sql(open_where)}) l GROUP BY 1"
+    )
+
+
+def split_counts(rows: Iterable[Any], keys: tuple[str, ...]) -> dict[str, int]:
+    """Each key with its count. A key with no row is a zero, not absent."""
+    out = dict.fromkeys(keys, 0)
+    for row in rows:
+        if row.label in out:
+            out[row.label] = int(row.n or 0)
+    return out
+
+
+async def actor_split_body(
+    db: Any, scope_where: str, params: dict[str, Any], *,
+    skip_current_week: bool = False,
+) -> dict[str, int]:
+    """``actor_split``: the done tasks of the window, by finish label.
+
+    ``params`` are the binds of :func:`cycle_cte_sql`. The three counts add
+    up to the ``completed`` figure of the same window.
+    """
+    rows = (
+        await db.execute(
+            text(actor_split_sql(scope_where, skip_current_week=skip_current_week)),
+            params,
+        )
+    ).fetchall()
+    return split_counts(rows, FINISH_LABELS)
+
+
+async def holder_split_body(
+    db: Any, open_where: str, params: dict[str, Any],
+) -> dict[str, int]:
+    """``holder_split``: the open tasks, by live holder. The three counts add
+    up to Load's ``total_tasks``."""
+    rows = (
+        await db.execute(text(holder_split_sql(open_where)), params)
+    ).fetchall()
+    return split_counts(rows, HOLDER_KEYS)
+
+
 # ── Will this land, and when? — the executive read ──────────────────────────
 #
 # ⚠️ **NO TIME TRACKING EXISTS, and this is built knowing it.** Owner
@@ -1262,6 +1528,8 @@ async def throughput(
             }
             for row in rows
         ]
+        # WS-27bn RA-1. Who finished the `completed` tasks of the summary.
+        actor_split = await actor_split_body(db, scope_where, params)
         return {
             "project_id": project_id,
             "scope": "portfolio" if project_id is None else "node",
@@ -1279,6 +1547,7 @@ async def throughput(
                 "median_hours": _hours(summary.median_hours),
                 "p90_hours": _hours(summary.p90_hours),
             },
+            "actor_split": actor_split,
         }
 
 
@@ -1426,6 +1695,10 @@ async def finished(
                 params,
             )
         ).one()
+        # WS-27bn RA-1. Who finished the `total_completed` tasks.
+        actor_split = await actor_split_body(
+            db, scope_where, params, skip_current_week=skip_current_week,
+        )
 
         return {
             "project_id": project_id,
@@ -1447,6 +1720,7 @@ async def finished(
             "total_completed": int(totals.completed or 0),
             "total_cancelled": int(totals.cancelled or 0),
             "median_hours": _hours(totals.median_hours),
+            "actor_split": actor_split,
         }
 
 #: How many whole weeks of history the forecast reads.
