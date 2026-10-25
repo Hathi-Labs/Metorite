@@ -51,12 +51,11 @@ from typing import Any
 import pytest
 
 PIL = pytest.importorskip("PIL", reason="Pillow builds the scanned files")
-from PIL import Image, ImageDraw, ImageFont  # noqa: E402
-
 from acb_common import get_settings  # noqa: E402
 from acb_skills import attachment_ocr as ocr  # noqa: E402
 from acb_skills import attachment_text as at  # noqa: E402
 from acb_skills import attachment_tools as tools  # noqa: E402
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 # The chat tool's tenant dir and the email route's harness. One harness each,
 # reused, never copied. `ws` is a fixture and is used by name.
@@ -216,7 +215,7 @@ class TestItReads:
         assert got.text.startswith(ocr.OCR_MARKER + "\n")
         assert "Invoice 99" in got.text and "1200" in got.text
 
-    def test_the_chat_tool_reads_a_scan_and_an_image(self, ocr_on, ws) -> None:
+    def test_the_chat_tool_reads_a_scan_and_an_image(self, ocr_on, ws) -> None:  # noqa: F811
         _attach(ws, SID_A, "scan.pdf", _scan([["Delivery by 30 November"]]))
         _attach(ws, SID_A, "photo.png", _image(["Bracket qty 12"], "PNG"))
         pdf = _read(ws, SID_A, "scan.pdf")
@@ -470,7 +469,9 @@ class TestTheFlagOff:
         assert await tools.parse_bounded(png, ".png") == at.unsupported_sentence(".png")
         assert spawn_trap == []
 
-    def test_the_chat_tool_refuses_an_image_as_before(self, ocr_off, ws, spawn_trap) -> None:
+    def test_the_chat_tool_refuses_an_image_as_before(
+        self, ocr_off, ws, spawn_trap,  # noqa: F811
+    ) -> None:
         _attach(ws, SID_A, "photo.png", _image(["x"], "PNG"))
         assert _read(ws, SID_A, "photo.png") == (
             f"I cannot read photo.png. {at.SUPPORTED_SENTENCE} Ask the member for one of those."
@@ -482,7 +483,7 @@ class TestTheFlagOff:
         assert spawn_trap == []
 
     def test_the_chat_tool_names_the_image_kinds_only_with_the_flag_on(
-        self, ocr_on, ws, spawn_trap,
+        self, ocr_on, ws, spawn_trap,  # noqa: F811
     ) -> None:
         _attach(ws, SID_A, "clip.gif", b"GIF89a")
         assert _read(ws, SID_A, "clip.gif") == (
