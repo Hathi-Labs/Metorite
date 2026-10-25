@@ -762,7 +762,8 @@ class TestTheApproval:
         # `in_progress` and read `answered` until an agent came back.
         from gateway.routes.projects import agent_runs as gateway_runs
 
-        assert closed.content == {"body": gateway_runs.ARCHIVE_CLOSED_BODY, "system": True}
+        assert closed.content == {"body": gateway_runs.ARCHIVE_CLOSED_BODY, "system": True,
+                                  "server_close": "archive"}
         assert _run_status(runs, run_id) == "completed"
         assert ok.json()["run"]["status"] == "completed"
 

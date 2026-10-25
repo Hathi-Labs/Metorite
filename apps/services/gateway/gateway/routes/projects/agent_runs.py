@@ -115,6 +115,7 @@ from gateway.routes.projects.filters import (
     lease_expired,
     open_strand_sql,
     strand_fits_sql,
+    task_closed_sql,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
 from gateway.routes.projects.tasks import archive_task_in
@@ -380,6 +381,15 @@ _MOVES: dict[str, dict[str, str]] = {
     # `close_archived_run` passes it. The approval moved the run from
     # `awaiting` to `in_progress` the moment before.
     "archive_close": {"in_progress": "completed"},
+    # SW-10a fix round. The task of the run is done, cancelled or archived,
+    # and the run was quiet for the stale band: the sweep closes it. Only
+    # `close_closed_task_run` passes it.
+    "task_close": {"in_progress": "completed"},
+    # SW-10a fix round. The agent of a run that the SERVER closed (one of
+    # the two moves above) finishes later with a summary. The summary is kept
+    # as a `response`, and the run stays `completed`. Only `finish_agent_run`
+    # passes it, after `_server_closed` holds.
+    "late_summary": {"completed": "completed"},
 }
 
 
@@ -1099,9 +1109,10 @@ async def _move_run(
         sets.append(
             "session_key = CASE WHEN connection_id IS DISTINCT FROM CAST(:cid AS uuid)"
             " THEN CAST(:sk AS text) ELSE COALESCE(session_key, CAST(:sk AS text)) END")
-    if new_status in TERMINAL_STATUSES:
+    # A late summary goes from terminal to terminal, so the end stays.
+    if new_status in TERMINAL_STATUSES and run.status not in TERMINAL_STATUSES:
         sets.append("ended_at = :ts")
-    elif run.status in TERMINAL_STATUSES:
+    elif new_status in OPEN_STATUSES and run.status in TERMINAL_STATUSES:
         sets.append("ended_at = NULL")
     if stop and user is not None:
         sets.append("stopped_at = :ts")
@@ -1255,9 +1266,16 @@ def _task_held(holder: Any, *, me: str | None = None, via: str | None = None,
 
 
 async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | None,
-                           body: str) -> None:
+                           body: str, server_close: str | None = None) -> None:
     """One ``response`` row on *run* that the SERVER writes, as the record of
-    a takeover or a release. No comment and no notification."""
+    a takeover or a release. No comment and no notification.
+
+    SW-10a: *server_close* names why the server closed the run (``archive``,
+    ``done``, ``cancelled`` or ``archived``). ``_server_closed`` reads it, so
+    the agent may still leave one late summary."""
+    content: dict[str, Any] = {"body": body, "system": True}
+    if server_close is not None:
+        content["server_close"] = server_close
     await db.execute(
         text(
             "INSERT INTO pm_agent_run_activities "
@@ -1266,7 +1284,7 @@ async def _system_activity(db: Any, run: Any, *, actor_email: str, via: str | No
             "        CAST(:content AS jsonb), false, NULL, :actor, :via)"
         ),
         {"rid": str(run.id), "tid": str(run.task_id), "actor": actor_email, "via": via,
-         "content": _jsonb({"body": body, "system": True})},
+         "content": _jsonb(content)},
     )
 
 
@@ -1747,7 +1765,16 @@ async def finish_agent_run(
             # activity, so no key finds it. The run is the result, as the
             # edge's `finish_agent_run` reads it.
             return {"run": (await _runs_out(db, [run]))[0], "activity": None}
-        if summary:
+        if summary and run.status == "completed" and await _server_closed(db, run_id):
+            # SW-10a fix round. The server closed this run (an approved
+            # archive, or a closed task), and its agent now finishes with a
+            # summary. Before, that answered 409 and the summary was lost.
+            # The summary is kept as a `response`, and the run stays closed.
+            written = await _write_activity(
+                db, run, user, kind="response", key=payload.idempotency_key, body=summary,
+                event="late_summary",
+            )
+        elif summary:
             # The response and the finish are ONE move: the response is
             # written under the event `agent_finish`, so it sets `completed`
             # (or `stopped`, when a Stop waits) itself.
@@ -1846,7 +1873,7 @@ async def close_archived_run(db: Any, run: Any) -> None:
     new_status = transition(run.status, "archive_close")
     await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
     await _system_activity(db, run, actor_email=run.member_email, via=None,
-                           body=ARCHIVE_CLOSED_BODY)
+                           body=ARCHIVE_CLOSED_BODY, server_close="archive")
 
 
 #: SW-10a. An open run of the OLD archive shape: the newest prompt of the run
@@ -1867,14 +1894,76 @@ _ARCHIVE_APPLIED_SQL = (
 )
 
 
-async def close_archived_runs(db: Any, *, limit: int) -> int:
-    """Close each open run of the old archive shape, at most *limit*, in the
-    caller's tenant transaction. Returns how many closed (SW-10a)."""
-    ids = [str(r.id) for r in (await db.execute(
+async def archive_applied_run_ids(db: Any, *, limit: int) -> list[str]:
+    """The open runs of the old archive shape, at most *limit*, locked for
+    the caller's tenant transaction (SW-10a). The sweep closes each one with
+    :func:`close_archived_run` in a savepoint of its own."""
+    return [str(r.id) for r in (await db.execute(
         text(_ARCHIVE_APPLIED_SQL), {"n": limit})).fetchall()]
-    for run_id in ids:
-        await close_archived_run(db, await _load_run(db, run_id))
-    return len(ids)
+
+
+async def load_run(db: Any, run_id: str) -> Any:
+    """One run as :data:`_RUN_SELECT` reads it, for the closers of the
+    sweep (SW-10a)."""
+    return await _load_run(db, run_id)
+
+
+#: SW-10a fix round. The text of the system line of a run that the sweep
+#: closed because its task is closed, by the reason.
+CLOSED_TASK_BODIES: dict[str, str] = {
+    "done": "Closed: the task is done.",
+    "cancelled": "Closed: the task is cancelled.",
+    "archived": "Closed: the task is archived.",
+}
+
+#: SW-10a fix round. An ``in_progress`` run whose task is closed
+#: (``filters.task_closed_sql``), quiet for the stale band (its derived state
+#: is ``stale``), so the close never races an agent that finishes or a fresh
+#: answer. ``why`` is ``archived`` first, then the status category.
+_CLOSED_TASK_RUNS_SQL = (
+    "SELECT r.id, CASE WHEN t.archived_at IS NOT NULL THEN 'archived'"
+    "                  ELSE st.category END AS why"
+    "  FROM pm_agent_runs r"
+    "  JOIN pm_tasks t ON t.id = r.task_id"
+    "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
+    " WHERE r.status = 'in_progress'"
+    f"   AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
+    f"   AND {task_closed_sql('r')}"
+    " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+)
+
+
+async def closed_task_runs(db: Any, *, limit: int) -> list[tuple[str, str]]:
+    """``(run_id, why)`` of each quiet open run whose task is closed, at most
+    *limit*, locked for the caller's tenant transaction (SW-10a fix round)."""
+    return [(str(r.id), str(r.why)) for r in (await db.execute(
+        text(_CLOSED_TASK_RUNS_SQL), {"n": limit})).fetchall()]
+
+
+async def close_closed_task_run(db: Any, run: Any, why: str) -> None:
+    """Close a run whose task is closed (SW-10a fix round). The run moves to
+    ``completed`` and gets the line of :data:`CLOSED_TASK_BODIES`. The task is
+    never touched. Nobody can claim a closed task, so a nudge would be false,
+    and the run would hold nothing."""
+    new_status = transition(run.status, "task_close")
+    await _move_run(db, run, new_status, ts=await _clock(db), user=None, via=None)
+    await _system_activity(db, run, actor_email=run.member_email, via=None,
+                           body=CLOSED_TASK_BODIES[why], server_close=why)
+
+
+#: SW-10a fix round. True when the newest activity of the run that is not
+#: ephemeral is a server-close line. Then the run's agent may still leave
+#: ONE summary: after it, the newest such activity is the summary.
+_SERVER_CLOSED_SQL = (
+    "SELECT (a.content ? 'server_close') AS closed FROM pm_agent_run_activities a"
+    " WHERE a.run_id = CAST(:rid AS uuid) AND NOT a.ephemeral"
+    " ORDER BY a.seq DESC LIMIT 1"
+)
+
+
+async def _server_closed(db: Any, run_id: str) -> bool:
+    found = (await db.execute(text(_SERVER_CLOSED_SQL), {"rid": run_id})).fetchone()
+    return found is not None and bool(found.closed)
 
 
 async def write_strand_line(db: Any, run: Any, body: str) -> None:
@@ -2155,6 +2244,7 @@ __all__ = [
     "ARCHIVE_OPTIONS",
     "ARCHIVE_REQUEST_KIND",
     "ARCHIVE_REQUEST_TTL",
+    "CLOSED_TASK_BODIES",
     "EPHEMERAL_CAP",
     "MAX_WAIT_S",
     "POLL_S",
@@ -2167,9 +2257,12 @@ __all__ = [
     "OptionIn",
     "ReleaseIn",
     "StartIn",
+    "archive_applied_run_ids",
     "archive_request_of",
     "close_archived_run",
-    "close_archived_runs",
+    "close_closed_task_run",
+    "closed_task_runs",
+    "load_run",
     "member_name",
     "transition",
     "write_strand_line",

@@ -22,9 +22,11 @@ runs, org by org, and does two things, never more:
 expired). An ``awaiting`` run waits on a person and is never swept.
 
 **What it never does.** It never reassigns the task, never picks another
-agent, never moves the task and never ends the run at either miss. The one
-run it closes is a run of the old archive shape (the member approved the
-archive, and no agent came back), through ``agent_runs.close_archived_runs``.
+agent, never moves the task and never ends the run at either miss. It closes
+two kinds of run, through ``agent_runs``: a run of the old archive shape (the
+member approved the archive, and no agent came back), and a run whose task
+is done, cancelled or archived, once the run was quiet for the stale band
+(fix round, H-409 item 1 for runs). It never touches that task.
 
 **A new activity starts over.** Any activity on the run after the first miss
 clears its fingerprint (step 2 of a tick), and ``needs_agent`` reads the same
@@ -157,6 +159,11 @@ def _stranded_sql() -> str:
     """Step 3. The stranded runs of the bound org, the oldest first, each
     with its reason and the open strand of that reason, if any. Built when a
     tick runs, because :func:`filters.stranded_clause` reads the lease then.
+
+    A run whose open strand is already a recovery record is left out (fix
+    round). It stays ``in_progress`` and stranded until a person acts, so
+    without this guard such runs would fill the :data:`MAX_PER_ORG` window
+    of every tick, and no new strand of the org would get its first miss.
     """
     return (
         "SELECT r.id, r.task_id, r.member_email, r.client_via, r.connection_id,"
@@ -172,6 +179,7 @@ def _stranded_sql() -> str:
         f"   AND s.cleared_at IS NULL AND s.reason = {STRAND_REASON_SQL}"
         "   AND s.seen_activity_at = r.last_activity_at"
         f" WHERE {stranded_clause()}"
+        "   AND (s.id IS NULL OR s.recovered_at IS NULL)"
         " ORDER BY r.last_activity_at, r.id"
         " LIMIT :n"
     )
@@ -306,25 +314,53 @@ async def _one_run(db: Any, row: Any, result: TickResult) -> None:
         result.recovered += int(await _second_miss(db, row))
 
 
+async def _each(db: Any, items: list[Any], step: Any, result: TickResult) -> None:
+    """Run *step* for each item in a savepoint of its own, so one failure
+    does not undo the others, and a later step of the org still runs."""
+    for item in items:
+        try:
+            async with db.begin_nested():
+                await step(item)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one run must not hide the others
+            result.failed += 1
+            _log.warning("projects.agent_run_sweep.run_failed", error=type(exc).__name__)
+
+
 async def run_org(org: str, result: TickResult) -> None:
-    """One org's share of a tick, in ONE tenant session. Each stranded run
-    gets its own savepoint, so one failure does not undo the others."""
+    """One org's share of a tick, in ONE tenant session. Each run gets its
+    own savepoint, in every step, so one failure does not undo the others.
+
+    1. Close each run of the old archive shape (spec §12.6, part 1 item 2).
+    2. Close each quiet run whose task is closed (done, cancelled or
+       archived). The task is never touched (fix round, H-409 item 1).
+    3. Clear each open strand that no longer fits its run.
+    4. The first or the second miss of each stranded run.
+    """
     async with tenant_session(org) as db:
-        result.closed += await agent_runs.close_archived_runs(db, limit=MAX_PER_ORG)
+
+        async def close_archived(run_id: str) -> None:
+            await agent_runs.close_archived_run(db, await agent_runs.load_run(db, run_id))
+            result.closed += 1
+
+        async def close_closed_task(item: tuple[str, str]) -> None:
+            run_id, why = item
+            await agent_runs.close_closed_task_run(db, await agent_runs.load_run(db, run_id), why)
+            result.closed += 1
+
+        async def one(row: Any) -> None:
+            await _one_run(db, row, result)
+
+        await _each(db, await agent_runs.archive_applied_run_ids(db, limit=MAX_PER_ORG),
+                    close_archived, result)
+        await _each(db, await agent_runs.closed_task_runs(db, limit=MAX_PER_ORG),
+                    close_closed_task, result)
         result.cleared += len((await db.execute(text(_CLEAR_SQL))).fetchall())
         rows = (await db.execute(text(_stranded_sql()), {
             "n": MAX_PER_ORG, "window": agent_run_lease_s(),
         })).fetchall()
-        for row in rows:
-            try:
-                async with db.begin_nested():
-                    await _one_run(db, row, result)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # one run must not hide the others
-                result.failed += 1
-                _log.warning("projects.agent_run_sweep.run_failed",
-                             error=type(exc).__name__)
+        await _each(db, list(rows), one, result)
 
 
 async def run_tick() -> TickResult:

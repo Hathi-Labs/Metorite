@@ -1034,6 +1034,20 @@ STRAND_REASON_SQL = (
 )
 
 
+def task_closed_sql(alias: str) -> str:
+    """The ONE SQL text of "the task of run *alias* is closed" (SW-10a fix
+    round): the task is archived, or its status is in a closed category
+    (:data:`CLOSED_CATEGORIES`). Such a run is never stranded, and the sweep
+    closes it instead (``agent_runs.closed_task_run_ids``)."""
+    closed = ", ".join(f"'{c}'" for c in CLOSED_CATEGORIES)
+    return (
+        "EXISTS (SELECT 1 FROM pm_tasks ct"
+        " LEFT JOIN pm_task_statuses cs ON cs.id = ct.status_id"
+        f" WHERE ct.id = {alias}.task_id"
+        f" AND (ct.archived_at IS NOT NULL OR cs.category IN ({closed})))"
+    )
+
+
 def stranded_clause() -> str:
     """The ONE SQL text of a stranded run, over the alias ``r`` (SW-10a).
 
@@ -1044,6 +1058,10 @@ def stranded_clause() -> str:
     ``in_progress`` run. An ``awaiting`` run waits on a person and never
     matches, and neither does a ``created`` or a ``stopping`` run.
 
+    Fix round: a run whose task is closed (:func:`task_closed_sql`) is never
+    stranded. Nobody can claim a closed task, so a bell that says "start a
+    session" would be false. The sweep closes such a run instead.
+
     The lease is read when the clause is built, never at import, as
     :func:`unheld_clause` reads it.
     """
@@ -1052,7 +1070,8 @@ def stranded_clause() -> str:
         "(r.status = 'in_progress'"
         f" AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
         f" AND (r.last_activity_at < now() - {lease} * interval '1 second'"
-        f"      OR {connection_gone_sql('r')}))"
+        f"      OR {connection_gone_sql('r')})"
+        f" AND NOT {task_closed_sql('r')})"
     )
 
 

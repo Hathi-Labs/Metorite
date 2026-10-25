@@ -25,7 +25,7 @@ Run::
   ``test_stale_comes_before_answered_in_the_state``.
 * W2. ``R`` ``approve_task_archive``: no ``close_archived_run``.
   ``test_s2_an_approved_archive_closes_its_run``.
-* W3. ``S`` ``run_org``: no ``close_archived_runs``.
+* W3. ``S`` ``run_org``: no step of the old archive shape.
   ``test_s2_the_sweep_closes_a_run_of_the_old_archive_shape``.
 * W4. ``S`` ``_first_miss``: no ``notify``.
   ``test_s3_the_first_miss_writes_one_fingerprint_and_one_bell``.
@@ -56,6 +56,29 @@ Run::
   ``test_the_flag_off_tick_reads_nothing``.
 * W17. ``E`` ``_waiting_reason``: read ``state`` only.
   ``test_an_answer_older_than_five_minutes_stays_run_answered``.
+
+The fix round (2026-10-25):
+
+* W18. ``S`` ``_stranded_sql``: no ``AND (s.id IS NULL OR s.recovered_at IS
+  NULL)``. ``test_s9_recovered_runs_never_starve_a_new_strand``.
+* W19. ``F`` ``stranded_clause``: no ``NOT task_closed_sql``.
+  ``test_s10_a_quiet_run_of_a_closed_task_closes_and_gets_no_bell``.
+* W20. ``S`` ``run_org``: no step of the closed tasks.
+  ``test_s10_a_quiet_run_of_a_closed_task_closes_and_gets_no_bell``.
+* W21. ``R`` ``_CLOSED_TASK_RUNS_SQL``: no test of the stale state.
+  ``test_s10_a_closed_task_with_fresh_activity_is_left_alone``.
+* W22. ``R`` ``finish_agent_run``: no late summary.
+  ``test_s11_a_late_summary_after_a_server_close_is_kept``.
+* W23. ``R`` ``_NEEDS_AGENT_REASON_SQL``: ``stranded`` before ``answered``.
+  ``test_s12_an_answer_wins_over_a_strand``.
+* W24. ``S`` ``_each``: no try around a step.
+  ``test_s13_a_closer_that_fails_stops_nothing_else``.
+* W25. ``S`` ``run_tick``: no try around an org.
+  ``test_one_org_that_fails_leaves_the_others_swept``.
+* W26. ``S`` ``_loop``: no try around a tick.
+  ``test_a_tick_that_throws_does_not_end_the_loop``.
+* W27. ``routes/admin/members.py``: no row of ``pm_agent_run_strands``.
+  ``test_crm_answer_first_fix1.py::test_every_table_keyed_by_a_member_email_is_in_the_purge``.
 
 Two guards hold twice on purpose: the read of the open strand and the
 unique index (W6, W7), and ``_one_run`` and the guarded ``UPDATE`` (W8). The
@@ -173,6 +196,51 @@ class TestTheFlag:
         src = MAIN.read_text(encoding="utf-8")
         assert "start_agent_run_sweep" in src and "stop_agent_run_sweep" in src
         assert "agent_run_sweep_enabled" not in src
+
+
+class TestTheLoopSurvives:
+    """Fix round, item 6. One org that fails does not stop the others, and
+    a tick that throws does not end the loop."""
+
+    def test_one_org_that_fails_leaves_the_others_swept(self, monkeypatch) -> None:
+        monkeypatch.setattr(get_settings(), "agent_run_sweep_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        sweep._stopping.clear()
+        swept: list[str] = []
+
+        async def orgs() -> list[str]:
+            return ["org-a", "org-b", "org-c"]
+
+        async def run_org(org: str, result: Any) -> None:
+            if org == "org-b":
+                raise RuntimeError("a bad org")
+            swept.append(org)
+            result.nudged += 1
+
+        monkeypatch.setattr(sweep, "_organization_ids", orgs)
+        monkeypatch.setattr(sweep, "run_org", run_org)
+        result = asyncio.run(sweep.run_tick())
+        assert swept == ["org-a", "org-c"]
+        assert (result.orgs, result.nudged, result.failed) == (3, 2, 1)
+
+    def test_a_tick_that_throws_does_not_end_the_loop(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        async def tick() -> Any:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("a bad tick")
+            sweep._stopping.set()
+            return sweep.TickResult()
+
+        monkeypatch.setattr(sweep, "run_tick", tick)
+        monkeypatch.setattr(sweep, "SWEEP_EVERY_SECS", 0.01)
+        sweep._stopping.clear()
+        try:
+            asyncio.run(asyncio.wait_for(sweep._loop(), timeout=5))
+        finally:
+            sweep._stopping.clear()
+        assert len(calls) == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -420,6 +488,26 @@ async def _needs(w: Any, user: Any) -> list[dict[str, Any]]:
         got = await call(user, "GET", "/projects/agent-runs?needs_agent=true")
     assert got.status_code == 200, got.text
     return got.json()["rows"]
+
+
+def _close_task(w: Any, task: str, how: str) -> None:
+    """Close *task* as a person would: archive it, or move it to a lane of
+    the category *how* (``done`` or ``cancelled``)."""
+    with w.p.admin_engine.begin() as c:
+        if how == "archived":
+            c.execute(text("UPDATE pm_tasks SET archived_at = now() WHERE id = CAST(:t AS uuid)"),
+                      {"t": task})
+            return
+        project, org = c.execute(text(
+            "SELECT project_id, organization_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": task}).one()
+        lane = str(uuid.uuid4())
+        c.execute(text(
+            "INSERT INTO pm_task_statuses (id, organization_id, project_id, name, category,"
+            " position) VALUES (CAST(:id AS uuid), :o, :p, :n, :c, 90)"),
+            {"id": lane, "o": org, "p": project, "n": f"{how} {lane[:8]}", "c": how})
+        c.execute(text("UPDATE pm_tasks SET status_id = CAST(:s AS uuid) WHERE id = CAST(:t AS uuid)"),
+                  {"s": lane, "t": task})
 
 
 def _age_strand(w: Any, run: str, seconds: int) -> None:
@@ -711,6 +799,158 @@ class TestTheMisses:
         result = await _sweep_org(w)
         assert result.nudged == 1
         assert _strands(w, rid)[0].reason == "agent_quiet"
+
+
+@_DB_GATE
+class TestTheFixRound:
+    """The review and the verifier of 2026-10-25 (fix round, items 2 to 6)."""
+
+    async def test_s9_recovered_runs_never_starve_a_new_strand(self, w, monkeypatch):
+        """Item 2. A recovered run stays in_progress and stranded. With the
+        window of one tick at 2, two recovered runs must not hide a new one."""
+        monkeypatch.setattr(sweep, "MAX_PER_ORG", 2)
+        old = [_insert_run(w, _fresh(w), idle_s=5 * 3600) for _ in range(2)]
+        await _sweep_org(w)
+        for rid in old:
+            _age_strand(w, rid, LEASE + 60)
+        recovered = await _sweep_org(w)
+        assert recovered.recovered == 2
+        new_task = _fresh(w)
+        new = _insert_run(w, new_task, idle_s=3 * 3600)
+        result = await _sweep_org(w)
+        assert result.nudged == 1
+        assert len(_strands(w, new)) == 1 and len(_nudges(w, new_task)) == 1
+
+    @pytest.mark.parametrize("how", ["done", "cancelled", "archived"])
+    async def test_s10_a_quiet_run_of_a_closed_task_closes_and_gets_no_bell(self, w, how):
+        """Item 3. The sweep closes the run with one system line, never
+        touches the task, and sends no bell, even past the lease."""
+        task = _fresh(w)
+        rid = _insert_run(w, task, idle_s=3 * 3600)
+        _close_task(w, task, how)
+        before = _task_state(w, task)
+        assert await _stranded_rows(w) == []
+        result = await _sweep_org(w)
+        assert result.closed == 1 and result.nudged == 0
+        row = _run_row(w, rid)
+        assert row.status == "completed" and row.ended_at is not None
+        assert _run_lines(w, rid) == [agent_runs.CLOSED_TASK_BODIES[how]]
+        assert _task_state(w, task) == before
+        assert _nudges(w, task) == [] and _strands(w, rid) == []
+
+    async def test_s10_a_closed_task_with_fresh_activity_is_left_alone(self, w):
+        """Item 3. One minute after the last activity, the agent may still be
+        finishing: the run stays open, and no bell goes."""
+        task = _fresh(w)
+        rid = _insert_run(w, task, idle_s=60)
+        _close_task(w, task, "done")
+        result = await _sweep_org(w)
+        assert (result.closed, result.nudged) == (0, 0)
+        assert _run_row(w, rid).status == "in_progress"
+        assert _run_lines(w, rid) == [] and _nudges(w, task) == []
+
+    async def test_s10_an_open_strand_of_a_closed_task_clears(self, w):
+        """Item 3. A run nudged before its task closed: the next tick closes
+        the run and clears the strand, and no recovery record opens."""
+        task = _fresh(w)
+        rid = _insert_run(w, task)
+        await _sweep_org(w)
+        _close_task(w, task, "cancelled")
+        _age_strand(w, rid, LEASE + 60)
+        result = await _sweep_org(w)
+        assert result.closed == 1 and result.recovered == 0 and result.cleared == 1
+        [strand] = _strands(w, rid)
+        assert strand.cleared_reason == "run_moved" and strand.recovered_at is None
+        assert len(_nudges(w, task)) == 1 and _system_rows(w, task) == []
+
+    async def test_s11_a_late_summary_after_a_server_close_is_kept(self, w):
+        """Item 4. The member approved the archive, so the run closed. The
+        agent then finishes with a summary: 200, and the summary is kept as a
+        response. A second summary is refused, as a finish on any completed
+        run is."""
+        task = _fresh(w)
+        async with _session(w.p) as call:
+            asked = await call(w.alice, "POST", f"/projects/tasks/{task}/archive-request",
+                               {"idempotency_key": _key()})
+            rid = asked.json()["run"]["id"]
+            ok = await call(w.alice_person, "POST", f"/projects/agent-runs/{rid}/archive-approval",
+                            {"decision": "approve", "idempotency_key": _key()})
+            assert ok.json()["run"]["status"] == "completed"
+            ended = _run_row(w, rid).ended_at
+            done = await call(w.alice, "POST", f"/projects/agent-runs/{rid}/finish",
+                              {"summary": "Archived it, nothing left.", "idempotency_key": _key()})
+            assert done.status_code == 200, done.text
+            assert done.json()["run"]["status"] == "completed"
+            assert done.json()["activity"]["content"]["body"] == "Archived it, nothing left."
+            again = await call(w.alice, "POST", f"/projects/agent-runs/{rid}/finish",
+                               {"summary": "Again.", "idempotency_key": _key()})
+            assert again.status_code == 409, again.text
+        row = _run_row(w, rid)
+        assert row.status == "completed" and row.ended_at == ended
+        bodies = [r.body for r in _rows(
+            w.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities"
+                 " WHERE run_id = CAST(:r AS uuid) AND type = 'response' ORDER BY seq", r=rid)]
+        assert bodies == [agent_runs.ARCHIVE_CLOSED_BODY, "Archived it, nothing left."]
+
+    async def test_s11_a_summary_on_a_run_the_agent_finished_is_still_refused(self, w):
+        """Item 4, the other side. Only a SERVER close takes a late summary."""
+        task = _fresh(w)
+        async with _session(w.p) as call:
+            started = await call(w.alice, "POST", f"/projects/tasks/{task}/agent-runs", {})
+            rid = started.json()["run"]["id"]
+            first = await call(w.alice, "POST", f"/projects/agent-runs/{rid}/finish",
+                               {"summary": "Done.", "idempotency_key": _key()})
+            assert first.status_code == 200, first.text
+            again = await call(w.alice, "POST", f"/projects/agent-runs/{rid}/finish",
+                               {"summary": "More.", "idempotency_key": _key()})
+        assert again.status_code == 409, again.text
+
+    async def test_s12_an_answer_wins_over_a_strand(self, w):
+        """Item 5. A run whose answer waits past the lease has a strand of
+        reason ``answer_unread``. Its ``needs_agent`` reason is ``answered``,
+        so ``my_work`` offers it as ``run_answered``, not as a quiet run."""
+        task = _fresh(w)
+        rid = _insert_run(w, task, answer_waits=True)
+        await _sweep_org(w)
+        [listed] = await _needs(w, w.alice)
+        assert listed["id"] == rid and listed["needs_agent"] == "answered"
+        assert listed["stranded"]["reason"] == "answer_unread"
+
+    async def test_s13_a_closer_that_fails_stops_nothing_else(self, w, monkeypatch):
+        """Item 6. Each closed run has its own savepoint: one failure leaves
+        the other closes, and the nudges of the org still go."""
+        archived = [_fresh(w), _fresh(w)]
+        runs = []
+        for task in archived:
+            rid = _insert_run(w, task, idle_s=600, answer_waits=True)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "INSERT INTO pm_agent_run_activities (organization_id, run_id, task_id,"
+                    " type, content, actor) VALUES (CAST(:o AS uuid), CAST(:r AS uuid),"
+                    " CAST(:t AS uuid), 'prompt',"
+                    " CAST('{\"selected\": [\"approve\"], \"archived\": true}' AS jsonb), :m)"),
+                    {"o": w.a, "r": rid, "t": task, "m": ALICE})
+            runs.append(rid)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET archived_at = now()"
+                           " WHERE id = ANY(CAST(:t AS uuid[]))"), {"t": archived})
+        quiet_task = _fresh(w)
+        quiet = _insert_run(w, quiet_task)
+        real = agent_runs.close_archived_run
+
+        async def flaky(db: Any, run: Any) -> None:
+            if str(run.id) == runs[0]:
+                raise RuntimeError("a bad run")
+            await real(db, run)
+
+        monkeypatch.setattr(agent_runs, "close_archived_run", flaky)
+        result = await _sweep_org(w)
+        # The failed close rolled back alone. Step 2 then closes that run as
+        # a run of an archived task, and the nudge of the org still goes.
+        assert result.failed == 1 and result.closed == 2 and result.nudged == 1
+        assert _run_lines(w, runs[1]) == [agent_runs.ARCHIVE_CLOSED_BODY]
+        assert _run_lines(w, runs[0]) == [agent_runs.CLOSED_TASK_BODIES["archived"]]
+        assert len(_nudges(w, quiet_task)) == 1 and len(_strands(w, quiet)) == 1
 
 
 @_DB_GATE

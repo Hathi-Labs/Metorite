@@ -830,6 +830,14 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # it after 14 days. Kept whole, so the table is on one side only.
     _PersonRows("knowledge_proposals", "kb_page_proposals",
                 "lower(proposer_email) = :email"),
+    # WS-55 SW-10a (external_agent_access.md §12.6): the strands of the
+    # member's agent runs, the nudges and the recovery records of the sweep.
+    # Kept and counted, not deleted: a strand is part of the record of its
+    # run, the run stays, and a purge deletes no `pm_` row (D63,
+    # `test_the_purge_names_no_task_table_and_deletes_no_pm_row`). Kept
+    # whole, so the table is on one side only.
+    _PersonRows("agent_run_strands", "pm_agent_run_strands",
+                "lower(member_email) = :email"),
 )
 
 
