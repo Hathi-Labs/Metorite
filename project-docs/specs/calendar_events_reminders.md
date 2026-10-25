@@ -673,7 +673,7 @@ Every flag is OFF by default. Off gives today's behaviour.
 |---|---|---|---|
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
 | `CALENDAR_REMINDERS` and `NEXT_PUBLIC_CALENDAR_REMINDERS` | Both | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
-| `WEB_PUSH_ENABLED` and `NEXT_PUBLIC_WEB_PUSH` | Both | PN-1, RE-9 | No service worker, no toggle, no push. 🔴 Owner flip for a real member in production |
+| `WEB_PUSH_ENABLED` and `NEXT_PUBLIC_WEB_PUSH` | Both | PN-1, RE-9 | No service worker, no toggle, no push. ✅ ON for every org is approved (D113.8) |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
@@ -707,8 +707,9 @@ CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11.
 
 ### 10.1 WS-66 — reminders and web push (D113)
 
-Every ticket is AGENT-SAFE and ships dark (§9). Turning a flag on for a real
-member in production is the owner's flip. Each R8 suite needs `pytestmark =
+Every ticket is AGENT-SAFE and ships dark (§9). The owner approved both flags
+ON for every org in production on 2026-10-25 (D113.8). An agent turns each one
+on after its slice passes on dev.metorite.com. Each R8 suite needs `pytestmark =
 _DB_GATE`, because `deploy.yml` has no ladder database.
 
 | Ticket | Order | Scope | Done when | Fence (R7) |
