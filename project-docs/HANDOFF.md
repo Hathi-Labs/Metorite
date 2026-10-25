@@ -5902,7 +5902,7 @@ line — never reclaim a number by deleting the other entry.
   1. A task that goes to done, cancelled or archived keeps its open run until
      the lease ends. End the run on that status change, or let a closed task
      not hold. **SW-10a (spec §12.6, step 2) covers the run side:** the sweep
-     closes a quiet run of a closed task, while `agent_run_sweep_enabled` is
+     closes a run of a closed task once its lease ended, while `agent_run_sweep_enabled` is
      on. The task side stays open here: an end of the run at the moment the
      task closes, with the flag off too.
   2. The Release button uses `access.is_admin`. The server uses

@@ -25,8 +25,9 @@ expired). An ``awaiting`` run waits on a person and is never swept.
 agent, never moves the task and never ends the run at either miss. It closes
 two kinds of run, through ``agent_runs``: a run of the old archive shape (the
 member approved the archive, and no agent came back), and a run whose task
-is done, cancelled or archived, once the run was quiet for the stale band
-(fix round, H-409 item 1 for runs). It never touches that task.
+is done, cancelled or archived, once its lease ended by the rule of the
+gate (``filters.holder_free_sql``, H-409 item 1 for runs). It never touches
+that task.
 
 **A new activity starts over.** Any activity on the run after the first miss
 clears its fingerprint (step 2 of a tick), and ``needs_agent`` reads the same
@@ -333,8 +334,8 @@ async def run_org(org: str, result: TickResult) -> None:
     own savepoint, in every step, so one failure does not undo the others.
 
     1. Close each run of the old archive shape (spec §12.6, part 1 item 2).
-    2. Close each quiet run whose task is closed (done, cancelled or
-       archived). The task is never touched (fix round, H-409 item 1).
+    2. Close each run whose task is closed (done, cancelled or archived)
+       and whose lease ended. The task is never touched (H-409 item 1).
     3. Clear each open strand that no longer fits its run.
     4. The first or the second miss of each stranded run.
     """

@@ -112,6 +112,7 @@ from gateway.routes.projects.filters import (
     attach_agent_state,
     connection_gone_sql,
     holder_free,
+    holder_free_sql,
     lease_expired,
     open_strand_sql,
     strand_fits_sql,
@@ -1916,28 +1917,34 @@ CLOSED_TASK_BODIES: dict[str, str] = {
     "archived": "Closed: the task is archived.",
 }
 
-#: SW-10a fix round. An ``in_progress`` run whose task is closed
-#: (``filters.task_closed_sql``), quiet for the stale band (its derived state
-#: is ``stale``), so the close never races an agent that finishes or a fresh
-#: answer. ``why`` is ``archived`` first, then the status category.
-_CLOSED_TASK_RUNS_SQL = (
-    "SELECT r.id, CASE WHEN t.archived_at IS NOT NULL THEN 'archived'"
-    "                  ELSE st.category END AS why"
-    "  FROM pm_agent_runs r"
-    "  JOIN pm_tasks t ON t.id = r.task_id"
-    "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
-    " WHERE r.status = 'in_progress'"
-    f"   AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
-    f"   AND {task_closed_sql('r')}"
-    " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
-)
+def _closed_task_runs_sql() -> str:
+    """SW-10a. An ``in_progress`` run whose task is closed
+    (``filters.task_closed_sql``) and whose holder is free by the rule of the
+    gate (``filters.holder_free_sql``): its lease ended, or its connection is
+    revoked or expired. The bar is the LEASE, not the stale band. An agent
+    that moves its own task to done and then waits in a long call, for a
+    deploy for example, keeps its run, and any activity, a member's answer
+    too, renews the lease. ``why`` is ``archived`` first, then the status
+    category. Built when a tick runs, because the lease is read then."""
+    return (
+        "SELECT r.id, CASE WHEN t.archived_at IS NOT NULL THEN 'archived'"
+        "                  ELSE st.category END AS why"
+        "  FROM pm_agent_runs r"
+        "  JOIN pm_tasks t ON t.id = r.task_id"
+        "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
+        " WHERE r.status = 'in_progress'"
+        f"   AND {holder_free_sql('r')}"
+        f"   AND {task_closed_sql('r')}"
+        " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
+    )
 
 
 async def closed_task_runs(db: Any, *, limit: int) -> list[tuple[str, str]]:
-    """``(run_id, why)`` of each quiet open run whose task is closed, at most
-    *limit*, locked for the caller's tenant transaction (SW-10a fix round)."""
+    """``(run_id, why)`` of each open run whose task is closed and whose
+    lease ended, at most *limit*, locked for the caller's tenant transaction
+    (SW-10a)."""
     return [(str(r.id), str(r.why)) for r in (await db.execute(
-        text(_CLOSED_TASK_RUNS_SQL), {"n": limit})).fetchall()]
+        text(_closed_task_runs_sql()), {"n": limit})).fetchall()]
 
 
 async def close_closed_task_run(db: Any, run: Any, why: str) -> None:

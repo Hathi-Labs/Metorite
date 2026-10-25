@@ -141,8 +141,6 @@ const PURGE_LABELS: Record<string, string> = {
   crm_member_rules: "own CRM business rule",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
-  // WS-55 SW-10a: a nudge or a recovery record of the member's agent run.
-  agent_run_strands: "stranded agent run record",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.
   member_settings: "personal settings record",
   audit_entries: "app audit entry",
@@ -154,6 +152,8 @@ const PURGE_LABELS: Record<string, string> = {
   meetings: "meeting",
   // WS-61 KB-5a: an edit the assistant proposed for the member, kept.
   knowledge_proposals: "proposed Knowledge edit",
+  // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
+  agent_run_strands: "stranded agent run record",
 };
 
 function purgeLabel(key: string, n: number): string {

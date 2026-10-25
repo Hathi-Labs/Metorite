@@ -981,8 +981,36 @@ def holder_free(status: str, idle_s: float, connection_gone: bool) -> bool:
     """True when an open run no longer keeps its task, so the next claim
     takes it over (EA-14a, SW-13c): its lease ended, or its connection is
     revoked or expired. The ONE Python rule of the gate and of
-    ``held_by.stale``. :func:`unheld_clause` is its SQL twin."""
+    ``held_by.stale``. :func:`holder_free_sql` is its SQL twin."""
     return connection_gone is True or lease_expired(status, idle_s)
+
+
+def lease_held_sql(alias: str) -> str:
+    """True in SQL while the lease of the open run *alias* holds: its last
+    activity is newer than the lease, or three leases while it waits on a
+    question. The SQL twin of NOT :func:`lease_expired`. ONE text for the
+    ``unheld`` filter (:func:`unheld_clause`) and :func:`holder_free_sql`.
+    The idle time is ``last_activity_at``, so ANY activity renews it, a
+    member's answer too.
+
+    The lease is read when the text is built, never at import, so the
+    environment override works in a running process.
+    """
+    lease = agent_run_lease_s()
+    hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
+    return (
+        f"{alias}.last_activity_at >= now() - (CASE WHEN {alias}.status = 'awaiting'"
+        f" THEN {hold} ELSE {lease} END) * interval '1 second'"
+    )
+
+
+def holder_free_sql(alias: str) -> str:
+    """The SQL twin of :func:`holder_free` over the open run *alias*: its
+    lease ended (:func:`lease_held_sql` fails), or its connection is revoked
+    or expired. The stranded rule (:func:`stranded_clause`) and the close of
+    a run of a closed task (``agent_runs``, SW-10a) read it, and the
+    ``unheld`` filter reads its two parts."""
+    return f"(NOT ({lease_held_sql(alias)}) OR {connection_gone_sql(alias)})"
 
 
 #: SW-10a (spec §12.6). The RAW answered rule over the alias ``r``: the newest
@@ -1065,12 +1093,10 @@ def stranded_clause() -> str:
     The lease is read when the clause is built, never at import, as
     :func:`unheld_clause` reads it.
     """
-    lease = agent_run_lease_s()
     return (
         "(r.status = 'in_progress'"
         f" AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
-        f" AND (r.last_activity_at < now() - {lease} * interval '1 second'"
-        f"      OR {connection_gone_sql('r')})"
+        f" AND {holder_free_sql('r')}"
         f" AND NOT {task_closed_sql('r')})"
     )
 
@@ -1125,14 +1151,11 @@ def unheld_clause() -> str:
     environment override works in a running process.
     """
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
-    lease = agent_run_lease_s()
-    hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
         " WHERE h.task_id = t.id"
         f"   AND h.status IN ({open_list})"
-        f"   AND h.last_activity_at >= now() - (CASE WHEN h.status = 'awaiting'"
-        f"        THEN {hold} ELSE {lease} END) * interval '1 second'"
+        f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
     )
 

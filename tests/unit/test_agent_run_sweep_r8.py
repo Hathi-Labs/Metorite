@@ -80,6 +80,15 @@ The fix round (2026-10-25):
 * W27. ``routes/admin/members.py``: no row of ``pm_agent_run_strands``.
   ``test_crm_answer_first_fix1.py::test_every_table_keyed_by_a_member_email_is_in_the_purge``.
 
+The last round (2026-10-25):
+
+* W28. ``R`` ``_closed_task_runs_sql``: the stale band instead of
+  ``holder_free_sql``. ``test_s10_a_run_quiet_for_ten_minutes_on_a_done_task_keeps_it``.
+* W29. ``R`` ``close_closed_task_run``: no ``server_close=why``.
+  ``test_s11_a_late_summary_after_the_sweep_closed_the_run_is_kept``.
+* W30. ``R`` ``_closed_task_runs_sql``: the lease measured on
+  ``last_agent_activity_at``. ``test_s10_a_fresh_answer_on_a_closed_task_keeps_the_run``.
+
 Two guards hold twice on purpose: the read of the open strand and the
 unique index (W6, W7), and ``_one_run`` and the guarded ``UPDATE`` (W8). The
 arbiter tests call one step twice, as two processes would, so each layer has
@@ -266,9 +275,19 @@ class TestTheRules:
 
     def test_the_stranded_clause_reads_the_lease_when_it_is_built(self, monkeypatch) -> None:
         monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, "100")
-        assert "now() - 100 * interval '1 second'" in filters.stranded_clause()
+        assert "THEN 300 ELSE 100 END) * interval '1 second'" in filters.stranded_clause()
         monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, "200")
-        assert "now() - 200 * interval '1 second'" in filters.stranded_clause()
+        assert "THEN 600 ELSE 200 END) * interval '1 second'" in filters.stranded_clause()
+
+    def test_the_gate_the_strand_and_the_close_read_one_lease_text(self) -> None:
+        """Last round, item 1. ``lease_held_sql`` is the one lease text: the
+        ``unheld`` filter of the gate holds it, and ``holder_free_sql``, the
+        SQL twin of ``holder_free``, holds it for the stranded rule and the
+        close of a run of a closed task."""
+        assert filters.lease_held_sql("h") in filters.unheld_clause()
+        assert filters.lease_held_sql("r") in filters.holder_free_sql("r")
+        assert filters.holder_free_sql("r") in filters.stranded_clause()
+        assert filters.holder_free_sql("r") in agent_runs._closed_task_runs_sql()
 
     def test_the_strand_reasons_are_the_check_of_the_migration(self) -> None:
         sql = _migration().read_text(encoding="utf-8")
@@ -404,11 +423,15 @@ def _fresh(w: Any, org: str | None = None, owner: str = ALICE) -> str:
 
 def _insert_run(w: Any, task: str, *, org: str | None = None, member: str = ALICE,
                 status: str = "in_progress", idle_s: int = 3 * 3600,
-                answer_waits: bool = False, connection: str | None = None) -> str:
+                answer_waits: bool = False, connection: str | None = None,
+                agent_idle_s: int | None = None) -> str:
     """A run, quiet for *idle_s* seconds. With *answer_waits* the newest
-    activity is a member's answer that no agent read."""
+    activity is a member's answer that no agent read. *agent_idle_s* sets
+    how long ago the agent last acted, when that is older than the answer."""
     rid = str(uuid.uuid4())
     agent_lag = 30 if answer_waits else 0
+    if agent_idle_s is not None:
+        agent_lag = agent_idle_s - idle_s
     with w.p.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO pm_agent_runs (id, organization_id, task_id, member_email,"
@@ -838,16 +861,28 @@ class TestTheFixRound:
         assert _task_state(w, task) == before
         assert _nudges(w, task) == [] and _strands(w, rid) == []
 
-    async def test_s10_a_closed_task_with_fresh_activity_is_left_alone(self, w):
-        """Item 3. One minute after the last activity, the agent may still be
-        finishing: the run stays open, and no bell goes."""
+    async def test_s10_a_run_quiet_for_ten_minutes_on_a_done_task_keeps_it(self, w):
+        """Last round, item 1. The bar is the LEASE, not the stale band. An
+        agent that moved its own task to done and then waits in a long call
+        keeps its run: ten quiet minutes close nothing, and no bell goes."""
         task = _fresh(w)
-        rid = _insert_run(w, task, idle_s=60)
+        rid = _insert_run(w, task, idle_s=600)
         _close_task(w, task, "done")
         result = await _sweep_org(w)
         assert (result.closed, result.nudged) == (0, 0)
         assert _run_row(w, rid).status == "in_progress"
         assert _run_lines(w, rid) == [] and _nudges(w, task) == []
+
+    async def test_s10_a_fresh_answer_on_a_closed_task_keeps_the_run(self, w):
+        """Last round, item 3. The agent last acted three hours ago, and a
+        member answered 30 minutes ago. The answer renews the lease, so the
+        run stays open on its done task."""
+        task = _fresh(w)
+        rid = _insert_run(w, task, idle_s=1800, answer_waits=True, agent_idle_s=3 * 3600)
+        _close_task(w, task, "done")
+        result = await _sweep_org(w)
+        assert result.closed == 0
+        assert _run_row(w, rid).status == "in_progress" and _run_lines(w, rid) == []
 
     async def test_s10_an_open_strand_of_a_closed_task_clears(self, w):
         """Item 3. A run nudged before its task closed: the next tick closes
@@ -891,6 +926,28 @@ class TestTheFixRound:
             w.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities"
                  " WHERE run_id = CAST(:r AS uuid) AND type = 'response' ORDER BY seq", r=rid)]
         assert bodies == [agent_runs.ARCHIVE_CLOSED_BODY, "Archived it, nothing left."]
+
+    async def test_s11_a_late_summary_after_the_sweep_closed_the_run_is_kept(self, w):
+        """Last round, item 2. The SWEEP closed the run because its task is
+        done. The agent then finishes with a summary: 200, the summary is a
+        response, and a second summary gets 409."""
+        task = _fresh(w)
+        rid = _insert_run(w, task, connection=w.conn_alice)
+        _close_task(w, task, "done")
+        assert (await _sweep_org(w)).closed == 1
+        async with _session(w.p) as call:
+            done = await call(w.alice, "POST", f"/projects/agent-runs/{rid}/finish",
+                              {"summary": "Shipped before the task closed.",
+                               "idempotency_key": _key()})
+            assert done.status_code == 200, done.text
+            assert done.json()["run"]["status"] == "completed"
+            again = await call(w.alice, "POST", f"/projects/agent-runs/{rid}/finish",
+                               {"summary": "Again.", "idempotency_key": _key()})
+            assert again.status_code == 409, again.text
+        bodies = [r.body for r in _rows(
+            w.p, "SELECT content->>'body' AS body FROM pm_agent_run_activities"
+                 " WHERE run_id = CAST(:r AS uuid) AND type = 'response' ORDER BY seq", r=rid)]
+        assert bodies == [agent_runs.CLOSED_TASK_BODIES["done"], "Shipped before the task closed."]
 
     async def test_s11_a_summary_on_a_run_the_agent_finished_is_still_refused(self, w):
         """Item 4, the other side. Only a SERVER close takes a late summary."""
@@ -945,11 +1002,11 @@ class TestTheFixRound:
 
         monkeypatch.setattr(agent_runs, "close_archived_run", flaky)
         result = await _sweep_org(w)
-        # The failed close rolled back alone. Step 2 then closes that run as
-        # a run of an archived task, and the nudge of the org still goes.
-        assert result.failed == 1 and result.closed == 2 and result.nudged == 1
+        # The failed close rolled back alone, and the nudge of the org still
+        # goes. Step 2 leaves that run open: its lease holds (ten minutes).
+        assert result.failed == 1 and result.closed == 1 and result.nudged == 1
         assert _run_lines(w, runs[1]) == [agent_runs.ARCHIVE_CLOSED_BODY]
-        assert _run_lines(w, runs[0]) == [agent_runs.CLOSED_TASK_BODIES["archived"]]
+        assert _run_row(w, runs[0]).status == "in_progress"
         assert len(_nudges(w, quiet_task)) == 1 and len(_strands(w, quiet)) == 1
 
 
