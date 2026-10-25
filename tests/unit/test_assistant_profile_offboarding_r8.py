@@ -27,8 +27,9 @@ engine), the CRM Redis keys, the identity shadow and the mailbox teardown.
 
 Mutations, each red here (``personalization.md`` §9 PZ-9):
 drop the ``user_settings`` entry of ``_PURGE_DELETES`` (P1, P5);
-drop its org predicate (P1); drop the clear of ``remove_member_rows``
-(P3, P4); make the clear a DELETE (P3).
+drop its org predicate (P1b); drop the clear of ``remove_member_rows``
+(P3, P4); make the clear a DELETE (P3); drop the clear's org predicate
+(P1b).
 """
 from __future__ import annotations
 
@@ -140,6 +141,12 @@ def _app_dsn(ns) -> str:
     return ns.app_url.render_as_string(hide_password=False)
 
 
+def _owner_dsn(ns) -> str:
+    """The superuser, which RLS does not bind. Only the statement's own org
+    predicate keeps another organization's row safe from it."""
+    return ns.admin_engine.url.render_as_string(hide_password=False)
+
+
 @contextlib.contextmanager
 def _tenant(org: str):
     token = bind_tenant(org)
@@ -192,6 +199,25 @@ async def test_p1_a_purge_deletes_this_orgs_row_only(db) -> None:
     assert set(_rows(db, a)) == {db.org_b}, "the purge reached another org's row"
     assert _rows(db, a)[db.org_b]["assistant_profile"] == _PROFILE
     assert _rows(db, b)[db.org_a]["assistant_profile"] == _PROFILE
+
+
+async def test_p1b_the_org_predicate_holds_where_rls_does_not(db) -> None:
+    """The purge and the removal each name the bound org beside RLS. A role
+    that bypasses RLS must still touch only this org's row."""
+    a, b = _address("a"), _address("b")
+    _seed_member(db, a, db.org_a)
+    _seed_member(db, b, db.org_a)
+    _seed_settings(db, a, db.org_a)
+    _seed_settings(db, a, db.org_b)
+    _seed_settings(db, b, db.org_a)
+    _seed_settings(db, b, db.org_b)
+    async with tenant_engine_scope(_owner_dsn(db)):
+        await _remove(db.org_a, b)
+        await _purge(db.org_a, a)
+    assert set(_rows(db, a)) == {db.org_b}
+    assert _rows(db, a)[db.org_b]["assistant_profile"] == _PROFILE
+    assert _rows(db, b)[db.org_a]["assistant_profile"] is None
+    assert _rows(db, b)[db.org_b]["assistant_profile"] == _PROFILE
 
 
 async def test_p2_a_member_invited_again_starts_empty(db) -> None:
