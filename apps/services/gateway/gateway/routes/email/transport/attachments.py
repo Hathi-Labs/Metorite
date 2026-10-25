@@ -688,11 +688,22 @@ TEXT_ROUTE_BUDGET_S = 55.0
 FETCH_TIMEOUT_S = 15.0
 
 
+def _route_reads_with_ocr() -> bool:
+    """The route's own answer for ``ocr``: always ``True``.
+
+    A dependency with no parameter adds no query parameter. So no request
+    can turn OCR off or on, and only a caller in the gateway that calls
+    :func:`attachment_text` itself can pass ``ocr=False``.
+    """
+    return True
+
+
 @router.get("/attachments/{attachment_id}/text", response_model=AttachmentTextModel)
 async def attachment_text(
     attachment_id: str,
     user: UserContext = Depends(get_current_user),
     offset: int = 0,
+    ocr: bool = Depends(_route_reads_with_ocr),
 ) -> AttachmentTextModel:
     """The text of one attachment of the caller's own mail (WS-17 EM-T11).
 
@@ -710,30 +721,18 @@ async def attachment_text(
     (``acb_skills.attachment_tools.parse_bounded``), after the database
     session has closed. Spec: ``email_app_master_plan.md`` §10.4.12.
 
-    The route reads with OCR when ``ATTACHMENT_OCR`` is on (WS-67 OA-3). It
-    has no OCR parameter, so no request can turn OCR off or on.
-    """
-    return await read_attachment_text(attachment_id, user, offset)
-
-
-async def read_attachment_text(
-    attachment_id: str, user: UserContext, offset: int = 0, *, ocr: bool = True,
-) -> AttachmentTextModel:
-    """The read of :func:`attachment_text`, for the route and for a caller in
-    the gateway.
-
-    *ocr* ``False`` reads as with ``ATTACHMENT_OCR`` off (fix round 2): no
-    OCR child, the flag-off cache namespace, the flag-off answers and no
-    time bound on the fetch. The reply drafter (``draft_files.py``) passes it,
-    because it reads up to six files in a budget of 8 to 20 s, and an OCR
-    read would spend that budget for each of them. A read with OCR bounds the
-    fetch to :data:`FETCH_TIMEOUT_S`, and gives OCR a deadline of
+    With ``ATTACHMENT_OCR`` on, the route reads with OCR (WS-67 OA-3). It
+    bounds the fetch to :data:`FETCH_TIMEOUT_S`, and gives OCR a deadline of
     :data:`TEXT_ROUTE_BUDGET_S` from the start. A busy OCR slot answers
-    ``kind="busy"``.
+    ``kind="busy"``. *ocr* ``False`` reads as with the flag off (fix round 2):
+    no OCR child, the flag-off cache namespace, the flag-off answers and no
+    time bound on the fetch. The reply drafter (``draft_files.py``) passes
+    it, because it reads up to six files in a budget of 8 to 20 s.
     """
     aid = _canonical_uuid(attachment_id)
     if aid is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    ocr = ocr is not False  # a direct call that passes nothing reads as the route
     use_ocr = ocr and attachment_ocr.ocr_enabled()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TEXT_ROUTE_BUDGET_S if use_ocr else None

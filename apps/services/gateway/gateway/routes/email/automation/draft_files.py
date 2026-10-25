@@ -174,11 +174,9 @@ async def _read_text(aid: str, user: UserContext) -> Any:
     (``TestTheCallers``) fails when a caller with a short budget can reach
     OCR.
     """
-    from gateway.routes.email.transport.attachments import (  # noqa: PLC0415
-        read_attachment_text,
-    )
+    from gateway.routes.email.transport.attachments import attachment_text  # noqa: PLC0415
 
-    return await read_attachment_text(aid, user, ocr=False)
+    return await attachment_text(aid, user, ocr=False)
 
 
 async def _read_image(aid: str, user: UserContext, mime: str) -> str | None:

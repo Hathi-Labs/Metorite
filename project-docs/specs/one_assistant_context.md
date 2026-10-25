@@ -142,7 +142,7 @@ caller, and on a short-budget caller that can reach OCR.
 | Caller | Its budget | OCR |
 |---|---|---|
 | The chat tool `read_attachment` (`attachment_tools.py`) | none: a tool call | yes |
-| The email text route `GET /email/attachments/{id}/text` (`read_attachment_text`), for `read_email_attachment` | 60 s | yes, inside a deadline of 55 s |
+| The email text route `GET /email/attachments/{id}/text` (`attachment_text`), for `read_email_attachment` | 60 s | yes, inside a deadline of 55 s |
 | The reply drafter `draft_files._read_text`: the reply card, the composer and a rule draft | 10 s, 8 s and 20 s for all files | no (`ocr=False`) |
 
 A no-OCR read also uses the flag-off cache name. So it never writes a "no

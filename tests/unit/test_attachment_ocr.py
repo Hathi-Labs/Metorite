@@ -1193,16 +1193,13 @@ CALLERS: dict[tuple[str, str, str], tuple[bool, str]] = {
     ("packages/acb_skills/acb_skills/attachment_tools.py", "read_attachment", "parse_bounded"):
         (True, "the chat tool: a tool call with no budget"),
     ("apps/services/gateway/gateway/routes/email/transport/attachments.py",
-     "read_attachment_text", "parse_bounded"):
+     "attachment_text", "parse_bounded"):
         (True, "the email text route: a deadline of 55 s inside the 60 s of its caller"),
-    ("apps/services/gateway/gateway/routes/email/transport/attachments.py",
-     "attachment_text", "read_attachment_text"):
-        (True, "the route: the email assistant waits 60 s for it"),
     ("apps/services/gateway/gateway/routes/email/automation/draft_files.py",
-     "_read_text", "read_attachment_text"):
+     "_read_text", "attachment_text"):
         (False, "the reply drafter: 8 to 20 s for all the files of a mail"),
 }
-_READS = frozenset({"parse_bounded", "read_attachment_text", "attachment_text"})
+_READS = frozenset({"parse_bounded", "attachment_text"})
 
 
 class _Calls(ast.NodeVisitor):
@@ -1265,6 +1262,18 @@ class TestTheCallers:
         for key, call in _read_calls():
             reaches_ocr, why = CALLERS[key]
             assert _asks_for_no_ocr(call) is (not reaches_ocr), (key, why)
+
+    def test_no_request_can_set_ocr(self) -> None:
+        """The route takes ``ocr`` from a dependency with no parameter, so the
+        API holds no ``ocr`` parameter of any kind."""
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(route.router)
+        paths = app.openapi()["paths"]
+        [path] = [p for p in paths if p.endswith("/attachments/{attachment_id}/text")]
+        names = {p["name"] for p in paths[path]["get"].get("parameters", [])}
+        assert "offset" in names and "ocr" not in names, names
 
     def test_each_drafter_budget_is_under_the_ocr_worst_case(self) -> None:
         """The reason the drafter reads with no OCR: each of its budgets
