@@ -679,7 +679,7 @@ Every flag is OFF by default. Off gives today's behaviour.
 |---|---|---|---|
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
 | `CALENDAR_REMINDERS` and `NEXT_PUBLIC_CALENDAR_REMINDERS` | Both | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
-| `WEB_PUSH_ENABLED` and `NEXT_PUBLIC_WEB_PUSH` | Both | PN-1, RE-9 | No service worker, no toggle, no push. ✅ ON for every org is approved (D114.8) |
+| `WEB_PUSH_ENABLED` | Gateway. The client has no flag of its own: the Notifications section shows only when `/push/public-key` answers | PN-1, RE-9 | Every `/push` route answers 404, so the section draws nothing, and nothing registers or sends. ✅ ON for every org is approved (D114.8) |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
