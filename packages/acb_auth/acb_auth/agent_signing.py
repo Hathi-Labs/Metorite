@@ -35,6 +35,15 @@ its value is the 9th line. A GET has no 9th line, so its signed string is the
 eight lines above, byte for byte. Branch 0 keeps each nonce for
 :data:`NONCE_TTL_S` seconds, so a replay of a write gets 401.
 
+**The MCP session adds a last line (SW-7, spec §12.5).** When the edge serves
+an MCP session, the request carries ``X-Agent-Session``, the session key (22
+base64url characters), and the signed string ends with one more line,
+``session:<key>``. A request with no session has no such line, so its string
+is byte for byte the string before SW-7. The edge mints the session id that
+the client echoes in ``Mcp-Session-Id`` with :func:`mint_mcp_session`, and
+reads it back with :func:`read_mcp_session`. The id binds the connection and
+carries an HMAC, so a client cannot make up the id of another session.
+
 **The keys.** ``agent_edge_signing_key`` and ``agent_edge_signing_key_previous``.
 A key under 32 bytes, or equal to ``GATEWAY_INTERNAL_TOKEN`` or to
 ``LITELLM_MASTER_KEY``, counts as unset. With no usable key, branch 0 refuses
@@ -66,6 +75,15 @@ HEADER_ACTOR_VIA = "X-Actor-Via"
 
 #: The nonce of a write (EA-6a, EA3-28). A GET never carries it.
 HEADER_NONCE = "X-Agent-Nonce"
+
+#: The MCP session key of the call (SW-7, spec §12.5). Signed, optional.
+HEADER_SESSION = "X-Agent-Session"
+
+#: The prefix of the last line of the signed string of a call in a session.
+SESSION_LINE_PREFIX = "session:"
+
+#: The version prefix of an ``Mcp-Session-Id`` that the edge mints.
+MCP_SESSION_VERSION = "s1"
 
 #: Any header whose name starts with this sends the request to branch 0.
 AGENT_HEADER_PREFIX = "x-agent-"
@@ -211,12 +229,17 @@ def canonical_string(
     query: str | Iterable[tuple[str, str]] = "",
     body: bytes = b"",
     nonce: str | None = None,
+    session: str | None = None,
 ) -> str:
     """The ONE signed string of spec §10.1. Both sides call this function.
 
     A GET takes no *nonce* and has eight lines. Any other method takes a
     well-formed *nonce* as the 9th line (EA3-28). A mismatch raises
     ``ValueError``, so neither side can sign a write without a nonce.
+
+    SW-7: a well-formed *session* adds the last line ``session:<key>``. With
+    no session the string does not change. A bad session raises
+    ``ValueError``.
     """
     lines = [
         VERSION,
@@ -235,6 +258,10 @@ def canonical_string(
         if not nonce_is_well_formed(nonce):
             raise ValueError("a write needs a well-formed nonce")
         lines.append(str(nonce))
+    if session is not None:
+        if not session_key_is_well_formed(session):
+            raise ValueError("a session key has the shape of a nonce")
+        lines.append(SESSION_LINE_PREFIX + session)
     return "\n".join(lines)
 
 
@@ -246,6 +273,45 @@ def new_nonce() -> str:
 def nonce_is_well_formed(value: str | None) -> bool:
     """True when *value* is 22 base64url characters (EA3-28)."""
     return isinstance(value, str) and _NONCE.fullmatch(value) is not None
+
+
+def session_key_is_well_formed(value: str | None) -> bool:
+    """True when *value* has the shape of a session key: 22 base64url
+    characters, the shape of a nonce (SW-7)."""
+    return nonce_is_well_formed(value)
+
+
+def _session_mac(key: str, connection_id: str, session: str) -> str:
+    message = f"mcp-session\n{MCP_SESSION_VERSION}\n{connection_id}\n{session}"
+    return hmac.new(key.encode("utf-8"), message.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def mint_mcp_session(key: str, connection_id: str) -> str:
+    """A new ``Mcp-Session-Id`` for *connection_id* (SW-7, spec §12.5):
+    ``s1.<session key>.<hex HMAC>``. The edge sends it on ``initialize``.
+    The key is random, and the HMAC binds it to the connection, so the
+    edge keeps no state."""
+    session = new_nonce()
+    return f"{MCP_SESSION_VERSION}.{session}.{_session_mac(key, connection_id, session)}"
+
+
+def read_mcp_session(value: str | None, connection_id: str,
+                     keys: Iterable[str]) -> str | None:
+    """The session key of an ``Mcp-Session-Id`` that one of *keys* minted
+    for *connection_id*, else ``None``. The compare is
+    ``hmac.compare_digest``. An id of another connection, an id with a
+    changed key part, and an id of an unknown signing key all fail."""
+    parts = (value or "").split(".")
+    if len(parts) != 3 or parts[0] != MCP_SESSION_VERSION:
+        return None
+    session, digest = parts[1], parts[2]
+    if not session_key_is_well_formed(session) or not _HEX.fullmatch(digest):
+        return None
+    for key in keys:
+        if hmac.compare_digest(_session_mac(key, connection_id, session), digest):
+            return session
+    return None
 
 
 def signature(key: str, canonical: str) -> str:
@@ -310,6 +376,7 @@ def signed_headers(
     body: bytes = b"",
     now: float | None = None,
     nonce: str | None = None,
+    session: str | None = None,
 ) -> dict[str, str]:
     """The headers of one signed gateway request (spec §10.1).
 
@@ -332,6 +399,7 @@ def signed_headers(
         query=query,
         body=body,
         nonce=nonce,
+        session=session,
     )
     headers = {
         HEADER_CONNECTION: f"{organization_id}.{connection_id}",
@@ -341,6 +409,8 @@ def signed_headers(
     }
     if write:
         headers[HEADER_NONCE] = str(nonce)
+    if session is not None:
+        headers[HEADER_SESSION] = session
     return headers
 
 
@@ -350,22 +420,28 @@ __all__ = [
     "HEADER_ACTOR_VIA",
     "HEADER_CONNECTION",
     "HEADER_NONCE",
+    "HEADER_SESSION",
     "HEADER_SIGNATURE",
     "HEADER_TIMESTAMP",
     "MAX_SKEW_S",
     "MCP_ACTOR_PREFIX",
+    "MCP_SESSION_VERSION",
     "MIN_KEY_BYTES",
     "NONCE_BYTES",
     "NONCE_NAMESPACE",
     "NONCE_TTL_S",
+    "SESSION_LINE_PREFIX",
     "VERSION",
     "canonical_string",
     "canonical_target",
     "key_id",
+    "mint_mcp_session",
     "new_nonce",
     "nonce_is_well_formed",
     "parse_signature_header",
     "query_pairs",
+    "read_mcp_session",
+    "session_key_is_well_formed",
     "signature",
     "signature_header",
     "signed_headers",

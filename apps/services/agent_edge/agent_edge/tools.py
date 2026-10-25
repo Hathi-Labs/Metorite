@@ -223,10 +223,11 @@ TEXT_TASK_HELD = (
 #: marks the holder ``same_client``: the caller's own run from another
 #: connection of the same client. ``{run_id}`` is the run id in its shape.
 TEXT_TASK_HELD_SAME_CLIENT = (
-    " Exception: the holder is your own run from another connection of the"
-    " same client (another machine, or an earlier sign-in). If that session"
-    " has ended, call release_task with run_id {run_id}, then claim the task"
-    " again. If that session still works, leave the task to it.")
+    " Exception: the holder is your own run from another session of this"
+    " client: another machine, an earlier sign-in, or another terminal when"
+    " MCP sessions are on."
+    " If that session has ended, call release_task with run_id {run_id}, then"
+    " claim the task again. If that session still works, leave the task to it.")
 
 
 def task_held_text(detail: Mapping[str, Any]) -> str:
@@ -402,7 +403,8 @@ async def _get(ctx: Context, template: str, not_found: str, *,
     try:
         answer = await gateway_get(
             ctx.key, ctx.caller.lookup, template,
-            path_params=path_params, query=query or [], timeout_s=timeout_s)
+            path_params=path_params, query=query or [], timeout_s=timeout_s,
+            session=ctx.session)
     except GatewayUnreachable:
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
@@ -433,7 +435,8 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
-            path_params=path_params, query=query or [], if_match=if_match)
+            path_params=path_params, query=query or [], if_match=if_match,
+            session=ctx.session)
     except GatewayNotSent:
         raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
@@ -842,10 +845,58 @@ def _check_members(name: str, rule: Mapping[str, Any], value: dict[str, Any]) ->
 
 @dataclass(frozen=True)
 class Context:
-    """What one tool call may use: the caller and the signing key."""
+    """What one tool call may use: the caller and the signing key.
+
+    SW-7: *session* is the MCP session key that ``mcp.py`` read from a
+    verified ``Mcp-Session-Id``, or ``None``. Every gateway call of the
+    tool signs it in as ``X-Agent-Session``."""
 
     caller: Caller
     key: str
+    session: str | None = None
+
+
+#: SW-7 (spec §12.5). The sentences of a tool description that follow
+#: ``agent_mcp_sessions_enabled``: each marker, and its text with the flag
+#: on and with it off. :meth:`Tool.describe` fills them when ``tools/list``
+#: runs, so the description says what is true in each state.
+SESSION_TEXTS: Mapping[str, tuple[str, str]] = {
+    "[[OWN]]": ("this session", "this connection"),
+    "[[OTHER]]": (
+        " A run of another session, such as another terminal or another"
+        " machine, holds the task like any other session.",
+        " A run of another connection, such as one on another machine, holds"
+        " the task like any other session. Two terminals on one connection"
+        " share one name, and a claim cannot tell them apart."),
+    "[[QUIET]]": (
+        " Second, the tasks of a run of this session that went quiet for five"
+        " minutes, which you may take back (held_by_you). A run of another"
+        " terminal on this connection shows there, and in the first group,"
+        " only after its lease ended.",
+        " Second, the tasks of a run of this connection that went quiet for"
+        " five minutes, which you may take back (held_by_you)."),
+    "[[ROWS]]": (
+        " Take only a row that this list gives. Each terminal is its own"
+        " session, so a run of another terminal, another connection or another"
+        " machine is never yours, and the list leaves it out.",
+        " Take only a row that this list gives: two terminals on one"
+        " connection share one name, and a claim cannot tell them apart. A run"
+        " of another connection, such as one on another machine, is never"
+        " yours, and the list leaves it out."),
+    "[[SHARED]]": (
+        "",
+        " Two terminals on one connection share one name, and a claim cannot"
+        " tell them apart."),
+}
+
+
+def session_text(text: str) -> str:
+    """*text* with each marker of :data:`SESSION_TEXTS` filled by the
+    session flag (SW-7)."""
+    on = agent_oauth.mcp_sessions_enabled()
+    for mark, (yes, no) in SESSION_TEXTS.items():
+        text = text.replace(mark, yes if on else no)
+    return text
 
 
 @dataclass(frozen=True)
@@ -896,7 +947,7 @@ class Tool:
         return {
             "name": self.name,
             "title": self.title,
-            "description": self.description,
+            "description": session_text(self.description),
             "inputSchema": dict(self.input_schema),
             "outputSchema": dict(self.output_schema),
             "annotations": {"title": self.title, **self.annotations},
@@ -2745,6 +2796,13 @@ def _run_connection(run: Mapping[str, Any]) -> str | None:
     return found.lower() if found is not None else None
 
 
+def _this_session(run: Mapping[str, Any], session: str | None) -> bool:
+    """True when *run* is of this MCP session, or of no session yet (SW-7,
+    spec §12.5). A call outside a session owns only runs with no key."""
+    key = run.get("session_key")
+    return key is None or (session is not None and key == session)
+
+
 def _live_holder(value: Any) -> bool:
     """True when an open run that is not stale holds the task (EA-14a)."""
     return isinstance(value, dict) and value.get("stale") is not True
@@ -2831,12 +2889,23 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if agent_oauth.runs_enabled() and via is not None:
         needs, idle = await _together(
             _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, state=HELD_STATE))
-        waiting = [r for r in needs if r.get("state") in WAITING_REASONS]
+        # SW-7: a waiting run of a SIBLING session of this connection is
+        # that session's, until its lease ended. A run with no session key
+        # (a member start, a reopen of a finished run, or a run from before
+        # SW-7) waits for any session of the connection.
+        waiting = [r for r in needs if r.get("state") in WAITING_REASONS
+                   and (_this_session(r, ctx.session)
+                        or r.get("lease_expired") is True)]
         # P1: only a run whose session went quiet. A live run of a sibling
         # session of this client is not this session's work, and an
-        # `awaiting` run waits on a person.
+        # `awaiting` run waits on a person. SW-7: a quiet run of a sibling
+        # session shows only when its LEASE ended, because a quiet session
+        # can still be alive (its subagents post nothing), and the claim
+        # takes a sibling's run over only after the lease.
         holding = [r for r in idle if r.get("state") == HELD_STATE
-                   and r.get("status") in OPEN_RUN_STATUSES]
+                   and r.get("status") in OPEN_RUN_STATUSES
+                   and (_this_session(r, ctx.session)
+                        or r.get("lease_expired") is True)]
 
     body = await _get(ctx, LIST_TASKS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=[
         ("assignee", email), ("status_category", MY_WORK_CATEGORIES),
@@ -2880,16 +2949,11 @@ MY_WORK = Tool(
         " session. The rows come in this order. First, the agent runs of this"
         " connection that wait: reason run_queued (a member queued work for"
         " you), run_answered (a member answered your question) or run_stopping"
-        " (a member asked you to stop). Second, the tasks of a run of this"
-        " connection whose session went quiet for five minutes, which you may"
-        " take back (held_by_you). Third, the tasks assigned to this member that"
-        " no AI session holds and that no open task blocks (assigned). A run of"
-        " another connection, such as one on another machine, is never yours,"
-        " and the list leaves it out. Take the top row. For a waiting run, read"
-        " it with get_agent_run and its run_id. For a task, with"
-        " projects:write, claim the task with claim_task, the task_id and the"
-        " version. Take only a row that this list gives: two terminals on one"
-        " connection share one name, and a claim cannot tell them apart. The"
+        " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
+        " this member that no AI session holds and that no open task blocks"
+        " (assigned). Take the top row. For a waiting run, read it with"
+        " get_agent_run and its run_id. For a task, with projects:write, claim"
+        " the task with claim_task, the task_id and the version.[[ROWS]] The"
         " list never holds a task that is not assigned to this member and that"
         " this connection does not hold." + _UNTRUSTED_NOTE
     ),
@@ -3778,11 +3842,11 @@ CLAIM_TASK = Tool(
         " expected_version. When the task changed after that read, the tool"
         " refuses, and you read the task again. A second claim changes"
         " nothing. Returns the task with its new version, and agent_run_id:"
-        " the agent run that the claim opened, or your own open run from this"
-        " connection that it found, or null when agent"
+        " the agent run that the claim opened, or your own open run from"
+        " [[OWN]] that it found, or null when agent"
         " runs are off. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
-        " claim this one again. A holder with no activity for 2 hours loses"
+        " claim this one again.[[SHARED]] A holder with no activity for 2 hours loses"
         " the task to the next claim." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -3923,10 +3987,9 @@ START_AGENT_RUN = Tool(
     description=(
         "Start an agent run on a task this member can see, when you begin work"
         " on that task. The task then shows people that an agent works on it."
-        " If this member already has an open run on the task from this"
-        " connection, you get that run back, and created is false. A run of"
-        " another connection, such as one on another machine, holds the task"
-        " like any other session. Only one AI session may"
+        " If this member already has an open run on the task from [[OWN]],"
+        " you get that run back, and created is false.[[OTHER]] Only one AI"
+        " session may"
         " hold a task. When another session holds it, the tool refuses: pick"
         " another task, and do not start this one again. While you work, send a"
         " thought with post_agent_activity at least once a minute. After 5"
@@ -4072,7 +4135,7 @@ ASK_ON_TASK = Tool(
     description=(
         "Ask the member a question on a task when you need a decision before"
         " you go on. The tool starts an agent run on the task, or uses the open"
-        " run of this member from this connection, and writes the question. Give 2"
+        " run of this member from [[OWN]], and writes the question.[[SHARED]] Give 2"
         " to 10 options, each with a short id and a label, and mark the one you"
         " recommend with recommended true. Set allow_multiple when more than"
         " one option can apply. With no options, the member answers in free"
@@ -4746,6 +4809,7 @@ __all__ = [
     "RUN_STATUSES",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
+    "SESSION_TEXTS",
     "SET_STATUS_KEYS",
     "SET_TASK_STATUS",
     "START_AGENT_RUN",
@@ -4821,6 +4885,7 @@ __all__ = [
     "offered",
     "reference",
     "run_activity",
+    "session_text",
     "task_held_text",
     "text_nul",
     "timeline_meta",
