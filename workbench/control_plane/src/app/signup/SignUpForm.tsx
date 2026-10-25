@@ -6,6 +6,7 @@ import { useState } from "react";
 import type { ConfiguredProvider } from "@/authPosture";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { forgetThisDevice } from "@/lib/push";
 import { Input, Select } from "@/components/ui/Input";
 import { RESERVED_LABELS, SLUG_RE, suggestSlug } from "@/lib/subdomain";
 
@@ -112,6 +113,15 @@ export function alreadyMemberMessage(email: string | null, orgName: string | nul
     "only one organization. To create a new organization, use a different " +
     "email. To use the existing one, sign in."
   );
+}
+
+/**
+ * "Use a different email": sign out and come back to /signup. WS-66 PN-1:
+ * first forget this device's push subscription, while the session still
+ * names this account. It never throws and gives up after a few seconds.
+ */
+function signOutForAnotherEmail(): void {
+  void forgetThisDevice().then(() => signOut({ callbackUrl: "/signup" }));
 }
 
 function Stepper({ email }: { email: string | null }) {
@@ -318,7 +328,7 @@ export default function SignUpForm({
               variant="secondary"
               size="sm"
               icon="RefreshCw"
-              onClick={() => signOut({ callbackUrl: "/signup" })}
+              onClick={signOutForAnotherEmail}
               className="w-full justify-center"
             >
               {/* The label in full ink: the variant's own muted text read as
@@ -348,7 +358,7 @@ export default function SignUpForm({
                   variant="secondary"
                   size="sm"
                   icon="RefreshCw"
-                  onClick={() => signOut({ callbackUrl: "/signup" })}
+                  onClick={signOutForAnotherEmail}
                 >
                   <span className="font-medium text-foreground">Use a different email</span>
                 </Button>

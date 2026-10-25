@@ -801,6 +801,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # of another organization stays.
     _PersonRows("member_settings", "user_settings",
                 f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-66 PN-1: the member's web push devices of THIS organization. A row
+    # left behind would keep a push going to the leaver's browser. The
+    # clause names the bound org, as the settings row does, so the devices of
+    # the same address in another organization stay.
+    _PersonRows("push_devices", "push_subscriptions",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )

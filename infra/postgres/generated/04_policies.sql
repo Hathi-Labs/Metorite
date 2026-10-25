@@ -1391,6 +1391,13 @@ CREATE POLICY kb_source_nodes_tenant_isolation ON kb_source_nodes
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS push_subscriptions_tenant_isolation ON push_subscriptions;
+CREATE POLICY push_subscriptions_tenant_isolation ON push_subscriptions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reminders FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS reminders_tenant_isolation ON reminders;

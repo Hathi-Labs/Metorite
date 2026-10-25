@@ -19,6 +19,7 @@ import { useEffect } from "react";
 import { leaveAccount } from "@/lib/accountLeave";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
+import { FORGET_TIMEOUT_MS, forgetThisDevice, thisDeviceEndpoint } from "@/lib/push";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 import { clearAppearanceForAccounts, pointAppearanceAt } from "@/lib/theme/scope";
 
@@ -178,6 +179,26 @@ export async function fetchAccounts(withOrgs: boolean): Promise<Accounts> {
   }
 }
 
+/**
+ * True when another account of the switcher stays on this browser (WS-66
+ * PN-1). Only then must the web push toggle keep the browser subscription,
+ * because every account shares that one subscription.
+ *
+ * ⚠️ **STRICT, unlike `fetchAccounts`.** That read answers `NO_ACCOUNTS` for
+ * every fault, and "no other account" makes the caller UNSUBSCRIBE, which
+ * would end the pushes of every other account after one failed read. So this
+ * read THROWS on a network fault, a non-2xx answer or a body that is not
+ * JSON, and the caller keeps the subscription. It answers false only for a
+ * good answer: the switcher is off, or it lists no other account.
+ */
+export async function otherAccountsStay(): Promise<boolean> {
+  const res = await fetch("/api/accounts", { cache: "no-store" });
+  if (!res.ok) throw new Error(`the accounts read answered ${res.status}`);
+  const body = (await res.json()) as Partial<Accounts> | null;
+  if (!body || body.enabled !== true) return false;
+  return Array.isArray(body.others) && body.others.length > 0;
+}
+
 async function act(action: string, body?: unknown): Promise<Response> {
   return fetch(`/api/accounts/${action}`, {
     method: "POST",
@@ -233,15 +254,36 @@ export async function addAccount(
   go: (url: string) => void = (u) => window.location.assign(u),
   callbackUrl?: string,
 ) {
-  const res = await act("stash");
+  // WS-66 PN-1: with 4 full slots the stash overwrites the oldest one. The
+  // server deletes that account's push row first, as that account, so it
+  // sends this browser's endpoint as `remove` does.
+  const res = await act("stash", await pushEndpointBody());
   if (!res.ok) return false;
   clearOrgScopedStorage();
   go(callbackUrl === undefined ? "/signin?add=1" : signInUrl(callbackUrl, true));
   return true;
 }
 
+/**
+ * `{push_endpoint}` of this browser, or `{}` when it holds no subscription
+ * (WS-66 PN-1). A `remove` and a `stash` send it. Each of them can take a
+ * slot account off this browser, and the server then deletes that account's
+ * row of the endpoint AS that account, with the slot's own session, because
+ * after it nothing can act for that account any more. The subscription itself
+ * stays: the active account still uses it.
+ */
+async function pushEndpointBody(): Promise<{ push_endpoint?: string }> {
+  const endpoint = await thisDeviceEndpoint().catch(() => null);
+  return endpoint ? { push_endpoint: endpoint } : {};
+}
+
+/** The body of a `remove`: the slot, and `pushEndpointBody`. */
+async function removeBody(slot: number): Promise<{ slot: number; push_endpoint?: string }> {
+  return { slot, ...(await pushEndpointBody()) };
+}
+
 export async function removeAccount(slot: number): Promise<boolean> {
-  return (await act("remove", { slot })).ok;
+  return (await act("remove", await removeBody(slot))).ok;
 }
 
 /**
@@ -309,7 +351,7 @@ export function clearSignOutNotice(): void {
 /** One `remove`, true only for a 2xx. A network error is false. */
 async function removed(slot: number): Promise<boolean> {
   try {
-    return (await act("remove", { slot })).ok;
+    return (await act("remove", await removeBody(slot))).ok;
   } catch {
     return false;
   }
@@ -349,6 +391,11 @@ export async function signOutThis(
   // This tab leaves, by one path or the other. Its own channel listener must
   // not start a second navigation (see `switchTo`).
   leaving = true;
+  // WS-66 PN-1: forget this device's push row NOW, while the cookie still
+  // names the leaving account, so the DELETE deletes ITS row. `next` stays on
+  // this browser and shares its one subscription, so the subscription stays.
+  // It never throws and gives up after a few seconds, so the sign-out goes on.
+  await forgetThisDevice(FORGET_TIMEOUT_MS, { keepSubscription: true });
   // True once the server swapped the cookie to `next`. From then on this tab
   // must never stay on the leaving account's page.
   let switched = false;
@@ -412,6 +459,9 @@ export async function signOutThis(
  * account's chat namespace (rule 4), then end the active session.
  */
 export async function signOutAll(): Promise<void> {
+  // WS-66 PN-1: first, while the session still names the active account.
+  // It never throws, so the sign-out below always runs.
+  await forgetThisDevice();
   try {
     const res = await act("signout-all");
     const body = res.ok ? ((await res.json()) as { emails?: string[] }) : {};
