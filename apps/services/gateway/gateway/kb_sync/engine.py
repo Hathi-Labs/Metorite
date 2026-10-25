@@ -56,6 +56,11 @@ UPDATE later is a deadlock of its own. The transactions:
   because each of their writes has its own ``state <> 'disconnected'`` guard.
 * **close_ok** locks the connection row first (``store.lock_by_id``, with
   the ``connection_id`` of step (a)), then the source row, then the run row.
+* **The access pass** (``access.py``, KC-4a) takes the source row first in
+  each transaction, with ``discovery.lock_source``, and then the children.
+  ``kb_node_access`` is a child of ``kb_source_nodes``. Its last page writes
+  ``kb_sources.access_read_at``, so it takes ``FOR NO KEY UPDATE``. It never
+  locks the connection row.
 * **The disconnect** (``routes/knowledge/sources.py``) reads the source row
   with no lock, locks the connection row, then locks the source row
   ``FOR UPDATE`` and reads its state again. ``FOR UPDATE`` stays, because

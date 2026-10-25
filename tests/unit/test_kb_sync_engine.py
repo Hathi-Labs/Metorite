@@ -29,7 +29,12 @@ Mutations this file catches (R7):
 * the start function stops reading the flag -> ``TestTheSwitch``;
 * a write transaction of the engine or of discovery takes a child row before
   the source lock, the connection row after the source row, or a weak source
-  lock that becomes an UPDATE (KC-3h) -> ``TestTheLockOrder``.
+  lock that becomes an UPDATE (KC-3h) -> ``TestTheLockOrder``;
+* KC-4a: an access page loses its guard, or the last page takes a weak lock
+  before its UPDATE of ``access_read_at`` -> ``TestTheLockOrder``. The pass
+  moves ``access_read_at`` before its listing ends, loses its cursor at the
+  call cap, or skips the sweep -> ``TestTheAccessPass``. The due rule runs
+  the pass before the change feed -> ``TestTheDueRule``.
 """
 from __future__ import annotations
 
@@ -52,10 +57,14 @@ from gateway.connections import store as conn_store
 from gateway.kb_sources.base import (
     KIND_FILE,
     KIND_FOLDER,
+    AccessCursor,
+    AccessPage,
+    AccessReader,
     ChangePage,
     CursorExpired,
     DiscoverPage,
     NeedsReconnect,
+    NodeAccess,
     OAuthClientConfig,
     RateLimited,
     SourceCredential,
@@ -65,7 +74,7 @@ from gateway.kb_sources.base import (
 from gateway.kb_sources.google_drive import client as gclient
 from gateway.kb_sources.google_drive.client import GoogleDriveSource
 from gateway.kb_sources.http import HttpAnswer, redact_page_tokens
-from gateway.kb_sync import discovery, engine, runs, scheduler
+from gateway.kb_sync import access, discovery, engine, runs, scheduler
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "apps/services/gateway/gateway/main.py"
@@ -344,6 +353,12 @@ _NAMES = {
     discovery._FAIL_SQL: "disc_fail",
     discovery._CLEAR_SQL: "clear",
     discovery._UNEXPLORED_SQL: "unexplored",
+    # KC-4a, the access pass.
+    access._SOURCE_SQL: "access_source",
+    access._DELETE_ROWS_SQL: "delete_access",
+    access._INSERT_ROWS_SQL: "insert_access",
+    access._SWEEP_SQL: "sweep_access",
+    access._ACCESS_READ_SQL: "access_read",
 }
 
 
@@ -379,6 +394,12 @@ class World:
         #: The capped relist: the explored folders, and what each sweep took.
         self.explored: list[str] = []
         self.swept: dict[str, list[str]] = {}
+        #: KC-4a: the stored access cursor, the last discovery, and the rows
+        #: and the sweeps of the access pass.
+        self.access_state: dict[str, Any] | None = None
+        self.discovered_at: datetime | None = None
+        self.access_rows: list[list[dict[str, Any]]] = []
+        self.access_sweeps: list[Any] = []
 
     @contextlib.asynccontextmanager
     async def session(self, org: str):
@@ -440,7 +461,27 @@ class _Db:
     def _insert_run(self, p: dict[str, Any]) -> _Result:
         return _Result([SimpleNamespace(id="run-1", started_at=datetime.now(UTC))])
 
+    def _access_source(self, p: dict[str, Any]) -> _Result:
+        return _Result([SimpleNamespace(id=SOURCE, provider="google_drive",
+                                        owner_email="ana@kc3.test", state=self.w.state,
+                                        connection_id=CONNECTION,
+                                        discovered_at=self.w.discovered_at)])
+
+    def _insert_access(self, p: dict[str, Any]) -> _Result:
+        rows = json.loads(p["rows"])
+        self.w.access_rows.append(rows)
+        return _Result(rowcount=len(rows))
+
+    def _sweep_access(self, p: dict[str, Any]) -> _Result:
+        self.w.access_sweeps.append(p["started"])
+        return _Result(rowcount=0)
+
     def _cursor(self, p: dict[str, Any]) -> _Result:
+        if p["kind"] == runs.CURSOR_ACCESS:
+            if self.w.access_state is None:
+                return _Result([])
+            return _Result([SimpleNamespace(kind="access", cursor_state=self.w.access_state,
+                                            last_run_at=None, last_status="partial")])
         if p["kind"] != runs.CURSOR_CHANGES or self.w.token is None:
             return _Result([])
         return _Result([SimpleNamespace(kind="changes", cursor_state={"page_token": self.w.token},
@@ -497,9 +538,21 @@ class FakeAdapter:
     provider = "google_drive"
 
     def __init__(self, world: World, pages: dict[str, Any], *,
-                 tree: tuple[SourceNode, ...] = ()) -> None:
+                 tree: tuple[SourceNode, ...] = (),
+                 access: dict[str | None, Any] | None = None) -> None:
         self.w, self.pages, self.tree = world, pages, tree
         self.cursors: list[str | None] = []
+        #: KC-4a: an access page (or an exception) for each page token.
+        self.access = access or {}
+        self.reads: list[tuple[Any, int]] = []
+
+    async def list_access(self, cred: Any, cursor: Any, *, budget: int) -> Any:
+        self._enter("list_access")
+        self.reads.append((cursor, budget))
+        item = self.access[getattr(cursor, "page_token", None)]
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     def _enter(self, name: str) -> None:
         assert self.w.open == 0, f"{name} ran while a session was open"
@@ -562,6 +615,7 @@ def _bind(monkeypatch: pytest.MonkeyPatch, w: World) -> World:
 
     monkeypatch.setattr(engine, "tenant_session", w.session)
     monkeypatch.setattr(discovery, "tenant_session", w.session)
+    monkeypatch.setattr(access, "tenant_session", w.session)
     monkeypatch.setattr(discovery, "_credential", fake_cred)
     w.creds = creds  # type: ignore[attr-defined]
     return w
@@ -816,30 +870,35 @@ class TestTheUnauthorizedRetry:
 #: The connection row: the lock of ``store.lock_by_id``, and its UPDATE.
 _CONN = frozenset({"lock_connection", "mark_synced"})
 #: The source row at the strength of a share lock. The step (a) read takes
-#: ``FOR SHARE``, and the guard ``FOR KEY SHARE``.
-_SOURCE_WEAK = frozenset({"source", "guard"})
-#: The source row at the strength of an UPDATE.
+#: ``FOR SHARE``, and the guard ``FOR KEY SHARE``. KC-4a: the step (a) read of
+#: the access pass takes ``FOR SHARE`` too.
+_SOURCE_WEAK = frozenset({"source", "guard", "access_source"})
+#: The source row at the strength of an UPDATE. KC-4a: the last page of an
+#: access pass sets ``access_read_at``.
 _SOURCE_STRONG = frozenset({
     "lock_source", "source_ok", "source_error", "source_reconnect", "last_new",
-    "disc_start", "disc_finish", "disc_fail",
+    "disc_start", "disc_finish", "disc_fail", "access_read",
 })
 #: A child row (a node, a cursor or a run) that ALSO takes ``FOR KEY SHARE``
 #: on the source row inside the statement: the guard of an upsert, or the
 #: foreign key check of an INSERT.
 _CHILD_AND_SOURCE = frozenset({"upsert_changes", "upsert_nodes", "upsert_cursor",
                                "insert_run"})
-#: A child row and nothing else.
+#: A child row and nothing else. KC-4a: ``kb_node_access`` is a child of a
+#: node. Its INSERT takes ``FOR KEY SHARE`` on the node rows, not the source.
 _CHILD_ONLY = frozenset({
     "remove", "cascade", "gone", "gone_folder", "cap", "clear", "unexplored", "progress",
-    "finish", "takeover", "preempt",
+    "finish", "takeover", "preempt", "delete_access", "insert_access", "sweep_access",
 })
 #: The reads that lock nothing.
 _READS = frozenset({"capped", "cursor", "now", "explored_folders", "disc_source"})
 #: The rows of nodes and cursors: a transaction that writes them is a page.
 _PAGE_WRITES = frozenset({"upsert_changes", "upsert_nodes", "remove", "cascade", "gone",
-                          "gone_folder", "cap", "clear", "unexplored", "upsert_cursor"})
+                          "gone_folder", "cap", "clear", "unexplored", "upsert_cursor",
+                          "delete_access", "insert_access", "sweep_access"})
 #: The statements that may open a write transaction of the engine.
-_ENGINE_FIRST = frozenset({"source", "guard", "lock_source", "lock_connection"})
+_ENGINE_FIRST = frozenset({"source", "guard", "lock_source", "lock_connection",
+                           "access_source"})
 
 
 def lock_order_faults(txn: list[str], *, engine_txn: bool = False) -> list[str]:
@@ -927,13 +986,68 @@ def _scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> None:
 
         adapter.changes_start_token = no_token  # type: ignore[method-assign]
         assert asyncio.run(discovery.discover_source(ORG, SOURCE, adapter)) == "failed"
+    elif name.startswith("access"):
+        _access_scenario(name, w, monkeypatch)
+    else:
+        raise AssertionError(name)
+
+
+# ── KC-4a, the access pass on the fake world ────────────────────────────────
+
+def _reader(email: str, kind: str = "user") -> AccessReader:
+    return AccessReader(kind=kind, principal=email, role="reader")
+
+
+def _apage(*nodes: NodeAccess, nxt: str | None = None, calls: int = 1,
+           after: str | None = None) -> AccessPage:
+    cursor = AccessCursor(page_token=nxt, after=after) if (nxt or after) else None
+    return AccessPage(nodes=tuple(nodes), next_cursor=cursor, calls=calls)
+
+
+def _two_pages() -> dict[str | None, Any]:
+    return {
+        None: _apage(NodeAccess("n1", (_reader("bo@kc4.test"), _reader("cy@kc4.test")), True),
+                     nxt="a2"),
+        "a2": _apage(NodeAccess("n2", (), False)),
+    }
+
+
+def _run_access(adapter: Any) -> engine.RunOutcome:
+    return asyncio.run(access.run_access(ORG, SOURCE, source=adapter))
+
+
+def _access_scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    if name == "access":
+        out = _run_access(FakeAdapter(w, {}, access=_two_pages()))
+        assert (out.status, out.counts["complete"]) == (runs.STATUS_OK, True), out
+    elif name == "access_capped":
+        pages = {None: _apage(NodeAccess("n1", (_reader("bo@kc4.test"),), True), nxt="a2",
+                              calls=access.ACCESS_CALLS_PER_TICK - access.MIN_BUDGET + 1)}
+        out = _run_access(FakeAdapter(w, {}, access=pages))
+        assert (out.status, out.counts["complete"]) == (runs.STATUS_OK, False), out
+    elif name == "access_reconnect":
+        exc = NeedsReconnect("dead")
+        exc.code = "invalid_grant"
+        out = _run_access(FakeAdapter(w, {}, access={None: exc}))
+        assert (out.status, out.error) == (runs.STATUS_STOPPED, "invalid_grant")
+    elif name == "access_disconnected":
+        w.disconnected = True
+        out = _run_access(FakeAdapter(w, {}, access=_two_pages()))
+        assert (out.status, out.error) == (runs.STATUS_STOPPED, "disconnected")
+    elif name == "access_expired":
+        w.access_state = {"page_token": "dead", "after": None, "page_size": 0,
+                          "pass_started": datetime.now(UTC).isoformat()}
+        pages = {**_two_pages(), "dead": CursorExpired("dead")}
+        out = _run_access(FakeAdapter(w, {}, access=pages))
+        assert out.status == runs.STATUS_OK and out.counts["cursor_expired"] is True, out
     else:
         raise AssertionError(name)
 
 
 _SCENARIOS = ("pages", "expired_cursor", "over_cap", "capped_sweep", "needs_reconnect",
               "source_error", "disconnected", "discovery", "discovery_capped",
-              "discovery_failed")
+              "discovery_failed", "access", "access_capped", "access_reconnect",
+              "access_disconnected", "access_expired")
 
 
 class TestTheLockOrder:
@@ -973,7 +1087,8 @@ class TestTheLockOrder:
                     firsts.add(t[0])
         writes = _CHILD_ONLY | _CHILD_AND_SOURCE | _SOURCE_STRONG | _CONN
         assert writes <= seen, sorted(writes - seen)
-        assert {"guard", "lock_source", "lock_connection", "source"} <= firsts, firsts
+        assert {"guard", "lock_source", "lock_connection", "source",
+                "access_source"} <= firsts, firsts
 
     @pytest.mark.parametrize(("txn", "fault"), [
         # The close of KC-3: the run row, the source row, then the connection (K-22).
@@ -1001,6 +1116,136 @@ class TestTheLockOrder:
         assert lock_order_faults(["guard", "remove", "cascade", "upsert_cursor", "progress",
                                   "commit"], engine_txn=True) == []
 
+    # ── KC-4a: the access pass keeps the one order ─────────────────────────
+
+    def test_each_access_page_takes_the_guard_first(self, world, monkeypatch) -> None:
+        """A page writes children only, so the guard is ``FOR KEY SHARE``. The
+        last page sets ``access_read_at``, so its lock is the strong one."""
+        _scenario("access", world, monkeypatch)
+        txns = _txns(world.events)
+        pages = [t for t in txns if "delete_access" in t]
+        assert pages == [
+            ["guard", "delete_access", "insert_access", "upsert_cursor", "progress", "commit"],
+            ["lock_source", "delete_access", "sweep_access", "upsert_cursor", "access_read",
+             "progress", "commit"],
+        ], txns
+        assert txns[0][:4] == ["access_source", "takeover", "insert_run", "cursor"], txns
+        assert txns[-1] == ["finish", "commit"], "the close of a pass took a source lock"
+        assert not {"lock_connection", "mark_synced"} & {s for t in txns for s in t}, (
+            "the access pass touched the connection row")
+
+    @pytest.mark.parametrize(("txn", "fault"), [
+        # An access page with no guard: the rows before the source lock.
+        (["delete_access", "insert_access", "upsert_cursor", "progress"], "not a lock"),
+        (["delete_access", "insert_access", "upsert_cursor", "progress"], "before the source"),
+        # The last page with a weak guard, then the UPDATE of access_read_at.
+        (["guard", "delete_access", "sweep_access", "upsert_cursor", "access_read"],
+         "becomes an UPDATE"),
+    ])
+    def test_the_check_sees_an_access_page_out_of_order(self, txn: list[str],
+                                                        fault: str) -> None:
+        faults = lock_order_faults(txn, engine_txn=True)
+        assert any(fault in f for f in faults), faults
+
+
+class TestTheAccessPass:
+    """KC-4a, ``access.py`` on the fake world (the SQL is R8, in
+    ``test_kc_access_r8.py``)."""
+
+    def test_a_full_pass_replaces_the_rows_sweeps_and_stamps_once(self, world) -> None:
+        adapter = FakeAdapter(world, {}, access=_two_pages())
+        out = _run_access(adapter)
+        assert out.status == runs.STATUS_OK and out.counts["complete"] is True, out
+        assert world.access_rows == [[
+            {"ext_id": "n1", "kind": "user", "principal": "bo@kc4.test", "role": "reader"},
+            {"ext_id": "n1", "kind": "user", "principal": "cy@kc4.test", "role": "reader"},
+        ]]
+        names = [e[1] for e in world.events if e[0] == "sql"]
+        assert names.count("access_read") == 1 and names.count("sweep_access") == 1
+        # The cursor of the open pass, then the cursor of no pass.
+        states = [s["state"] for s in world.stored if s["kind"] == runs.CURSOR_ACCESS]
+        assert json.loads(states[0])["page_token"] == "a2" and states[-1] is None
+        assert [r[0] for r in adapter.reads] == [None, AccessCursor(page_token="a2")]
+        assert adapter.cursors == [], "the access pass read the change feed"
+
+    def test_the_cap_stops_the_pass_and_keeps_the_cursor(self, world, monkeypatch) -> None:
+        _scenario("access_capped", world, monkeypatch)
+        names = [e[1] for e in world.events if e[0] == "sql"]
+        assert "access_read" not in names, "a pass that stopped at its cap moved access_read_at"
+        assert "sweep_access" not in names, "a pass that stopped at its cap swept rows"
+        [state] = [s["state"] for s in world.stored if s["kind"] == runs.CURSOR_ACCESS]
+        assert json.loads(state)["page_token"] == "a2"
+
+    def test_a_pass_resumes_from_its_cursor_and_its_start(self, world) -> None:
+        started = datetime(2026, 10, 25, 6, 0, tzinfo=UTC)
+        world.access_state = {"page_token": "a2", "after": "x9", "page_size": 50,
+                              "pass_started": started.isoformat()}
+        adapter = FakeAdapter(world, {}, access=_two_pages())
+        assert _run_access(adapter).status == runs.STATUS_OK
+        assert adapter.reads[0][0] == AccessCursor(page_token="a2", after="x9", page_size=50)
+        assert world.access_sweeps == [started], "the sweep took another start"
+
+    def test_a_pass_that_began_before_the_last_discovery_starts_again(self, world) -> None:
+        world.discovered_at = datetime(2026, 10, 25, 7, 0, tzinfo=UTC)
+        world.access_state = {"page_token": "a2", "after": None, "page_size": 0,
+                              "pass_started": "2026-10-25T06:00:00+00:00"}
+        adapter = FakeAdapter(world, {}, access=_two_pages())
+        assert _run_access(adapter).status == runs.STATUS_OK
+        assert adapter.reads[0][0] is None, "a stale pass went on from its old cursor"
+
+    def test_a_dead_page_token_starts_the_pass_again(self, world, monkeypatch) -> None:
+        _scenario("access_expired", world, monkeypatch)
+        names = [e[1] for e in world.events if e[0] == "sql"]
+        assert "now" in names and names.count("access_read") == 1
+
+    def test_each_read_gets_the_budget_that_is_left(self, world) -> None:
+        pages = _two_pages()
+        pages[None] = _apage(NodeAccess("n1", (), True), nxt="a2", calls=7)
+        adapter = FakeAdapter(world, {}, access=pages)
+        out = _run_access(adapter)
+        assert [b for _c, b in adapter.reads] == [access.ACCESS_CALLS_PER_TICK,
+                                                  access.ACCESS_CALLS_PER_TICK - 7]
+        assert out.counts["calls"] == 8
+
+    def test_a_node_with_no_permission_list_writes_no_row(self, world) -> None:
+        """A7, the hermetic half: the old rows go, and nothing is written."""
+        pages = {None: _apage(NodeAccess("n1", (), False))}
+        out = _run_access(FakeAdapter(world, {}, access=pages))
+        assert out.status == runs.STATUS_OK and out.counts["rows"] == 0
+        assert world.access_rows == []
+        assert "delete_access" in [e[1] for e in world.events if e[0] == "sql"]
+
+    def test_rate_limited_stops_and_keeps_the_last_page(self, world) -> None:
+        pages = {None: _apage(NodeAccess("n1", (_reader("bo@kc4.test"),), True), nxt="a2"),
+                 "a2": RateLimited("slow down", tries=4)}
+        out = _run_access(FakeAdapter(world, {}, access=pages))
+        assert (out.status, out.error) == (runs.STATUS_STOPPED, "rate_limited")
+        [state] = [s["state"] for s in world.stored if s["kind"] == runs.CURSOR_ACCESS]
+        assert json.loads(state)["page_token"] == "a2"
+        assert _txns(world.events)[-1] == ["lock_source", "finish", "source_error", "commit"]
+
+    def test_needs_reconnect_takes_the_kc3_path(self, world, monkeypatch) -> None:
+        _scenario("access_reconnect", world, monkeypatch)
+        assert _txns(world.events)[-1] == ["lock_source", "finish", "source_reconnect",
+                                           "commit"]
+
+    def test_a_source_that_is_not_ready_takes_no_lock_and_calls_nothing(self, world) -> None:
+        world.state = "needs_reconnect"
+        adapter = FakeAdapter(world, {}, access=_two_pages())
+        assert _run_access(adapter).status == "skipped"
+        assert "insert_run" not in [e[1] for e in world.events]
+        assert adapter.reads == []
+
+    def test_no_provider_call_runs_inside_a_session(self, world) -> None:
+        # FakeAdapter._enter asserts that no session is open at each call.
+        assert _run_access(FakeAdapter(world, {}, access=_two_pages())).status == "ok"
+
+    def test_the_numbers(self) -> None:
+        assert access.ACCESS_CALLS_PER_TICK == 50
+        assert access.MIN_BUDGET == 1 + gclient.MAX_PERMISSION_PAGES
+        assert scheduler.ACCESS_SECONDS == 6 * 60 * 60
+        assert scheduler.ACCESS_RETRY_SECONDS == 15 * 60
+
 
 # ── The loop ────────────────────────────────────────────────────────────────
 
@@ -1009,13 +1254,18 @@ NOW = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
 
 
 def _due(state: str = "ready", *, running: bool = False, finished: float | None = None,
-         reconciled: float | None = 1.0) -> runs.DueRow:
-    """A due row. *finished* and *reconciled* are minutes ago, or None."""
+         reconciled: float | None = 1.0, read: float | None = 1.0,
+         discovered: float | None = None, access_finished: float | None = None,
+         access_status: str | None = None) -> runs.DueRow:
+    """A due row. Each time is minutes ago, or None. By default the access
+    pass is fresh (*read* one minute ago), so only the feed is due."""
     def ago(m: float | None) -> datetime | None:
         return None if m is None else NOW - timedelta(minutes=m)
     return runs.DueRow(source_id=SOURCE, provider="google_drive", state=state, db_now=NOW,
                        last_finished=ago(finished), running=running,
-                       reconciled_at=ago(reconciled))
+                       reconciled_at=ago(reconciled), discovered_at=ago(discovered),
+                       access_read_at=ago(read), access_finished=ago(access_finished),
+                       access_status=access_status)
 
 
 class TestTheDueRule:
@@ -1044,6 +1294,35 @@ class TestTheDueRule:
         assert scheduler.CONCURRENCY == 3
         assert scheduler.STOP_GRACE_SECONDS == 30
         assert runs.STALE_AFTER_SECONDS == 900
+
+    # ── KC-4a: the access pass ─────────────────────────────────────────────
+
+    def test_the_change_feed_comes_before_the_access_pass(self) -> None:
+        assert scheduler.due_kind(_due(read=None)) == runs.KIND_CHANGES
+        assert scheduler.due_kind(_due(read=None, reconciled=None)) == runs.KIND_RECONCILE
+
+    def test_the_access_pass_runs_between_two_feed_reads(self) -> None:
+        assert scheduler.due_kind(_due(finished=5, read=None)) == runs.KIND_ACCESS
+        assert scheduler.due_kind(_due(finished=5, read=6 * 60)) == runs.KIND_ACCESS
+        assert scheduler.due_kind(_due(finished=5, read=6 * 60 - 1)) is None
+
+    def test_a_discovery_after_the_last_pass_makes_it_due(self) -> None:
+        assert scheduler.due_kind(_due(finished=5, read=30, discovered=10)) == runs.KIND_ACCESS
+        assert scheduler.due_kind(_due(finished=5, read=10, discovered=30)) is None
+
+    def test_a_pass_at_its_cap_goes_on_and_a_failure_waits(self) -> None:
+        cap = _due(finished=5, read=None, access_finished=1, access_status=runs.STATUS_OK)
+        assert scheduler.due_kind(cap) == runs.KIND_ACCESS
+        failed = _due(finished=5, read=None, access_finished=14,
+                      access_status=runs.STATUS_FAILED)
+        assert scheduler.due_kind(failed) is None
+        again = _due(finished=5, read=None, access_finished=15,
+                     access_status=runs.STATUS_STOPPED)
+        assert scheduler.due_kind(again) == runs.KIND_ACCESS
+
+    def test_no_access_pass_for_a_source_that_is_not_ready_or_locked(self) -> None:
+        assert scheduler.due_kind(_due("needs_reconnect", finished=5, read=None)) is None
+        assert scheduler.due_kind(_due(running=True, finished=5, read=None)) is None
 
 
 def _flags(monkeypatch: pytest.MonkeyPatch, sync: str, google: str = "*") -> None:
@@ -1205,6 +1484,40 @@ class TestTheTick:
         assert asyncio.run(scheduler.run_tick(
             lambda: SimpleNamespace(provider="onedrive"))) == 0
         assert loop.ran == []
+
+    def test_an_access_due_source_runs_the_access_pass(self, monkeypatch, loop) -> None:
+        _flags(monkeypatch, ORG)
+        loop.rows[ORG] = [_due(finished=5, read=None)]
+        passes: list[tuple[str, str]] = []
+
+        async def run_access(org: str, source_id: str, **kw: Any) -> Any:
+            passes.append((org, source_id))
+            return engine.RunOutcome(runs.STATUS_OK)
+
+        monkeypatch.setattr(access, "run_access", run_access)
+        assert asyncio.run(scheduler.run_tick(_adapter)) == 1
+        assert passes == [(ORG, SOURCE)] and loop.ran == [], "the feed ran, not the pass"
+
+    def test_the_flag_empty_runs_no_access_pass_and_calls_nothing(
+        self, monkeypatch, loop,
+    ) -> None:
+        """A6: ``KNOWLEDGE_SYNC`` empty, a source due for its access pass."""
+        _flags(monkeypatch, "")
+        loop.rows[ORG] = [_due(finished=5, read=None)]
+        loop.rows[OTHER] = [_due(finished=5, read=None)]
+        passes: list[str] = []
+
+        async def run_access(org: str, source_id: str, **kw: Any) -> Any:
+            passes.append(org)
+            raise AssertionError("an access pass ran with KNOWLEDGE_SYNC empty")
+
+        def never() -> Any:
+            raise AssertionError("an adapter was built with KNOWLEDGE_SYNC empty")
+
+        monkeypatch.setattr(access, "run_access", run_access)
+        assert asyncio.run(scheduler.run_tick(never)) == 0
+        assert asyncio.run(scheduler.start_kb_sync()) is False
+        assert passes == [] and loop.sessions == [] and loop.listed == []
 
     def test_the_default_adapter_is_the_route_seam(self) -> None:
         import ast

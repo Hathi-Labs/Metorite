@@ -38,6 +38,12 @@ until KC-5 (the text) ships.
 
 **A dead change cursor** raises :class:`CursorExpired`. The engine then takes
 a new start token FIRST, and relists the tree slim (``kb_sync/engine.py``).
+
+**KC-4a reads the readers.** :meth:`KbSource.list_access` reads the readers
+of each node at the provider, in the provider's words, in
+:class:`AccessPage` pages. It is a read only, with no new scope. The access
+pass of ``kb_sync/access.py`` stores the readers in ``kb_node_access``, and
+``kb_access/resolve.py`` proves members from them. A reader is never a grant.
 """
 
 from __future__ import annotations
@@ -159,6 +165,72 @@ class CursorExpired(SourceError):
     code = "cursor_expired"
 
 
+#: The four kinds of a reader at the provider (``knowledge_curation.md``
+#: §8.1). Mirrors the CHECK of ``kb_node_access.principal_kind``.
+READER_USER = "user"
+READER_GROUP = "group"
+READER_DOMAIN = "domain"
+READER_ANYONE = "anyone"
+READER_KINDS: tuple[str, ...] = (READER_USER, READER_GROUP, READER_DOMAIN, READER_ANYONE)
+
+#: The principal of an ``anyone`` reader.
+ANYONE = "*"
+
+
+@dataclass(frozen=True)
+class AccessReader:
+    """One reader of one node at the provider, in the provider's words (KC-4a).
+
+    ``kind`` is one of :data:`READER_KINDS`. ``principal`` is a lower-case
+    email (a user or a group), a lower-case domain, or :data:`ANYONE`.
+    ``role`` is the provider's role, at most 32 characters. A reader is
+    never a grant: ``kb_access/resolve.py`` decides who it proves.
+    """
+
+    kind: str
+    principal: str
+    role: str
+
+
+@dataclass(frozen=True)
+class NodeAccess:
+    """The readers of one node, from one access read (KC-4a).
+
+    ``listed`` is False when the provider gave no permission list for the
+    node. Then ``readers`` is empty, and only the owner of the source is a
+    proven reader (``knowledge_curation.md`` §8.2).
+    """
+
+    ext_id: str
+    readers: tuple[AccessReader, ...]
+    listed: bool
+
+
+@dataclass(frozen=True)
+class AccessCursor:
+    """Where an access read stands. The caller passes it back as it came.
+
+    ``page_token`` is the listing page to read, or ``None`` for the first
+    page. ``after`` is the last node of that page that a read finished, so a
+    read that stopped inside a page reads the page again and goes on after
+    it. ``page_size`` keeps a page size that a read made smaller.
+    """
+
+    page_token: str | None = None
+    after: str | None = None
+    page_size: int = 0
+
+
+@dataclass(frozen=True)
+class AccessPage:
+    """One read of the readers (KC-4a). ``next_cursor`` is ``None`` when the
+    whole listing is done. ``calls`` is how many provider calls it made."""
+
+    nodes: tuple[NodeAccess, ...]
+    next_cursor: AccessCursor | None
+    calls: int
+
+
 class KbSource(Protocol):
     """The operations of ``knowledge_base.md`` §7.1, in its order."""
 
@@ -196,6 +268,12 @@ class KbSource(Protocol):
         self, cred: SourceCredential, cursor: str | None, folder_ext_ids: Sequence[str],
     ) -> ChangePage: ...
 
+    # KC-4a: the readers of the nodes, from *cursor*, with at most *budget*
+    # provider calls. Read only. Raises CursorExpired for a dead page token.
+    async def list_access(
+        self, cred: SourceCredential, cursor: AccessCursor | None, *, budget: int,
+    ) -> AccessPage: ...
+
     # KC-5: the text of one document, capped. KC-5: the bytes, only for
     # "Keep a copy".
     async def fetch_text(self, cred: SourceCredential, node: SourceNode) -> str: ...
@@ -207,11 +285,20 @@ class KbSource(Protocol):
 
 
 __all__ = [
+    "ANYONE",
     "KIND_FILE",
     "KIND_FOLDER",
     "NOT_IN_KC1",
+    "READER_ANYONE",
+    "READER_DOMAIN",
+    "READER_GROUP",
+    "READER_KINDS",
+    "READER_USER",
     "SCOPE_MEMBER",
     "SCOPE_ORG",
+    "AccessCursor",
+    "AccessPage",
+    "AccessReader",
     "AccountIdentity",
     "ChangePage",
     "CursorExpired",
@@ -219,6 +306,7 @@ __all__ = [
     "DiscoverPage",
     "KbSource",
     "NeedsReconnect",
+    "NodeAccess",
     "OAuthClientConfig",
     "RateLimited",
     "SourceCredential",
