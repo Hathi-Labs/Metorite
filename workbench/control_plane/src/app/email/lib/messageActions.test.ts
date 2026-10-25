@@ -8,7 +8,7 @@
 //   * `email-row-keys`: Up, Down, Home and End move and wrap.
 //   * `email-row-per-message`: each card of a thread and the single email get
 //     the same row, and each handler gets THAT message.
-//   * `email-capture-thread-message`: Add to My Tasks opens for a message of a
+//   * `email-capture-thread-message`: Add to My work opens for a message of a
 //     thread that is not a row of the list, in that message's mailbox.
 //   * `email-loading-per-message`: "Loading message…" belongs to one fetch of
 //     one mail, and only while that mail has no body.
@@ -134,7 +134,7 @@ describe("email-row-per-message", () => {
     expect(conversation).toContain("{renderActions?.(view)}");
     // The old trio of a card and the big capture button are gone.
     expect(conversation).not.toContain("CardAction");
-    expect(detail).not.toContain('<span className="hidden sm:inline">Add to My Tasks</span>');
+    expect(detail).not.toContain('<span className="hidden sm:inline">Add to My work</span>');
   });
 
   it("gives every handler the message of the row", () => {

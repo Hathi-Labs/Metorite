@@ -10,8 +10,15 @@ and the Google Drive adapter. It also holds `kb_sources`, `kb_source_nodes`,
 discovery at connect, the source routes and the Google grant rule.
 
 Both flags of KC-1a default to empty. Nobody tested it against live Google. The owner must first register
-the redirect URI and the `drive.readonly` scope. KC-1b, the Sources view, is
-open.
+the redirect URI and the `drive.readonly` scope.
+
+**KC-1b BUILT 2026-10-25, dark** (branch `kc-1b-sources-view`, built on
+`origin/main` `76f3e9875`, no migration, frontend only). It is the Sources
+view of KC-1: a rail row, the route `/knowledge/sources`, Connect Google
+Drive, the return from Google, the folder tree and Disconnect. The row shows
+when `GET /knowledge/sources` answers. The view stays dark while both source
+flags are empty. No live Google test ran. KC-1c, the expand-on-demand of a
+folder that discovery did not reach, is open as Metorite task #441.
 
 The workbench route `/api/knowledge/sources/google_drive/callback` carries
 the consent back to the gateway, with one try and no followed redirect. A
@@ -20,7 +27,38 @@ it revokes each free Google grant once (§19).
 
 §20 holds the decisions **D-KC-1** to **D-KC-9**, and §21 holds the owner
 questions with their answers. Board row **WS-61** (no new row).
-Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
+Verified against the code on 2026-10-25, at `origin/main` `76f3e9875`.
+
+**KC-3 BUILT 2026-10-25, dark** (branch `kc-3-sync`, migration 308,
+`KNOWLEDGE_SYNC` empty). The loop reads the Drive change feed every 15
+minutes for each ready source, and relists it slim once a day. It keeps
+`kb_source_nodes` current as metadata, and reads no text. KC-5 compares
+`content_hash` with its own hash.
+
+**The audit narrowed the KC-3 acceptance.** The supervisor accepted the
+narrowing on 2026-10-25. The text re-index and the rule of one embed for each
+changed chunk moved to KC-5. The `source_sync_failed` card moved to KB-9b.
+
+A discovery ends a live loop run of its source, so a consent never leaves a
+source in `discovering`. The loop reads the source row `FOR SHARE`, so a
+re-consent and the loop take turns. ⚠️ Discovery takes the run lock and a
+start token on each connect, also when `KNOWLEDGE_SYNC` is empty. So
+`KNOWLEDGE_SOURCES` alone writes `kb_sync_runs` and `kb_sync_cursors` rows.
+
+The review round of 2026-10-25 added four rules:
+
+- A gone folder takes each live node below it, to a fixed point, in the same
+  transaction. The feed reports a trashed folder as one event.
+- An uncapped source that grows past 50 000 nodes becomes capped, and the loop
+  deletes no node. Each folder below the walk levels becomes `explored = false`,
+  and the reconcile cursor keeps the mark `capped`.
+- Each tick keeps the newest 50 runs of each source, and the due check reads
+  the newest run on the index.
+- The loop reads a source only when the flag of its provider names the org.
+
+Two checks against a live Google account are open. The first is the HTTP code
+of a dead page token. The second is the order of the change feed on a real
+drive.
 
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
@@ -831,7 +869,7 @@ All of it lives in the Knowledge app and its rail. No new pane (D-KB-7).
 
 | Where | What | Who |
 |---|---|---|
-| Rail → **Sources** | The connected drives, their tree, the filing plan, the exceptions | A member sees their own sources. A manager sees every source |
+| Rail → **Sources** (built at KC-1b: the drives and their tree. The filing plan and the exceptions come with KC-7) | The connected drives, their tree, the filing plan, the exceptions | A member sees their own sources. A manager sees every source |
 | Rail → **Directories** | Company, Products, People, Customers, Workstreams, Workflows, Topics | Each type by its owning app's rule (§6.4) |
 | `GET /knowledge/entity-types` (KC-8b) | The types with one visible row or more, in the order of §6.1. The rail draws one Directories row for each | Each type by its owning app's rule (§6.4) |
 | An entity page | The brief and the body (§11) | Through the clause |
@@ -842,7 +880,8 @@ All of it lives in the Knowledge app and its rail. No new pane (D-KB-7).
 
 The shell manifest of `knowledge_base.md` §11 gains three jobs: "Connect a
 drive", "Review the filing plan" and "See what Metorite knows about…". KC-7
-adds them there, and adds no manifest of its own (R9).
+adds them there, and adds no manifest of its own (R9). KC-1b built the
+Sources view and no job. KC-7 adds the filing plan and the three jobs.
 
 ---
 
@@ -857,7 +896,9 @@ nullable with a default (R6).
 |---|---|---|
 | `kb_sources` | `connection_id`, `provider`, `kind` (`member`, `org`), `owner_email`, `state` (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), `default_space_id`, `account_email`, `account_id`, `node_count`, `discovered_at`, `last_error` | KC-1 (built at KC-1a, migration 300) |
 | `kb_source_nodes` | `source_id`, `ext_id`, `parent_ext_id`, `drive_id`, `kind`, `name`, `mime`, `size`, `modified_at`, `content_hash`, `web_url`, `state` (`live`, `gone`), `explored` | KC-1 (built at KC-1a, migration 300) |
-| `kb_sync_cursors`, `kb_sync_runs` | as `knowledge_base.md` §7.1 | KC-3 |
+| `kb_sync_cursors` | `source_id`, `kind` (`changes`, `reconcile`), `cursor_state`, `last_run_at`, `last_status`. UNIQUE (`organization_id`, `source_id`, `kind`) | KC-3 (built at KC-3, migration 308) |
+| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 308) |
+| `kb_sources.last_new_at` | When a run last inserted a node. CX-5 reads it for Knowledge | KC-3 (built at KC-3, migration 308) |
 | `kb_watch_channels` | `source_id`, `provider_channel_id`, `resource_id`, `expires_at` | KC-3b |
 | `kb_node_access` | `node_id`, `principal_kind`, `principal`, `role`, `synced_at` | KC-4 |
 | `kb_documents` | `node_id`, `text`, `sha`, `extracted_at`, `parser`, `truncated`, `summary` | KC-5 |
@@ -909,6 +950,7 @@ inside its module, never in `main.py`.
 |---|---|---|
 | `KNOWLEDGE_SOURCES` | Connect, discovery and the Sources view | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_SOURCE_GOOGLE`, `KNOWLEDGE_SOURCE_MICROSOFT` | One provider each | Owner. Google waits for §21 Q1 outside the test users |
+| `KNOWLEDGE_SYNC` | The sync loop of KC-3: the change feed every 15 minutes and the daily reconcile, for each ready source of a named org. It needs `KNOWLEDGE_SOURCES` too. Empty, `start_kb_sync()` starts no task | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_FILING` | Pass one and pass two of the classifier | Owner (spends credits) |
 | `KC_FACTS` | The update step and the fact tables | Owner (spends credits) |
 | `KC_CAPTURE_CHAT`, `KC_CAPTURE_MEETINGS`, `KC_CAPTURE_TASKS`, `KC_CAPTURE_EMAIL` | One feed each (§13) | Owner |
@@ -1047,12 +1089,14 @@ keeps the brain current.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KC-0** | This spec, the INDEX row, the decisions | The owner accepts or overrules §20 and §21 | **OWNER-GATE** |
-| **KC-1** (was KB-3a, KB-7a, KB-7d) | Lift the CRM-only side effects out of `connections/store.py`. The adapter protocol of `knowledge_base.md` §7.1. The Google Drive adapter on the one Google client, for member sources. `kb_sources` and `kb_source_nodes`. Discovery at connect. The Sources view with the tree | A test user connects Drive. The tree shows with no text. Disconnecting Drive leaves Gmail connected, and a test proves it. `save_credential` for Knowledge touches no CRM row. `test_kc_sources_read_only_scopes.py` and `test_kb_sources_no_global_creds.py` hold. R8: org B sees no node of org A | AGENT-SAFE to build. The flag on production: owner |
+| **KC-1a** (was KB-3a, KB-7a, KB-7d). **BUILT 2026-10-25, dark** | Lift the CRM-only side effects out of `connections/store.py`. The adapter protocol of `knowledge_base.md` §7.1. The Google Drive adapter on the one Google client, for member sources. `kb_sources` and `kb_source_nodes`. Discovery at connect. The source routes | `save_credential` for Knowledge touches no CRM row. Disconnecting Drive leaves Gmail connected, and a test proves it. `test_kc_sources_read_only_scopes.py` and `test_kb_sources_no_global_creds.py` hold. R8: org B sees no node of org A | AGENT-SAFE to build. The flag on production: owner |
+| **KC-1b**. **BUILT 2026-10-25, dark** | The Sources view: the rail row, `/knowledge/sources`, Connect Google Drive, the return from Google, polling while a drive is read, the folder tree, Disconnect and Reconnect. The manager view shows each owner. Frontend only: no route, no flag, no migration | (1) The list answers 200 with no drive: the rail shows Sources and the view shows "Connect Google Drive". The list answers 404: no rail row, and the view says connected drives are off, with no error. (2) Connect makes one POST, then goes to an https address on accounts.google.com. Any other address goes nowhere and shows an error. (3) The return `?source_connected=google_drive` or `?source_error=<code>` shows one plain sentence and moves the address to `/knowledge/sources`. A reload does not repeat it. (4) A drive that is being read shows "Reading your folders", and the list is read every 3 seconds. At ready the reads stop. They also stop after 5 minutes and on leaving. (5) A ready drive shows the account, "Connected", the count and "Read" with the time. Folders come first, a folder loads its children once, a folder that discovery did not reach shows "Not yet explored", and a file shows its type, size, time and a link that is https on Google Drive or Docs only. The view draws no file text. (6) Disconnect asks first, and the words say that Gmail stays connected. Cancel sends nothing. Confirm sends one DELETE. A failure keeps the card. (7) The owner of a drive that needs to reconnect gets Reconnect. Another member's card says who it waits for, and offers no Reconnect. (8) A manager sees each drive with its owner. (9) A disconnected drive is not drawn. (10) A cut tree says "Showing the first N items. More items exist." (11) The view uses only the shared parts, and draws no colour literal, no lucide import and no direct fetch. Tests: `sources.test.ts`, `e2e/knowledge-sources.spec.ts`. Non-goals: expand on demand (KC-1c, Metorite task #441), the shell job "Connect a drive" and the chat tool (KC-7), the filing plan (KC-7) | AGENT-SAFE to build. The flags on production, the redirect URI and the `drive.readonly` scope on the Google client: owner |
+| **KC-1c** (Metorite task #441). Open | Expand on demand: a gateway route that reads one folder that discovery did not reach, and the view that calls it | A folder with `explored` false opens, and its children show with no file text. R8: org B cannot read the folder of org A | AGENT-SAFE to build |
 | **KC-2** (was KB-7c) | The OneDrive and SharePoint adapter on the Email app's Microsoft app. Member sources with delegated `Files.Read.All`. Org sources with `Sites.Read.All` | The KC-1 checks pass on a Microsoft 365 account. A SharePoint site shows as an org source after one admin consent | AGENT-SAFE. The admin consent on a customer tenant: owner |
-| **KC-3** (was KB-7b) | The sync loop: `kb_sync_cursors`, `kb_sync_runs`, the run lock, `changes.list` and `delta`, track by id, the expired-cursor path, the daily reconcile, `source_sync_failed`, the CX-5 health columns | A file edited at the provider re-indexes within 15 minutes, with one embed call per changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile. A revoked token sets `needs_reconnect` and stops retrying | AGENT-SAFE to build. The loop on production: owner |
+| **KC-3** (was KB-7b) | The sync loop of the METADATA tree: `kb_sync_cursors`, `kb_sync_runs`, the run lock of each source, the Drive `changes.list`, track by id, the expired-cursor path, the daily reconcile, and the health columns (`kb_sources.last_error`, `kb_sources.last_new_at`, `integration_connections.last_sync_at`). KC-3 reads no text and builds no hook for KC-5. KC-5 pulls: it compares `kb_source_nodes.content_hash` with `kb_documents.sha`. OneDrive `delta` is KC-2. The `source_sync_failed` card is KB-9b | The loop reads the Drive change feed every 15 minutes for each ready source and keeps `kb_source_nodes` current. (1) A rename or a move keeps the node id and updates the name and `parent_ext_id`. A renamed folder keeps every child node. (2) A deletion or a trash sets `state = 'gone'` within one change read. A file that the daily reconcile finds missing also becomes `gone`. (3) A revoked token sets `kb_sources.state` and `integration_connections.status` to `needs_reconnect`. The next ticks make no provider call. (4) Two runs of one source cannot run at the same time. A new run takes over a running row older than 15 minutes with the error `stale`, and the old run cannot write. (5) `RateLimited` ends the run `stopped`, with the cursor at the last committed page. The next run starts at that cursor. (6) A page and its cursor commit together, or neither commits. (7) An expired cursor gets a new start token, then a slim relist and a hash compare. Nothing reads text. (8) Org B can read, write and run nothing of org A in `kb_sync_cursors`, `kb_sync_runs` and `kb_source_nodes`. Both new tables have FORCE RLS. (9) With `KNOWLEDGE_SYNC` empty, `start_kb_sync()` returns False and no task exists. The text re-index and the rule of one embed for each changed chunk move to KC-5 | AGENT-SAFE to build. The loop on production (`KNOWLEDGE_SYNC`): owner |
 | **KC-3b** | Push hints: Drive `changes.watch` and Graph subscriptions, `kb_watch_channels`, renewal, the validation answer | A push moves the next cursor read forward. A missed push changes nothing, because the 15-minute read still runs | AGENT-SAFE |
 | **KC-4** | Permission capture: `kb_node_access`, the 6-hour slim access pass, the resolver of §8.2, the filing rule of §8.3, the visibility branch of §8.4, the `filing_conflict` card | `test_kc_document_visibility.py`: a member of the space who is not a reader at the provider gets no hit. A file shared with four people cannot be filed into `company`. Narrowing a share at the provider removes the document from the space within one access pass | AGENT-SAFE. HIGH tier (tenancy and visibility) |
-| **KC-5** | Inclusion and extraction: `kb_documents`, the three chunk templates, the hash skip, document chunks in `kb_chunks` | An included folder of 50 files is searchable within one tick. An unchanged file is never read twice. A deck hit names its slide | AGENT-SAFE |
+| **KC-5** | Inclusion and extraction: `kb_documents`, the three chunk templates, the hash skip, document chunks in `kb_chunks`. The re-index of a changed file: KC-5 compares `kb_source_nodes.content_hash`, which KC-3 keeps current, with `kb_documents.sha` | An included folder of 50 files is searchable within one tick. An unchanged file is never read twice. A deck hit names its slide. A file edited at the provider re-indexes within 15 minutes, with one embed call for each changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile | AGENT-SAFE |
 
 ### Phase 2 — the AI files
 
@@ -1130,6 +1174,7 @@ node .claude/hooks/ste-lint.test.mjs
 
 # The fences each slice adds. Each exists from the slice named after it.
 uv run pytest tests/unit/test_kc_sources_read_only_scopes.py tests/unit/test_kb_sources_no_global_creds.py -q  # KC-1
+uv run pytest tests/unit/test_kb_sync_engine.py tests/unit/test_kb_sync_tenancy.py -q   # KC-3
 uv run pytest tests/unit/test_kc_document_visibility.py -q   # KC-4
 uv run pytest tests/unit/test_kc_entities.py -q              # KC-8a
 uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
@@ -1137,6 +1182,7 @@ uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
 # The R8 suites. A skip is not a pass.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_kc_sources_r8.py -p no:xdist -rs -q    # KC-1, KC-3
+uv run pytest tests/unit/test_kc_sync_r8.py -p no:xdist -rs -q       # KC-3
 uv run pytest tests/unit/test_kc_access_r8.py -p no:xdist -rs -q     # KC-4
 uv run pytest tests/unit/test_kc_entities_r8.py -p no:xdist -rs -q   # KC-8a
 uv run pytest tests/unit/test_kc_facts_r8.py -p no:xdist -rs -q      # KC-9, KC-10, KC-13

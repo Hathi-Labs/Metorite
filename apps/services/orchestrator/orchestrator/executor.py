@@ -1109,6 +1109,78 @@ def _email_context_block(agent_name: str) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+# ── The member's corrections and limits in a chat (WS-67 OA-4) ─────────────
+
+
+async def _prime_chat_constraints(agent_name: str) -> None:
+    """Read this chat's kept corrections into the run, and open the two tools.
+
+    ``one_assistant_context.md`` §4 OA-4. Only an orchestrator run with
+    ``CHAT_CONSTRAINTS`` on, in a solo room, with a verified member who is
+    the member of the run binding, and with an org. Such a run binds the
+    list (``chat_constraints.CONSTRAINTS``) and opens the tools
+    (``chat_constraints.OPEN``), so the sync :func:`_context_preamble_parts`
+    and each delegated task read it. All of it comes from the run boundary,
+    never from the payload or the model (R5). Never raises. Awaited once per
+    turn, after the artifact context binds.
+    """
+    if agent_name != _EMAIL_CTX_AGENT:
+        return
+    try:
+        from acb_skills import chat_constraints as cc
+        from acb_skills.write_artifact import (
+            artifact_context,
+            derive_artifact_context,
+        )
+    except ImportError:
+        return
+    if not cc.chat_constraints_enabled():
+        return
+    member = _email_ctx_member()
+    if not (member and _current_run_org()):
+        return
+    if str(artifact_context().get("member") or "").strip().lower() != member:
+        return
+    try:
+        items = await cc.load_constraints()
+    except Exception as exc:  # a block, never the turn
+        _log.warning("executor.chat_constraints_failed", error=type(exc).__name__)
+        items = []
+    derive_artifact_context(**{cc.CONSTRAINTS: tuple(items), cc.OPEN: True})
+
+
+def _chat_constraints_block(agent_name: str) -> str:
+    """The orchestrator's block of this chat's corrections and limits, or
+    ``""``. It reads the run binding and the process cache, never Redis."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return ""
+    try:
+        from acb_skills import chat_constraints as cc
+
+        return cc.orchestrator_block(cc.kept_for_run())
+    except Exception:
+        return ""
+
+
+def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
+    """The parent's kept corrections, for a DELEGATED run's own binding.
+
+    WS-67 OA-4, as ``member_turns`` (OA-1). *parent* is the run context read
+    BEFORE this run sets its own. A top-level run binds none here, because
+    :func:`_prime_chat_constraints` reads its own. With the flag off or none
+    kept, ``{}``, so the binding stays as it was.
+    """
+    if not (parent or {}).get("run_id"):
+        return {}
+    try:
+        from acb_skills import chat_constraints as cc
+
+        items = cc.kept_for_run(parent)
+    except Exception:
+        return {}
+    return {cc.CONSTRAINTS: tuple(items)} if items else {}
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -1963,6 +2035,13 @@ async def _run_sub_agent_streaming(
     Returns the final text response.
     """
     settings = get_settings()
+    # WS-67 OA-1 and OA-2: the member's own words, verbatim, and the reply
+    # rules (quoted or inferred) head every delegated task. The executor adds
+    # them, so no prompt and no model can leave them out. Read from the
+    # PARENT's binding, on the parent's frame. WS-67 OA-4: `head_task` puts
+    # the member's kept corrections and limits of the chat after the words.
+    from acb_skills.handoff import head_task
+    message_str = head_task(message_str)
     _repo_name: str | None = None
     _local_path: str | None = None
     _runtime: str = "maf"
@@ -4289,6 +4368,10 @@ async def _run_agent_inner(
     _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
     # CRM-Q29: the member's own words, a source of the number check.
     _member_words = _member_words_for_run(_parent_ctx, event_payload)
+    # WS-67 OA-1: the member's messages of the chat, for each delegated task.
+    _member_turns = _member_turns_for_run(_parent_ctx, event_payload)
+    # WS-67 OA-4: a delegated run inherits its parent's kept corrections.
+    _inherited_constraints = _inherited_chat_constraints(_parent_ctx)
     # H-236: decide this run's no_egress once, from the parent's binding and
     # this agent's own cover, and bind it before anything can fail. A load
     # error then retries (self-anneal) with this answer, never the parent's.
@@ -4594,6 +4677,8 @@ async def _run_agent_inner(
                 run_id=run_id,
                 workspace_root=_effective_agent_dir,
                 member_message=_member_words,  # CRM-Q29
+                member_turns=_member_turns,  # WS-67 OA-1
+                **_inherited_constraints,  # WS-67 OA-4
                 # H-227: True only when this executor minted the thread of a
                 # run with no chat and no parent (see `_batch_thread`).
                 batch_thread=_batch_thread,
@@ -5372,6 +5457,10 @@ async def run_agent_stream(
     # CRM-Q29: the member's own words of this turn, a source of the number
     # check. A delegated run takes its parent's words, never its payload.
     _member_words = _member_words_for_run(artifact_context(), event_payload)
+    # WS-67 OA-1: the member's messages of the chat, for each delegated task.
+    _member_turns = _member_turns_for_run(artifact_context(), event_payload)
+    # WS-67 OA-4: a delegated run inherits its parent's kept corrections.
+    _inherited_constraints = _inherited_chat_constraints(artifact_context())
     _artifact_token = enter_artifact_context()
     # H-236: decide this run's no_egress ONCE, before anything can fail, and
     # bind it. A covered agent's run is a covered run, whatever its parent.
@@ -5605,6 +5694,8 @@ async def run_agent_stream(
                 run_id=run_id,
                 workspace_root=_effective_ws,
                 member_message=_member_words,  # CRM-Q29
+                member_turns=_member_turns,  # WS-67 OA-1
+                **_inherited_constraints,  # WS-67 OA-4
                 batch_thread=_batch_thread,  # H-227
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
@@ -5679,6 +5770,9 @@ async def run_agent_stream(
             # §7.1.1: the mailboxes and the email working set of this chat,
             # read now that the session is bound, for the sync context.
             await _prime_email_context(agent_name)
+            # WS-67 OA-4: this chat's kept corrections and limits, beside the
+            # working set, for the sync context and each delegated task.
+            await _prime_chat_constraints(agent_name)
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -8765,6 +8859,10 @@ async def _tier_policy_for_run(
         message = str(
             event_payload.get("message") or event_payload.get("user_query") or ""
         )
+    # WS-67: the question reads the task only. The head of a delegated task
+    # (the member's words and the reply rules) would make every task look long.
+    from acb_skills.handoff import task_of
+    message = task_of(message)
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
         read_effort=effort_from_text,
@@ -8806,6 +8904,18 @@ async def _tier_policy_for_run(
         emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
         context_tokens=context_tokens,
     )
+
+
+def _member_turns_for_run(parent: Any, event_payload: dict[str, Any]) -> list[str]:
+    """The member's own messages of the chat, for each task that this run
+    delegates (WS-67 OA-1). ``acb_skills.handoff.member_turns`` decides.
+    *parent* is the run context read BEFORE this run sets its own. With no
+    ``acb_skills``, none."""
+    try:
+        from acb_skills.handoff import member_turns
+    except ImportError:
+        return []
+    return member_turns(parent or {}, event_payload or {})
 
 
 def _member_words_for_run(parent: Any, event_payload: dict[str, Any]) -> str:
@@ -9099,6 +9209,14 @@ def _context_preamble_parts(
     email_ctx = _email_context_block(agent_name)
     if email_ctx:
         parts.append(email_ctx)
+
+    # WS-67 OA-4 (one_assistant_context.md §4): the member's corrections and
+    # limits in this chat, for the orchestrator only, beside the working set.
+    # From the run binding that `_prime_chat_constraints` set, never from the
+    # payload (R5).
+    constraints_ctx = _chat_constraints_block(agent_name)
+    if constraints_ctx:
+        parts.append(constraints_ctx)
 
     # Memory context (pre-enriched by the route handler from Mem0) —
     # inject as a system-level preamble so Tier 2 agents also benefit.

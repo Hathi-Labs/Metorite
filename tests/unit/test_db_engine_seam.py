@@ -750,6 +750,12 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
         "chunk read and write after it binds one organization with "
         "`tenant_session`",
+    ("apps/services/gateway/gateway/kb_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-61 KC-3: which organizations the Knowledge sync loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "It keeps the orgs that `KNOWLEDGE_SYNC` names, and every source "
+        "read and write after it binds one organization with `tenant_session`",
     ("apps/services/gateway/gateway/routes/knowledge/proposal_expiry.py",
      "_organization_ids"):
         "WS-61 KB-5c: which organizations the Knowledge proposal expiry looks "

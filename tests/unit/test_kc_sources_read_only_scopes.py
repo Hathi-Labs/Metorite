@@ -10,7 +10,10 @@ Three scans over ``gateway/kb_sources/``, by AST and by string:
    scope URL, a Drive short scope, or a word of a scope list is checked
    against :data:`ALLOWLIST`: ``drive.readonly``, ``openid``, ``email`` and
    ``profile``, in their short and their URL form. ``drive``, ``drive.file``,
-   ``drive.metadata`` and any scope URL that ends in a write verb fail.
+   ``drive.metadata`` and any scope URL that ends in a write verb fail. The
+   one exception (KC-3): the first argument of a ``.get(`` call may be the
+   bare word ``drive``, because the change feed answers a shared-drive
+   change under that key. Every other rule still checks that argument.
 2. **Every write verb.** A ``.post(``, ``.put(``, ``.patch(`` or ``.delete(``
    call fails, except the ``.post(`` of the token and revoke calls in
    ``google_drive/auth.py``. A verb passed as data (``"PUT"``, ``"PATCH"``,
@@ -77,12 +80,20 @@ def _scope_words(value: str) -> list[str]:
     return words if len(words) > 1 else [value]
 
 
-def _scope_finding(word: str) -> str | None:
+def _scope_finding(word: str, *, json_key: bool = False) -> str | None:
+    """What is wrong with *word*, or ``None``.
+
+    *json_key* (KC-3) marks the key of a ``.get(`` call. The Drive change
+    feed answers a shared-drive change under the key ``drive``, which is the
+    same word as the full-drive short scope. A key that the adapter READS is
+    not a scope that it ASKS for, so only the bare-word rule skips it. Every
+    other rule still applies to it, and ``S = 'drive'`` still fails.
+    """
     if word in ALLOWLIST:
         return None
     if _SCOPE_URL.match(word) or word.startswith(_GOOGLE_SCOPE_URL):
         return f"names the scope {word!r}, which is not on the allowlist"
-    if _DRIVE_SHORT.match(word) and not _HOST.search(word):
+    if _DRIVE_SHORT.match(word) and not _HOST.search(word) and not (json_key and word == "drive"):
         return f"names the Drive scope {word!r}, which is not drive.readonly"
     if word.startswith(("Files.", "Sites.")):
         return f"names the scope {word!r}, which is not on the allowlist"
@@ -126,6 +137,18 @@ def _docstrings(tree: ast.AST) -> set[int]:
     return out
 
 
+def _get_keys(tree: ast.AST) -> set[int]:
+    """The ids of the string constants that are the first argument of a
+    ``.get(`` call: a key that the code reads from an answer (KC-3)."""
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and node.args
+                and isinstance(node.args[0], ast.Constant)):
+            out.add(id(node.args[0]))
+    return out
+
+
 def scan(root: Path) -> list[str]:
     """Every finding under ``root``, as ``<file>:<line>: <what>``."""
     findings: list[str] = []
@@ -134,13 +157,14 @@ def scan(root: Path) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         names = _module_strings(tree)
         skip = _docstrings(tree)
+        keys = _get_keys(tree)
         for node in ast.walk(tree):
             line = getattr(node, "lineno", 0)
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if id(node) in skip:
                     continue
                 for word in _scope_words(node.value):
-                    what = _scope_finding(word)
+                    what = _scope_finding(word, json_key=id(node) in keys)
                     if what:
                         findings.append(f"{rel}:{line}: {what}")
                 if node.value in _VERB_STRINGS or (
@@ -215,6 +239,27 @@ def test_a_planted_violation_is_found(tmp_path: Path, rel: str, snippet: str,
     findings = scan(copy)
     assert findings, f"the scan missed {snippet!r}"
     assert any(expect in f and f.startswith(rel) for f in findings), findings
+
+
+@pytest.mark.parametrize(("snippet", "found"), [
+    # KC-3: the key of a shared-drive change in a change-feed answer.
+    ("def f(c):\n    return c.get('drive')\n", False),
+    # The same word as a value, a scope list or a subscript key still fails.
+    ("S = 'drive'\n", True),
+    ("def f(c):\n    return c['drive']\n", True),
+    ("def f(c):\n    return c.get('k', 'drive')\n", True),
+    # A key is still checked against every other rule.
+    ("def f(c):\n    return c.get('drive.file')\n", True),
+    ("def f(c):\n    return c.get('https://www.googleapis.com/auth/drive')\n", True),
+])
+def test_a_get_key_is_exempt_from_the_bare_word_rule_only(
+    tmp_path: Path, snippet: str, found: bool,
+) -> None:
+    copy = tmp_path / "kb_sources"
+    shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    target = copy / "google_drive" / "client.py"
+    target.write_text(target.read_text(encoding="utf-8") + "\n\n" + snippet, encoding="utf-8")
+    assert bool(scan(copy)) is found, scan(copy)
 
 
 def test_a_docstring_that_names_a_scope_is_not_a_finding(tmp_path: Path) -> None:

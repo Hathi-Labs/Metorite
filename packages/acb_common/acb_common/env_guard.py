@@ -142,6 +142,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-45 (D90): the agents that the tier policy covers. It moves what an
     # organization pays, so only the operator writes it (ai_tier_routing.md).
     "AI_TIER_ROUTING",
+    # Chat speed (2026-10-25): the covered agents whose auto chat turns run
+    # with thinking off. It changes how a model answers, so only the
+    # operator writes it.
+    "AI_REASONING_OFF_AGENTS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).

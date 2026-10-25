@@ -614,3 +614,9 @@ UPDATE reminders SET organization_id = (SELECT id FROM organization WHERE slug =
 
 UPDATE reminder_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE kb_sync_cursors SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE kb_sync_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

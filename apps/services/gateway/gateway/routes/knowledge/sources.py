@@ -39,8 +39,8 @@ Gmail grant of the same Google account.
 ``content`` or a ``body`` key.
 
 **Disconnect (§7.4).** In ONE transaction: the source becomes
-``disconnected``, its nodes are DELETED, and ``store.disconnect`` deletes the
-blob. After the commit, with no session open, the route asks the two
+``disconnected``, its nodes and its sync cursors (KC-3) are DELETED, and
+``store.disconnect`` deletes the blob. The rows of ``kb_sync_runs`` stay. After the commit, with no session open, the route asks the two
 shared-grant functions of migration 300. It calls Google's revoke ONLY when
 both answer false. ``true`` and ``NULL`` both skip it, as
 ``routes/email/teardown.py`` does for Gmail. The source row stays as a
@@ -71,6 +71,7 @@ from gateway.kb_sources.google_drive import auth as google_auth
 from gateway.kb_sources.google_drive.client import PROVIDER as GOOGLE_DRIVE
 from gateway.kb_sources.google_drive.client import GoogleDriveSource
 from gateway.kb_sync import discovery
+from gateway.kb_sync import runs as sync_runs
 from gateway.routes.email import teardown
 from gateway.routes.email.transport.oauth import _workbench_public_url
 from gateway.routes.email.transport.signing import (
@@ -630,6 +631,8 @@ async def disconnect_source(
             )
             await store.disconnect(db, org, conn.id)
         await db.execute(text(_DELETE_NODES_SQL), {"org": org, "source": sid})
+        # KC-3: the cursors go with the nodes. The run rows stay as the record.
+        await sync_runs.delete_cursors(db, org, sid)
         await db.execute(text(_DISCONNECTED_SQL), {"org": org, "id": sid})
         after = (await db.execute(text(_ONE_SQL), {**params, "id": sid})).first()
     # After the commit, and with no session open: the revoke, only when free.
