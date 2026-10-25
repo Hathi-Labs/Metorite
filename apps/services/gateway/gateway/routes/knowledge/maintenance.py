@@ -34,13 +34,14 @@ REASONS = ("all", "expired", "unowned", "stale")
 #: The rows of one answer.
 DEFAULT_LIMIT, MAX_LIMIT = 100, 500
 
-_EXPIRED = "(p.review_at IS NOT NULL AND p.review_at <= now())"
+#: The SQL test of an expired page (KB-9b imports it for ``my_day``).
+EXPIRED = "(p.review_at IS NOT NULL AND p.review_at <= now())"
 _UNOWNED = "(p.owner_email IS NULL)"
 _STALE = f"(p.updated_at < now() - make_interval(days => {core.STALE_DAYS}))"
 
 _FILTERS = {
-    "all": f"({_EXPIRED} OR {_UNOWNED} OR {_STALE})",
-    "expired": _EXPIRED,
+    "all": f"({EXPIRED} OR {_UNOWNED} OR {_STALE})",
+    "expired": EXPIRED,
     "unowned": _UNOWNED,
     "stale": _STALE,
 }
@@ -70,14 +71,14 @@ async def list_maintenance(
             text(
                 "SELECT p.id, p.title, p.space_id, s.name AS space_name, "
                 "p.owner_email, p.review_at, p.updated_at, "
-                f"{_EXPIRED} AS is_expired, {_UNOWNED} AS is_unowned, "
+                f"{EXPIRED} AS is_expired, {_UNOWNED} AS is_unowned, "
                 f"{_STALE} AS is_stale "
                 "FROM kb_pages p JOIN kb_spaces s "
                 "ON s.id = p.space_id AND s.organization_id = p.organization_id "
                 f"WHERE p.state = 'published' AND s.kind <> 'me' AND {vis} AND {_FILTERS[reason]} "
                 "ORDER BY (CASE WHEN "
-                f"{_EXPIRED} THEN 0 WHEN {_UNOWNED} THEN 1 ELSE 2 END), "
-                f"(CASE WHEN {_EXPIRED} THEN p.review_at END) ASC NULLS LAST, p.id "
+                f"{EXPIRED} THEN 0 WHEN {_UNOWNED} THEN 1 ELSE 2 END), "
+                f"(CASE WHEN {EXPIRED} THEN p.review_at END) ASC NULLS LAST, p.id "
             ),
             params,
         )).all()

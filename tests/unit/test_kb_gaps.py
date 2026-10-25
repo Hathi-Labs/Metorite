@@ -492,39 +492,53 @@ class TestTheRoutes:
 # ── My Day: the source `knowledge` and the card `kb_gap` ────────────────────
 
 class TestTheMyDayCard:
-    def test_the_source_is_gated_feed_only_and_for_managers(self) -> None:
+    def test_the_source_is_gated_feed_only_and_hashes_the_manage_grant(self) -> None:
+        # KB-9b rewrote this on purpose. The source no longer names
+        # `knowledge:manage` as its `permission`: a plain member now gets the
+        # page cards, so the source must run for any holder of the app. The
+        # grant moved to `hash_permission`, and the gates live in the provider.
         from gateway.routes.shell import feed, needs
 
         p = needs.REGISTRY["knowledge"]
         assert p.gated and not p.needs and p.handled is None
         assert p.features == ("knowledge",)
-        assert p.permission == "knowledge:manage"
-        assert p.kinds == feed.KNOWLEDGE_KINDS == frozenset({"kb_gap"})
-        assert not p.held_by(_user())
+        assert p.permission is None
+        assert p.hash_permission == "knowledge:manage"
+        assert p.kinds == feed.KNOWLEDGE_KINDS == frozenset(
+            {"kb_gap", "doc_needs_review", "doc_shared_with_me"})
+        assert p.held_by(_user())
         assert p.held_by(_user("a@x.test", "knowledge:manage"))
 
-    def test_the_flag_off_reads_absent_before_any_read(self, gates: Any, monkeypatch) -> None:
+    def test_knowledge_off_reads_absent_before_any_read(self, gates: Any, monkeypatch) -> None:
+        # KB-9b rewrote this on purpose. It named the gaps flag. The gaps flag
+        # now skips only the gap read (see test_kb_my_day.py), and a closed
+        # Knowledge switch for the org is what raises SourceAbsent.
+        from gateway.routes.knowledge import my_day
         from gateway.routes.shell import feed, needs
 
-        monkeypatch.setattr(gates, "knowledge_gaps", "", raising=False)
+        monkeypatch.setattr(gates, "knowledge_enabled", False, raising=False)
 
         async def read(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError("no read with the flag off")
+            raise AssertionError("no read with Knowledge off")
 
+        monkeypatch.setattr(my_day, "read", read)
         monkeypatch.setattr(gaps, "my_day_rows", read)
         with pytest.raises(needs.SourceAbsent):
             asyncio.run(feed._knowledge(_user("a@x.test", "knowledge:manage")))
 
     def test_a_row_becomes_one_card(self, gates: Any, monkeypatch) -> None:
+        from gateway.routes.knowledge import my_day
         from gateway.routes.shell import feed, feed_rank
         from gateway.routes.shell.state import SIGNAL_ID_PATTERN
 
         at = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
 
-        async def rows(user: UserContext, limit: int) -> list[dict[str, Any]]:
-            return [{"id": "g-1", "question": QUESTION, "ask_count": 3, "last_asked_at": at}]
+        async def rows(user: UserContext, **_k: Any) -> Any:
+            # KB-9b: the provider reads through `my_day.read` (ONE session).
+            return my_day.Rows(gaps=[
+                {"id": "g-1", "question": QUESTION, "ask_count": 3, "last_asked_at": at}])
 
-        monkeypatch.setattr(gaps, "my_day_rows", rows)
+        monkeypatch.setattr(my_day, "read", rows)
         found = asyncio.run(feed._knowledge(_user("a@x.test", "knowledge:manage")))
         [signal] = found.signals()
         assert signal.signal_id == "knowledge:gap:g-1"

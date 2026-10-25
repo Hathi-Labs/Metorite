@@ -145,7 +145,8 @@ def features_hash(user: Any) -> str:
     held = sorted(f"feature:{f}" for f in FEATURES if user.has_permission(f"feature:{f}"))
     if user.has_permission(ADMIN_PERMISSION):
         held.append(ADMIN_PERMISSION)
-    gates = {p.permission for p in needs.REGISTRY.values() if p.permission}
+    gates = {g for p in needs.REGISTRY.values()
+             for g in (p.permission, p.hash_permission) if g}
     held += sorted(g for g in gates - {ADMIN_PERMISSION} if user.has_permission(g))
     listed = needs.listed_sources()
     if listed:

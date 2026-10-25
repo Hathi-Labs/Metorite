@@ -934,6 +934,9 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   crm_open_questions: "Open questions",
   // WS-61 KB-9a: a question that Knowledge could not answer.
   kb_gap: "Unanswered question",
+  // WS-61 KB-9b: a page of mine is past its review date, and a new page.
+  doc_needs_review: "Page to review",
+  doc_shared_with_me: "New page",
 };
 
 /**

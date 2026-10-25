@@ -530,7 +530,9 @@ async def accept_proposal(
         out = page_proposal_dict(row)
         out["decided_by"] = core.viewer_email(user)
         out["page"] = await pages._written(db, user, row, ACCEPT_REASON, background)
-        return out
+    # KB-9b: a page proposal publishes a page, so the org's My Day moves.
+    await pages.bump_feed_after_publish(user)
+    return out
 
 
 @router.post("/proposals/{proposal_id}/reject")

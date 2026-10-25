@@ -773,7 +773,8 @@ class TestTheMyDayCard:
         # it, and WS-61 KB-9a puts the Knowledge `kb_gap` below both.
         assert feed_rank.BASE["digest_ready"] < min(
             v for k, v in feed_rank.BASE.items()
-            if k not in ("digest_ready", "crm_open_questions", "kb_gap"))
+            if k not in ("digest_ready", "crm_open_questions", "kb_gap",
+                         "doc_needs_review", "doc_shared_with_me"))
         assert feed_rank.group("digest_ready", {}, NOW, NOW.date()) == "fyi"
         # Delivery outside the app is CRM-Q28b, an owner gate.
         assert classes.REACH_CLASS["digest_ready"] == "none"
