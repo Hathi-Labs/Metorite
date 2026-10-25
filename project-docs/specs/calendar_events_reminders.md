@@ -3,9 +3,11 @@
 <!-- ste-tier: strict -->
 
 - **Status:** PROPOSED, 2026-10-15, for events (§3, §4, §8). **Reminders
-  (§5) are DECIDED, 2026-10-25 (D114), and not built.** Verified against
-  code on 2026-10-25 (`origin/main` `894ddad27`): no `reminders` table, no
-  `remind_at`, no service worker, and no push code exists.
+  (§5) are DECIDED, 2026-10-25 (D114).** **PN-1 (the web push platform) is
+  BUILT, 2026-10-25, dark behind `WEB_PUSH_ENABLED`** (migration 306,
+  `gateway/push/`, `public/sw.js`). Verified against code on 2026-10-25
+  (`origin/main` `894ddad27`): no `reminders` table and no `remind_at`
+  existed then.
 - **Board row:** **WS-66** for reminders and web push. Events still wait on
   CE-0 for a row.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -482,10 +484,14 @@ and its item 5 (for reminder pushes, D114.4).
   (`/people/me`), beside the Reach section. It adds no pane and no nav
   entry. RE-7 later adds the choice of the main channel to that section.
 - **One browser, several accounts.** The account switcher lets one browser
-  hold several accounts. A reminder title of account A can then show while
-  account B is in use. RE-9 must settle this before a reminder push holds
-  text. The default: the payload names the org, and "Hide details" covers a
-  shared device.
+  hold several accounts, and all of them share one push subscription. PN-1
+  settles the device rows: each account has its own row for the endpoint. A
+  sign-out or a toggle-off deletes that account's row only. The browser
+  unsubscribes only when no other account stays. A failed read of the
+  account list keeps the subscription.
+- **What RE-9 still settles.** A reminder title of account A can show while
+  account B is in use. The default: the payload names the org, and "Hide
+  details" covers a shared device.
 
 ### 5.10 What the other docs gain
 
@@ -715,7 +721,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | Ticket | Order | Scope | Done when | Fence (R7) |
 |---|---|---|---|---|
 | **RM-0** The spec, D114 and the board row | First | This section, §5, D114, WS-66, INDEX | The spec-auditor gives GO for PN-1 and RM-1 | — |
-| **PN-1** The push platform (S7's transport) | Now, beside RM-1 | §10.2 | The agent proves: no prompt shows without a tap, org B reads no subscription of org A, a 410 deletes the row, and a sign-out deletes the row of that device. 🔴 The owner checks, through a HANDOFF entry on dev.metorite.com: a test push reaches an installed iPhone app and Android Chrome | `tests/unit/test_push_subscriptions.py` (R8, two orgs), `src/lib/push.test.ts`, `src/proxy.test.ts` |
+| **PN-1** The push platform (S7's transport) — ✅ **BUILT 2026-10-25, dark** (migration 306) | Now, beside RM-1 | §10.2 | The agent proves: no prompt shows without a tap, org B reads no subscription of org A, a 410 deletes the row, and a sign-out deletes the row of that device. 🔴 The owner checks, through a HANDOFF entry on dev.metorite.com: a test push reaches an installed iPhone app and Android Chrome | `tests/unit/test_push_subscriptions.py` (R8, two orgs), `src/lib/push.test.ts`, `src/proxy.test.ts` |
 | **RM-1** The store and the API | Now, beside PN-1 | §10.3 | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members), `test_projects_chat_coverage.py` |
 | **RM-2** The loop and the smart slot | After RM-1 | §5.4 and §5.5. The three card kinds in `feed.py` and in `REACH_CLASS`. The D114.3 exception in the Reach budget | A reminder for 15:00 fires at 15:00, and its check-back comes at 16:00. No answer moves it to the brief, then to one new slot. After 2 cycles it is `unconfirmed`. No step 2 to 5 lands in quiet hours. Two workers never fire one row twice | `tests/unit/test_reminder_loop.py` (R8, frozen clock), `tests/unit/test_reminder_slot.py`, `test_reach_plan.py` |
 | **RM-3** The chat tools | After RM-1 | §5.8 in `skill_projects`. The `set-reminder` job in `routes/shell/intent.py` and `src/lib/shell/registry.ts`. `capture` stops taking "remind me" | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `test_shell_intent.py`, `tests/unit/test_reminder_tools.py` |
@@ -768,6 +774,15 @@ content, as `test_email_send_later.py` does. The fence is
    send blocks, so it runs in `asyncio.to_thread`. On a 404 or a 410, it
    deletes the row in the same tenant session. The test payload holds a
    fixed title and no content (S7 item 5).
+   - **As built (review, 2026-10-25).** The sender encrypts and signs with
+     pywebpush, and sends only through `outbound_guard.request_https`, after
+     the push-service allowlist of `push/endpoints.py`. So push adds no
+     second outbound seam. `/push/test` sends to every device at once, under
+     a budget of 20 s.
+   - **The cap.** A member holds at most 10 devices. A new device first
+     evicts the stale ones (expired, or 5 failures), then the oldest by its
+     last success. It never refuses a device.
+   - **The purge.** The admin member purge deletes the member's devices.
 5. **The service worker.** `public/sw.js` at scope `/` (§5.9). Add `/sw.js`
    to `PUBLIC_PAGES` in `src/proxy.ts`, with a `proxy.test.ts` case.
    Otherwise a signed-out update fetch of the script gets a redirect.
@@ -777,9 +792,14 @@ content, as `test_email_send_later.py` does. The fence is
    `app/people/me/page.tsx`, beside `ReachSection`. The prompt shows only
    after a tap on the toggle. In a Safari tab on iOS, the section shows the
    three Home Screen steps.
-8. **Sign-out.** Delete the row and unsubscribe before the session ends, on
-   all four paths: `signOutThis` and `signOutAll` in `lib/accountSwitch.ts`,
-   `components/Sidebar.tsx`, and `app/signup/SignUpForm.tsx`.
+8. **Sign-out.** Delete the row before the session ends, on all six paths:
+   `signOutThis` and `signOutAll` in `lib/accountSwitch.ts`,
+   `components/Sidebar.tsx`, `app/signup/SignUpForm.tsx`, "Remove from this
+   browser", and a stash that overwrites a full slot. The last two delete as
+   the account that leaves, through its slot session. The browser
+   unsubscribes only when no other account stays (§5.9). A read
+   `POST /push/subscriptions/status` tells whether this member has a row for
+   this endpoint, so the toggle shows the member's own state.
 9. **The keys.** The agent makes one P-256 pair. Add `VAPID_*` to
    `app-env.allowed_keys` in `deploy/secrets/manifest.json`. Push to staging
    first (`metorite-dev`), and report the act with its evidence (CLAUDE.md
