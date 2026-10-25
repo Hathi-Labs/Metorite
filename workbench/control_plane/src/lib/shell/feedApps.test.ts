@@ -60,6 +60,12 @@ describe("the feed apps of MD-3b", () => {
     expect(sourceLine({ app: "unknown" as never, kind: "overdue" })).toBe("unknown · Overdue");
   });
 
+  it("names every Knowledge kind in its failed-source line (KB-9b)", () => {
+    expect(feedFailedLines({ knowledge: "failed" } as never)).toEqual([
+      "Knowledge did not answer, so its pages to review, new pages and unanswered questions may be missing.",
+    ]);
+  });
+
   it("links Show all in CRM to the CRM pane", () => {
     const group = { cards: [{ app: "crm" }] } as unknown as Parameters<typeof cappedLinks>[0];
     expect(cappedLinks(group, ["crm"])).toEqual([

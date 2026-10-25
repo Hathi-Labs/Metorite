@@ -91,6 +91,11 @@ BASE: dict[str, int] = {
     # not answer, for a manager of Knowledge. A thing to know, below every
     # other kind.
     "kb_gap": 20,
+    # WS-61 KB-9b: a page of the member is past its review date, and a page
+    # that another author published in the last day. Things to know. The
+    # review sits above the gap, and the new page sits below it.
+    "doc_needs_review": 21,
+    "doc_shared_with_me": 19,
 }
 
 #: The urgency terms (§7).
@@ -198,7 +203,8 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "needs_you"
     if kind == "unblocked":
         return "ready"
-    if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready", "kb_gap"):
+    if kind in ("stale_next", "deal_quiet", "colleague_out", "digest_ready", "kb_gap",
+                "doc_needs_review", "doc_shared_with_me"):
         return "fyi"
     if kind == "crm_open_questions":
         # CRM-Q32-4: needs you while a question about money is open.
