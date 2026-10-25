@@ -25,10 +25,11 @@ pytest.importorskip("agent_framework", reason="MAF not installed")
 
 from evals.one_assistant_measure import checks as ck
 from evals.one_assistant_measure import pack, run
-from evals.one_assistant_measure.mailbox import DRAFT, HOME, KIRAN, MAIL, WORK
+from evals.one_assistant_measure.mailbox import DRAFT, HOME, KIRAN, MAIL, WORK, Mailbox
 from evals.one_assistant_measure.scenarios import (
     EXACT_TEXT,
     NAVY_NAMES,
+    OFFICE,
     SCENARIOS,
     Check,
     Plan,
@@ -101,6 +102,42 @@ def test_the_delegation_arm_reaches_the_real_email_assistant(scripted) -> None:
     row = next(r for r in rows if r["arm"] == "delegation" and r["scenario"] == "exact_reply")
     assert row["email_tools"] == ["compose_reply"] and row["tasks"], row
     assert row["checks"]["no_email_delegation"] is None
+
+
+def test_a_saved_reply_sent_later_is_a_reply_to_its_own_people() -> None:
+    """Turn 1 saves a reply that nobody asked for, and turn 2 sends it. The
+    held card shows the draft's own people and text, never the five-turn
+    chat's. The first live run of 2026-10-25 found the fake's fixed answer."""
+    sc = scenario("reply_correction")
+    anil = "7a5e0000-0000-4000-8000-000000000006"
+    models = {
+        ORCHESTRATOR: ReplyModel([
+            tool_turn(pack.DELEGATE_TOOL, {"task": "Correct the date with Anil."}, "c1"),
+            text_turn("Saved a reply in Drafts."),
+            tool_turn(pack.DELEGATE_TOOL, {"task": "Send the draft to Anil."}, "c2"),
+            text_turn("Sent to Anil."),
+        ]),
+        pack.EA: ReplyModel([
+            tool_turn("compose_reply", {"email_id": anil, "account_id": WORK,
+                                        "instruction": "They arrive on 14 November."}, "c3"),
+            text_turn("Saved in Drafts."),
+            tool_turn("send_draft", {"account_id": WORK, "draft_id": "d-000006"}, "c4"),
+            text_turn("Draft sent."),
+        ]),
+    }
+    first, second = run.run_chat(sc, "delegation", models=models)
+    assert first["checks"]["no_write"] is False, first
+    assert second["checks"]["replied"] is True and second["checks"]["the_corrected_date"], second
+
+    async def held_send() -> dict[str, Any]:
+        gw = Mailbox(OFFICE)
+        await gw.post("/email/reply-card", {"message_id": anil, "instruction": "14 November"})
+        await gw.post("/email/reply-card/act", {"message_id": anil, "answer": "APPROVE {}"})
+        await gw.post("/email/held-card", {"kind": "draft", "account_id": WORK,
+                                           "draft_id": "d-000006"})
+        return await gw.post("/email/held-card/act", {})
+
+    assert asyncio.run(held_send()) == {"to": ["anil@railfreight.example"], "cc": []}
 
 
 # ── the checkers, one mutation each ──────────────────────────────────────────

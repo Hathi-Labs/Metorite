@@ -44,6 +44,7 @@ __all__ = [
     "Attachment",
     "Mail",
     "Mailbox",
+    "draft_id_for",
     "uid",
 ]
 
@@ -71,6 +72,14 @@ _STOP = frozenset({
 def uid(n: int) -> str:
     """A fixed UUID for fixture *n*. The tools refuse an id that is not a UUID."""
     return f"7a5e0000-0000-4000-8000-{n:012d}"
+
+
+def draft_id_for(message_id: str) -> str:
+    """The id of the draft that a reply card to *message_id* saves.
+
+    The five-turn mail keeps the five-turn draft, ``DRAFT``."""
+    return DRAFT if message_id == MAIL or not message_id.startswith("7a5e") \
+        else f"d-{message_id[-6:]}"
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,12 @@ class Mailbox(Gateway):
         self.mails = tuple(mails)
         #: Each reply card that the gateway prepared, by message id.
         self.preps: dict[str, dict[str, Any]] = {}
+        #: Each draft that a reply card saved, by draft id. The five-turn
+        #: draft (``DRAFT``) stays with the five-turn fake.
+        self.drafts: dict[str, dict[str, Any]] = {}
+        #: The draft of the held card that shows now, and each draft sent.
+        self.held_for = ""
+        self.sent_drafts: list[str] = []
         self.now = datetime.now(UTC)
         self.by_id = {m.id: m for m in self.mails}
         self.by_attachment = {a.id: (m, a) for m in self.mails for a in m.attachments}
@@ -217,11 +232,23 @@ class Mailbox(Gateway):
                 out.append({"name": name, "email": addr, "source": src})
             return out
         if path == "/email/drafts/seal":
+            saved = self.drafts.get(str(p.get("draft_id") or ""))
+            if saved is not None:
+                return {"subject": saved["subject"], "text_digest": f"digest-{saved['id']}",
+                        "body_text": saved["body"]}
             return {"subject": "Re: Quote for the clinic", "text_digest": "digest-1",
                     "body_text": "Dear Dr Sagar,\n\nThank you. We accept.\n\nVJ"}
         if path == "/email/recent-reply":
             return {}
         m = re.fullmatch(r"/email/messages/([^/]+)(/full-body)?", path)
+        if m and m.group(1) in self.drafts:
+            saved = self.drafts[m.group(1)]
+            if m.group(2):
+                return {"subject": saved["subject"], "from": ME, "body_text": saved["body"]}
+            return {"id": saved["id"], "account_id": saved["account_id"], "folder": "drafts",
+                    "subject": saved["subject"], "body_text": saved["body"],
+                    "to_addresses": [{"email": a} for a in saved["to"]],
+                    "cc_addresses": [{"email": a} for a in saved["cc"]]}
         if m and m.group(1) in self.by_id:
             mail = self.by_id[m.group(1)]
             if m.group(2):
@@ -254,7 +281,7 @@ class Mailbox(Gateway):
         prep = {
             "message_id": mid, "subject": subject, "body": text,
             "mailbox": _HOME_LABEL if mail and mail.account_id == HOME else _WORK_LABEL,
-            "draft_id": DRAFT if mid == MAIL or not mail else f"d-{mid[-6:]}",
+            "draft_id": draft_id_for(mid),
             "recipients": {"reply": {"to": [addr], "cc": cc},
                            "reply_all": {"to": [addr], "cc": cc}},
             "classes": {addr: "known", **dict.fromkeys(cc, "org")},
@@ -271,9 +298,27 @@ class Mailbox(Gateway):
         except (IndexError, ValueError, AttributeError):
             choice = {}
         to = prep["recipients"]["reply"]["to"]
-        return {"action": choice.get("action") or "save", "draft_id": prep["draft_id"],
-                "to": to, "cc": list(choice.get("cc") or []),
+        cc = list(choice.get("cc") or [])
+        action = choice.get("action") or "save"
+        if action == "save" and prep["draft_id"] != DRAFT:
+            mail = self.by_id.get(mid)
+            self.drafts[prep["draft_id"]] = {
+                "id": prep["draft_id"], "message_id": mid, "subject": prep["subject"],
+                "body": str(choice.get("body") or prep["body"]), "to": list(to), "cc": cc,
+                "account_id": mail.account_id if mail else WORK,
+            }
+        return {"action": action, "draft_id": prep["draft_id"], "to": to, "cc": cc,
                 "subject": prep["subject"], "mailbox": prep["mailbox"]}
+
+    def _held(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The held card of a draft that a reply card saved."""
+        saved = self.drafts[str(body.get("draft_id"))]
+        self.held_for = saved["id"]
+        people = [*saved["to"], *saved["cc"]]
+        return {"title": "Send this draft?", "detail": f"To {', '.join(saved['to'])}",
+                "context": saved["body"], "card_id": f"c0ffee00{saved['id'][-6:]:0>24}",
+                "rows": [{"id": f"r-{i}", "label": a, "checked": True}
+                         for i, a in enumerate(people)]}
 
     # ── the verbs that the email agent's module calls ────────────────────────
 
@@ -291,6 +336,19 @@ class Mailbox(Gateway):
         if path == "/email/reply-card/act":
             self.calls.append(("POST", path, body))
             return self._act(dict(body or {}))
+        draft = str((body or {}).get("draft_id") or "")
+        if path == "/email/held-card" and draft in self.drafts:
+            self.calls.append(("POST", path, body))
+            return self._held(dict(body))
+        if path == "/email/held-card/act" and self.held_for in self.drafts:
+            self.calls.append(("POST", path, body))
+            saved = self.drafts[self.held_for]
+            self.sent_drafts.append(saved["id"])
+            return {"to": saved["to"], "cc": saved["cc"]}
+        if path == "/email/drafts/send" and draft in self.drafts:
+            self.calls.append(("POST", path, body))
+            self.sent_drafts.append(draft)
+            return {}
         return await super().post(path, body)
 
     async def delete(self, path: str) -> Any:

@@ -314,7 +314,7 @@ REPLY_CORRECTION = Scenario(
              (Check("no_write"),),
              Plan((), "Noted: the parts arrive on 14 November, not 12 November.")),
         Turn("Reply to Anil and confirm the date.",
-             (Check("reply_card", ANIL.id), Check("reply_text", (r"\b14\b",), "the_corrected_date")),
+             (Check("replied", ANIL.id), Check("reply_text", (r"\b14\b",), "the_corrected_date")),
              Plan((("compose_reply", {"email_id": ANIL.id, "account_id": WORK,
                                       "instruction": "Confirm delivery on 14 November."}),),
                   "Saved in Drafts of Work: the reply confirms 14 November.")),

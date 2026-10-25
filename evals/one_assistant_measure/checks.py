@@ -179,10 +179,35 @@ def _reply_card(obs: Observation, arg: Any) -> bool:
     return shown and acted
 
 
+def _sent_drafts(obs: Observation) -> list[str]:
+    """The id of each draft that the turn sent: a held card, or a plain send."""
+    out: list[str] = []
+    held = ""
+    for m, p, b in obs.gateway:
+        if m == "POST" and p == "/email/held-card":
+            held = str((b or {}).get("draft_id") or "")
+        elif m == "POST" and p == "/email/held-card/act" and held:
+            out.append(held)
+        elif m == "POST" and p == "/email/drafts/send":
+            out.append(str((b or {}).get("draft_id") or ""))
+    return out
+
+
+def _replied(obs: Observation, arg: Any) -> bool:
+    """A reply to email *arg*: its reply card, or the send of a saved reply draft."""
+    from evals.one_assistant_measure.mailbox import draft_id_for
+
+    return _reply_card(obs, arg) or draft_id_for(arg) in _sent_drafts(obs)
+
+
 def _reply_texts(obs: Observation) -> list[str]:
+    """The text of each reply of the turn: what the model passed, and what a
+    card showed. A send card shows the draft's text in its context."""
     out = [str(a.get("draft") or "") + "\n" + str(a.get("instruction") or "")
            for name, a, _ in obs.email_calls if name == "compose_reply"]
     out += [str((c.get("reply") or {}).get("body") or "") for c in obs.cards if c.get("reply")]
+    out += [f"{c.get('detail') or ''}\n{c.get('context') or ''}" for c in obs.cards
+            if not c.get("reply") and _found(r"\bsend\b", str(c.get("title") or ""))]
     return out
 
 
@@ -282,6 +307,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "read_mail": _read_mail,
     "all_inboxes": _all_inboxes,
     "reply_card": _reply_card,
+    "replied": _replied,
     "reply_text": _reply_text,
     "verbatim": _verbatim,
     "cc": _cc,
