@@ -97,7 +97,7 @@ def test_the_root_is_a_pane_every_member_holds() -> None:
     ("/people", "/people"),
     ("/people/me", "/people/me"),
     ("/people/me/edit", "/people/me"),
-    ("/tasks#today", "/tasks"),
+    ("/calendar#today", "/calendar"),
     ("/%70rojects", "/projects"),
 ])
 def test_pane_of_takes_the_longest_href(path: str, href: str) -> None:
@@ -162,7 +162,7 @@ def test_path_segments_decodes_once_and_refuses_the_tricks() -> None:
         assert iap.path_segments(bad) is None, bad
 
 
-@pytest.mark.parametrize("path", ["/", "/projects?task=42", "/tasks#today",
+@pytest.mark.parametrize("path", ["/", "/projects?task=42", "/calendar#today",
                                   "/email?message=x", "/people/me", "/calendar"])
 def test_a_held_pane_is_not_refused(path: str) -> None:
     assert iap.refusal(path, HELD) is None

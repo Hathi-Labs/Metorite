@@ -287,7 +287,8 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     await page.goto("/");
     await expect(feedCard(page, "tasks:t1")).toBeVisible();
     await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
-    const tasksRow = sidebar(page).getByRole("link", { name: "My Tasks, 2 need you", exact: true });
+    // My Tasks has no row since OP-4 (2026-10-25): its count is on Projects.
+    const tasksRow = sidebar(page).getByRole("link", { name: "Projects, 2 need you", exact: true });
     await expect(tasksRow).toBeVisible();
 
     await feedCard(page, "tasks:t1").getByRole("button", { name: "More for Send the quote" }).click();
