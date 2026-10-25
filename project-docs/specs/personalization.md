@@ -1209,8 +1209,8 @@ member can reset one area or the whole interview. A fact shows its area.
 6. `profile_interview(stop)` marks `never` each area that is not `answered`.
    `profile_interview(start)` sets `started_at` only. It is the "no thanks"
    said in the chat. A learning switch that is off refuses both.
-7. The executor shows the due line at most once in `DUE_HOURS` for each
-   member in one process, because the model may ask and never mark `asked`.
+7. The model may ask and never mark `asked`. So the executor shows the due
+   line at most once in `DUE_HOURS` for each member in one process.
    This limit is ADVISORY across processes (R7). A restart, or a second box,
    can show the line once more. `profile_remember` with `replaces` and an
    area marks the area `answered` too.
