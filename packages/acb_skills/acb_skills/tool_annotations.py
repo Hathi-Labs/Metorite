@@ -175,6 +175,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "profile_alias":         {"read_only": False, "destructive": False, "idempotent": True,  "open_world": False},
     # PZ-6a fix round 1: the spoken Undo of the last chat change.
     "profile_undo":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-63 PZ-26: the interview. It reads the open areas and marks one. A
+    # mark changes the member's own interview state and sends nothing out.
+    "profile_interview":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # WS-61 KB-4a: the two Knowledge reads (`knowledge_tools.py`). Each reads
     # a `/knowledge` route as the member, and nothing leaves the platform.
     "read_page":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -256,6 +259,7 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "profile_set",
     "profile_alias",
     "profile_undo",
+    "profile_interview",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
