@@ -209,7 +209,15 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "1. When the member asks about the company, its work, its customers, its\n"
         "   mail or its policies, call search_company first. Answer from what it\n"
         "   returns, and cite each item you used. When it returns nothing, say\n"
-        "   that the company's records hold nothing on it.\n",
+        "   that the company's records hold nothing on it.\n"
+        # Chat speed (2026-10-25): a write searched first and then delegated,
+        # and the specialist searched again. That cost one model round and a
+        # search, about 8.7 s, before the work began (knowledge_base.md §8.2).
+        "   A request to change something in one app, such as an email to write\n"
+        "   or send, a task to make or a record to update, is work in that app.\n"
+        "   Give it at once to that app's specialist, or to your own tool for it,\n"
+        "   with no search first. The specialist or the tool finds the email, the\n"
+        "   contact or the record itself.\n",
     ),
     (
         "5. Every factual claim from retrieval must cite [entity:uuid] tokens exactly as returned.\n",
