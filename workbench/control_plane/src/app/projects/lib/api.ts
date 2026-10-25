@@ -733,6 +733,103 @@ export interface WaitingReport {
   oldest_hours?: number | null;
 }
 
+/** WS-27bn RA-4. The five outcomes of an agent run, in the panel's order. */
+export type RunOutcome = "completed" | "failed" | "stopped" | "abandoned" | "released";
+
+/** WS-27bn RA-4. Each outcome with its count of runs. */
+export type RunOutcomeCounts = Record<RunOutcome, number>;
+
+/** WS-27bn RA-4. One UTC day of the outcome series. */
+export interface RunOutcomeDay extends RunOutcomeCounts {
+  /** The day, as `YYYY-MM-DD`, in UTC. */
+  day: string;
+  total: number;
+}
+
+/** WS-27bn RA-4. The four sizes of a completed run, by agent time. */
+export type RunSize = "under_15m" | "under_1h" | "under_4h" | "over_4h";
+
+/**
+ * WS-27bn RA-4. One run of the `agent_runs` section: the task it works on,
+ * the agent, and the member the agent works for (§6.8 E2).
+ */
+export interface AgentRunRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** The run. The client keys the row on it. */
+  run_id: string;
+  /** The client name, from the one client map of the server. */
+  agent: string;
+  client_via: string | null;
+  member: string | null;
+  member_name: string | null;
+}
+
+/** A silent run: since when the agent said nothing, and for how long. */
+export interface SilentRunRow extends AgentRunRow {
+  since: string | null;
+  age_hours: number | null;
+}
+
+/** A long run: its agent time, and when it ended. */
+export interface LongRunRow extends AgentRunRow {
+  hours: number | null;
+  ended_at: string | null;
+}
+
+/**
+ * WS-27bn RA-4 — the `agent_runs` section (`analytics_agent_runs.py`
+ * `agent_runs_body`). The outcomes and the sizes read the last `days` UTC
+ * days, today included, and never the report period. The silent runs read
+ * the state now.
+ */
+export interface AgentRunsReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** False while agent runs are off for the organization. */
+  on: boolean;
+  /** False when no task of the scope has an agent run. */
+  agent_runs_seen: boolean;
+  days: number;
+  /** The first UTC day of the window, as `YYYY-MM-DD`. */
+  window_start: string;
+  /** The runs that ended in the window, by outcome. */
+  outcomes: RunOutcomeCounts;
+  ended_total: number;
+  /** The runs that ended in the window before, by outcome. */
+  outcomes_before: RunOutcomeCounts;
+  /** Each UTC day of the window, oldest first. The days add up to `outcomes`. */
+  series: RunOutcomeDay[];
+  success: {
+    /** Completed over completed, failed and abandoned. Null with none. */
+    rate: number | null;
+    completed: number;
+    rated: number;
+    rate_before: number | null;
+    rated_before: number;
+    trend: "up" | "down" | "flat" | null;
+  };
+  silent: SilentRunRow[];
+  silent_total: number;
+  silent_after_minutes: number;
+  /** The completed runs of the window by size, and those with no agent time. */
+  sizes: Record<RunSize | "unmeasured", number>;
+  sized_total: number;
+  /** The longest runs of 4 hours or more, the longest first. */
+  long_runs: LongRunRow[];
+  long_total: number;
+  long_after_hours: number;
+  /** The flag of the long runs, with its count, or null with none. */
+  long_line: string | null;
+  max_rows: number;
+}
+
 /** WS-27bn RA-1. The done tasks of a window, by finish label. */
 export interface ActorSplit {
   agent_finished: number;
@@ -1356,6 +1453,11 @@ export interface RenderedReportBody {
      * a review and blocked handoffs, with the answer time of the period.
      */
     waiting?: WaitingReport;
+    /**
+     * WS-27bn RA-4. How agent runs end: 14 days of outcomes, the success
+     * rate, the silent runs now and the run sizes.
+     */
+    agent_runs?: AgentRunsReport;
     /**
      * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
      * estimate, and tasks in progress with no change. It reads the state now.

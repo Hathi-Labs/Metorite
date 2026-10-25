@@ -63,6 +63,7 @@ export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "pulse", label: "Team pulse" },
   { key: "stuck", label: "Stuck work" },
   { key: "waiting", label: "Waiting on people" },
+  { key: "agent_runs", label: "Agent runs" },
   { key: "hygiene", label: "Data hygiene" },
   { key: "conflicts", label: "Where the plan conflicts" },
   { key: "rebalance", label: "Who could help" },
@@ -76,7 +77,7 @@ export function sectionName(key: string): string {
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.
  * The same lockstep test pins it. `outlook`, `capacity`, `pulse`,
- * `waiting`, `hygiene`, `conflicts` and `rebalance` are opt-in.
+ * `waiting`, `agent_runs`, `hygiene`, `conflicts` and `rebalance` are opt-in.
  */
 export const DEFAULT_REPORT_SECTIONS: readonly string[] = [
   "finished",
@@ -200,12 +201,13 @@ export function newBuilderState(): BuilderState {
 // ── WS-27bn R5f: Overview, the start of the one Reports app ────────────────
 
 /**
- * The eight sections of Overview, in `SECTIONS` order. The Analytics app
+ * The nine sections of Overview, in `SECTIONS` order. The Analytics app
  * drew the first seven, with the route defaults that `overviewState` copies,
  * so Overview shows the same numbers (§8 R5f rule 4). WS-27bn RA-3 adds
- * `waiting`, the coordination panel of §6.8 C. Overview hides it when the
- * scope has no agent run (`overviewShown`). `pulse`, `hygiene` and
- * `rebalance` start off. A reader turns them on in the section list.
+ * `waiting`, the coordination panel of §6.8 C, and RA-4 adds `agent_runs`.
+ * Overview hides each of the two when the scope has no agent run
+ * (`overviewShown`). `pulse`, `hygiene` and `rebalance` start off. A reader
+ * turns them on in the section list.
  */
 export const OVERVIEW_SECTIONS: readonly string[] = [
   "finished",
@@ -215,6 +217,7 @@ export const OVERVIEW_SECTIONS: readonly string[] = [
   "capacity",
   "stuck",
   "waiting",
+  "agent_runs",
   "conflicts",
 ];
 
@@ -436,11 +439,16 @@ export function configFor(state: BuilderState): ReportConfig {
  * `NO_SUBJECT_SECTIONS`. `test_projects_report_sections_lockstep.py` reads
  * this list as text and fails when the two differ.
  */
-export const NO_SUBJECT_SECTIONS: readonly string[] = ["outlook", "waiting", "hygiene"];
+export const NO_SUBJECT_SECTIONS: readonly string[] = [
+  "outlook",
+  "waiting",
+  "agent_runs",
+  "hygiene",
+];
 
 /** The line under the sections when a subject turns sections off. */
 export const NO_SUBJECT_NOTE =
-  "Forecast, Waiting on people and Data hygiene cover a whole project, so they are off for a person or team.";
+  "Forecast, Waiting on people, Agent runs and Data hygiene cover a whole project, so they are off for a person or team.";
 
 /** The subject chip's value for "Everyone": no subject. */
 export const EVERYONE = "";
@@ -966,8 +974,9 @@ export function hiddenTeamHint(
 
 /**
  * §6.5 item 3. The sections that ignore the period: `render_body` reads each of
- * them as the state now. `finished` and `throughput` are the only sections
- * that read `weeks` and `skip_current_week`.
+ * them as the state now. `finished`, `throughput` and `waiting` are the only
+ * sections that read `weeks` and `skip_current_week`. WS-27bn RA-4's
+ * `agent_runs` reads its own 14 days back from today, so it is "as of today".
  *
  * ⚠️ `test_projects_report_sections_lockstep.py` reads this list as text,
  * and fails when it differs from the branches of `render_body`.
@@ -978,6 +987,7 @@ export const PERIOD_FREE_SECTIONS: readonly string[] = [
   "capacity",
   "pulse",
   "stuck",
+  "agent_runs",
   "hygiene",
   "conflicts",
   "rebalance",
@@ -1079,6 +1089,7 @@ const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
   capacity: "Where things stand",
   stuck: "Where things stand",
   waiting: "Where things stand",
+  agent_runs: "Where things stand",
   hygiene: "Where things stand",
   pulse: "Who needs help",
   conflicts: "Who needs help",

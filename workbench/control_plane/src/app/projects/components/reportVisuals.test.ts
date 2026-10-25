@@ -363,6 +363,64 @@ const WAITING: NonNullable<Sections["waiting"]> = {
   max_rows: 20,
 };
 
+/** `agent_runs_body` for an admin: one silent run and one long run (WS-27bn RA-4). */
+const AGENT_RUN_ROW = {
+  project_id: "p1",
+  project_name: "Rig",
+  agent: "Claude Code",
+  client_via: "mcp:claude.ai:claude-code",
+  member: "ana@example.test",
+  member_name: "Ana Rao",
+};
+
+const AGENT_RUNS: NonNullable<Sections["agent_runs"]> = {
+  summary:
+    "9 agent runs ended in the last 14 days. The success rate is 75%, down from 80% in the 14 days before." +
+    " 1 run is silent now. 1 completed run took 4 hours or more of agent time: maybe a poorly specified task.",
+  on: true,
+  agent_runs_seen: true,
+  days: 14,
+  window_start: "2026-09-11",
+  outcomes: { completed: 6, failed: 1, stopped: 1, abandoned: 1, released: 0 },
+  ended_total: 9,
+  outcomes_before: { completed: 4, failed: 1, stopped: 0, abandoned: 0, released: 0 },
+  series: [
+    { day: "2026-09-23", completed: 2, failed: 1, stopped: 0, abandoned: 0, released: 0, total: 3 },
+    { day: "2026-09-24", completed: 4, failed: 0, stopped: 1, abandoned: 1, released: 0, total: 6 },
+  ],
+  success: { rate: 0.75, completed: 6, rated: 8, rate_before: 0.8, rated_before: 5, trend: "down" },
+  silent: [
+    {
+      ...AGENT_RUN_ROW,
+      id: "ts",
+      run_id: "rs",
+      task_number: 21,
+      title: "Calibrate the bed 8301",
+      since: "2026-09-24T05:00:00+00:00",
+      age_hours: 2,
+    },
+  ],
+  silent_total: 1,
+  silent_after_minutes: 15,
+  sizes: { under_15m: 2, under_1h: 2, under_4h: 1, over_4h: 1, unmeasured: 0 },
+  sized_total: 6,
+  long_runs: [
+    {
+      ...AGENT_RUN_ROW,
+      id: "tl",
+      run_id: "rl",
+      task_number: 22,
+      title: "Port the firmware",
+      hours: 6.5,
+      ended_at: "2026-09-24T03:00:00+00:00",
+    },
+  ],
+  long_total: 1,
+  long_after_hours: 4,
+  long_line: "1 completed run took 4 hours or more of agent time: maybe a poorly specified task.",
+  max_rows: 20,
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -447,6 +505,7 @@ const SECTIONS: Required<Sections> = {
   hygiene: HYGIENE,
   pulse: PULSE,
   waiting: WAITING,
+  agent_runs: AGENT_RUNS,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -461,6 +520,7 @@ const SENTINEL: Record<keyof Sections, string> = {
   hygiene: "7901",
   pulse: "8101",
   waiting: "8201",
+  agent_runs: "8301",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -512,21 +572,22 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   hygiene: "Data hygiene",
   pulse: "Team pulse",
   waiting: "Waiting on people",
+  agent_runs: "Agent runs",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all eleven panels and eleven tables in one report", () => {
+  it("draws all twelve panels and twelve tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(', as a table').length).toBe(12);
+    expect(html.split(', as a table').length).toBe(13);
     // §6.6 D item 5. Each card has one table button in its header.
-    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(11);
+    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(12);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(11);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(12);
   });
 
   it("pulse draws one card a person: the load bar, the status and three focus tasks", () => {
@@ -1038,6 +1099,7 @@ const PANELS = [
   "HygienePanel",
   "PulsePanel",
   "WaitingPanel",
+  "AgentRunsPanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -1056,13 +1118,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the eleven panels from ./AnalyticsPanels", () => {
+  it("imports the twelve panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the eleven", () => {
+  it("renders each of the twelve", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 

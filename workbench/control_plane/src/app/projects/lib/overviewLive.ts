@@ -23,6 +23,7 @@ import {
   overviewState,
   previewNeeded,
 } from "./reportBuilder";
+import { agentRunsHidden } from "./agentRunsReport";
 import { waitingHidden } from "./waiting";
 
 /** A return to the tab refreshes an answer older than this. */
@@ -178,6 +179,7 @@ export const BODY_ORDER: readonly string[] = [
   "outlook",
   "stuck",
   "waiting",
+  "agent_runs",
   "load",
   "capacity",
   "pulse",
@@ -189,15 +191,20 @@ export const BODY_ORDER: readonly string[] = [
 /**
  * WS-27bn RA-3. The sections the live Overview draws: every section, less
  * `waiting` when the scope has no agent run and nothing waits
- * (`waitingHidden`). A body of `waiting` alone keeps it, so the page never
- * draws nothing. A saved report and the builder draw every section.
+ * (`waitingHidden`). WS-27bn RA-4 hides `agent_runs` by the same rule
+ * (`agentRunsHidden`, the done-when of RA-4). A body of the hidden panels
+ * alone keeps them, so the page never draws nothing. A saved report and the
+ * builder draw every section.
  */
 export function overviewShown(
   sections: RenderedReportBody["sections"]
 ): RenderedReportBody["sections"] {
-  if (!waitingHidden(sections.waiting)) return sections;
+  const hideWaiting = waitingHidden(sections.waiting);
+  const hideRuns = agentRunsHidden(sections.agent_runs);
+  if (!hideWaiting && !hideRuns) return sections;
   const rest = { ...sections };
-  delete rest.waiting;
+  if (hideWaiting) delete rest.waiting;
+  if (hideRuns) delete rest.agent_runs;
   const others = Object.values(rest).some((s) => s !== undefined && s !== null);
   return others ? rest : sections;
 }

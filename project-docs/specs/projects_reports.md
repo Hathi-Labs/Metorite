@@ -59,7 +59,13 @@ the panel by default, and hides it when the scope has no agent run.
 draws a KPI strip of six tiles, and each tile carries its rule as its
 tooltip. "Who did the work" replaces "What we finished" in the Overview of
 one project. "How long it took" splits its median and p90 by people and
-agents. RA-4 to RA-8 are not built.
+agents.
+
+**RA-4 BUILT 2026-10-25, not merged** (§6.8 B, §8 RA-4). The `agent_runs`
+section gives 14 days of run outcomes, the success rate and its trend, the
+silent runs now and the run sizes. It flags a long run. Overview shows the
+panel by default, and hides it when the scope has no agent run. RA-5 to RA-8
+are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -356,6 +362,10 @@ next to each status, as `classify` already does.
 | **Agents working now** | An open run in `in_progress` on an open task, that is not silent. "Working" is the rule of the board strip, `agent_summary.WORKING_STATES`. | `analytics_agents.py` `runs_now_sql` (RA-2) |
 | **Agent PR merge rate** | The pull requests on tasks that an agent worked before the close, merged or closed in the last 14 days. The rate is the merged ones over the merged and the closed ones. A merge reads its `merged_at`. A close with no merge reads `pr_updated_at`, the last update of the pull request on GitHub. A pull request with no time from GitHub does not count, because the token path of TR-1 moves the row's own `updated_at` on each read. An open or draft pull request does not count. The trend compares the 14 days before. | `analytics_agents.py` `merge_sql`, `pr_closed_at` and `merge_rate` (RA-2) |
 | **Agent time** | The time that agents worked on a finished task. Each run lasts from its start to the last act of its agent, and never past its end. A takeover or a server close stamps its end later than that. Each wait on a person comes out: from a question to its answer, or to the next act of the agent if that comes first. Only a run made at or before the finish counts. The tile gives the median over the finished tasks with a measured run. | `analytics_agents.py` `run_hours` and `run_time_sql` (RA-2). The answer of a question is `analytics_waiting.answered_at_sql`. |
+| **Run outcome** | How an agent run ended: completed, failed, stopped, abandoned or released. These are the terminal statuses of a run. A run counts on the UTC day of its `ended_at`, which each terminal move stamps. The window is the last 14 UTC days, today included. | `analytics_agent_runs.py` `RUN_OUTCOMES` and `outcome_series_sql` (RA-4) |
+| **Success rate** | The completed runs divided by the completed, failed and abandoned runs of the window. A stop and a release stay out, because a person chose the stop, and a release gives the task back with no outcome. With no such run, there is no rate. The trend compares the 14 days before. No text calls 100% the goal. | `analytics_agent_runs.py` `success_rate` (RA-4) |
+| **Run size** | The agent time of a completed run of the window, in one of four sizes: under 15 minutes, under 1 hour, under 4 hours, and 4 hours or more. "Agent time" is the §5 row above, for one run. A run with no agent time has no size, and the section counts it. | `analytics_agent_runs.py` `size_bucket` and `size_bucket_sql` (RA-4). The agent time is `analytics_agents.run_time_joins_sql`. |
+| **Long run** | A completed run of 4 hours of agent time or more. The panel flags it as "maybe a poorly specified task", with the count, and names the longest five. | `analytics_agent_runs.py` `is_long_run` and `long_line` (RA-4) |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
 | **Needs an owner** | An open task with no assignee and no open run | Not built. §8 RA-6 puts it first in Open work. The `none` count of RA-1's `holder_split` is near it, but it reads the lease of a run. |
 
@@ -2135,11 +2145,27 @@ Fences: `tests/unit/test_projects_report_kpis.py` (hermetic) and `tests/unit/tes
 
 Fences: `tests/unit/test_projects_report_waiting.py` (hermetic), `tests/unit/test_projects_report_waiting_r8.py` (R8), and in the client `lib/waiting.test.ts` and `components/waitingPanel.test.ts`.
 
-### RA-4 — Agent runs · AGENT-SAFE
+### RA-4 — Agent runs · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** 14 days of run outcomes, the success rate and silent runs now (the §6.8 F rule). Run sizes: under 15 minutes, under 1 hour, under 4 hours, and longer. A long run is flagged as "maybe a poorly specified task".
 
 **Done when:** the panel hides itself when the scope has no agent runs.
+
+**Built.** The report section `agent_runs` lives in `routes/projects/analytics_agent_runs.py`. It joins rules that exist, and §5 holds each new word.
+
+1. **Outcomes.** The runs that ended in the last 14 UTC days, today included, by outcome. "Ended" is `ended_at`, the time of the terminal move. RA-2's run end is the end of the agent's time, so only the sizes read it. A daily series feeds a small stacked chart, and its days add up to the outcomes.
+2. **The success rate.** Completed over completed, failed and abandoned. A failure is the agent's error, and an abandoned run is an agent that went quiet past its lease. A stop and a release stay out. The trend is RA-2's `merge_trend`, against the 14 days before.
+3. **Silent runs now.** RA-2's `silent_run_sql` and its one constant, on Load's open-work predicate. So the total equals the silent count of the KPI tile. The list names 20 runs at most, the longest silence first. Each row names its task, the agent and its member (E2).
+4. **Run sizes.** The completed runs of the window, by RA-2's agent time of a run. `analytics_agents.run_time_joins_sql` is now the one text of that time, and the KPI tile reads it too. A long run is 4 hours or more. The panel names the longest five.
+5. **Summary first (E5).** The server writes the sentence and the flag of the long runs. The panel, the email, the download and the chat print them.
+6. **§7 rule 1.** The outcomes and the sizes read Throughput's history predicate. A run on a task that is done or archived now still counts in its window.
+7. **The period.** The section reads its own window and never the report period, as the merge rate does. The builder lists it as period-free. It refuses a subject, as `waiting` does.
+8. **Overview.** The section is on by default. Overview hides the panel when the scope has no agent run and nothing is in it, by RA-3's rule. A saved report shows one clear row in its place.
+9. **UI.** The chart takes Throughput's style. Each outcome takes an explicit slot of the categorical ramp, beside its label. Each figure has an `InfoTip` with its rule, and a keyboard or a touch opens it.
+10. **The chat.** A saved report prints the section through `report_render`. The text fences each title, agent name and member name with `data()`. A direct question to the assistant is RA-8.
+11. While `agent_runs_enabled` is off, the section reads no run. Live, with no flag. Every API change is a new key, with no table and no migration.
+
+Fences: `tests/unit/test_projects_report_agent_runs.py` (hermetic) and `tests/unit/test_projects_report_agent_runs_r8.py` (R8), and in the client `lib/agentRunsReport.test.ts` and `components/agentRunsPanel.test.ts`.
 
 ### RA-5 — Quality · AGENT-SAFE
 
@@ -2271,7 +2297,9 @@ uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py \
   tests/unit/test_projects_analytics_actor.py tests/unit/test_projects_analytics_actor_r8.py \
   tests/unit/test_projects_report_waiting.py tests/unit/test_projects_report_waiting_r8.py \
-  tests/unit/test_projects_report_kpis.py tests/unit/test_projects_report_kpis_r8.py -q -rs
+  tests/unit/test_projects_report_kpis.py tests/unit/test_projects_report_kpis_r8.py \
+  tests/unit/test_projects_report_agent_runs.py \
+  tests/unit/test_projects_report_agent_runs_r8.py -q -rs
 
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
@@ -2307,6 +2335,9 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_kpis.py` and `test_projects_report_kpis_r8.py` are
   RA-2's files. Its client files are `lib/kpiStrip.test.ts` and
   `components/kpiStrip.test.ts`.
+- `test_projects_report_agent_runs.py` and
+  `test_projects_report_agent_runs_r8.py` are RA-4's files. Its client files
+  are `lib/agentRunsReport.test.ts` and `components/agentRunsPanel.test.ts`.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 - R5g has no server file. Its files are `overviewLive.test.ts` and

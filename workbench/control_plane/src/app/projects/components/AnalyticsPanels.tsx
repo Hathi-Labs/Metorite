@@ -49,6 +49,7 @@ import {
 import { PILL_HUE, PILL_LABEL } from "@/app/people/lib/dashboard";
 
 import type {
+  AgentRunsReport,
   CapacityReport,
   ConflictsReport,
   FinishedReport,
@@ -128,6 +129,19 @@ import {
   pulseRows,
   statusMark,
 } from "../lib/pulse";
+import {
+  AGENT_RUN_RULES,
+  LONG_SIZE,
+  PANEL_RUN_ROWS,
+  RUN_OUTCOME_SEGMENTS,
+  RUN_SIZES,
+  longLines,
+  outcomeAccent,
+  peakDay,
+  silentLines,
+  successFigure,
+  successTrend,
+} from "../lib/agentRunsReport";
 import {
   type WaitingKind,
   type WaitingLine,
@@ -1348,6 +1362,261 @@ export function WaitingPanel({ data }: { data: WaitingReport }) {
             </div>
           );
         })}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn RA-4 — one heading of the "Agent runs" panel, with the rule of its
+ * figure behind an `InfoTip`, so a keyboard and a touch reach it too.
+ */
+function RunsHeading({
+  label,
+  help,
+  dot,
+  count,
+  countTitle,
+}: {
+  label: string;
+  /** The rule, and the words of its button: "How the run sizes are counted". */
+  help?: { label: string; text: string };
+  dot?: string;
+  count?: number;
+  countTitle?: string;
+}) {
+  return (
+    <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      {dot && <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} aria-hidden />}
+      <span>{label}</span>
+      {help && (
+        <InfoTip label={help.label} title={label}>
+          {help.text}
+        </InfoTip>
+      )}
+      {typeof count === "number" && (
+        <span className="ml-auto font-medium tabular-nums text-foreground" title={countTitle}>
+          {count}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * WS-27bn RA-4 — "Agent runs" (`projects_reports.md` §6.8 B): "can I trust
+ * agents with this work?"
+ *
+ * ⚠️ **Draws the server's figures and decides nothing.** The outcomes, the
+ * days, the success rate, the silent runs, the sizes, the flag and the
+ * summary sentence are `agent_runs_body`'s. `lib/agentRunsReport.ts` holds
+ * the words and the rule of each figure. The summary comes first (§6.8 E5).
+ * The chart is the Throughput chart's style, with each day stacked by
+ * outcome.
+ *
+ * ⚠️ **No rank of people (E1), and each row names the agent and its member
+ * (E2).** No text calls 100% the goal (E4). The run log stays one click
+ * away, on the task.
+ *
+ * Each row opens its task. The Overview hides the panel when the scope has
+ * no agent run (`overviewShown`).
+ */
+export function AgentRunsPanel({ data }: { data: AgentRunsReport }) {
+  const open = useContext(OpenTaskContext);
+  const name = (email: string) => personDisplayName(null, email);
+  const series = asList<AgentRunsReport["series"][number]>(data?.series);
+  const peak = peakDay(series);
+  const trend = successTrend(data);
+  const silent = listRows(silentLines(data, name), data.silent_total, PANEL_RUN_ROWS);
+  const long = longLines(data, name);
+  const sized = Math.max(1, ...RUN_SIZES.map((sz) => data.sizes?.[sz.key] ?? 0));
+  const flag = accentForHue("amber");
+
+  return (
+    <Panel title={sectionName("agent_runs")} hint={PANEL_HINTS.agent_runs}>
+      <p className="text-xs text-foreground">{data.summary}</p>
+
+      <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <dt className="flex items-center gap-1 text-muted-foreground">
+            <span>Success rate</span>
+            <InfoTip label="How the success rate is counted" title="Success rate">
+              {AGENT_RUN_RULES.success(data.days)}
+            </InfoTip>
+          </dt>
+          <dd
+            className="font-semibold tabular-nums text-foreground"
+            title={`${data.success.completed} of ${data.success.rated} runs that completed, failed or were abandoned`}
+          >
+            {successFigure(data)}
+          </dd>
+          {trend && <dd className="text-[10px] text-muted-foreground">{trend}</dd>}
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Ended</dt>
+          <dd
+            className="font-semibold tabular-nums text-foreground"
+            title={`Agent runs that ended in the last ${data.days} days`}
+          >
+            {data.ended_total}
+          </dd>
+          <dd className="text-[10px] text-muted-foreground">in {data.days} days</dd>
+        </div>
+        <div>
+          <dt className="flex items-center gap-1 text-muted-foreground">
+            <span>Silent now</span>
+            <InfoTip label="How a silent run is counted" title="Silent now">
+              {AGENT_RUN_RULES.silent(data.silent_after_minutes)}
+            </InfoTip>
+          </dt>
+          <dd
+            className="font-semibold tabular-nums text-foreground"
+            title={`Open runs with no agent activity for ${data.silent_after_minutes} minutes or more`}
+          >
+            {data.silent_total}
+          </dd>
+        </div>
+      </dl>
+
+      {/* The outcomes of each day, stacked. ⚠️ A chart with no axis is a
+          picture, so the scale and the two ends are named, as Throughput
+          names them. */}
+      <div className="mt-3 border-t border-border pt-2">
+        <RunsHeading
+          label="Run outcomes"
+          help={{ label: "How the run outcomes are counted", text: AGENT_RUN_RULES.outcomes(data.days) }}
+        />
+        <div className="flex items-baseline justify-between text-[11px] text-muted-foreground">
+          <span title={`Busiest day: ${peak} runs ended`}>{peak}</span>
+          <span>runs ended per day</span>
+        </div>
+        <div className="flex h-16 items-end gap-0.5">
+          {series.map((d) => (
+            <div
+              key={d.day}
+              className="flex h-full flex-1 flex-col justify-end"
+              title={
+                `${weekLabel(d.day)}: ${d.total} ended` +
+                RUN_OUTCOME_SEGMENTS.filter((seg) => d[seg.key] > 0)
+                  .map((seg) => `, ${d[seg.key]} ${seg.label.toLowerCase()}`)
+                  .join("")
+              }
+            >
+              {d.total === 0 ? (
+                <div className="h-[3%] w-full rounded-sm bg-muted" />
+              ) : (
+                // Completed sits on the axis, and the other outcomes above it.
+                <div
+                  className="flex w-full flex-col overflow-hidden rounded-sm"
+                  style={{ height: `${Math.max(8, (d.total / peak) * 100)}%` }}
+                >
+                  {[...RUN_OUTCOME_SEGMENTS].reverse().map((seg) =>
+                    d[seg.key] > 0 ? (
+                      <div
+                        key={seg.key}
+                        className={outcomeAccent(seg.key).dot}
+                        style={{ flexGrow: d[seg.key] }}
+                      />
+                    ) : null
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="mt-1 flex items-baseline justify-between text-[11px] text-muted-foreground">
+          <span>{weekLabel(series[0]?.day)}</span>
+          <span>today</span>
+        </div>
+        {/* The legend carries the meaning, never the hue alone. */}
+        <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          {RUN_OUTCOME_SEGMENTS.map((seg) => (
+            <li key={seg.key} className="inline-flex items-center gap-1.5" title={seg.title}>
+              <span className={`h-2 w-2 shrink-0 rounded-full ${outcomeAccent(seg.key).dot}`} aria-hidden />
+              {seg.label}
+              <span className="font-medium tabular-nums text-foreground">
+                {data.outcomes?.[seg.key] ?? 0}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {data.silent_total > 0 && (
+        <div className="mt-3 border-t border-border pt-2">
+          {/* The rule of a silent run is the InfoTip of the figure above. */}
+          <RunsHeading
+            label="Silent now"
+            dot={flag.dot}
+            count={data.silent_total}
+            countTitle={`${data.silent_total} in total, the longest silence first`}
+          />
+          <ul className="space-y-0.5">
+            {silent.shown.map((r) => (
+              <WaitingTaskRow key={r.key} line={r} open={open} />
+            ))}
+          </ul>
+          {silent.more > 0 && (
+            <p
+              className="mt-0.5 text-[10px] text-muted-foreground"
+              title="The table under this panel names up to twenty silent runs."
+            >
+              …and {silent.more} more
+            </p>
+          )}
+        </div>
+      )}
+
+      {data.sized_total > 0 && (
+        <div className="mt-3 border-t border-border pt-2">
+          <RunsHeading
+            label="Run sizes"
+            help={{
+              label: "How the run sizes are counted",
+              text: AGENT_RUN_RULES.sizes(data.days, data.long_after_hours),
+            }}
+            count={data.sized_total}
+            countTitle={`${data.sized_total} runs completed in the last ${data.days} days`}
+          />
+          <ul className="space-y-1">
+            {RUN_SIZES.map((sz) => {
+              const n = data.sizes?.[sz.key] ?? 0;
+              const isLong = sz.key === LONG_SIZE;
+              return (
+                <li key={sz.key} className="flex items-center gap-2 text-[11px]">
+                  <span className="w-24 shrink-0 text-muted-foreground">{sz.label}</span>
+                  <span className="h-2 min-w-0 flex-1 rounded-sm bg-muted" aria-hidden>
+                    <span
+                      className={`block h-full rounded-sm ${isLong ? flag.dot : "bg-primary/50"}`}
+                      style={{ width: `${n === 0 ? 0 : Math.max(4, (n / sized) * 100)}%` }}
+                    />
+                  </span>
+                  <span className="w-6 shrink-0 text-right font-medium tabular-nums text-foreground">
+                    {n}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {(data.sizes?.unmeasured ?? 0) > 0 && (
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              {data.sizes.unmeasured} completed with no agent time, so they have no size.
+            </p>
+          )}
+          {data.long_line && (
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] text-foreground">
+              <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${flag.dot}`} aria-hidden />
+              <span>{data.long_line}</span>
+            </p>
+          )}
+          {long.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {long.slice(0, PANEL_RUN_ROWS).map((r) => (
+                <WaitingTaskRow key={r.key} line={r} open={open} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </Panel>
   );
 }
