@@ -34,7 +34,7 @@ import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 import { AppTopBar } from "@/components/AppTopBar";
-import { assistantProfileOn } from "@/lib/assistantProfileFlag";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { MyNumberFormat } from "@/components/NumberFormatSettings";
 import {
   AUTO_FOLD_EVENT,
@@ -60,6 +60,8 @@ const ACCENT_PRESETS = [
 
 export default function AppearancePage() {
   const [tab, setTab] = useState<"personal" | "organisation">("personal");
+  // WS-63 PZ-25: the build switch AND the gateway's yes for this org.
+  const assistantOn = useAssistantProfileEnabled();
 
   // Preferences live in localStorage, so the server cannot know them. Waiting
   // on the store's own hydration flag — rather than a bare mounted flag —
@@ -94,7 +96,7 @@ export default function AppearancePage() {
             <PersonalSettings />
             <SidebarSettings />
             <MyNumberFormat />
-            {assistantProfileOn() ? <AssistantLinkRow /> : null}
+            {assistantOn ? <AssistantLinkRow /> : null}
           </div>
         ) : (
           <OrganisationSettings />

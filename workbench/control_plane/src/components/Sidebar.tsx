@@ -32,6 +32,7 @@ import {
   shellSidebar,
   strayCount,
 } from "@/lib/shell/shellNav";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
@@ -90,6 +91,8 @@ export default function Sidebar() {
   // The shell nav (NS-2, `lib/shell/shellNav.ts`). Read once: the flag is
   // build-time, and the dev override must not flip mid-session.
   const [shellNav] = useState(() => shellNavOn());
+  // WS-63 PZ-25: the "Assistant" account row, only with the profile on for this org.
+  const assistant = useAssistantProfileEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
   // `localStorage` override the server and the browser can disagree, and
@@ -518,7 +521,7 @@ export default function Sidebar() {
           collapsed={collapsed}
           accounts={accounts}
           reload={reloadAccounts}
-          you={shellNav ? accountLinks(sections) : undefined}
+          you={shellNav ? accountLinks(sections, { assistant }) : undefined}
         />
       )}
       {!barOn && !shellNav && !accounts.enabled && !collapsed && (
