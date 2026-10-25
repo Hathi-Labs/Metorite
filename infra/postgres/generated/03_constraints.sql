@@ -2401,3 +2401,27 @@ ALTER TABLE reminder_events ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE reminder_events ADD CONSTRAINT reminder_events_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS reminder_events_org_idx ON reminder_events (organization_id);
+
+-- kb_sync_cursors
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_sync_cursors WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_sync_cursors still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_sync_cursors ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_sync_cursors ADD CONSTRAINT kb_sync_cursors_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_sync_cursors_org_idx ON kb_sync_cursors (organization_id);
+
+-- kb_sync_runs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_sync_runs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_sync_runs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_sync_runs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_sync_runs ADD CONSTRAINT kb_sync_runs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_sync_runs_org_idx ON kb_sync_runs (organization_id);
