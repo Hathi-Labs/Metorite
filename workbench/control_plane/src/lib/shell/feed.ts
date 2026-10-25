@@ -652,7 +652,13 @@ export function feedGroups(
 }
 
 /** Where "Show all in <app>" goes, for each feed app. */
-const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, ...FEED_ONLY_APP_HREF };
+const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = {
+  ...NEEDS_APP_HREF,
+  ...FEED_ONLY_APP_HREF,
+  // WS-64: the `tasks` rows count on the Projects row (`NEEDS_APP_HREF`, the
+  // nav badge), but "Show all" opens My work, the landing view, `app/projects/lib/myWork.ts`.
+  tasks: "/projects?app=my-today",
+};
 
 /**
  * The "Show all in <app>" links at the end of a group (§6.1, MD-2b): one for

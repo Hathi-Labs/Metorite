@@ -125,7 +125,9 @@ import {
   SidePanelFitContext,
   sidePanelFits,
 } from "@/lib/sidePanelFit";
-import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { drawerStep } from "./lib/drawerOwner";
+import { moveFollowUp } from "./lib/moveRefresh";
+import { useLiveRefresh } from "./lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -785,6 +787,8 @@ function ProjectsWorkspace() {
   const [railOpen, setRailOpen] = useState(true);
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
   const [sheet, setSheet] = useState<Sheet>(null);
+  /** The page put a sheet in the shell drawer (WS-64 #8). Only then may it close it. */
+  const ownsDrawer = useRef(false);
 
   /**
    * ── The tree, read through the shared cache ────────────────────────────
@@ -1751,9 +1755,16 @@ function ProjectsWorkspace() {
   useEffect(() => {
     if (!isMobile) return;
     if (!sheet) {
-      closeDrawer();
+      // WS-64 #8 — close the drawer only when THIS page opened it. The shell's
+      // Menu tab opens the same drawer with `sheet` null, and a tree refetch
+      // changes a dependency below: closing then shut the Menu by itself.
+      if (drawerStep(false, ownsDrawer.current) === "close") {
+        ownsDrawer.current = false;
+        closeDrawer();
+      }
       return;
     }
+    ownsDrawer.current = true;
     openDrawer(
       <div className="p-2">
         {/* ⚠️ The tree sheet has NO header of its own (2026-10-10). It drew a
@@ -1829,6 +1840,7 @@ function ProjectsWorkspace() {
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
   useEffect(() => {
+    if (!drawerOpen) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!drawerOpen) setSheet(null);
   }, [drawerOpen]);
@@ -2904,17 +2916,19 @@ function ProjectsWorkspace() {
   // the board reloads the selected project so the member sees the change
   // without a click. The chat never reaches the page's state; this event
   // is the one seam.
-  useEffect(() => {
-    const onChanged = () => {
-      // The app's own writes invalidate the family in `api.ts`; a chat write
-      // ran server-side, so this is where the same drop happens. It notifies
-      // the tree and the summaries too, not only the selected board.
-      invalidate(PROJECTS_CACHE);
-      if (selected) void loadProject(selected);
-    };
-    window.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-  }, [selected, loadProject]);
+  // WS-64 #128 — the same reload runs when the tab returns to sight or the
+  // window gets focus (throttled), so a write by an MCP client or an agent
+  // run in another process shows up too. `useLiveRefresh` owns the rule.
+  const myWorkOpen = isMyWorkId(app);
+  useLiveRefresh(() => {
+    // The app's own writes invalidate the family in `api.ts`; a chat write
+    // ran server-side, so this is where the same drop happens. It notifies
+    // the tree and the summaries too, not only the selected board.
+    invalidate(PROJECTS_CACHE);
+    // My work reloads itself (`MyWorkHost`). The board reloads here, in the
+    // mode the member is looking at.
+    if (!myWorkOpen) void refreshRef.current();
+  });
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,
@@ -3468,6 +3482,21 @@ function ProjectsWorkspace() {
       // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
       await refreshRef.current();
+      // WS-64 #11 — in My work nothing is selected, so the line above read no
+      // list. Read the task store again, and point an open panel at the moved
+      // task in its new project (its statuses are the new project's).
+      const follow = moveFollowUp({
+        myWork: isMyWorkId(app),
+        openTaskId: openTask?.id ?? null,
+        movedIds: ids,
+      });
+      if (follow.reloadMyWork) {
+        const store = useTaskStore.getState();
+        void store.reloadItems().then(() => {
+          if (useTaskStore.getState().selectedView === "done") void store.loadDone();
+        });
+      }
+      if (follow.reopenTaskId) void openTaskById(follow.reopenTaskId, isMyWorkId(app));
       // "Moved 4 tasks to Website relaunch" — the subtasks the move took
       // along are counted, from the server's answer.
       const moved = moveReceipt(

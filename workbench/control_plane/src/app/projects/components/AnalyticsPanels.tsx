@@ -1452,7 +1452,7 @@ export function PulsePanel({
                   {typeof waiting === "number" && waiting > 0 && (
                     <p
                       className="mt-0.5 text-[10px] text-muted-foreground"
-                      title="Only you see this. It comes from your own notes in My Tasks."
+                      title="Only you see this. It comes from your own notes in My work."
                     >
                       {waiting} waiting past the date
                     </p>

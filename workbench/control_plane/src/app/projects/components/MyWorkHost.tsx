@@ -35,6 +35,7 @@ import { useUndoScope } from "@/components/UndoProvider";
 
 import { tasksEntryView } from "@/app/tasks/lib/today";
 
+import { useLiveRefresh } from "../lib/liveRefresh";
 import { myWorkView, watchInsideFocus, type MyWorkId } from "../lib/myWork";
 
 export default function MyWorkHost({
@@ -92,17 +93,15 @@ export default function MyWorkHost({
   }, []);
 
   // A tab left open past midnight moves on: read the date again on return.
-  useEffect(() => {
-    const again = () => {
-      if (document.visibilityState === "visible") void loadMyToday();
-    };
-    document.addEventListener("visibilitychange", again);
-    window.addEventListener("focus", again);
-    return () => {
-      document.removeEventListener("visibilitychange", again);
-      window.removeEventListener("focus", again);
-    };
-  }, [loadMyToday]);
+  // WS-64 #128 — the same wake, and a chat write, also read the list again,
+  // so a task changed by another process or by the chat shows without a click.
+  const reloadItems = useTaskStore((s) => s.reloadItems);
+  useLiveRefresh(() => {
+    void loadMyToday();
+    void reloadItems().then(() => {
+      if (useTaskStore.getState().selectedView === "done") void loadDone();
+    });
+  });
 
   // The store loads when a My work view opens, and not before.
   useEffect(() => {

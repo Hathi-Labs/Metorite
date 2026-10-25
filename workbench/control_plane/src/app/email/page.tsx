@@ -1407,9 +1407,9 @@ export default function EmailPage() {
               {isMessage ? (
                 n.title
               ) : n.created ? (
-                <>Captured to My Tasks: &ldquo;{n.title}&rdquo;</>
+                <>Captured to My work: &ldquo;{n.title}&rdquo;</>
               ) : (
-                <>Already in My Tasks: &ldquo;{n.title}&rdquo;</>
+                <>Already in My work: &ldquo;{n.title}&rdquo;</>
               )}
             </span>
             {n.created && disp && (
@@ -1419,7 +1419,7 @@ export default function EmailPage() {
               </span>
             )}
             <a href={tasksLink("/tasks")} className="text-primary font-medium hover:opacity-80">
-              Open My Tasks
+              Open My work
             </a>
             <button
               onClick={() => useEmailStore.getState().clearTaskCaptureNotice()}
