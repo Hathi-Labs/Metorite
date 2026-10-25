@@ -32,6 +32,10 @@ describe("shouldOffer", () => {
   it("does not offer outside the orchestrator", () => {
     expect(shouldOffer(fresh, true, 0, false)).toBe(false);
   });
+  it("does not offer in a shared room", () => {
+    expect(shouldOffer(fresh, true, 0, true, true)).toBe(false);
+    expect(shouldOffer(fresh, true, 0, true, false)).toBe(true);
+  });
   it("does not offer once the chat has a message", () => {
     expect(shouldOffer(fresh, true, 1, true)).toBe(false);
   });

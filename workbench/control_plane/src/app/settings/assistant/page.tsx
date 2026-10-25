@@ -5,8 +5,8 @@
  * `personalization.md` §7). Open to every member: `canSeePath` lets
  * `/settings/*` through with no feature slug.
  *
- * Flag `NEXT_PUBLIC_ASSISTANT_PROFILE`, default off, AND `enabled` from the
- * gateway for the member's organization (PZ-25, §14.2). Off, the page says it
+ * The gateway's `enabled` answer
+ * for the member's organization is the one switch (PZ-25, §14.2). Off, the page says it
  * is not available. While the gateway has not answered, the page shows a
  * skeleton. A failed read shows an error with Retry (`AssistantPageBody`).
  * The ways in are the "Assistant" row of the account menu and a link row on

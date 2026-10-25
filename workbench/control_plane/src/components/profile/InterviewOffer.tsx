@@ -7,7 +7,7 @@
  * It sits in the empty chat, above the starter pills, in the dock and on
  * /chat alike. It shows only when ALL of these hold (`shouldOffer`): the
  * profile is on for this member's organization, the agent is the orchestrator,
- * the chat has no message, learning is not off, and the member has not started
+ * the chat is not a shared room, the chat has no message, learning is not off, and the member has not started
  * or declined the interview (`interview.started_at`).
  *
  * - "Yes, start" opens a fresh chat and sends the request as the member's turn.
@@ -37,8 +37,10 @@ export function shouldOffer(
   enabled: boolean,
   messageCount: number,
   isOrchestrator: boolean,
+  isRoom = false,
 ): boolean {
-  if (!enabled || !isOrchestrator || messageCount !== 0 || !profile) return false;
+  // A shared room never offers it: the interview is the member's own (§14.4).
+  if (!enabled || !isOrchestrator || isRoom || messageCount !== 0 || !profile) return false;
   return profile.learning !== false && !profile.interview?.started_at;
 }
 
@@ -70,12 +72,15 @@ function safeStore(): Storage | undefined {
 export default function InterviewOffer({
   isOrchestrator,
   messageCount,
+  isRoom = false,
 }: {
   isOrchestrator: boolean;
   messageCount: number;
+  /** True in a shared room. */
+  isRoom?: boolean;
 }) {
   const enabled = useAssistantProfileEnabled();
-  const wanted = enabled && isOrchestrator && messageCount === 0;
+  const wanted = enabled && isOrchestrator && !isRoom && messageCount === 0;
   const read = useCachedResource<Profile>(wanted ? OFFER_PROFILE_KEY : null, () => fetchProfile());
   const [hidden, setHidden] = useState(() => hiddenThisSession());
   const [busy, setBusy] = useState(false);
@@ -93,7 +98,7 @@ export default function InterviewOffer({
     }
   }, []);
 
-  if (hidden || !shouldOffer(read.data, enabled, messageCount, isOrchestrator)) return null;
+  if (hidden || !shouldOffer(read.data, enabled, messageCount, isOrchestrator, isRoom)) return null;
   return (
     <div
       role="region"

@@ -25,7 +25,7 @@ exception, and asks the model to keep the channel limits. See "PZ-8 as
 built" in §9.
 
 **PZ-7 BUILT 2026-10-23**, dark: the route `/settings/assistant`, behind
-`NEXT_PUBLIC_ASSISTANT_PROFILE` (off). A link row on Appearance is the way in.
+the server switch (off). A link row on Appearance is the way in.
 The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
 
 **PZ-5 BUILT 2026-10-24**, dark: the tool `resolve_person` and the route
@@ -36,7 +36,7 @@ must be a person or a member of the org, and the directory tiers need
 **PZ-3 and PZ-4 BUILT 2026-10-24, dark.** The block carries the style lines
 of §5.3 and the form of address of §5.2. `GET
 /auth/me/assistant-profile/address` gives My Day the same name, behind
-`NEXT_PUBLIC_ASSISTANT_PROFILE`.
+the server switch.
 
 **PZ-6a BUILT 2026-10-24, dark.** The write tools of §5.5, the Undo
 card, the refusal while `learning` is off, and the write-origin fence. Fix
@@ -55,7 +55,7 @@ them, for Hathi Labs only.
 row of the org, and a removal clears the profile. `GET
 /auth/me/assistant-profile/export` gives the member a download, as JSON or
 as text. A fence holds the profile out of every staff route. The page
-control is dark behind `NEXT_PUBLIC_ASSISTANT_PROFILE`. §9 "PZ-9 as built"
+control is dark behind the server switch. §9 "PZ-9 as built"
 holds the detail.
 
 Owner directive of 2026-10-23, recorded in §1. Verified against code on 2026-10-23, at
@@ -118,8 +118,8 @@ talks to, and how it uses that. That is five things:
    block, with no guess.
 5. **It is private.** No admin and no other member reads it. A shared room
    gets no profile block.
-6. **It ships dark,** behind `ASSISTANT_PROFILE_ENABLED` on the server and
-   `NEXT_PUBLIC_ASSISTANT_PROFILE` on the client.
+6. **It ships dark,** behind `ASSISTANT_PROFILE_ENABLED` on the server. The web app has no build switch
+   (owner, 2026-10-25).
 
 ---
 
@@ -763,7 +763,7 @@ uv run pytest tests/unit/test_profile_tools.py -q
 uv run pytest tests/unit/test_resolve_person_r8.py -q
 # PZ-7
 cd workbench/control_plane && npx tsc --noEmit
-cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/assistantProfileFlag.test.ts src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
+cd workbench/control_plane && npx vitest run src/app/settings src/app/api/auth/me src/lib/publicFlags.test.ts src/lib/theme/ src/components/pageHeading.test.ts
 # PZ-9
 uv run pytest tests/unit/test_assistant_profile_offboarding_r8.py tests/unit/test_assistant_profile_private.py -q
 uv run pytest tests/unit/test_admin_member_purge.py tests/unit/test_admin_member_offboarding.py tests/unit/test_operator_door.py -q
@@ -1081,10 +1081,12 @@ The first release needs one organization.
    answer. Each gateway, executor and tool site that reads `enabled()`
    for a run or a request passes the bound organization. A site with no
    organization fails closed.
-4. **The web app.** `NEXT_PUBLIC_ASSISTANT_PROFILE` stays the build switch.
-   The page, the nav entry and My Day also read `enabled` from
-   `GET /auth/me/assistant-profile`. For an organization outside the list,
-   that answer is `enabled: false` and the web app shows nothing.
+4. **The web app.** The web app reads only `enabled` from
+   `GET /auth/me/assistant-profile`. The build switch is retired (owner,
+   2026-10-25). So turning the profile on needs only the two server settings
+   and a restart, with no rebuild. The page, the nav entry and My Day read
+   that answer. For an organization outside the list, the answer is
+   `enabled: false` and the web app shows nothing.
 5. **The nav entry.** The account menu gains the row "Assistant", which
    opens `/settings/assistant`. It is a static account link beside
    My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
@@ -1099,8 +1101,9 @@ The first release needs one organization.
 3. `build_payload` takes the org of the WhatsApp link.
 4. The GET route answers `enabled`. `/address` answers an empty name when
    the org is off. The writes take no flag.
-5. The web hook `useAssistantProfileEnabled` needs the build switch and
-   `enabled`.
+5. The web hook `useAssistantProfileEnabled` needs only `enabled`. It stays
+   closed while the read is out and after a fault. A fence refuses any read
+   of the retired build switch in the web source.
 6. The fence is `tests/unit/test_assistant_profile_org_rollout.py`.
 
 ### 14.3 The interview areas

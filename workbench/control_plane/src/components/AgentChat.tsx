@@ -2280,7 +2280,7 @@ export default function AgentChat({
                 <div className="text-muted-foreground/60 text-xs max-w-sm leading-relaxed">{agentDescription}</div>
               )}
               {/* PZ-27: the "Get to know me" offer. It shows only when its own rule holds. */}
-              <InterviewOffer isOrchestrator={isOrchestrator} messageCount={messages.length} />
+              <InterviewOffer isOrchestrator={isOrchestrator} messageCount={messages.length} isRoom={isRoom} />
               {/* CF-4: the feed's headlines with the flag on, else the fixed list (`starters`). */}
               <SuggestionPills
                 suggestions={starters}
