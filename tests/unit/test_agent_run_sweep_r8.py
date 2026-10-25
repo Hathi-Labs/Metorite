@@ -21,36 +21,46 @@ Run::
 ``agent_run_sweep.py`` and ``E`` is ``agent_edge/tools.py``.
 
 * W1. ``F`` ``AGENT_RUN_STATE_SQL``: test ``answered`` before ``stale`` again.
-  ``test_s1_an_answer_that_no_agent_reads_turns_stale``.
+  ``test_s1_an_answer_that_no_agent_reads_turns_stale`` and
+  ``test_stale_comes_before_answered_in_the_state``.
 * W2. ``R`` ``approve_task_archive``: no ``close_archived_run``.
   ``test_s2_an_approved_archive_closes_its_run``.
 * W3. ``S`` ``run_org``: no ``close_archived_runs``.
   ``test_s2_the_sweep_closes_a_run_of_the_old_archive_shape``.
-* W4. ``S`` ``_first_miss``: no ``notify``. ``test_s3_the_first_miss_writes_one_fingerprint_and_one_bell``.
+* W4. ``S`` ``_first_miss``: no ``notify``.
+  ``test_s3_the_first_miss_writes_one_fingerprint_and_one_bell``.
 * W5. ``R`` ``_NEEDS_AGENT_REASON_SQL``: no ``stranded`` arm.
   ``test_s3_the_first_miss_writes_one_fingerprint_and_one_bell``.
-* W6. ``S`` ``_stranded_sql``: no join of the open strand (every tick reads
-  a first miss). ``test_s4_a_second_tick_in_the_window_sends_no_second_bell``.
-* W7. ``S`` ``_SECOND_MISS_SQL``: no guard ``recovered_at IS NULL``.
+* W6. ``S`` ``_stranded_sql``: the join of the open strand never matches.
   ``test_s5_the_second_miss_opens_one_recovery_record_and_a_third_adds_nothing``.
-* W8. ``S`` ``_one_run``: no check of ``window_passed``.
+* W7. The migration: the fingerprint index is not ``UNIQUE``.
+  ``test_s4_two_processes_send_one_bell``.
+* W8. ``S`` ``_SECOND_MISS_SQL``: no guard ``recovered_at IS NULL``.
+  ``test_s5_two_processes_open_one_recovery_record``.
+* W9. ``S`` ``_one_run``: no check of ``window_passed``.
   ``test_s4_a_second_tick_in_the_window_sends_no_second_bell``.
-* W9. ``S`` ``_CLEAR_SQL``: clear nothing (``AND false``).
+* W10. ``S`` ``_CLEAR_SQL``: clear nothing.
   ``test_s6_new_agent_activity_resets_the_fingerprint``.
-* W10. ``F`` ``strand_fits_sql``: no ``seen_activity_at`` test.
+* W11. ``F`` ``strand_fits_sql``: no ``seen_activity_at`` test.
   ``test_s6_new_agent_activity_resets_the_fingerprint``.
-* W11. ``F`` ``stranded_clause``: no lease arm (a quiet run is stranded at
+* W12. ``F`` ``stranded_clause``: no lease arm (a quiet run is stranded at
   five minutes). ``test_s7_a_live_lease_an_awaiting_run_and_a_queued_run_are_never_swept``.
-* W12. ``F`` ``stranded_clause``: no ``status = 'in_progress'``.
+* W13. ``F`` ``stranded_clause``: any open run quiet for five minutes, with
+  no test of the status or the state.
   ``test_s7_a_live_lease_an_awaiting_run_and_a_queued_run_are_never_swept``.
-* W13. ``S`` ``run_tick``: one ``tenant_session`` of the first org for every
+* W14. ``S`` ``run_tick``: one ``tenant_session`` of the first org for every
   org. ``test_s8_each_pass_binds_its_own_org``.
-* W14. ``S`` ``start_agent_run_sweep``: no check of ``sweep_enabled``.
+* W15. ``S`` ``start_agent_run_sweep``: no check of ``sweep_enabled``.
   ``test_the_flag_off_starts_no_task``.
-* W15. ``S`` ``run_tick``: no check of the flags.
+* W16. ``S`` ``run_tick``: no check of the flags.
   ``test_the_flag_off_tick_reads_nothing``.
-* W16. ``E`` ``_waiting_reason``: read ``state`` only.
+* W17. ``E`` ``_waiting_reason``: read ``state`` only.
   ``test_an_answer_older_than_five_minutes_stays_run_answered``.
+
+Two guards hold twice on purpose: the read of the open strand and the
+unique index (W6, W7), and ``_one_run`` and the guarded ``UPDATE`` (W8). The
+arbiter tests call one step twice, as two processes would, so each layer has
+its own red test.
 """
 from __future__ import annotations
 
@@ -352,6 +362,21 @@ async def _sweep_org(w: Any, org: str | None = None) -> sweep.TickResult:
     return result
 
 
+async def _stranded_rows(w: Any, org: str | None = None) -> list[Any]:
+    """The rows that one tick reads in step 3, as one process reads them."""
+    async with (tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+                sweep.tenant_session(org or w.a) as db):
+        return list((await db.execute(text(sweep._stranded_sql()),
+                                      {"n": 50, "window": LEASE})).fetchall())
+
+
+async def _in_session(w: Any, step: Any, row: Any, org: str | None = None) -> Any:
+    """One step of the sweep in its own committed transaction: one process."""
+    async with (tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+                sweep.tenant_session(org or w.a) as db):
+        return await step(db, row)
+
+
 def _strands(w: Any, run: str) -> list[Any]:
     return _rows(w.p, "SELECT * FROM pm_agent_run_strands WHERE run_id = CAST(:r AS uuid)"
                       " ORDER BY nudged_at", r=run)
@@ -547,6 +572,18 @@ class TestTheMisses:
         [bell] = _nudges(w, task)
         assert "did not read your answer for 180 minutes" in bell.excerpt
 
+    async def test_s4_two_processes_send_one_bell(self, w):
+        """The arbiter of the fingerprint is the partial unique index, not the
+        read. Two processes that both read "no strand yet" both try the first
+        miss: one insert wins, and the other sends no bell."""
+        task = _fresh(w)
+        rid = _insert_run(w, task)
+        [row] = await _stranded_rows(w)
+        assert row.strand_id is None
+        sent = [await _in_session(w, sweep._first_miss, row) for _ in range(2)]
+        assert sent == [True, False]
+        assert len(_nudges(w, task)) == 1 and len(_strands(w, rid)) == 1
+
     async def test_s4_a_second_tick_in_the_window_sends_no_second_bell(self, w):
         task = _fresh(w)
         rid = _insert_run(w, task)
@@ -592,6 +629,20 @@ class TestTheMisses:
         assert _task_state(w, task) == before
         [listed] = await _needs(w, w.alice)
         assert listed["stranded"]["recovered_at"] is not None
+
+    async def test_s5_two_processes_open_one_recovery_record(self, w):
+        """The second miss is an UPDATE guarded on ``recovered_at IS NULL``.
+        Two processes that both read the open fingerprint write ONE record
+        and ONE pair of lines."""
+        task = _fresh(w)
+        rid = _insert_run(w, task)
+        await _sweep_org(w)
+        _age_strand(w, rid, LEASE + 60)
+        [row] = await _stranded_rows(w)
+        assert row.strand_id is not None and row.recovered_at is None and row.window_passed
+        opened = [await _in_session(w, sweep._second_miss, row) for _ in range(2)]
+        assert opened == [True, False]
+        assert len(_run_lines(w, rid)) == 1 and len(_system_rows(w, task)) == 1
 
     async def test_s6_new_agent_activity_resets_the_fingerprint(self, w):
         task = _fresh(w)
