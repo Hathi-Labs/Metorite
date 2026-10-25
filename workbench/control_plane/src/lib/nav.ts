@@ -199,7 +199,10 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: "CheckSquare",
         note: "Your tasks, and your view of the company's",
         feature: "tasks",
-        launch: "live",
+        // WS-64 OP-4, the owner's flip (2026-10-25): My Tasks is now the
+        // My work section of Projects, and `/tasks` redirects there while
+        // `NEXT_PUBLIC_PROJECTS_MY_WORK` is on. The route and its grant stay.
+        launch: "preview",
         agent: "task-manager",
       },
       // Calendar — D54 (2026-08-24, board WS-39 S2). Lifted out of `/tasks`,
