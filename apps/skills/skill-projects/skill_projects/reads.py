@@ -2002,6 +2002,14 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "answer_time.median_hours", "answer_time.p90_hours",
         "answer_time.unanswered",
     )),
+    # WS-27bn RA-4. Two lists: the silent runs now and the long runs.
+    # `_agent_runs_lines` prints both, so the list key here is the first
+    # only. The outcomes and the success rate are nested.
+    "agent_runs": ("silent", "title", (
+        "outcomes.completed", "outcomes.failed", "outcomes.stopped",
+        "outcomes.abandoned", "outcomes.released", "success.rate",
+        "success.rate_before", "silent_total", "long_total",
+    )),
     # WS-27bn R3c. One row per task, each with its kind. The four counts sit
     # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
     "hygiene": ("rows", "title", (
@@ -2050,6 +2058,15 @@ _REPORT_LABELS: dict[str, str] = {
     "waiting:answer_time.median_hours": "median answer hours",
     "waiting:answer_time.p90_hours": "p90 answer hours",
     "waiting:answer_time.unanswered": "questions with no answer in the period",
+    "agent_runs:outcomes.completed": "runs completed in 14 days",
+    "agent_runs:outcomes.failed": "runs failed in 14 days",
+    "agent_runs:outcomes.stopped": "runs stopped by a person in 14 days",
+    "agent_runs:outcomes.abandoned": "runs abandoned in 14 days",
+    "agent_runs:outcomes.released": "runs released in 14 days",
+    "agent_runs:success.rate": "success rate",
+    "agent_runs:success.rate_before": "success rate of the 14 days before",
+    "agent_runs:silent_total": "silent runs now",
+    "agent_runs:long_total": "completed runs of 4 hours or more",
 }
 
 #: The three waiting lists, in the panel's order, with the words of each.
@@ -2105,6 +2122,56 @@ def _waiting_lines(section: dict[str, Any]) -> list[str]:
         more = (total if isinstance(total, int) else len(rows)) - len(rows)
         if more > 0:
             out.append(f"  (and {more} more of the {key}{past})")
+    return out
+
+
+#: WS-27bn RA-4. The two lists of the agent runs section, in the panel's
+#: order, as ``(list key, the word of a row, the total key)``.
+_AGENT_RUN_LISTS: tuple[tuple[str, str, str], ...] = (
+    ("silent", "silent", "silent_total"),
+    ("long_runs", "long run", "long_total"),
+)
+
+
+def _agent_run_row(kind: str, row: dict[str, Any]) -> str:
+    """One run as one line: the task, the agent, its member and the time.
+
+    The title, the agent and the member print as data, for the reason that
+    `_waiting_row` gives: an in-app agent's name is text that a member
+    typed, so a newline in it cannot forge a second row.
+    """
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if kind == "silent" and isinstance(row.get("age_hours"), int | float):
+        facts.append(f"silent {row['age_hours']} hours")
+    if kind == "long run" and isinstance(row.get("hours"), int | float):
+        facts.append(f"agent time {row['hours']} hours")
+    return f"- {kind} · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _agent_runs_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every silent run and every long run.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server names 20 silent runs and 5 long runs at most
+    (`analytics_agent_runs.py`), so the text prints each row it got. The
+    line after a list says how many the server's cap left out, from the
+    list's own total."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    for key, kind, total_key in _AGENT_RUN_LISTS:
+        rows = [r for r in section.get(key) or [] if isinstance(r, dict)]
+        out.extend(_agent_run_row(kind, r) for r in rows)
+        total = section.get(total_key)
+        more = (total if isinstance(total, int) else len(rows)) - len(rows)
+        if more > 0:
+            out.append(f"  (and {more} more {kind} rows that the report does not name)")
     return out
 
 
@@ -2308,6 +2375,10 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     if name == "waiting":
         # WS-27bn RA-3. Three lists, each with its own cap.
         out.extend(_waiting_lines(section))
+        return out
+    if name == "agent_runs":
+        # WS-27bn RA-4. Two lists, each with its own cap.
+        out.extend(_agent_runs_lines(section))
         return out
     rows = section.get(list_key) if list_key else None
     rows = rows or []

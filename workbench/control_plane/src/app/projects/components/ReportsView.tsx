@@ -80,6 +80,14 @@ import {
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
 import { answerLine, waitingLists, waitingRowCount } from "../lib/waiting";
+import {
+  agentRunsRowCount,
+  longLines,
+  outcomeLine,
+  silentLines,
+  successFigure,
+  successTrend,
+} from "../lib/agentRunsReport";
 import { WHO_DID_THE_WORK, overviewTiles, whoDidTheWorkShown } from "../lib/kpiStrip";
 import { PANEL_HINTS } from "../lib/panelHints";
 import {
@@ -98,6 +106,7 @@ import {
   rebalanceTasks,
 } from "../lib/rebalance";
 import {
+  agentRunsPanelData,
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
@@ -199,6 +208,7 @@ import {
 import { allClear, clearLine, sectionIsClear } from "../lib/sectionEmpty";
 import { sectionIcon } from "../lib/sectionIcons";
 import {
+  AgentRunsPanel,
   CapacityPanel,
   ConflictsPanel,
   FinishedPanel,
@@ -804,6 +814,73 @@ export function RenderedBody({
           >
             <LayoutBoundary layout="waiting on people">
               <WaitingPanel data={waitingPanelData(sections.waiting, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {/* WS-27bn RA-4. How agent runs end (§6.8 B). The outcomes and the
+          sizes read their own 14 days, and the silent runs read the state
+          now. The table names every silent run and long run the server
+          sent. */}
+      {sections.agent_runs &&
+        cell(
+          "agent_runs",
+          sectionIsClear("agent_runs", sections.agent_runs) ? (
+          <ClearRow sectionKey="agent_runs" title="Agent runs" />
+        ) : (
+          <SectionFrame
+            sectionKey="agent_runs"
+            fill={grid}
+            table={
+              <Table title="Agent runs" count={agentRunsRowCount(sections.agent_runs)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.agent_runs.summary}</p>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {outcomeLine(sections.agent_runs)} · success rate{" "}
+                  {successFigure(sections.agent_runs)}
+                  {successTrend(sections.agent_runs) ? `, ${successTrend(sections.agent_runs)}` : ""}
+                </p>
+                <ul className="space-y-1.5">
+                  {[
+                    {
+                      key: "silent",
+                      heading: "Silent now",
+                      total: sections.agent_runs.silent_total,
+                      rows: silentLines(sections.agent_runs, (e) => personDisplayName(null, e)),
+                    },
+                    {
+                      key: "long",
+                      heading: "Runs of 4 hours or more",
+                      total: sections.agent_runs.long_total,
+                      rows: longLines(sections.agent_runs, (e) => personDisplayName(null, e)),
+                    },
+                  ]
+                    .filter((l) => l.total > 0)
+                    .map((l) => (
+                      <li key={l.key} className="text-xs">
+                        <span className="font-medium text-foreground">{l.heading}</span>
+                        <span className="text-muted-foreground" title={`${l.total} in total`}>
+                          {" "}
+                          · {l.total}
+                        </span>
+                        <ul className="mt-0.5 space-y-0.5">
+                          {l.rows.map((r) => (
+                            <li
+                              key={r.key}
+                              className="truncate pr-px text-muted-foreground"
+                              title={r.label}
+                            >
+                              <span className="text-foreground">{r.label}</span> · {r.detail}
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="agent runs">
+              <AgentRunsPanel data={agentRunsPanelData(sections.agent_runs)} />
             </LayoutBoundary>
           </SectionFrame>
         ))}

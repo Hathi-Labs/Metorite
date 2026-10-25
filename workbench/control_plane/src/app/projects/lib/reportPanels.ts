@@ -19,6 +19,7 @@
  * the literal `sections.<name>` access, which the lockstep test reads.
  */
 import type {
+  AgentRunsReport,
   CapacityReport,
   ConflictsReport,
   FinishedReport,
@@ -289,6 +290,22 @@ export function whoDidTheWorkPanelData(
       : {}),
     ...(typeof section.hidden_people === "number" ? { hidden_people: section.hidden_people } : {}),
     current_week_partial: series.length > 0 && !frame.report.config.skip_current_week,
+  };
+}
+
+/**
+ * `agent_runs` as `AgentRunsPanel` takes it (WS-27bn RA-4).
+ *
+ * The section IS `agent_runs_body`, so this copies it. A list the body lacks
+ * reads as no rows, never as a figure. It takes no period: the section
+ * reads its own 14 days, and the panel names them.
+ */
+export function agentRunsPanelData(section: NonNullable<Sections["agent_runs"]>): AgentRunsReport {
+  return {
+    ...section,
+    series: asList<AgentRunsReport["series"][number]>(section.series),
+    silent: asList<AgentRunsReport["silent"][number]>(section.silent),
+    long_runs: asList<AgentRunsReport["long_runs"][number]>(section.long_runs),
   };
 }
 
