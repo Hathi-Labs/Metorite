@@ -969,7 +969,7 @@ a fixed fake model. The scored half runs on demand, through the Router.
   takes the sources and the nodes. After the email teardown, it revokes each
   free Google grant once. Fences: `test_kc_sources_purge.py` and, R8,
   `test_kc_sources_r8.py`. The org purge does not revoke yet
-  (`hardening_backlog.md` K-19).
+  (`hardening_backlog.md` K-20).
 - **Deletion at the provider** reaches Metorite within one reconcile (24 h).
   A member who needs it sooner uses "Remove from Knowledge" on the document.
 

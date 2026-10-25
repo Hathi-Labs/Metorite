@@ -65,6 +65,9 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/knowledge/sources", None),
     ("GET", f"/knowledge/sources/{OTHER}/tree", None),
     ("DELETE", f"/knowledge/sources/{OTHER}", None),
+    # KB-AI-4: the maintenance list and the verify.
+    ("GET", "/knowledge/maintenance", None),
+    ("POST", f"/knowledge/pages/{OTHER}/verify", None),
     # KC-8a: the entity registry.
     ("GET", "/knowledge/entities?type=person", None),
     ("GET", f"/knowledge/entities/{OTHER}", None),

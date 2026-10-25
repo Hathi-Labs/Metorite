@@ -364,7 +364,7 @@ routes that stay class X. Its list of pending routes is empty since OP-6d.
 | **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders | Accept |
 | **D-OP-3** | The name of the section is **My work** | Accept. Other names: "My tasks", "Me" |
 | **D-OP-4** | `feature:tasks` gates My work and Personal. `feature:projects` gates the company tree | Accept |
-| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4 |
+| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4. **Applied 2026-10-25.** |
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
@@ -692,12 +692,23 @@ the Personal space, and that closes the gap.
 
 ### OP-4 — capture, the tab bar, and the redirect · MEDIUM · OWNER-GATE for the nav
 
-**Status: BUILT 2026-10-24 (task #298, branch `ws64-op4-tabbar-redirect-mt-b20534fd`), dark behind `NEXT_PUBLIC_PROJECTS_MY_WORK`. The nav flip is NOT done. It is the owner's PR.**
+**Status: DONE 2026-10-25. The owner flip is applied (D-OP-5).** The "My Tasks" pane (`/tasks`) is `preview` in `nav.ts`. Fourteen panes are live (`launch_surface.md` §2).
+
+The owner said on 2026-10-25, "go ahead and turn on all the flags". The build switches `NEXT_PUBLIC_PROJECTS_MY_WORK=1` and `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME=1` are set in `.env.local` on the production and staging boxes. They apply at the next build. Task #298 built the slice on 2026-10-24 (branch `ws64-op4-tabbar-redirect-mt-b20534fd`).
+
+The pane is `preview` whatever the switch says. Each consumer of the live pane list follows it:
+
+- The "New task" job belongs to Projects (`/projects?do=capture`).
+- The due-task count shows on the Projects row (`NEEDS_APP_HREF`).
+- The assistant keeps the page when a member asks from `/tasks` (`ALSO_SERVES`).
+- The `/tasks` route and the `feature:tasks` grant stay, and Calendar keeps the same grant.
+- A preset pin for `/tasks` draws nothing and breaks nothing.
+
 Done: the tab bar (`phoneTabs.ts`), the page listeners for `projects-mywork` and
 `projects-capture`, the `?do=capture` read once, the client redirect in
 `app/tasks/page.tsx` (`tasksRedirectTarget`), and the repointed links
 (`email/page.tsx`, `TaskCaptureModal.tsx`, `TaskToolCards.tsx`, `commands.ts`,
-`centers.ts`, `runActivity.ts`). Not done: the `nav.ts` entry, `nav.test.ts` and
+`centers.ts`, `runActivity.ts`). Done by the flip on 2026-10-25: the `nav.ts` entry, `nav.test.ts` and
 `launch_surface.md` §2. Two points the build settled. The shell draws the first
 tab of every bar, "Menu", and it keeps opening the global drawer on `/projects`.
 The Projects branch draws My work, Capture and Search, and My work opens the

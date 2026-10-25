@@ -51,10 +51,10 @@ const EMPTY = { preset: null, answered: null, pins: null, known: null, cardOrder
  * agents view. No answer stars it (`answerStars`), so it shows only when the
  * member keeps every held app, or stars it.
  */
-const KNOWN = ["/tasks", "/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/integrations"];
+const KNOWN = ["/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/integrations"];
 
 /** A stored Engineer layout: Personal Center, and the preset's apps. */
-const ENGINEER_STARS = ["/tasks", "/calendar", "/email", "/projects", "/chat"];
+const ENGINEER_STARS = ["/calendar", "/email", "/projects", "/chat"];
 
 /**
  * What an Engineer answer ticks for MEMBER: Personal Center, the preset's
@@ -184,7 +184,7 @@ test("a first visit asks, an answer ticks the defaults, and Done saves the ticks
   await expect(appsStep(page)).toBeVisible();
   await expect(question(page)).toHaveCount(0);
   expect(store.puts).toEqual([]);
-  for (const name of ["My Tasks", "Calendar", "My Email", "Projects", "Chat"]) await expect(tick(page, name)).toBeChecked();
+  for (const name of ["Calendar", "My Email", "Projects", "Chat"]) await expect(tick(page, name)).toBeChecked();
   // MEMBER holds Approvals, so every answer ticks it (the approver's door).
   await expect(tick(page, "Approvals")).toBeChecked();
   await expect(tick(page, "People")).not.toBeChecked();
@@ -207,13 +207,13 @@ test("a first visit asks, an answer ticks the defaults, and Done saves the ticks
       ...EMPTY,
       preset: "engineer",
       answered: "answered",
-      pins: ["/tasks", "/calendar", "/projects", "/people", "/chat", "/approvals"],
+      pins: ["/calendar", "/projects", "/people", "/chat", "/approvals"],
       known: KNOWN,
     },
   ]);
   // Each category lists only its ticked apps, under its own heading.
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar"]],
+    ["personal", ["Calendar"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
     ["admin", ["Approvals"]],
@@ -258,7 +258,7 @@ test("Skip for now is stored, a reload does not ask again, and every app shows",
   await expect(sidebar(page)).toBeVisible();
   // Personal Center first, and every category the member holds an app in.
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
     ["admin", ["Approvals", "Integrations"]],
@@ -271,7 +271,7 @@ test("the star in All apps shows an app under its category, and hides it", async
   const store = await stub(page, { ...EMPTY, preset: "engineer", answered: "answered", pins: ENGINEER_STARS, known: KNOWN });
   await page.goto("/settings/appearance");
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects"]],
     ["studio", ["Chat"]],
   ]);
@@ -298,11 +298,11 @@ test("the star in All apps shows an app under its category, and hides it", async
   const unstar = launcher.getByRole("button", { name: "Hide People from sidebar" });
   await expect(unstar).toHaveAttribute("aria-pressed", "true");
   await expect(unstar).toHaveAttribute("title", "Shown in sidebar");
-  expect(store.puts.at(-1)).toMatchObject({ pins: ["/tasks", "/calendar", "/email", "/projects", "/people", "/chat"], known: KNOWN });
+  expect(store.puts.at(-1)).toMatchObject({ pins: ["/calendar", "/email", "/projects", "/people", "/chat"], known: KNOWN });
   await page.keyboard.press("Escape");
   // People shows under its own category, in nav.ts order: never moved.
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
   ]);
@@ -311,10 +311,10 @@ test("the star in All apps shows an app under its category, and hides it", async
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
   await launcher.getByRole("button", { name: "Hide People from sidebar" }).click();
   await launcher.getByRole("button", { name: "Hide Chat from sidebar" }).click();
-  expect(store.puts.at(-1)).toMatchObject({ pins: ["/tasks", "/calendar", "/email", "/projects"] });
+  expect(store.puts.at(-1)).toMatchObject({ pins: ["/calendar", "/email", "/projects"] });
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects"]],
   ]);
 });
@@ -366,22 +366,22 @@ test("Change my layout asks again: the same answer keeps the stars, a new one gi
   // The same answer: the member's current stars, ticked.
   await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
   await expect(tick(page, "Projects")).toBeChecked();
-  await expect(tick(page, "My Tasks")).not.toBeChecked();
+  await expect(tick(page, "People")).not.toBeChecked();
   // Back, and a different answer: its defaults replace them.
   await appsStep(page).getByRole("button", { name: "Back" }).click();
   await question(page).getByRole("button", { name: /Run the company/ }).click();
-  for (const name of ["My Tasks", "Calendar", "My Email", "Projects", "Chat", "Approvals"]) await expect(tick(page, name)).toBeChecked();
+  for (const name of ["Calendar", "My Email", "Projects", "Chat", "Approvals"]) await expect(tick(page, name)).toBeChecked();
   await expect(tick(page, "People")).not.toBeChecked();
   await appsStep(page).getByRole("button", { name: "Done" }).click();
   expect(store.puts.at(-1)).toEqual({
     ...EMPTY,
     preset: "founder",
     answered: "answered",
-    pins: ["/tasks", "/calendar", "/email", "/projects", "/chat", "/approvals"],
+    pins: ["/calendar", "/email", "/projects", "/chat", "/approvals"],
     known: KNOWN,
   });
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects"]],
     ["studio", ["Chat"]],
     ["admin", ["Approvals"]],
@@ -452,7 +452,7 @@ test.describe("a failed save never traps the member in the question", () => {
       await expect(page.getByLabel("Notifications").getByText(SAVE_FAILED)).toHaveCount(1);
       expect(store.puts).toHaveLength(1);
       await expect.poll(() => shape(page)).toEqual([
-        ["personal", ["My Tasks", "Calendar", "My Email"]],
+        ["personal", ["Calendar", "My Email"]],
         ["across", ["Projects"]],
         ["studio", ["Chat"]],
         ["admin", ["Approvals"]],
@@ -564,7 +564,7 @@ test.describe("phone", () => {
     // Chat is starred and stored, and the chat bar takes it out of the
     // drawer (D99): the Ask tab is its door.
     await expect.poll(() => shape(page, drawer)).toEqual([
-      ["personal", ["My Tasks", "Calendar", "My Email"]],
+      ["personal", ["Calendar", "My Email"]],
       ["across", ["Projects"]],
       ["admin", ["Approvals"]],
     ]);
@@ -582,7 +582,7 @@ test.describe("phone", () => {
     await page.getByRole("button", { name: "Menu" }).click();
     const drawer = page.locator("aside:not([data-collapsed])");
     await expect.poll(() => shape(page, drawer)).toEqual([
-      ["personal", ["My Tasks", "Calendar", "My Email"]],
+      ["personal", ["Calendar", "My Email"]],
       ["across", ["Projects"]],
       ["studio", ["Chat"]],
       ["admin", ["Approvals"]],
@@ -648,9 +648,9 @@ test.describe("a row's menu hides an app, and Undo brings it back", () => {
     // Projects was the last of its category, so the focus goes to the next
     // row: Chat.
     await expect(sidebar(page).getByRole("link", { name: "Chat", exact: true })).toBeFocused();
-    expect(store.puts[0]).toMatchObject({ pins: ["/tasks", "/calendar", "/email", "/chat"], known: KNOWN });
+    expect(store.puts[0]).toMatchObject({ pins: ["/calendar", "/email", "/chat"], known: KNOWN });
     await expect.poll(() => shape(page)).toEqual([
-      ["personal", ["My Tasks", "Calendar", "My Email"]],
+      ["personal", ["Calendar", "My Email"]],
       ["studio", ["Chat"]],
     ]);
     const toast = page.getByLabel("Notifications");
@@ -714,18 +714,18 @@ test.describe("a category folds, per account", () => {
   test("a fold shows the count, survives a reload, and toggles from the keyboard", async ({ page }) => {
     await stub(page, STARRED);
     await page.goto("/settings/appearance");
-    await expect.poll(() => shape(page)).toContainEqual(["personal", ["My Tasks", "Calendar", "My Email"]]);
+    await expect.poll(() => shape(page)).toContainEqual(["personal", ["Calendar", "My Email"]]);
     const personal = heading(page, "personal");
     await expect(personal).toHaveAttribute("aria-expanded", "true");
     await personal.focus();
     await page.keyboard.press("Enter");
     await expect(personal).toHaveAttribute("aria-expanded", "false");
-    await expect(personal).toHaveText(/Personal Center \(3\)/);
+    await expect(personal).toHaveText(/Personal Center \(2\)/);
     await expect.poll(() => shape(page)).toContainEqual(["personal", []]);
     // Kept per account, so a reload keeps it.
     await page.reload();
     await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "false");
-    await expect(heading(page, "personal")).toHaveText(/Personal Center \(3\)/);
+    await expect(heading(page, "personal")).toHaveText(/Personal Center \(2\)/);
     await heading(page, "personal").focus();
     await page.keyboard.press("Space");
     await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "true");
@@ -738,7 +738,7 @@ test.describe("a category folds, per account", () => {
     });
     await stub(page, STARRED);
     await page.goto("/settings/appearance");
-    await expect.poll(() => shape(page)).toContainEqual(["personal", ["My Tasks", "Calendar", "My Email"]]);
+    await expect.poll(() => shape(page)).toContainEqual(["personal", ["Calendar", "My Email"]]);
     await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "true");
     // Priya folds AI Studio. Then another member signs in on this browser:
     // Ben sees AI Studio open, because Priya's folds are hers.
@@ -837,7 +837,7 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
   await page.goto("/settings/appearance");
   // No `known`, so every held app shows, each under its own category.
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
     ["admin", ["Approvals", "Integrations"]],
@@ -849,12 +849,12 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
   const launcher = page.getByRole("dialog", { name: "All apps" });
   await launcher.getByRole("button", { name: "Hide Chat from sidebar" }).click();
   expect(store.puts.at(-1)).toMatchObject({
-    pins: ["/tasks", "/calendar", "/email", "/projects", "/people", "/approvals", "/integrations"],
+    pins: ["/calendar", "/email", "/projects", "/people", "/approvals", "/integrations"],
     known: KNOWN,
   });
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([
-    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["personal", ["Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["admin", ["Approvals", "Integrations"]],
   ]);
@@ -871,7 +871,7 @@ test("every category's apps can be hidden: Personal Center, AI Studio and Admin 
   await page.goto("/settings/appearance");
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
   const launcher = page.getByRole("dialog", { name: "All apps" });
-  for (const name of ["My Tasks", "Calendar", "My Email", "Chat", "Approvals", "Integrations"]) {
+  for (const name of ["Calendar", "My Email", "Chat", "Approvals", "Integrations"]) {
     await launcher.getByRole("button", { name: `Hide ${name} from sidebar` }).click();
   }
   await page.keyboard.press("Escape");

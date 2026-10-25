@@ -113,6 +113,7 @@ async def search_pages(
     *, q: str, space: str | None, k: int, hybrid: bool, user: UserContext,
     reviewed: bool = False, author: str | None = None,
     updated_after: str | None = None, title_only: bool = False,
+    verified_only: bool = False,
 ) -> dict[str, Any]:
     """The body of :func:`search_knowledge`, for the route and one source.
 
@@ -121,6 +122,8 @@ async def search_pages(
     ``GET /search/company`` sets it, with ``CONTEXT_RECENCY`` on. The fusion
     then lowers a page past its review date in place of the age decay. Each
     hit also carries ``review_at``. ``False`` gives the answer of KB-3.
+    *verified_only* (KB-AI-4) keeps the pages with an owner and a review date
+    in the future. It is no query parameter of the route either.
     """
     # The module is read at call time: `kb_index.query` imports this package.
     from gateway.kb_index import query as kb_query
@@ -151,6 +154,8 @@ async def search_pages(
         options["updated_after"] = since
     if title_only:
         options["title_only"] = True
+    if verified_only:
+        options["verified_only"] = True
     async with core._tenant_session() as db:
         answer = await kb_query.query(
             db, user, words, k=k, spaces=spaces, vector=vector, **options,

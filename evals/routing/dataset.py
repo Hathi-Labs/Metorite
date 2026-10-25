@@ -127,14 +127,15 @@ CASES: tuple[Case, ...] = (
          "/projects", "crm-assistant", facts=_PROJECT,
          note="cross-app: asked in Projects, about the pipeline"),
 
-    # ── My Tasks and Calendar → projects-assistant ─────────────────────────
+    # ── My work and Calendar → projects-assistant ─────────────────────────
     # One task store, three lenses (D52, D53, D54). task-manager runs on the
     # retired Copilot runtime, so it is no specialist (D84, D92).
     Case("T1", "Capture a to-do: renew the domain before the 30th.",
-         "/tasks", "projects-assistant", facts=_MY_TASKS,
-         note="a private task (ALSO_SERVES keeps the page in My Tasks)"),
+         "/projects", "projects-assistant", facts=_MY_TASKS,
+         note="a private task, asked in Projects -> My work (My Tasks is "
+              "a preview pane since the OP-4 flip, 2026-10-25)"),
     Case("T2", "What should I work on next?",
-         "/tasks", "projects-assistant", facts=_MY_TASKS),
+         "/projects", "projects-assistant", facts=_MY_TASKS),
     Case("T3", "Block two hours tomorrow morning to write the board report.",
          "/calendar", "projects-assistant",
          note="Calendar has no agent of its own (ALSO_SERVES in assistant.ts)"),
@@ -170,7 +171,7 @@ CASES: tuple[Case, ...] = (
     Case("S1", "Show me the board for Website relaunch.", None, None,
          opens=f"/projects?project={PROJECT_ID}",
          note="from My Day: a project board, named in the words"),
-    Case("S2", "Open task #12.", "/tasks", None, facts=_MY_TASKS,
+    Case("S2", "Open task #12.", "/projects", None, facts=_MY_TASKS,
          opens=f"/projects?task={TASK_ID}",
          note="a record: the task opens in Projects, the one task store"),
     Case("S3", "Take me to my inbox.", "/projects", None, facts=_PROJECT,
