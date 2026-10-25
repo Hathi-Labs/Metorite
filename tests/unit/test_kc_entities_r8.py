@@ -763,3 +763,60 @@ async def test_q_finds_a_row_past_the_cap(ns, app_engine, monkeypatch) -> None: 
         assert [r["ref_id"] for r in found] == [last], words
     # The alias match stays under the owner rule.
     assert await _listed(ns, _principal(_address("x"), ns.org_a), "person", f"kilo{tag}") == []
+
+
+# ── KC-8b: the types the rail draws ─────────────────────────────────────────
+
+async def _types(p: Any, user: Any) -> list[str]:
+    return (await _ok(p, user, "GET", "/knowledge/entity-types"))["types"]
+
+
+async def test_the_entity_types_follow_the_owner_rules(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    me, other = _address("types"), _address("types-other")
+    _add_member(ns, ns.org_a, me)
+    _add_member(ns, ns.org_a, other)
+    _add_company(ns, ns.org_a, "Acme types")
+    _set_crm_access(ns, ns.org_a, "everyone", [])
+
+    # Company for every member past the Knowledge gate, and no more.
+    assert await _types(ns, _principal(me, ns.org_a)) == ["company"]
+    # No CRM access, no customer. CRM access, a customer.
+    assert await _types(ns, _principal(me, ns.org_a, CRM)) == ["company", "customer"]
+    _set_crm_access(ns, ns.org_a, "admins", [])
+    assert await _types(ns, _principal(me, ns.org_a, CRM)) == ["company"]
+    assert await _types(ns, _principal(me, ns.org_a, CRM, CRM_ADMIN)) == ["company", "customer"]
+
+    # A workstream only when a visible project exists. Another member's
+    # personal project never makes the type appear.
+    projects = _principal(me, ns.org_a, PROJECTS)
+    _add_project(ns, ns.org_a, "Theirs alone", other, personal_owner=other)
+    _add_project(ns, ns.org_a, "No grant")
+    assert await _types(ns, projects) == ["company"]
+    _add_project(ns, ns.org_a, "Shared work", "org")
+    assert await _types(ns, projects) == ["company", "workstream"]
+
+    # A person and a workflow need their feature.
+    _add_person(ns, ns.org_a, "Types person")
+    _add_workflow(ns, ns.org_a, "Types workflow")
+    both = _principal(me, ns.org_a, PEOPLE, WORKFLOWS)
+    assert await _types(ns, both) == ["company", "person", "workflow"]
+
+
+async def test_the_entity_types_of_org_b_are_its_own(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    _add_person(ns, ns.org_a, "Only in A")
+    _add_project(ns, ns.org_a, "Only in A work", "org")
+    _add_company(ns, ns.org_a, "Only in A customer")
+    _set_crm_access(ns, ns.org_a, "everyone", [])
+    _set_crm_access(ns, ns.org_b, "everyone", [])
+    b = _principal(_address("b-types"), ns.org_b, PEOPLE, PROJECTS, CRM, WORKFLOWS)
+    _add_member(ns, ns.org_b, b.email)
+    # Org B holds no customer, no project and no workflow. Its person rows
+    # (the fixture seeds some) are its own, never "Only in A".
+    got_b = await _types(ns, b)
+    assert "customer" not in got_b and "workstream" not in got_b and "workflow" not in got_b, got_b
+    assert "Only in A" not in await _names(ns, b, "person")
+    a = _principal(_address("a-types"), ns.org_a, PEOPLE, PROJECTS, CRM, WORKFLOWS)
+    _add_member(ns, ns.org_a, a.email)
+    assert await _types(ns, a) == ["company", "person", "customer", "workstream"]

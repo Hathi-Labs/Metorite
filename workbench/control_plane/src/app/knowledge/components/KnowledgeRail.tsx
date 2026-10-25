@@ -5,11 +5,19 @@
  * §11.1 and §21.5).
  *
  * Three entries today, Search (KB-3b), Review (KB-5b) and Spaces (KB-2a),
- * and Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org.
+ * Gaps (KB-9a) for a manager of Knowledge when gaps are on for the org, a
+ * Maintenance row (KB-AI-4) for a manager, and Sources (KC-1b) when the
+ * sources read answers.
+ * After Spaces and the space tree comes the Directories group (KC-8b): a
+ * heading, then one row for each type of entity that the gateway says the
+ * member can see (Company, Products, People, Customers, Workstreams,
+ * Workflows, Topics, in that order). The group is absent when the list is
+ * empty. The rail holds no rule about which types show.
  * Review shows only while a proposal of the assistant waits (with the
- * count) or while the member is on it. Files and Sources join them with
- * KB-2c and KB-7a, and each is ABSENT until then, never a stub. Search sits first, above the tree, so it stays in one
- * place while a space opens. Under Spaces, each space the member can open is
+ * count) or while the member is on it. Files joins them with KB-2c, and it
+ * is ABSENT until then, never a stub. Search sits first, above the tree, so
+ * it stays in one place while a space opens. Under Spaces, each space the
+ * member can open is
  * a row, and the open space shows its page tree. Every row is a `RailRow`
  * (AGENTS.md rule 12), as the Projects tree and the CRM rail draw theirs.
  *
@@ -48,8 +56,10 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
+import { directoryHref, typeIcon, typeLabel, type EntityType } from "../lib/entities";
 import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { KNOWLEDGE_MAINTENANCE } from "../lib/maintenance";
+import { KNOWLEDGE_SOURCES } from "../lib/sources";
 import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
@@ -87,10 +97,21 @@ export interface KnowledgeRailProps {
    */
   gaps?: { selected: boolean; count: string | null } | null;
   /**
+   * The Directories group (KC-8b). `types` are the types the gateway says the
+   * member can see, in order, and `selected` is the open directory. Absent or
+   * empty: no group.
+   */
+  directories?: { types: readonly EntityType[]; selected: EntityType | null };
+  /**
    * The Maintenance row (KB-AI-4): `null` hides it. The layout shows it to a
    * manager of Knowledge whose list read answered. `count` is the expired pages.
    */
   maintenance?: { selected: boolean; count: string | null } | null;
+  /**
+   * The Sources row (KC-1b): `null` hides it. The layout shows it when the
+   * sources read answers. `count` is the drives that are connected.
+   */
+  sources?: { selected: boolean; count: string | null } | null;
   /** True on `/knowledge/review` (KB-5b). */
   atReview?: boolean;
   /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
@@ -116,6 +137,8 @@ export default function KnowledgeRail({
   atSearch,
   gaps = null,
   maintenance = null,
+  sources = null,
+  directories,
   atReview = false,
   reviewCount = 0,
   onNavigate,
@@ -169,6 +192,17 @@ export default function KnowledgeRail({
           onSelect={() => onNavigate(KNOWLEDGE_MAINTENANCE)}
         />
       ) : null}
+      {sources ? (
+        <RailRow
+          label="Sources"
+          tier="group"
+          selected={sources.selected}
+          icon={<Icon name="HardDrive" className={ICON} />}
+          meta={sources.count ?? undefined}
+          buttonProps={{ "aria-current": sources.selected ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_SOURCES)}
+        />
+      ) : null}
       <RailRow
         label="Spaces"
         tier="group"
@@ -188,6 +222,29 @@ export default function KnowledgeRail({
           onArchive={onArchive}
         />
       ))}
+      {directories && directories.types.length > 0 ? (
+        <div className="mt-2 flex flex-col gap-0.5" data-knowledge-directories="">
+          {/* A heading, not a link: no onSelect, and out of the tab order. */}
+          <RailRow
+            label="Directories"
+            tier="group"
+            icon={<Icon name="BookUser" className={ICON} />}
+            buttonProps={{ tabIndex: -1, "aria-disabled": true }}
+          />
+          {directories.types.map((type) => (
+            <RailRow
+              key={type}
+              label={typeLabel(type)}
+              depth={1}
+              selected={directories.selected === type}
+              icon={<Icon name={typeIcon(type)} className={ICON} />}
+              buttonProps={{ "aria-current": directories.selected === type ? "page" : undefined }}
+              rowProps={{ "data-directory-type": type }}
+              onSelect={() => onNavigate(directoryHref(type))}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

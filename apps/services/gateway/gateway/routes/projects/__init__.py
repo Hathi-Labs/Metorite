@@ -67,6 +67,7 @@ from gateway.routes.projects import plan_preview as _plan_preview  # noqa: F401
 from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
 from gateway.routes.projects import refs as _refs  # noqa: F401
+from gateway.routes.projects import reminders as _reminders  # noqa: F401
 from gateway.routes.projects import reports as _reports  # noqa: F401
 from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401

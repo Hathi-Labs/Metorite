@@ -201,7 +201,15 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "1. When the member asks about the company, its work, its customers, its\n"
         "   mail or its policies, call search_company first. Answer from what it\n"
         "   returns, and cite each item you used. When it returns nothing, say\n"
-        "   that the company's records hold nothing on it.\n",
+        "   that the company's records hold nothing on it.\n"
+        # Chat speed (2026-10-25): a write searched first and then delegated,
+        # and the specialist searched again. That cost one model round and a
+        # search, about 8.7 s, before the work began (knowledge_base.md §8.2).
+        "   A request to change something in one app, such as an email to write\n"
+        "   or send, a task to make or a record to update, is work in that app.\n"
+        "   Give it at once to that app's specialist, or to your own tool for it,\n"
+        "   with no search first. The specialist or the tool finds the email, the\n"
+        "   contact or the record itself.\n",
     ),
     (
         "5. Every factual claim from retrieval must cite [entity:uuid] tokens exactly as returned.\n",
@@ -264,7 +272,12 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  as replaces. Pass sensitive=true for a fact about health, religion, caste,\n"
     "  politics, sexuality or money. Such a change asks the member once first.\n"
     "  When a colleague lookup lists several people and the member picks one,\n"
-    "  offer to save that name with profile_alias.\n",
+    "  offer to save that name with profile_alias.\n"
+    "- profile_interview: the member's get-to-know-me questions. Ask only when the\n"
+    "  block has an interview line, or when the member starts a sitting. Ask one\n"
+    "  question at a time. Save the answer with its area. When the member says stop\n"
+    "  asking, call profile_interview with stop. When the member asks for the Get\n"
+    "  to know me interview, call profile_interview with next_sitting.\n",
 )
 
 

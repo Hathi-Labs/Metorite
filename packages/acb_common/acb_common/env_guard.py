@@ -142,6 +142,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-45 (D90): the agents that the tier policy covers. It moves what an
     # organization pays, so only the operator writes it (ai_tier_routing.md).
     "AI_TIER_ROUTING",
+    # Chat speed (2026-10-25): the covered agents whose auto chat turns run
+    # with thinking off. It changes how a model answers, so only the
+    # operator writes it.
+    "AI_REASONING_OFF_AGENTS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
@@ -260,6 +264,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # a tenant that set it would hold the key of every org's devices.
     # WEB_PUSH_ENABLED is the switch, and the `_ENABLED` suffix covers it too.
     "VAPID_", "WEB_PUSH_",
+    # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
+    # routes, so a tenant that set it could turn them on for every org.
+    "CALENDAR_REMINDERS",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

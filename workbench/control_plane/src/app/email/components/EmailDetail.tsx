@@ -1250,7 +1250,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
           <TBtn
             icon={themedIcon("ListChecks")}
-            label="Add to My Tasks"
+            label="Add to My work"
             onClick={() => {
               if (email) captureEmailToTasks(email.id);
             }}
@@ -1534,7 +1534,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
               {fullDateLabel(email.receivedAt)}
             </div>
           </div>
-          {/* The same action row as each card of a thread. "Add to My Tasks"
+          {/* The same action row as each card of a thread. "Add to My work"
               is its first menu item (owner, 2026-10-10). */}
           {messageActions(email)}
         </div>

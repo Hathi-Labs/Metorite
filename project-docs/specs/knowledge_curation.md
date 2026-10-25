@@ -10,8 +10,15 @@ and the Google Drive adapter. It also holds `kb_sources`, `kb_source_nodes`,
 discovery at connect, the source routes and the Google grant rule.
 
 Both flags of KC-1a default to empty. Nobody tested it against live Google. The owner must first register
-the redirect URI and the `drive.readonly` scope. KC-1b, the Sources view, is
-open.
+the redirect URI and the `drive.readonly` scope.
+
+**KC-1b BUILT 2026-10-25, dark** (branch `kc-1b-sources-view`, built on
+`origin/main` `76f3e9875`, no migration, frontend only). It is the Sources
+view of KC-1: a rail row, the route `/knowledge/sources`, Connect Google
+Drive, the return from Google, the folder tree and Disconnect. The row shows
+when `GET /knowledge/sources` answers. The view stays dark while both source
+flags are empty. No live Google test ran. KC-1c, the expand-on-demand of a
+folder that discovery did not reach, is open as Metorite task #441.
 
 The workbench route `/api/knowledge/sources/google_drive/callback` carries
 the consent back to the gateway, with one try and no followed redirect. A
@@ -20,12 +27,17 @@ it revokes each free Google grant once (§19).
 
 §20 holds the decisions **D-KC-1** to **D-KC-9**, and §21 holds the owner
 questions with their answers. Board row **WS-61** (no new row).
-Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
+Verified against the code on 2026-10-25, at `origin/main` `76f3e9875`.
 
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
 and person resolvers, and the directory routes under the rule of §6.4.
-KC-8b and KC-8c stay open.
+KC-8c stays open.
+
+**KC-8b BUILT 2026-10-25** (branch `kc-8b-directories`, no migration, dark
+under `KNOWLEDGE_ENABLED`). It adds the Directories group in the rail, the
+directory view at `/knowledge/directories/<type>`, and "Write the page" with
+its warning. It adds one read route, `GET /knowledge/entity-types`.
 
 The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
 epics, #361 to #366, and one task for each slice, #368 to #411 (§23).
@@ -346,6 +358,17 @@ The name and the role stay in `people`, and the People app stays their owner.
   reads the owner row under the rule of §6.4, then calls `ensure_entity`.
   The page route then takes the entity id. A row that the caller cannot see
   gets 404, and nothing is written.
+
+**KC-8b decision, 2026-10-25.** A new page is a draft that only its author sees.
+So the leak that §6.4 warns of starts when the author publishes the
+page, and not when the page is made. The dialog "Write the page" shows a
+warning for a customer, a workstream, a person and a workflow. The warning
+says that everyone who can read the space sees the page and the name of the
+record. That includes people who cannot open the record in its own app.
+
+The dialog also offers another space that the author can write in. The default
+stays `company`, and a `me` space is never offered. KC-9 keeps the hard gate
+that §22 names.
 
 ### 6.3 The directories
 
@@ -815,8 +838,9 @@ All of it lives in the Knowledge app and its rail. No new pane (D-KB-7).
 
 | Where | What | Who |
 |---|---|---|
-| Rail → **Sources** | The connected drives, their tree, the filing plan, the exceptions | A member sees their own sources. A manager sees every source |
+| Rail → **Sources** (built at KC-1b: the drives and their tree. The filing plan and the exceptions come with KC-7) | The connected drives, their tree, the filing plan, the exceptions | A member sees their own sources. A manager sees every source |
 | Rail → **Directories** | Company, Products, People, Customers, Workstreams, Workflows, Topics | Each type by its owning app's rule (§6.4) |
+| `GET /knowledge/entity-types` (KC-8b) | The types with one visible row or more, in the order of §6.1. The rail draws one Directories row for each | Each type by its owning app's rule (§6.4) |
 | An entity page | The brief and the body (§11) | Through the clause |
 | Rail → **Review** (built) | Proposals: pages, edits, merges, promotions, drafts | The reviewers of KB-5a |
 | Rail → **Health** | The gardener's last run, conflicts, orphans, spend | `knowledge:manage` |
@@ -825,7 +849,8 @@ All of it lives in the Knowledge app and its rail. No new pane (D-KB-7).
 
 The shell manifest of `knowledge_base.md` §11 gains three jobs: "Connect a
 drive", "Review the filing plan" and "See what Metorite knows about…". KC-7
-adds them there, and adds no manifest of its own (R9).
+adds them there, and adds no manifest of its own (R9). KC-1b built the
+Sources view and no job. KC-7 adds the filing plan and the three jobs.
 
 ---
 
@@ -1030,7 +1055,9 @@ keeps the brain current.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KC-0** | This spec, the INDEX row, the decisions | The owner accepts or overrules §20 and §21 | **OWNER-GATE** |
-| **KC-1** (was KB-3a, KB-7a, KB-7d) | Lift the CRM-only side effects out of `connections/store.py`. The adapter protocol of `knowledge_base.md` §7.1. The Google Drive adapter on the one Google client, for member sources. `kb_sources` and `kb_source_nodes`. Discovery at connect. The Sources view with the tree | A test user connects Drive. The tree shows with no text. Disconnecting Drive leaves Gmail connected, and a test proves it. `save_credential` for Knowledge touches no CRM row. `test_kc_sources_read_only_scopes.py` and `test_kb_sources_no_global_creds.py` hold. R8: org B sees no node of org A | AGENT-SAFE to build. The flag on production: owner |
+| **KC-1a** (was KB-3a, KB-7a, KB-7d). **BUILT 2026-10-25, dark** | Lift the CRM-only side effects out of `connections/store.py`. The adapter protocol of `knowledge_base.md` §7.1. The Google Drive adapter on the one Google client, for member sources. `kb_sources` and `kb_source_nodes`. Discovery at connect. The source routes | `save_credential` for Knowledge touches no CRM row. Disconnecting Drive leaves Gmail connected, and a test proves it. `test_kc_sources_read_only_scopes.py` and `test_kb_sources_no_global_creds.py` hold. R8: org B sees no node of org A | AGENT-SAFE to build. The flag on production: owner |
+| **KC-1b**. **BUILT 2026-10-25, dark** | The Sources view: the rail row, `/knowledge/sources`, Connect Google Drive, the return from Google, polling while a drive is read, the folder tree, Disconnect and Reconnect. The manager view shows each owner. Frontend only: no route, no flag, no migration | (1) The list answers 200 with no drive: the rail shows Sources and the view shows "Connect Google Drive". The list answers 404: no rail row, and the view says connected drives are off, with no error. (2) Connect makes one POST, then goes to an https address on accounts.google.com. Any other address goes nowhere and shows an error. (3) The return `?source_connected=google_drive` or `?source_error=<code>` shows one plain sentence and moves the address to `/knowledge/sources`. A reload does not repeat it. (4) A drive that is being read shows "Reading your folders", and the list is read every 3 seconds. At ready the reads stop. They also stop after 5 minutes and on leaving. (5) A ready drive shows the account, "Connected", the count and "Read" with the time. Folders come first, a folder loads its children once, a folder that discovery did not reach shows "Not yet explored", and a file shows its type, size, time and a link that is https on Google Drive or Docs only. The view draws no file text. (6) Disconnect asks first, and the words say that Gmail stays connected. Cancel sends nothing. Confirm sends one DELETE. A failure keeps the card. (7) The owner of a drive that needs to reconnect gets Reconnect. Another member's card says who it waits for, and offers no Reconnect. (8) A manager sees each drive with its owner. (9) A disconnected drive is not drawn. (10) A cut tree says "Showing the first N items. More items exist." (11) The view uses only the shared parts, and draws no colour literal, no lucide import and no direct fetch. Tests: `sources.test.ts`, `e2e/knowledge-sources.spec.ts`. Non-goals: expand on demand (KC-1c, Metorite task #441), the shell job "Connect a drive" and the chat tool (KC-7), the filing plan (KC-7) | AGENT-SAFE to build. The flags on production, the redirect URI and the `drive.readonly` scope on the Google client: owner |
+| **KC-1c** (Metorite task #441). Open | Expand on demand: a gateway route that reads one folder that discovery did not reach, and the view that calls it | A folder with `explored` false opens, and its children show with no file text. R8: org B cannot read the folder of org A | AGENT-SAFE to build |
 | **KC-2** (was KB-7c) | The OneDrive and SharePoint adapter on the Email app's Microsoft app. Member sources with delegated `Files.Read.All`. Org sources with `Sites.Read.All` | The KC-1 checks pass on a Microsoft 365 account. A SharePoint site shows as an org source after one admin consent | AGENT-SAFE. The admin consent on a customer tenant: owner |
 | **KC-3** (was KB-7b) | The sync loop: `kb_sync_cursors`, `kb_sync_runs`, the run lock, `changes.list` and `delta`, track by id, the expired-cursor path, the daily reconcile, `source_sync_failed`, the CX-5 health columns | A file edited at the provider re-indexes within 15 minutes, with one embed call per changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile. A revoked token sets `needs_reconnect` and stops retrying | AGENT-SAFE to build. The loop on production: owner |
 | **KC-3b** | Push hints: Drive `changes.watch` and Graph subscriptions, `kb_watch_channels`, renewal, the validation answer | A push moves the next cursor read forward. A missed push changes nothing, because the 15-minute read still runs | AGENT-SAFE |
@@ -1049,7 +1076,7 @@ keeps the brain current.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KC-8a** | The entity registry, backend: `kb_entities`, the page types, aliases, `ensure_entity`, the resolver, the directory routes under the rule of §6.4, lazy entity pages. It does not depend on KC-1 to KC-7 | Each person in `people` resolves to one entity. A second insert for one record fails. A member without the owning app's access gets no row of that type, and a GET by id is 404. A project the member cannot see, another member's personal project, and a CRM company outside `crm_settings.access` never show in a list, a get or an alias hit. Org B sees no entity of org A | AGENT-SAFE. HIGH tier |
-| **KC-8b** | The Directories group in the rail, after KC-8a | A rail row shows only for a type with a visible entity. The visual review passes | AGENT-SAFE |
+| **KC-8b** | The Directories group in the rail, after KC-8a. **BUILT 2026-10-25.** | A rail row shows only for a type with a visible entity: `GET /knowledge/entity-types` answers exactly the types whose directory has one visible row, and the client holds no per-type permission rule. A directory lists one type, searches, and shows "Write the page" only for a row with no page. The act calls by-ref before the page route. The dialog warns for a customer, a workstream, a person and a workflow, and lists no `me` space. A 404 and a 409 each show their own words. The visual review passes | AGENT-SAFE. MEDIUM tier |
 | **KC-8c** | After KC-6: a filing makes a product entity | The Products directory lists an entity made from a filing | AGENT-SAFE |
 | **KC-9** | Facts and episodes: `kb_episodes`, `kb_facts`, `kb_fact_episodes`, extraction from documents and pages, the update step, the quote check, fact chunks | A datasheet v3 that changes a value closes the v2 fact and keeps it in history. A fact with no quote in its episode is dropped. `test_kc_fact_audience.py`: a private fact and an org fact never merge. The eval precision is 90% or more. **The rule of a restricted record (KC-8a re-verify, 2026-10-25):** the page of a person, a customer or a workstream defaults to the `company` space, which every member reads. So a fact about a record that its own app hides from a member must not reach that member through the page. KC-9 gates each fact and the page title of such a record by the owner rule of §6.4, or it files the page in a space whose readers all pass that rule. An R8 test proves that a member without CRM access reads no fact and no title of a customer page | AGENT-SAFE to build. HIGH tier. The flip: owner |
 | **KC-10** | The brief zone: drawn per reader, Confirm, Correct, Hide, the confidence floor, the history | Two members with different access see two briefs, and neither sees a fact outside their audience (R8). Correct closes the old fact and adds the new one | AGENT-SAFE. Showing learned facts before a click: §21 Q3 |

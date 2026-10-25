@@ -2,6 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_curation.md`` §6.2 to §6.4.
 
+    GET  /knowledge/entity-types             the types the caller sees one row of
     GET  /knowledge/entities?type=&q=        the directory of one type, or all
     GET  /knowledge/entities/{id}            one entity
     POST /knowledge/entities                 make a product or a topic
@@ -81,6 +82,25 @@ def _kind(value: str | None) -> str | None:
             detail=f"Unknown entity type '{value}'. One of: {list(registry.ENTITY_TYPES)}.",
         )
     return kind
+
+
+@router.get("/entity-types")
+async def entity_types(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, list[str]]:
+    """The types with at least one row the caller sees, in the order of §6.1.
+
+    It asks ``registry.directory_rows`` for one row of each type, so the owner
+    rule of each app decides, and this route holds no rule of its own. The
+    rail of KC-8b draws one Directories row for each type in the answer.
+    """
+    seen: list[str] = []
+    async with core._tenant_session() as db:
+        for each in registry.ENTITY_TYPES:
+            rows, _cut = await registry.directory_rows(db, user, each, cap=1)
+            if rows:
+                seen.append(each)
+    return {"types": seen}
 
 
 @router.get("/entities")

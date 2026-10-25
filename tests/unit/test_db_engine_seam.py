@@ -756,6 +756,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "at. It lists the RLS-EXEMPT `organization` table, so it does not go "
         "blind. It keeps the orgs that Knowledge serves, and every update "
         "after it binds one organization with `tenant_session`",
+    ("apps/services/gateway/gateway/agent_run_sweep.py",
+     "_organization_ids"):
+        "WS-55 SW-10a: which organizations the sweep of stranded agent runs "
+        "looks at. It lists the RLS-EXEMPT `organization` table, so it does "
+        "not go blind. Every read and write after it binds one organization "
+        "with `tenant_session`, and the sweep starts only while "
+        "`agent_run_sweep_enabled` is on",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "
