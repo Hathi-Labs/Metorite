@@ -557,3 +557,40 @@ def test_by_ref_reads_the_owner_row_under_the_rule_before_it_writes() -> None:
 def test_q_is_matched_in_sql_before_the_limit() -> None:
     rows = ast.unparse(_functions(_REGISTRY)["directory_rows"])
     assert "strpos(" in rows and "unnest(e.aliases)" in rows
+
+
+# ── KC-8b: the types the rail draws ─────────────────────────────────────────
+
+class _FakeSession:
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_entity_types_route_returns_visible_types_in_order(monkeypatch) -> None:
+    from gateway.kb_entities import registry
+    from gateway.routes.knowledge import core, entities
+
+    asked: list[tuple[str, int | None]] = []
+    has_rows = {"topic", "company", "customer"}
+
+    async def fake_rows(db, user, kind, **kw):
+        asked.append((kind, kw.get("cap")))
+        return ([{"id": None}] if kind in has_rows else []), False
+
+    monkeypatch.setattr(core, "_tenant_session", lambda: _FakeSession())
+    monkeypatch.setattr(registry, "directory_rows", fake_rows)
+    got = await entities.entity_types(user=object())
+    # Section 6.1 order, and a type with no row never appears.
+    assert got == {"types": ["company", "customer", "topic"]}
+    assert [k for k, _ in asked] == list(registry.ENTITY_TYPES)
+    assert {cap for _, cap in asked} == {1}
+
+
+def test_entity_types_route_holds_no_owner_rule() -> None:
+    source = ast.unparse(_functions(_GATEWAY / "routes" / "knowledge" / "entities.py")["entity_types"])
+    assert "directory_rows(" in source
+    assert "feature:" not in source and "has_permission" not in source
