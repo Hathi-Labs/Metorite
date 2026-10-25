@@ -52,13 +52,20 @@ const KEY = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3
 const DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36";
 const IPHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) Version/17.4 Mobile Safari/604.1";
 
-/** Strip comments, so a fence never matches the text that explains it. */
+/**
+ * Strip comments, so a fence never matches the text that explains it. Line
+ * ends become LF first: a Windows checkout holds CRLF, and the slices below
+ * look for "\n".
+ */
 function code(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  return source
+    .replace(/\r\n/g, "\n")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
 function read(rel: string): string {
-  return fs.readFileSync(path.join(SRC, rel), "utf8");
+  return fs.readFileSync(path.join(SRC, rel), "utf8").replace(/\r\n/g, "\n");
 }
 
 function walk(dir: string, out: string[] = []): string[] {
