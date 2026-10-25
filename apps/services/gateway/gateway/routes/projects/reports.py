@@ -60,6 +60,12 @@ from gateway.routes.projects.analytics import (
     stale_bands_sql,
     weekly_sql,
 )
+from gateway.routes.projects.analytics_agents import (
+    finished_actor_body,
+    finished_summary,
+    kpis_body,
+    throughput_actor_body,
+)
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
 from gateway.routes.projects.analytics_pulse import pulse_body
@@ -863,8 +869,14 @@ async def render_body(
     *,
     project_id: str | None,
     config: dict[str, Any],
+    kpis: bool = False,
 ) -> dict[str, Any]:
     """The period and the sections of one report config, computed NOW.
+
+    WS-27bn RA-2. ``kpis`` adds the ``kpis`` key: the figures of the
+    Overview's KPI strip that no section holds (`analytics_agents.kpis_body`).
+    Only the Overview asks for it, through the preview. A saved report, the
+    email and the chat render no strip, so they run none of its queries.
 
     WS-27bn R1. **The one render function** (`projects_reports.md` §8a). The
     saved-report render and the unsaved preview both call it, and a later
@@ -978,6 +990,12 @@ async def render_body(
                 "total_cancelled": int(totals.cancelled or 0),
                 # WS-27bn RA-1. Who finished `total_completed`, by label.
                 "actor_split": dict(actor_split or {}),
+                # WS-27bn RA-2. "Who did the work": the sentence, each week
+                # by label, and each agent under its member, for the reader.
+                "actor_summary": finished_summary(actor_split or {}),
+                **await finished_actor_body(
+                    db, past_where, params, skip_current_week=skip, allowed=allowed,
+                ),
             }
         elif name == "throughput":
             # ⚠️ `weekly_sql` has no `skip_current_week` arm, and that is
@@ -1020,6 +1038,11 @@ async def render_body(
                 "cancelled": int(totals.cancelled or 0),
                 # WS-27bn RA-1. Who finished `completed`, over the same window.
                 "actor_split": dict(actor_split or {}),
+                # WS-27bn RA-2. The median and the p90 of people and of
+                # agents, and the sentence that says them.
+                **await throughput_actor_body(
+                    db, past_where, params, skip_current_week=skip,
+                ),
             }
         elif name == "load":
             # WS-27bn R5a. The Load route's OWN body, imported, as
@@ -1240,6 +1263,14 @@ async def render_body(
         "period_start": window.period_start.isoformat(),
         "period_end": window.period_end.isoformat(),
         "sections": sections,
+        # WS-27bn RA-2. The same predicates, binds and reader as the
+        # sections above, so a tile and a panel describe the same tasks.
+        **({
+            "kpis": await kpis_body(
+                db, past_where=past_where, open_where=open_where, params=params,
+                skip_current_week=skip, allowed=allowed,
+            ),
+        } if kpis else {}),
     }
 
 
@@ -1308,6 +1339,9 @@ async def preview_report(
     )
     raw_project = payload.get("project_id")
     project_id = str(raw_project) if raw_project else None
+    # WS-27bn RA-2. The Overview asks for its KPI strip. Only a literal true
+    # asks: the key changes which figures come back, never whose.
+    kpis = payload.get("kpis") is True
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -1315,7 +1349,7 @@ async def preview_report(
             # The same refusal as create: seeing the node is required.
             await load_visible_project(db, vis, project_id)
         body = await render_body(
-            db, vis, user, project_id=project_id, config=config,
+            db, vis, user, project_id=project_id, config=config, kpis=kpis,
         )
         return {
             "report": {

@@ -53,8 +53,13 @@ Throughput and Finished reads carry `actor_split`, and the Load read carries
 **RA-3 BUILT 2026-10-25, not merged** (§6.8 C, §8 RA-3). The `waiting`
 section lists agent questions with no answer, agent work that waits for a
 review, and blocked handoffs. It gives the answer time too. Overview shows
-the panel by default, and hides it when the scope has no agent run. RA-2 and
-RA-4 to RA-8 are not built.
+the panel by default, and hides it when the scope has no agent run.
+
+**RA-2 BUILT 2026-10-25, not merged** (§6.8 B, §8 RA-2). The live Overview
+draws a KPI strip of six tiles, and each tile carries its rule as its
+tooltip. "Who did the work" replaces "What we finished" in the Overview of
+one project. "How long it took" splits its median and p90 by people and
+agents. RA-4 to RA-8 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -346,9 +351,13 @@ next to each status, as `classify` already does.
 | **Person act** | A timeline row that a person made: no agent act (`is_agent_act`), and no actor that starts with `system:`, such as a workflow or GitHub. | `analytics_waiting.py` `is_person_act` (RA-3) |
 | **Handoff blocker** | An open `blocks` link where an agent holds one task and a person holds the other. "Holds" is RA-1's holder rule. | `analytics_waiting.py` `handoff_side` and `handoffs_sql` (RA-3) |
 | **Answer time** | The time from an agent's question to the prompt that answers it, for the questions of the report period. A question with no answer stays out of the median and the p90, and the section counts it. | `analytics_waiting.py` `answer_time` and `answer_time_sql` (RA-3) |
-| **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more | RA-4, not built |
+| **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more. A run with no agent activity yet counts from its start. | `analytics_agents.py` `SILENT_RUN_AFTER_S` and `silent_run_sql` (RA-2). RA-4 reads the same constant. It is not the idle state of the pill, `filters.AGENT_RUN_STALE_AFTER_S` (5 minutes), which reads every activity. |
+| **Agents**, **People** | The two groups of a done task. Agents holds the agent-finished and the agent-assisted tasks. People holds the tasks that no agent worked before the finish. | `analytics_agents.py` `actor_group` and `actor_group_sql` (RA-2) |
+| **Agents working now** | An open run in `in_progress` on an open task, that is not silent. "Working" is the rule of the board strip, `agent_summary.WORKING_STATES`. | `analytics_agents.py` `runs_now_sql` (RA-2) |
+| **Agent PR merge rate** | The pull requests on tasks that an agent worked before the close, merged or closed in the last 14 days. The rate is the merged ones over the merged and the closed ones. A merge reads its `merged_at`. A close with no merge reads `pr_updated_at`, the last update of the pull request on GitHub. A pull request with no time from GitHub does not count, because the token path of TR-1 moves the row's own `updated_at` on each read. An open or draft pull request does not count. The trend compares the 14 days before. | `analytics_agents.py` `merge_sql`, `pr_closed_at` and `merge_rate` (RA-2) |
+| **Agent time** | The time that agents worked on a finished task. Each run lasts from its start to the last act of its agent, and never past its end. A takeover or a server close stamps its end later than that. Each wait on a person comes out: from a question to its answer, or to the next act of the agent if that comes first. Only a run made at or before the finish counts. The tile gives the median over the finished tasks with a measured run. | `analytics_agents.py` `run_hours` and `run_time_sql` (RA-2). The answer of a question is `analytics_waiting.answered_at_sql`. |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
-| **Needs an owner** | An open task with no assignee and no open run | RA-2, not built. The `none` count of RA-1's `holder_split` is near it, but it reads the lease of a run. |
+| **Needs an owner** | An open task with no assignee and no open run | Not built. §8 RA-6 puts it first in Open work. The `none` count of RA-1's `holder_split` is near it, but it reads the lease of a run. |
 
 ⚠️ **"Needs help" is a flag, not a sixth pill.** `PILLS` is a closed vocabulary
 that the People dashboard also draws. A sixth pill changes two apps. So the
@@ -2077,11 +2086,31 @@ first-name match.
 
 Fences: `tests/unit/test_projects_analytics_actor.py` (hermetic) and `tests/unit/test_projects_analytics_actor_r8.py` (R8).
 
-### RA-2 — The KPI strip and "Who did the work" · AGENT-SAFE
+### RA-2 — The KPI strip and "Who did the work" · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** the six tiles of §6.8 B, and weekly finishes stacked by people and agents, with each agent under its member. "How long it took" splits its median and p90 by people and agents. "What we finished" stays for a scope of more than one project.
 
 **Done when:** `visual-review` passes at four widths, in light mode and at compact density, and each tile's rule is in its tooltip.
+
+**Built.** The server half lives in `routes/projects/analytics_agents.py`. It joins rules that exist, and §5 holds each new word.
+
+1. **Agents and people.** Agents holds `agent_finished` AND `agent_assisted`. §6.8 B asks if agent tasks are faster end to end. Merge-to-Done gives `agent_assisted` to each task that it moves, so that label is agent work.
+2. **The `finished` section** gains `actor_series`, each week of the window by label. The weeks add up to `actor_split`. It gains `agent_members` too: each agent finish under its member, by the rule of `analytics_waiting.agent_of`. The members sort by name, never by count (E1). §7.1 rule 3 hides the rows of other people from a reader who is not an admin, and `hidden_people` counts them.
+3. **The `throughput` section** gains `actor_cycle`, the median and the p90 of each group, over the `cyc` hours of Throughput.
+4. **Summary first (E5).** Both sections gain `actor_summary`. The server writes the sentence, and the panel prints it first.
+5. **The `waiting` section** gains `waiting_total` and `oldest_hours`, from its own three lists. A task that waits in two ways counts two times.
+6. **The KPI strip.** `POST /projects/reports/preview` with `kpis: true` adds a `kpis` block. Only the Overview sends it, so a saved report, the email and the chat run none of its queries. The block holds the runs now, the merge rate of 14 days, the run time and the cost.
+7. **The six tiles.** Finished this week reads the last week of `actor_series`. Median cycle time reads `actor_cycle`. Waiting on a person reads `waiting_total` and `oldest_hours`. The other three read `kpis`. Each tile names its split of people and agents. Its rule is its tooltip, and an `InfoTip` beside its label gives the same rule to a keyboard and a touch.
+8. **The silent rule.** §5 says 15 minutes, and the tile uses 15. `SILENT_RUN_AFTER_S` is the one constant, and `analytics_agents.py` owns it. The 5-minute idle state of the pill (`filters.AGENT_RUN_STALE_AFTER_S`) stays as it was.
+9. **Cost.** SW-20 captures no usage yet. So the tile reads "Unknown", never $0, beside "0% of finished tasks have cost data". The measured fallback is the agent time of §5, with the waits on a person taken out (§6.8 D item 3). `basis` is `agent_time_less_waits`.
+10. **"Who did the work"** replaces "What we finished" in the live Overview when the scope is a node and its finished work sits in one project or none. The organization and a scope of many projects keep "What we finished". A saved report keeps it too.
+11. **The flag.** While `agent_runs_enabled` is off, the runs tile reads "Off" and counts no run. The pull requests do not depend on the flag.
+12. **Live, with no flag.** Every API change is a new key. RA-2 adds no table and no migration.
+13. **Review fix round (2026-10-25).** The merge rate reads only a time from GitHub (P1). A run ends at the last act of its agent (P2). The waits come out of the agent time. Each tile has an `InfoTip`. A subject hides the waiting tile, because `waiting` refuses a subject and `sectionsFor` drops it.
+14. **The merge rate and the board strip.** Both read `merged_at` for a merge, so both skip the token path. They still differ on purpose. The strip of the board counts every merged pull request of 7 days, in one project. The tile counts the pull requests of agent work, merged or closed, in 14 days, in the scope of the Overview.
+15. **Known cost, filed as a follow-up.** `actor_series`, `agent_members`, `actor_cycle` and the run time each build the window of `cycle_cte_sql` again, so a render runs that walk four times. One shared statement needs the four answers from one query, and that is not a small change.
+
+Fences: `tests/unit/test_projects_report_kpis.py` (hermetic) and `tests/unit/test_projects_report_kpis_r8.py` (R8), and in the client `lib/kpiStrip.test.ts` and `components/kpiStrip.test.ts`.
 
 ### RA-3 — Waiting on people · AGENT-SAFE · BUILT 2026-10-25, not merged
 
@@ -2241,7 +2270,8 @@ uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_analytics_rebalance.py \
   tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py \
   tests/unit/test_projects_analytics_actor.py tests/unit/test_projects_analytics_actor_r8.py \
-  tests/unit/test_projects_report_waiting.py tests/unit/test_projects_report_waiting_r8.py -q -rs
+  tests/unit/test_projects_report_waiting.py tests/unit/test_projects_report_waiting_r8.py \
+  tests/unit/test_projects_report_kpis.py tests/unit/test_projects_report_kpis_r8.py -q -rs
 
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
@@ -2274,6 +2304,9 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_waiting.py` and `test_projects_report_waiting_r8.py`
   are RA-3's files. Its client files are `waiting.test.ts` and
   `waitingPanel.test.ts`.
+- `test_projects_report_kpis.py` and `test_projects_report_kpis_r8.py` are
+  RA-2's files. Its client files are `lib/kpiStrip.test.ts` and
+  `components/kpiStrip.test.ts`.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 - R5g has no server file. Its files are `overviewLive.test.ts` and
