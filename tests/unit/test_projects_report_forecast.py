@@ -540,6 +540,13 @@ class TestTheChat:
         assert "Needs an owner: 2 open tasks with no assignee and no open run" in out
         assert out.index("Needs an owner") < out.index("- unassigned")
 
+    def test_the_card_says_not_enough_history_in_the_section_5_word(self) -> None:
+        from skill_projects.views import _card_section
+
+        _stats, table = _card_section("outlook", {"velocity": {"verdict": "no_history"}})
+        assert table is not None
+        assert table["rows"][0]["cells"][0] == "Not enough history"
+
     def test_the_card_names_the_85_percent_date_and_the_count(self) -> None:
         from skill_projects.views import REPORT_CARD_SECTIONS
 

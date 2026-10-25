@@ -468,6 +468,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: WS-27bn RA-6. A verdict whose §5 word is not its key in plain case.
+VERDICT_WORDS: dict[str, str] = {"no_history": "Not enough history"}
+
 #: A value that is an ISO timestamp. The card prints its date only, as the
 #: Reports app's `shortDate` does (H-185 item 1).
 #:
@@ -501,7 +504,8 @@ def _card_cell(key: str, row: dict[str, Any], numbers: bool = False) -> Any:
         return value
     if key.endswith("verdict") and isinstance(value, str):
         # A server word such as ``not_converging`` reads as "Not converging".
-        return _human(value)
+        # WS-27bn RA-6: ``no_history`` reads as the §5 word.
+        return VERDICT_WORDS.get(value) or _human(value)
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
