@@ -474,6 +474,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "refsApi",
         # WS-55 EA-12c: agent runs on a task.
         "agentRunsApi",
+        # WS-55 SW-11a: the Needs attention list.
+        "attentionApi",
         "watchersApi",
         "projectWatchersApi",
         "intakeApi",
@@ -498,6 +500,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "agentRunsApi.get": [("GET", "/projects/agent-runs/{}")],
         "agentRunsApi.enabled": [("GET", "/projects/agent-runs")],
         "agentRunsApi.summary": [("GET", "/projects/{}/agent-summary")],
+        "agentRunsApi.resume": [("POST", "/projects/agent-runs/{}/resume")],
+        "attentionApi.list": [("GET", "/projects/needs-attention")],
     }
     for name, calls in shapes.items():
         assert methods[name].calls == calls, f"{name}: read {methods[name].calls}"
