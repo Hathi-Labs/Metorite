@@ -1863,7 +1863,7 @@ async def _load_agent_off_loop(agent_name: str, **kwargs: Any) -> Any:
     it stalled every other chat on the worker for the length of one fetch.
     ``to_thread`` copies the context, so the run binding still holds.
     """
-    import time as _t  # noqa: PLC0415
+    import time as _t
     started = _t.monotonic()
     task = asyncio.ensure_future(
         asyncio.to_thread(load_agent, agent_name, **kwargs)
@@ -7623,8 +7623,8 @@ async def _self_anneal(
         from acb_skills.integrations import build_integrations as _bi
         from acb_skills.loader import load_agent as _load
         settings = get_settings()
-        with _load(
-            agent_name, run_id=run_id,
+        with await asyncio.to_thread(
+            _load, agent_name, run_id=run_id,
             repo_name=inputs.repo_name, local_path=inputs.local_path,
         ) as loaded:
             # Org access control: the retry resolves no authority again. A

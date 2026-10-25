@@ -1280,8 +1280,10 @@ def _ensure_repo(
         if clone_dir.exists() and (clone_dir / ".git").exists():
             # Already cloned — scrub any token from the clone's config and
             # set the public URL (H-363), then pull through the seam.
+            # The scrub is local and cheap, so it runs on every call. Only the
+            # fetch waits for the TTL (H-363).
+            _refresh_remote_auth(clone_dir, org, repo_name)
             if _refresh_due(local_name):
-                _refresh_remote_auth(clone_dir, org, repo_name)
                 _pull_latest(clone_dir)
                 _mark_refreshed(local_name)
         else:
