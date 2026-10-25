@@ -65,10 +65,20 @@ import {
   type PageFocus,
 } from "./components/KnowledgeContext";
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
+import AddEntityDialog from "./components/AddEntityDialog";
 import NewPageDialog from "./components/NewPageDialog";
 import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
-import { ENTITY_TYPES, ENTITY_TYPES_KEY, directoryTypeOf, listEntityTypes, type EntityType } from "./lib/entities";
+import {
+  ENTITY_TYPES,
+  ENTITY_TYPES_KEY,
+  directoryHref,
+  directoryTypeOf,
+  listEntityTypes,
+  type CreatableType,
+  type EntityType,
+} from "./lib/entities";
+import { canAddEntity } from "./lib/entityForm";
 import {
   GAPS_KEY,
   KNOWLEDGE_GAPS,
@@ -217,6 +227,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   const [focus, setFocus] = useState<PageFocus | null>(null);
   const [ask, setAsk] = useState<NewPageAsk | null>(null);
+  const [adding, setAdding] = useState<CreatableType | null>(null);
   const [archiving, setArchiving] = useState<PageSummary | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const toast = useToast();
@@ -287,6 +298,14 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
 
   const setPageFocus = useCallback((next: PageFocus | null) => setFocus(next), []);
   const openNewPage = useCallback((next?: NewPageAsk) => setAsk(next ?? {}), []);
+  // KC-8d: the Add a product / Add a topic acts. A member with no writable
+  // space gets none of them: not in the rail, not in a directory.
+  // A refused types read (404, 403, a network error) means the entity feature
+  // is not there for this member, so a POST would fail: every act hides with
+  // the group (KC-8b). An EMPTY answer is a success, and the acts show.
+  const typesAnswered = typesRead.data !== undefined;
+  const canAdd = useMemo(() => canAddEntity(spaces) && typesAnswered, [spaces, typesAnswered]);
+  const openAddEntity = useCallback((type: CreatableType) => setAdding(type), []);
 
   // The one leave guard (fix round 1, P1). A dirty page registers it, and
   // every way out of the page asks through `requestLeave` first.
@@ -315,8 +334,17 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   );
 
   const context = useMemo(
-    () => ({ spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave }),
-    [spaces, setPageFocus, openNewPage, setLeaveGuard, leaveGuarded, requestLeave],
+    () => ({
+      spaces,
+      setPageFocus,
+      openNewPage,
+      openAddEntity,
+      canAddEntity: canAdd,
+      setLeaveGuard,
+      leaveGuarded,
+      requestLeave,
+    }),
+    [spaces, setPageFocus, openNewPage, openAddEntity, canAdd, setLeaveGuard, leaveGuarded, requestLeave],
   );
 
   // A row's `+` and New sub-page (KB-2e). The form opens through the guard.
@@ -366,6 +394,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
       ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
       : null,
     onArchive: setArchiving,
+    onAddEntity: canAdd ? (type: CreatableType) => requestLeave(() => openAddEntity(type)) : undefined,
   };
 
   const title = isMobile ? (
@@ -388,6 +417,14 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
                 closeDrawer();
                 setArchiving(page);
               }}
+              onAddEntity={
+                railProps.onAddEntity
+                  ? (type) => {
+                      closeDrawer();
+                      railProps.onAddEntity?.(type);
+                    }
+                  : undefined
+              }
             />
           </nav>,
         )
@@ -476,6 +513,16 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
         busy={archiveBusy}
         onCancel={() => setArchiving(null)}
         onConfirm={() => void archive()}
+      />
+      <AddEntityDialog
+        type={canAdd ? adding : null}
+        spaces={spaces}
+        onClose={() => setAdding(null)}
+        onCreated={(entity) => {
+          setAdding(null);
+          invalidate(KNOWLEDGE_CACHE);
+          router.push(directoryHref(entity.type));
+        }}
       />
       <NewPageDialog
         ask={ask}
