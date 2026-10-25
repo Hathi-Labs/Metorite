@@ -170,7 +170,7 @@ def next_slot(member: MemberDay, reminder: Any, now: datetime, *,
     when it is after *now*, not quiet and not inside a busy block.
 
     With no gap in :data:`SLOT_DAYS` days, the slot is the day start that
-    follows them. It is never quiet."""
+    follows them, moved past any busy block (:func:`_clear`)."""
     if named is not None:
         named = _aware(named)
         if named is not None and _fits(member, named, now):
@@ -185,4 +185,22 @@ def next_slot(member: MemberDay, reminder: Any, now: datetime, *,
     if gap is not None:
         return gap
     last = member.day.feed_day(now) + timedelta(days=SLOT_DAYS)
-    return member.day.at(last, member.day.start_hour)
+    return _clear(member, member.day.at(last, member.day.start_hour))
+
+
+#: The moves of :func:`_clear`, at most: past a block, or to a day start.
+_CLEAR_MOVES = 200
+
+
+def _clear(member: MemberDay, at: datetime) -> datetime:
+    """*at*, moved past each busy block it falls in and out of quiet hours,
+    so the last resort is not quiet and not busy either."""
+    for _ in range(_CLEAR_MOVES):
+        ends = [end for start, end in member.busy if start <= at < end]
+        if ends:
+            at = max(ends)
+        elif quiet(member.day, at):
+            at = next_day_start(member.day, at)
+        else:
+            break
+    return at
