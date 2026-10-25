@@ -690,6 +690,9 @@ class TestTheMisses:
         awaiting = _insert_run(w, _fresh(w), status="awaiting", idle_s=10 * 3600)
         queued = _insert_run(w, _fresh(w), status="created", idle_s=10 * 3600)
         fresh_answer = _insert_run(w, _fresh(w), idle_s=3600, answer_waits=True)
+        # The one text of the rule reads none of them. The first-miss insert
+        # checks `in_progress` again, so this read is its own fence.
+        assert await _stranded_rows(w) == []
         result = await _sweep_org(w)
         assert (result.nudged, result.recovered) == (0, 0)
         for rid in (live, awaiting, queued, fresh_answer):
@@ -704,6 +707,7 @@ class TestTheMisses:
             c.execute(text("UPDATE agent_connection SET revoked_at = now()"
                            " WHERE id = CAST(:i AS uuid)"), {"i": dead})
         rid = _insert_run(w, _fresh(w), idle_s=600, connection=dead)
+        assert [str(r.id) for r in await _stranded_rows(w)] == [rid]
         result = await _sweep_org(w)
         assert result.nudged == 1
         assert _strands(w, rid)[0].reason == "agent_quiet"
