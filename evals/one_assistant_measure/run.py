@@ -424,15 +424,45 @@ def _write(out: Path, data: dict[str, Any]) -> None:
     out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def router_up(base: str, timeout: float = 3.0) -> bool:
+    """True when the Router's port accepts a connection. It costs nothing.
+
+    The live run reaches the Router through an SSH tunnel. On 2026-10-25 the
+    tunnel dropped during a chat, and that chat hung far past its turn
+    timeout. So the run checks the port before each chat, and drops a chat
+    that the Router left during it (:func:`run_live`).
+    """
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base)
+    try:
+        with socket.create_connection((parts.hostname or "127.0.0.1", parts.port or 80),
+                                      timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _lost_the_router(rows: list[dict[str, Any]]) -> bool:
+    """True when a turn of the chat failed to reach the Router."""
+    words = ("Connection error", "ConnectError", "connection attempts failed")
+    return any(any(w in str(r.get("error") or "") for w in words) for r in rows)
+
+
 def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tuple[str, ...],
-             *, repeat: int, tier: str, budget: float, out: Path, timeout: float) -> dict[str, Any]:
+             *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
+             first_repeat: int = 1, spent_before: float = 0.0) -> dict[str, Any]:
+    """The live chats. *budget* caps the spend, counted from *spent_before*,
+    so a run in chunks keeps one cap. A chat that lost the Router is dropped,
+    and the run stops."""
     data: dict[str, Any] = {
         "date": datetime.now(UTC).date().isoformat(), "sha": _sha(), "tier": tier,
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
         "repeat": repeat, "budget_usd": budget, "rate_card": RATE_CARD["usd_per_1m"],
-        "rows": [], "stopped": None,
+        "rows": [], "stopped": None, "dropped": [], "spent_before_usd": spent_before,
     }
-    spent = 0.0
+    spent = spent_before
 
     def on_turn(row: dict[str, Any]) -> None:
         nonlocal spent
@@ -447,19 +477,48 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         if bad:
             print(f"      fails {bad}: {row['answer'][:240]!r}", flush=True)
 
-    for rep in range(1, repeat + 1):
+    def stop(why: str) -> dict[str, Any]:
+        data["stopped"] = why
+        data["spent_usd"] = round(spent, 4)
+        print(why, flush=True)
+        _write(out, data)
+        return data
+
+    for rep in range(first_repeat, first_repeat + repeat):
         for i, sc in enumerate(scenarios):
             order = arms if (rep + i) % 2 else tuple(reversed(arms))
             for arm in order:
                 if spent >= budget:
-                    data["stopped"] = f"the budget: USD {spent:.3f} spent before {sc.id} {arm} r{rep}"
-                    print(data["stopped"], flush=True)
-                    _write(out, data)
-                    return data
-                data["rows"] += run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
-                                         repeat=rep, on_turn=on_turn)
+                    return stop(f"the budget: USD {spent:.3f} spent before {sc.id} {arm} r{rep}")
+                if not router_up(router[0]):
+                    return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
+                rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
+                                repeat=rep, on_turn=on_turn)
+                if _lost_the_router(rows) or not router_up(router[0]):
+                    data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
+                                            "usd": round(sum(turn_totals(r)["cost_usd"]
+                                                             for r in rows), 4)})
+                    return stop(f"the Router went away during {sc.id} {arm} r{rep}: "
+                                "the chat is dropped")
+                data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
                 _write(out, data)
+    data["spent_usd"] = round(spent, 4)
+    _write(out, data)
+    return data
+
+
+def merge(paths: list[Path], out: Path) -> dict[str, Any]:
+    """One results file from the files of several chunks of one live run."""
+    parts = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
+    data = {k: v for k, v in parts[0].items() if k not in ("rows", "summary", "stopped")}
+    data["rows"] = [r for p in parts for r in p["rows"]]
+    data["dropped"] = [d for p in parts for d in p.get("dropped") or []]
+    data["stopped"] = [p["stopped"] for p in parts if p.get("stopped")]
+    data["chunks"] = len(parts)
+    data["spent_usd"] = max(float(p.get("spent_usd") or 0.0) for p in parts)
+    data["repeat"] = max((r["repeat"] for r in data["rows"]), default=0)
+    _write(out, data)
     return data
 
 
@@ -488,9 +547,14 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--scripted", action="store_true", help="no model, no network (CI)")
     mode.add_argument("--live", action="store_true", help="the real model, through the Router")
     mode.add_argument("--report", action="store_true", help="print the tables of --out")
+    mode.add_argument("--merge", default="", help="a comma list of chunk files, into --out")
     parser.add_argument("--arms", default=",".join(ARMS))
     parser.add_argument("--scenarios", default="", help="a comma list of scenario ids")
     parser.add_argument("--repeat", type=int, default=2)
+    parser.add_argument("--first-repeat", type=int, default=1,
+                        help="live: the number of the first repeat, for a run in chunks")
+    parser.add_argument("--spent-before", type=float, default=0.0,
+                        help="live: USD that earlier chunks spent, counted against the budget")
     parser.add_argument("--tier", default="tier-balanced", help="the orchestrator's tier")
     parser.add_argument("--budget-usd", type=float, default=5.0)
     parser.add_argument("--timeout", type=float, default=300.0, help="live: seconds a turn")
@@ -508,6 +572,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.report:
         print(report(json.loads(out.read_text(encoding="utf-8"))))
+        return EXIT_PASS
+    if args.merge:
+        data = merge([Path(p) for p in args.merge.split(",") if p.strip()], out)
+        print(report(data))
         return EXIT_PASS
     if args.scripted:
         rows, problems = run_scripted(scenarios, arms)
@@ -528,7 +596,8 @@ def main(argv: list[str] | None = None) -> int:
     if not ok:
         return EXIT_NO_GO
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
-                    budget=args.budget_usd, out=out, timeout=args.timeout)
+                    budget=args.budget_usd, out=out, timeout=args.timeout,
+                    first_repeat=args.first_repeat, spent_before=args.spent_before)
     print(report(data))
     print(f"results: {out}")
     return EXIT_PASS
