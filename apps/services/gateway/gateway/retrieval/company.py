@@ -257,6 +257,9 @@ async def company_search(
     # A plain default: FastAPI checks nothing on it, so with the flag off no
     # value is refused, and a direct call that leaves it out gets None.
     after: str | None = None,
+    # KB-AI-4. A plain default, read only with the flag on, as `after`. Set,
+    # Knowledge answers pages with an owner and a review date in the future.
+    verified: bool = False,
     # KB-9a. FastAPI gives the route's own tasks, never a request value. A
     # direct call that leaves it out gets None and records no gap.
     background: BackgroundTasks = None,  # type: ignore[assignment]
@@ -279,6 +282,9 @@ async def company_search(
     # Off, `after` is not read at all, as before CX-1.
     since = _after(after) if recency else None
     options: dict[str, Any] = {"after": since, "reviewed": True} if recency else {}
+    only_verified = bool(recency and verified)
+    if only_verified:
+        options["verified_only"] = True
 
     found: dict[str, list[Hit]] = {}
     skipped: list[str] = []
@@ -324,7 +330,8 @@ async def company_search(
             hits = [h for h in hits if _kept(h, since)]
         found[key] = list(hits)[:per_app]
 
-    _note_gap(background, user, words, knowledge_hits)
+    # A filtered search that finds nothing says nothing about a gap (KB-AI-4).
+    _note_gap(background, user, words, None if only_verified else knowledge_hits)
 
     if not recency:
         return {

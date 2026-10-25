@@ -411,7 +411,7 @@ class TestTheRouteTakesNoTenant:
         # org and no member. KB-9a added `background`, the route's own
         # BackgroundTasks, which FastAPI fills and no request can set.
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "after", "user", "background"}
+        assert set(params) == {"q", "apps", "k", "after", "verified", "user", "background"}
         assert params["user"].default.dependency is get_current_user
         assert params["background"].annotation in (BackgroundTasks, "BackgroundTasks")
 

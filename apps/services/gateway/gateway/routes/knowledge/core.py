@@ -97,6 +97,20 @@ ME_PURPOSE = "Your private drafts. Only you can see them."
 #: The days from a publish to the review date (§4.2).
 REVIEW_DAYS = 180
 
+#: The days without an edit after which a published page reads as stale
+#: (KB-AI-4). The maintenance list uses it.
+STALE_DAYS = 365
+
+
+def VERIFIED_SQL(alias: str) -> str:
+    """The one test of a verified page (KB-AI-4), on the page alias *alias*.
+
+    A page is verified when it has an owner AND a review date in the future.
+    A page with no review date is not verified. Search and the list share
+    this text, so the two cannot drift. *alias* is code, never input.
+    """
+    return f"{alias}.owner_email IS NOT NULL AND {alias}.review_at > now()"
+
 #: The highest version number. ``kb_page_versions.version`` is int4, so a
 #: route refuses a bigger number with 422 before it reaches the driver.
 MAX_VERSION = 2_147_483_647
@@ -107,7 +121,7 @@ PAGE_COLUMNS = (
     "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
     "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
     "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from, "
-    "p.archived_from_state, p.icon"
+    "p.archived_from_state, p.icon, p.owner_email, p.review_every_days"
 )
 
 #: The space columns that each space read returns.
@@ -507,6 +521,8 @@ def page_dict(
         "author_email": row.author_email,
         "reviewers": list(row.reviewers or []),
         "review_at": _iso(row.review_at),
+        "owner_email": getattr(row, "owner_email", None),
+        "review_every_days": getattr(row, "review_every_days", None),
         "source_ref": row.source_ref,
         "published_at": _iso(row.published_at),
         "archived_at": _iso(row.archived_at),
@@ -753,6 +769,14 @@ def clean_reviewers(values: list[str] | None) -> list[str]:
             status_code=422, detail=f"A draft names at most {MAX_REVIEWERS} reviewers.",
         )
     return out
+
+
+def clean_owner(raw: str) -> str:
+    """The owner address of a page, folded. ValueError on a value that is no address."""
+    value = (raw or "").strip().lower()
+    if not _EMAIL.match(value):
+        raise ValueError("An owner must be an email address.")
+    return value
 
 
 def can_write_page(level: str | None) -> bool:
