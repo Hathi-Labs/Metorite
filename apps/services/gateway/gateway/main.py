@@ -479,6 +479,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.email_send_later_loop_skipped", error=str(exc))
 
+    # Start the reminder loop (gateway/reminders/loop.py; spec
+    # calendar_events_reminders.md §5.4, WS-66 RM-2). Every 60 s it fires the
+    # reminders that are due, checks back, and reschedules. Dark by default:
+    # with CALENDAR_REMINDERS off it starts no task. Fence:
+    # test_reminder_loop.py.
+    try:
+        from gateway.reminders.loop import start_reminder_loop
+        _log.info("gateway.reminder_loop", started=await start_reminder_loop())
+    except Exception as exc:
+        _log.warning("gateway.reminder_loop_skipped", error=str(exc))
+
     # Start the Knowledge embed sweep (gateway/kb_index/sweep.py; spec
     # knowledge_base.md §6.4, WS-61 KB-3c). Every 120 s it embeds the chunks
     # that have no vector, for each org on KNOWLEDGE_EMBED. The kill switch
@@ -611,6 +622,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.email.automation.send_later import stop_send_later_loop
         await stop_send_later_loop()
+    except Exception:
+        pass
+
+    # Stop the reminder loop and wait for a tick in progress.
+    try:
+        from gateway.reminders.loop import stop_reminder_loop
+        await stop_reminder_loop()
     except Exception:
         pass
 

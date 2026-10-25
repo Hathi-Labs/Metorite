@@ -875,7 +875,7 @@ _EDGE_SQL = (
 
 async def my_open_cards(
     user: Any, *, now: datetime, limit: int,
-) -> tuple[list[Any], datetime | None]:
+) -> tuple[list[dict[str, Any]], datetime | None]:
     """My reminders that make a My Day card, and the next edge (RM-2).
 
     The rows are the ``due`` and ``unconfirmed`` ones, oldest ``fire_at``
@@ -890,4 +890,4 @@ async def my_open_cards(
             "me": me, "steps": list(CARD_STEPS), "limit": limit,
         })).fetchall()
         edge = (await db.execute(text(_EDGE_SQL), {"me": me, "now": now})).scalar()
-    return list(rows), edge
+    return [dict(r._mapping) for r in rows], edge

@@ -91,6 +91,12 @@ BASE: dict[str, int] = {
     # not answer, for a manager of Knowledge. A thing to know, below every
     # other kind.
     "kb_gap": 20,
+    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
+    # reminder. Each one is alone on its entity, so the base orders it
+    # against other cards only. A fired reminder also carries `urgent_at`.
+    "reminder_due": 31,
+    "reminder_check": 29,
+    "reminder_unconfirmed": 21,
 }
 
 #: The urgency terms (§7).
@@ -210,8 +216,11 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "now" if due is not None and due - now <= SOON else "needs_you"
     if kind == "notification":
         return "needs_you" if facts.get("notification") in ASKING_NOTIFICATIONS else "fyi"
-    if kind == "block_soon":
+    if kind in ("block_soon", "reminder_due"):
         return "now"
+    if kind in ("reminder_check", "reminder_unconfirmed"):
+        # WS-66 RM-2: each one asks the member for an answer.
+        return "needs_you"
     if kind == "block_overlap":
         return "now" if _is_day(facts.get("overlap_day"), today) else "needs_you"
     if kind == "day_overbooked":

@@ -57,6 +57,13 @@ REACH_CLASS: dict[str, str] = {
     # WS-61 KB-9a (knowledge_base.md §9): a question that Knowledge could not
     # answer. A thing to know for a manager, so it goes in the brief.
     "kb_gap": "brief",
+    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
+    # reminders stay in My Day for now. Reach sends only on WhatsApp, and
+    # D114.7 keeps reminders off WhatsApp. RE-9 raises them to `urgent`,
+    # `interrupt` and `brief` on web push, with the D114.3 budget exception.
+    "reminder_due": "none",
+    "reminder_check": "none",
+    "reminder_unconfirmed": "none",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).

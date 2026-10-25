@@ -1068,6 +1068,79 @@ register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, need
                   gated=True, permission="knowledge:manage"))
 
 
+# ── Reminders (WS-66 RM-2, calendar_events_reminders.md §5.6, feed only, gated) ─
+#
+# One card for each of my reminders that fired and is still open, computed on
+# read from the row. No card is stored. It keys on `reminders:<id>`, so the
+# card changes its kind in place: `reminder_due` after the fire,
+# `reminder_check` after the check-back, `reminder_unconfirmed` after the
+# loop gave up. A `scheduled` row has no card: it has not fired, or the loop
+# moved it to a new slot. The app is the Calendar. `reminders.my_open_cards`
+# opens ONE tenant session, and this file opens none. With CALENDAR_REMINDERS
+# off the source is absent before any read. The act is a link to the one URL
+# of §5.7, which RM-4 makes the chat read. The acts in place of §5.6 wait for
+# the client (D101). Fence: `tests/unit/test_reminder_loop.py`.
+
+#: The kinds of the source (§5.6).
+REMINDER_KINDS = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
+
+
+def reminder_href(reminder_id: str) -> str:
+    """The one link of every reminder surface (§5.7 item 1)."""
+    return f"/chat?reminder={quote(reminder_id, safe='')}"
+
+
+def _reminder_kind(row: dict[str, Any]) -> str:
+    """The card kind of one row: its state, then its last ladder step."""
+    if row.get("state") == "unconfirmed":
+        return "reminder_unconfirmed"
+    if row.get("step") == "check_back":
+        return "reminder_check"
+    return "reminder_due"
+
+
+def _reminder_signal(row: dict[str, Any]) -> Signal:
+    """One reminder card. The facts are times and counts only. The title is
+    the member's own line of text."""
+    rid = str(row["id"])
+    kind = _reminder_kind(row)
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    fire_at = _iso(row.get("fire_at"))
+    href = reminder_href(rid)
+    return Signal(
+        signal_id=f"reminders:{rid}", app="calendar", kind=kind,
+        entity={"type": "reminder", "id": rid, "label": title}, title=title,
+        # `waiting_since` is the instant of the last step, so a dismissed
+        # card comes back at the check-back and after a new fire (§6.8 item 1).
+        facts={"fire_at": fire_at,
+               "waiting_since": _iso(row.get("step_at")) or fire_at,
+               "cycles": int(row.get("cycles") or 0),
+               "notice": row.get("kind") == "notice"},
+        href=href, acts=(link("open-reminder", "Open", href),),
+        at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
+    )
+
+
+async def _reminders(user: UserContext) -> Found:
+    from gateway.routes.projects.reminders import my_open_cards, reminders_enabled
+
+    if not reminders_enabled():
+        raise needs.SourceAbsent("CALENDAR_REMINDERS is off")
+    rows, edge = await my_open_cards(user, now=needs._now(), limit=PER_APP + 1)
+    signals = [_reminder_signal(r) for r in rows]
+    # The next fire or step of the loop is when the card set changes next,
+    # so the read cache keeps the answer until then (§8.4 item 2).
+    return Found([], 0, capped=len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
+
+
+# The gate: `feature:projects`, the gate of the reminder routes. Gated, so it
+# runs only while MY_DAY_PROVIDERS lists `reminders` (§5.8 item 1), and with
+# no Handled read. The cards are the Calendar's.
+register(Provider("reminders", ("projects",), _reminders, REMINDER_KINDS, needs=False,
+                  gated=True, app="calendar"))
+
+
 # ── The templates (§4.2): code writes every why line ────────────────────────
 
 
@@ -1176,6 +1249,8 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
     if kind == "no_plan_yet":
         return "no_plan", (f"Your day started at {_clock(facts.get('day_start'), tz)}, "
                            "and nothing is on the calendar.")
+    if kind in REMINDER_KINDS:
+        return _reminder_line(kind, facts, tz, today)
     return _md3_why(kind, facts, tz, today)
 
 
@@ -1313,6 +1388,23 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
                         "The run waits for your answer.")
     raise KeyError(kind)
+
+
+def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
+                   today: date) -> tuple[str, str]:
+    """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
+    template over the time: no guilt and no "you missed". A check-back after
+    a move uses other words than the first one."""
+    at = facts.get("fire_at")
+    when = f"{_clock(at, tz)} {_when(at, tz, today)}".strip()
+    if kind == "reminder_unconfirmed":
+        return "reminder_stopped", ("I stopped checking on this. Make it a task, "
+                                    "pick a time, or drop it?")
+    if kind == "reminder_check":
+        if int(facts.get("cycles") or 0) > 0:
+            return "reminder_moved", f"It is still open after the move to {when}. Is it done?"
+        return "reminder_check", f"Is it done? It was set for {when}."
+    return "reminder_set", f"Reminder for {when}."
 
 
 def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
