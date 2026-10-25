@@ -2,8 +2,12 @@
 
 <!-- ste-tier: strict -->
 
-- **Status:** PROPOSED, 2026-10-15. No decision taken. Nothing built.
-- **Board row:** none yet. CE-0 asks the owner to mint one.
+- **Status:** PROPOSED, 2026-10-15, for events (§3, §4, §8). **Reminders
+  (§5) are DECIDED, 2026-10-25 (D113), and not built.** Verified against
+  code on 2026-10-25 (`origin/main` `894ddad27`): no `reminders` table, no
+  `remind_at`, no service worker, and no push code exists.
+- **Board row:** **WS-66** for reminders and web push. Events still wait on
+  CE-0 for a row.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
   tasks. Add events, meetings and reminders, and fit them into the app.
 - **Reads:** D12, D49, D52, D53, D54, D89, D96, D99, D101, D102, D103.
@@ -17,14 +21,17 @@
 Add one new table, `calendar_entries`, for time that is not a to-do. It
 holds events, meetings and read-only copies of Google and Outlook events.
 Tasks stay the one to-do store, and a task block stays on `pm_task_personal`.
-The Calendar then reads one list from two sources. A reminder is a time on a
-row that exists, so it adds no store. Every reminder reaches the member only
-as a My Day card with a reach class, so Reach (D103) stays the one way out.
+The Calendar then reads one list from two sources.
+
+**A reminder has its own private store, `reminders` (D113).** It is a nudge,
+not work, so it stays out of the task store. "Make it a task" promotes one
+when it is work. Every reminder reaches the member only as a My Day card with
+a reach class, so Reach (D103) stays the one way out. A reminder stays open
+until the member closes it, and a tap on it opens the chat (§5).
 
 The new table amends D54.5, and a meeting with colleagues amends D54.4. Both
-are the owner's call in CE-0. Four tickets need no decision change and can
-start now: CE-1 (lead time), CE-2 (reminders on tasks), CE-3 (the composer)
-and CE-7a (the reminder tool).
+are the owner's call in CE-0. CE-1 (lead time) and CE-3 (the composer) need
+no decision change and can start now. WS-66 (§10.1) replaces CE-2 and CE-7a.
 
 ## 1. What exists today (measured 2026-10-15)
 
@@ -53,7 +60,7 @@ It is the same design, so it is not a second seam.
 |---|---|---|---|
 | **Task block** | Time that a member gives to a task | Yes. Check it off | `pm_task_personal` (exists) |
 | **Event** | A time with no to-do: a meeting, a call, a visit, a holiday, an all-day entry | No | `calendar_entries` (new) |
-| **Reminder** | A moment when the member wants to hear about something | Only when it is on a task | A column on a row that exists |
+| **Reminder** | A moment when the member wants to hear about something | No. It may point at a task | `reminders` (new, D113) |
 
 **An event** may have attendees, a location, a call link and a repeat rule.
 It may link to a task, a CRM deal, a CRM contact or a Notes meeting. A link
@@ -62,13 +69,18 @@ ends.
 
 **A reminder** has three forms:
 
-1. **On a task.** "Remind me about this on Friday at 9." It is `remind_at`
-   on my overlay of the task.
+1. **On an object.** "Remind me about this on Friday at 9." It is a
+   `reminders` row that points at one object. The object is a task, an
+   email thread, a contact, a WhatsApp chat or a project.
 2. **On an event, as a lead time.** "Tell me 10 minutes before." It is
-   `lead_minutes` on my attendee row of the event.
-3. **Standalone.** "Remind me at 5 to call Ravi." It is a private task in my
-   personal project, with a `remind_at` and no block. So "remind me" stays in
-   the one task store (D53).
+   `lead_minutes` on my attendee row of the event. A lead time is not a
+   `reminders` row, because it moves with the event.
+3. **Standalone.** "Remind me at 5 to call Ravi." It is a `reminders` row
+   with no link.
+
+⚠️ **D113 changed forms 1 and 3 on 2026-10-25, before either was built.**
+They were `pm_task_personal.remind_at` and a private task. The owner chose an
+own store, because a reminder is not work.
 
 ## 3. Where the data lives
 
@@ -182,61 +194,282 @@ The event sheet offers **Prepare notes**, which makes or opens the linked
 on-demand join that exists. Auto-join stays deferred and needs consent
 (Note Taker D10). This spec does not change that.
 
-## 5. Reminders
+## 5. Reminders (D113, decided 2026-10-25)
 
-### 5.1 The data
+**Board: WS-66.** This section owns the reminder store, its states, the
+loop that fires and checks back, the smart reschedule, the open-in-chat flow
+and the reminder tools. It does not own the push transport
+(`chat_run_continuity.md` §S7), the cards (`my_day_feed.md`) or delivery
+(`proactive_reach.md`). §5.10 says what each of those docs gains.
 
-| Reminder | Column | Default |
+### 5.0 The research record (2026-10-25)
+
+The owner asked for product research first. These findings set the design.
+
+| Finding | Source products | What we take |
 |---|---|---|
-| On a task | `pm_task_personal.remind_at` TIMESTAMPTZ | NULL |
-| Before a task block | `pm_task_personal.lead_minutes` INT | NULL reads `user_settings.block_lead_minutes`, which reads 30 when NULL |
-| Before an event | `calendar_entry_attendees.lead_minutes` INT | NULL reads `user_settings.event_lead_minutes`, which reads 10 when NULL |
-| Standalone | A private task in my personal project with `remind_at` | — |
+| **No assistant checks back and reschedules.** ChatGPT Tasks, Gemini, Siri and Google Tasks fire once and forget | ChatGPT Tasks, Gemini Scheduled Actions, Apple Reminders | The loop of §5.4 is the gap in the market |
+| **Nag apps repeat on a fixed timer**, from every minute to every hour, and never reschedule with judgement | Due, TickTick, Alexa follow-up reminders, Medisafe | Reschedule, do not repeat. Stop after a known limit |
+| **Volume kills response.** Acceptance fell about 30% with each extra reminder in one clinical encounter | BMC Med Inform, PMC5387195 | One check-back a day. Batch the rest into the brief |
+| **Give up openly.** Due stops after 5 repeats. Alexa never stops. Duolingo's give-up message reads as a guilt trip | Due, Alexa, Duolingo | A neutral "I stopped checking" with three exits |
+| **A reminder in a task store loses its shape.** Google moved Assistant reminders into Google Tasks and lost the time of day and the location triggers | Google Tasks | An own store (D113.1) |
+| **When, deadline and reminder are three fields.** Apps that blur them confuse users | Things 3, Planify | A reminder is not a due date and not a block |
+| **A reminder stored in a chat thread breaks with the thread**, and a regenerated reply duplicates it | ChatGPT Tasks | The row lives in `reminders`. The chat only points at it |
+| **Time zones break reminders.** Slack keeps the old zone after travel. Teams ignores working hours | Slack, Microsoft Teams | Store UTC and the zone. Fire in the member's current zone. Respect quiet hours |
+| **Conditional follow-ups that cancel themselves** exist only for email | Superhuman, Boomerang | RM-7, across email, WhatsApp, the CRM and tasks |
+| **Fake confirmation.** Early Gemini said "done" and saved nothing | Gemini | The reply quotes the saved row: its time and its zone |
 
-**The fixed 30 minutes goes.** `SOON` in `routes/shell/feed.py` becomes the
-lead time of each block. With the default of 30, nothing changes for a
-member who sets nothing.
+### 5.1 What a reminder is
 
-### 5.2 The delivery
+A reminder is a private nudge to one member. It has a time, one line of
+text, a kind, and an optional link to one object. It holds no work of its
+own.
 
-A reminder sends nothing. It makes a My Day card, and Reach plans the
-card like any other (D103.1). The member sees it in three places:
+- **Kind `action`.** "Get a haircut", "call the bank". It needs the member to
+  confirm. The model picks the kind from the verb. The member can change it.
+- **Kind `notice`.** "The office closes early today", "Priya's birthday". It
+  closes when the member opens it.
+- **The link.** `subject_kind` is `task`, `email_thread`, `crm_contact`,
+  `wa_chat` or `project`, with `subject_id`. A link is a pointer. It copies
+  nothing from the object, and the object's own visibility still binds when
+  the chat reads it.
+- **Private.** Only the member who owns it reads or writes it. A colleague
+  on a linked task never sees it. An admin does not see it either.
 
-1. **In the app:** the feed card and the bell count. The shell owns the bell
-   (D89).
-2. **On WhatsApp:** Reach sends it, under the link, opt-in and STOP rules.
-3. **By web push,** when RE-9 lands.
+### 5.2 The tables
 
-| Card kind | When | Reach class | Ticket |
+Take the migration number at build time and check it again at merge (R1).
+Both tables are tenant-scoped under FORCE ROW LEVEL SECURITY at the
+`get_db()` seam, and `organization_id` defaults to `app.tenant_id` (R5).
+Every column is nullable or has a default (R6).
+
+`reminders`
+
+| Column | Meaning |
+|---|---|
+| `id`, `organization_id`, `member_email` | The row, the tenant and the owner |
+| `title`, `notes` | The text. `title` is at most 200 characters |
+| `kind` | `action` or `notice`. Default `action` |
+| `subject_kind`, `subject_id` | The optional link of §5.1 |
+| `fire_at` | TIMESTAMPTZ. The next time the reminder fires |
+| `tz` | The IANA zone that the member was in when the time was set |
+| `state` | §5.3. A CHECK holds the list. Default `scheduled` |
+| `next_check_at` | TIMESTAMPTZ. When the loop next looks at a `due` row |
+| `first_fired_at` | The first fire. The 72-hour limit counts from it |
+| `cycles`, `snoozes` | Counts. A reschedule that Metorite makes adds to `cycles`. A snooze that the member asks for adds to `snoozes` |
+| `estimate_minutes` | The model's guess of how long the act takes. It sizes the grace of §5.4 |
+| `important` | Default false. True gives the tighter ladder of §5.4 |
+| `resolution` | `done`, `dropped`, `evidence`, `promoted` or `gave_up` |
+| `resolved_at`, `promoted_task_id` | The end, and the task that a promotion made |
+| `source` | `chat`, `app`, `whatsapp` or `api` |
+| `source_session_id` | The chat session that made it, for the open-in-chat flow. The reminder does not depend on it |
+| `created_at`, `updated_at` | Times |
+
+`reminder_events` is the ledger. One row for each change and each delivery.
+
+| Column | Meaning |
+|---|---|
+| `id`, `organization_id`, `reminder_id` | The row, the tenant, the reminder |
+| `at` | TIMESTAMPTZ, default `now()` |
+| `event` | `created`, `fired`, `check_back`, `briefed`, `rescheduled`, `snoozed`, `opened`, `done`, `dropped`, `promoted`, `gave_up`, `evidence`, `delivered` or `failed` |
+| `channel` | `feed`, `push`, `chat` or `whatsapp`, for a delivery |
+| `detail` | JSONB. For example the old and the new `fire_at` |
+
+Index `reminders (organization_id, state, fire_at)` and
+`reminders (organization_id, state, next_check_at)` for the loop, and
+`reminders (organization_id, member_email, state)` for the lists.
+
+### 5.3 The states
+
+```
+scheduled ──fire──▶ due ──answer──▶ done | dropped | promoted
+    ▲                │
+    │                ├─check back (once)─▶ due (next_check_at = the brief)
+    └──reschedule────┤
+                     └─limit reached───▶ unconfirmed ──answer──▶ done | dropped | promoted | scheduled
+```
+
+| State | Meaning | Open? |
+|---|---|---|
+| `scheduled` | Waits for `fire_at` | Yes |
+| `due` | Fired, and waits for the member | Yes |
+| `unconfirmed` | Metorite stopped chasing it. It shows in the Unconfirmed list | Yes |
+| `done`, `dropped` | The member closed it, or evidence did (`resolution` says which) | No |
+| `cancelled` | The condition of a conditional reminder cleared (RM-7) | No |
+
+A `notice` reminder goes from `due` to `done` when the member opens it. Every
+change writes one `reminder_events` row in the same transaction.
+
+### 5.4 The loop: fire, check back, reschedule, give up
+
+**The worker.** Copy `routes/email/automation/send_later.py`. It has a
+60-second tick and the one tenant-discovery read for the orgs. Then it opens
+`tenant_session(org)` for each org and claims with `FOR UPDATE SKIP LOCKED`.
+Do not copy the
+workflows scheduler, which is still on the unbound `get_db()`. The loop
+claims two sets of rows:
+
+- `state = 'scheduled' AND fire_at <= now()`: fire.
+- `state = 'due' AND next_check_at <= now()`: the next step of the ladder.
+
+**The ladder for an `action` reminder.**
+
+| Step | When | What the member gets | Reach class |
 |---|---|---|---|
-| `block_soon` | A block starts within its lead time | `interrupt` (exists) | CE-1 |
-| `reminder_due` | The `remind_at` of an open task is now | `urgent`, as the member's own rule | CE-2 |
-| `event_soon` | An event I attend starts within its lead time | `interrupt` | CE-6 |
-| `event_invite` | A colleague adds me to an event | `brief` | CE-9 |
-| `meeting_overlap` | MD-11's kind | MD-11 sets it | CE-10 |
+| 1. Fire | `fire_at`, the time the member asked for | The card `reminder_due`: "Get a haircut · 15:00" | `urgent` (D113.3) |
+| 2. Check back | `fire_at` plus the grace | The card turns to `reminder_check`: "Did you get the haircut?" | `interrupt` |
+| 3. The brief | The next `day_start_hour` | One line in the morning brief, under "Still open from yesterday" | `brief` |
+| 4. Reschedule | Right after the brief, when the member did not answer | Metorite picks a slot (§5.5), sets `fire_at`, adds 1 to `cycles`, and says so in the brief line: "Moved to Sat 10:00" | — |
+| 5. Give up | `cycles` reaches 2, or 72 hours pass after `first_fired_at` | State `unconfirmed`. One brief line: "I stopped checking on 'haircut'. Make it a task, pick a time, or drop it?" Then nothing more | `brief` |
 
-`event_soon` takes the place of the illustrative `meeting_starts_soon` of
-`proactive_reach.md` §4.3. Each kind enters `REACH_CLASS` in the same PR
-that adds it (Reach W2).
+**The defaults.**
 
-### 5.3 Quiet hours and the budget
+| Parameter | Default | Why |
+|---|---|---|
+| Grace before the check-back | `estimate_minutes` plus 30 minutes, kept between 30 minutes and 3 hours. 60 minutes when there is no estimate | A check-back before the act can end reads as nagging. Habitify checks at +30 minutes, Medisafe at +1 hour |
+| Check-backs in one day | 1 for each reminder. No second ping that day | The clinical data on volume |
+| Quiet hours | 21:00 to `day_start_hour`, in the member's current zone | Steps 2 to 5 never land there. A step that would land there waits for the brief |
+| Weekends | A check-back on a reminder linked to work waits for the next workday. A personal one does not | Work and personal time |
+| The member's snoozes | They do not count toward the limit. After 3 snoozes, the chat offers "Make it a task, or drop it?" once | The member is engaged, but the item keeps moving |
+| `important` | Check back after 15 minutes, then every hour, at most 4 times, inside the cap | For the few items that need it |
+| Escalating to another person | Off. Not in WS-66 | It reaches a real person (CLAUDE.md §3a rule 3) |
 
-A reminder at a time is the member's own rule. D103.3 lets only the member's
-own rule break quiet hours. So `reminder_due` has class `urgent`.
+A `notice` reminder has step 1 only.
 
-D103.3 also allows 1 urgent message each day. A member who sets 4 reminders
-for one day loses 3 of them to the feed. The owner must decide whether a
-member's reminder is outside the budget (Q3). That amends D103.3 and
-D-RE-3. Until the owner answers, CE-2 keeps the budget as it is. A reminder
-that does not fit shows in the feed and the bell only.
+**The member's answer, at any step.** Done ends the reminder. Drop ends it.
+"Not yet" with no time reschedules it with §5.5 and says the new time.
 
-### 5.4 A request to WS-59
+"Later" or a named time snoozes it to that time. It adds 1 to `snoozes`.
+"Make it a task" makes a private task in the member's personal project. It
+sets `promoted_task_id` and ends the reminder as `promoted`.
 
-A reminder must go at its minute, not at the next member pass. The ask:
-the planner plans a card with a fixed time ahead, with `not_before` set to
-that time. The worker reads the task again at send time. A task done before
-the time sends nothing. `proactive_reach.md` owns the planner, so WS-59
-decides how.
+**Words.** The check-back names the thing and gives every exit in one line.
+Each try uses different words. No guilt, and no "you missed".
+
+### 5.5 The smart slot
+
+`reminders/slot.py` holds one function, `next_slot(member, reminder, now)`.
+It is code, with no model call, so a test can hold it. It picks, in order:
+
+1. A time that the member named.
+2. The same time of day on the next suitable day.
+3. The next free gap in the member's calendar that is long enough for
+   `estimate_minutes`. The read holds task blocks today, and busy events
+   after CE-4.
+
+It never returns a time in quiet hours. For a reminder linked to work, it
+keeps inside working hours and skips the weekend. For a personal reminder, it
+prefers time outside working hours. An errand never lands inside a block that
+the member pinned. The chat may propose another slot, and the member's answer
+wins.
+
+### 5.6 Delivery
+
+A reminder sends nothing itself (D103.1). The loop changes the row, and the
+row makes a card. Reach plans the card like any other.
+
+| Card kind | When | Reach class | Actions in place (D101) |
+|---|---|---|---|
+| `reminder_due` | Step 1 | `urgent`, outside the daily cap, at most 10 each day, may break quiet hours (D113.3) | Done · Later · Open |
+| `reminder_check` | Step 2 | `interrupt`, inside the cap, never in quiet hours. An overflow goes to the brief | Done · Not yet · Drop · Open |
+| `reminder_unconfirmed` | Step 5 | `brief` | Make it a task · Pick a time · Drop |
+
+- **The bell and the feed.** The shell bell counts the open reminder cards,
+  because it reads the one feed (`/api/shell/needs`).
+- **Web push.** Reach sends the card through RE-9 on the S7 transport. The
+  payload holds the title and the time (D113.4), unless the member turned on
+  "Hide details on the lock screen". Then it reads "Metorite: a reminder".
+  The `url` is `/chat?reminder=<id>`.
+- **On the minute.** A reminder must go at its minute, not at the next
+  member pass. Accept a push within 90 seconds of `fire_at`. RM-2 measures
+  Reach's pass rate and, if it is slower, adds the `not_before` of the old
+  ask to WS-59. `proactive_reach.md` owns how.
+- **Closed before it goes.** Reach reads the row again at send time. A
+  reminder that is done, dropped or moved sends nothing.
+
+### 5.7 A tap opens the chat
+
+The owner's words: "When I open the reminder on mobile, it should open the
+chat interface and remind me what the reminder is about. I then chat with the
+AI about what to do next."
+
+1. **One link for every surface.** The push, the bell card, the feed card
+   and the Calendar pin all open `/chat?reminder=<id>`. In the installed web
+   app on a phone, the chat opens full screen. On a desktop, the one
+   assistant opens in the top bar (D99).
+2. **Code builds the first message.** It makes no model call, so it is
+   instant and free. An example: "Reminder · Get a haircut · 15:00 today.
+   Did you do it?" It shows the linked object in one line. For a task, that
+   is the title and the status. For an email thread, it is the subject and
+   the last sender.
+3. **The chips.** Done · Not yet · Later · Drop · Make it a task. A chip
+   acts at once with Undo (D-CF-5), because each is a reversible write on the
+   member's own record. The chat says the result: "Moved to Sat 10:00".
+4. **A typed answer.** It goes to the model with a `reminder` context block.
+   The block holds the row and its ledger. It also holds a summary of the
+   linked object, when the member can read that object. The tools of §5.8 are in scope. The model can then help
+   with the act itself, for example draft the follow-up email. A draft that
+   sends still asks a confirm.
+5. **The open counts.** It writes an `opened` ledger row. A `notice`
+   reminder closes on open. An `action` reminder stays `due`.
+6. **No answer after the open.** The ladder of §5.4 goes on. An open is not
+   an answer.
+
+### 5.8 The chat tools
+
+The tools go into `skill_projects` beside `create_personal_task`, so
+`test_projects_chat_coverage.py` maps each one to its route.
+
+| Tool | Does | Confirm |
+|---|---|---|
+| `set_reminder` | Makes a reminder: `title`, `at` (ISO with an offset), `kind`, `subject`, `estimate_minutes`, `important` | None. It acts at once with Undo (D-CF-5) |
+| `list_reminders` | Lists my reminders by state and window | A read |
+| `resolve_reminder` | Done, drop, or promote to a task | None, with Undo |
+| `reschedule_reminder` | A named time, or `smart` for §5.5 | None, with Undo |
+
+- **Time.** The model gets the member's zone and the current time in its
+  context. The tool refuses a time with no offset. "Tomorrow morning" reads
+  `day_start_hour`. "Later today" reads 3 hours on, inside working hours.
+- **Answer first.** On an unclear time, the tool saves the best guess, and
+  the reply states it with one correction: "09:00 tomorrow, or did you mean
+  tonight?" (the CRM rule of answering first).
+- **The reply quotes the saved row.** It states the absolute time and the
+  zone, for example "Fri 31 Oct, 09:00 IST". It never says "done" for a row
+  that it did not save.
+- **"Remind me to…" in the command bar.** The `capture` job stops taking it.
+  A new `set-reminder` job opens the composer of §6.1 filled.
+
+### 5.9 Web push on iOS and Android
+
+The transport is S7's. WS-66 builds it as PN-1, because the reminders need
+it first. The rules here add to S7 and change only its item 4 (the events)
+and its item 5 (for reminder pushes, D113.4).
+
+- **iOS.** Push works only in a web app on the Home Screen, on iOS 16.4 or
+  later. In a Safari tab, Settings shows no toggle. It shows the three steps
+  to add Metorite to the Home Screen. The permission prompt shows only after
+  the member taps the toggle (S7 item 3). iOS shows no action buttons on a
+  web notification. So the tap that opens the chat is the one path.
+- **Android.** Push works in Chrome and in the installed app. A notification
+  may carry two actions, Done and Later, as a shortcut. The tap still opens
+  the chat.
+- **Desktop.** Chrome, Edge, Firefox and Safari, from the same toggle.
+- **The service worker.** One file, `public/sw.js`, registered at scope `/`.
+  On `push` it shows the notification with a `tag` of the reminder id, so a
+  check-back replaces the first notification and does not stack. On
+  `notificationclick` it focuses an open Metorite window and navigates it,
+  or opens a new one at the payload's `url`.
+- **Every notification.** Push is the channel for every card that Reach
+  delivers (RE-9), and for S7's two chat events. The member picks the main
+  channel in Settings → Notifications (RE-7).
+
+### 5.10 What the other docs gain
+
+| Doc | Gains |
+|---|---|
+| `chat_run_continuity.md` §S7 | A note: built under WS-66 PN-1. Item 4 grows to every Reach card. Item 5 has the reminder exception of D113.4 |
+| `proactive_reach.md` | `reminder_due`, `reminder_check` and `reminder_unconfirmed` in §4. The D113.3 exception in the budget. RE-9 points at PN-1 |
+| `my_day_feed.md` | The three card kinds |
 
 ## 6. UI and UX
 
@@ -258,7 +491,7 @@ from the `--cat-1…12` ramp, `src/lib/categorical.ts` and
 |---|---|---|
 | Task | Title, project, block, flexible, due date | My personal project, private. The block is the drawn range. Flexible on |
 | Event | Title, all day, start and end, repeat, people, location or call link, link to a task, deal or contact, lead time, busy, notes | The drawn range. Busy on. My event lead time |
-| Reminder | Title, time, task | The time is the start of the range. No task makes a new private task |
+| Reminder | Title, time, kind, link | The time is the start of the range. Kind `action`. No link makes a standalone reminder (§5.1) |
 
 **Smart defaults.**
 
@@ -277,7 +510,7 @@ from the `--cat-1…12` ramp, `src/lib/categorical.ts` and
 | Task block | Filled, with the `--cat-n` of its context, as today | Drag, resize, check off |
 | Event | Outlined. A border in the `--cat-n` of its link, or the accent. A surface fill. A people glyph when it has attendees | Drag and resize when I own it. Opens the event sheet |
 | External | Hatched. A stripe token on a muted surface, and the provider glyph. No handles | Read only. Opens the sheet with **Open in Google** or **Open in Outlook** |
-| Reminder | A pin. A 2 px line across the day column at its minute, and a bell glyph in the gutter. No height | Drag moves the time. A click opens the task |
+| Reminder | A pin. A 2 px line across the day column at its minute, and a bell glyph in the gutter. No height. A `due` reminder has the accent. An `unconfirmed` one is muted | Drag moves the time. A click opens the chat with the reminder (§5.7) |
 
 A tentative event has a dashed border. The grid mutes a declined event and
 strikes its title. The stripe token is new, so it goes into `src/app/globals.css`
@@ -308,13 +541,13 @@ accent, and beside the Tasks app (CLAUDE.md §4).
 ### 6.5 The other lenses
 
 - **An event never shows in Tasks or Projects.** It is not a task.
-- **A task with a `remind_at`** shows a bell glyph and the time. It shows in
-  Tasks, and on the Projects card for the member who set it. Only that
-  member sees it, because the column is on the overlay.
+- **A task that an open reminder points at** shows a bell glyph and the
+  time. It shows in Tasks, and on the Projects card for the member who set
+  it. Only that member sees it, because the reminder is private.
 - **A task that an event links to** shows a calendar glyph and the event
   time.
-- **A standalone reminder** is a private task, so Tasks lists it under my
-  personal project.
+- **A standalone reminder** is not a task, so Tasks and Projects do not list
+  it. The Calendar lists it, in the grid and in its Reminders panel (RM-5).
 
 ### 6.6 The command bar
 
@@ -340,7 +573,7 @@ One assistant (D99), and one tool for each act:
 |---|---|---|
 | `create_event` | Makes an event, with people and links | A web card. On WhatsApp, the WAC-4 buttons |
 | `update_event` | Moves, renames or changes the people of an event I own | Same |
-| `set_reminder` | Sets `remind_at` on a task, a lead time on an event, or makes a standalone reminder | Same |
+| `set_reminder` | Makes a `reminders` row (§5.8). A lead time on an event is `update_event` | §5.8: acts at once, with Undo |
 
 `create_personal_task` (with `block_start` and `block_end`) and
 `set_my_overlay` stay the tools for a task block. The new tools go into
@@ -415,7 +648,8 @@ Every flag is OFF by default. Off gives today's behaviour.
 | Flag | Where | Ticket | Off means |
 |---|---|---|---|
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
-| `CALENDAR_REMINDERS` | Gateway | CE-2, CE-7a | No `reminder_due` card |
+| `CALENDAR_REMINDERS` and `NEXT_PUBLIC_CALENDAR_REMINDERS` | Both | RM-1 to RM-5 | No reminder routes, no loop, no cards, no tools, no pins. `/version` reports a mismatch |
+| `WEB_PUSH_ENABLED` and `NEXT_PUBLIC_WEB_PUSH` | Both | PN-1, RE-9 | No service worker, no toggle, no push. 🔴 Owner flip for a real member in production |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` reports a mismatch, as for `TASKS_LENS` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
@@ -431,12 +665,12 @@ needs no decision change.
 |---|---|---|---|---|
 | **CE-0** The owner's decisions | 🔴 OWNER | Answer Q1 to Q10 of §11. Mint the board row. Record the amendments the owner accepts | `work_plan.md` §3 holds the decision | — |
 | **CE-1** Lead time on a task block | AGENT-SAFE. No change | `pm_task_personal.lead_minutes`. `user_settings.block_lead_minutes` and `event_lead_minutes`. `feed.py` reads the lead, not `SOON`. The block menu sets it | A lead of 10 gives `block_soon` 10 minutes before the start. No lead gives 30. The flag off gives 30 for every block | `tests/unit/test_calendar_lead_time.py` (R8, new) and `test_shell_feed.py` |
-| **CE-2** Reminders on tasks, and standalone | AGENT-SAFE. No change | `pm_task_personal.remind_at`. The kind `reminder_due`, with class `urgent` in `REACH_CLASS`. The bell glyph in Tasks and Projects. The pin on the grid. The ask of §5.4 | A `remind_at` of 17:00 gives a card at 17:00, not before. A done task gives none. Org B never sees a reminder of org A. A colleague on the same task never sees mine | `tests/unit/test_calendar_reminders.py` (R8, new, two orgs and two members) and `test_reach_plan.py` |
+| ~~**CE-2**~~ | **REPLACED by WS-66 (§10.1), D113** | — | — | — |
 | **CE-3** The composer and drag to draw | AGENT-SAFE. No change | The composer of §6.1 with Task and Reminder. Event shows only with `NEXT_PUBLIC_CALENDAR_EVENTS`. Drag to draw in `TimeGrid.tsx`. The **New at…** row in the Gap Filler | A drag from 14:00 to 15:00 makes a private task with that block in one save. Esc saves nothing. The keyboard alone can do it | `components/Composer.test.tsx` (new), the conformance suite, `src/lib/shell/seams.test.ts`, and a visual review |
 | **CE-4** The event store | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/calendar/entries`. The read of §3.4 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read | `tests/unit/test_calendar_entries_r8.py` (new) and `test_db_engine_seam.py` |
 | **CE-5** Events in the UI | AGENT-SAFE after CE-3, CE-4 | The Event kind, the looks of §6.2, the sheet of §6.3, the all-day row and Month of §6.4 | No event shows in Tasks or Projects. An all-day event keeps its date in every zone | Vitest for the composer, `MonthGrid` and the all-day row, and `themes.test.ts` |
 | **CE-6** Event lead time and conflicts | AGENT-SAFE after CE-1, CE-4 | `event_soon` with class `interrupt`. `block_overlap` reads busy entries | A lead of 10 gives `event_soon` 10 minutes before. A free entry gives no overlap | `test_calendar_lead_time.py` and `test_shell_feed_r8.py` |
-| **CE-7a** The reminder tool and job | AGENT-SAFE after CE-2. No change | `set_reminder` for a task and a standalone reminder. The `set-reminder` job. `ALLOWED_ACTS` | "Remind me at 5 to call Ravi" asks one confirm and makes one private task with `remind_at` 17:00 in my zone | `test_projects_chat_coverage.py`, `test_shell_intent.py`, `test_wac_writes.py` |
+| ~~**CE-7a**~~ | **REPLACED by RM-3 and RM-9 (§10.1), D113** | — | — | — |
 | **CE-7b** The event tools and job | AGENT-SAFE after CE-4 | `create_event`, `update_event`, `set_reminder` on an event. The `new-event` job | "Meet Sharath 8:30-10:30 tomorrow" opens a filled composer. The chat makes the event after one confirm | The three tests of CE-7a |
 | **CE-8** Repeat rules | AGENT-SAFE after CE-4 | `recurrence`, `series_id`, `original_start`, expanded in the window. "This event" or "all events" on a change | A weekly 09:00 event in `Asia/Kolkata` stays at 09:00 in that zone. A cancelled instance does not show | `tests/unit/test_calendar_recurrence.py` (new), with a zone that changes its clock |
 | **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee rows with `member_email`. The rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
@@ -444,8 +678,38 @@ needs no decision change.
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
 
-**The order.** CE-1, CE-2, CE-3 and CE-7a now, and CE-0 in parallel. Then
-CE-4, CE-5, CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11.
+**The order.** CE-1 and CE-3 now, and CE-0 in parallel. Then CE-4, CE-5,
+CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11.
+
+### 10.1 WS-66 — reminders and web push (D113)
+
+Every ticket is AGENT-SAFE and ships dark (§9). Turning a flag on for a real
+member in production is the owner's flip. Each R8 suite needs `pytestmark =
+_DB_GATE`, because `deploy.yml` has no ladder database.
+
+| Ticket | Order | Scope | Done when | Fence (R7) |
+|---|---|---|---|---|
+| **RM-0** The spec, D113 and the board row | First | This section, §5, D113, WS-66, INDEX | The spec-auditor gives GO for PN-1 and RM-1 | — |
+| **PN-1** The push platform (S7's transport) | Now, beside RM-1 | The VAPID pair through `scripts/secrets.sh`. The table `push_subscriptions` (S7 item 6). `GET /push/public-key`, `POST` and `DELETE /push/subscriptions`, `POST /push/test`. One sender module, with `pywebpush`, that deletes a subscription on 404 or 410. `public/sw.js` (§5.9). The toggle and the iOS steps in My Profile → Notifications. Sign-out deletes the device's row | A test push reaches an installed iPhone app and an Android Chrome. No prompt shows without a tap. Org B reads no subscription of org A. A 410 deletes the row | `tests/unit/test_push_subscriptions.py` (R8, two orgs) and `src/lib/push.test.ts` |
+| **RM-1** The store and the API | Now, beside PN-1 | The two tables of §5.2. `GET`, `POST`, `PATCH` on `/calendar/reminders`, and `POST /calendar/reminders/{id}/resolve` (done, drop, promote), `/snooze` and `/reschedule`. The ledger row in the same transaction. The Unconfirmed list read | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members) |
+| **RM-2** The loop and the smart slot | After RM-1 | §5.4 and §5.5. The three card kinds in `feed.py` and in `REACH_CLASS`. The D113.3 exception in the Reach budget | A reminder for 15:00 fires at 15:00, and its check-back comes at 16:00. No answer moves it to the brief, then to one new slot. After 2 cycles it is `unconfirmed`. No step 2 to 5 lands in quiet hours. Two workers never fire one row twice | `tests/unit/test_reminder_loop.py` (R8, frozen clock), `tests/unit/test_reminder_slot.py`, `test_reach_plan.py` |
+| **RM-3** The chat tools | After RM-1 | §5.8 in `skill_projects`. The `set-reminder` job in `routes/shell/intent.py` and `src/lib/shell/registry.ts`. `capture` stops taking "remind me" | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `test_shell_intent.py`, `tests/unit/test_reminder_tools.py` |
+| **RE-9** Push as a Reach channel | After PN-1, RM-2 | `proactive_reach.md` RE-9 on the PN-1 sender. The reminder payload of D113.4 and "Hide details on the lock screen" | A `reminder_due` card reaches the device within 90 s of `fire_at`. A hidden-details member gets no title in the payload | `test_reach_plan.py` and `tests/unit/test_reach_push.py` |
+| **RM-4** A tap opens the chat | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.tsx` (new) and `tests/unit/test_reminder_context.py` |
+| **RM-5** The Calendar UI | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. The bell glyph of §6.5 | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at` | Vitest for the pin and the panel, the conformance suite, and a visual review |
+| **RM-6** Closed by evidence | Later | The linked task goes to done, or the member sends an email on the linked thread. The reminder closes and says so | A done task closes its reminder, with an `evidence` ledger row | `test_reminder_evidence.py` |
+| **RM-7** Conditional follow-ups | Later | "Remind me if Ravi has not replied by Friday". A reply cancels it | An inbound reply before Friday cancels the reminder | `test_reminder_conditions.py` |
+| **RM-8** Repeats | Later | An RRULE on a reminder, in its own zone | A daily 09:00 reminder stays at 09:00 across a clock change | `test_reminder_repeat.py` |
+| **RM-9** WhatsApp | Later | Reminder acts in `ALLOWED_ACTS`, and the reminder as a Reach WhatsApp card | — | `test_wac_writes.py` |
+| **RM-10** Learning | Later | Ask once to stop check-backs for one kind. Learn the times that the member acts on | — | — |
+
+**Verification commands.** Start the database first:
+`bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`.
+
+```
+uv run pytest tests/unit/test_push_subscriptions.py tests/unit/test_reminders_r8.py tests/unit/test_reminder_loop.py tests/unit/test_reminder_slot.py tests/unit/test_reminder_tools.py tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/push.test.ts src/app/manifest.test.ts
+```
 
 ## 11. Owner questions
 
@@ -453,7 +717,7 @@ CE-4, CE-5, CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11.
 |---|---|---|
 | Q1 | Accept option C, one `calendar_entries` table? It amends D54.5 | Yes. A task block stays on the overlay |
 | Q2 | May a colleague see an event when they are an attendee, and nobody else? It amends D54.4 narrowly | Yes. No team calendar, no free and busy view |
-| Q3 | May a member's own reminder use class `urgent`, and sit outside the daily budget? It amends D103.3 and D-RE-3 | Yes, up to 10 reminders a day. It may break quiet hours, because the member set it |
+| Q3 | May a member's own reminder use class `urgent`, and sit outside the daily budget? It amends D103.3 and D-RE-3 | ✅ **ANSWERED 2026-10-25 (D113.3): yes**, up to 10 reminders a day. It may break quiet hours. A check-back is `interrupt`, inside the cap |
 | Q4 | The default lead times | 30 minutes for a task block, as today. 10 minutes for an event |
 | Q5 | The first kind in the composer for a new member | Task |
 | Q6 | Google or Outlook first? | Google. The Gmail connect already runs on our Google project |

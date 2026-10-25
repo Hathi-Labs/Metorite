@@ -486,6 +486,12 @@ VAPID key of `chat_run_continuity.md` §S7. A push payload holds no content,
 only a count and a link, as §S7 decides. It costs nothing per message. RE-9
 builds it after S7 lands.
 
+> ⚠️ **2026-10-25, D113.** WS-66 builds S7's transport as PN-1. Three card
+> kinds join §4: `reminder_due` (`urgent`, outside the daily cap, at most 10
+> each day), `reminder_check` (`interrupt`, inside the cap) and
+> `reminder_unconfirmed` (`brief`). A reminder push holds its title and time
+> (D113.4). The owning text is `calendar_events_reminders.md` §5.6.
+
 ### 8.3 The order of channels
 
 A member who has both picks one main channel in Settings. Reach sends on that
