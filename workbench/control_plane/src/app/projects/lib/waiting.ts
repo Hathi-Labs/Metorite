@@ -82,9 +82,9 @@ export function handoffWhy(
 /** One row as words: the task, then who waits and why. */
 export interface WaitingLine {
   /**
-   * The one key of the row. A task can make two rows: two members' runs
-   * wait on it, or two tasks block it. So the key names the run or the
-   * blocker as well as the task.
+   * The one key of the row. A task makes two handoff rows when two tasks
+   * block it, so a handoff key names the blocker. A question key names its
+   * run, and a review key the task, which the server lists once.
    */
   key: string;
   /** The task id. A row opens this task. */

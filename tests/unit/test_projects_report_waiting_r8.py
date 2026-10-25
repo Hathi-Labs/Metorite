@@ -233,17 +233,14 @@ class TestQuestions:
         assert "The oldest is 3 days old." in got["summary"]
         assert got["agent_runs_seen"] is True
 
-    async def test_q1_two_members_on_one_task_make_two_rows(self, w):
-        """RA-3 review. Each run is its own row, and `run_id` tells the two
-        apart, so the client keys each row on it."""
+    async def test_q1_each_question_row_names_its_run(self, w):
+        """RA-3 review. A question row carries `run_id`, and the client keys
+        the row on it. `pm_agent_runs_one_open_per_task` (migration 289)
+        keeps one open run for each task, so the run and the task agree."""
         tid = _task(w)
-        for who in (A_EMAIL, PERSON):
-            rid = b.run(w.p, w.p.org_a, tid, who, "awaiting")
-            _run_activity(w, rid, tid, "elicitation", minutes_ago=60)
+        rid = _question(w, tid)
         got = await _waiting(w, w.a)
-        assert [r["id"] for r in got["questions"]] == [tid, tid]
-        assert len({r["run_id"] for r in got["questions"]}) == 2
-        assert {r["member"] for r in got["questions"]} == {A_EMAIL, PERSON}
+        assert [(r["id"], r["run_id"]) for r in got["questions"]] == [(tid, rid)]
 
     async def test_q1_an_answered_awaiting_run_has_no_open_question(self, w):
         """The run still reads `awaiting`, and its only question has an
@@ -378,6 +375,21 @@ class TestHandoffs:
         assert by_id[agent_blocked]["person"] == PERSON
         assert by_id[agent_blocked]["blocker_id"] == person_blocker
         assert by_id[person_blocked]["member"] == A_EMAIL
+
+    async def test_h1_two_blockers_of_one_task_make_two_rows(self, w):
+        """RA-3 review. One agent task with two person-held blockers is two
+        handoffs. The rows share the task id and differ in `blocker_id`, and
+        the client keys each row on the blocker."""
+        agent_blocked = _task(w, title="agent blocked")
+        _assign(w, agent_blocked, IN_APP)
+        first, second = _task(w, title="first"), _task(w, title="second")
+        for blocker in (first, second):
+            _assign(w, blocker, PERSON)
+            _link(w, blocker, agent_blocked)
+        got = await _waiting(w, w.a)
+        assert [h["id"] for h in got["handoffs"]] == [agent_blocked, agent_blocked]
+        assert {h["blocker_id"] for h in got["handoffs"]} == {first, second}
+        assert got["handoffs_total"] == 2
 
 
 # ── A1 ───────────────────────────────────────────────────────────────────────

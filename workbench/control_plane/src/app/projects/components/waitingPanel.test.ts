@@ -172,21 +172,22 @@ describe("§6.8 E1 and E2: no rank, and the agent names its person", () => {
 });
 
 describe("RA-3 review: one task can make two rows, and no question can lack a word", () => {
-  it("keys two runs of one task apart, so React sees two rows", () => {
+  it("keys two blockers of one task apart, so React sees two rows", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const handoff = BUSY.handoffs[0];
     const twice: WaitingReport = {
       ...BUSY,
-      questions: [
-        { ...ROW, run_id: "run-a" },
-        { ...ROW, run_id: "run-b", member_name: "Bo" },
+      handoffs: [
+        { ...handoff, blocker_id: "b1" },
+        { ...handoff, blocker_id: "b2", blocker_title: "Order bolts" },
       ],
-      questions_total: 2,
+      handoffs_total: 2,
     };
     const panel = html(createElement(WaitingPanel, { data: twice }));
     const keyWarnings = spy.mock.calls.filter((c) => String(c[0]).includes("same key"));
     spy.mockRestore();
     expect(keyWarnings).toEqual([]);
-    expect(panel.match(/href="\/projects\?task=q-old"/g)?.length).toBe(2);
+    expect(panel.match(/href="\/projects\?task=h1"/g)?.length).toBe(2);
   });
 
   it("says how many questions got no answer when none got one", () => {

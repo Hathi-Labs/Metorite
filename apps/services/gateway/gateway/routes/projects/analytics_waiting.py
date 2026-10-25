@@ -557,8 +557,8 @@ async def _questions(
     return [
         {
             **_task_row(run, clock, question.created_at),
-            # Two members' runs can wait on one task, so the run names the
-            # row. The client keys each row on it.
+            # The run names the row, and the client keys the row on it.
+            # Migration 289 keeps one open run for each task.
             "run_id": str(run.run_id),
             **agent_of(run.client_via, run.member_email),
             "member_name": run.member_name or None,
