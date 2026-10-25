@@ -46,6 +46,10 @@ an address, a link or a long number. Only the typed words ground a write.
 
 **PZ-6b BUILT 2026-10-24, dark.**
 
+**§14 ACCEPTED 2026-10-25 (D113).** The first release adds PZ-25 (rollout
+by org), PZ-26 (the interview) and PZ-27 ("Get to know me"). PZ-11 follows
+them, for Hathi Labs only.
+
 **PZ-9 BUILT 2026-10-25.** A purge deletes the member's `user_settings`
 row of the org, and a removal clears the profile. `GET
 /auth/me/assistant-profile/export` gives the member a download, as JSON or
@@ -1034,3 +1038,145 @@ owner also chose Yes and No buttons for the second yes on WhatsApp
   derived features only (§12).
 - **Mem0 for this.** It stays off until WS-7 fixes its tenancy (H-307,
   H-336, H-337, H-407).
+
+---
+
+## 14. The first release: rollout by org, and the interview (ACCEPTED, 2026-10-25)
+
+**The owner accepted this section on 2026-10-25, recorded as D113.** It adds
+three slices and puts PZ-11 after them. With these slices done, the owner
+can use the assistant profile on staging and then in production, for
+Hathi Labs only. PZ-10 follows the first release, and PZ-16 and PZ-17
+take in the interview later.
+
+### 14.1 The owner's ask
+
+The owner's words, 2026-10-25: "What is left to build to get this MVP out
+there, so that we can start experiencing things?" The owner also asked for
+three things. The assistant must "build a complete profile of the user".
+It must speak to the member "in a way which is exciting to them". It must
+"proactively ask a few questions".
+
+**What §4 lacks.** The profile holds how to talk to the member. It holds
+nothing about what the member works toward or enjoys. The setup items of
+§12.5 set up the app. They do not learn about the person. §14 adds that
+half, the interview.
+
+### 14.2 Rollout by org (PZ-25)
+
+**The defect.** `ASSISTANT_PROFILE_ENABLED` is one switch for the whole
+server. When it turns on, every organization gets the profile at once.
+The first release needs one organization.
+
+**The change.**
+
+1. **A new setting, `ASSISTANT_PROFILE_ORGS`.** It holds a list of
+   organization ids, separated by commas. It is empty by default.
+2. **The rule.** With the master switch off, the profile is off for every
+   organization. With the master switch on and an empty list, it is on for
+   every organization. With a list, it is on only for the organizations in
+   the list.
+3. **One function.** `assistant_profile.enabled_for(org_id)` gives the
+   answer. Each gateway, executor and tool site that reads `enabled()`
+   for a run or a request passes the bound organization. A site with no
+   organization fails closed.
+4. **The web app.** `NEXT_PUBLIC_ASSISTANT_PROFILE` stays the build switch.
+   The page, the nav entry and My Day also read `enabled` from
+   `GET /auth/me/assistant-profile`. For an organization outside the list,
+   that answer is `enabled: false` and the web app shows nothing.
+5. **The nav entry.** The account menu gains the row "Assistant", which
+   opens `/settings/assistant`. It is a static account link beside
+   My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
+   live set of `launch_surface.md` §2 and `nav.test.ts` does not change.
+
+### 14.3 The interview areas
+
+The interview has ten areas. Each area has one starting question and a
+target in the profile. The questions are examples. The model asks in its
+own words, in the member's language and style.
+
+| Area id | Starting question | Saves as |
+|---|---|---|
+| `role` | "What is your role, and what takes most of your week?" | fact, kind `work` |
+| `goals` | "What are the one to three things you most want to move this quarter?" | fact, kind `work` |
+| `good_day` | "What would make today a win for you?" | fact, kind `preference` |
+| `decisions` | "Do you want options with a recommendation, or only the answer?" | fact, kind `preference` |
+| `detail` | "Do you want the headline first, or the full reasoning?" | `style.length`, and a fact when it needs words |
+| `rhythm` | "When do you do deep work, and when must I not interrupt?" | fact, kind `routine` |
+| `channels` | "What must reach you on WhatsApp, and what can wait for the web?" | fact, kind `preference` |
+| `energy` | "Which part of your work do you enjoy most?" | fact, kind `about` |
+| `peeves` | "Is there something that assistants do that annoys you?" | fact, kind `preference` |
+| `people` | "Who do you work with most?" | an alias for each person, through `resolve_person` |
+
+**The `area` key.** A fact gains an optional key `area`, with a value from
+the table. It is the area of the question that the fact answers. A fact
+from an ordinary chat has no area. Version 1 of the shape stays, because
+the key is optional. No migration is needed.
+
+**The interview state.** The profile gains one optional key, `interview`.
+
+```json
+"interview": {
+  "started_at": "2026-10-25T10:00:00Z",
+  "last_asked_at": "2026-10-25T10:05:00Z",
+  "areas": { "goals": { "state": "answered", "at": "2026-10-25T10:05:00Z" } }
+}
+```
+
+The state of an area is `asked`, `answered`, `skipped` or `never`. An area
+with no entry is open. The parser of §4 checks each value and drops an
+unknown area.
+
+### 14.4 How the interview asks
+
+**The first sitting.** The member starts it in one of two ways:
+
+- The button "Get to know me" on Settings → Assistant opens the chat with a
+  fixed first message.
+- In the first solo chat of a member with no `interview.started_at`, the
+  block offers it once. The member can say no, and the offer does not come
+  back.
+
+In the sitting, the model asks up to five open areas, one question at a
+time. It saves each answer with the tools of §5.5, with the area set. The
+member can skip a question or stop the sitting at any time.
+
+**After the first sitting.** At most one question a day. The block carries
+one line when a question is due. The line names one open area and its
+starting question. The model asks it only at the end of a reply that fits.
+
+**The limits.**
+
+1. **One question a day.** The gateway puts the due line in the block only
+   when `last_asked_at` is more than 24 hours old. The model marks the
+   area `asked` when it asks.
+2. **A skip waits 14 days** (D-PZ-13). After that, the area is open again.
+3. **"Don't ask again" sets `never`.** That area never comes back, unless
+   the member resets it in Settings.
+4. **No question in a shared room**, the same rule as the block (§5.1).
+5. **No outbound question.** On WhatsApp, a question comes only inside a
+   chat that the member started. Reach stays the only sender (D-PZ-14).
+
+**The writes.** An interview answer is the member's own typed words, so it
+is an explicit write (D-PZ-2), with Undo. The sensitive rule of D-PZ-16
+stays. A health, religion, caste, politics, sexuality or finance answer
+needs a second yes. An opinion is never saved.
+
+**Settings → Assistant.** The pane shows each area and its state, and the
+member can reset one area or the whole interview. A fact shows its area.
+
+### 14.5 The slices
+
+| Slice | What | Done when | Gate · tier |
+|---|---|---|---|
+| **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block) |
+| **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM |
+| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW |
+| **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
+
+### 14.6 How this fits phase 2
+
+The interview is the "about you" half of the setup coach of §12.5. When
+PZ-16 builds `setup_status`, each open area becomes a setup item. PZ-17
+then owns the timing, and the due line of PZ-26 moves into it. The limits
+stay the same.

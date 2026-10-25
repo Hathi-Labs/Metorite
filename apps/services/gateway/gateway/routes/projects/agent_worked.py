@@ -11,7 +11,8 @@ Spec: ``project-docs/specs/github_integration.md`` §12.2. A task is
 
 ⚠️ **This module is the ONE copy of the predicate.** The merge-to-Done rule
 (``github_merge.py``) reads it, and EA-13e's summary strip and filter import
-it. :data:`AGENT_WORKED_SQL` is a SQL boolean with two named parameters
+it. WS-27bn RA-1's ``agent_assisted`` label reads it through
+:func:`agent_worked_sql`, with the time of the done move. :data:`AGENT_WORKED_SQL` is a SQL boolean with two named parameters
 (``:aw_task`` and ``:aw_before``), and :func:`reason` names which row made it
 true, so a person can audit each move. Both come from ONE WHERE clause for
 each half (``_RUN_WHERE`` and ``_MCP_WHERE``). Fence:
@@ -56,6 +57,18 @@ AGENT_WORKED_SQL = f"({_RUN_EXISTS} OR {_MCP_EXISTS})"
 #: the id column of a list, so the batched read below is the SAME boolean and
 #: no second copy of it (EA-13e, EA3-49).
 _TASK_PARAM = "CAST(:aw_task AS uuid)"
+#: How the predicate names its time. :func:`agent_worked_sql` swaps it too.
+_BEFORE_PARAM = "CAST(:aw_before AS timestamptz)"
+assert _TASK_PARAM in AGENT_WORKED_SQL and _BEFORE_PARAM in AGENT_WORKED_SQL
+
+
+def agent_worked_sql(task: str, before: str = _BEFORE_PARAM) -> str:
+    """:data:`AGENT_WORKED_SQL` with the task, and if given the time, as SQL
+    expressions of the caller's query. The SAME boolean, by text swap, so no
+    second copy of the rule exists. The batched read below and the RA-1 label
+    (`analytics.finish_actor_join`, WS-27bn) read it this way."""
+    return AGENT_WORKED_SQL.replace(_TASK_PARAM, task).replace(_BEFORE_PARAM, before)
+
 
 #: The predicate over a LIST of task ids, one row for each id. Bind ``ids``
 #: (a ``uuid[]``) and ``aw_before``. ⚠️ Built from :data:`AGENT_WORKED_SQL`
@@ -63,10 +76,10 @@ _TASK_PARAM = "CAST(:aw_task AS uuid)"
 #: this query with it.
 _BATCH_SQL = (
     "SELECT t.id AS task_id, "
-    + AGENT_WORKED_SQL.replace(_TASK_PARAM, "t.id")
+    + agent_worked_sql("t.id")
     + " AS worked FROM unnest(CAST(:ids AS uuid[])) AS t(id)"
 )
-assert _TASK_PARAM in AGENT_WORKED_SQL and "aw_task" not in _BATCH_SQL
+assert "aw_task" not in _BATCH_SQL
 
 #: Which row makes the predicate true: the newest run first, then the newest
 #: MCP act. ``kind`` is ``agent_run`` or ``mcp_act``.
@@ -130,6 +143,7 @@ __all__ = [
     "AGENT_WORKED_SQL",
     "MCP_VIA_PREFIX",
     "AgentWork",
+    "agent_worked_sql",
     "is_agent_worked",
     "params",
     "reason",
