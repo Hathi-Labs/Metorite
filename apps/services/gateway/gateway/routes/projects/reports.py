@@ -64,6 +64,7 @@ from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
 from gateway.routes.projects.analytics_pulse import pulse_body
 from gateway.routes.projects.analytics_rebalance import rebalance_body
+from gateway.routes.projects.analytics_waiting import waiting_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -122,10 +123,12 @@ from sqlalchemy import text
 #: above it found. R3c adds `hygiene` after `stuck`: both read the open work,
 #: and hygiene says which tasks lack the data the other sections need.
 #: R3d adds `pulse` after `capacity`: both read the same person rows, and
-#: pulse says who needs help today.
+#: pulse says who needs help today. RA-3 adds `waiting` after `stuck`
+#: (`projects_reports.md` §6.8 A, question 3): stuck says what stalls, and
+#: waiting says on whom it waits.
 SECTIONS: tuple[str, ...] = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse",
-    "stuck", "hygiene", "conflicts", "rebalance",
+    "stuck", "waiting", "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -1176,6 +1179,18 @@ async def render_body(
                 db, vis,
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
+            )
+        elif name == "waiting":
+            # WS-27bn RA-3. `waiting_body`, imported, as `hygiene` does. The
+            # three lists read the state now, through Load's open-work
+            # predicate. The answer time reads the report period, so the
+            # period goes in, as it does for `finished`.
+            sections[name] = await waiting_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+                weeks=int(config["weeks"]),
+                skip_current_week=skip,
             )
         elif name == "stuck":
             # What is overdue, by project, and (WS-27bn R3a) how long open

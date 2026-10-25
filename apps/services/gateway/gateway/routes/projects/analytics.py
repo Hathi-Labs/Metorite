@@ -1186,6 +1186,29 @@ def _starts_with(column: str, prefix: str) -> str:
     return f"lower(coalesce({column}, '')) LIKE '{prefix}%'"
 
 
+def activity_via_sql(alias: str) -> str:
+    """The ``meta.via`` stamp of the `pm_activities` row ``alias``, in SQL.
+
+    ⚠️ **The ONE read of ``meta.via`` in the analytics modules and the
+    report render.** :func:`finish_actor_join` reads it here, and so does
+    WS-27bn RA-3's ``waiting`` section. `test_projects_analytics_actor.py`
+    counts the text once in these modules.
+    """
+    return f"{alias}.meta->>'via'"
+
+
+def agent_act_sql(by: str, via: str) -> str:
+    """The SQL twin of :func:`is_agent_act`, over two column expressions.
+
+    ``by`` is the ``created_by`` of the act and ``via`` its stamp, which is
+    :func:`activity_via_sql` for a `pm_activities` row.
+    """
+    return (
+        f"({_starts_with(via, MCP_VIA_PREFIX)}"
+        f" OR {_starts_with(by, AGENT_PREFIX)})"
+    )
+
+
 def finish_actor_join(task: str, until: str) -> str:
     """The done move of the task id ``task``, and the agent work before it.
 
@@ -1207,7 +1230,7 @@ def finish_actor_join(task: str, until: str) -> str:
     worked = agent_worked_sql(task, "fm.done_at")
     return (
         f" LEFT JOIN LATERAL ("
-        f"   SELECT fa.created_by AS done_by, fa.meta->>'via' AS done_via,"
+        f"   SELECT fa.created_by AS done_by, {activity_via_sql('fa')} AS done_via,"
         f"          fa.created_at AS done_at"
         f"     FROM pm_activities fa"
         f"    WHERE fa.task_id = {task}"
@@ -1226,8 +1249,7 @@ def finish_actor_join(task: str, until: str) -> str:
 def finish_label_sql() -> str:
     """The SQL twin of :func:`finish_label`, over :func:`finish_actor_join`."""
     return (
-        f"CASE WHEN {_starts_with('fm.done_via', MCP_VIA_PREFIX)}"
-        f"       OR {_starts_with('fm.done_by', AGENT_PREFIX)}"
+        f"CASE WHEN {agent_act_sql('fm.done_by', 'fm.done_via')}"
         f"     THEN '{FINISH_AGENT}'"
         f"     WHEN fh.worked THEN '{FINISH_ASSISTED}'"
         f"     ELSE '{FINISH_PERSON}' END"

@@ -46,7 +46,9 @@ from sqlalchemy import text
 SUBJECT_KINDS: tuple[str, ...] = ("person", "team")
 
 #: The sections that refuse a subject, and the words of the refusal.
-NO_SUBJECT_SECTIONS: tuple[str, ...] = ("outlook", "hygiene")
+#: WS-27bn RA-3 adds `waiting`: it reads the coordination of a whole scope,
+#: and a subject narrows a scope to the tasks that a person holds.
+NO_SUBJECT_SECTIONS: tuple[str, ...] = ("outlook", "waiting", "hygiene")
 NO_SUBJECT_REASON = "not available for a person or team scope"
 
 #: The conflict kinds that are about a PAIR of tasks, not about one person.

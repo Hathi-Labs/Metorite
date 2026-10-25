@@ -277,6 +277,22 @@ def test_the_reach_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_push_subscriptions_table_is_tenant_scoped() -> None:
+    """WS-66 PN-1 (``calendar_events_reminders.md`` §10.2 item 1). One row is
+    one device of one member: the push service endpoint and its two keys. It
+    must never be exempt, and the committed policy phase must carry it (R5).
+    ``tests/unit/test_push_subscriptions.py`` runs the policy on a real
+    Postgres (R8)."""
+    gen = _generator()
+    assert "push_subscriptions" in gen.discover_tables()
+    assert "push_subscriptions" not in gen.EXEMPT
+    assert "push_subscriptions" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE push_subscriptions FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_fill_rank_table_is_tenant_scoped() -> None:
     """WS-53 CRM-Q17a-1 (``crm_platform.md`` §18.9.3 item 3). ``crm_field_fill``
     holds how full each field of one organization's CRM is. It must never be

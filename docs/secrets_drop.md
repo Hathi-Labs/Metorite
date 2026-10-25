@@ -21,7 +21,7 @@ script refuses to use a folder inside a checkout.
 | `README.txt` | none | What each file is for |
 | `backup-gpg-public.asc` | `backup-gpg-public` | The PUBLIC key of the backup |
 | `backup-offbox.env` | `backup-offbox` | The seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys |
-| `app.env` | `app-env` | Keys for the app env file. The list is empty now |
+| `app.env` | `app-env` | Keys for the app env file, as `allowed_keys` of `app-env` lists them in `deploy/secrets/manifest.json`. They include the web push keys `VAPID_*` and `WEB_PUSH_ENABLED` |
 | `github-app-staging.pem` | `github-app-staging-key` | The private key of the staging GitHub App. Push it to the staging box only |
 | `github-app-staging.env` | `github-app-staging` | The eight settings of the staging GitHub App. Push it to the staging box only |
 | `github-app.pem` | `github-app-key` | The private key of the production GitHub App |

@@ -334,19 +334,17 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
-### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
-- **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
-  No hit means S7 is not built.
-- **Why.** The owner called web push "a good idea" on 2026-10-10. D-2 is
-  decided: push is opt-in, per member. It is not built. The spec holds the
-  acceptance criteria and the fence:
-  - Our VAPID keys, through the secrets path.
-  - A service worker, a settings toggle, and a permission prompt only on a
-    click.
-  - Two events, for the member's own runs only, with no content in the
-    payload.
-  - Subscriptions under RLS, and an unsubscribe at sign-out.
-- **Do this:** build S7 as one slice behind a flag, default OFF.
+### H-289 · Send WS-51 S7's two chat events, "needs your answer" and "finished", over web push · [AGENT]
+- **Check:** run `rg -n "send_to_member" apps/services/gateway/gateway --glob '!gateway/push/**'`.
+  No hit outside `gateway/push/` means no chat event sends a push yet.
+- **Why.** The owner called web push "a good idea" on 2026-10-10 (D-2: opt-in,
+  per member). **The transport is built** (WS-66 PN-1, 2026-10-25): VAPID keys,
+  `public/sw.js`, the toggle on `/people/me`, `push_subscriptions` under RLS,
+  and the sign-out paths. What is left of S7 is item 4: the two events, for the
+  member's own runs only, with no content in the payload.
+- **Do this:** call `gateway.push.sender` with a `PushMessage` from the S2
+  "needs your answer" and the S5 "finished" points, behind `WEB_PUSH_ENABLED`.
+  A tap opens the S3 `open-chat` link.
 - **Authority:** `specs/chat_run_continuity.md` §4 S7, board row WS-51
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
@@ -6328,6 +6326,21 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
+
+### H-410 · Check a real web push on an installed iPhone app and on Android Chrome · [OWNER]
+- **Check:** the owner says that a test push reached both phones. Then delete this entry.
+- **Why:** WS-66 PN-1 is built and tested, but no test can prove delivery to a real
+  phone. iOS delivers web push only to a web app on the Home Screen, on iOS 16.4
+  or later.
+- **Do this (owner), on dev.metorite.com after the agent turns `WEB_PUSH_ENABLED`
+  on there:**
+  1. iPhone: open dev.metorite.com in Safari, tap Share, then "Add to Home Screen".
+     Open Metorite from the Home Screen icon and sign in.
+  2. Open My Profile, find Notifications, turn it on, and allow notifications.
+  3. Tap "Send a test". A notification must show on the lock screen.
+  4. Android: open dev.metorite.com in Chrome, sign in, and do steps 2 and 3.
+- **Authority:** `specs/calendar_events_reminders.md` §10.1 PN-1 and §10.2
+- **Added:** 2026-10-25 · branch `ws66-pn1-mt-d09a41c2`
 
 # DONE — deleted, not archived
 

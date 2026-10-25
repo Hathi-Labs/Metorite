@@ -169,6 +169,7 @@ describe("sections", () => {
       "capacity",
       "pulse",
       "stuck",
+      "waiting",
       "hygiene",
       "conflicts",
       "rebalance",

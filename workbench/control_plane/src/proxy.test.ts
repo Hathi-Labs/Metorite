@@ -129,6 +129,18 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
     }
   });
 
+  it("passes a signed-out update fetch of the service worker, and no neighbour (WS-66 PN-1)", async () => {
+    // A browser checks /sw.js for an update with no cookie. A redirect to
+    // /signin would fail the update, so the script must pass signed out.
+    const res = await proxy(request("/sw.js"));
+    expect(passed(res)).toBe(true);
+    expect(res.headers.get("location")).toBeNull();
+    expect(posture.authCalls).toBe(0);
+    for (const path of ["/sw.js/x", "/sw.json", "/sw", "/public/sw.js", "/api/sw.js"]) {
+      expect(passed(await proxy(request(path))), path).toBe(false);
+    }
+  });
+
   it("does not open a subpath of the public page", async () => {
     const res = await proxy(request("/oauth/approved/x"));
     expect(res.status).toBe(307);
