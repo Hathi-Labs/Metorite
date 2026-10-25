@@ -1,4 +1,4 @@
-"""The one writer of ``push_subscriptions`` (WS-66 PN-1, migration 304).
+"""The one writer of ``push_subscriptions`` (WS-66 PN-1, migration 306).
 
 Spec: ``project-docs/specs/calendar_events_reminders.md`` §10.2 items 1, 3
 and 4, and ``chat_run_continuity.md`` §S7 item 6.

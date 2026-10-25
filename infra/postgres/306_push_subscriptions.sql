@@ -1,5 +1,5 @@
 -- ============================================================================
--- 304_push_subscriptions.sql — one web push subscription of one device.
+-- 306_push_subscriptions.sql — one web push subscription of one device.
 --
 -- What: one new table, `push_subscriptions`. One row is one browser or one
 --       installed web app of one member, as the W3C Push API gives it:
@@ -25,8 +25,9 @@
 -- can hold it. A key on `endpoint` alone makes the insert of org B fail on a
 -- row that org B cannot see.
 -- The number is taken at build time (R1). On 2026-10-25 origin/main held
--- 303, open branches held 300, 302 and a second 303, and RM-1 reserved 305,
--- so this takes 304. Check it again at merge.
+-- 300 to 303, open PR #1317 held 304 (304_pm_tasks_fields_at.sql), and RM-1
+-- held 305, so this takes 306. It took 304 first, and the review of PN-1
+-- moved it. Check it again at merge.
 -- Pinned by tests/unit/test_push_subscriptions.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
