@@ -17,22 +17,26 @@ stays pure: it starts no process.
 reads untrusted bytes. None of them runs in the gateway process. The child is
 ``attachment_ocr_worker.py``, started as ``python -I <path>`` with the
 allowlisted env of :func:`acb_common.child_env.child_env` and no secret. It
-gets the bytes on stdin and gives one JSON object on stdout. On Linux the
-child caps its own memory (``RLIMIT_AS``), its CPU time (``RLIMIT_CPU``) and
-its priority. Every library in it runs on one thread, because the box has two
-cores.
+gets the bytes on stdin and writes one JSON line for each step on stdout
+(:class:`_Stream`). On Linux the child caps its own memory (``RLIMIT_AS``),
+its CPU time (``RLIMIT_CPU``) and its priority. Every library in it runs on
+one thread, because the box has two cores.
 
-**Confinement** (fix round 1, P1). The child runs as the gateway's user. So
-before it reads one untrusted byte, it confines itself with Landlock: it may
-read only the Python and library dirs, it may write nowhere, and it may not
-bind or connect a TCP socket (Landlock ABI :data:`MIN_LANDLOCK_ABI`). It may
-not fork or grow a file. A Linux kernel below that ABI makes the child answer
-``unavailable``, so it fails closed. The worker's docstring gives the steps.
+**Confinement** (fix rounds 1 and 2). The child runs as the gateway's user.
+So before it reads one untrusted byte, it confines itself. Landlock lets it
+read only the Python and library dirs, write nowhere, and not bind or connect
+a TCP socket (Landlock ABI :data:`MIN_LANDLOCK_ABI`). A seccomp filter refuses
+each signal to another process, ``ptrace``, the cross-process memory calls
+and each new socket. It may not fork or grow a file. A Linux kernel below that
+ABI, another architecture than x86-64, or a filter that does not install makes
+the child answer ``unavailable``, so it fails closed. The worker's docstring
+gives the steps.
 
 **The child dies with its read.** It starts in a new session. The parent
-kills its process group at :data:`OCR_TIMEOUT_S`, on a cancel, and when its
-answer grows past :data:`_MAX_ANSWER_BYTES`. The parent reads stdout in
-chunks and never holds more than that cap.
+kills its process group at the timeout, on a cancel, and when its answer
+grows past :data:`_MAX_ANSWER_BYTES`. The parent reads stdout in chunks and
+never holds more than that cap. The child writes each page when it ends it
+(fix round 2), so after a time kill the parent keeps the pages that arrived.
 
 **Fairness.** At most :data:`MAX_OCR_CHILDREN` children live in the process.
 The wait for that slot is an ``await`` that holds no thread, and it gives up
@@ -41,11 +45,16 @@ read holds no pool thread and the event loop keeps serving every other run.
 The slot has no share for each organization (spec §4.1, a condition before
 the flag turns on).
 
-**The wait budget** (fix round 1, P2). The email assistant waits 60 s for the
-text route. The worst case is the text parse, then the slot wait, then the
-OCR kill and the reap: ``DEADLINE_SECONDS + _WAIT_MARGIN + OCR_SLOT_WAIT_S +
-OCR_TIMEOUT_S + _REAP_S``, 20 + 2 + 3 + 28 + 2 = 55 s. The fence holds the
-sum at 55 s or less.
+**The wait budget** (fix rounds 1 and 2). With no deadline, the worst case is
+the text parse, then the slot wait, then the OCR kill and the reap:
+``DEADLINE_SECONDS + _WAIT_MARGIN + OCR_SLOT_WAIT_S + OCR_TIMEOUT_S +
+_REAP_S``, 20 + 2 + 3 + 28 + 2 = 55 s. A caller can pass a *deadline*. Then
+the slot wait, the child and the reap all end before it. The email text route
+passes one, so the provider fetch fits in its 60 s too.
+
+**Who gets OCR.** Only a caller that can wait. A caller with a short budget
+passes ``ocr=False`` to ``parse_bounded``. The spec (§4.1) lists each caller,
+and ``TestTheCallers`` fails on a new one.
 
 **Caps.** At most :data:`MAX_OCR_PAGES` pages, each at :data:`OCR_DPI` and at
 most :data:`MAX_PAGE_PIXELS` pixels. An image is at most
@@ -68,6 +77,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -87,6 +97,7 @@ from acb_skills.attachment_text import (
     MAX_FILE_BYTES,
     PAGE_UNREADABLE,
     Extracted,
+    ReaderBusy,
     text_state,
 )
 
@@ -100,6 +111,7 @@ __all__ = [
     "OCR_TIMEOUT_S",
     "OTHER_IMAGE_SENTENCE",
     "image_suffix",
+    "no_words_sentence",
     "ocr_bounded",
     "ocr_enabled",
     "wants_ocr",
@@ -164,6 +176,9 @@ _MAX_ANSWER_BYTES = 4 * 1024 * 1024
 _CHUNK = 64 * 1024
 #: The longest wait for a killed child to end. It is part of the budget.
 _REAP_S = 2.0
+#: The least time that a child gets. With less left before a caller's
+#: deadline, the read answers the timeout sentence and starts no child.
+_MIN_OCR_S = 5.0
 
 #: Each library in the child runs on one thread. glibc keeps two malloc
 #: arenas, which took the address space from 3.0 GB to 0.9 GB. None of these
@@ -277,7 +292,7 @@ async def _take_slot(wait: float) -> _Held | None:
 # ── The child ────────────────────────────────────────────────────────────────
 
 
-def _spec(kind: str, max_bytes: int) -> dict[str, Any]:
+def _spec(kind: str, max_bytes: int, soft_seconds: float | None = None) -> dict[str, Any]:
     """The caps that the child applies. Read at each call, so a test can lower them."""
     return {
         "kind": kind,
@@ -288,7 +303,7 @@ def _spec(kind: str, max_bytes: int) -> dict[str, Any]:
         "max_page_side": MAX_PAGE_SIDE,
         "max_image_pixels": MAX_IMAGE_PIXELS,
         "max_page_chars": MAX_PAGE_CHARS,
-        "soft_seconds": OCR_SOFT_SECONDS,
+        "soft_seconds": OCR_SOFT_SECONDS if soft_seconds is None else soft_seconds,
         "memory_bytes": OCR_MEMORY_BYTES,
         "cpu_seconds": OCR_CPU_SECONDS,
         "landlock_abi": MIN_LANDLOCK_ABI,
@@ -310,14 +325,72 @@ def _child_env() -> dict[str, str]:
     return child_env(extra=_THREAD_VALUES)
 
 
-def _answer_of(out: bytes) -> dict[str, Any] | None:
-    if not out or len(out) > _MAX_ANSWER_BYTES:
-        return None
-    try:
-        answer = json.loads(out.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    return answer if isinstance(answer, dict) else None
+class _Stream:
+    """The child's answer, one JSON line at a time, as it arrives.
+
+    The child writes one object on each line and flushes it (fix round 2):
+    ``{"total": N}``, then ``{"page": text}`` for each page (``null`` for a
+    page that did not render), then ``{"end": stop}``. A refusal is
+    ``{"refused": code}``. So when the parent kills a slow child, it keeps
+    each page that arrived. Any other line makes the answer ``bad``. The
+    bytes of all lines are capped at :data:`_MAX_ANSWER_BYTES`.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self.size = 0
+        self.total: int | None = None
+        self.pages: list[str | None] = []
+        self.end: str | None = None
+        self.ended = False
+        self.refused: str | None = None
+        self.bad = False
+        self.flooded = False
+        self.timed_out = False
+
+    def feed(self, chunk: bytes) -> bool:
+        """Take *chunk*. ``False`` when the answer passed the cap."""
+        self.size += len(chunk)
+        if self.size > _MAX_ANSWER_BYTES:
+            self.flooded = True
+            return False
+        self._buffer += chunk
+        while (cut := self._buffer.find(b"\n")) >= 0:
+            line = bytes(self._buffer[:cut])
+            del self._buffer[: cut + 1]
+            self._line(line)
+        return True
+
+    def _line(self, raw: bytes) -> None:
+        if self.bad or self.ended or self.refused is not None:
+            self.bad = True
+            return
+        try:
+            item = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            self.bad = True
+            return
+        if not isinstance(item, dict) or len(item) != 1:
+            self.bad = True
+            return
+        (name, value), = item.items()
+        if name == "refused" and isinstance(value, str):
+            self.refused = value
+        elif name == "total" and self.total is None and _is_count(value):
+            self.total = value
+        elif name == "page" and self.total is not None and (value is None or isinstance(value, str)):
+            if len(self.pages) >= min(self.total, MAX_OCR_PAGES):
+                self.bad = True  # the child never reads more than the cap
+            else:
+                self.pages.append(None if value is None else _clean(value))
+        elif name == "end" and self.total is not None and value in (None, "pages", "time"):
+            self.end, self.ended = value, True
+        else:
+            self.bad = True
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _kill_group(proc: Any) -> None:
@@ -374,24 +447,22 @@ def _feed_blocking(stdin: Any, data: bytes) -> None:
         stdin.close()
 
 
-def _read_capped_blocking(stdout: Any) -> bytes | None:
-    """At most ``_MAX_ANSWER_BYTES`` of stdout, else ``None``."""
-    out = bytearray()
+def _read_blocking(stdout: Any, stream: _Stream) -> None:
+    """Feed stdout to *stream* until the end, or until it passes the cap."""
     while chunk := stdout.read1(_CHUNK):
-        out += chunk
-        if len(out) > _MAX_ANSWER_BYTES:
-            return None
-    return bytes(out)
+        if not stream.feed(chunk):
+            return
 
 
 def _run_blocking(
     argv: list[str], data: bytes, timeout: float, held: _Held, running: _Running,
-) -> dict[str, Any] | str:
+    stream: _Stream,
+) -> _Stream | str:
     """The child, for a loop that cannot spawn one (a Windows dev server).
 
     It runs on :data:`_POOL`, and releases the slot when it ends. A timer
     kills the child at *timeout*, and a cancel of the caller kills it at once
-    through *running*.
+    through *running*. A flood kills it at the cap.
     """
     try:
         try:
@@ -414,7 +485,7 @@ def _run_blocking(
         feeder = threading.Thread(target=_feed_blocking, args=(proc.stdin, data), daemon=True)
         feeder.start()
         try:
-            out = _read_capped_blocking(proc.stdout)
+            _read_blocking(proc.stdout, stream)
         finally:
             timer.cancel()
             if proc.poll() is None:
@@ -422,12 +493,8 @@ def _run_blocking(
             proc.wait()
             with contextlib.suppress(OSError):
                 proc.stdout.close()
-        if expired.is_set():
-            return _TOO_SLOW
-        if out is None:
-            _log.warning("attachment_ocr.answer_too_large", path="blocking")
-            return _FAILED
-        return _answer_of(out) or _FAILED
+        stream.timed_out = expired.is_set()
+        return stream
     finally:
         held.release()
 
@@ -445,31 +512,28 @@ async def _feed(stdin: Any, data: bytes) -> None:
             stdin.close()
 
 
-async def _talk(proc: Any, data: bytes) -> dict[str, Any] | str:
-    """Feed the child and read its answer, at most ``_MAX_ANSWER_BYTES``."""
+async def _talk(proc: Any, data: bytes, stream: _Stream) -> None:
+    """Feed the child, and give its stdout to *stream* up to the cap."""
     feed = asyncio.ensure_future(_feed(proc.stdin, data))
-    out = bytearray()
     try:
         while chunk := await proc.stdout.read(_CHUNK):
-            out += chunk
-            if len(out) > _MAX_ANSWER_BYTES:
+            if not stream.feed(chunk):
                 _kill_group(proc)
-                _log.warning("attachment_ocr.answer_too_large", path="async")
-                return _FAILED
+                return
         await proc.wait()
     finally:
         feed.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await feed
-    return _answer_of(bytes(out)) or _FAILED
 
 
 async def _reap(proc: Any) -> None:
     """Wait for a killed child, within :data:`_REAP_S`.
 
     ``Process.wait()`` returns only when every pipe has closed. A stdout pipe
-    that nobody reads stays open, so the wait would never end (found by the
-    flood fence). The rest of stdout is read and thrown away: the child is
+    that nobody reads stays open, so the wait would not end until the reap
+    bound (found on Windows by the flood fence; ``test_the_reap_drains_the_pipe``
+    holds it). The rest of stdout is read and thrown away: the child is
     dead, so that is at most one pipe buffer.
     """
     async def _drain_and_wait() -> None:
@@ -484,15 +548,20 @@ async def _reap(proc: Any) -> None:
         _log.warning("attachment_ocr.reap_timeout", pid=proc.pid)
 
 
-async def _run_child(data: bytes, spec: dict[str, Any], held: _Held) -> dict[str, Any] | str:
-    """The child's answer, or a sentence that says why there is none.
+async def _run_child(
+    data: bytes, spec: dict[str, Any], held: _Held, timeout: float,
+) -> _Stream | str:
+    """The child's answer as a :class:`_Stream`, or a sentence when it did
+    not start.
 
     The child's process group is killed and the child reaped on a timeout,
     on a cancel of the caller and on an answer past the cap, so no OCR
-    outlives its read.
+    outlives its read. The pages that arrived before a kill stay in the
+    stream.
     """
     _note_unconfined()
     argv = _worker_argv(spec)
+    stream = _Stream()
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -506,7 +575,7 @@ async def _run_child(data: bytes, spec: dict[str, Any], held: _Held) -> dict[str
         loop = asyncio.get_running_loop()
         running = _Running()
         job = loop.run_in_executor(
-            _POOL, _run_blocking, argv, data, OCR_TIMEOUT_S, held, running,
+            _POOL, _run_blocking, argv, data, timeout, held, running, stream,
         )
         held.thread_owns = True
         try:
@@ -517,14 +586,15 @@ async def _run_child(data: bytes, spec: dict[str, Any], held: _Held) -> dict[str
     except OSError:
         return _NO_START
     try:
-        return await asyncio.wait_for(_talk(proc, data), OCR_TIMEOUT_S)
+        await asyncio.wait_for(_talk(proc, data, stream), timeout)
     except TimeoutError:
-        return _TOO_SLOW
+        stream.timed_out = True
     finally:
         if proc.returncode is None:
             _kill_group(proc)
         # Always: a child that exited can still hold an unread pipe open.
         await _reap(proc)
+    return stream
 
 
 # ── The answer ───────────────────────────────────────────────────────────────
@@ -535,23 +605,24 @@ def _clean(text: object) -> str:
     return str(text).translate(_CONTROLS)[:MAX_PAGE_CHARS].strip()
 
 
-def _pages_of(answer: dict[str, Any]) -> tuple[list[str | None], int, str | None] | None:
-    """The checked fields of an ``ok`` answer, else ``None``."""
-    pages, total, stop = answer.get("pages"), answer.get("total"), answer.get("stop")
-    if not isinstance(pages, list) or not all(p is None or isinstance(p, str) for p in pages):
-        return None
-    if len(pages) > MAX_OCR_PAGES:  # the child never reads more than the cap
-        return None
-    if not isinstance(total, int) or isinstance(total, bool) or total < len(pages):
-        return None
-    if stop not in (None, "pages", "time"):
-        return None
-    return [None if p is None else _clean(p) for p in pages], total, stop
+def no_words_sentence(got: Extracted) -> str:
+    """The sentence for a read in which OCR found no words.
+
+    A read that the page cap stopped says how many pages OCR read (fix round
+    2), so the member never reads "no words" for a file that holds more.
+    """
+    if got.total and got.read < got.total:
+        return (
+            f"I read the first {got.read} of {got.total} pages of this file by OCR, "
+            "and OCR found no words in them."
+        )
+    return NO_WORDS_SENTENCE
 
 
-def _image_answer(pages: list[str | None]) -> Extracted:
-    text = (pages[0] or "") if pages else ""
-    body = f"{OCR_MARKER}\n{text}" if text else ""
+def _image_answer(pages: list[str | None]) -> Extracted | str:
+    if not pages or pages[0] is None:
+        return _FAILED  # the image did not read, so "no words" would be false
+    body = f"{OCR_MARKER}\n{pages[0]}" if pages[0] else ""
     return Extracted(text=body, kind="image", unit="image", read=1, total=1,
                      stopped=False, ocr=True)
 
@@ -574,8 +645,13 @@ def _pdf_answer(
     if not words:
         if stop == "time":
             return _TOO_SLOW
+        if any(page is None for page in pages):
+            # A page that did not render can hold words, so "OCR found no
+            # words" would be false, and the email route caches it for an
+            # hour (fix round 2). A sentence is not cached.
+            return _FAILED
         if text_layer is not None:
-            return replace(text_layer, ocr=True)
+            return replace(text_layer, ocr=True, read=read, total=total, stopped=read < total)
         return Extracted(text="", kind="pdf", unit="page", read=read, total=total,
                          stopped=read < total, ocr=True)
     if stop == "pages":
@@ -591,15 +667,48 @@ def _pdf_answer(
                      stopped=read < total, ocr=True)
 
 
+def _answer_of(
+    stream: _Stream, kind: str, text_layer: Extracted | None,
+) -> Extracted | str:
+    """The answer that the parent gives for what the child wrote."""
+    if stream.flooded:
+        _log.warning("attachment_ocr.answer_too_large")
+        return _FAILED
+    if stream.bad:
+        _log.warning("attachment_ocr.bad_answer", kind=kind)
+        return _FAILED
+    if stream.refused is not None:
+        return _REASONS.get(stream.refused, _FAILED)
+    if stream.ended:
+        stop = stream.end
+    elif stream.timed_out and stream.total is not None and stream.pages:
+        stop = "time"  # the kill came during a page: keep the pages before it
+    elif stream.timed_out:
+        return _TOO_SLOW
+    else:
+        _log.warning("attachment_ocr.no_end", kind=kind)  # a crash or an abort
+        return _FAILED
+    total = stream.total if stream.total is not None else 0
+    if kind == "image":
+        if stop == "time" and not stream.pages:
+            return _TOO_SLOW
+        return _image_answer(stream.pages)
+    return _pdf_answer(stream.pages, total, stop, text_layer)
+
+
 async def ocr_bounded(
     data: bytes, suffix: str, *, text_layer: Extracted | None = None,
+    deadline: float | None = None,
 ) -> Extracted | str:
     """The text that OCR reads in *data*, or one sentence that says why not.
 
     *suffix* is ``.pdf`` or an image suffix of :data:`IMAGE_SUFFIXES`.
     *text_layer* is what the text reader gave for the PDF. When OCR finds no
-    words, the answer is that, marked ``ocr``. It never raises: a refusal, a
-    busy slot, a crash, a timeout and a bug each give one sentence.
+    words, the answer is that, marked ``ocr``. *deadline* is a time of the
+    running loop: the slot wait, the child and the reap all end before it,
+    and too little time left gives the timeout sentence at once. It never
+    raises: a refusal, a busy slot (``ReaderBusy``), a crash, a timeout and a
+    bug each give one sentence.
     """
     kind = "pdf" if suffix.lower() == ".pdf" else "image"
     if kind == "image":
@@ -608,12 +717,27 @@ async def ocr_bounded(
         if not data.startswith((_PNG_MAGIC, _JPEG_MAGIC)):
             return _NOT_AN_IMAGE
     max_bytes = MAX_FILE_BYTES if kind == "pdf" else MAX_IMAGE_BYTES
-    held = await _take_slot(OCR_SLOT_WAIT_S)
+    loop = asyncio.get_running_loop()
+
+    def _left() -> float:
+        return math.inf if deadline is None else deadline - loop.time()
+
+    # The least time worth a child. A test that lowers OCR_TIMEOUT_S still
+    # starts one, and only a caller's deadline can cut the time below it.
+    least = min(_MIN_OCR_S, OCR_TIMEOUT_S)
+    if _left() - _REAP_S < least:
+        return _TOO_SLOW
+    held = await _take_slot(min(OCR_SLOT_WAIT_S, max(0.0, _left() - _REAP_S - least)))
     if held is None:
-        return _BUSY
+        return ReaderBusy(_BUSY)
+    timeout = min(OCR_TIMEOUT_S, _left() - _REAP_S)
+    if timeout < least:
+        held.release()
+        return _TOO_SLOW
+    soft = max(1.0, min(OCR_SOFT_SECONDS, timeout - (OCR_TIMEOUT_S - OCR_SOFT_SECONDS)))
     started = time.monotonic()
     try:
-        answer = await _run_child(data, _spec(kind, max_bytes), held)
+        answer = await _run_child(data, _spec(kind, max_bytes, soft), held, timeout)
     except Exception as exc:  # a bug here is a refusal, never a crash
         _log.warning("attachment_ocr.failed", kind=kind, error=type(exc).__name__)
         return _FAILED
@@ -624,17 +748,8 @@ async def ocr_bounded(
     if isinstance(answer, str):
         _log.info("attachment_ocr.refused", kind=kind, size=len(data), ms=ms, why=answer[:40])
         return answer
-    if answer.get("status") == "refused":
-        reason = str(answer.get("reason") or "")
-        _log.info("attachment_ocr.refused", kind=kind, size=len(data), ms=ms, why=reason[:20])
-        return _REASONS.get(reason, _FAILED)
-    fields = _pages_of(answer) if answer.get("status") == "ok" else None
-    if fields is None:
-        _log.warning("attachment_ocr.bad_answer", kind=kind, ms=ms)
-        return _FAILED
-    pages, total, stop = fields
-    _log.info("attachment_ocr.read", kind=kind, size=len(data), ms=ms,
-              pages=len(pages), total=total, stop=stop)
-    if kind == "image":
-        return _image_answer(pages)
-    return _pdf_answer(pages, total, stop, text_layer)
+    result = _answer_of(answer, kind, text_layer)
+    _log.info("attachment_ocr.read", kind=kind, size=len(data), ms=ms, pages=len(answer.pages),
+              total=answer.total, stop=answer.end, timed_out=answer.timed_out,
+              answered=not isinstance(result, str))
+    return result

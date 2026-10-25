@@ -230,40 +230,52 @@ clone cache.
    Fences: tests/unit/test_attachment_xlsx.py and section 14 of
    tests/unit/test_read_attachment.py.
 5f-1. attachment_ocr.py + attachment_ocr_worker.py -- OCR of a scanned file
-   (WS-67 OA-3, D116, spec `one_assistant_context.md` §4). It ships dark
+   (WS-67 OA-3, D116, spec `one_assistant_context.md` §4.1). It ships dark
    behind `ATTACHMENT_OCR`, and `ocr_enabled()` is its one reader. With the
-   flag on, `parse_bounded` sends two kinds of file to `ocr_bounded`: a PDF
-   whose text layer gives no words, and a `.png`, `.jpg` or `.jpeg` image.
-   `attachment_text.text_state` is the ONE rule for "no words". So the chat
-   tool and the email text route both get OCR, and no second reader exists.
-   `attachment_text` stays free of processes.
+   flag on, `parse_bounded` sends two kinds of file to `ocr_bounded`. The
+   first is a PDF whose text layer gives no words. The second is a `.png`,
+   `.jpg` or `.jpeg` image. `attachment_text.text_state` is the ONE rule
+   for "no words", and `attachment_text` stays free of processes.
+
+   Only a caller that can wait gets OCR: the chat tool, and the email text
+   route for `read_email_attachment`. The reply drafter reads with
+   `ocr=False` (fix round 2). Spec §4.1 lists each caller, and
+   `TestTheCallers` fails on a new one. A no-OCR read uses the flag-off
+   cache name.
+
    The OCR runs in a child, never in the gateway process. The parent starts
    `attachment_ocr_worker.py` as `python -I <path>`, never with `-m`, because
    the package `__init__` imports every tool. The child imports nothing from
    `acb_` packages. It gets the `child_env` allowlist and the thread names,
-   and no secret. On Linux it sets `RLIMIT_AS` (1.5 GiB) and `RLIMIT_CPU` on
-   itself. Each library in it runs on one thread, and it never downloads a
-   model.
-   ⚠️ The order of `main()` is the control (fix round 1, P1). The child
+   and no secret. Each library in it runs on one thread, and it never
+   downloads a model.
+
+   ⚠️ The order of `main()` is the control (fix rounds 1 and 2). The child
    checks Landlock, preloads every library and model, and confines itself
    with `_confine`. Only then does it read the bytes. Landlock lets it read
    only the Python and library dirs, never a dir that holds the cwd. It may
-   write nowhere, and with ABI 4 it may not bind or connect TCP.
-   `RLIMIT_NPROC` and `RLIMIT_FSIZE` are 0. A Linux kernel below ABI 4 answers
-   `unavailable`, so it fails closed. A new lazy import or lazy thread in
-   the parse breaks under the confinement, so put it in `_preload`. The
-   fence `TestTheConfinement` runs on Linux only.
+   write nowhere, and with ABI 4 it may not bind or connect TCP. A seccomp
+   filter refuses each signal to another process, `ptrace` and each socket.
+
+   `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_AS` and `RLIMIT_CPU` cap the rest.
+   A kernel below ABI 4, another machine than x86-64, or a filter that does
+   not install answers `unavailable`, so it fails closed. A new lazy import
+   or lazy thread in the parse breaks under the confinement, so put it in
+   `_preload`. The fence `TestTheConfinement` runs on Linux only.
+
    At most one child lives in the process (`_SLOT`, process-wide). The wait
-   for it is an `await`, and a wait past 3 s answers busy. The child starts
-   in a new session. The parent kills its process group at 28 s, on a
-   cancel and when stdout passes 4 MiB, and reads stdout in chunks. The child
-   stops between pages at 20 s. The worst wait of the email text route is
-   55 s, and a fence holds that sum. A read takes
-   15 pages at most, at 150 DPI and 4 million pixels for each page. The text
-   starts with `OCR_MARKER`, and `Extracted.ocr` is true. A capped read ends
-   with a sentence that gives the count. Each failure gives one sentence.
-   With the flag off, no child starts and both paths answer as before.
-   Fence: tests/unit/test_attachment_ocr.py.
+   for it is an `await`, and a wait past 3 s answers busy (`ReaderBusy`).
+
+   The child writes one JSON line for each page (`_Stream`). The parent
+   kills its process group at 28 s, on a cancel and when stdout passes
+   4 MiB. After a time kill it keeps the pages that arrived. A caller may
+   pass a `deadline`. The email text route sets it to 55 s after its start.
+
+   A read takes 15 pages at most, at 150 DPI and 4 million pixels for each
+   page. The text starts with `OCR_MARKER`, and `Extracted.ocr` is true. A
+   capped read ends with a sentence that gives the count. Each failure gives
+   one sentence. With the flag off, no child starts and both paths answer
+   as before. Fence: tests/unit/test_attachment_ocr.py.
 5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
    binds `no_egress=True` in its artifact context and holds only the

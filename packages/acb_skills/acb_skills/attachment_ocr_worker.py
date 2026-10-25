@@ -12,13 +12,17 @@ ignores ``PYTHONPATH`` and the user site, and it puts no script dir on
 here. This file imports nothing from ``acb_skills``.
 
 **The contract.** The spec comes in ``argv[1]``. The file bytes come on
-stdin. The child writes ONE JSON object to stdout and exits 0:
+stdin. The child writes one JSON object on each line of stdout, flushes each
+line, and exits 0 (fix round 2):
 
-* ``{"status": "ok", "pages": [...], "total": N, "stop": null}``. Each item
-  of ``pages`` is the text of one page, or ``null`` for a page that did not
-  render. ``stop`` is ``"pages"`` (the page cap) or ``"time"`` (the soft
-  deadline) when the child read fewer pages than the file holds.
-* ``{"status": "refused", "reason": "<code>"}``. The parent owns every
+* ``{"total": N}``, once, when the file opened.
+* ``{"page": "..."}`` for each page that it read, or ``{"page": null}`` for
+  a page that did not render. Each page line goes out when the page ends, so
+  the parent keeps the pages that arrived before a kill.
+* ``{"end": null}``, or ``{"end": "pages"}`` (the page cap) or
+  ``{"end": "time"}`` (the soft deadline) when it read fewer pages than the
+  file holds.
+* ``{"refused": "<code>"}`` in place of the rest. The parent owns every
   sentence for the member, so the child sends a code only.
 
 **The order of the steps** is the control (fix round 1, P1). The child runs
@@ -34,12 +38,22 @@ in a native parser must find nothing to read and nowhere to send it:
    a new file or start a thread.
 4. ``_confine``: Landlock lets the child READ only the Python dirs and the
    shared library dirs, and write nowhere. With ABI 4 or later it refuses
-   each TCP bind and connect. Then ``RLIMIT_NPROC`` is 0, so no fork and no
-   new thread, and ``RLIMIT_FSIZE`` is 0, so no file grows.
+   each TCP bind and connect. Then a seccomp filter (fix round 2) answers
+   EPERM to each call that reaches another process or opens a socket:
+   ``kill``, ``tkill``, ``tgkill``, the two ``rt_*sigqueueinfo`` calls, the
+   two ``pidfd`` calls, ``ptrace``, ``process_vm_readv``,
+   ``process_vm_writev``, ``socket`` and ``socketpair``. So a parser bug
+   cannot kill the gateway or send a UDP or Unix packet. A glibc ``abort()``
+   still ends the child, because abort falls back to a fault. The filter
+   checks the architecture, and refuses an x32 call. Then ``RLIMIT_NPROC``
+   is 0, so no fork and no new thread, and ``RLIMIT_FSIZE`` is 0, so no
+   file grows.
 5. Only then does the child read the untrusted bytes from stdin.
 
-Landlock is a Linux feature. On Windows, the dev box only, steps 2 and 4 do
-nothing, and the parent logs ``attachment_ocr.unconfined``.
+Landlock and seccomp are Linux features. On Windows, the dev box only, steps
+2 and 4 do nothing, and the parent logs ``attachment_ocr.unconfined``. On a
+Linux box that is not x86-64, the filter cannot be built, so the child
+answers ``unavailable``.
 
 **The limits.** Every library runs on one thread: the parent sets the thread
 env names, the child calls ``cv2.setNumThreads(1)``, and onnxruntime gets one
@@ -124,6 +138,97 @@ class _RulesetAttr(ctypes.Structure):
 class _PathBeneath(ctypes.Structure):
     _pack_ = 1
     _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
+
+
+# ── seccomp (Linux x86-64), by prctl through ctypes (fix round 2) ────────────
+# See https://docs.kernel.org/userspace-api/seccomp_filter.html.
+_PR_SET_SECCOMP = 22
+_SECCOMP_MODE_FILTER = 2
+_SECCOMP_RET_KILL_PROCESS = 0x80000000
+_SECCOMP_RET_ERRNO = 0x00050000
+_SECCOMP_RET_ALLOW = 0x7FFF0000
+_EPERM = 1
+_AUDIT_ARCH_X86_64 = 0xC000003E
+#: An x32 call sets this bit in its number. The filter refuses each one.
+_X32_SYSCALL_BIT = 0x40000000
+_BPF_LD_W_ABS = 0x20
+_BPF_JEQ_K = 0x15
+_BPF_JGE_K = 0x35
+_BPF_RET_K = 0x06
+#: The offsets of ``nr`` and ``arch`` in ``struct seccomp_data``.
+_DATA_NR = 0
+_DATA_ARCH = 4
+#: The x86-64 calls that the confined child never needs, each with its
+#: number. Each one reaches another process, or opens a socket.
+SECCOMP_DENIED: dict[str, int] = {
+    "kill": 62,
+    "tkill": 200,
+    "tgkill": 234,
+    "rt_sigqueueinfo": 129,
+    "rt_tgsigqueueinfo": 297,
+    "pidfd_open": 434,
+    "pidfd_send_signal": 424,
+    "ptrace": 101,
+    "process_vm_readv": 310,
+    "process_vm_writev": 311,
+    "socket": 41,
+    "socketpair": 53,
+}
+
+
+class _SockFilter(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_uint16),
+        ("jt", ctypes.c_uint8),
+        ("jf", ctypes.c_uint8),
+        ("k", ctypes.c_uint32),
+    ]
+
+
+class _SockFprog(ctypes.Structure):
+    _fields_ = [("len", ctypes.c_uint16), ("filter", ctypes.POINTER(_SockFilter))]
+
+
+def seccomp_program() -> list[tuple[int, int, int, int]]:
+    """The filter, as ``(code, jt, jf, k)`` instructions.
+
+    A call of another architecture kills the child. A call with the x32 bit
+    and each call of :data:`SECCOMP_DENIED` answers EPERM. Every other call
+    passes. A jump counts from the next instruction.
+    """
+    denied = sorted(SECCOMP_DENIED.values())
+    refuse_at = 6 + len(denied)
+    program = [
+        (_BPF_LD_W_ABS, 0, 0, _DATA_ARCH),
+        (_BPF_JEQ_K, 1, 0, _AUDIT_ARCH_X86_64),
+        (_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL_PROCESS),
+        (_BPF_LD_W_ABS, 0, 0, _DATA_NR),
+        (_BPF_JGE_K, refuse_at - 5, 0, _X32_SYSCALL_BIT),
+    ]
+    for index, number in enumerate(denied, start=5):
+        program.append((_BPF_JEQ_K, refuse_at - (index + 1), 0, number))
+    program.append((_BPF_RET_K, 0, 0, _SECCOMP_RET_ALLOW))
+    program.append((_BPF_RET_K, 0, 0, _SECCOMP_RET_ERRNO | _EPERM))
+    return program
+
+
+def _install_seccomp(libc: Any) -> None:
+    """Install :func:`seccomp_program` on this process, or refuse.
+
+    It needs ``NO_NEW_PRIVS``, which ``_confine`` has set. Another machine
+    than x86-64, or a filter that does not install, refuses with
+    ``unavailable``: the child never parses without it on Linux.
+    """
+    if os.uname().machine != "x86_64":
+        raise _Refused("unavailable")
+    program = seccomp_program()
+    filters = (_SockFilter * len(program))(*(_SockFilter(*ins) for ins in program))
+    prog = _SockFprog(len(program), ctypes.cast(filters, ctypes.POINTER(_SockFilter)))
+    if libc.prctl(
+        ctypes.c_int(_PR_SET_SECCOMP), ctypes.c_ulong(_SECCOMP_MODE_FILTER),
+        ctypes.byref(prog), ctypes.c_ulong(0), ctypes.c_ulong(0),
+    ) != 0:
+        raise _Refused("unavailable")
 
 
 class _Refused(Exception):
@@ -290,6 +395,8 @@ def _confine(spec: dict[str, Any]) -> None:
             raise _Refused("unavailable")
     finally:
         os.close(ruleset)
+    # No signal to another process, no ptrace, no new socket (fix round 2).
+    _install_seccomp(libc)
     # A write past the cap fails with EFBIG and does not kill the child.
     signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
@@ -444,27 +551,34 @@ def _page_text(engine: Any, image: Any, spec: dict[str, Any]) -> str:
     return text[: spec["max_page_chars"]]
 
 
-def _read(data: bytes, spec: dict[str, Any], started: float, engine: Any) -> dict[str, Any]:
+def _emit(item: dict[str, Any]) -> None:
+    """Write one line of the answer, and flush it at once."""
+    sys.stdout.write(json.dumps(item) + "\n")
+    sys.stdout.flush()
+
+
+def _read(data: bytes, spec: dict[str, Any], started: float, engine: Any) -> None:
+    """Read the file, and write the total, each page and the end."""
     if spec["kind"] == "pdf":
         loaders, total = _pdf_pages(data, spec)
     else:
         loaders, total = _image_pages(data, spec)
-    pages: list[str | None] = []
-    stop: str | None = None
+    _emit({"total": total})
+    read = 0
     for load in loaders:
         if time.monotonic() - started > spec["soft_seconds"]:
-            stop = "time"
-            break
+            _emit({"end": "time"})
+            return
         try:
             image = load()
-            pages.append("" if image is None else _page_text(engine, image, spec))
+            text: str | None = "" if image is None else _page_text(engine, image, spec)
         except MemoryError:
             raise
         except Exception:  # one bad page is not a bad file
-            pages.append(None)
-    if stop is None and len(pages) < total:
-        stop = "pages"
-    return {"status": "ok", "pages": pages, "total": total, "stop": stop}
+            text = None
+        _emit({"page": text})
+        read += 1
+    _emit({"end": "pages" if read < total else None})
 
 
 def main(argv: list[str]) -> int:
@@ -479,13 +593,11 @@ def main(argv: list[str]) -> int:
         data = sys.stdin.buffer.read(spec["max_bytes"] + 1)
         if len(data) > spec["max_bytes"]:
             raise _Refused("size")
-        answer = _read(data, spec, started, engine)
+        _read(data, spec, started, engine)
     except _Refused as exc:
-        answer = {"status": "refused", "reason": exc.reason}
+        _emit({"refused": exc.reason})
     except Exception:  # no traceback reaches the parent, only a code
-        answer = {"status": "refused", "reason": "failed"}
-    sys.stdout.write(json.dumps(answer))
-    sys.stdout.flush()
+        _emit({"refused": "failed"})
     return 0
 
 

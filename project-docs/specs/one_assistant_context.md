@@ -128,12 +128,25 @@ moves them.
 ### 4.1 OA-3 as built (2026-10-25)
 
 **What it does.** With `ATTACHMENT_OCR` on, the one bounded parse
-(`attachment_tools.parse_bounded`) reads two kinds of file by OCR: a PDF whose
-text layer gives no words, and a `.png`, `.jpg` or `.jpeg` image. The chat
-tool `read_attachment` and the email text route both get it through that
-function. The text starts with the OCR marker. A read takes 15 pages at most,
-and a capped read says how many it read. With the flag off, both paths are
-byte-identical.
+(`attachment_tools.parse_bounded`) reads two kinds of file by OCR. The first
+is a PDF whose text layer gives no words. The second is a `.png`, `.jpg` or
+`.jpeg` image. The text starts with the OCR marker. A read takes 15 pages at
+most, and a capped read says how many it read.
+
+With the flag off, each path is byte-identical.
+
+**Who gets OCR.** Only a caller that can wait for it. A caller with a short
+budget reads with `ocr=False`. `TestTheCallers` in the fence fails on a new
+caller, and on a short-budget caller that can reach OCR.
+
+| Caller | Its budget | OCR |
+|---|---|---|
+| The chat tool `read_attachment` (`attachment_tools.py`) | none: a tool call | yes |
+| The email text route `GET /email/attachments/{id}/text` (`read_attachment_text`), for `read_email_attachment` | 60 s | yes, inside a deadline of 55 s |
+| The reply drafter `draft_files._read_text`: the reply card, the composer and a rule draft | 10 s, 8 s and 20 s for all files | no (`ocr=False`) |
+
+A no-OCR read also uses the flag-off cache name. So it never writes a "no
+text" answer where an OCR read looks, and it never reads an OCR answer.
 
 **How the child stays apart.** The OCR runs in a child process
 (`acb_skills/attachment_ocr_worker.py`), never in the gateway. The child gets
@@ -142,26 +155,34 @@ file, it confines itself on Linux:
 
 - Landlock lets it read only the Python and shared library dirs. It may
   write nowhere, and it may not bind or connect a TCP socket (ABI 4).
-- A kernel below Landlock ABI 4 makes it answer "unavailable". It fails
-  closed. The box runs kernel 6.8, which has ABI 4.
+- A seccomp filter answers EPERM to each signal to another process, to
+  `ptrace` and to each new socket. It also refuses the two calls that read
+  or write the memory of another process.
+  So a parser bug cannot kill the gateway, or send a UDP or Unix packet.
+- A kernel below Landlock ABI 4 makes the child answer "unavailable". So
+  does another machine than x86-64, and a filter that does not install. It
+  fails closed. The box runs kernel 6.8 on x86-64, which has ABI 4.
 - `RLIMIT_NPROC` is 0 (no fork), `RLIMIT_FSIZE` is 0, and `RLIMIT_AS` and
   `RLIMIT_CPU` cap memory and CPU.
 
-The parent kills the child's process group at 28 s, on a cancel, and when
-its answer passes 4 MiB. The worst wait of the email text route is 55 s,
-under the 60 s of `read_email_attachment`.
+**Time.** The child writes each page when it ends it. The parent kills the
+child's process group at 28 s, on a cancel, and when its answer passes
+4 MiB. After a time kill, the parent keeps the pages that arrived and says
+how many it read. The email text route bounds the provider fetch at 15 s,
+and gives OCR a deadline of 55 s from its start. So the route answers inside
+the 60 s of `read_email_attachment`.
 
-**Residual risk.** Landlock ABI 4 does not cover UDP, or a connect to an
-existing Unix socket. A Windows dev box runs the child unconfined, because
-Windows has no Landlock.
+**Residual risk.** A child that the confinement holds can still read the
+Python and library dirs, which hold no secret. A Windows dev box runs the
+child unconfined, because Windows has no Landlock and no seccomp.
 
-**Conditions before the flag turns on.** The fix round of 2026-10-25 records
-these two, and builds neither:
+**Conditions before the flag turns on.** The fix rounds of 2026-10-25 record
+these two, and build neither:
 
 1. **A share for each organization.** One child slot serves the whole
-   process. A long scan of one organization makes every other organization
-   answer busy for up to 31 s. Add a share for each organization, or accept
-   this in writing.
+   process. A long scan holds it for up to 30 s. In that time each other
+   organization gets "busy". Add a share for each organization, or the
+   owner accepts one slot in writing.
 2. **The tool descriptions.** The docstring of `read_email_attachment` says
    that it reads no image. The docstring of `read_attachment` names only
    document, sheet and text files. `addendum.ATTACHMENT_FAILURE_RULE` tells

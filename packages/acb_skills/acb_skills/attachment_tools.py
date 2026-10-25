@@ -279,26 +279,38 @@ def _parse_and_release(data: bytes, suffix: str, slot: _Slot) -> Extracted:
         slot.release()
 
 
-async def parse_bounded(data: bytes, suffix: str) -> Extracted | str:
+async def parse_bounded(
+    data: bytes, suffix: str, *, ocr: bool = True, deadline: float | None = None,
+) -> Extracted | str:
     """The text of *data*, or a sentence that says why there is none.
 
     The ONE bounded parse of the process. :func:`read_attachment` and the
     gateway's email text route (WS-17 EM-T11) both call it. It never raises:
     a refusal, a busy pool, a parse past its deadline and a bug each return
-    one sentence. The answer comes at most ``DEADLINE_SECONDS +
-    _WAIT_MARGIN`` seconds after the call, 22 s by default.
+    one sentence. A busy OCR slot returns ``attachment_text.ReaderBusy``. The
+    answer comes at most ``DEADLINE_SECONDS + _WAIT_MARGIN`` seconds after the
+    call, 22 s by default.
 
     With ``ATTACHMENT_OCR`` on (WS-67 OA-3), an image of
     ``attachment_ocr.IMAGE_SUFFIXES`` and a PDF whose text layer gives no
     words go to :func:`acb_skills.attachment_ocr.ocr_bounded`, after the text
     parse has freed its slot. That adds at most ``OCR_SLOT_WAIT_S +
-    OCR_TIMEOUT_S`` seconds. With the flag off, nothing here changes.
+    OCR_TIMEOUT_S + _REAP_S`` seconds, and never past *deadline* (a time of
+    the running loop) when the caller gives one. With the flag off, nothing
+    here changes.
+
+    *ocr* ``False`` is a read with no OCR, whatever the flag says. A caller
+    with a short budget passes it (fix round 2): the reply drafter reads up
+    to six files in 8 to 20 s, and an OCR read would spend that budget.
     """
-    if attachment_ocr.image_suffix(suffix):
-        return await attachment_ocr.ocr_bounded(data, suffix)
+    use_ocr = ocr and attachment_ocr.ocr_enabled()
+    if use_ocr and attachment_ocr.image_suffix(suffix):
+        return await attachment_ocr.ocr_bounded(data, suffix, deadline=deadline)
     got = await _parse_text(data, suffix)
-    if isinstance(got, Extracted) and attachment_ocr.wants_ocr(got):
-        return await attachment_ocr.ocr_bounded(data, ".pdf", text_layer=got)
+    if use_ocr and isinstance(got, Extracted) and attachment_ocr.wants_ocr(got):
+        return await attachment_ocr.ocr_bounded(
+            data, ".pdf", text_layer=got, deadline=deadline,
+        )
     return got
 
 

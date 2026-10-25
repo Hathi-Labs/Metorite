@@ -16,7 +16,9 @@ R7 fences, each a test class:
    existing refusal and starts no child. A broken image, a decompression
    bomb, a crash and a bad answer each give one sentence.
 4. **The time cap** (:class:`TestTheTimeCap`). A child that hangs is killed at
-   the timeout and reaped. A cancelled read kills its child too.
+   the timeout and reaped. A cancelled read kills its child too. A slow last
+   page keeps the pages before it (fix round 2). On Linux the kill takes the
+   child's own children too, through its process group.
 5. **One child at a time** (:class:`TestOneChildAtATime`). Two reads never
    run two children, and a read that cannot get the slot answers busy.
 6. **The scrubbed env** (:class:`TestTheScrubbedEnv`). No secret of the
@@ -37,7 +39,17 @@ R7 fences, each a test class:
     write a file, cannot fork and, with Landlock ABI 4, cannot connect a TCP
     socket. The same probe unconfined can do each, so each attack is real. A
     kernel below the ABI fails closed, and real OCR still reads inside the
-    confinement.
+    confinement. Fix round 2: the seccomp filter refuses a signal to the
+    parent, a UDP socket and a Unix socket.
+12. **The callers** (:class:`TestTheCallers`, fix round 2). Each call of the
+    OCR-capable reads is on a list. A caller with a budget under the OCR
+    worst case passes ``ocr=False``, and the reply drafter starts no child
+    and uses the flag-off cache name. A busy OCR slot answers
+    ``kind="busy"``, a fetch past its bound answers 504, and a deadline with
+    too little time left starts no child.
+13. **No false "no words"** (:class:`TestNoFalseNoWords`, fix round 2). A
+    read whose pages all failed is a refusal, never "no words", and a capped
+    read with no words says how many pages it read.
 
 Real OCR runs only where the child can confine itself: on a non-Linux dev
 box, or on a Linux kernel with Landlock ABI 4 or later. On an older kernel
@@ -84,6 +96,7 @@ from tests.unit.test_email_attachment_text import (  # noqa: E402
     ORG_A,
     _Harness,
     _text,
+    _user,
 )
 from tests.unit.test_email_attachment_text import m as route  # noqa: E402
 from tests.unit.test_read_attachment import (  # noqa: E402, F401
@@ -226,12 +239,36 @@ def _fake_child(monkeypatch: pytest.MonkeyPatch, code: str) -> None:
     monkeypatch.setattr(ocr, "_worker_argv", lambda _spec: [sys.executable, "-I", "-c", code])
 
 
+def _lines(*items: dict[str, Any]) -> str:
+    """The child's answer: one JSON object on each line (fix round 2)."""
+    return "".join(json.dumps(item) + chr(10) for item in items)
+
+
 def _ok_child(seconds: float = 0.0, text: str = "fake words") -> str:
-    answer = json.dumps({"status": "ok", "pages": [text], "total": 1, "stop": None})
+    answer = _lines({"total": 1}, {"page": text}, {"end": None})
     return (
         "import sys, time; sys.stdin.buffer.read(); "
         f"time.sleep({seconds}); sys.stdout.write({answer!r})"
     )
+
+
+def _alive(pid: int) -> bool:
+    """True while *pid* runs. A zombie is dead: it only waits to be reaped."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, IndexError):
+        return False
+    return state not in ("Z", "X")
+
+
+async def _wait_until(test: Any, seconds: float = 15.0) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if test():
+            return True
+        await asyncio.sleep(0.05)
+    return test()
 
 
 def _slot_is_free() -> bool:
@@ -333,23 +370,42 @@ class TestThePageCap:
         assert ocr._pdf_answer(["", ""], 9, "time", None) == ocr._TOO_SLOW
 
     def test_the_whole_worst_case_fits_inside_the_email_assistants_wait(self) -> None:
-        """Fix round 1, P2. The text parse runs first, then the slot wait,
-        then the OCR child. The whole sum stays under 55 s, and 5 s under the
-        wait of read_email_attachment."""
-        worst = (at.DEADLINE_SECONDS + tools._WAIT_MARGIN
-                 + ocr.OCR_SLOT_WAIT_S + ocr.OCR_TIMEOUT_S + ocr._REAP_S)
-        assert worst <= 55, worst
+        """Fix rounds 1 and 2. The email text route runs the owned fetch, the
+        text parse, then the OCR slot wait, the child and the reap. The fetch
+        has a bound, and OCR ends by the route's deadline. So the route
+        answers inside the wait of read_email_attachment, with 5 s left for
+        the query, Redis and the reply."""
         src = (REPO / "apps/agents/agent-email-assistant/agents.py").read_text(encoding="utf-8")
         found = re.search(r'/email/attachments/\{aid\}/text", timeout=([0-9.]+)', src)
         assert found, "read_email_attachment no longer names its wait for the text route"
-        assert worst <= float(found.group(1)) - 5, (worst, found.group(1))
+        wait = float(found.group(1))
+        assert wait - 5 >= route.TEXT_ROUTE_BUDGET_S, (route.TEXT_ROUTE_BUDGET_S, wait)
+        # Before OCR: the fetch bound and the parse bound. OCR still gets its
+        # least time inside the deadline.
+        before_ocr = route.FETCH_TIMEOUT_S + at.DEADLINE_SECONDS + tools._WAIT_MARGIN
+        assert before_ocr + ocr._MIN_OCR_S + ocr._REAP_S <= route.TEXT_ROUTE_BUDGET_S
+        # With no deadline (the chat tool), the sum of the parts stays under it.
+        no_deadline = (at.DEADLINE_SECONDS + tools._WAIT_MARGIN
+                       + ocr.OCR_SLOT_WAIT_S + ocr.OCR_TIMEOUT_S + ocr._REAP_S)
+        assert no_deadline <= route.TEXT_ROUTE_BUDGET_S, no_deadline
         assert ocr.OCR_SOFT_SECONDS < ocr.OCR_TIMEOUT_S
 
-    def test_an_answer_with_more_pages_than_the_cap_is_refused(self) -> None:
-        many = {"status": "ok", "pages": ["x"] * (ocr.MAX_OCR_PAGES + 1), "total": 99,
-                "stop": "pages"}
-        assert ocr._pages_of(many) is None
-        assert ocr._pages_of({**many, "pages": ["x"] * ocr.MAX_OCR_PAGES}) is not None
+    def test_an_answer_with_more_pages_than_the_cap_is_bad(self) -> None:
+        stream = ocr._Stream()
+        stream.feed(_lines({"total": 99}, *[{"page": "x"}] * ocr.MAX_OCR_PAGES).encode())
+        assert not stream.bad and len(stream.pages) == ocr.MAX_OCR_PAGES
+        stream.feed(_lines({"page": "x"}).encode())
+        assert stream.bad
+        assert ocr._answer_of(stream, "pdf", None) == ocr._FAILED
+
+    @pytest.mark.parametrize("raw", [
+        {"total": 2, "page": "x"}, {"page": "x"}, {"end": None}, {"total": -1}, {"total": True},
+        {"refused": 3}, ["total", 1],
+    ], ids=["two-keys", "page-first", "end-first", "negative", "bool", "code-type", "list"])
+    def test_a_line_out_of_the_contract_is_bad(self, raw: Any) -> None:
+        stream = ocr._Stream()
+        stream.feed((json.dumps(raw) + chr(10)).encode())
+        assert stream.bad
 
 
 # ── 3. Clean refusals ───────────────────────────────────────────────────────
@@ -432,6 +488,65 @@ class TestTheTimeCap:
         assert spawned and spawned[0].returncode is not None
         assert _slot_is_free()
 
+    async def test_a_slow_last_page_keeps_the_pages_before_it(self, ocr_on, monkeypatch) -> None:
+        """Fix round 2, P2. The child writes each page when it ends it. A
+        kill during the third page keeps the first two, and says so."""
+        code = (
+            "import json, sys, time\n"
+            "sys.stdin.buffer.read()\n"
+            "def out(item):\n"
+            "    sys.stdout.write(json.dumps(item) + chr(10))\n"
+            "    sys.stdout.flush()\n"
+            "out({'total': 3})\n"
+            "out({'page': 'first words'})\n"
+            "out({'page': 'second words'})\n"
+            "time.sleep(120)\n"
+        )
+        _fake_child(monkeypatch, code)
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 2.0)
+        got = await ocr.ocr_bounded(b"%PDF-1.7 scan", ".pdf")
+        assert isinstance(got, at.Extracted), got
+        assert (got.read, got.total, got.stopped, got.ocr) == (2, 3, True, True)
+        assert "first words" in got.text and "second words" in got.text
+        assert got.text.endswith(
+            "(OCR read the first 2 of 3 pages, and then it reached its time limit.)"
+        )
+        assert _slot_is_free()
+
+    async def test_a_kill_with_no_page_says_too_slow(self, ocr_on, monkeypatch) -> None:
+        code = (
+            "import sys, time; sys.stdin.buffer.read(); "
+            "sys.stdout.write('{\"total\": 3}' + chr(10)); sys.stdout.flush(); time.sleep(120)"
+        )
+        _fake_child(monkeypatch, code)
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 2.0)
+        assert await ocr.ocr_bounded(b"%PDF-1.7 scan", ".pdf") == ocr._TOO_SLOW
+
+    @linux_only
+    async def test_a_kill_takes_the_childs_own_children(self, ocr_on, monkeypatch, tmp_path) -> None:
+        """Verifier LOW-1. The child starts in its own session, and the kill
+        is of its process group. Without either, its own child lives on.
+        This fake child has no RLIMIT_NPROC, so it can fork."""
+        pidfile = tmp_path / "grandchild.pid"
+        code = (
+            "import subprocess, sys, time\n"
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+            "time.sleep(120)\n"
+        )
+        _fake_child(monkeypatch, code)
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 3.0)
+        got = await ocr.ocr_bounded(_image(["x"], "PNG"), ".png")
+        assert got == ocr._TOO_SLOW
+        grandchild = int(pidfile.read_text(encoding="utf-8"))
+        try:
+            assert await _wait_until(lambda: not _alive(grandchild), 5.0), (
+                "the child's own child outlived the kill"
+            )
+        finally:
+            if _alive(grandchild):
+                os.kill(grandchild, 9)
+
 
 # ── 5. One child at a time ──────────────────────────────────────────────────
 
@@ -476,7 +591,7 @@ class TestOneChildAtATime:
             got = await ocr.ocr_bounded(_image(["x"], "PNG"), ".png")
         finally:
             ocr._SLOT.release()
-        assert got == ocr._BUSY
+        assert got == ocr._BUSY and isinstance(got, at.ReaderBusy)
         assert spawn_trap == []
 
     def test_the_slot_is_one_for_the_process(self) -> None:
@@ -503,17 +618,21 @@ class TestTheScrubbedEnv:
     async def test_the_real_child_sees_no_secret(self, ocr_on, monkeypatch) -> None:
         dump = (
             "import json, os, sys; sys.stdin.buffer.read(); "
-            "sys.stdout.write(json.dumps({'names': sorted(os.environ), "
-            "'values': sorted(os.environ.values())}))"
+            "env = json.dumps({'names': sorted(os.environ), 'values': sorted(os.environ.values())}); "
+            "sys.stdout.write(json.dumps({'total': 1}) + chr(10)); "
+            "sys.stdout.write(json.dumps({'page': env}) + chr(10)); "
+            "sys.stdout.write(json.dumps({'end': None}) + chr(10))"
         )
         _fake_child(monkeypatch, dump)
+        monkeypatch.setattr(ocr, "MAX_PAGE_CHARS", 1_000_000)
         held = await ocr._take_slot(1.0)
         assert held is not None
         try:
-            seen = await ocr._run_child(b"x", ocr._spec("image", 10), held)
+            stream = await ocr._run_child(b"x", ocr._spec("image", 10), held, 20.0)
         finally:
             held.release()
-        assert isinstance(seen, dict), seen
+        assert isinstance(stream, ocr._Stream) and stream.ended and stream.pages, stream
+        seen = json.loads(stream.pages[0])
         assert not set(CANARIES) & set(seen["names"])
         assert not [v for v in seen["values"] if "oa3canary" in v]
         assert "OMP_NUM_THREADS" in seen["names"]
@@ -576,6 +695,9 @@ class TestTheFlagOff:
         monkeypatch.setattr(get_settings(), "attachment_ocr", True, raising=False)
         assert route._no_fetch(row) is None
         assert route._cache_namespace() == "email-att-text-ocr"
+        # A read that asks for no OCR answers as with the flag off (round 2).
+        assert route._no_fetch(row, ocr=False) == ("no_text", route._IMAGE_REASON)
+        assert route._cache_namespace(ocr=False) == "email-att-text"
 
     def test_another_image_kind_is_named_with_the_flag_on(self, ocr_on) -> None:
         row = SimpleNamespace(filename="clip.gif", mime_type="image/gif", provider="microsoft")
@@ -644,6 +766,25 @@ class TestTheWorker:
         assert worker._scale(0.0, 842.0, spec) is None
         assert worker._scale(float("inf"), 842.0, spec) is None
 
+    def test_the_seccomp_filter_refuses_each_listed_call_and_passes_the_rest(self) -> None:
+        """Fix round 2. The filter runs here in a small BPF interpreter, so
+        this fence holds on Windows too. Each denied call gets EPERM, an x32
+        call gets EPERM, a read passes, and another architecture is killed."""
+        program = _W.seccomp_program()
+        errno_eperm = _W._SECCOMP_RET_ERRNO | _W._EPERM
+        x86 = _W._AUDIT_ARCH_X86_64
+        for name, number in _W.SECCOMP_DENIED.items():
+            assert _run_bpf(program, number, x86) == errno_eperm, name
+            assert _run_bpf(program, number | _W._X32_SYSCALL_BIT, x86) == errno_eperm, name
+        for allowed in (0, 1, 3, 9, 60, 231, 13):  # read, write, close, mmap, exit, ...
+            assert _run_bpf(program, allowed, x86) == _W._SECCOMP_RET_ALLOW, allowed
+        assert _run_bpf(program, 0, 0x40000028) == _W._SECCOMP_RET_KILL_PROCESS  # i386
+        assert set(_W.SECCOMP_DENIED) == {
+            "kill", "tkill", "tgkill", "rt_sigqueueinfo", "rt_tgsigqueueinfo", "pidfd_open",
+            "pidfd_send_signal", "ptrace", "process_vm_readv", "process_vm_writev",
+            "socket", "socketpair",
+        }
+
     def test_the_spec_asks_for_landlock_abi_four(self) -> None:
         assert ocr.MIN_LANDLOCK_ABI == 4
         assert ocr._spec("pdf", 1)["landlock_abi"] == 4
@@ -667,6 +808,25 @@ class TestTheWorker:
             "_limit_self", "_check_landlock", "_preload", "_confine",
             "sys.stdin.buffer.read", "_read",
         ], order
+
+
+def _run_bpf(program: list[tuple[int, int, int, int]], nr: int, arch: int) -> int:
+    """Run a seccomp filter of the worker's four opcodes, for one call."""
+    pc, acc = 0, 0
+    for _ in range(len(program) + 1):
+        code, jt, jf, k = program[pc]
+        if code == 0x20:  # BPF_LD | BPF_W | BPF_ABS
+            acc = {0: nr, 4: arch}[k]
+            pc += 1
+        elif code == 0x15:  # BPF_JMP | BPF_JEQ | BPF_K
+            pc += 1 + (jt if acc == k else jf)
+        elif code == 0x35:  # BPF_JMP | BPF_JGE | BPF_K
+            pc += 1 + (jt if acc >= k else jf)
+        elif code == 0x06:  # BPF_RET | BPF_K
+            return k
+        else:
+            raise AssertionError(f"opcode {code:#x}")
+    raise AssertionError("the filter did not return")
 
 
 # ── 9. The answer cap ───────────────────────────────────────────────────────
@@ -715,14 +875,43 @@ class TestTheAnswerCap:
         assert time.monotonic() - start < 10, "the parent waited for the timeout"
         # What the parent HELD when it killed the child: the cap and one chunk.
         assert at_kill and at_kill[0] <= 1024 * 1024 + ocr._CHUNK, at_kill
-        # The reap then reads what the dead child left in the pipe, and keeps
-        # none of it. That is bounded too.
-        assert read <= 1024 * 1024 + 2 * 1024 * 1024, read
+        # The reap then reads what the dead child left in the pipe and in the
+        # transport, and keeps none of it. The child is dead, so that ends.
+        assert read <= 1024 * 1024 + 8 * 1024 * 1024, read
         assert held and held[0].returncode is not None, "the child still runs"
         assert _slot_is_free()
 
+    async def test_the_reap_drains_the_pipe(self, ocr_on, monkeypatch) -> None:
+        """Verifier LOW-3. After a flood kill, stdout holds unread bytes, and
+        ``Process.wait()`` returns only when every pipe has closed. The reap
+        reads the rest and throws it away. Without that drain, the wait runs
+        to the reap bound, set high here, and the read takes 30 s."""
+        monkeypatch.setattr(ocr, "_MAX_ANSWER_BYTES", 1024 * 1024)
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 60.0)
+        monkeypatch.setattr(ocr, "_REAP_S", 30.0)
+        _fake_child(monkeypatch, _FLOOD)
+        start = time.monotonic()
+        assert await ocr.ocr_bounded(_image(["x"], "PNG"), ".png") == ocr._FAILED
+        assert time.monotonic() - start < 10, "the reap waited for its bound"
+
 
 # ── 10. The blocking path ───────────────────────────────────────────────────
+
+
+class _CountingReader:
+    """A child's stdout that counts the bytes that the parent took from it."""
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+        self.count = 0
+
+    def read1(self, size: int = -1) -> bytes:
+        chunk = self._raw.read1(size)
+        self.count += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self._raw.close()
 
 
 @pytest.fixture
@@ -738,20 +927,13 @@ def blocking_path(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
     def _spy(*args: Any, **kwargs: Any) -> Any:
         proc = real(*args, **kwargs)
+        if proc.stdout is not None:
+            proc.stdout = _CountingReader(proc.stdout)
         procs.append(proc)
         return proc
 
     monkeypatch.setattr(subprocess, "Popen", _spy)
     return procs
-
-
-async def _wait_until(test: Any, seconds: float = 15.0) -> bool:
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        if test():
-            return True
-        await asyncio.sleep(0.05)
-    return test()
 
 
 class TestTheBlockingPath:
@@ -766,9 +948,19 @@ class TestTheBlockingPath:
         monkeypatch.setattr(ocr, "_MAX_ANSWER_BYTES", 1024 * 1024)
         monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 20.0)
         _fake_child(monkeypatch, _FLOOD)
+        at_kill: list[int] = []
+        real_kill = ocr._kill_group
+
+        def _kill(proc: Any) -> None:
+            at_kill.append(proc.stdout.count)
+            real_kill(proc)
+
+        monkeypatch.setattr(ocr, "_kill_group", _kill)
         start = time.monotonic()
         assert await ocr.ocr_bounded(_image(["x"], "PNG"), ".png") == ocr._FAILED
         assert time.monotonic() - start < 10
+        # Verifier LOW-2: what the parent took when it killed the child.
+        assert at_kill and at_kill[0] <= 1024 * 1024 + ocr._CHUNK, at_kill
         assert blocking_path[0].poll() is not None
         assert _slot_is_free()
 
@@ -807,6 +999,10 @@ spec = importlib.util.spec_from_file_location("w", sys.argv[1])
 w = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(w)
 mode, abi, secret, out_path, port = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], int(sys.argv[6])
+# A TCP socket made BEFORE the confinement: its connect meets Landlock only,
+# because the seccomp filter refuses socket() itself.
+pre = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+pre.settimeout(3)
 
 def attempt(fn):
     try:
@@ -832,6 +1028,18 @@ def fork():
         os._exit(0)
     os.waitpid(pid, 0)
 
+def connect_open():
+    pre.connect(("127.0.0.1", port))
+
+def signal_parent():
+    os.kill(os.getppid(), 0)
+
+def udp():
+    socket.socket(socket.AF_INET, socket.SOCK_DGRAM).close()
+
+def unix():
+    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()
+
 def lazy_import():
     try:
         import sqlite3  # noqa: F401  (a module and a library that no step loaded)
@@ -851,6 +1059,10 @@ print(json.dumps({
     "parent_environ": attempt(lambda: read(f"/proc/{os.getppid()}/environ")),
     "write_file": attempt(write),
     "tcp_connect": attempt(connect),
+    "tcp_connect_open_socket": attempt(connect_open),
+    "signal_parent": attempt(signal_parent),
+    "udp_socket": attempt(udp),
+    "unix_socket": attempt(unix),
     "fork": attempt(fork),
     "stdlib_read": attempt(lambda: read(os.path.join(os.path.dirname(os.__file__), "json", "__init__.py"))),
     "lazy_import": attempt(lazy_import),
@@ -906,6 +1118,10 @@ class TestTheConfinement:
         assert got["parent_environ"] == "allowed:canary", got
         assert got["write_file"] == "allowed", got
         assert got["tcp_connect"] == "allowed", got
+        assert got["tcp_connect_open_socket"] == "allowed", got
+        assert got["signal_parent"] == "allowed", got
+        assert got["udp_socket"] == "allowed", got
+        assert got["unix_socket"] == "allowed", got
         assert got["fork"] == "allowed", got
 
     def test_the_confined_child_reads_only_the_python_and_library_dirs(
@@ -922,13 +1138,27 @@ class TestTheConfinement:
         if os.geteuid() != 0:  # root ignores RLIMIT_NPROC
             assert got["fork"] in ("refused:EAGAIN", "refused:EWOULDBLOCK"), got
 
+    @pytest.mark.skipif(sys.platform == "linux" and os.uname().machine != "x86_64",
+                        reason="the seccomp filter is built for x86-64; another machine fails closed")
+    def test_the_confined_child_cannot_signal_or_open_a_socket(self, tmp_path, listener) -> None:
+        """Fix round 2. The seccomp filter refuses a signal to the parent (the
+        gateway), and each new socket: TCP, UDP and Unix. This holds at every
+        Landlock ABI, because the filter does not depend on it."""
+        got = _probe(tmp_path, "confine", min(LANDLOCK_ABI, ocr.MIN_LANDLOCK_ABI), listener)
+        assert got["confine"] == "done", got
+        assert got["signal_parent"] == "refused:EPERM", got
+        assert got["udp_socket"] == "refused:EPERM", got
+        assert got["unix_socket"] == "refused:EPERM", got
+        assert got["tcp_connect"] == "refused:EPERM", got
+
     @pytest.mark.skipif(sys.platform == "linux" and LANDLOCK_ABI < 4, reason=(
         f"Landlock ABI {LANDLOCK_ABI} has no network rules; ABI 4 (Linux 6.7) adds TCP. "
         "The box (6.8) and the dev VPS have it"))
     def test_the_confined_child_cannot_connect_tcp(self, tmp_path, listener) -> None:
         got = _probe(tmp_path, "confine", ocr.MIN_LANDLOCK_ABI, listener)
         assert got["confine"] == "done", got
-        assert got["tcp_connect"] == "refused:EACCES", got
+        # A socket made before the confinement meets Landlock's TCP rule.
+        assert got["tcp_connect_open_socket"] == "refused:EACCES", got
 
     def test_a_kernel_below_the_abi_fails_closed(self, tmp_path, listener) -> None:
         got = _probe(tmp_path, "confine", LANDLOCK_ABI + 1, listener)
@@ -950,3 +1180,238 @@ class TestTheConfinement:
         assert got.ocr and "4471" in got.text
         img = await tools.parse_bounded(_image(["Total 1200 INR"], "JPEG"), ".jpg")
         assert isinstance(img, at.Extracted) and "1200" in img.text, img
+
+
+# ── 12. The callers (fix round 2) ───────────────────────────────────────────
+
+#: Each call of a read that can reach OCR, in apps/ and packages/, by
+#: (file, the function that calls, the read) -> (OCR, why). A new call fails
+#: the fence until it is on this list, with a reason.
+CALLERS: dict[tuple[str, str, str], tuple[bool, str]] = {
+    ("packages/acb_skills/acb_skills/attachment_tools.py", "read_attachment", "parse_bounded"):
+        (True, "the chat tool: a tool call with no budget"),
+    ("apps/services/gateway/gateway/routes/email/transport/attachments.py",
+     "read_attachment_text", "parse_bounded"):
+        (True, "the email text route: a deadline of 55 s inside the 60 s of its caller"),
+    ("apps/services/gateway/gateway/routes/email/transport/attachments.py",
+     "attachment_text", "read_attachment_text"):
+        (True, "the route: the email assistant waits 60 s for it"),
+    ("apps/services/gateway/gateway/routes/email/automation/draft_files.py",
+     "_read_text", "read_attachment_text"):
+        (False, "the reply drafter: 8 to 20 s for all the files of a mail"),
+}
+_READS = frozenset({"parse_bounded", "read_attachment_text", "attachment_text"})
+
+
+class _Calls(ast.NodeVisitor):
+    def __init__(self, rel: str) -> None:
+        self.rel = rel
+        self.stack: list[str] = []
+        self.found: list[tuple[tuple[str, str, str], ast.Call]] = []
+
+    def _function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.stack.append(node.name)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    visit_FunctionDef = _function
+    visit_AsyncFunctionDef = _function
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else (
+            func.attr if isinstance(func, ast.Attribute) else None)
+        if name in _READS:
+            where = self.stack[-1] if self.stack else "<module>"
+            self.found.append(((self.rel, where, name), node))
+        self.generic_visit(node)
+
+
+def _read_calls() -> list[tuple[tuple[str, str, str], ast.Call]]:
+    found: list[tuple[tuple[str, str, str], ast.Call]] = []
+    for root in ("apps", "packages"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            rel = path.relative_to(REPO).as_posix()
+            if "/node_modules/" in rel or "/.venv/" in rel:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            visitor = _Calls(rel)
+            visitor.visit(tree)
+            found.extend(visitor.found)
+    return found
+
+
+def _asks_for_no_ocr(call: ast.Call) -> bool:
+    return any(
+        kw.arg == "ocr" and isinstance(kw.value, ast.Constant) and kw.value.value is False
+        for kw in call.keywords
+    )
+
+
+class TestTheCallers:
+    def test_every_call_of_a_read_that_can_reach_ocr_is_listed(self) -> None:
+        found = {key for key, _call in _read_calls()}
+        assert found == set(CALLERS), (
+            "a new caller can reach OCR. List it in CALLERS and in spec §4.1, and "
+            f"pass ocr=False when its budget is short: {sorted(found ^ set(CALLERS))}"
+        )
+
+    def test_a_caller_with_a_short_budget_asks_for_no_ocr(self) -> None:
+        for key, call in _read_calls():
+            reaches_ocr, why = CALLERS[key]
+            assert _asks_for_no_ocr(call) is (not reaches_ocr), (key, why)
+
+    def test_each_drafter_budget_is_under_the_ocr_worst_case(self) -> None:
+        """The reason the drafter reads with no OCR: each of its budgets
+        for ALL the files of a mail is shorter than one OCR read."""
+        from gateway.routes.email.automation import actions, draft_files, drafting
+
+        for budget in (draft_files.READ_BUDGET_S, drafting.COMPOSE_FILES_BUDGET_S,
+                       actions.RULE_FILES_BUDGET_S):
+            assert budget < ocr.OCR_TIMEOUT_S + ocr._REAP_S < route.TEXT_ROUTE_BUDGET_S, budget
+
+    async def test_the_drafter_starts_no_child_and_keeps_the_flag_off_cache(
+        self, ocr_on, monkeypatch, spawn_trap,
+    ) -> None:
+        from gateway.routes.email.automation import draft_files as df
+
+        h = _Harness(monkeypatch, filename="order.pdf", payload=_scan([["PURCHASE ORDER 4471"]]))
+        got = await df._read_text(ATT_ID, _user())
+        assert (got.kind, got.reason) == ("no_text", route._NO_TEXT_REASON)
+        assert list(h.text_redis.store) == [f"cc:{ORG_A}:email-att-text:{ATT_ID}"]
+        h = _Harness(monkeypatch, filename="photo.png", mime="image/png",
+                     payload=_image(["x"], "PNG"))
+        got = await df._read_text(ATT_ID, _user())
+        assert (got.kind, got.reason) == ("no_text", route._IMAGE_REASON)
+        assert h.provider_calls == 0
+        assert spawn_trap == []
+
+    async def test_an_ocr_read_never_takes_a_no_ocr_answer(self, ocr_on, monkeypatch) -> None:
+        """The drafter caches "no text" for a scan under the old name. The
+        email assistant then reads the same file with OCR, and gets the OCR
+        text: the two answers live under two names."""
+        from gateway.routes.email.automation import draft_files as df
+
+        _fake_child(monkeypatch, _ok_child(text="ocr words"))
+        h = _Harness(monkeypatch, filename="order.pdf", payload=_scan([["x"]]))
+        assert (await df._read_text(ATT_ID, _user())).kind == "no_text"
+        got = await _text()
+        assert got.kind == "pdf" and "ocr words" in got.text, got
+        assert sorted(h.text_redis.store) == [
+            f"cc:{ORG_A}:email-att-text-ocr:{ATT_ID}", f"cc:{ORG_A}:email-att-text:{ATT_ID}",
+        ]
+
+    async def test_a_busy_ocr_slot_answers_busy_and_is_not_cached(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(ocr, "OCR_SLOT_WAIT_S", 0.2)
+        h = _Harness(monkeypatch, filename="photo.png", mime="image/png",
+                     payload=_image(["x"], "PNG"))
+        assert ocr._SLOT.acquire(blocking=False)
+        try:
+            got = await _text()
+        finally:
+            ocr._SLOT.release()
+        assert (got.kind, got.reason) == ("busy", ocr._BUSY)
+        assert h.text_redis.store == {}
+
+    async def test_the_drafter_names_a_busy_file(self, monkeypatch) -> None:
+        from gateway.routes.email.automation import draft_files as df
+
+        row = SimpleNamespace(id=ATT_ID, filename="spec.pdf", mime_type="application/pdf",
+                              size_bytes=1000)
+
+        async def _rows(_db: Any, _mid: str) -> list[Any]:
+            return [row]
+
+        async def _busy(_aid: str, _user: Any) -> Any:
+            return SimpleNamespace(text="", kind="busy", truncated=False)
+
+        monkeypatch.setattr(df, "_list_files", _rows)
+        monkeypatch.setattr(df, "_read_text", _busy)
+        out = await df.load_draft_files(object(), "m-1", _user())
+        assert out.unread == [("spec.pdf", df.UNREAD_BUSY)]
+
+    async def test_a_fetch_past_its_bound_answers_504_only_with_ocr(
+        self, monkeypatch,
+    ) -> None:
+        from fastapi import HTTPException
+
+        _Harness(monkeypatch, filename="order.pdf", payload=b"%PDF-1.7")
+        stopped = route.AttachmentTextModel(filename="order.pdf", mime_type="application/pdf",
+                                            kind="unsupported", reason="fetched late")
+
+        async def _slow(*_args: Any, **_kwargs: Any) -> Any:
+            await asyncio.sleep(0.8)
+            return SimpleNamespace(stopped=stopped, row=None, content=b"")
+
+        monkeypatch.setattr(route, "_fetch_owned_attachment", _slow)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(get_settings(), "attachment_ocr", True, raising=False)
+        with pytest.raises(HTTPException) as refused:
+            await _text()
+        assert refused.value.status_code == 504
+        # With the flag off, the fetch keeps its old, unbounded wait.
+        monkeypatch.setattr(get_settings(), "attachment_ocr", False, raising=False)
+        assert (await _text()).reason == "fetched late"
+
+    async def test_a_deadline_with_too_little_time_starts_no_child(
+        self, ocr_on, spawn_trap,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        png = _image(["x"], "PNG")
+        assert await ocr.ocr_bounded(png, ".png", deadline=loop.time() + 3.0) == ocr._TOO_SLOW
+        assert spawn_trap == []
+
+    async def test_a_deadline_cuts_the_child_time(self, ocr_on, monkeypatch) -> None:
+        seen: list[tuple[dict[str, Any], float]] = []
+
+        async def _child(_data: bytes, spec: dict[str, Any], _held: Any, timeout: float) -> Any:
+            seen.append((spec, timeout))
+            stream = ocr._Stream()
+            stream.feed(_lines({"total": 1}, {"page": "words"}, {"end": None}).encode())
+            return stream
+
+        monkeypatch.setattr(ocr, "_run_child", _child)
+        loop = asyncio.get_running_loop()
+        got = await ocr.ocr_bounded(_image(["x"], "PNG"), ".png", deadline=loop.time() + 20.0)
+        assert isinstance(got, at.Extracted) and "words" in got.text
+        spec, timeout = seen[0]
+        assert 17.0 <= timeout <= 18.01, timeout  # 20 s less the reap bound
+        assert spec["soft_seconds"] <= timeout - (ocr.OCR_TIMEOUT_S - ocr.OCR_SOFT_SECONDS) + 0.01
+
+
+# ── 13. No false "no words" (fix round 2) ───────────────────────────────────
+
+
+class TestNoFalseNoWords:
+    def test_pages_that_did_not_render_are_a_refusal(self) -> None:
+        layer = at.Extracted(text="[Page 1]\n[Page 2]", kind="pdf", unit="page", read=2,
+                             total=2, stopped=False)
+        assert ocr._pdf_answer([None, None], 2, None, layer) == ocr._FAILED
+        assert ocr._pdf_answer(["", None], 2, None, layer) == ocr._FAILED
+        assert ocr._image_answer([None]) == ocr._FAILED
+
+    def test_a_capped_read_with_no_words_says_how_many_pages_it_read(self) -> None:
+        layer = at.Extracted(text="[Page 1]", kind="pdf", unit="page", read=100, total=200,
+                             stopped=True)
+        got = ocr._pdf_answer(["", ""], 200, "pages", layer)
+        assert isinstance(got, at.Extracted) and got.ocr and (got.read, got.total) == (2, 200)
+        assert ocr.no_words_sentence(got) == (
+            "I read the first 2 of 200 pages of this file by OCR, and OCR found no words in them."
+        )
+        whole = ocr._pdf_answer([""], 1, None, layer)
+        assert ocr.no_words_sentence(whole) == ocr.NO_WORDS_SENTENCE
+
+    async def test_the_route_gives_the_counted_sentence(self, ocr_on, monkeypatch) -> None:
+        pages = _lines({"total": 200}, *[{"page": ""}] * ocr.MAX_OCR_PAGES, {"end": "pages"})
+        _fake_child(monkeypatch, f"import sys; sys.stdin.buffer.read(); sys.stdout.write({pages!r})")
+        _Harness(monkeypatch, filename="blank.pdf", payload=_scan([[]]))
+        got = await _text()
+        assert got.kind == "no_text", got
+        assert got.reason == (
+            "I read the first 15 of 200 pages of this file by OCR, and OCR found no words in them."
+        )

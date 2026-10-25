@@ -32,6 +32,7 @@ from acb_common.tenant_redis import (
 from acb_skills import attachment_ocr
 from acb_skills.attachment_text import (
     SUPPORTED_SUFFIXES,
+    ReaderBusy,
     text_state,
     unsupported_sentence,
 )
@@ -425,11 +426,12 @@ class AttachmentTextModel(BaseModel):
 
     ``kind`` is the type that the shared reader read (a key of
     ``acb_skills.attachment_text.KIND_NAMES``, such as ``pdf``, ``docx`` or
-    ``pptx``), or one of three answers with no text:
+    ``pptx``), or one of four answers with no text:
     ``unsupported`` (a type or a source that the slice does not read),
     ``no_text`` (an image, or a file with no text layer) and ``unreadable``
     (the reader refused the file: a password, a limit, a broken file, no page
-    that parsed, or a busy reader). Each answer with no text carries
+    that parsed, or a busy reader), and ``busy`` (the OCR slot was in use,
+    WS-67 OA-3: try again). Each answer with no text carries
     ``reason``, a sentence for the member. ``chars`` counts the text that the
     reader got, before the cut. ``offset`` is the character where ``text``
     starts, and ``next_offset`` is the one where the next part starts, or
@@ -467,7 +469,7 @@ def _text_suffix(filename: str | None, mime: str | None) -> str:
     return _name_suffix(filename) or _SUFFIX_OF_MIME.get(_mime_base(mime), "")
 
 
-def _no_fetch(row: Any) -> tuple[str, str] | None:
+def _no_fetch(row: Any, *, ocr: bool = True) -> tuple[str, str] | None:
     """``(kind, reason)`` when the route answers without the bytes, else None.
 
     The owned row decides it, before the cache and the provider: an IMAP
@@ -480,7 +482,11 @@ def _no_fetch(row: Any) -> tuple[str, str] | None:
     one type that wins over a suffix is ``message/rfc822``. It only refuses,
     and Outlook names an attached mail after its subject, which can end in
     ``.pdf``.
+
+    *ocr* ``False`` answers as with ``ATTACHMENT_OCR`` off (fix round 2): the
+    reply drafter reads with no OCR.
     """
+    use_ocr = ocr and attachment_ocr.ocr_enabled()
     named = _name_suffix(row.filename)
     mime = _mime_base(row.mime_type)
     suffix = named or _SUFFIX_OF_MIME.get(mime, "")
@@ -491,9 +497,9 @@ def _no_fetch(row: Any) -> tuple[str, str] | None:
     if suffix in _IMAGE_SUFFIXES or (not named and mime.startswith("image/")):
         # WS-67 OA-3: with ATTACHMENT_OCR on, a .png, .jpg or .jpeg image
         # is fetched and read by OCR. Any other image kind says so.
-        if attachment_ocr.image_suffix(named, mime):
+        if use_ocr and attachment_ocr.image_suffix(named, mime):
             return None
-        if attachment_ocr.ocr_enabled():
+        if use_ocr:
             return "no_text", attachment_ocr.OTHER_IMAGE_SENTENCE
         return "no_text", _IMAGE_REASON
     if suffix not in SUPPORTED_SUFFIXES:
@@ -501,14 +507,18 @@ def _no_fetch(row: Any) -> tuple[str, str] | None:
     return None
 
 
-def _cache_namespace() -> str:
+def _cache_namespace(*, ocr: bool = True) -> str:
     """The tenant Redis namespace of the text cache.
 
-    With ``ATTACHMENT_OCR`` on (WS-67 OA-3) the answers live under their own
-    name. So a "no text" answer that was cached before the flag turned on
-    does not hide the OCR text for the hour of its TTL.
+    With ``ATTACHMENT_OCR`` on (WS-67 OA-3) the answers of an OCR read live
+    under their own name. So a "no text" answer that was cached before the
+    flag turned on does not hide the OCR text for the hour of its TTL. A read
+    with *ocr* ``False`` uses the old name (fix round 2), so it never writes a
+    "no text" answer where an OCR read looks, and never reads an OCR answer.
     """
-    return "email-att-text-ocr" if attachment_ocr.ocr_enabled() else "email-att-text"
+    if ocr and attachment_ocr.ocr_enabled():
+        return "email-att-text-ocr"
+    return "email-att-text"
 
 
 def _canonical_uuid(value: str) -> str | None:
@@ -624,18 +634,20 @@ def _base(row: Any) -> dict[str, str]:
     }
 
 
-async def _cached_text(org_id: str | None, row: Any) -> AttachmentTextModel | None:
+async def _cached_text(
+    org_id: str | None, row: Any, namespace: str = "email-att-text",
+) -> AttachmentTextModel | None:
     """The answer that an earlier read of this row cached, else ``None``.
 
     Only after the ownership check, only with an organization, and keyed by
-    the id of the row in tenant Redis. A Redis failure or a bad entry is a
-    miss.
+    the id of the row in tenant Redis, under *namespace*
+    (:func:`_cache_namespace`). A Redis failure or a bad entry is a miss.
     """
     if not org_id:
         return None
     try:
         with organization_scope(org_id):
-            raw = await get_tenant_redis().get(key(_cache_namespace(), str(row.id)))
+            raw = await get_tenant_redis().get(key(namespace, str(row.id)))
         if not raw:
             return None
         data = json.loads(raw)
@@ -646,8 +658,12 @@ async def _cached_text(org_id: str | None, row: Any) -> AttachmentTextModel | No
         return None
 
 
-async def _remember_text(org_id: str | None, row: Any, answer: AttachmentTextModel) -> None:
-    """Cache *answer* for the TTL of the bytes cache. Best effort."""
+async def _remember_text(
+    org_id: str | None, row: Any, answer: AttachmentTextModel,
+    namespace: str = "email-att-text",
+) -> None:
+    """Cache *answer* under *namespace* for the TTL of the bytes cache. Best
+    effort."""
     if not org_id:
         return
     try:
@@ -655,10 +671,21 @@ async def _remember_text(org_id: str | None, row: Any, answer: AttachmentTextMod
             {**{f: getattr(answer, f) for f in _CACHED_FIELDS}, "whole": True})
         with organization_scope(org_id):
             await get_tenant_redis().setex(
-                key(_cache_namespace(), str(row.id)), ATTACHMENT_CACHE_TTL_SECS, payload,
+                key(namespace, str(row.id)), ATTACHMENT_CACHE_TTL_SECS, payload,
             )
     except Exception:
         pass
+
+
+#: The seconds that the text route may take for a read with OCR (WS-67 OA-3
+#: fix round 2). ``read_email_attachment`` waits 60 s for the route, and the
+#: rest is for the database query, the Redis cache and the reply. The OCR
+#: child, its slot wait and its reap all end before this deadline.
+TEXT_ROUTE_BUDGET_S = 55.0
+#: The seconds that the owned fetch (the query, the bytes cache and the mail
+#: provider) may take in a read with OCR. A read with no OCR keeps its old,
+#: unbounded fetch, so the flag off changes nothing.
+FETCH_TIMEOUT_S = 15.0
 
 
 @router.get("/attachments/{attachment_id}/text", response_model=AttachmentTextModel)
@@ -682,19 +709,44 @@ async def attachment_text(
     The parse runs on the shared bounded pool
     (``acb_skills.attachment_tools.parse_bounded``), after the database
     session has closed. Spec: ``email_app_master_plan.md`` §10.4.12.
+
+    The route reads with OCR when ``ATTACHMENT_OCR`` is on (WS-67 OA-3). It
+    has no OCR parameter, so no request can turn OCR off or on.
+    """
+    return await read_attachment_text(attachment_id, user, offset)
+
+
+async def read_attachment_text(
+    attachment_id: str, user: UserContext, offset: int = 0, *, ocr: bool = True,
+) -> AttachmentTextModel:
+    """The read of :func:`attachment_text`, for the route and for a caller in
+    the gateway.
+
+    *ocr* ``False`` reads as with ``ATTACHMENT_OCR`` off (fix round 2): no
+    OCR child, the flag-off cache namespace, the flag-off answers and no
+    time bound on the fetch. The reply drafter (``draft_files.py``) passes it,
+    because it reads up to six files in a budget of 8 to 20 s, and an OCR
+    read would spend that budget for each of them. A read with OCR bounds the
+    fetch to :data:`FETCH_TIMEOUT_S`, and gives OCR a deadline of
+    :data:`TEXT_ROUTE_BUDGET_S` from the start. A busy OCR slot answers
+    ``kind="busy"``.
     """
     aid = _canonical_uuid(attachment_id)
     if aid is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    use_ocr = ocr and attachment_ocr.ocr_enabled()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TEXT_ROUTE_BUDGET_S if use_ocr else None
+    namespace = _cache_namespace(ocr=ocr)
     org_id = user.organization_id
     hold = _ReadHold(user)
 
     async def _answer_first(row: Any) -> AttachmentTextModel | None:
         """An answer with no fetch: a refused type, the cache, or busy."""
-        early = _no_fetch(row)
+        early = _no_fetch(row, ocr=ocr)
         if early is not None:
             return AttachmentTextModel(**_base(row), kind=early[0], reason=early[1])
-        cached = await _cached_text(org_id, row)
+        cached = await _cached_text(org_id, row, namespace)
         if cached is not None:
             return cached
         if not hold.take():
@@ -705,19 +757,12 @@ async def attachment_text(
         # ⚠️ The session opens OUTSIDE the try (review round 1), so
         # `TenantUnbound` and a refused connect reach main.py's handlers.
         async with _tenant_session() as db:
-            try:
-                got = await _fetch_owned_attachment(
+            got = await _fetch_for_text(
+                _fetch_owned_attachment(
                     db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
-                )
-            except HTTPException:
-                raise
-            except Exception as exc:
-                if _is_database_fault(exc):
-                    raise
-                _log.error("attachment_text.fetch_failed", aid=aid, error=str(exc)[:200])
-                raise HTTPException(
-                    status_code=502, detail="The mail provider did not give the file.",
-                ) from None
+                ),
+                aid, FETCH_TIMEOUT_S if use_ocr else None,
+            )
         if got.stopped:
             return _text_part(got.stopped, offset)
         row = got.row
@@ -727,36 +772,75 @@ async def attachment_text(
         if len(got.content) > MAX_TEXT_INPUT_BYTES:
             raise HTTPException(status_code=413, detail=_too_large(MAX_TEXT_INPUT_BYTES))
 
-        # An image with no name suffix has an OCR suffix by its type (OA-3).
-        suffix = (_text_suffix(row.filename, row.mime_type)
-                  or attachment_ocr.image_suffix("", row.mime_type or "") or "")
-        parsed = await parse_bounded(got.content, suffix)
+        suffix = _text_suffix(row.filename, row.mime_type)
+        options: dict[str, Any] = {}
+        if use_ocr:
+            # An image with no name suffix has an OCR suffix by its type.
+            suffix = suffix or attachment_ocr.image_suffix("", row.mime_type or "") or ""
+            options["deadline"] = deadline
+        elif attachment_ocr.ocr_enabled():
+            options["ocr"] = False  # the caller asked for no OCR
+        parsed = await parse_bounded(got.content, suffix, **options)
         if isinstance(parsed, str):
             # Not cached: a busy pool and a deadline pass with time.
             _log.info("attachment_text.refused", aid=aid, kind=suffix, size=len(got.content))
-            return AttachmentTextModel(**base, kind="unreadable", reason=parsed)
-        state = text_state(parsed)
-        if state == "unread":
-            answer = AttachmentTextModel(**base, kind="unreadable", reason=_NO_PAGE_REASON)
-        elif state == "none":
-            reason = attachment_ocr.NO_WORDS_SENTENCE if parsed.ocr else _NO_TEXT_REASON
-            answer = AttachmentTextModel(**base, kind="no_text", reason=reason)
-        else:
-            full = parsed.text
-            _log.info("attachment_text.read", aid=aid, kind=parsed.kind,
-                      size=len(got.content), chars=len(full), stopped=parsed.stopped)
-            # The text goes in the cache, up to MAX_CACHED_TEXT_CHARS.
-            # `truncated` here says that the reader or the cap stopped early,
-            # and `_text_part` cuts the reply.
-            kept = full[:MAX_CACHED_TEXT_CHARS]
-            answer = AttachmentTextModel(
-                **base,
-                kind=parsed.kind,
-                text=kept,
-                truncated=bool(parsed.stopped) or len(full) > len(kept),
-                chars=len(kept),
-            )
-        await _remember_text(org_id, row, answer)
+            kind = "busy" if isinstance(parsed, ReaderBusy) else "unreadable"
+            return AttachmentTextModel(**base, kind=kind, reason=str(parsed))
+        answer = _parsed_answer(base, parsed, aid, len(got.content))
+        await _remember_text(org_id, row, answer, namespace)
         return _text_part(answer, offset)
     finally:
         hold.release()
+
+
+async def _fetch_for_text(fetch: Awaitable[Any], aid: str, seconds: float | None) -> Any:
+    """Await the owned *fetch*, within *seconds* when it is given.
+
+    A fault of the database keeps its own answer (review round 1). A fetch
+    past *seconds* is 504 (WS-67 OA-3 fix round 2), and any other fault of
+    the provider is 502.
+    """
+    try:
+        if seconds is None:
+            return await fetch
+        return await asyncio.wait_for(fetch, seconds)
+    except HTTPException:
+        raise
+    except TimeoutError:
+        _log.warning("attachment_text.fetch_slow", aid=aid, seconds=seconds)
+        raise HTTPException(
+            status_code=504, detail="The mail provider did not give the file in time.",
+        ) from None
+    except Exception as exc:
+        if _is_database_fault(exc):
+            raise
+        _log.error("attachment_text.fetch_failed", aid=aid, error=str(exc)[:200])
+        raise HTTPException(
+            status_code=502, detail="The mail provider did not give the file.",
+        ) from None
+
+
+def _parsed_answer(
+    base: dict[str, str], parsed: Any, aid: str, size: int,
+) -> AttachmentTextModel:
+    """The answer to cache for what the reader gave."""
+    state = text_state(parsed)
+    if state == "unread":
+        return AttachmentTextModel(**base, kind="unreadable", reason=_NO_PAGE_REASON)
+    if state == "none":
+        reason = attachment_ocr.no_words_sentence(parsed) if parsed.ocr else _NO_TEXT_REASON
+        return AttachmentTextModel(**base, kind="no_text", reason=reason)
+    full = parsed.text
+    _log.info("attachment_text.read", aid=aid, kind=parsed.kind,
+              size=size, chars=len(full), stopped=parsed.stopped)
+    # The text goes in the cache, up to MAX_CACHED_TEXT_CHARS. `truncated`
+    # here says that the reader or the cap stopped early, and `_text_part`
+    # cuts the reply.
+    kept = full[:MAX_CACHED_TEXT_CHARS]
+    return AttachmentTextModel(
+        **base,
+        kind=parsed.kind,
+        text=kept,
+        truncated=bool(parsed.stopped) or len(full) > len(kept),
+        chars=len(kept),
+    )

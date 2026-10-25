@@ -716,8 +716,11 @@ class Settings(BaseSettings):
     # byte-identical: a scan answers "no text" and an image is refused. The
     # one reader is `acb_skills.attachment_ocr.ocr_enabled`. The flip is the
     # agent's under the dev-phase `enforcement-flip` grant. It spends CPU on
-    # the box and no money, and it sends nothing to a third party. Fence:
-    # tests/unit/test_attachment_ocr.py.
+    # the box and no money, and it sends nothing to a third party. ⚠️ Before
+    # the flip, meet the two conditions of `one_assistant_context.md` §4.1: a
+    # share of the one OCR slot for each organization (or the owner accepts
+    # one slot in writing), and the three prompt texts that still say "no
+    # image". Fence: tests/unit/test_attachment_ocr.py.
     attachment_ocr: bool = False
 
     # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────

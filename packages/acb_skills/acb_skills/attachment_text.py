@@ -128,6 +128,7 @@ __all__ = [
     "SUPPORTED_SUFFIXES",
     "AttachmentRefused",
     "Extracted",
+    "ReaderBusy",
     "extract_text",
     "text_state",
     "unsupported_sentence",
@@ -277,6 +278,17 @@ MAX_DOCX_ELEMENTS = 1_000_000
 
 class AttachmentRefused(ValueError):
     """A file this module will not read. ``str()`` is a sentence for the member."""
+
+
+class ReaderBusy(str):
+    """A refusal that passes with time: the OCR slot was in use.
+
+    It is a ``str``, so each caller that takes a sentence still works. The
+    email text route answers ``kind="busy"`` for it (WS-67 OA-3 fix round 2),
+    so a reply card does not call the file "a type that cannot be read". No
+    caller caches it. A full parse pool keeps its plain sentence, as before
+    OA-3.
+    """
 
 
 @dataclass(frozen=True)
