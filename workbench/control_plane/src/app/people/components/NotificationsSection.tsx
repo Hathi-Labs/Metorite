@@ -34,33 +34,45 @@ import {
   permissionState,
   pushSupport,
   pushView,
+  registeredHere,
   sendTestPush,
   webPushOn,
 } from "@/lib/push";
+import { fetchAccounts } from "@/lib/accountSwitch";
 
 type Note = { ok: boolean; message: string } | null;
+
+/** True when another account of the switcher stays on this browser, so the
+ * toggle keeps the browser subscription for it. */
+async function otherAccountsStay(): Promise<boolean> {
+  return (await fetchAccounts(false)).others.length > 0;
+}
 
 export function NotificationsSection() {
   const [view, setView] = useState<PushView>({ kind: "hidden" });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note>(null);
 
-  // Reads only: the key answer, the support, the permission and whether this
-  // browser holds a subscription. Nothing here can show a prompt.
+  // Reads only: the key answer, the support, the permission, the browser's
+  // subscription and THIS member's row of it. Nothing here can show a prompt.
+  // One browser subscription serves every account of the switcher, so the
+  // browser alone does not say whether this member gets the pushes.
   const reload = useCallback(async () => {
     if (!webPushOn()) {
       setView({ kind: "hidden" });
       return;
     }
     const key = await fetchPublicKey();
-    const subscribed = (await currentSubscription().catch(() => null)) !== null;
+    const sub = await currentSubscription().catch(() => null);
+    const registered = sub ? await registeredHere(sub.endpoint) : false;
     setView(
       pushView({
         flag: true,
         support: pushSupport(),
         key,
         permission: permissionState(),
-        subscribed,
+        subscribed: sub !== null,
+        registered,
       }),
     );
   }, []);
@@ -77,10 +89,10 @@ export function NotificationsSection() {
     setNote(null);
     try {
       if (next) {
-        const res = await enablePush();
+        const res = await enablePush(otherAccountsStay);
         if (!res.ok) setNote({ ok: false, message: res.message });
       } else {
-        await disablePush().catch(() => undefined);
+        await disablePush(otherAccountsStay).catch(() => undefined);
       }
       await reload();
     } finally {

@@ -25,8 +25,9 @@ vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
 import { signOut } from "next-auth/react";
 
-import { signOutAll } from "@/lib/accountSwitch";
+import { removeAccount, resetLeaving, signOutAll, signOutThis } from "@/lib/accountSwitch";
 import {
+  FORGET_TIMEOUT_MS,
   base64UrlToBytes,
   currentSubscription,
   disablePush,
@@ -37,9 +38,11 @@ import {
   permissionState,
   pushSupport,
   pushView,
+  registeredHere,
   sendTestPush,
   supportOf,
   testMessage,
+  thisDeviceEndpoint,
   type BrowserFacts,
 } from "@/lib/push";
 
@@ -177,7 +180,12 @@ describe("no permission prompt without a tap", () => {
     await currentSubscription();
     await fetchPublicKey();
     await sendTestPush();
-    pushView({ flag: true, support: "supported", key: { kind: "key", key: KEY }, permission: "default", subscribed: false });
+    await registeredHere(ENDPOINT);
+    await thisDeviceEndpoint();
+    pushView({
+      flag: true, support: "supported", key: { kind: "key", key: KEY },
+      permission: "default", subscribed: false, registered: false,
+    });
     await disablePush();
     await forgetThisDevice();
     expect(b.requestPermission).not.toHaveBeenCalled();
@@ -212,16 +220,54 @@ describe("no permission prompt without a tap", () => {
     expect(b.fetch).not.toHaveBeenCalled();
   });
 
-  it("a device the server refuses is unsubscribed again", async () => {
-    const b = fakeBrowser({
-      fetchImpl: async (url) =>
-        url.endsWith("/public-key")
-          ? Response.json({ public_key: KEY })
-          : Response.json({ detail: "You have 10 devices with notifications on." }, { status: 409 }),
-    });
-    const res = await enablePush();
-    expect(res).toMatchObject({ ok: false, reason: "refused", message: expect.stringContaining("10 devices") });
-    expect(b.unsubscribe).toHaveBeenCalled();
+  it("a device the server refuses is unsubscribed again when no other account needs it", async () => {
+    const refuse = async (url: string) =>
+      url.endsWith("/public-key")
+        ? Response.json({ public_key: KEY })
+        : Response.json({ detail: "Metorite could not keep it." }, { status: 503 });
+    const alone = fakeBrowser({ fetchImpl: refuse });
+    const res = await enablePush(async () => false);
+    expect(res).toMatchObject({ ok: false, reason: "refused", message: "Metorite could not keep it." });
+    expect(alone.unsubscribe).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    // Another account stays on this browser: the subscription is theirs too.
+    const shared = fakeBrowser({ fetchImpl: refuse });
+    expect((await enablePush(async () => true)).ok).toBe(false);
+    expect(shared.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it("a browser another account subscribed turns on for me with no second prompt", async () => {
+    // One subscription serves every account of the switcher. The first
+    // account granted the permission and subscribed. I only need my row.
+    const b = fakeBrowser({ subscribed: true, permission: "granted" });
+    expect(await enablePush()).toEqual({ ok: true });
+    expect(b.requestPermission).not.toHaveBeenCalled();
+    expect(b.subscribe).not.toHaveBeenCalled();
+    expect(b.unsubscribe).not.toHaveBeenCalled();
+    const post = b.fetch.mock.calls.find(([u]) => u === "/api/push/subscriptions")!;
+    expect(JSON.parse(String(post[1]!.body)).endpoint).toBe(ENDPOINT);
+  });
+
+  it("the status read asks for my row with the endpoint in the body, never in the URL", async () => {
+    const b = fakeBrowser({ fetchImpl: async () => Response.json({ registered: true }) });
+    expect(await registeredHere(ENDPOINT)).toBe(true);
+    const [url, init] = b.fetch.mock.calls[0];
+    expect(url).toBe("/api/push/subscriptions/status");
+    expect(init!.method).toBe("POST");
+    expect(JSON.parse(String(init!.body))).toEqual({ endpoint: ENDPOINT });
+    vi.unstubAllGlobals();
+    fakeBrowser({ fetchImpl: async () => Response.json({}, { status: 404 }) });
+    expect(await registeredHere(ENDPOINT)).toBe(false);
+  });
+
+  it("the toggle turns me off and keeps the subscription while another account stays", async () => {
+    const shared = fakeBrowser({ subscribed: true });
+    await disablePush(async () => true);
+    expect(shared.order).toEqual(["fetch DELETE /api/push/subscriptions"]);
+    vi.unstubAllGlobals();
+    const alone = fakeBrowser({ subscribed: true });
+    await disablePush(async () => false);
+    expect(alone.order).toEqual(["fetch DELETE /api/push/subscriptions", "unsubscribe"]);
   });
 
   it("in the source, only enablePush calls requestPermission, and only the tap calls enablePush", () => {
@@ -411,7 +457,10 @@ describe("iOS and the other browsers", () => {
   it("the section draws the steps on iOS, a toggle elsewhere, and nothing when dark", () => {
     const key = { kind: "key" as const, key: KEY };
     const v = (over: Partial<Parameters<typeof pushView>[0]>) =>
-      pushView({ flag: true, support: "supported", key, permission: "default", subscribed: false, ...over });
+      pushView({
+        flag: true, support: "supported", key, permission: "default",
+        subscribed: false, registered: false, ...over,
+      });
     expect(v({ flag: false })).toEqual({ kind: "hidden" });
     expect(v({ key: { kind: "off" } })).toEqual({ kind: "hidden" });
     expect(v({ key: null })).toEqual({ kind: "loading" });
@@ -420,7 +469,10 @@ describe("iOS and the other browsers", () => {
     expect(v({ key: { kind: "not-configured" } })).toEqual({ kind: "not-configured" });
     expect(v({ permission: "denied" })).toEqual({ kind: "blocked" });
     expect(v({})).toEqual({ kind: "ready", on: false });
-    expect(v({ permission: "granted", subscribed: true })).toEqual({ kind: "ready", on: true });
+    expect(v({ permission: "granted", subscribed: true, registered: true })).toEqual({ kind: "ready", on: true });
+    // One browser, several accounts: another account subscribed this browser,
+    // and I hold no row of it. The toggle reads OFF for me.
+    expect(v({ permission: "granted", subscribed: true, registered: false })).toEqual({ kind: "ready", on: false });
   });
 
   it("the iOS section has no checkbox, only the three steps", () => {
@@ -441,6 +493,44 @@ describe("a sign-out forgets this device first", () => {
     expect(b.order).toEqual(["fetch DELETE /api/push/subscriptions", "unsubscribe"]);
     const del = b.fetch.mock.calls[0];
     expect(JSON.parse(String(del[1]!.body))).toEqual({ endpoint: ENDPOINT });
+  });
+
+  it("keeps the subscription when another account stays on this browser", async () => {
+    const b = fakeBrowser({ subscribed: true });
+    await forgetThisDevice(FORGET_TIMEOUT_MS, { keepSubscription: true });
+    expect(b.order).toEqual(["fetch DELETE /api/push/subscriptions"]);
+  });
+
+  it("signOutThis deletes MY row before the switch, keeps the subscription, and names it at the remove", async () => {
+    // Two accounts on one browser. I leave, and `next` stays and keeps its pushes.
+    const b = fakeBrowser({
+      subscribed: true,
+      fetchImpl: async (url) =>
+        url.endsWith("/switch") ? Response.json({ ok: true, email: "b@two.test" }) : Response.json({ ok: true }),
+    });
+    vi.stubGlobal("localStorage", { removeItem: () => undefined, getItem: () => null, setItem: () => undefined, key: () => null, length: 0 });
+    vi.stubGlobal("BroadcastChannel", class { postMessage() {} close() {} addEventListener() {} });
+    resetLeaving();
+    expect(await signOutThis("a@one.test", { slot: 1 }, vi.fn(), vi.fn(async () => {}))).toBe("one");
+    const del = b.order.indexOf("fetch DELETE /api/push/subscriptions");
+    expect(del).toBeGreaterThan(-1);
+    expect(del).toBeLessThan(b.order.indexOf("fetch POST /api/accounts/switch"));
+    expect(b.unsubscribe).not.toHaveBeenCalled();
+    const remove = b.fetch.mock.calls.find(([u]) => u === "/api/accounts/remove")!;
+    expect(JSON.parse(String(remove[1]!.body))).toEqual({ slot: 1, push_endpoint: ENDPOINT });
+  });
+
+  it("Remove from this browser names this device's endpoint, and never unsubscribes", async () => {
+    const b = fakeBrowser({ subscribed: true });
+    expect(await removeAccount(2)).toBe(true);
+    const [url, init] = b.fetch.mock.calls[0];
+    expect(url).toBe("/api/accounts/remove");
+    expect(JSON.parse(String(init!.body))).toEqual({ slot: 2, push_endpoint: ENDPOINT });
+    expect(b.unsubscribe).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    const none = fakeBrowser({ subscribed: false });
+    await removeAccount(2);
+    expect(JSON.parse(String(none.fetch.mock.calls[0][1]!.body))).toEqual({ slot: 2 });
   });
 
   it("makes no request when this browser holds no subscription", async () => {
@@ -508,11 +598,36 @@ describe("a sign-out forgets this device first", () => {
     }
   });
 
-  it("signOutThis forgets the device before the switch moves the cookie", () => {
+  it("signOutThis forgets the device before the switch moves the cookie, and keeps the subscription", () => {
     const src = code(read("lib/accountSwitch.ts"));
     const fn = src.slice(src.indexOf("export async function signOutThis("), src.indexOf("export async function signOutAll("));
-    expect(fn.indexOf("await forgetThisDevice()")).toBeGreaterThan(-1);
-    expect(fn.indexOf("await forgetThisDevice()")).toBeLessThan(fn.indexOf('act("switch"'));
+    const forget = fn.indexOf("await forgetThisDevice(");
+    expect(forget).toBeGreaterThan(-1);
+    expect(forget).toBeLessThan(fn.indexOf('act("switch"'));
+    expect(fn.slice(forget, fn.indexOf(";", forget))).toContain("keepSubscription: true");
+  });
+
+  it("the fifth path: every remove carries this device's endpoint, and the server deletes that row", () => {
+    // "Remove from this browser" (AccountSwitcher) and signOutThis both call
+    // the `remove` action. After it, nothing can act for the removed account.
+    const switchSrc = code(read("lib/accountSwitch.ts"));
+    const removes = [...switchSrc.matchAll(/act\(\s*"remove"\s*,\s*([^)]*\)?)/g)].map((m) => m[1]);
+    expect(removes.length).toBe(2); // removeAccount and the retry helper of signOutThis
+    for (const arg of removes) expect(arg).toMatch(/^await removeBody\(/);
+    const body = switchSrc.slice(switchSrc.indexOf("async function removeBody("));
+    expect(body.slice(0, body.indexOf("\n}\n"))).toContain("thisDeviceEndpoint(");
+    // No other file reaches the remove action by itself.
+    const direct = walk(SRC)
+      .map((f) => ({ rel: rel(f), text: code(fs.readFileSync(f, "utf8")) }))
+      .filter((f) => f.rel !== "lib/accountSwitch.ts" && /\/api\/accounts\/remove|act\(\s*"remove"/.test(f.text))
+      .map((f) => f.rel);
+    expect(direct).toEqual([]);
+    // The server half: the slot account's row goes before the slot does.
+    const route = code(read("app/api/accounts/[action]/route.ts"));
+    const branch = route.slice(route.indexOf('action === "remove"'), route.indexOf('action === "signout-all"'));
+    expect(branch.indexOf("forgetSlotDevice(target.account.email")).toBeGreaterThan(-1);
+    expect(branch.indexOf("forgetSlotDevice(")).toBeLessThan(branch.indexOf("clearSlot("));
+    expect(branch).toContain("!same(target.account.email, s.account.email)");
   });
 });
 

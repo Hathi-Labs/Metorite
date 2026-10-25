@@ -5,7 +5,9 @@
  *   sends the member to /signin. The new sign-in then replaces the active
  *   cookie, and the old account waits in its slot.
  * - `switch {slot}` swaps the active session and the slot.
- * - `remove {slot}` forgets one other account.
+ * - `remove {slot, push_endpoint?}` forgets one other account. With a
+ *   `push_endpoint`, it first deletes that account's web push row of this
+ *   browser, as that account (WS-66 PN-1, `forgetSlotDevice`).
  * - `signout-all` empties every slot, and names every account it held, so the
  *   page can clear their chat namespaces before it signs the active one out.
  *
@@ -13,12 +15,49 @@
  * (`loadState`). None mints a token: each moves a token Auth.js issued.
  */
 import { NextResponse, type NextRequest } from "next/server";
-import { clearSlot, loadState, setSession, setSlot, slotFromBody } from "@/lib/accountsServer";
+import {
+  clearSlot,
+  jsonBody,
+  loadState,
+  pushEndpointOf,
+  setSession,
+  setSlot,
+  slotFromBody,
+  slotOf,
+} from "@/lib/accountsServer";
 import { SLOT_COUNT, stashIndex } from "@/lib/accountSlots";
+import { GATEWAY_URL, currentIdentity, gatewayFetch, headersActingAs } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/**
+ * Delete the web push row of `endpoint` for the account in a slot, AS that
+ * account (WS-66 PN-1, "Remove from this browser").
+ *
+ * ⚠️ The second place this tier acts as an email that is not the active
+ * session's. `GET /api/accounts` is the first, and its note gives the proof:
+ * the slot holds a valid Auth.js session for that email, which `loadState`
+ * verified with the session secret. The act is one DELETE of that member's
+ * own row, so it can touch no other member and no other org.
+ *
+ * It never blocks the remove: the active session must still resolve, the
+ * call has 3 seconds, and a refusal or a fault changes nothing.
+ */
+async function forgetSlotDevice(email: string, endpoint: string): Promise<void> {
+  if (!(await currentIdentity())) return;
+  try {
+    await gatewayFetch(`${GATEWAY_URL}/push/subscriptions`, {
+      method: "DELETE",
+      headers: headersActingAs(email, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ endpoint }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    /* the remove goes on */
+  }
+}
 
 export async function POST(
   req: NextRequest,
@@ -55,8 +94,18 @@ export async function POST(
   }
 
   if (action === "remove") {
-    const index = await slotFromBody(req);
+    const body = await jsonBody(req);
+    const index = slotOf(body);
     if (index === null) return NextResponse.json({ detail: "bad slot" }, { status: 400 });
+    const target = s.slots[index];
+    const endpoint = pushEndpointOf(body);
+    // WS-66 PN-1: the removed account's push row of THIS browser goes first,
+    // as that account. After the remove nothing can act for it any more. A
+    // slot that is a leftover copy of the ACTIVE account is skipped: its row
+    // is the active member's own, and the active member stays.
+    if (target && endpoint && !same(target.account.email, s.account.email)) {
+      await forgetSlotDevice(target.account.email, endpoint);
+    }
     const res = NextResponse.json({ ok: true });
     clearSlot(res, s, index);
     return res;

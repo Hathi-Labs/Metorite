@@ -19,7 +19,7 @@ import { useEffect } from "react";
 import { leaveAccount } from "@/lib/accountLeave";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
-import { forgetThisDevice } from "@/lib/push";
+import { FORGET_TIMEOUT_MS, forgetThisDevice, thisDeviceEndpoint } from "@/lib/push";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 import { clearAppearanceForAccounts, pointAppearanceAt } from "@/lib/theme/scope";
 
@@ -241,8 +241,20 @@ export async function addAccount(
   return true;
 }
 
+/**
+ * The body of a `remove`: the slot, and this browser's push endpoint when it
+ * has one (WS-66 PN-1). The server deletes the removed account's row of that
+ * endpoint AS that account, with the slot's own session, because after the
+ * remove nothing can act for it any more. The subscription itself stays: the
+ * active account still uses it.
+ */
+async function removeBody(slot: number): Promise<{ slot: number; push_endpoint?: string }> {
+  const endpoint = await thisDeviceEndpoint().catch(() => null);
+  return endpoint ? { slot, push_endpoint: endpoint } : { slot };
+}
+
 export async function removeAccount(slot: number): Promise<boolean> {
-  return (await act("remove", { slot })).ok;
+  return (await act("remove", await removeBody(slot))).ok;
 }
 
 /**
@@ -310,7 +322,7 @@ export function clearSignOutNotice(): void {
 /** One `remove`, true only for a 2xx. A network error is false. */
 async function removed(slot: number): Promise<boolean> {
   try {
-    return (await act("remove", { slot })).ok;
+    return (await act("remove", await removeBody(slot))).ok;
   } catch {
     return false;
   }
@@ -350,10 +362,11 @@ export async function signOutThis(
   // This tab leaves, by one path or the other. Its own channel listener must
   // not start a second navigation (see `switchTo`).
   leaving = true;
-  // WS-66 PN-1: forget this device's push subscription NOW, while the cookie
-  // still names the leaving account, so the DELETE deletes ITS row. It never
-  // throws and gives up after a few seconds, so the sign-out goes on anyway.
-  await forgetThisDevice();
+  // WS-66 PN-1: forget this device's push row NOW, while the cookie still
+  // names the leaving account, so the DELETE deletes ITS row. `next` stays on
+  // this browser and shares its one subscription, so the subscription stays.
+  // It never throws and gives up after a few seconds, so the sign-out goes on.
+  await forgetThisDevice(FORGET_TIMEOUT_MS, { keepSubscription: true });
   // True once the server swapped the cookie to `next`. From then on this tab
   // must never stay on the leaving account's page.
   let switched = false;

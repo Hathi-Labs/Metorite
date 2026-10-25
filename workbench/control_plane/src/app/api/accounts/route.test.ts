@@ -228,3 +228,54 @@ describe("stash, list and switch", () => {
     expect(set[SESSION]).toBeUndefined();
   });
 });
+
+describe("remove forgets the removed account's push row of this browser (WS-66 PN-1)", () => {
+  const ENDPOINT = "https://fcm.googleapis.com/fcm/send/device-1";
+
+  /** The gateway calls of the stub, as (method, url, acting email, body). */
+  function gatewayCalls() {
+    return vi.mocked(fetch).mock.calls.map(([url, init]) => ({
+      method: init?.method ?? "GET",
+      url: String(url),
+      who: new Headers(init?.headers).get("X-User-Email"),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    }));
+  }
+
+  it("deletes the slot account's row AS that account, then clears the slot", async () => {
+    authed.email = "a@one.test";
+    const a = await token("a@one.test");
+    const b = await token("b@two.test");
+    const res = await post("remove", { [SESSION]: a, "__Host-mt-acct-2": b }, {
+      body: { slot: 2, push_endpoint: ENDPOINT },
+    });
+    expect(res.status).toBe(200);
+    expect(setCookies(res)).toEqual({ "__Host-mt-acct-2": "" });
+    const calls = gatewayCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "DELETE", who: "b@two.test", body: { endpoint: ENDPOINT } });
+    expect(calls[0].url).toMatch(/\/push\/subscriptions$/);
+  });
+
+  it("never acts for the active account, sends nothing without an endpoint, and still removes on a gateway fault", async () => {
+    authed.email = "a@one.test";
+    const a = await token("a@one.test");
+    // A leftover slot that holds the ACTIVE account: its row is mine, and I stay.
+    await post("remove", { [SESSION]: a, "__Host-mt-acct-1": a }, { body: { slot: 1, push_endpoint: ENDPOINT } });
+    // No endpoint, or one that is not https: nothing goes to the gateway.
+    const b = await token("b@two.test");
+    await post("remove", { [SESSION]: a, "__Host-mt-acct-2": b }, { body: { slot: 2 } });
+    await post("remove", { [SESSION]: a, "__Host-mt-acct-2": b }, {
+      body: { slot: 2, push_endpoint: "http://10.0.0.5/x" },
+    });
+    expect(gatewayCalls()).toEqual([]);
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("gateway down");
+    }));
+    const res = await post("remove", { [SESSION]: a, "__Host-mt-acct-2": b }, {
+      body: { slot: 2, push_endpoint: ENDPOINT },
+    });
+    expect(res.status).toBe(200);
+    expect(setCookies(res)).toEqual({ "__Host-mt-acct-2": "" });
+  });
+});

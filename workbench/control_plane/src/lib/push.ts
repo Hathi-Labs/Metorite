@@ -17,8 +17,17 @@
  *   later). In a Safari tab, `pushSupport` answers `ios-tab`, and the section
  *   shows the three steps instead of a toggle.
  * - **Sign-out.** `forgetThisDevice` deletes this device's row while the
- *   session still names the member, then unsubscribes. It never throws and
- *   gives up after a short time, so it can never block a sign-out.
+ *   session still names the member. It never throws and gives up after a
+ *   short time, so it can never block a sign-out.
+ * - ⚠️ **One browser, several accounts.** Every account of the switcher
+ *   shares this origin, so ONE browser subscription serves them all. The
+ *   browser alone cannot say whether THIS member gets the pushes, so the
+ *   section asks the gateway (`registeredHere`). And only the last account
+ *   to leave this browser may unsubscribe it. A path that leaves another
+ *   account behind deletes this member's row and KEEPS the subscription:
+ *   `signOutThis` (`keepSubscription`), the toggle and the refused enable
+ *   (`othersStay`). "Remove from this browser" deletes the removed
+ *   account's row on the server, as that account (`api/accounts/[action]`).
  *
  * The flag is `NEXT_PUBLIC_WEB_PUSH`, default off. Off, the section draws
  * nothing and nothing registers. `forgetThisDevice` still runs on sign-out:
@@ -177,15 +186,32 @@ export type EnableResult =
   | { ok: false; reason: "unsupported" | "denied" | "dismissed" | "unavailable" | "refused"; message: string };
 
 /**
+ * True when another account of the switcher stays on this browser. Only then
+ * must a path keep the browser subscription for it. The section passes the
+ * switcher's own list (`accountSwitch.ts`, `fetchAccounts`). This module
+ * does not import that file, because that file imports this one.
+ */
+export type OthersStay = () => Promise<boolean>;
+
+const NO_OTHERS: OthersStay = async () => false;
+
+/**
  * Turn push on for this device. **Call it from a click handler only**: the
  * browser shows its permission prompt here, and only here.
+ *
+ * With the permission already granted, it asks nothing. That is the case of
+ * a second account on a browser that the first account subscribed: the
+ * browser holds the subscription, and this member only needs a row, so it
+ * POSTs the subscription that exists and shows no second prompt.
  */
-export async function enablePush(): Promise<EnableResult> {
+export async function enablePush(othersStay: OthersStay = NO_OTHERS): Promise<EnableResult> {
   if (pushSupport() !== "supported") {
     return { ok: false, reason: "unsupported", message: "This browser cannot show notifications from Metorite." };
   }
-  // FIRST, while the tap still counts (see the module note).
-  const permission = await Notification.requestPermission();
+  // FIRST, while the tap still counts (see the module note). A granted
+  // permission needs no prompt, and a browser shows none for it.
+  const permission =
+    Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
   if (permission === "denied") {
     return { ok: false, reason: "denied", message: BLOCKED_MESSAGE };
   }
@@ -202,20 +228,23 @@ export async function enablePush(): Promise<EnableResult> {
     const key = base64UrlToBytes(answer.key);
     const held = await reg.pushManager.getSubscription();
     // A subscription made with an older key cannot receive a push signed
-    // with the new one. Replace it.
+    // with the new one, for ANY account. Replace it.
     if (held && !sameKey(held, key)) await held.unsubscribe();
-    const sub =
-      held && sameKey(held, key)
-        ? held
-        : await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    const reuse = held !== null && sameKey(held, key);
+    const sub = reuse
+      ? held
+      : await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
     const res = await fetch(`${API}/subscriptions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...sub.toJSON(), user_agent: navigator.userAgent }),
     });
     if (!res.ok) {
-      // The server did not keep it, so do not keep it here either.
-      await sub.unsubscribe().catch(() => false);
+      // The server did not keep it. Unsubscribe only a subscription this tap
+      // made, and only when no other account of this browser needs it.
+      if (!reuse && !(await othersStay().catch(() => true))) {
+        await sub.unsubscribe().catch(() => false);
+      }
       const detail = await res.json().then((b: { detail?: unknown }) => b.detail).catch(() => null);
       return {
         ok: false,
@@ -232,12 +261,46 @@ export async function enablePush(): Promise<EnableResult> {
 export const BLOCKED_MESSAGE =
   "Notifications are blocked for Metorite in this browser. Allow them in the site settings, then come back.";
 
-/** Turn push off for this device: delete its row, then unsubscribe. */
-export async function disablePush(): Promise<void> {
+/**
+ * Turn push off for this member on this device: delete the member's row.
+ * Unsubscribe the browser only when no other account stays on it.
+ */
+export async function disablePush(othersStay: OthersStay = NO_OTHERS): Promise<void> {
   const sub = await currentSubscription();
   if (!sub) return;
   await deleteRow(sub.endpoint, AbortSignal.timeout(10_000));
-  await sub.unsubscribe();
+  if (!(await othersStay().catch(() => true))) await sub.unsubscribe();
+}
+
+/**
+ * Does the signed-in member hold a row of `endpoint`. The browser's own
+ * subscription may belong to another account of the switcher. A POST, so
+ * the endpoint stays out of the URL. A failed read answers false.
+ */
+export async function registeredHere(endpoint: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API}/subscriptions/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { registered?: unknown };
+    return body.registered === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * This browser's push endpoint, or null, within `timeoutMs`. It reads only.
+ * "Remove from this browser" sends it, so the server can delete the removed
+ * account's row as that account.
+ */
+export async function thisDeviceEndpoint(timeoutMs = 1000): Promise<string | null> {
+  const read = currentSubscription().then((s) => s?.endpoint ?? null);
+  return within(read, timeoutMs, null);
 }
 
 async function deleteRow(endpoint: string, signal: AbortSignal): Promise<void> {
@@ -267,11 +330,19 @@ function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 }
 
 /**
- * Forget this device at sign-out (S7 item 7). Delete its row while the
- * session still names the member, then unsubscribe. It NEVER throws, and it
- * gives up after `FORGET_TIMEOUT_MS`, so a sign-out never waits on it.
+ * Forget this device at sign-out (S7 item 7), in this order and all within
+ * `timeoutMs`: read the endpoint, delete the member's row while the session
+ * still names the member, then unsubscribe the browser, but only when this
+ * account is the last one on it. It NEVER throws and never waits past the
+ * cap, so a sign-out never waits on it.
+ *
+ * `keepSubscription`: another account stays on this browser, so its pushes
+ * must keep coming (`signOutThis`).
  */
-export async function forgetThisDevice(timeoutMs: number = FORGET_TIMEOUT_MS): Promise<void> {
+export async function forgetThisDevice(
+  timeoutMs: number = FORGET_TIMEOUT_MS,
+  { keepSubscription = false }: { keepSubscription?: boolean } = {},
+): Promise<void> {
   const work = (async () => {
     const sub = await currentSubscription();
     if (!sub) return;
@@ -280,7 +351,7 @@ export async function forgetThisDevice(timeoutMs: number = FORGET_TIMEOUT_MS): P
     } catch {
       /* the unsubscribe below still runs */
     }
-    await sub.unsubscribe().catch(() => false);
+    if (!keepSubscription) await sub.unsubscribe().catch(() => false);
   })();
   await within(work, timeoutMs, undefined);
 }
@@ -330,13 +401,20 @@ export type PushView =
   | { kind: "blocked" }
   | { kind: "ready"; on: boolean };
 
-/** The pure rule of what `NotificationsSection` draws. */
+/**
+ * The pure rule of what `NotificationsSection` draws. ON needs THREE facts:
+ * the permission, the browser's subscription, and this member's row of it.
+ * A browser that another account subscribed reads OFF for this member.
+ */
 export function pushView(input: {
   flag: boolean;
   support: PushSupport;
   key: KeyAnswer | null;
   permission: NotificationPermission | "unsupported";
+  /** The browser holds a subscription (for any account). */
   subscribed: boolean;
+  /** The gateway holds THIS member's row of that subscription. */
+  registered: boolean;
 }): PushView {
   if (!input.flag) return { kind: "hidden" };
   if (input.key === null) return { kind: "loading" };
@@ -345,5 +423,8 @@ export function pushView(input: {
   if (input.support === "unsupported") return { kind: "unsupported" };
   if (input.key.kind === "not-configured" || input.key.kind === "error") return { kind: "not-configured" };
   if (input.permission === "denied") return { kind: "blocked" };
-  return { kind: "ready", on: input.subscribed && input.permission === "granted" };
+  return {
+    kind: "ready",
+    on: input.subscribed && input.registered && input.permission === "granted",
+  };
 }
