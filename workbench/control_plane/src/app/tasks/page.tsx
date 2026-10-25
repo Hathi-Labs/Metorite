@@ -45,7 +45,8 @@ import { NotificationBell } from "../projects/components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { isOpenShortcut } from "../projects/lib/search";
 import { myWorkEnabled } from "../projects/lib/myWork";
-import { tasksRedirectTarget } from "../projects/lib/tasksRedirect";
+import { tasksRedirectFor } from "../projects/lib/tasksRedirect";
+import { canSeePath } from "@/lib/access";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -69,16 +70,21 @@ import { askRailSession } from "@/lib/railSessions";
 export default function TasksPage() {
   const router = useRouter();
   const live = myWorkEnabled();
+  const { access, loading } = useAccess();
   const [stays, setStays] = useState(!live);
+  // A member without `feature:projects` cannot open the target, so the page
+  // stays and draws My Tasks. The same check `AccessGate` makes.
+  const canProjects = canSeePath(access, "/projects");
   useEffect(() => {
-    if (!live) return;
-    const to = tasksRedirectTarget(
+    if (!live || loading) return;
+    const to = tasksRedirectFor(
       { search: window.location.search, hash: window.location.hash },
       true,
+      canProjects,
     );
     if (to) router.replace(to);
     else setStays(true);
-  }, [live, router]);
+  }, [live, loading, canProjects, router]);
   return stays ? <TasksPageBody /> : null;
 }
 

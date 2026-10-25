@@ -21,11 +21,19 @@ anywhere in ``kb_sources``.
 
 A test passes its own object with the same two methods (:class:`Http`), so
 no test needs DNS or a socket.
+
+**No page token in a log (KC-3).** The Drive change feed takes its cursor as
+the ``pageToken`` query value, and httpx logs each request URL at INFO. A
+filter on the ``httpx`` logger replaces each ``pageToken`` value with
+``[redacted]`` before a line leaves. Fence:
+``tests/unit/test_kb_sync_engine.py``.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -35,6 +43,47 @@ import httpx
 
 from gateway import outbound_guard
 from gateway.kb_sources.base import SourceError, UntrustedHost
+
+#: The value of a ``pageToken`` in a URL or a line of text.
+_PAGE_TOKEN = re.compile(r"(pageToken=)[^&\s\"']+")
+
+
+def redact_page_tokens(value: Any) -> Any:
+    """*value* with each ``pageToken`` value replaced, or *value* unchanged.
+
+    httpx passes the URL as an ``httpx.URL``, not as text, so any value whose
+    text holds a page token comes back as redacted text.
+    """
+    if isinstance(value, bool | int | float) or value is None:
+        return value
+    text = value if isinstance(value, str) else str(value)
+    if "pageToken=" not in text:
+        return value
+    return _PAGE_TOKEN.sub(r"\1[redacted]", text)
+
+
+class _PageTokenFilter(logging.Filter):
+    """Redact the page token of each ``httpx`` request line."""
+
+    #: The mark that keeps a reload of this module from adding a second filter.
+    page_token_filter = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact_page_tokens(a) for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = redact_page_tokens(record.msg)
+        return True
+
+
+def _install_page_token_filter() -> None:
+    """Add :class:`_PageTokenFilter` to the ``httpx`` logger, once."""
+    target = logging.getLogger("httpx")
+    if not any(getattr(f, "page_token_filter", False) for f in target.filters):
+        target.addFilter(_PageTokenFilter())
+
+
+_install_page_token_filter()
 
 
 @dataclass(frozen=True)
@@ -128,4 +177,4 @@ class GuardedHttp:
             "POST", url, headers=sent, content=urlencode(dict(form)).encode("ascii"))
 
 
-__all__ = ["GuardedHttp", "Http", "HttpAnswer", "check_host"]
+__all__ = ["GuardedHttp", "Http", "HttpAnswer", "check_host", "redact_page_tokens"]

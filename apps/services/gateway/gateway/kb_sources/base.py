@@ -29,10 +29,15 @@ Three rules hold this seam:
 * **An adapter never stores a credential.** :meth:`KbSource.refresh` returns
   a new one, and ``shared_token`` writes it back.
 
-**KC-1a builds discovery only.** :meth:`KbSource.list_changed`,
+**KC-1a builds discovery. KC-3 builds the change feed.**
+:meth:`KbSource.changes_start_token` and :meth:`KbSource.list_changed` read
+the provider's change feed as metadata, in :class:`ChangePage` pages (KC-3).
 :meth:`KbSource.fetch_text` and :meth:`KbSource.fetch_bytes` are part of the
-protocol, and an adapter may raise ``NotImplementedError("KC-3/KC-5")`` for
-them until KC-3 (the change reader) and KC-5 (the text) ship.
+protocol, and an adapter may raise ``NotImplementedError("KC-5")`` for them
+until KC-5 (the text) ships.
+
+**A dead change cursor** raises :class:`CursorExpired`. The engine then takes
+a new start token FIRST, and relists the tree slim (``kb_sync/engine.py``).
 """
 
 from __future__ import annotations
@@ -62,7 +67,7 @@ KIND_FOLDER = "folder"
 KIND_FILE = "file"
 
 #: The message of a method that a later slice builds.
-NOT_IN_KC1 = "KC-3/KC-5"
+NOT_IN_KC1 = "KC-5"
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,10 @@ class SourceNode:
     modified_at: datetime | None
     web_url: str | None
     drive_id: str | None = None
+    #: The provider's own content version (KC-3): the MD5 of the bytes when
+    #: the provider gives one, else a version mark. KC-5 compares it with the
+    #: hash of its document, and re-reads the text only when they differ.
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,34 @@ class DiscoverPage:
     next_cursor: DiscoverCursor | None
 
 
+@dataclass(frozen=True)
+class ChangePage:
+    """One page of the change feed (KC-3). Metadata only.
+
+    ``upserts`` holds the nodes that are new or changed, and ``removed`` the
+    ids of the nodes that left the source (deleted, trashed, or no longer
+    shared). An id is in one of the two, never in both, and the last event of
+    a page wins. ``next_token`` is the cursor of the next page. It is
+    ``None`` on the last page, which carries ``new_start_token``, the cursor
+    of the next run.
+    """
+
+    upserts: tuple[SourceNode, ...]
+    removed: tuple[str, ...]
+    next_token: str | None
+    new_start_token: str | None
+
+
+class CursorExpired(SourceError):
+    """The provider refused a stored change cursor (KC-3).
+
+    The engine takes a new start token, then relists the tree slim and
+    compares the hashes. It never re-reads the text for a lost cursor.
+    """
+
+    code = "cursor_expired"
+
+
 class KbSource(Protocol):
     """The operations of ``knowledge_base.md`` §7.1, in its order."""
 
@@ -148,10 +185,16 @@ class KbSource(Protocol):
         self, cred: SourceCredential, cursor: DiscoverCursor | None = None,
     ) -> DiscoverPage: ...
 
-    # KC-3: the changes since a cursor, with the provider's own delta API.
+    # KC-3: the cursor of "now" in the change feed. Discovery takes it BEFORE
+    # it lists the tree, so no change between the two is lost.
+    async def changes_start_token(self, cred: SourceCredential) -> str: ...
+
+    # KC-3: one page of the changes since *cursor*, with the provider's own
+    # change API. Raises CursorExpired for a dead cursor. An adapter whose
+    # feed covers every folder ignores *folder_ext_ids* (Google does).
     async def list_changed(
         self, cred: SourceCredential, cursor: str | None, folder_ext_ids: Sequence[str],
-    ) -> DiscoverPage: ...
+    ) -> ChangePage: ...
 
     # KC-5: the text of one document, capped. KC-5: the bytes, only for
     # "Keep a copy".
@@ -170,6 +213,8 @@ __all__ = [
     "SCOPE_MEMBER",
     "SCOPE_ORG",
     "AccountIdentity",
+    "ChangePage",
+    "CursorExpired",
     "DiscoverCursor",
     "DiscoverPage",
     "KbSource",

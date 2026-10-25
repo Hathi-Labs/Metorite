@@ -49,6 +49,20 @@ export function tasksRedirectTarget(
 }
 
 /**
+ * The redirect decision for the `/tasks` page. A member who holds
+ * `feature:tasks` and not `feature:projects` cannot open `/projects` (the
+ * `AccessGate` refuses it), so for that member the address stays and the
+ * page draws My Tasks as it did with the flag off.
+ */
+export function tasksRedirectFor(
+  url: { search?: string | null; hash?: string | null },
+  flag: boolean,
+  canSeeProjects: boolean,
+): string | null {
+  return tasksRedirectTarget(url, flag && canSeeProjects);
+}
+
+/**
  * An in-app link that names `/tasks`, repointed when the flag is on. A link
  * that does not name `/tasks` comes back unchanged. `flag` defaults to the
  * build flag.
