@@ -126,7 +126,8 @@ and streams chat responses as AG-UI events.
 
 24. **The orchestrator's per-turn context carries the member's own profile block** (WS-63 PZ-2, `project-docs/specs/personalization.md` §5.1).
    - `_member_profile_block` sits in `_context_preamble_parts` after the name line and before the number-system line. Only the agent `orchestrator` gets it.
-   - It needs `ASSISTANT_PROFILE_ENABLED`, a verified member (`_verified_run_member`), an org (`_current_run_org`) and `_RUN_SOLO_ROOM` True. A run that fails one reads nothing.
+   - It needs an org (`_current_run_org`), `assistant_profile.enabled_for(org)` true, a verified member (`_verified_run_member`) and `_RUN_SOLO_ROOM` True. A run that fails one reads nothing.
+   - **The switch is per organization (PZ-25, §14.2).** `ASSISTANT_PROFILE_ENABLED` is the master switch, and `ASSISTANT_PROFILE_ORGS` is the list. Empty means each org. `enabled_for(org)` is the one reader, and no bare `enabled()` exists. `build_orchestrator_agent` takes `organization_id` from a caller that builds before the run binds. With none, it reads the bound tenant, then `_current_run_org`. No org gives no profile tools. Fence: `tests/unit/test_assistant_profile_org_rollout.py`.
    - `_RUN_SOLO_ROOM` defaults to False. `run_agent` and `run_agent_stream` take `solo_room`. The web chat route passes `not _room_is_shared`, and the WhatsApp run passes `not shared`.
    - `None` keeps the parent's value, so a delegated run cannot widen it. Never read it from the payload, and never copy `_kb_index_key`, whose memory id comes from the payload.
    - `_PROFILE_CACHE` keeps the block per org and member for 60 s, and caches a miss. `acb_common.assistant_profile` renders it, at most 6,000 characters.
