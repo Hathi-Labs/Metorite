@@ -18,7 +18,11 @@ The EA-13a stamp is `mcp:<host>:<slug>`, so Claude Code reads "Claude Code". The
 
 **EA-15 is MERGED (#1295, `90e4d702e`, 2026-10-25).** `get_task_context`, `my_work` and one protocol for agents, built in the edge from the read routes it already has (§12.4). The fence is `test_mcp_edge_context.py`, and each rule is red under a named mutation.
 
-**SW-13b is BUILT and not merged (2026-10-25, branch `sw13b-connection-mt-25ce9ae1`).** `my_work` lists a run of the caller's own connection only. Two machines of one member share one stamp, and each machine has its own connection (§12.4).
+**SW-13b is MERGED (#1299, 2026-10-25).** `my_work` lists a run of the caller's own connection only. Two machines of one member share one stamp, and each machine has its own connection (§12.4).
+
+**SW-13c is MERGED (#1300, 2026-10-25).** The own run of an agent is of one connection, and a dead connection frees its task (§12.3).
+
+**SW-7 is BUILT, not merged, and dark (2026-10-25, branch `sw7-session-key-mt-5eab8fde`, PR #1312).** One key for each MCP session, behind `agent_mcp_sessions_enabled`, default off (§12.5). Migration 302.
 
 **Verified against code on 2026-10-15 at `7512100f5`.** The sixth audit read the anchors of EA-6e and EA-6g at that commit: `mcp.py` (`instructions` and `_dispatch`), `archive_task` at `tasks.py:1160`, `_write_activity` at `agent_runs.py:619`, `TestTheInstructions` at `test_mcp_edge_agent_runs.py:299`, and the class C row of the archive at `manifest.py:161`. The EA-6 audit read §6.1, §9.2, §9.5, §9.6 and §15 on 2026-10-14 at `2295c9bf9`.
 
@@ -853,7 +857,7 @@ After the eight checks, the edge dispatches the method. A notification, or a JSO
 **The transport.**
 
 1. One `POST /mcp`. Each answer is `application/json`. The edge ignores the `Accept` header.
-2. The edge never sends `Mcp-Session-Id`.
+2. ~~The edge never sends `Mcp-Session-Id`.~~ SW-7 (§12.5) changed this rule, behind the flag `agent_mcp_sessions_enabled`. With the flag on, `initialize` answers an `Mcp-Session-Id` that the edge signs, and the edge keeps no state. A later request may echo it. An id that does not verify gets 404, so the client starts a new session. The edge serves a request with no id with no session.
 
 **The error body (EA3-13).** A 400, 401 or 403 answer carries a JSON-RPC error with `id: null`. The `code` is `-32700` for a body that is not JSON, and `-32600` for every other case. A 503 carries the same shape with the code `-32603`. A 404 from the flag and a 405 carry no rule for the body.
 
@@ -959,6 +963,7 @@ v1
 - The gateway refuses a query that is not ASCII, or whose `%XX` sequences do not decode as UTF-8. Then `%FF` and `%FE` cannot share one signature.
 - A GET has an empty body, so its hash is the SHA-256 of zero bytes.
 - A write (EA-6a, EA3-28) adds a 9th line, the value of `X-Agent-Nonce`, after the body hash. A GET has no 9th line, so its signed string is the eight lines above, byte for byte. The body line of a write is the SHA-256 of the body bytes as sent.
+- A call in an MCP session (SW-7, §12.5) adds a last line, `session:<key>`, after the body hash or the nonce. The key goes out as `X-Agent-Session`. A call with no session has no such line, so its string is byte for byte the string before SW-7.
 
 **The keys.**
 
@@ -1464,7 +1469,7 @@ Owner directive, 2026-10-20. If one AI session holds a task, no other AI session
 
 **Locks.** The gate takes no task row lock. It takes the lock order of EA-13c (run, then task row) and the index decides a race. A takeover locks the old run only, and it checks `last_activity_at`, so a heartbeat that arrives first wins.
 
-**SW-13c: the own run is of one connection (BUILT 2026-10-25 on `sw13c-gate-mt-5bbab3c0`, not merged, Metorite task #416).** Two machines of one member share one stamp, and each machine signs in on its own `agent_connection`.
+**SW-13c: the own run is of one connection (MERGED, #1300, 2026-10-25, Metorite task #416).** Two machines of one member share one stamp, and each machine signs in on its own `agent_connection`.
 
 - **The own run.** For an agent caller, the gate counts an open run as its own only when the member, the stamp and the `connection_id` all match. The connection comes from `UserContext.agent`, which branch 0 builds from the signed `X-Agent-Connection` and the token row. It never comes from a body. One read, `_OPEN_RUN_SQL`, holds both rules: an agent binds its connection, and a person binds NULL.
 - **Another machine holds the task.** An open run of the same member and stamp on another connection is a holder like any other. A claim or a start from the second machine gets 409 `task_held`, or a takeover when the lease ended.
@@ -1477,7 +1482,7 @@ Owner directive, 2026-10-20. If one AI session holds a task, no other AI session
   - **Known gap.** `AgentRunPanel.tsx` reads `lease_expired`, so for a dead holder it does not say that the next claim can take the task. The card and `held_by.stale` do say it.
 - **A person keeps the old rules.** "Ask an agent" binds no connection in the gate, so the own run of a person stays member and stamp. The insert still stores the connection that the person names. The dead-connection rule applies to every caller, because it is a fact of the holder.
 - **No migration.** The per-task index `pm_agent_runs_one_open_per_task` already refuses a second open run beside the run of another machine.
-- **Not changed.** A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too, not the connection. An agent move stamps its own connection on the run. SW-7 owns two terminals on one connection.
+- **Not changed.** A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too, not the connection. An agent move stamps its own connection on the run. SW-7 (§12.5) closes two terminals on one connection.
 
 **Fence.** `tests/unit/test_agent_run_exclusive.py`.
 
@@ -1520,13 +1525,13 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
 
-**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this connection does not hold. An agent takes new work only by assignment or by an explicit claim. One residual stays: two terminals that share ONE connection. They have one stamp and one connection id, so `my_work` and the claim cannot tell them apart. SW-7 of the swarm plan (a session key) closes that.
+**What `my_work` does not do.** It never lists a task that the member is not assigned to and that this connection does not hold. An agent takes new work only by assignment or by an explicit claim. One residual stays while SW-7 is dark: two terminals that share ONE connection are not told apart. SW-7 (§12.5) is built behind `agent_mcp_sessions_enabled`. With the flag on, each terminal is its own MCP session, and `my_work` keeps the runs of this session and the runs with no key.
 
 **EA-15c. The protocol.** The server instructions (`mcp.py`) and the prompt `work_on_task` (`prompts.py`) give one order of steps:
 
 1. At the start of a session, call `my_work`. It replaces "call `list_agent_runs` with `needs_agent`, and continue each run".
 2. Take the top row. For `run_stopping`, call `finish_agent_run` at once, with no activity before it. For another waiting run, read it with `get_agent_run`. For a task, call `claim_task`.
-3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. A run of another connection, such as one on another machine, is never yours. Two terminals on one connection share one stamp, and the claim does not tell them apart (SW-7). So the agent takes only a row that `my_work` lists.
+3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. A run of another connection, such as one on another machine, is never yours. With the flag of SW-7 on (§12.5), each terminal is its own session. Then a run of another terminal on your connection is not yours either. The refusal names `release_task` for a session that ended. With the flag off, two terminals on one connection are not told apart. The agent takes only a row that `my_work` lists.
 4. Call `get_task_context`, then `start_agent_run` when the claim opened no run.
 5. Post a thought at least once a minute.
 6. End with exactly one disposition: the task moves to review or done, or a question waits on a named member (`ask_on_task`), or `release_task` gives it back. A comment is evidence, never a disposition.
@@ -1540,6 +1545,65 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 **Fence.** `tests/unit/test_mcp_edge_context.py`. Each rule above has a test, and each test fails under a named mutation. `test_mcp_edge_coverage.py` lists the two new tools, and rule 4 lists `limit` of `my_work` as an edge input. `test_mcp_edge_prompts.py` pins that the instructions and the prompt name `my_work`, `get_task_context` and the 409 rule.
 
 *Verified against code: 2026-10-25, at `ffc09bb68` (the routes and parameters of `agent_oauth.MCP_ROUTES`, `activities.get_timeline`, `tasks.list_tasks`, `agent_runs.list_agent_runs` and `tools._get_task`).*
+
+### 12.5 One key for each agent session (SW-7)
+
+**BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged (Metorite task #338, which takes in the SW-6 design #337 and MCP-G4).**
+
+**Ships dark behind `agent_mcp_sessions_enabled` (default off).** Turn it on on staging, and check it with a real Claude Code: two terminals, a resume, and a 404 after a key change. Then turn it on in production.
+
+- **While it is off**, the edge mints no `Mcp-Session-Id`. It reads an id that a client still sends as no session. It never answers 404 for such an id, because the client may hold one from a time the flag was on. It signs no `X-Agent-Session`. So every client sees the transport of before SW-7.
+- **The gateway needs no flag.** With no signed session, a call owns only runs with no key, and every run has no key while the flag is off. So the own run, the adoption, the 409 and `my_work` all act as they did after SW-13c.
+- **The texts follow the flag.** Step 3 of the protocol and the prompt say "each terminal is its own session" only while the flag is on. While it is off, they say that two terminals on one connection are not told apart.
+  - **The tool descriptions follow it too.** `my_work`, `claim_task`, `start_agent_run` and `ask_on_task` carry markers that `tools.session_text` fills when `tools/list` runs (`tools.SESSION_TEXTS`). Off, the own run is "from this connection", and two terminals on one connection share one name. On, it is "from this session".
+  - **The hint of a 409 is true in both states.** It names another machine, an earlier sign-in, or another terminal when MCP sessions are on.
+- **Who flips it.** The dev-phase window (CLAUDE.md §3a, gate `enforcement-flip`) lets an agent flip it. The agent names the flag and the box in the same message. Only the edge reads it, so set it on the edge unit (`acb-agent-edge`) and restart that unit.
+- **A flip back to off.** A run that a session adopted keeps its key. A call with no session then meets it as a holder, and the 409 names `release_task` with its `run_id`.
+
+**The gap.** Two Claude Code terminals on ONE machine share one `agent_connection` and one stamp. After SW-13c the own run of an agent was member + stamp + connection. So terminal B got the run of terminal A back as its own, and worked its task.
+
+**The finding (feasible, no new state).** Each Claude Code process sends its own `initialize`. The MCP transport lets a server answer `initialize` with an `Mcp-Session-Id`, and the client then sends it on each request. So the edge can tell two sessions apart without a store.
+
+- **The id.** `agent_signing.mint_mcp_session` makes `s1.<key>.<hex HMAC>`. The key is 16 random bytes in base64url, 22 characters. The HMAC of the signing key covers the version, the connection id and the key. So the id binds its connection, and a client cannot make up the id of another session. It can only steal one, which is the trust level of the bearer token.
+- **No state.** The edge reads an id back with `agent_signing.read_mcp_session` and the usable keys. These are the current key and the key before it, so a key rotation keeps the sessions. The edge keeps nothing between requests, as EA3-2 wants.
+- **The check.** Check 7b of §9.6 comes after the version. An id that does not verify for THIS connection gets 404, so the client starts a new session. Two ids get 400. No id means no session.
+
+**The gateway.**
+
+- **The signed header.** The edge signs the key into each gateway call as `X-Agent-Session`, and the signed string ends with `session:<key>` (§10.1). Branch 0 reads the key ONLY from that signed header, once and in its shape, and never from a body or an unsigned header (R5). It puts the key on `AgentScope.session_key`. A header that the edge did not sign breaks the signature.
+- **The column.** Migration 302 adds `pm_agent_runs.session_key TEXT NULL`, with a CHECK on its shape. It changes no index. The per-task index already allows one open run for each task, and `pm_agent_runs_one_open` stays.
+- **The own run.** For an agent, the own run is member + stamp + connection + session key. One read, `_OPEN_RUN_SQL`, holds it. A person binds no connection and keeps the old rule.
+- **The transition rule.** A run with NO key counts as the own run of any session of its connection. These are a member start ("Ask an agent") and a run from before SW-7, so a run in flight keeps working. The first agent session that the gate finds such a run for adopts it: the gate stamps its key, guarded on NULL. A sibling that loses the race reads the run again and meets a holder.
+- **The life of a key (fix rounds 1 and 2).** `_move_run` writes the key in one assignment:
+  - The key stays until a terminal status or a takeover clears it. A reopen of a finished run then finds no key, and the next session adopts the run.
+  - A person's move that is not terminal keeps the key: a plain prompt, an answer to the session's question, and a Stop. The asking session may be alive and polling `get_agent_run`, so an answer must not hand its run to a sibling.
+  - A sibling session sees a waiting run of another terminal once the lease of that run ended (`my_work`, group 1).
+  - An agent move on the same connection adopts a run with no key, and keeps a key that is set.
+  - An agent move from ANOTHER connection writes the caller's key, also NULL. A key minted for the old connection never survives a connection change.
+- **A call outside a session** owns only runs with no key. So leaving the header out never reaches the run of a session.
+- **The 409.** A sibling session on the same connection that holds the task gives the 409 of SW-13c. It carries `same_client: true`, the `run_id` and the hint, which now names another terminal. The release checks member and stamp only, so the agent can end the run of a session that ended.
+
+**`my_work`.**
+
+- **Groups 1 and 2** keep the runs of this session, and the runs with no key. A LIVE waiting run of a sibling session is that session's, and it is not listed. Once its lease ended, its terminal most likely closed, so group 1 lists it (fix round).
+- **A quiet run of a sibling session** shows in group 2 only when its LEASE ended. Five quiet minutes do not show that a session ended: a session whose subagents work for a long time posts nothing (the SW-13b incident). The gate takes a sibling's run over only after the lease, so `my_work` offers only what the claim can take.
+- The runs wire carries `session_key`. The key alone is no credential, because the edge verifies the HMAC of the id before it signs a key in.
+
+**What stays.**
+
+- `agent_label`, a display name for a session, is not built. It is display only.
+- A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too. It does not check the session.
+- A client that sends no `Mcp-Session-Id`, and the 2026-07-28 revision when EA-3c accepts it, run with no session. Such a call keeps the transition rule only.
+- **The deploy order.** The deploy restarts the gateway before the edge (`vps_apply.sh`). The new gateway accepts an old edge, because a call with no session signs the old string. The edge starts to send `X-Agent-Session` only after its own restart.
+
+**Fence.**
+
+- `tests/unit/test_mcp_edge_session.py`: the id and the transport.
+- `tests/unit/test_mcp_edge_signing.py`: branch 0 reads the signed header only.
+- `tests/unit/test_agent_run_exclusive.py`: the gate, the adoption and its guard, and the life of a key. Also the migration, the texts by the flag, and R8 with two sessions of one connection.
+- `tests/unit/test_mcp_edge_context.py`: `my_work`.
+
+ The digest of branch 0 in `test_tenant_request_binding.py` changed, and its comment says why.
 
 ## 13. The landing-page scenario
 
@@ -1604,6 +1668,9 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-15a | **MERGED (#1295, `90e4d702e`, 2026-10-25).** **`get_task_context` (§12.4).** An edge-only read. No route, no `MCP_ROUTES` pair, no migration | One call returns the task, its ancestors (a hidden one as a stub), the project, the blockers and the newest 20 comments. Each rule of §12.4 fails under a named mutation in `test_mcp_edge_context.py` | AGENT-SAFE |
 | EA-15b | **MERGED (#1295, `90e4d702e`, 2026-10-25).** **`my_work` (§12.4).** An edge-only read. `limit` is a named edge input | The rows come in the order of §12.4. A waiting run of another client and a task with an open blocker are not listed | AGENT-SAFE |
 | EA-15c | **MERGED (#1295, `90e4d702e`, 2026-10-25).** **The protocol (§12.4).** The server instructions, the prompt `work_on_task` and `docs/external_agents_connect.md` | `test_mcp_edge_prompts.py` pins `my_work`, `get_task_context` and the 409 rule | AGENT-SAFE |
+| SW-13b | **MERGED (#1299, 2026-10-25).** **`my_work` keeps the runs of the caller's own connection (§12.4).** Edge only. No migration | A stale or answered run of the same member and stamp on another connection is not listed. Member-queued work for this connection shows. `test_mcp_edge_context.py` (`TestOneMemberTwoMachines`), each red under a named mutation | AGENT-SAFE |
+| SW-13c | **MERGED (#1300, 2026-10-25).** **The gate's own run is of one connection, and a dead connection frees its task (§12.3).** No migration | A live run of another connection of the same stamp gives 409 `task_held`. A revoked or expired holder is taken over at once. `unheld` and `held_by` agree with the gate. A person keeps the old rule. `test_agent_run_exclusive.py` (R8) | AGENT-SAFE |
+| SW-7 | **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged, dark (PR #1312).** **One key for each MCP session (§12.5)**, behind `agent_mcp_sessions_enabled`. Migration 302 | With the flag off, the edge mints, reads and signs no session, and every text says that two terminals on one connection are not told apart. With it on, two sessions of one connection are two owners: B gets 409 on A's live task, and A gets its own run back. A keyless run is adopted by one session. A terminal status clears the key. Branch 0 reads the key from the signed header only. `test_mcp_edge_session.py`, `test_mcp_edge_signing.py`, `test_agent_run_exclusive.py` (R8) and `test_mcp_edge_context.py`, each red under a named mutation. **Before the flag goes on:** a check on staging with a real Claude Code (two terminals, a resume, a 404 after a key change) | AGENT-SAFE. A flip is gate `enforcement-flip` |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
 
