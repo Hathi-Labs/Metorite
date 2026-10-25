@@ -2353,3 +2353,27 @@ ALTER TABLE kb_source_nodes ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_source_nodes ADD CONSTRAINT kb_source_nodes_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_source_nodes_org_idx ON kb_source_nodes (organization_id);
+
+-- reminders
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reminders WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reminders still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reminders ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reminders ADD CONSTRAINT reminders_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reminders_org_idx ON reminders (organization_id);
+
+-- reminder_events
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reminder_events WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reminder_events still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reminder_events ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reminder_events ADD CONSTRAINT reminder_events_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reminder_events_org_idx ON reminder_events (organization_id);
