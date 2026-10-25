@@ -8,6 +8,10 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-8 BUILT 2026-10-25, dark.** The WhatsApp scope rule names the profile
+exception, and asks the model to keep the channel limits. See "PZ-8 as
+built" in §9.
+
 **PZ-7 BUILT 2026-10-23**, dark: the route `/settings/assistant`, behind
 `NEXT_PUBLIC_ASSISTANT_PROFILE` (off). A link row on Appearance is the way in.
 The nav pane is an owner follow-up. The chat Undo card waits for PZ-6.
@@ -669,10 +673,30 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value **PZ-6a BUILT 2026-10-24, dark** **PZ-6b BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
-| **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call | AGENT-SAFE · MEDIUM |
+| **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call. **BUILT 2026-10-25, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all and the switch were built in PZ-1 and PZ-6a. PZ-9 adds the three gaps: the profile when access ends, the privacy fence, and the export of §13.3 item 7 | A real-database test for each. A removed member leaves no profile. **BUILT 2026-10-25** | AGENT-SAFE · **HIGH** (a member write) |
 | **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text | AGENT-SAFE · LOW |
 | **PZ-11** | #261 | Web and WhatsApp give the same answer from the same profile. Staging test | Verified on staging. Turning the flags on in production is an owner act | **OWNER-GATE** for the production flip |
+
+**PZ-8 as built (2026-10-25).**
+
+1. **Most of it was already built.** PZ-2, PZ-6a and PZ-6b put the tools,
+   the label and the block on the WhatsApp run. PZ-8 adds the scope text and
+   the run tests.
+2. **The scope sentence.** With the flag on, writes on and the WhatsApp
+   profile, `build_payload` adds `PROFILE_EXCEPTION_RULE` to the scope rule.
+   It says the member's own profile is the one change that needs no web app.
+   With the flag off the rule stays byte for byte. With writes off the run
+   holds no profile write tool, so the sentence is absent.
+3. **Channel wins is advisory.** With the flag on, `PROFILE_CHANNEL_RULE`
+   asks the model to keep the limits of the rule over any Answer length line.
+   No test can read that choice. The hard limit is `split_reply` at 4096
+   characters. The scope rule sits before the profile block, and a test pins
+   the order.
+4. **No keyword intercept for undo.** The model calls `profile_undo`, by the
+   persona line and the tool doc. The label `X-Profile-Via: whatsapp` is what
+   lets the undo find the change.
+5. **The fence** is `tests/unit/test_wac_profile_run.py`.
 
 **PZ-9 as built (2026-10-25).**
 
