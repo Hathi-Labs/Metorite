@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { RenderedReportBody, WaitingReport, WaitingRow } from "../lib/api";
 import { OpenTaskContext, WaitingPanel } from "./AnalyticsPanels";
@@ -172,8 +172,7 @@ describe("§6.8 E1 and E2: no rank, and the agent names its person", () => {
 });
 
 describe("RA-3 review: one task can make two rows, and no question can lack a word", () => {
-  it("keys two blockers of one task apart, so React sees two rows", () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  it("draws both rows when two tasks block one task", () => {
     const handoff = BUSY.handoffs[0];
     const twice: WaitingReport = {
       ...BUSY,
@@ -184,10 +183,22 @@ describe("RA-3 review: one task can make two rows, and no question can lack a wo
       handoffs_total: 2,
     };
     const panel = html(createElement(WaitingPanel, { data: twice }));
-    const keyWarnings = spy.mock.calls.filter((c) => String(c[0]).includes("same key"));
-    spy.mockRestore();
-    expect(keyWarnings).toEqual([]);
     expect(panel.match(/href="\/projects\?task=h1"/g)?.length).toBe(2);
+    expect(panel).toContain("Order steel");
+    expect(panel).toContain("Order bolts");
+  });
+
+  it("keys each row on `waitingLists`' key, in the panel and in its table", () => {
+    // A static render does not warn on a repeated key (measured 2026-10-25:
+    // a key of the task id passed a console spy). So the fence is the
+    // source: both renderers key on the one key, and `waiting.test.ts`
+    // holds that key unique for two blockers of one task.
+    const panels = readFileSync(join(__dirname, "AnalyticsPanels.tsx"), "utf-8");
+    expect(panels).toContain("<WaitingTaskRow key={r.key} line={r} open={open} />");
+    expect(VIEW).toMatch(/\{l\.rows\.map\(\(r\) => \(\s*<li\s+key=\{r\.key\}/);
+    for (const source of [panels, VIEW]) {
+      expect(source).not.toMatch(/key=\{`\$\{l\.kind\}:\$\{r\.id\}`\}/);
+    }
   });
 
   it("says how many questions got no answer when none got one", () => {
