@@ -113,10 +113,11 @@ def _uuid(n: int) -> str:
 
 #: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
 #: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
-#: of EA-6c (``test_mcp_edge_comments.py``) and ``claim_task`` of EA-6b
-#: (``test_mcp_edge_claim.py``).
+#: of EA-6c (``test_mcp_edge_comments.py``), ``claim_task`` of EA-6b
+#: (``test_mcp_edge_claim.py``) and ``set_assignees`` of MCP-G2
+#: (``test_mcp_edge_assignees.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
-                    "add_comment", "claim_task")
+                    "add_comment", "claim_task", "set_assignees")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -355,7 +356,7 @@ class TestTheWriteToolsAtTheEdge:
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
         # EA-6d appends its two tools after the two of EA-6a, EA-6c one more,
-        # and EA-6b `claim_task`.
+        # EA-6b `claim_task`, and MCP-G2 `set_assignees`.
         assert names[-len(WRITE_TOOL_NAMES):] == list(WRITE_TOOL_NAMES)
         edge.tokens[GOOD] = _lookup(scope="projects:read", scopes=("projects:read",))
         r = await _post(_rpc("tools/list"))
