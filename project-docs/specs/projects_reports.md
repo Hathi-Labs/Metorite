@@ -68,9 +68,10 @@ panel by default, and hides it when the scope has no agent run.
 
 **RA-6 BUILT 2026-10-25, not merged** (§6.8 B and F, §8 RA-6). The Forecast
 runs the past weeks again 2,000 times and gives the 50% and 85% dates, with
-no estimate. "Not converging" now says the finishes a week that would
-converge it. "Needs an owner" shows first in Open work when it leads. RA-5,
-RA-7 and RA-8 are not built.
+no estimate. When work arrives as fast as it finishes, "Not converging"
+says the finishes a week that would converge it. "Needs an owner" shows
+first in Open work when it leads. Fix round 1 BUILT 2026-10-26. RA-5, RA-7
+and RA-8 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -373,8 +374,8 @@ next to each status, as `classify` already does.
 | **Long run** | A completed run of 4 hours of agent time or more. The panel flags it as "maybe a poorly specified task", with the count, and names the longest five. | `analytics_agent_runs.py` `is_long_run` and `long_line` (RA-4) |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
 | **Forecast by count** | 2,000 runs play the history weeks again. Each simulated week is one past week, taken at random. Its finished tasks come off the open count, and its new tasks go back on. The 50% date is the week by which half the runs empty the open count. The 85% date is the week by which 85% of them do. Each date is today plus whole weeks. The same seed gives the same dates. The seed is the scope and the last week of the history. | `analytics_forecast.py` `count_forecast`, `simulate_weeks`, `percentile_weeks` and `forecast_seed` (RA-6). The weeks are `analytics.velocity_sql`, the spine of Throughput. |
-| **Not converging** | One of two things gives no date. New work arrives at least as fast as work finishes, which is the rule of 2026-09-17. Or fewer than 85% of the runs empty the open count within 52 weeks. The panel then gives the finished tasks a week that would converge it. That rate is the new tasks of a week, plus the open count divided by 52, rounded up to one decimal. | `analytics_forecast.py` `converge_per_week`, `REASON_ARRIVALS` and `REASON_CAP` (RA-6) |
-| **Not enough history** | Fewer than 4 of the 6 history weeks have a finished task. The forecast gives no date, and it says how many weeks had a finish. | `analytics_forecast.py` `MIN_WEEKS_WITH_FINISHES` (RA-6) |
+| **Not converging** | One of two things gives no date. In the first, new work arrives, and it arrives at least as fast as work finishes. That is the rule of 2026-09-17. The panel then gives the finished tasks a week that would converge it: the new tasks of a week, plus the open count divided by 52, rounded up to one decimal. In the second, fewer than 85% of the runs empty the open count within 52 weeks. The panel then says that the 85% date is more than 52 weeks away. It says that a steadier flow of finished tasks, or smaller tasks, brings that date closer. It names no rate, because an 85% test has no mean rate. | `analytics_forecast.py` `converge_per_week`, `REASON_ARRIVALS` and `REASON_CAP` (RA-6, fix round 1) |
+| **Not enough history** | Fewer than 3 finished tasks in the history weeks, or fewer than 2 weeks with a finish. The forecast gives no date. It says how many tasks finished, and in how many weeks. A project that grows is "Not converging" before this rule runs. | `analytics_forecast.py` `MIN_FINISHED_FOR_FORECAST` and `MIN_FINISH_WEEKS` (RA-6, fix round 1) |
 | **Needs an owner** | An open task with no assignee and no open run. An open run has the status `created`, `in_progress`, `awaiting` or `stopping`, with no regard to its lease. Each such task is in the `none` count of RA-1's `holder_split`. `none` also holds an unassigned task whose open run lost its lease, and that task has an owner. | `analytics.py` `needs_owner_sql` and `is_needs_owner` (RA-6). Load's `needs_owner` carries the total and `leads`. |
 
 ⚠️ **"Needs help" is a flag, not a sixth pill.** `PILLS` is a closed vocabulary
@@ -2194,14 +2195,23 @@ Fences: `tests/unit/test_projects_report_agent_runs.py` (hermetic) and `tests/un
 2. **The runs.** Each of 2,000 runs samples one past week at a time, with replacement. The finishes and the arrivals of that week go together. The rule of 2026-09-17 binds: scope growth is part of the answer. A run that read finishes only would print the date that the mean net rate refused.
 3. **The seed.** The seed is SHA-256 of the scope and the last week of the history. A reload gives the same dates, and a new week gives new ones. `hash()` changes in each process, so the seed does not use it. The generator is a local `random.Random`, never the global state.
 4. **2,000 runs and a cap of 52 weeks.** At 2,000 runs the 85% figure has a standard error under one point. So two seeds differ by a week at most. A run stops at 52 weeks, because a date past a year is no forecast. The cap also bounds the work to 104,000 draws, near 12 ms.
-5. **The verdicts, in order.** First comes no open task, then "Not enough history", then "Not converging" for arrivals. Then comes "Not converging" for the cap, and last the two dates. A `not_converging` answer carries `converge_per_week` and `reason`.
+5. **The verdicts, in order.** First comes no open task, then "Not converging" for arrivals, then "Not enough history". Then comes "Not converging" for the cap, and last the two dates. The arrivals rule runs before the history gate, so a project that grows stays red with a thin history. Only the arrivals verdict carries `converge_per_week`. Each `not_converging` answer carries `reason`.
 6. **The estimates.** The simpler choice: the estimates add a second line only when they exist. "Nothing sized" no longer draws. "No capacity on file" still draws, because it says that estimates exist and hours do not. The server still sends the `capacity` block.
 7. **The API.** Every change is a new key. `velocity` gains the two dates, the weeks, the runs, the cap, the converge line, `reason` and `summary`. `finish_date` and `weeks_remaining` carry the 50% figure, so the slip, the email and the chat keep working. No key goes. Load gains `needs_owner`.
 8. **Summary first (E5).** The server writes the sentence. The panel, the email and the chat print it first.
 9. **Needs an owner.** `analytics.needs_owner_sql` over Load's open-work predicate, so a reader sees only the tasks they can open. The server names 20, the soonest due first, beside the total. `leads` is true when the total is at least the open count of each holder. It reads every row before the reader's row filter, because it compares totals only. RA-1's item 6 says how it differs from `none`.
-10. **UI.** The Forecast draws one band from today. It is solid to the 50% date and lighter to the 85% date, with a tick at the plan. The band takes the explicit ramp slot 9. An `InfoTip` beside the headline gives the rule of the verdict. "Needs an owner" is the first group of Open work when it leads. It is the last group when it does not lead. Each row opens its task.
+10. **UI.** The Forecast draws one band from today. It is solid to the 50% date and an outline to the 85% date, with a tick at the plan. The band takes the explicit ramp slot 9. An `InfoTip` beside the headline gives the rule of the verdict. "Needs an owner" is the first group of Open work when it leads. It is the last group when it does not lead. Each row opens its task.
 11. **The chat.** `analytics_outlook` prints the sentence first. `analytics_load` and a report's `load` section print the tasks that need an owner, each title through `data()`. The text prints each row the server sent, so the paging fence holds. The card gains "85% finish" and "Need an owner".
 12. Live, with no flag. RA-6 adds no table and no migration.
+
+**Fix round 1 (2026-10-26), after the review.**
+
+1. **No rate for the cap.** The converge line is a mean rate, and the cap verdict is an 85% test. In about one cap verdict in five, the line asked a team for a rate it already had. So only the arrivals verdict names a rate. The cap verdict says what helps.
+2. **The history gate.** It needs 3 finished tasks, in 2 weeks or more. So a team that finishes work every second week gets a date. The arrivals rule runs before the gate.
+3. **Three weeks.** `GET /analytics/outlook` takes 2 to 26 weeks. Three weeks of history can now give a date.
+4. **The chat.** A figure that the server sends as null prints nothing. `analytics_load` prints "Needs an owner" on the first page only.
+5. **The band.** The 85% part is an outline in the full hue, with a fill of 20%. The outline is 3.96:1 against the dark track and 6.90:1 against the light one. The solid part is 3.08:1 against the fill in dark mode and 4.91:1 in light mode.
+6. **The table.** The table of Open work puts "Needs an owner" first when it leads.
 
 Fences: `tests/unit/test_projects_report_forecast.py` (hermetic) and `tests/unit/test_projects_report_forecast_r8.py` (R8), and in the client `lib/outlook.test.ts`, `lib/needsOwner.test.ts` and `components/forecastPanel.test.ts`.
 

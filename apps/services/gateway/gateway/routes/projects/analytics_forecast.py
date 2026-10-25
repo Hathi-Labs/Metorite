@@ -50,12 +50,19 @@ FORECAST_TRIALS = 2000
 #: the work: a run stops here even when the open count is 7,000.
 FORECAST_CAP_WEEKS = 52
 
-#: The fewest weeks of the history with a finished task, for a forecast.
+#: The fewest finished tasks in the history, for a forecast.
 #:
 #: Under this the answer is "Not enough history" (verdict ``no_history``).
-#: Three good weeks out of six are three numbers, and a run that samples
-#: them says more than it knows.
-MIN_WEEKS_WITH_FINISHES = 4
+#: Two finished tasks are not a rate, they are two numbers. This is the floor
+#: the mean-rate forecast had before RA-6, kept.
+MIN_FINISHED_FOR_FORECAST = 3
+
+#: The fewest weeks of the history with a finished task, for a forecast.
+#:
+#: One busy week is one sample, and every run would only repeat it. Two
+#: weeks are the least a run can mix. A team that finishes work every second
+#: week (6, 0, 6, 0, 6, 0) has three weeks with a finish, and gets a date.
+MIN_FINISH_WEEKS = 2
 
 #: The two shares the forecast names: half the runs, and 85% of them.
 P50 = 0.5
@@ -64,7 +71,8 @@ P85 = 0.85
 #: The reasons of ``not_converging``.
 #: ``arrivals``: work arrives at least as fast as it finishes (the rule of
 #: 2026-09-17, kept). ``cap``: fewer than 85% of the runs empty the open
-#: count within :data:`FORECAST_CAP_WEEKS`.
+#: count within :data:`FORECAST_CAP_WEEKS`. Only ``arrivals`` carries a
+#: converge line (RA-6 fix round 1).
 REASON_ARRIVALS = "arrivals"
 REASON_CAP = "cap"
 
@@ -138,11 +146,19 @@ def percentile_weeks(runs: Sequence[int], share: float) -> int:
 def converge_per_week(
     *, remaining: int, created_per_week: float, cap: int = FORECAST_CAP_WEEKS,
 ) -> float:
-    """The finishes a week that would converge the forecast.
+    """The finishes a week that would converge a forecast that work outruns.
 
-    The arrivals of a week, plus the open count over the cap. At that steady
-    rate the net clears the open count in ``cap`` weeks. Rounded UP to one
-    decimal, so the rate the panel states does converge.
+    Only for reason ``arrivals``, where the mean net rate is zero or less.
+    It is the arrivals of a week, plus the open count over the cap. So it is
+    always above the arrival rate, and so above the finish rate of today. At
+    that steady rate the net clears the open count in ``cap`` weeks. Rounded
+    UP to one decimal, so the rate the panel states does converge.
+
+    ⚠️ **Never for reason ``cap``** (RA-6 fix round 1). That verdict is an
+    85% test over the runs, and this is a mean-rate line. Across random
+    inputs the line fell AT OR BELOW the finish rate of today in about one
+    ``cap`` verdict in five, so the panel told a team to reach a rate it
+    already had. A ``cap`` verdict says what would help, and names no rate.
     """
     need = max(0.0, float(created_per_week)) + max(0, remaining) / cap
     return math.ceil(round(need * 10, 6)) / 10
@@ -174,25 +190,36 @@ def forecast_summary(block: dict[str, Any]) -> str:
     if verdict == "nothing_left":
         return "Nothing is open in this scope."
     if verdict == "no_history":
+        fin = int(block.get("finished_in_window") or 0)
         had = int(block.get("weeks_with_finishes") or 0)
         sampled = int(block.get("weeks_sampled") or 0)
-        need = int(block.get("min_weeks_with_finishes") or MIN_WEEKS_WITH_FINISHES)
+        need = int(block.get("min_finished") or MIN_FINISHED_FOR_FORECAST)
+        need_weeks = int(block.get("min_finish_weeks") or MIN_FINISH_WEEKS)
+        tasks = "task" if fin == 1 else "tasks"
+        weeks = "week" if had == 1 else "weeks"
+        if fin > 0:
+            seen = f"{fin} {tasks} finished in {had} {weeks} of the last {sampled}."
+        elif sampled > 0:
+            seen = f"no task finished in the last {sampled} weeks."
+        else:
+            seen = "no task has finished yet."
         return (
-            f"Not enough history to forecast: {had} of the last {sampled} weeks"
-            f" had a finished task, and a forecast needs {need}."
+            f"Not enough history to forecast: {seen} A forecast needs"
+            f" {need} finished tasks, in {need_weeks} weeks or more."
+        )
+    if verdict == "not_converging" and block.get("reason") == REASON_CAP:
+        # RA-6 fix round 1: no rate here. The 85% test failed, and a mean
+        # rate cannot say what passes it.
+        return (
+            f"Not converging: at the current rate, the 85% date is more than"
+            f" {block.get('cap_weeks')} weeks away. A steadier flow of"
+            f" finished tasks, or smaller tasks, brings it closer."
         )
     converge = block.get("converge_per_week")
     tail = (
         f" To converge, it needs {_rate(converge)} finished tasks a week."
         if isinstance(converge, int | float) else ""
     )
-    if verdict == "not_converging" and block.get("reason") == REASON_CAP:
-        return (
-            f"Not converging within {block.get('cap_weeks')} weeks: fewer than"
-            f" 85% of {int(block.get('trials') or 0):,} runs finish the"
-            f" {_tasks(remaining)} in that time."
-            + tail
-        )
     if verdict == "not_converging":
         return (
             f"Not converging: work arrives at least as fast as it finishes"
@@ -220,21 +247,23 @@ def count_forecast(
     trials: int = FORECAST_TRIALS,
     cap: int = FORECAST_CAP_WEEKS,
 ) -> dict[str, Any]:
-    """The forecast by count: a verdict, two dates, and the converge line.
+    """The forecast by count: a verdict, two dates, or why there is none.
 
-    The order of the verdicts is the rule (§5):
+    The order of the verdicts is the rule (§5, RA-6 fix round 1):
 
     1. ``nothing_left``: no open task.
-    2. ``no_history`` ("Not enough history"): fewer than
-       :data:`MIN_WEEKS_WITH_FINISHES` weeks of the history had a finish.
-    3. ``not_converging``, reason ``arrivals``: the mean net rate is zero or
-       less. This is the rule of 2026-09-17, and no run starts.
+    2. ``not_converging``, reason ``arrivals``: work arrives, and the mean
+       net rate is zero or less. This is the rule of 2026-09-17, and no run
+       starts. It comes BEFORE the history gate, so a project that grows
+       stays red even with a thin history. It carries ``converge_per_week``.
+    3. ``no_history`` ("Not enough history"): fewer than
+       :data:`MIN_FINISHED_FOR_FORECAST` finished tasks, or fewer than
+       :data:`MIN_FINISH_WEEKS` weeks with a finish.
     4. ``not_converging``, reason ``cap``: fewer than 85% of the runs empty
-       the open count within the cap.
+       the open count within the cap. It names no rate.
     5. ``converging``: the 50% and the 85% dates.
 
-    A ``not_converging`` answer carries ``converge_per_week``. The dates are
-    ``today`` plus whole weeks.
+    The dates are ``today`` plus whole weeks.
     """
     weeks = max(len(finished), len(created))
     fin_total = sum(finished)
@@ -250,8 +279,10 @@ def count_forecast(
         "created_per_week": per_week_made,
         "net_per_week": net,
         "remaining_tasks": remaining,
+        "finished_in_window": fin_total,
         "weeks_with_finishes": with_finishes,
-        "min_weeks_with_finishes": MIN_WEEKS_WITH_FINISHES,
+        "min_finished": MIN_FINISHED_FOR_FORECAST,
+        "min_finish_weeks": MIN_FINISH_WEEKS,
         "trials": trials,
         "cap_weeks": cap,
         "reason": None,
@@ -272,15 +303,18 @@ def count_forecast(
 
     if remaining <= 0:
         return done("nothing_left")
-    if with_finishes < MIN_WEEKS_WITH_FINISHES:
-        return done("no_history")
-    converge = converge_per_week(
-        remaining=remaining, created_per_week=per_week_made, cap=cap,
-    )
-    if net <= 0:
+    # Work must ARRIVE for the arrivals rule. With no arrival and no finish
+    # the net is zero too, and that is a thin history, not a growing one.
+    if made_total > 0 and net <= 0:
         return done(
-            "not_converging", reason=REASON_ARRIVALS, converge_per_week=converge,
+            "not_converging",
+            reason=REASON_ARRIVALS,
+            converge_per_week=converge_per_week(
+                remaining=remaining, created_per_week=per_week_made, cap=cap,
+            ),
         )
+    if fin_total < MIN_FINISHED_FOR_FORECAST or with_finishes < MIN_FINISH_WEEKS:
+        return done("no_history")
     runs = simulate_weeks(
         remaining=remaining, finished=finished, created=created,
         seed=seed, trials=trials, cap=cap,
@@ -288,7 +322,7 @@ def count_forecast(
     p50 = percentile_weeks(runs, P50)
     p85 = percentile_weeks(runs, P85)
     if p85 > cap:
-        return done("not_converging", reason=REASON_CAP, converge_per_week=converge)
+        return done("not_converging", reason=REASON_CAP)
     p50_date = (today + timedelta(weeks=p50)).isoformat()
     return done(
         "converging",

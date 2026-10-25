@@ -10,6 +10,8 @@ The done-when of RA-6 is two sentences, and two classes here pin them:
   seed can give other dates, the generator is a local instance, and the seed
   is the same in each process.
 * **D2 a pure test pins the converge line** (``TestTheConvergeLine``).
+  Fix round 1: the line belongs to reason ``arrivals`` only, and a ``cap``
+  verdict names no rate.
 
 The rest pins each rule of §5: the percentile pick, the runs, "Not
 converging" for both reasons, "Not enough history", the summary sentence
@@ -34,7 +36,8 @@ from gateway.routes.projects import analytics as ana
 from gateway.routes.projects.analytics_forecast import (
     FORECAST_CAP_WEEKS,
     FORECAST_TRIALS,
-    MIN_WEEKS_WITH_FINISHES,
+    MIN_FINISH_WEEKS,
+    MIN_FINISHED_FOR_FORECAST,
     REASON_ARRIVALS,
     REASON_CAP,
     converge_per_week,
@@ -208,12 +211,25 @@ class TestTheConvergeLine:
         )
         assert got["p50_date"] is None and got["finish_date"] is None
 
-    def test_a_backlog_past_the_cap_is_not_converging_with_the_line(self) -> None:
-        got = _forecast(60, finished=[1, 1, 1, 1, 0, 0], created=[0] * 6)
+    def test_past_the_cap_names_no_rate_the_reviewers_case(self) -> None:
+        """Fix round 1. A mean-rate line said "needs 2.3 a week" here, and
+        the team finished 2.5 a week. The 85% test failed for the spread of
+        the weeks, not for the mean, so the verdict names no rate."""
+        got = _forecast(80, finished=[1, 5, 8, 0, 0, 1], created=[2, 0, 0, 0, 0, 2])
         assert got["verdict"] == "not_converging"
         assert got["reason"] == REASON_CAP
-        assert got["converge_per_week"] == 1.2
+        assert got["finished_per_week"] == 2.5
+        assert got["converge_per_week"] is None
         assert got["p85_date"] is None
+        assert "To converge" not in got["summary"]
+
+    def test_for_arrivals_the_line_is_above_the_arrival_and_the_finish_rate(self) -> None:
+        got = _forecast(30, finished=[3, 2, 4, 3, 2, 3], created=[4, 3, 4, 3, 3, 4])
+        assert (got["verdict"], got["reason"]) == ("not_converging", REASON_ARRIVALS)
+        line = got["converge_per_week"]
+        assert line == converge_per_week(remaining=30, created_per_week=got["created_per_week"])
+        assert line > got["created_per_week"] >= got["finished_per_week"]
+        assert f"To converge, it needs {line} finished tasks a week." in got["summary"]
 
     def test_a_converging_forecast_has_no_line(self) -> None:
         got = _forecast(40)
@@ -226,26 +242,49 @@ class TestTheConvergeLine:
 
 
 class TestNotEnoughHistory:
-    def test_fewer_weeks_with_a_finish_than_the_rule_is_not_enough(self) -> None:
-        short = MIN_WEEKS_WITH_FINISHES - 1
-        got = _forecast(12, finished=[20] * short + [0] * (6 - short), created=[0] * 6)
+    """Fix round 1: fewer than 3 finished tasks, or fewer than 2 weeks with
+    a finish. The arrivals rule runs BEFORE this gate."""
+
+    def test_a_team_that_finishes_every_second_week_gets_a_date(self) -> None:
+        got = _forecast(20, finished=[6, 0, 6, 0, 6, 0], created=[0] * 6)
+        assert got["verdict"] == "converging"
+        assert got["p50_date"] and got["p85_date"]
+
+    def test_a_growing_project_stays_red_with_a_thin_history(self) -> None:
+        got = _forecast(30, finished=[1, 0, 0, 0, 0, 0], created=[3, 2, 0, 1, 0, 2])
+        assert (got["verdict"], got["reason"]) == ("not_converging", REASON_ARRIVALS)
+        assert got["converge_per_week"] is not None
+
+    def test_two_finished_tasks_are_not_enough(self) -> None:
+        got = _forecast(10, finished=[1, 0, 1, 0, 0, 0], created=[0] * 6)
+        assert MIN_FINISHED_FOR_FORECAST == 3
         assert got["verdict"] == "no_history"
-        assert got["weeks_with_finishes"] == short
+        assert got["finished_in_window"] == 2
+
+    def test_one_week_with_a_finish_is_not_enough(self) -> None:
+        got = _forecast(10, finished=[9, 0, 0, 0, 0, 0], created=[0] * 6)
+        assert MIN_FINISH_WEEKS == 2
+        assert got["verdict"] == "no_history"
+        assert got["weeks_with_finishes"] == 1
         assert got["p50_date"] is None and got["converge_per_week"] is None
 
     def test_exactly_the_rule_is_enough(self) -> None:
-        got = _forecast(
-            4, finished=[1] * MIN_WEEKS_WITH_FINISHES + [0, 0], created=[0] * 6,
-        )
+        got = _forecast(4, finished=[2, 1, 0, 0, 0, 0], created=[0] * 6)
         assert got["verdict"] == "converging"
+
+    def test_no_arrival_and_no_finish_is_a_thin_history_not_a_growing_one(self) -> None:
+        assert _forecast(12, finished=[0] * 6, created=[0] * 6)["verdict"] == "no_history"
+        assert _forecast(12, finished=[], created=[])["verdict"] == "no_history"
 
     def test_nothing_open_comes_first(self) -> None:
         got = _forecast(0, finished=[], created=[])
         assert got["verdict"] == "nothing_left"
 
-    def test_not_enough_history_comes_before_not_converging(self) -> None:
-        got = _forecast(9, finished=[1, 1, 0, 0, 0, 0], created=[5] * 6)
-        assert got["verdict"] == "no_history"
+    def test_three_weeks_of_history_can_give_a_date(self) -> None:
+        """Item 3 of fix round 1: the route takes `weeks` from 2 to 26."""
+        got = _forecast(10, finished=[2, 0, 3], created=[0, 0, 0])
+        assert got["weeks_sampled"] == 3
+        assert got["verdict"] == "converging"
 
 
 # ── The summary sentence (§6.8 E5) ──────────────────────────────────────────
@@ -269,16 +308,21 @@ class TestTheSummary:
         )
         slow = _forecast(60, finished=[1, 1, 1, 1, 0, 0], created=[0] * 6)
         assert slow["summary"] == (
-            "Not converging within 52 weeks: fewer than 85% of 2,000 runs"
-            " finish the 60 open tasks in that time. To converge, it needs"
-            " 1.2 finished tasks a week."
+            "Not converging: at the current rate, the 85% date is more than"
+            " 52 weeks away. A steadier flow of finished tasks, or smaller"
+            " tasks, brings it closer."
         )
 
     def test_not_enough_history_says_the_rule(self) -> None:
-        got = _forecast(12, finished=[3, 0, 2, 0, 0, 0], created=[0] * 6)
+        got = _forecast(12, finished=[2, 0, 0, 0, 0, 0], created=[0] * 6)
         assert got["summary"] == (
-            "Not enough history to forecast: 2 of the last 6 weeks had a"
-            " finished task, and a forecast needs 4."
+            "Not enough history to forecast: 2 tasks finished in 1 week of"
+            " the last 6. A forecast needs 3 finished tasks, in 2 weeks or more."
+        )
+        none = _forecast(12, finished=[0] * 6, created=[0] * 6)
+        assert none["summary"] == (
+            "Not enough history to forecast: no task finished in the last 6"
+            " weeks. A forecast needs 3 finished tasks, in 2 weeks or more."
         )
 
     def test_one_open_task_is_singular(self) -> None:
@@ -380,7 +424,8 @@ class TestTheOutlookSeed:
         got = _outlook(_WeeksDB(date(2026, 10, 12)), "p1", monkeypatch)["velocity"]
         for key in (
             "p50_weeks", "p50_date", "p85_weeks", "p85_date", "trials",
-            "cap_weeks", "weeks_with_finishes", "min_weeks_with_finishes",
+            "cap_weeks", "weeks_with_finishes", "finished_in_window",
+            "min_finished", "min_finish_weeks",
             "converge_per_week", "reason", "summary",
             # The keys that every older reader reads stay.
             "weeks_sampled", "finished_per_week", "created_per_week",
@@ -539,6 +584,31 @@ class TestTheChat:
         out = asyncio.run(skill_projects.analytics_load())
         assert "Needs an owner: 2 open tasks with no assignee and no open run" in out
         assert out.index("Needs an owner") < out.index("- unassigned")
+
+    def test_analytics_load_prints_it_on_the_first_page_only(self, monkeypatch) -> None:
+        """Fix round 1. It is not a page of people, so page 2 does not repeat it."""
+        fake_gateway(monkeypatch, lambda c: {
+            **_owner_section(leads=True, total=2, named=2), "people_listed": 25,
+        })
+        later = asyncio.run(skill_projects.analytics_load(offset=20))
+        assert "Needs an owner" not in later
+        assert "needs an owner ·" not in later
+
+    def test_a_null_figure_prints_nothing(self) -> None:
+        """Fix round 1. A converging forecast sends `converge_per_week: null`,
+        and the model must not read "to converge None"."""
+        from skill_projects.reads import _report_section
+
+        lines = _report_section("outlook", {"velocity": {
+            "verdict": "converging", "finish_date": "2026-12-23", "p85_date": "2027-01-13",
+            "converge_per_week": None, "remaining_tasks": 9,
+        }})
+        assert "None" not in lines[0]
+        assert "to converge" not in lines[0]
+        arrivals = _report_section("outlook", {"velocity": {
+            "verdict": "not_converging", "converge_per_week": 6.6, "remaining_tasks": 9,
+        }})
+        assert "finished tasks a week to converge 6.6" in arrivals[0]
 
     def test_the_card_says_not_enough_history_in_the_section_5_word(self) -> None:
         from skill_projects.views import _card_section

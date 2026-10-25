@@ -194,16 +194,25 @@ export function forecastRule(v: VelocityForecast | null | undefined): string | n
   const runs = (v.trials ?? 2000).toLocaleString("en-US");
   const cap = v.cap_weeks ?? 52;
   if (v.verdict === "no_history") {
-    const need = v.min_weeks_with_finishes ?? 4;
+    const need = v.min_finished ?? 3;
+    const needWeeks = v.min_finish_weeks ?? 2;
     return (
-      `A forecast needs ${need} of the last ${weeks} weeks with a finished task.` +
+      `A forecast needs ${need} finished tasks in the last ${weeks} weeks,` +
+      ` in ${needWeeks} weeks or more.` +
       " With fewer, the runs would say more than the history knows."
+    );
+  }
+  if (v.verdict === "not_converging" && v.reason === "cap") {
+    // RA-6 fix round 1: an 85% test, so no mean rate is named.
+    return (
+      `Not converging: fewer than 85% of ${runs} runs finish within ${cap}` +
+      " weeks. A steadier flow of finished tasks, or smaller tasks, brings" +
+      " the 85% date closer."
     );
   }
   if (v.verdict === "not_converging") {
     return (
-      "Not converging: new work arrives at least as fast as work finishes," +
-      ` or fewer than 85% of ${runs} runs finish within ${cap} weeks.` +
+      "Not converging: new work arrives at least as fast as work finishes." +
       " The rate that converges it is the new tasks of a week, plus the" +
       ` open tasks spread over ${cap} weeks.`
     );
@@ -300,7 +309,9 @@ export function velocityLine(v: VelocityForecast): OutlookLine {
         detail:
           (typeof v.converge_per_week === "number"
             ? `To converge, it needs ${v.converge_per_week} finished a week. `
-            : "Work is arriving at least as fast as it is finished, so no completion date exists at this rate. ") +
+            : v.reason === "cap"
+              ? `The 85% date is more than ${v.cap_weeks ?? 52} weeks away at this rate. `
+              : "Work is arriving at least as fast as it is finished, so no completion date exists at this rate. ") +
           rates,
         tone: "bad",
       };
@@ -308,8 +319,8 @@ export function velocityLine(v: VelocityForecast): OutlookLine {
       return {
         headline: "Not enough history",
         detail:
-          typeof v.weeks_with_finishes === "number"
-            ? `${v.weeks_with_finishes} of the last ${v.weeks_sampled} weeks had a finished task. A forecast needs ${v.min_weeks_with_finishes ?? 4}.`
+          typeof v.finished_in_window === "number" && typeof v.weeks_with_finishes === "number"
+            ? `${v.finished_in_window} finished in ${v.weeks_with_finishes} of the last ${v.weeks_sampled} weeks. A forecast needs ${v.min_finished ?? 3}, in ${v.min_finish_weeks ?? 2} weeks or more.`
             : `Too few tasks finished in the last ${v.weeks_sampled} weeks. A rate needs more than that.`,
         tone: "quiet",
       };

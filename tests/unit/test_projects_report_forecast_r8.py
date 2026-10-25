@@ -15,7 +15,9 @@ fixture), on a database with the whole ladder and two organizations:
   counts the weeks with a finish, and its rate is their mean.
 * **W2** the same scope and the same week give the same dates, in the
   section and in the route.
-* **W3** a scope with finishes in two of six weeks says "Not enough history".
+* **W3** a scope with finishes in one week of six says "Not enough history",
+  and one with finishes in two weeks gets a date (fix round 1).
+* **W4** the route takes ``weeks=3``, and three weeks of history give a date.
 * **N1** "Needs an owner" is an open task with no assignee and no open run.
   An unassigned task whose open run went quiet is in ``none`` and does not
   need an owner. A closed run, a closed task and an archived task follow
@@ -195,18 +197,42 @@ class TestTheForecast:
         assert (first["p50_date"], first["p85_date"]) == (again["p50_date"], again["p85_date"])
         assert first == again == route
 
-    async def test_w3_finishes_in_two_weeks_are_not_enough_history(self, w):
-        _history(w, {1: 6, 4: 2})
+    async def test_w3_finishes_in_one_week_are_not_enough_history(self, w):
+        _history(w, {1: 6})
         for _ in range(5):
             _task(w)
         velocity = (await _preview(w, w.a, ["outlook"]))["outlook"]["velocity"]
         assert velocity["verdict"] == "no_history"
-        assert velocity["weeks_with_finishes"] == 2
+        assert velocity["weeks_with_finishes"] == 1
+        assert velocity["finished_in_window"] == 6
         assert velocity["p50_date"] is None and velocity["finish_date"] is None
         assert velocity["summary"] == (
-            "Not enough history to forecast: 2 of the last 6 weeks had a"
-            " finished task, and a forecast needs 4."
+            "Not enough history to forecast: 6 tasks finished in 1 week of the"
+            " last 6. A forecast needs 3 finished tasks, in 2 weeks or more."
         )
+        # A second week with a finish gives a date (fix round 1).
+        _history(w, {4: 2})
+        again = (await _preview(w, w.a, ["outlook"]))["outlook"]["velocity"]
+        assert again["verdict"] == "converging", again
+
+    async def test_w4_the_route_takes_three_weeks(self, w):
+        """Fix round 1, item 3. `GET /analytics/outlook` takes 2 to 26 weeks,
+        and the history gate no longer needs four of them."""
+        _history(w, {1: 2, 2: 0, 3: 3})
+        for _ in range(6):
+            _task(w)
+        async with b._session(w.p) as call:
+            got = await call(
+                w.a, "GET",
+                f"/projects/analytics/outlook?project_id={w.root['id']}&include_subtree=true&weeks=3",
+            )
+        assert got.status_code == 200, got.text
+        velocity = got.json()["velocity"]
+        assert got.json()["weeks"] == 3
+        assert velocity["weeks_sampled"] == 3
+        assert velocity["finished_in_window"] == 5
+        assert velocity["verdict"] == "converging", velocity
+        assert velocity["p50_date"] and velocity["p85_date"]
 
 
 # ── N1 and N2: Needs an owner ───────────────────────────────────────────────

@@ -17,8 +17,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { LoadReport, NeedsOwner, OutlookReport } from "../lib/api";
+import type { LoadReport, NeedsOwner, OutlookReport, RenderedReportBody } from "../lib/api";
 import { LoadPanel, OpenTaskContext, OutlookPanel } from "./AnalyticsPanels";
+import { RenderedBody } from "./ReportsView";
 
 const html = (el: React.ReactElement) => renderToStaticMarkup(el);
 
@@ -36,7 +37,9 @@ const OUTLOOK: OutlookReport = {
     finish_date: "2026-12-23",
     verdict: "converging",
     weeks_with_finishes: 5,
-    min_weeks_with_finishes: 4,
+    finished_in_window: 21,
+    min_finished: 3,
+    min_finish_weeks: 2,
     trials: 2000,
     cap_weeks: 52,
     reason: null,
@@ -87,9 +90,24 @@ const THIN: OutlookReport = {
     verdict: "no_history",
     reason: null,
     converge_per_week: null,
-    weeks_with_finishes: 2,
+    finished_in_window: 2,
+    weeks_with_finishes: 1,
     summary:
-      "Not enough history to forecast: 2 of the last 6 weeks had a finished task, and a forecast needs 4.",
+      "Not enough history to forecast: 2 tasks finished in 1 week of the last 6. A forecast needs 3 finished tasks, in 2 weeks or more.",
+  },
+};
+
+/** RA-6 fix round 1: past the cap, the panel names no rate. */
+const PAST_CAP: OutlookReport = {
+  ...NOT_CONVERGING,
+  velocity: {
+    ...NOT_CONVERGING.velocity,
+    reason: "cap",
+    converge_per_week: null,
+    created_per_week: 0.67,
+    finished_per_week: 2.5,
+    summary:
+      "Not converging: at the current rate, the 85% date is more than 52 weeks away. A steadier flow of finished tasks, or smaller tasks, brings it closer.",
   },
 };
 
@@ -101,8 +119,10 @@ describe("OutlookPanel — the forecast by count", () => {
     expect(out).toContain('aria-label="50% by 23 Dec 2026, 85% by 13 Jan 2027."');
     expect(out).toContain("50% by 23 Dec 2026</span>");
     expect(out).toContain("85% by 13 Jan 2027</span>");
-    // The explicit ramp slot, never a raw palette class.
+    // The explicit ramp slot, never a raw palette class. RA-6 fix round 1:
+    // the 50% part is solid, and the 85% part an outline in the full hue.
     expect(out).toContain("bg-cat-10");
+    expect(out).toMatch(/border-2 border-current text-cat-10/);
     // The rule is a button, so a keyboard and a touch reach it.
     expect(out).toContain('aria-label="How the forecast is counted"');
   });
@@ -131,7 +151,15 @@ describe("OutlookPanel — the forecast by count", () => {
   it("not enough history says the rule, with no band", () => {
     const out = html(createElement(OutlookPanel, { data: THIN }));
     expect(out).toContain("Not enough history");
-    expect(out).toContain("2 of the last 6 weeks had a finished task, and a forecast needs 4.");
+    expect(out).toContain("A forecast needs 3 finished tasks, in 2 weeks or more.");
+    expect(out).not.toMatch(/aria-label="50% by/);
+  });
+
+  it("⚠️ past the cap it names no rate, so it never asks for a rate the team has", () => {
+    const out = html(createElement(OutlookPanel, { data: PAST_CAP }));
+    expect(out).toContain("Not converging");
+    expect(out).toContain("the 85% date is more than 52 weeks away");
+    expect(out).not.toContain("To converge");
     expect(out).not.toMatch(/aria-label="50% by/);
   });
 });
@@ -201,5 +229,51 @@ describe("LoadPanel — Needs an owner", () => {
     expect(html(createElement(LoadPanel, { data: { ...LOAD, needs_owner: owner({ total: 0, tasks: [] }) } }))).not.toContain("Needs an owner");
     const { needs_owner: _gone, ...older } = LOAD;
     expect(html(createElement(LoadPanel, { data: older }))).not.toContain("Needs an owner");
+  });
+});
+
+/** A report body with one `load` section, for the table under the panel. */
+function reportBody(load: LoadReport): RenderedReportBody {
+  return {
+    report: {
+      id: "r-1",
+      project_id: null,
+      scope: "portfolio",
+      name: "Overview",
+      config: { weeks: 12, skip_current_week: false, include_subtree: true, sections: ["load"] },
+      created_by: "a@x.io",
+      created_at: "2026-10-25T00:00:00Z",
+    },
+    period_start: "2026-08-04",
+    period_end: "2026-10-25",
+    sections: { load },
+  } as unknown as RenderedReportBody;
+}
+
+/** The folded table of a report, the part after the panel. */
+function tableOf(out: string): string {
+  const at = out.indexOf('aria-label="Open work, as a table');
+  expect(at, "the table of Open work").toBeGreaterThan(-1);
+  return out.slice(at);
+}
+
+describe("the table of Open work (RA-6 fix round 1)", () => {
+  it("puts Needs an owner first when it leads, as the panel does", () => {
+    const table = tableOf(html(createElement(RenderedBody, { body: reportBody(LOAD) })));
+    const owner = table.indexOf("Needs an owner");
+    expect(owner).toBeGreaterThan(-1);
+    expect(owner).toBeLessThan(table.indexOf("Unassigned"));
+    expect(table).toContain("#12 Choose the nozzle");
+  });
+
+  it("puts it last when it does not lead", () => {
+    const table = tableOf(
+      html(
+        createElement(RenderedBody, {
+          body: reportBody({ ...LOAD, needs_owner: owner({ total: 1, leads: false, tasks: owner().tasks.slice(0, 1) }) }),
+        })
+      )
+    );
+    expect(table.indexOf("Needs an owner")).toBeGreaterThan(table.indexOf("Unassigned"));
   });
 });

@@ -1996,8 +1996,8 @@ def project_forecast(
     ⚠️ **It refuses more often than it answers, on purpose.** `no_history`,
     `nothing_left` and `not_converging` are findings. A number invented to
     fill the space would be quoted in a meeting and believed. Since RA-6 a
-    `not_converging` answer also says the finishes a week that would
-    converge it.
+    `not_converging` answer for arrivals also says the finishes a week that
+    would converge it. One for the cap names no rate (fix round 1).
     """
     return count_forecast(
         remaining=remaining_tasks,

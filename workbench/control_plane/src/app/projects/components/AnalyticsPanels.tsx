@@ -2437,10 +2437,17 @@ function ForecastBandBar({ band }: { band: ForecastBand }) {
           className={`absolute inset-y-0 left-0 rounded-l-full ${hue.dot}`}
           style={{ width: `${band.p50}%` }}
         />
+        {/* RA-6 fix round 1. The 85% part is an outline in the full hue,
+            with a faint fill. A lighter fill alone could not reach 3:1
+            against the track in dark mode and stay apart from the solid
+            part: the full hue is 3.96:1 on the dark track and 6.90:1 on the
+            light one, so the outline carries the contrast. */}
         <div
-          className={`absolute inset-y-0 opacity-50 ${hue.dot}`}
+          className={`absolute inset-y-0 rounded-r-full border-2 border-current ${hue.text}`}
           style={{ left: `${band.p50}%`, width: `${Math.max(1, band.p85 - band.p50)}%` }}
-        />
+        >
+          <div className="h-full w-full rounded-r-full bg-current opacity-20" />
+        </div>
         {band.plan !== null && (
           <span
             className="absolute -top-0.5 h-3 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
@@ -2455,7 +2462,7 @@ function ForecastBandBar({ band }: { band: ForecastBand }) {
           50% by {band.p50Label}
         </span>
         <span className="flex items-center gap-1">
-          <span className={`size-2 rounded-full opacity-50 ${hue.dot}`} aria-hidden />
+          <span className={`size-2 rounded-full border-2 border-current ${hue.text}`} aria-hidden />
           85% by {band.p85Label}
         </span>
         {band.planLabel && (

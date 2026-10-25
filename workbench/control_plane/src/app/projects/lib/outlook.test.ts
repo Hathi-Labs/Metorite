@@ -498,7 +498,9 @@ function counted(over: Partial<OutlookReport["velocity"]> = {}): OutlookReport {
       p85_weeks: 13,
       p85_date: "2027-04-02",
       weeks_with_finishes: 5,
-      min_weeks_with_finishes: 4,
+      finished_in_window: 13,
+      min_finished: 3,
+      min_finish_weeks: 2,
       trials: 2000,
       cap_weeks: 52,
       reason: null,
@@ -536,20 +538,41 @@ describe("velocityLine — the count forecast (WS-27bn RA-6)", () => {
     expect(line.detail).toContain("31 open: 50% by then, 85% by 2 Apr 2027");
   });
 
-  it("⚠️ NOT CONVERGING names the rate that would converge it", () => {
+  it("⚠️ NOT CONVERGING for arrivals names the rate that would converge it", () => {
     const line = velocityLine(
-      counted({ verdict: "not_converging", converge_per_week: 6.6, finish_date: null }).velocity
+      counted({
+        verdict: "not_converging",
+        reason: "arrivals",
+        converge_per_week: 6.6,
+        finish_date: null,
+      }).velocity
     );
     expect(line.detail).toContain("To converge, it needs 6.6 finished a week.");
     expect(line.detail).toContain("4.2/wk");
   });
 
-  it("not enough history says the weeks and the rule", () => {
+  it("⚠️ NOT CONVERGING past the cap names no rate (fix round 1)", () => {
     const line = velocityLine(
-      counted({ verdict: "no_history", weeks_with_finishes: 2, finish_date: null }).velocity
+      counted({ verdict: "not_converging", reason: "cap", converge_per_week: null, finish_date: null })
+        .velocity
+    );
+    expect(line.detail).toContain("The 85% date is more than 52 weeks away at this rate.");
+    expect(line.detail).not.toContain("To converge");
+  });
+
+  it("not enough history says the finishes, the weeks and the rule", () => {
+    const line = velocityLine(
+      counted({
+        verdict: "no_history",
+        finished_in_window: 2,
+        weeks_with_finishes: 1,
+        finish_date: null,
+      }).velocity
     );
     expect(line.headline).toBe("Not enough history");
-    expect(line.detail).toBe("2 of the last 6 weeks had a finished task. A forecast needs 4.");
+    expect(line.detail).toBe(
+      "2 finished in 1 of the last 6 weeks. A forecast needs 3, in 2 weeks or more."
+    );
   });
 });
 
@@ -563,9 +586,15 @@ describe("forecastRule — each rule is reachable (WS-27bn RA-6, §6.8 E6)", () 
   });
 
   it("explains not converging and not enough history", () => {
-    expect(forecastRule(counted({ verdict: "not_converging" }).velocity)).toContain("52 weeks");
+    const arrivals = forecastRule(counted({ verdict: "not_converging", reason: "arrivals" }).velocity)!;
+    expect(arrivals).toContain("new work arrives at least as fast");
+    expect(arrivals).toContain("spread over 52 weeks");
+    // RA-6 fix round 1: the cap rule names what helps, and no rate.
+    const cap = forecastRule(counted({ verdict: "not_converging", reason: "cap" }).velocity)!;
+    expect(cap).toContain("fewer than 85% of 2,000 runs finish within 52 weeks");
+    expect(cap).not.toContain("rate that converges");
     expect(forecastRule(counted({ verdict: "no_history" }).velocity)).toContain(
-      "4 of the last 6 weeks"
+      "3 finished tasks in the last 6 weeks, in 2 weeks or more"
     );
   });
 

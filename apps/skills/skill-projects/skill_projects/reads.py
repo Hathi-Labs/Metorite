@@ -954,8 +954,9 @@ async def analytics_load(project_id: str = "", offset: int = 0) -> str:
         # model never ranks people across rows it did not receive.
         out.append(f"  {line}. Do not compare the rows below with them.")
     # WS-27bn RA-6. "Needs an owner" comes first when it leads the open
-    # work (§6.8 B), and after the people when it does not.
-    owners = needs_owner_lines(payload)
+    # work (§6.8 B), and after the people when it does not. It is not a page
+    # of people, so only the first page prints it (fix round 1).
+    owners = needs_owner_lines(payload) if start == 0 else []
     leads = bool((payload.get("needs_owner") or {}).get("leads"))
     if leads:
         out.extend(owners)
@@ -2430,10 +2431,13 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         name,
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
+    # RA-6 fix round 1: a figure the server sent as null prints nothing. A
+    # converging forecast sends `converge_per_week: null`, and "to converge
+    # None" is a word the model must not repeat.
     totals = ", ".join(
         f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
         for k in scalar_keys
-        if (v := _dig(section, k)) is not _MISSING
+        if (v := _dig(section, k)) is not _MISSING and v is not None
     )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
     if section.get("hr_visible") is False and name in _REPORT_HINTS:

@@ -348,16 +348,26 @@ export interface VelocityForecast {
    * key below is optional: an older server sends none of them, and the panel
    * then draws the old lines. The server computes each one.
    */
+  /** The finished tasks of the history weeks. */
+  finished_in_window?: number;
   weeks_with_finishes?: number;
-  /** The rule of "Not enough history": the fewest weeks with a finish. */
-  min_weeks_with_finishes?: number;
+  /**
+   * The rule of "Not enough history" (RA-6 fix round 1): fewer than
+   * `min_finished` finished tasks, or fewer than `min_finish_weeks` weeks
+   * with a finish.
+   */
+  min_finished?: number;
+  min_finish_weeks?: number;
   /** How many runs the forecast made. */
   trials?: number;
   /** The most weeks one run simulates. */
   cap_weeks?: number;
   /** Why it does not converge: work arrives as fast, or past the cap. */
   reason?: "arrivals" | "cap" | null;
-  /** The finished tasks a week that would converge it. */
+  /**
+   * The finished tasks a week that would converge it. Only for reason
+   * `arrivals`. A `cap` verdict names no rate (RA-6 fix round 1).
+   */
   converge_per_week?: number | null;
   p50_weeks?: number | null;
   p50_date?: string | null;
