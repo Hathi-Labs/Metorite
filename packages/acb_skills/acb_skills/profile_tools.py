@@ -18,8 +18,8 @@ name is another person's text, so each name loses its guillemets, its line
 breaks and its control characters, and stops at 80 characters.
 
 **One path.** Only the orchestrator holds the tool, in its ``core_tools``,
-and only while ``ASSISTANT_PROFILE_ENABLED`` is on
-(``acb_common.assistant_profile.enabled``). It is not in ``config.json``
+and only while the profile is on for the run's org
+(``acb_common.assistant_profile.enabled_for``, PZ-25). It is not in ``config.json``
 ``tool_scope``, the floor or the injection chain. ``_H236_UNLISTED`` keeps
 it out of every risk block.
 

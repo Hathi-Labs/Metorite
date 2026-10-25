@@ -20,8 +20,10 @@ connection and imports no web framework. :data:`READ_SQL` runs in the
 caller's session, which binds the tenant (R5).
 
 **The flag.** ``ASSISTANT_PROFILE_ENABLED`` (``assistant_profile_enabled``),
-default OFF. :func:`enabled` is its one reader. OFF gives no block, so the
-per-turn context stays as it was before PZ-2.
+default OFF, and the list ``ASSISTANT_PROFILE_ORGS``
+(``assistant_profile_orgs``), default empty. :func:`enabled_for` is their one
+reader, and it takes the organization (PZ-25, §14.2). OFF gives no block, so
+the per-turn context stays as it was before PZ-2.
 
 Fences: ``tests/unit/test_assistant_profile.py`` and
 ``tests/unit/test_executor_profile_block.py``.
@@ -31,10 +33,12 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
 import json
 import logging
 import re
 import unicodedata
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -260,12 +264,52 @@ def profile_size(profile: Any) -> int:
 # ── The flag ───────────────────────────────────────────────────────────────
 
 
-def enabled() -> bool:
-    """True when ``ASSISTANT_PROFILE_ENABLED`` is on. Fails closed."""
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The ids in *raw*, trimmed and in lower case. Cached on the raw value.
+
+    The precedent is ``gateway.routes.crm.flags._parse_orgs``. An empty
+    entry, as in ``"a,,b"``, is dropped. An entry that is not a uuid stays,
+    and no org id, which is a uuid, matches it. It logs one warning, and the
+    cache makes it one for each raw value. The list holds org ids only, never
+    a secret, so the warning names the entry.
+    """
+    orgs = frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+    for org in sorted(orgs):
+        try:
+            uuid.UUID(org)
+        except ValueError:
+            logger.warning("assistant_profile.orgs.not_a_uuid",
+                           extra={"entry": org[:64]})
+    return orgs
+
+
+def enabled_for(org_id: str | None) -> bool:
+    """True when the profile is on for the organization *org_id*. Fails closed.
+
+    The rule of ``personalization.md`` §14.2 (PZ-25, D113):
+
+    * The master switch ``ASSISTANT_PROFILE_ENABLED`` off gives False.
+    * The master switch on and an empty ``ASSISTANT_PROFILE_ORGS`` gives
+      True for each organization.
+    * The master switch on and a list gives True only for an id in it.
+    * No organization gives False, always.
+
+    The caller passes the organization of the bound run or the server-side
+    ``UserContext``, never an id from request input (R5). The settings
+    object is cached, so a change of the env needs a restart.
+    """
     try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
         from acb_common import get_settings
 
-        return getattr(get_settings(), "assistant_profile_enabled", False) is True
+        settings = get_settings()
+        if getattr(settings, "assistant_profile_enabled", False) is not True:
+            return False
+        orgs = _parse_orgs(str(getattr(settings, "assistant_profile_orgs", "") or ""))
+        return not orgs or org in orgs
     except Exception:
         return False
 

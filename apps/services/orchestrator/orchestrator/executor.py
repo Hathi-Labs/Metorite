@@ -754,10 +754,10 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     """``(block, zone, greeting)`` of this turn, or ``("", "", "")``.
 
     ``personalization.md`` §5.1. The block reaches a run only when all hold:
-    ``ASSISTANT_PROFILE_ENABLED`` is on, the agent is ``orchestrator``, the
+    the agent is ``orchestrator``, the run has an org,
+    ``assistant_profile.enabled_for`` is true for that org (PZ-25), the
     run has a verified member (:func:`_verified_run_member`), the run
-    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`), and the run has
-    an org. Each check comes before the read, so a run that fails one reads
+    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`). Each check comes before the read, so a run that fails one reads
     nothing.
 
     The name follows §5.2 (``assistant_profile.resolve_address_name``). The
@@ -772,13 +772,15 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
 
     from acb_common import assistant_profile
 
-    if agent_name != _PROFILE_AGENT or not assistant_profile.enabled():
+    if agent_name != _PROFILE_AGENT:
+        return ("", "", "")
+    # PZ-25 (§14.2): the switch is per organization, so read the run's org
+    # first. The org comes from the run boundary, never from the payload.
+    org = _current_run_org()
+    if not org or not assistant_profile.enabled_for(str(org)):
         return ("", "", "")
     member = _verified_run_member()
     if not member or _RUN_SOLO_ROOM.get() is not True:
-        return ("", "", "")
-    org = _current_run_org()
-    if not org:
         return ("", "", "")
     key = (str(org), member)
     now = time.monotonic()

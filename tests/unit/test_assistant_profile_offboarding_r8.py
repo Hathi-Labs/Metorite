@@ -238,6 +238,8 @@ async def test_p2_a_member_invited_again_starts_empty(db) -> None:
             fact = await ap.add_fact(body={"text": "New start", "kind": "about"},
                                      user=_user(a))
             after = await ap.get_assistant_profile(user=_user(a))
+    # PZ-25: ``enabled`` is an answer, not part of the stored profile.
+    first.pop("enabled")
     assert first == empty_profile()
     assert [f["text"] for f in after["facts"]] == ["New start"]
     assert fact["text"] == "New start"
@@ -339,6 +341,7 @@ async def test_p4_a_member_who_returns_finds_the_profile_empty(db) -> None:
     async with tenant_engine_scope(_app_dsn(db)):
         with _tenant(db.org_a):
             back = await ap.get_assistant_profile(user=_user(a))
+    back.pop("enabled")
     assert back == empty_profile()
 
 
