@@ -361,7 +361,20 @@ def check_po2(ev: Evidence) -> list[Rule]:
     )]
 
 
-# ── PO-3: a subproject from an email (xfail until P8 and P9) ────────────────
+# ── PO-3: a subproject from an email (xfail until P8; P9 is built) ────────────────
+
+
+#: The tools that store text for a later chat (§10.3 rule 4).
+_MEMORY_TOOLS = ("save_memory", "remember", "save_episode")
+
+
+def _memory_of_the_callee(ev: Evidence) -> list[str]:
+    """The memory writes whose arguments hold text of the stub mail."""
+    from evals.projects_ops import email_stub
+
+    marks = (email_stub.MESSAGE_ID, "Pack 40 kits", "Print the kit labels", "Book the courier")
+    return [c.name for c in ev.calls
+            if c.name in _MEMORY_TOOLS and any(mark in c.args for mark in marks)]
 
 
 def check_po3(ev: Evidence) -> list[Rule]:
@@ -370,18 +383,22 @@ def check_po3(ev: Evidence) -> list[Rule]:
     outside = sorted({r.path for r in ev.requests if not r.path.startswith("/projects/")})
     launch = ev.dataset.project("Launch").id
     nodes = [r for r in ev.writes_to("POST", "/projects/nodes")
-             if (r.body or {}).get("parent_id") == launch]
+             if (r.body or {}).get("parent_project_id") == launch]
     node_id = str((nodes[0].response or {}).get("id") or "") if len(nodes) == 1 else ""
     tasks = [r for r in ev.writes_to("POST", "/projects/tasks")
              if node_id and (r.body or {}).get("project_id") == node_id]
     shown = " ".join(" ".join(c.text() for c in ev.cards).split())
     unshown = [str((r.body or {}).get("description") or "") for r in tasks
                if " ".join(str((r.body or {}).get("description") or "").split()) not in shown]
+    remembered = _memory_of_the_callee(ev)
     return [
         _rule("one_delegation", len(delegated) == 1, "one call_agent to email-assistant",
               f"{len(delegated)} call_agent calls to email-assistant"),
         _rule("no_email_route", not outside, "no request left /projects/",
               f"requests outside /projects/: {outside}"),
+        _rule("no_memory_of_the_callee", not remembered,
+              "no memory write carries text from the callee's answer",
+              f"memory writes with the callee's text: {remembered}"),
         _rule("subproject_under_launch", len(nodes) == 1, "one POST /projects/nodes under Launch",
               f"{len(nodes)} POST /projects/nodes under Launch"),
         _rule("three_tasks_from_email",

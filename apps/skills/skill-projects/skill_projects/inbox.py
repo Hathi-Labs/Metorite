@@ -39,6 +39,7 @@ from skill_projects.writes import (
     _resolve_status,
     _split,
     _task,
+    mailbox_line,
 )
 
 try:
@@ -601,12 +602,16 @@ async def capture_intake(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    source: str = "",
+    source_ref: str = "",
 ) -> str:
     """Capture a task into a project's intake queue for someone to triage,
     rather than straight onto its board. project_id empty captures into
     the member's own personal project, when they have one. The card shows
     the title, the priority and where it lands. Omit every priority argument
-    to leave the task unjudged."""
+    to leave the task unjudged. source says where the capture came from, such
+    as email, and source_ref is the reference there, such as the message id.
+    For a mail, the card then says that the text leaves the mailbox."""
     label = str(title or "").strip()
     if not label:
         return "A task needs a title."
@@ -643,11 +648,26 @@ async def capture_intake(
             return "due is a date, YYYY-MM-DD."
         payload["due_at"] = due.strip()
     payload.update(flags)
+    # WS-46 P9 (G11): the route keeps both words on the capture. They are
+    # free text there, so the card shows them whole.
+    card: dict[str, Any] = {}
+    origin = source.strip()[:80]
+    reference = source_ref.strip()[:200]
+    if origin:
+        payload["source"] = origin
+        if origin.lower() == "email":
+            card["mailbox"] = mailbox_line(where)
+    if reference:
+        payload["source_ref"] = reference
     if not await _confirm(
         title="Capture this into intake?",
         detail=f"{data(label)} → {where}",
         context=_fields_block(
-            {**_priority_card(payload), "lands in": f"the intake queue of {where}"}
+            {
+                **card,
+                **_priority_card(payload),
+                "lands in": f"the intake queue of {where}",
+            }
         ),
     ):
         return CANCELLED

@@ -477,6 +477,9 @@ HELD_SETTING_DECISIONS: dict[str, str] = {
     # each later reply and new-mail card. An injection that changes them
     # changes future recipients, so a held chat never changes them.
     "always_copy": SETTING_REFUSED,
+    # H-411: the version of the list that the model read. It goes with
+    # ``always_copy``, so a held chat refuses it too.
+    "always_copy_version": SETTING_REFUSED,
 }
 
 #: The values that each closed key with a fixed set takes.

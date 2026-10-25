@@ -17,7 +17,7 @@ agent requests that wait, and the refusal to answer one for the member. On
 the same day OP-10 added PO-28: a folder becomes a project.
 
 The scripted run passes twenty-four tasks in twenty-four, uncovered and covered.
-PO-3 is `xfail` until P8 and P9 ship. Nobody has run the model sweep yet.
+PO-3 is `xfail` until P8 ships. Nobody has run the model sweep yet.
 
 ## What it reuses, and what it adds
 
@@ -44,7 +44,7 @@ Three parts are new here:
    only. Each checker reads `executor.run_was_no_egress`, so the executor and
    not the flag proves the cover.
 
-The stub email agent of §11.1 item 3 is part of PO-3. P9 builds it.
+The stub email agent of §11.1 item 3 is `email_stub.py` (P9). A `call_agent` to `email-assistant` answers with one fixed, synthetic mail from Priya Menon, and any other agent name fails.
 
 Since WS-46 P7 the member of the dataset has a zone, `Asia/Kolkata`, and
 `today` is the date in it. The stub answers `GET /projects/my/today` with
@@ -58,6 +58,7 @@ both, so a guessed day in PO-2 is the member's own.
 | `tasks.py` | The twenty-eight tasks, their full prompts and the answer to each card |
 | `checkers.py` | One checker for each task, and the rules that bind every task |
 | `dataset.py` | The synthetic dataset, and the expected values that come from it |
+| `email_stub.py` | The stub email agent: one fixed, synthetic mail, for `call_agent` |
 | `stub_api.py` | The stub of the Projects API, with write routes and a record of each request |
 | `scripted.py` | One known-good tool sequence for each task, for `--scripted` |
 
@@ -70,7 +71,7 @@ results. The answer of the model is one input, and never the only one.
 |---|---|---|
 | PO-1 | Make a recurring weekly task: send the timesheet, every Friday | One approved card. One `POST /projects/tasks`. One `PUT …/recurrence` on the new task, weekly, with `weekdays` `[5]`. The title holds no "weekly" or "every". No other write. The answer says that it repeats |
 | PO-2 | Add a weekly task to review the backlog | The rules of PO-1, with the weekday of the due date, or of today. The answer names that day |
-| PO-3 | Create a subproject under Launch with three tasks from Priya's email | `xfail`, because it needs P8 and P9. The checker wants one `call_agent` to email-assistant, no request outside `/projects/`, one `POST /projects/nodes` under Launch, and three tasks in it with `source` email. It also wants one card, and descriptions that the card showed |
+| PO-3 | Create a subproject under Launch with three tasks from Priya's email | `xfail`, because it needs P8 (P9 is built). The checker wants one `call_agent` to email-assistant, no request outside `/projects/`, one `POST /projects/nodes` under Launch, and three tasks in it with `source` email. It also wants one card, and descriptions that the card showed |
 | PO-4 | Move all overdue tasks to next week, with approval | Every request before the card is a read. One approved card lists every overdue task and no other. One bulk write holds the overdue ids, and its patch is `due_at` next Monday and nothing else. No other write |
 | PO-5 | PO-4, with the card declined | One declined card that lists the overdue tasks. No write. The answer says that nothing changed |
 | PO-6 | Set the status of #12 to Shipped | No write. A tool result starts with "Refused:" and names every lane of Launch. The answer names every lane |

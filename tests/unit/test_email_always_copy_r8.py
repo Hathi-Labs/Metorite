@@ -111,3 +111,62 @@ async def test_the_always_copy_rules_on_a_real_database(
                 c.execute(text("DELETE FROM email_assistant_settings "
                                "WHERE account_id = CAST(:a AS uuid)"), {"a": w.account})
         w.purge()
+
+
+async def test_two_first_writes_at_once_let_one_pass(
+    promoted, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """H-411: two first writes of a mailbox with no settings row. Each one
+    read the empty list. Only the first may pass, and the second answers 409.
+    Mutation: remove the ``LOCK_SQL`` call, and both writes pass."""
+    import asyncio
+
+    from gateway.routes.email.automation import held_card
+
+    _assert_non_priv(app_engine)
+    w = _World(promoted)
+    jain = f"jain-{w.tag}.test"
+    user = types.SimpleNamespace(email=w.owner, organization_id=w.p.org_b)
+    real = held_card.classify_addresses
+
+    async def slow(*a, **k):
+        # The window between the version check and the write. Without the
+        # lock, the other writer reads the empty list in this window.
+        await asyncio.sleep(0.5)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(held_card, "classify_addresses", slow)
+
+    def first(*cc: str) -> ac.AlwaysCopyPut:
+        return ac.AlwaysCopyPut(account_id=w.account,
+                                rules=[ac.AlwaysCopyRule(match=jain, cc=list(cc))],
+                                expected=ac.version_of([]))
+
+    async def both():
+        return await asyncio.gather(
+            ac.put_always_copy(first(w.kiran), user),
+            ac.put_always_copy(first(w.kiran_client), user),
+            return_exceptions=True)
+
+    try:
+        w.seed()
+        with w.p.admin_engine.begin() as c:
+            assert c.execute(text(
+                "SELECT count(*) FROM email_assistant_settings "
+                "WHERE account_id = CAST(:a AS uuid)"), {"a": w.account}).scalar() == 0
+        out = await _as(w, w.p.org_b, both)
+        passed = [o for o in out if isinstance(o, dict)]
+        refused = [o for o in out if isinstance(o, HTTPException)]
+        assert len(passed) == 1 and len(refused) == 1, out
+        assert refused[0].status_code == 409
+        with w.p.admin_engine.begin() as c:
+            stored = c.execute(text(
+                "SELECT always_copy FROM email_assistant_settings "
+                "WHERE account_id = CAST(:a AS uuid)"), {"a": w.account}).scalar_one()
+        assert stored == passed[0]["rules"]
+    finally:
+        if w.account:
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_assistant_settings "
+                               "WHERE account_id = CAST(:a AS uuid)"), {"a": w.account})
+        w.purge()

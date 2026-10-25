@@ -88,6 +88,10 @@ export interface PageLink {
 export interface PageDetail extends PageSummary {
   body_md: string;
   origin: string | null;
+  /** Who vouches for the page (KB-AI-4). Not the space owner of `Space.owner_email`. */
+  owner_email?: string | null;
+  /** The days from a publish or a verify to the next review. Null: the default. */
+  review_every_days?: number | null;
   level: SpaceLevel | null;
   can_write: boolean;
   versions: PageVersion[];
@@ -116,6 +120,10 @@ export interface PageCreateBody {
 export interface PagePatchBody {
   title?: string;
   body_md?: string;
+  /** An org member's address, or null to clear (KB-AI-4). */
+  owner_email?: string | null;
+  /** 1 to 3650, or null to use the default (KB-AI-4). */
+  review_every_days?: number | null;
 }
 
 /**
