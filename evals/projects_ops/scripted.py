@@ -16,7 +16,7 @@ A sequence proves the tools and the checkers. It does not prove the
 instructions: the answer text here is the script's own. Only the model sweep
 tests what a model does with the prompt.
 
-PO-3 has no sequence. It is ``xfail`` until P8 and P9 ship.
+PO-3 has no sequence. It is ``xfail`` until P8 ships.
 """
 from __future__ import annotations
 

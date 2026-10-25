@@ -10,6 +10,11 @@ import { stubApi } from "./visual/harness";
  * move, archive and restore. Each write goes into `writes`, so a test can
  * read what reached the BFF. The real gateway half is
  * `tests/unit/test_kb_pages_r8.py`.
+ *
+ * KB-AI-4: a page may carry `owner`, `review_at`, `review_every` and `stale`.
+ * The mock answers `POST pages/{id}/verify`, a PATCH of the two care fields
+ * (422 for an owner outside `members`) and `GET maintenance` from the same
+ * state, so a verify changes the list.
  */
 
 export const COMPANY = "ks-company";
@@ -36,12 +41,21 @@ export interface MockPage {
   archived_from_state?: string | null;
   author: string;
   versions: MockVersion[];
+  /** KB-AI-4. The owner address, or none. */
+  owner?: string | null;
+  /** KB-AI-4. The review date. Absent: ten months ahead for a published page. */
+  review_at?: string | null;
+  review_every?: number | null;
+  /** KB-AI-4. The maintenance list names the page as stale. */
+  stale?: boolean;
 }
 
 export interface MockOpts {
   /** The member's level on each space. */
   levels: Partial<Record<string, Level>>;
   pages: MockPage[];
+  /** KB-AI-4. The addresses that the owner PATCH accepts. */
+  members?: string[];
 }
 
 export function member() {
@@ -82,7 +96,9 @@ export async function mockKnowledge(page: Page, opts: MockOpts) {
     state: p.state,
     author_email: p.author,
     reviewers: [],
-    review_at: p.state === "published" ? "2027-04-14T00:00:00Z" : null,
+    review_at: p.review_at !== undefined ? p.review_at : p.state === "published" ? "2027-04-14T00:00:00Z" : null,
+    owner_email: p.owner ?? null,
+    review_every_days: p.review_every ?? null,
     source_ref: null,
     published_at: null,
     archived_at: p.state === "archived" ? minutesAgo(5) : null,
@@ -137,6 +153,27 @@ export async function mockKnowledge(page: Page, opts: MockOpts) {
         ],
       }));
     }
+    if (path.startsWith("maintenance")) {
+      const now = Date.now();
+      const rows = [...pages.values()]
+        .filter((p) => p.state === "published")
+        .map((p) => {
+          const expired = Boolean(p.review_at) && Date.parse(p.review_at as string) <= now;
+          const reasons = [expired && "expired", !p.owner && "unowned", p.stale && "stale"].filter(Boolean);
+          return { p, reasons };
+        })
+        .filter((r) => r.reasons.length);
+      const count = (name: string) => rows.filter((r) => r.reasons.includes(name)).length;
+      return route.fulfill(json(200, {
+        pages: rows.map(({ p, reasons }) => ({
+          id: p.id, title: p.title, space_id: p.space_id,
+          space_name: p.space_id === COMPANY ? "Company" : "Operations",
+          owner_email: p.owner ?? null, review_at: p.review_at ?? null, updated_at: minutesAgo(10), reasons,
+        })),
+        counts: { expired: count("expired"), unowned: count("unowned"), stale: count("stale") },
+        scope: "org",
+      }));
+    }
     if (path === "pages" && method === "GET") {
       const space = url.searchParams.get("space");
       const state = url.searchParams.get("state");
@@ -145,10 +182,25 @@ export async function mockKnowledge(page: Page, opts: MockOpts) {
       );
       return route.fulfill(json(200, { pages: rows.map(summary) }));
     }
-    const m = /^pages\/([^/]+)(?:\/(move|archive|restore))?$/.exec(path);
+    const m = /^pages\/([^/]+)(?:\/(move|archive|restore|verify))?$/.exec(path);
     const found = m ? pages.get(decodeURIComponent(m[1])) : undefined;
     if (!m || !found) return route.fulfill(json(404, { detail: "Not found" }));
     if (method === "GET") return route.fulfill(json(200, detail(found)));
+    if (m[2] === "verify") {
+      if (level(found.space_id) === "read") return route.fulfill(json(403, { detail: "Verifying needs a write grant." }));
+      found.review_at = new Date(Date.now() + (found.review_every ?? 180) * 86_400_000).toISOString();
+      found.owner = found.owner ?? "asha@example.com";
+      return route.fulfill(json(200, written(found)));
+    }
+    if (method === "PATCH" && body && ("owner_email" in body || "review_every_days" in body)) {
+      if (level(found.space_id) === "read") return route.fulfill(json(403, { detail: "Editing needs a write grant." }));
+      if (body.owner_email && !(opts.members ?? []).includes(body.owner_email)) {
+        return route.fulfill(json(422, { detail: "The owner must be a member of your organization." }));
+      }
+      if ("owner_email" in body) found.owner = body.owner_email;
+      if ("review_every_days" in body) found.review_every = body.review_every_days;
+      return route.fulfill(json(200, written(found)));
+    }
     if (m[2] === "move") {
       if (level(found.space_id) === "read") return route.fulfill(json(403, { detail: "Moving needs a write grant." }));
       if (body.space_id) found.space_id = body.space_id;

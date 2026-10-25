@@ -383,6 +383,7 @@ async def test_a_row_sends_what_create_task_sends(monkeypatch) -> None:
         "leveraged": "no",
         "type": "bug",
         "fields": '{"Customer": "SMB"}',
+        "source": "email",
     }
     assert set(words) == set(F.ROW_KEYS) - {"priority"}
     approve(monkeypatch)
