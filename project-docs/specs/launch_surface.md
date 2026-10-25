@@ -98,7 +98,6 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 
 | Section | App | Route | Gate | Note |
 |---|---|---|---|---|
-| **Personal Center** | My Tasks | `/tasks` | `feature:tasks` | Renamed from "Tasks" on 2026-09-23 (D73). The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
 | **Personal Center** | Calendar | `/calendar` | `feature:tasks` | 🆕 **Added 2026-08-24 by D54**, extracted from a *view* inside `/tasks` (there was never a `/tasks/calendar` route — D54.5, measured). ⚠️ The gate is **`feature:tasks`, not a new `feature:calendar`** (D54.1): the calendar lived inside Tasks, so every `feature:tasks` holder already had it, and minting a new slug would ship the app dark to all of them until an admin granted it. Code + fence agree — `nav.ts:142`, `access.ts:94` (`["/calendar", "tasks"]`), `nav.test.ts:43`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Email | `/email` | `feature:email` | Named "My Email" since 2026-10-08 (owner), apart from a later shared team inbox. 🆕 **Live on 2026-10-02**, by owner decision of 2026-10-01 (H-21). WS-17 EM-T3b gave the app a connect flow with no setup step. A member connects Microsoft 365 from inside Email. Gmail shows as "Coming soon" (`email_app_master_plan.md` §10.4.3) |
@@ -114,13 +113,19 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 | **Admin** | Integrations | `/integrations` | none (each view gates itself) | 🆕 **Live on 2026-10-13**, by owner decision in chat ("I still don't see the integrations app on my sidebar ... turn it on"). WS-54 built the org connections (IN-0 to IN-4, IN-7, IN-8a). ⚠️ **Open to every member since 2026-10-14 (D-EA-9, WS-55 EA-4b).** The pane has no `feature`, and `/integrations` is an exact entry of `ALWAYS_ALLOWED`. Each member sees the AI agents view. The org views still need `feature:integrations`, which is `is_default false`. The pane stays in Admin |
 
-**Fifteen** entries, four sections, in that order. The set held eight until 2026-08-24,
+**Fourteen** entries, four sections, in that order. The set held eight until 2026-08-24,
 nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05, ten until
 2026-10-08, eleven until 2026-10-11, twelve until 2026-10-13, thirteen until later on
-2026-10-13, and fourteen until 2026-10-18. D54 added Calendar. The owner then promoted
+2026-10-13, fourteen until 2026-10-18, and fifteen until 2026-10-25. D54 added Calendar. The owner then promoted
 People, Email, WhatsApp, the CRM, Integrations, Artifacts and Knowledge. `nav.test.ts`'s
-count fence moved 8 → 9 → 10 → 11 → 10 → 11 → 12 → 13 → 14 → 15 in the same pull
+count fence moved 8 → 9 → 10 → 11 → 10 → 11 → 12 → 13 → 14 → 15 → 14 in the same pull
 request as each pane. That is what the fence is for.
+
+**My Tasks left the sidebar on 2026-10-25** (owner: "go ahead and turn on all the
+flags"). WS-64 OP-4 made it the My work section of Projects
+(`one_projects_app.md` D-OP-1, D-OP-5), and `/tasks` redirects there while
+`NEXT_PUBLIC_PROJECTS_MY_WORK` is on. The route, the `feature:tasks` grant and the
+Calendar's gate stay. The pane is `preview` in `nav.ts`.
 
 **My Access left the sidebar on 2026-10-05** (owner directive: "remove my access from
 the sidebar and fold it into the People's app"). It is the "My access" tab of the
@@ -157,7 +162,7 @@ answer rather than a diff:
 | Admin | Agent Registry | `/agents` | Operator concern |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **fifteen** rows
+**The count is the fence.** `nav.test.ts` asserts that exactly the **fourteen** rows
 of the live table are `live`. A pane added without a launch status fails the suite.
 Promoting one is a deliberate edit that also updates the test.
 
@@ -443,7 +448,7 @@ move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 
 **Done when:** `nav.test.ts` asserts all four of these.
 
-- (a) The live set is exactly §2's **fifteen** `(section, href)` pairs (measured 2026-10-24 in `nav.test.ts`; Email joined
+- (a) The live set is exactly §2's **fourteen** `(section, href)` pairs (2026-10-25, after My Tasks left for Projects; Email joined
   on 2026-10-02, My Access left for the People app on 2026-10-05, and WhatsApp
   joined on 2026-10-08).
 - (b) Every pane carries an explicit `launch`.
