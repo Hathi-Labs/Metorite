@@ -77,6 +77,7 @@ from skill_projects.reads import (
     list_tasks,
     my_task,
     my_work,
+    needs_attention,
     people_for,
     project_summary,
     projects_tree,
@@ -152,6 +153,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "task_detail",
     "vocabulary",
     "waiting_agent_requests",
+    # Class A — WS-55 SW-11a, what needs a person (spec §12.7)
+    "needs_attention",
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",

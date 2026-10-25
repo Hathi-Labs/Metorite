@@ -20,6 +20,7 @@
 
 import { createContext, useContext } from "react";
 
+import type { CreatableType } from "../lib/entities";
 import type { Space } from "../lib/types";
 
 /** The page on screen and its space, as the page view last read it. */
@@ -53,6 +54,10 @@ export interface KnowledgeContextValue {
   spaces: Space[];
   setPageFocus: (focus: PageFocus | null) => void;
   openNewPage: (ask?: NewPageAsk) => void;
+  /** Open the Add a product / Add a topic form (KC-8d). */
+  openAddEntity: (type: CreatableType) => void;
+  /** True when the member can write in a space. False hides every act that adds an entity. */
+  canAddEntity: boolean;
   /** Register the guard of a dirty page, or `null` when it is clean. */
   setLeaveGuard: (guard: LeaveGuard | null) => void;
   /** True while a dirty page holds the guard. */
@@ -65,6 +70,8 @@ const NO_CONTEXT: KnowledgeContextValue = {
   spaces: [],
   setPageFocus: () => {},
   openNewPage: () => {},
+  openAddEntity: () => {},
+  canAddEntity: false,
   setLeaveGuard: () => {},
   leaveGuarded: () => false,
   requestLeave: (act) => act(),

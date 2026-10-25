@@ -105,6 +105,7 @@ const EVIDENCE: readonly string[] = [
   "report_list",
   "report_recipients",
   "waiting_agent_requests",
+  "needs_attention",
   "report_render",
   "open_in_app",
   "show_view",
