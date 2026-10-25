@@ -72,6 +72,13 @@ import {
   markGapAnswered,
   type GapList,
 } from "./lib/gaps";
+import {
+  KNOWLEDGE_MAINTENANCE,
+  MAINTENANCE_KEY,
+  expiredCount,
+  listMaintenance,
+  type MaintenanceList,
+} from "./lib/maintenance";
 import type { PageSummary, Space } from "./lib/types";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
@@ -213,6 +220,11 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const manager = hasCapability(access, MANAGE_CAPABILITY);
   const gapsRead = useCachedResource<GapList>(manager ? GAPS_KEY : null, listGaps);
   const showGaps = (manager && gapsRead.data?.scope === "org" && !gapsRead.data.off) || atGaps;
+  // KB-AI-4: the Maintenance row, for a manager. It has no flag, so the row
+  // shows when the read answers. A refusal or an error hides it.
+  const atMaintenance = pathname === KNOWLEDGE_MAINTENANCE;
+  const maintenanceRead = useCachedResource<MaintenanceList>(manager ? MAINTENANCE_KEY : null, listMaintenance);
+  const showMaintenance = (manager && Boolean(maintenanceRead.data)) || atMaintenance;
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
@@ -302,6 +314,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     reviewCount,
     directories: { types: directoryTypes, selected: openType },
     gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
+    maintenance: showMaintenance
+      ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
+      : null,
     onArchive: setArchiving,
   };
 

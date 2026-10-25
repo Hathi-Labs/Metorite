@@ -16,6 +16,8 @@ export interface PageMenuState {
   /** The member manages the page's space (`level === "manage"`). */
   canManage: boolean;
   archived: boolean;
+  /** The page is published. Only a published page has an owner and a review date (KB-AI-4). */
+  published?: boolean;
   /** An edit is open on the page. */
   editing: boolean;
   /** The page draws at the full width of the window. */
@@ -54,6 +56,9 @@ export const PAGE_MENU: readonly PageMenuEntry[] = [
   { id: "move", label: "Move", icon: "FolderInput", group: "organise", when: (s) => s.canWrite && !s.archived && !s.editing },
   // KB-2m: the import makes draft pages under this one, so it needs write.
   { id: "import", label: "Import into this page", icon: "Upload", group: "organise", when: (s) => s.canWrite && !s.archived && !s.editing },
+  // KB-AI-4: the care of a published page. A writer sets the owner and the interval.
+  { id: "set-owner", label: "Set owner", icon: "UserRound", group: "organise", when: (s) => s.canWrite && s.published === true && !s.archived && !s.editing },
+  { id: "review-every", label: "Review every…", icon: "CalendarClock", group: "organise", when: (s) => s.canWrite && s.published === true && !s.archived && !s.editing },
   {
     id: "archive",
     label: "Archive",

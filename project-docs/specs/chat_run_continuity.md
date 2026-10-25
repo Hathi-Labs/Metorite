@@ -712,6 +712,13 @@ carries that slot's cookie only, and that a row keeps its account label.
 **The decision.** The owner called web push "a good idea" on 2026-10-10. So
 D-2 is decided: push is opt-in, per member. Nothing is built yet.
 
+> ⚠️ **2026-10-25, D114. WS-66 builds this transport as PN-1**, because
+> reminders need it first. The design of the iOS and Android web app is in
+> `calendar_events_reminders.md` §5.9. Two items change. Item 4 grows: push
+> carries every card that Reach delivers (RE-9), and the two events below. Item 5 has one exception: a reminder push holds its title and time,
+> unless the member hides details on the lock screen. Every other push keeps
+> item 5.
+
 **What.** A push to the member's device when one of their own runs needs an
 answer, or finishes, while no tab of theirs shows it.
 

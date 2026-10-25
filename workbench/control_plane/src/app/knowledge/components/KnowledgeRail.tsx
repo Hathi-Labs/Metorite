@@ -55,6 +55,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
 import { directoryHref, typeIcon, typeLabel, type EntityType } from "../lib/entities";
 import { KNOWLEDGE_GAPS } from "../lib/gaps";
+import { KNOWLEDGE_MAINTENANCE } from "../lib/maintenance";
 import { spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
@@ -97,6 +98,11 @@ export interface KnowledgeRailProps {
    * empty: no group.
    */
   directories?: { types: readonly EntityType[]; selected: EntityType | null };
+  /**
+   * The Maintenance row (KB-AI-4): `null` hides it. The layout shows it to a
+   * manager of Knowledge whose list read answered. `count` is the expired pages.
+   */
+  maintenance?: { selected: boolean; count: string | null } | null;
   /** True on `/knowledge/review` (KB-5b). */
   atReview?: boolean;
   /** The proposals that wait for the member (KB-5b). Zero hides the Review row. */
@@ -121,6 +127,7 @@ export default function KnowledgeRail({
   atHome,
   atSearch,
   gaps = null,
+  maintenance = null,
   directories,
   atReview = false,
   reviewCount = 0,
@@ -162,6 +169,17 @@ export default function KnowledgeRail({
           meta={gaps.count ?? undefined}
           buttonProps={{ "aria-current": gaps.selected ? "page" : undefined }}
           onSelect={() => onNavigate(KNOWLEDGE_GAPS)}
+        />
+      ) : null}
+      {maintenance ? (
+        <RailRow
+          label="Maintenance"
+          tier="group"
+          selected={maintenance.selected}
+          icon={<Icon name="ShieldCheck" className={ICON} />}
+          meta={maintenance.count ?? undefined}
+          buttonProps={{ "aria-current": maintenance.selected ? "page" : undefined }}
+          onSelect={() => onNavigate(KNOWLEDGE_MAINTENANCE)}
         />
       ) : null}
       <RailRow
