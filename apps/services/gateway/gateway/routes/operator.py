@@ -294,8 +294,10 @@ async def remove_organization_member(
         if mode == "remove":
             tree_projects = await remove_member_rows(db, org_id, member)
         else:
+            knowledge_revokes: list[Any] = []
             deleted, kept, plans = await purge_member_rows(
                 db, org_id, member, actor_email=_OPERATOR_ACTOR,
+                knowledge_revokes=knowledge_revokes,
             )
 
     if mode == "remove":
@@ -322,5 +324,14 @@ async def remove_organization_member(
     mailboxes = await finish_teardowns(
         org_id, plans, open_session=partial(_tenant_session, org_id),
         stop_loops=True, bump_owners=False)
+
+    # WS-61 KC-1a (review P1): the Google revokes of the leaver's Drive, after
+    # the email teardown. Its check ran with the Drive rows already gone, so
+    # an address that a Gmail plan covers is left to it: one grant, one revoke.
+    from gateway.routes.knowledge import sources as kb_sources
+
+    await kb_sources.finish_purge_revokes(
+        org_id, knowledge_revokes,
+        gmail_addresses={p.email_address or "" for p in plans if p.provider == "gmail"})
     return PurgeResult(email=member["email"], deleted=deleted,
                        kept=kept, mailboxes=mailboxes).model_dump()

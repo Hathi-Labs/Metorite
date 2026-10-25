@@ -52,7 +52,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -388,6 +388,91 @@ async def _revoke_if_free(
         outcome = f"failed:{type(exc).__name__}"
     _log.info("knowledge.source_revoke", provider=GOOGLE_DRIVE, outcome=outcome)
     return outcome
+
+
+# ── The member purge (§19, review P1) ───────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SourceRevoke:
+    """A revoke that a purge owes after its commit. The token stays out of ``repr``."""
+
+    connection_id: str
+    account_email: str | None
+    credential: SourceCredential | None = field(default=None, repr=False)
+
+
+async def purge_member_sources(db: Any, org: str, email: str) -> list[SourceRevoke]:
+    """Delete each member-scope Knowledge connection of *email*, in the purge.
+
+    It runs in the purge's own transaction (``routes/admin/members.py``
+    ``purge_member_rows``). ``store.delete`` deletes the row and its blob, and
+    the foreign key of migration 300 cascades the sources and the nodes. A
+    purge keeps no row with the leaver's address, so it deletes where the
+    route only disconnects. The credential is read first, for the revoke
+    that :func:`finish_purge_revokes` owes after the commit.
+
+    The rows are gone before the email teardown asks
+    ``email_gmail_grant_shared``, so that check no longer counts the leaver's
+    own Drive and the grant is revoked when nothing else holds it.
+    """
+    me = (email or "").strip().lower()
+    out: list[SourceRevoke] = []
+    if not me:
+        return out
+    for conn in await store.list_all(db, org):
+        if (conn.owning_app != OWNING_APP or conn.scope_kind != store.SCOPE_MEMBER
+                or (conn.member_email or "").strip().lower() != me):
+            continue
+        cred = await store.load_credential(
+            db, org, conn.provider, conn.owning_app,
+            scope_kind=conn.scope_kind, member_email=conn.member_email,
+        )
+        out.append(SourceRevoke(
+            connection_id=conn.id,
+            account_email=conn.provider_meta.get(google_auth.META_ACCOUNT_EMAIL),
+            credential=cred,
+        ))
+        await store.delete(db, org, conn.provider, conn.owning_app,
+                           scope_kind=conn.scope_kind, member_email=conn.member_email)
+    if out:
+        _log.info("knowledge.sources_purged", organization_id=org, count=len(out))
+    return out
+
+
+async def finish_purge_revokes(
+    org: str, pending: list[SourceRevoke], *, gmail_addresses: set[str],
+) -> dict[str, str]:
+    """The Google revokes a purge owes, after its commit and its email teardown.
+
+    One Google grant gets one revoke. An account address that a Gmail plan of
+    the same purge covers is left to the Gmail teardown, which already
+    decided for that grant. Every other address goes through
+    :func:`_revoke_if_free`. It never raises. Returns the outcome of each
+    connection, by a fixed word.
+    """
+    covered = {a.strip().lower() for a in gmail_addresses if a}
+    out: dict[str, str] = {}
+    for item in pending:
+        if (item.account_email or "").strip().lower() in covered:
+            out[item.connection_id] = "gmail_teardown"
+            continue
+        try:
+            client = google_client()
+        except HTTPException:
+            out[item.connection_id] = "not_configured"
+            continue
+        try:
+            out[item.connection_id] = await _revoke_if_free(
+                org, make_source(client), item.credential, item.account_email,
+                item.connection_id)
+        except Exception as exc:  # a purge already committed: never raise here
+            out[item.connection_id] = f"failed:{type(exc).__name__}"
+    for cid, outcome in out.items():
+        if outcome in ("gmail_teardown", "not_configured"):
+            _log.info("knowledge.source_revoke_skipped", provider=GOOGLE_DRIVE,
+                      reason=outcome, connection_id=cid)
+    return out
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────

@@ -840,6 +840,13 @@ class _FakeDB:
             self.kb_purge.append(s)
             return _Rows([], rowcount=0)
 
+        # WS-61 KC-1a: the purge lists the connections of the org through
+        # `connections/store.py`, to find the member's Knowledge sources. This
+        # fake holds none. The real delete is proven in `test_kc_sources_r8.py`.
+        if s.startswith("SELECT") and "FROM integration_connections" in s:
+            self.kb_purge.append(s)
+            return _Rows([], rowcount=0)
+
         # H-375: a removal cancels the member's queued sends, and a purge
         # deletes them. What the statements do to real rows is proven on a
         # real Postgres in `test_email_send_later.py` (R8).
