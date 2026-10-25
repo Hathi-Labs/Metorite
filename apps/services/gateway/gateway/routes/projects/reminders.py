@@ -56,7 +56,9 @@ RM-2.
 
 **The gate.** The ``/projects`` router gives ``feature:projects``. No second
 gate applies. ``CALENDAR_REMINDERS`` off makes every route here answer 404
-before the body is read (:func:`_require_on`, a route dependency).
+before the shape of the body is checked (:func:`_require_on`, a route
+dependency). A body that is not JSON still answers 422, because FastAPI
+decodes the JSON before any dependency runs.
 """
 
 from __future__ import annotations
@@ -131,10 +133,12 @@ def reminders_enabled() -> bool:
 
 
 async def _require_on() -> None:
-    """404 while the flag is off.
+    """404 while the flag is off, and nothing is written.
 
-    A route dependency, so it runs before FastAPI reads the body: a flag-off
-    POST with a bad body answers 404, not 422, and writes nothing.
+    A route dependency, so it runs before FastAPI checks the SHAPE of the
+    body: with the flag off, valid JSON of the wrong shape answers 404, not
+    422. FastAPI decodes the JSON before any dependency runs, so a body that
+    is not JSON at all answers 422 with the flag off. Neither writes a row.
     """
     if not reminders_enabled():
         raise HTTPException(status_code=404, detail="Not Found")
@@ -335,8 +339,8 @@ def _source(user: Any) -> str:
         return "api"
     if via.startswith("chat:"):
         return "chat"
-    if via.startswith("whatsapp"):
-        return "whatsapp"
+    # No caller sends a WhatsApp stamp yet. RM-9 adds that arm, and the
+    # CHECK of migration 305 already holds `whatsapp` for it.
     return "app"
 
 

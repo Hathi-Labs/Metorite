@@ -40,6 +40,7 @@ naive time is refused, and the flag off gives 404.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -225,17 +226,41 @@ def _make_due(world: Any, reminder_id: str) -> None:
 # ── The migration and /version ───────────────────────────────────────────
 
 
+def _check_values(sql: str, name: str) -> set[str]:
+    """The quoted values of ONE named CHECK of the migration, and no other.
+
+    Read per constraint, so a value that another CHECK holds (`done` is a
+    state, a resolution and an event) cannot stand in for a missing one.
+    """
+    found = re.search(rf"CONSTRAINT {name} CHECK \((.*?)\)\),?\s*$", sql, re.S | re.M)
+    assert found, f"no CHECK {name} in {_MIGRATION.name}"
+    return set(re.findall(r"'([a-z_]+)'", found.group(1)))
+
+
 def test_the_migration_holds_the_lists_of_the_spec() -> None:
     sql = _MIGRATION.read_text(encoding="utf-8")
     for table in ("reminders", "reminder_events"):
         assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in sql
         assert f"CREATE POLICY {table}_tenant_isolation ON {table}" in sql
-    assert "state IN ('scheduled', 'due', 'unconfirmed', 'done', 'dropped', 'cancelled')" in sql
-    assert "resolution IN ('done', 'dropped', 'evidence', 'promoted', 'gave_up')" in sql
-    for event in ("created", "fired", "check_back", "briefed", "rescheduled", "snoozed",
-                  "opened", "done", "dropped", "promoted", "gave_up", "evidence",
-                  "delivered", "failed", "edited"):
-        assert f"'{event}'" in sql
+    assert _check_values(sql, "reminders_state") == {
+        "scheduled", "due", "unconfirmed", "done", "dropped", "cancelled",
+    }
+    assert _check_values(sql, "reminders_resolution") == {
+        "done", "dropped", "evidence", "promoted", "gave_up",
+    }
+    # The fourteen of §5.2, `edited` and `reopened`. The route module names
+    # each one it writes, so the two lists must agree.
+    events = _check_values(sql, "reminder_events_event")
+    assert events == {
+        "created", "fired", "check_back", "briefed", "rescheduled", "snoozed",
+        "opened", "done", "dropped", "promoted", "gave_up", "evidence",
+        "delivered", "failed", "edited", "reopened",
+    }
+    module = Path(rm.__file__).read_text(encoding="utf-8")
+    written = set(re.findall(r'_ledger\(db, row\.id, "([a-z_]+)"', module))
+    written |= {e for _s, _r, e in rm.RESOLUTIONS.values()}
+    written |= {"snoozed", "rescheduled"}  # the event argument of `_move`
+    assert written <= events, written - events
     for index in ("(organization_id, state, fire_at)",
                   "(organization_id, state, next_check_at)",
                   "(organization_id, member_email, state)"):
@@ -754,7 +779,8 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
         for method, path, body in (
             ("GET", BASE, None),
             ("POST", BASE, {"title": "x", "fire_at": AT}),
-            # A bad body still answers 404: the flag runs before the body.
+            # Valid JSON of the wrong shape still answers 404: the flag runs
+            # before FastAPI checks the shape.
             ("POST", BASE, {"nonsense": True}),
             ("PATCH", f"{BASE}/{rid}", {"title": "off"}),
             ("POST", f"{BASE}/{rid}/resolve", {"action": "done"}),
@@ -765,6 +791,13 @@ async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) ->
         ):
             resp = await c.request(method, path, json=body, headers=_as(ALICE))
             assert resp.status_code == 404, (method, path, resp.text)
+        # A body that is not JSON at all is a 422 with the flag off, because
+        # FastAPI decodes the JSON before any dependency runs. It writes
+        # nothing either. The docstring of `_require_on` says so.
+        resp = await c.post(BASE, content=b"not json", headers={
+            **_as(ALICE), "content-type": "application/json",
+        })
+        assert resp.status_code == 422, resp.text
     row = _row(world, rid)
     assert row.title == "Get a haircut" and row.state == "scheduled"
     assert _ledger(world, rid) == ["created"]
