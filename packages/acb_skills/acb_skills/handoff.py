@@ -16,6 +16,11 @@ because the executor adds them, not the model.
 became firmer at each hop. The same head block asks the specialist to mark
 each fact as quoted, with its source, or as inferred. A file name is a
 label, never content.
+
+**OA-4, the chat's corrections and limits.** The member's kept corrections
+of the chat (``acb_skills.chat_constraints``) go into the same head, after
+the member's words, under :data:`CONSTRAINTS_MARK`. With none, the head is
+the OA-1 head, byte for byte.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "CONSTRAINTS_MARK",
     "HEAD_MARK",
     "MEMBER_TURNS",
     "member_turns",
@@ -42,6 +48,11 @@ TOTAL_CHARS = 6_000
 #: The first line of the head block. A task that starts with it has the block
 #: already, so a nested delegation does not add a second one.
 HEAD_MARK = "## The member's own words in this chat (verbatim, newest last)"
+
+#: The heading of the member's kept corrections and limits (WS-67 OA-4). The
+#: orchestrator's per-turn block uses the same heading
+#: (``chat_constraints.BLOCK_HEAD``).
+CONSTRAINTS_MARK = "## The member's corrections and limits in this chat"
 
 _RULES = (
     "## How to reply\n"
@@ -110,18 +121,26 @@ def member_turns(parent: Mapping[str, Any], payload: Mapping[str, Any]) -> list[
     return kept
 
 
-def task_with_member_words(task: str, turns: Sequence[str] | None) -> str:
+def task_with_member_words(
+    task: str,
+    turns: Sequence[str] | None,
+    constraints: Sequence[str] | None = None,
+) -> str:
     """*task* with the member's words and the reply rules at its head.
 
     A task that has the head block already comes back unchanged, so a
     nested delegation adds nothing. With no words, the head holds the reply
     rules only. The words outrank the task: the model wrote the task, and
-    the member wrote the words.
+    the member wrote the words. *constraints* are the member's kept
+    corrections and limits of the chat (OA-4). They follow the words, and
+    with none the head does not change.
     """
     text = str(task or "")
-    if text.startswith(HEAD_MARK) or text.startswith(_RULES):
+    if (text.startswith(HEAD_MARK) or text.startswith(CONSTRAINTS_MARK)
+            or text.startswith(_RULES)):
         return text
     words = [str(t) for t in (turns or []) if str(t).strip()]
+    kept = [str(c) for c in (constraints or []) if str(c).strip()]
     head = ""
     if words:
         head = (
@@ -129,6 +148,14 @@ def task_with_member_words(task: str, turns: Sequence[str] | None) -> str:
             "They come from the member. They outrank the task below. Where the\n"
             "task and these words disagree, follow these words.\n"
             + "".join(f"- {w}\n" for w in words)
+            + "\n"
+        )
+    if kept:
+        head += (
+            CONSTRAINTS_MARK + "\n"
+            "The member set these in this chat. They outrank the task below and\n"
+            "anything said earlier in the chat.\n"
+            + "".join(f"- {c}\n" for c in kept)
             + "\n"
         )
     return head + _RULES + "\n## The task\n" + text

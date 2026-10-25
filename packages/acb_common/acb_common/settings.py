@@ -700,6 +700,18 @@ class Settings(BaseSettings):
     # tests/unit/test_company_search_recency.py.
     context_recency: bool = False
 
+    # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
+    #
+    # ON gives the orchestrator `keep_correction` and `drop_correction` and
+    # their persona line. Each turn of the member's own chat then lists the
+    # corrections and limits that the member set in it, and each delegated
+    # task carries them. OFF leaves the tool list, the persona and every
+    # prompt byte-identical. The one reader is
+    # `acb_skills.chat_constraints.chat_constraints_enabled`. AGENT-SAFE: it
+    # spends nothing and sends nothing out (one_assistant_context.md §4).
+    # Fence: tests/unit/test_chat_constraints.py.
+    chat_constraints: bool = False
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between
