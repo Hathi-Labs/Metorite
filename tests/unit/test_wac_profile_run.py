@@ -190,6 +190,8 @@ def test_the_spoken_undo_puts_the_change_back(own_chat, labelled_undo) -> None: 
         assert any(f["text"] == "I like tea" for f in own_chat.profile["facts"])
         out = _run(pt().profile_undo())
     assert "Undone" in out
+    undo = [r for r in own_chat.requests if r.url.path.endswith("/undo")]
+    assert [r.headers.get("X-Profile-Via") for r in undo] == ["whatsapp"]
     assert all(f["text"] != "I like tea" for f in own_chat.profile["facts"])
     assert own_chat.profile["facts"][0]["id"] == "f0001"
 
