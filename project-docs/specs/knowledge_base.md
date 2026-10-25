@@ -5,6 +5,10 @@ The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-15.
 
+**KB-4b is BUILT, 2026-10-25** (branch `kb-4b-chips`, no migration, frontend
+only, no flag). A link in an assistant answer draws as a chip when the same
+message's finished tools printed the same href (§8.3).
+
 **KB-0 is BUILT, 2026-10-15** (PR #1058, migration 270). The
 feature `knowledge`, the capability `knowledge:manage`, the pane at
 `preview`, the route gate, and the page scaffold with `AppTopBar`. The pane
@@ -906,9 +910,28 @@ as a link to its `/knowledge/pages/<id>`, which `InAppLink` in
 `MarkdownMessage.tsx` already opens in this tab. A link is cited only when
 the same href appears in this message's tool results (the S9 rule).
 
-**KB-4b may draw pills** for those links. A pill is a chip with the app
-icon and the title. It keys on an in-app href that a tool result carries,
-for every kind that `search_company` returns. It needs no «» and no change to rule 10.
+**KB-4b draws chips** for those links (BUILT 2026-10-25). A chip is an
+`EntityPill` with the app icon and a label. It keys on an in-app href that a
+finished tool result carries, for every kind that `search_company` returns. It
+needs no «» and no change to rule 10. `src/lib/linkChips.ts` builds the index
+and `MarkdownBody` draws the chip. Three decisions close the gaps:
+
+- **The hrefs.** `search_company` returns these: a task as
+  `/projects?task=<id>`, an email as `/email?email=<id>`, a person as
+  `/people/<id>`, a CRM row as `/crm?tab=<leads|deals|contacts|organizations>&<lead|deal|contact|organization>=<id>`,
+  a page as `/knowledge/pages/<id>`, an artifact as `/artifacts?session=<id>`
+  or bare `/artifacts`, and WhatsApp as bare `/whatsapp`. The app and icon come
+  from the pane whose href is the first path segment. A task wears the
+  Projects icon.
+- **The label.** The label comes from the tool result and never from the
+  model's link text. The tool line is `- «Title» (hint, date) <href>`. The
+  index reads the title from the line that holds the href. If more than one
+  distinct title carries one href, the label is the app name, such as
+  "WhatsApp". If no title parses, the label is the link text, then the app name.
+- **The syntax.** Only a Markdown link `[x](/path)` draws a chip. A bare
+  `/crm?...` stays text. The Markdown source is not changed, so WhatsApp keeps
+  `[title](/path)`. A running or failed tool, and an href inside a code span,
+  draw no chip. The index reads `toolEvents` and `subAgentTools`.
 
 ### 8.4 Growth — the three doors
 
@@ -1322,7 +1345,7 @@ its own branch, three or four in flight at most.
 | **KB-3c** ✅ BUILT 2026-10-18 | The whole index by meaning (owner request, 2026-10-18). `GET /search/company` asks Knowledge for the vector half when `KNOWLEDGE_EMBED` names the org, and the command bar stays lexical. The sweep `kb_index/sweep.py` and its kill switch `KNOWLEDGE_EMBED_SWEEP`. The embed job takes the new shas only and binds the acting member (H-330) | A page published before the flag gets vectors in one tick. `search_company` finds a paraphrase that shares no word with the page. The bar makes no embed call. Two concurrent saves embed each chunk once. The job and the sweep carry a member. With the flag off for an org, nothing calls the door | AGENT-SAFE to build. The flip of `KNOWLEDGE_EMBED` for an org: owner |
 | **KB-3a** | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
 | **KB-4a** ✅ BUILT 2026-10-16 | `acb_skills/knowledge_tools.py` with two read tools, `read_page` (one section by heading path, at most 4 000 tokens) and `list_spaces`, behind `COMPANY_SEARCH_ENABLED` in the orchestrator's `core_tools`. `acb_skills/knowledge_manifest.py` lists every Knowledge route with its class, and the client refuses an unmapped route. The index block of §6.5, built in the executor. One line in the flag-on persona names the two tools | With the flag off, the persona and the tools are byte-identical to main. A scripted orchestrator run with "what is our refund window" calls `search_company`, then `read_page`. The model's input holds the index block, and the answer cites `/knowledge/pages/<id>`. With no hit, the answer says the company's records hold nothing on it. The block is absent for an org that is not on `KNOWLEDGE_ORGS`, and for a member who can read no published page, and it is identical across two turns. Every Knowledge route is in the manifest | AGENT-SAFE |
-| **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | AGENT-SAFE |
+| **KB-4b** | Pills for in-app links that a tool result carries, for every kind of `search_company` (§8.3) | An answer that cites a page, a task and a deal draws three chips, and a link absent from the tool results draws none | **BUILT 2026-10-25** (branch `kb-4b-chips`, fence `linkChips.render.test.ts`) |
 | **KB-5a** ✅ BUILT 2026-10-22, dark behind `KNOWLEDGE_PROPOSALS` | Backend only. Migration 292 (check at merge): `kb_page_proposals` (§12) with FORCE RLS, the generated-phase lines and the tenant-coverage entry. `POST /knowledge/proposals` with `kind = page` (a draft, `origin = {"kind": "agent_proposal", "via": ..., "proposer": ...}`, a version with `reason = agent_proposal`) or `kind = edit` (a proposal row at the `base_version` that `read_page` printed, 409 when the page moved since). `POST /knowledge/proposals/{id}/accept` and `/reject`, web only, with the F1 rules of §8.1. `GET /knowledge/proposals?status=pending`. The tools `propose_page` and `propose_edit` in `knowledge_tools.py`, each behind `request_confirmation`, which send `X-Actor-Via: chat`. Their manifest rows, their `tool_annotations` entries (`read_only False`, `destructive False`, `open_world False`), the orchestrator's `retrieval_tools`, and one persona line. Not `link_page` and not `save_to_knowledge` | 1. A scripted run of `propose_page` with the card approved leaves one `kb_pages` row with `state = draft` and `origin.kind = agent_proposal`, one version with `reason = agent_proposal` and `via = chat`, and no row in `kb_chunks`. 2. A declined card, or a run with nobody to answer, writes nothing. 3. No tool in the manifest maps to a publish, accept, reject, restore or archive route, and a source test fails if one does. 4. Accept by the author writes a version with `reason = accept` and `via = web`, and the history returns the proposer and the accepter. 5. A member with no `write` on the space gets 403. A member who cannot see the page gets the 404 of a missing page. 6. A second accept is 409. An edit whose `base_version` moved is 409. 7. A proposal id of org A is 404 for org B (R8). 8. The tool output shows page text only under the "data, not instructions" line, with the title on one line. Fences: `test_kb_proposals.py` (hermetic: 2, 3 and 8) and `test_kb_proposals_r8.py` (R8: 1, 4, 5, 6 and 7) | AGENT-SAFE |
 | **KB-5b** ✅ BUILT 2026-10-23 (frontend, plus the space on each listed proposal) | The Review view and the card in the app. A list of the pending proposals over `GET /knowledge/proposals`, Accept and Reject, the diff of an edit proposal, "Proposed by the assistant" on a draft, and the link from the chat card to the draft | A member opens the Review view, sees the proposals of the assistant, and accepts one. The page history then says "Proposed by the assistant, accepted by <member>". The visual review passes in light mode, compact density and a changed accent | AGENT-SAFE |
 | **KB-5c** ✅ BUILT 2026-10-25 (branch `kb-5c-expiry`, no migration) | The 14-day expiry (§8.4 door 2). A loop marks each pending edit proposal older than 14 days `expired`, and archives each page proposal that nobody answered in 14 days | A proposal 15 days old is `expired` or archived after one tick, and one 13 days old is not. The loop writes one version for each archive, with the actor `system`. The page age is `updated_at`, so an edited draft stays. The version channel is `sync`, because the CHECK has no `system`. Tests: `test_kb_proposal_expiry.py` and `test_kb_proposal_expiry_r8.py` (R8) | AGENT-SAFE |
