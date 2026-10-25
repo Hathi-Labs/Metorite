@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { forgetThisDevice } from "@/lib/push";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -31,6 +32,7 @@ import {
   shellSidebar,
   strayCount,
 } from "@/lib/shell/shellNav";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
@@ -89,6 +91,8 @@ export default function Sidebar() {
   // The shell nav (NS-2, `lib/shell/shellNav.ts`). Read once: the flag is
   // build-time, and the dev override must not flip mid-session.
   const [shellNav] = useState(() => shellNavOn());
+  // WS-63 PZ-25: the "Assistant" account row, only with the profile on for this org.
+  const assistant = useAssistantProfileEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
   // `localStorage` override the server and the browser can disagree, and
@@ -517,7 +521,7 @@ export default function Sidebar() {
           collapsed={collapsed}
           accounts={accounts}
           reload={reloadAccounts}
-          you={shellNav ? accountLinks(sections) : undefined}
+          you={shellNav ? accountLinks(sections, { assistant }) : undefined}
         />
       )}
       {!barOn && !shellNav && !accounts.enabled && !collapsed && (
@@ -533,7 +537,9 @@ export default function Sidebar() {
                 </div>
               </div>
               <button
-                onClick={() => signOut({ callbackUrl: "/signin" })}
+                // WS-66 PN-1: forget this device's push first. It never
+                // throws and gives up after a few seconds.
+                onClick={() => void forgetThisDevice().then(() => signOut({ callbackUrl: "/signin" }))}
                 className="ml-2 shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
                 title="Sign out"
               >

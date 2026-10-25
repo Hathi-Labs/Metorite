@@ -114,6 +114,11 @@ Ten rules on top of the three above. Each one exists because it was broken:
    `app/projects/lib/reportPanels.ts` maps a section to the panel's props
    and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.
    Fence: `app/projects/components/reportVisuals.test.ts`.
+   **A report row opens its task through `OpenTaskContext`** in
+   `AnalyticsPanels.tsx` (WS-27bn RA-3). `ReportsView` provides the opener of
+   the page. A row is a `ControlLink` to `/projects?task=<id>`. Do not add a
+   second way for a panel to open a task. Fence:
+   `app/projects/components/waitingPanel.test.ts`.
    Since WS-27bn R5f round 1, `app/projects/lib/sectionIcons.ts` is the one
    icon map of the report sections. `app/projects/lib/sectionEmpty.ts` holds
    the one friendly line of a clear section, and the app, the email and the

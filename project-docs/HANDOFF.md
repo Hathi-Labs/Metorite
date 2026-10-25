@@ -334,19 +334,17 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
-### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
-- **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
-  No hit means S7 is not built.
-- **Why.** The owner called web push "a good idea" on 2026-10-10. D-2 is
-  decided: push is opt-in, per member. It is not built. The spec holds the
-  acceptance criteria and the fence:
-  - Our VAPID keys, through the secrets path.
-  - A service worker, a settings toggle, and a permission prompt only on a
-    click.
-  - Two events, for the member's own runs only, with no content in the
-    payload.
-  - Subscriptions under RLS, and an unsubscribe at sign-out.
-- **Do this:** build S7 as one slice behind a flag, default OFF.
+### H-289 · Send WS-51 S7's two chat events, "needs your answer" and "finished", over web push · [AGENT]
+- **Check:** run `rg -n "send_to_member" apps/services/gateway/gateway --glob '!gateway/push/**'`.
+  No hit outside `gateway/push/` means no chat event sends a push yet.
+- **Why.** The owner called web push "a good idea" on 2026-10-10 (D-2: opt-in,
+  per member). **The transport is built** (WS-66 PN-1, 2026-10-25): VAPID keys,
+  `public/sw.js`, the toggle on `/people/me`, `push_subscriptions` under RLS,
+  and the sign-out paths. What is left of S7 is item 4: the two events, for the
+  member's own runs only, with no content in the payload.
+- **Do this:** call `gateway.push.sender` with a `PushMessage` from the S2
+  "needs your answer" and the S5 "finished" points, behind `WEB_PUSH_ENABLED`.
+  A tap opens the S3 `open-chat` link.
 - **Authority:** `specs/chat_run_continuity.md` §4 S7, board row WS-51
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
@@ -381,23 +379,6 @@ line — never reclaim a number by deleting the other entry.
   `acompletion_stream_text` already takes `feature=`, so its name is ready.
 - **Authority:** `customer_console.md` §4.3a, H-171
 - **Added:** 2026-10-10 · branch `ai-call-attribution`
-
-### H-286 · Reply Zero lists snoozed and junk threads as needing a reply, and the digest and My Day do not · [AGENT]
-- **Check:** run `rg -n "excluded = " apps/services/gateway/gateway/routes/email/automation/replyzero.py`.
-  If the active buckets still exclude only `'trash', 'archive'`, this is open.
-- **Why.** The email app has two rules for "needs a reply". The digest's
-  `_LIVE_THREAD` (`routes/email/digest.py`) leaves out a thread when its last
-  message is in trash, junk or the archive, or the member snoozed it. The shell's needs
-  feed reads the same rule (`needs_reply_threads`, WS-44 NS-3). Reply Zero
-  (`replyzero.reply_zero`) leaves out only trash and archive. So a member sees
-  a snoozed or junk thread in the Reply list, and not in the digest count or
-  on My Day.
-- **Do this:** the email app decides which rule is right. If Reply Zero
-  should match, make its active buckets read `digest._LIVE_THREAD`, and do
-  not write a third copy. Fence it with a snoozed and a junk case in the
-  Reply Zero suite.
-- **Authority:** `email_app_master_plan.md` (Reply Zero), `navigation_shell.md` §7.2
-- **Added:** 2026-10-09 · WS-44 NS-3 slice A
 
 ### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
 - **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
@@ -6177,14 +6158,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `projects_agent_parity.md` §3.3 G19 and G20, §12 P8
 - **Added:** 2026-10-23 · Projects chat parity session
 
-### H-382 · The Projects chat does not make tasks from email or CRM context (WS-46 P9, G10, G11) · [AGENT]
-- **Check:** `grep -n "G10\|G11" apps/skills/skill-projects/skill_projects/manifest.py`.
-  A hit in `FIELD_PLANNED` means `source` and `source_ref` are not sent.
-- **Why:** a task made from an email does not record where it came from.
-- **Do this:** build slice P9 of `projects_agent_parity.md` §12, then PO-3.
-- **Authority:** `projects_agent_parity.md` §3.3, §10, §12 P9
-- **Added:** 2026-10-23 · Projects chat parity session
-
 ### H-383 · The Projects chat has no agent-run tools (WS-55 EA-12e, G23) · [AGENT]
 - **Check:** `grep -n "EA-12e" apps/skills/skill-projects/skill_projects/manifest.py`.
   A hit in `PLANNED` means the four tools are not built.
@@ -6344,13 +6317,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §17 KB-9a
 - **Added:** 2026-10-23 · Knowledge session
 
-### H-406 · The Knowledge index block trusts a client email to decide that a room is solo · [AGENT] · security
-- **Check:** `grep -n "_payload_user\|_memory_user_id" apps/services/orchestrator/orchestrator/executor.py` shows that `_kb_index_key` no longer compares the memory id with the verified member, and reads the `_RUN_SOLO_ROOM` bit of WS-63 PZ-2 instead. If it holds, delete this entry.
-- **Why:** `_kb_index_key` (`executor.py`, WS-61 KB-4a) treats "memory id differs from the verified member" as a shared room. `_bind_run_identity` rebinds the memory id from `_payload_user(event_payload)`, which is `payload.user_email`, a client field. A member in a shared room can send their own email and get the solo Knowledge index there. Found by the PZ-2 audit on 2026-10-23.
-- **Do this:** read the `_RUN_SOLO_ROOM` ContextVar that PZ-2 adds (it fails closed) in `_kb_index_key`, in place of the memory-id compare. Add a test where a shared-room run with `payload.user_email` set to the member gets no solo index.
-- **Authority:** `specs/knowledge_base.md` §6.5 (KB-4a) · `specs/personalization.md` §5.1
-- **Added:** 2026-10-24 · WS-63 PZ-2 session
-
 ### H-407 · Mem0 memory reads a member's private facts into an org-visible room of one · [AGENT] · security
 - **Check:** `grep -n "shared=_room_is_shared\|_clearance.write if _room_is_shared" apps/services/gateway/gateway/routes/agent.py` prints nothing, because the memory pre-read and the extraction use `not room_is_solo(room)` from `gateway/rooms.py`. If it holds, delete this entry.
 - **Why:** `_room_is_shared` is `room.is_shared`, which counts participants only. A room of one with visibility `org` or `people` is readable by other members, but it reads the owner's private Mem0 facts and writes its turns to the owner's store. Mem0 is off in production, so nothing leaks today. Found by the WS-63 PZ-2 review on 2026-10-24. PZ-2 fixed the same rule for the profile block with `room_is_solo`.
@@ -6358,19 +6324,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
 
-### H-410 · The look-alike guard refuses Pinyin tone letters and the Azerbaijani ə in a held chat · [AGENT]
-- **Check:** `lookalike_words("Nǐ hǎo")` and `lookalike_words("Azərbaycan")` in `acb_skills/reply_card.py` both return `[]`. If they do, delete this entry.
-- **Why:** #1288 (H-393) refuses a Latin letter outside Basic Latin, Latin-1, Latin Extended-A and the Vietnamese ranges, in a chat that read outside mail. Pinyin tone letters (U+01CE, U+01D0) and ə (U+0259) are real text, not look-alikes, so a held send that holds them is refused. Other chats only warn.
-- **Do this:** allow the letters of Latin Extended-B and IPA that have no ASCII twin in `held_card._CONFUSABLE`. Keep ɑ, ɡ and ı-style twins refused. Add a test for each language.
-- **Authority:** the final check of #1288, 2026-10-24.
-- **Added:** 2026-10-24 · email single-mailbox session
-
-### H-411 · Two first writes of the always-copy list at once can both pass · [AGENT]
-- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row. The agent sends the version that the model read. If both hold, delete this entry.
-- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing. So two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT. So it misses a change in the UI after the model read the list.
-- **Do this:** lock on the account row, or take an advisory lock on the account id. Carry the version from the model's read into the tool call.
-- **Authority:** the final check of #1288, 2026-10-24.
-- **Added:** 2026-10-24 · email single-mailbox session
+### H-410 · Check a real web push on an installed iPhone app and on Android Chrome · [OWNER]
+- **Check:** the owner says that a test push reached both phones. Then delete this entry.
+- **Why:** WS-66 PN-1 is built and tested, but no test can prove delivery to a real
+  phone. iOS delivers web push only to a web app on the Home Screen, on iOS 16.4
+  or later.
+- **Do this (owner), on dev.metorite.com after the agent turns `WEB_PUSH_ENABLED`
+  on there:**
+  1. iPhone: open dev.metorite.com in Safari, tap Share, then "Add to Home Screen".
+     Open Metorite from the Home Screen icon and sign in.
+  2. Open My Profile, find Notifications, turn it on, and allow notifications.
+  3. Tap "Send a test". A notification must show on the lock screen.
+  4. Android: open dev.metorite.com in Chrome, sign in, and do steps 2 and 3.
+- **Authority:** `specs/calendar_events_reminders.md` §10.1 PN-1 and §10.2
+- **Added:** 2026-10-25 · branch `ws66-pn1-mt-d09a41c2`
 
 # DONE — deleted, not archived
 

@@ -45,7 +45,7 @@ from typing import Any
 
 from evals.coding_engine import run as coding
 from evals.coding_engine.checkers import Session
-from evals.projects_ops import checkers, scripted, stub_api, tasks
+from evals.projects_ops import checkers, email_stub, scripted, stub_api, tasks
 from evals.projects_ops import dataset as ds_mod
 from evals.projects_ops.checkers import Card, Evidence
 from evals.projects_ops.dataset import Dataset
@@ -65,11 +65,16 @@ class OpsHarness(coding.Harness):
 
     covered: bool = False
     serve_stub: Any = stub_api.serve
+    #: WS-46 P9. The stub email agent that a ``call_agent`` reaches.
+    email: email_stub.EmailStub = field(default_factory=email_stub.EmailStub)
 
     def __enter__(self) -> OpsHarness:
         from acb_common import get_settings
 
         super().__enter__()
+        from orchestrator import executor
+
+        self._patches.set(executor, "_run_sub_agent_streaming", self.email.run_sub_agent)
         settings = get_settings()
         if hasattr(settings, "maf_coding_scope"):
             # The coding harness sets the scope for its own sweep. This sweep
@@ -203,6 +208,7 @@ def _reset_stub(harness: OpsHarness) -> None:
     fresh = stub_api.OpsStub(harness.dataset)
     ops = harness.ops
     ops.requests.clear()
+    harness.email.calls.clear()
     ops.tasks, ops.rules, ops.nodes = fresh.tasks, fresh.rules, fresh.nodes
     ops.attachments, ops.nudges = fresh.attachments, fresh.nudges
     ops.grants = fresh.grants

@@ -210,7 +210,7 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
 
   it("draws its rows from accountMenu alone", () => {
     const foot = footSource();
-    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages \}\)/);
+    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages, assistant \}\)/);
     expect(foot).not.toMatch(/accountLinks|MY_ACCESS|"\/people\/me"|"\/settings\/appearance"|Change my layout/);
   });
 

@@ -65,6 +65,7 @@ request too, with the measured result of each.
 * D27 (fix 1). ``G/tasks.py`` ``delete_task_in``: ``all`` goes through ``clean_task_ids`` and its cap. ``test_all_has_no_cap_of_its_own``.
 * D28 (fix 1). ``G/tasks.py`` ``delete_task``: one event for the task only. ``test_the_plain_delete_emits_one_event_for_each_task``.
 * D29 (fix 1). ``G/tasks.py`` ``agent_delete_task``: one event for the task only. ``test_the_agent_delete_emits_one_event_for_each_task_with_via`` and ``test_all_keeps_a_descendant_hidden_behind_the_assignee_arm``.
+* D30 (WS-55 MCP-G7). ``G/tasks.py`` ``agent_delete_task``: ``precondition_holds`` in place of strict equality. ``test_h2b_a_comment_after_the_read_gets_409_and_deletes_nothing`` and ``test_h2c_a_subtask_moved_in_after_the_read_gets_409_and_deletes_nothing``.
 * D10b, measured GREEN on purpose: ``BYPASSRLS`` alone. The ``vis_org`` predicate of ``load_visible_task`` still hides organization B. D9 alone leaves H6 green too, because FORCE RLS still hides it.
 """
 from __future__ import annotations
@@ -663,6 +664,41 @@ class TestTheDelete:
                                  "confirm_title": seen["title"], "subtasks_to_delete": "none"})
         assert r.status_code == 409 and r.json()["detail"] == tools.AGENT_DELETE_STALE
         assert _exists(live, task) and _tombstones(live, task) == 0
+
+    async def test_h2b_a_comment_after_the_read_gets_409_and_deletes_nothing(self, live):
+        """WS-55 MCP-G7. The delete keeps STRICT equality, so a comment alone
+        stales the member's yes. A PATCH would pass here (``fields_at``)."""
+        await _switch(live, True)
+        task = live.task(live.team, live.s.todo, "h2b comment")
+        seen = await _read(live, task)
+        r = await _person(live, MEMBER, "POST", f"/projects/tasks/{task}/comments",
+                          {"body": "Wait, I still need this."})
+        assert r.status_code == 201, r.text
+        r = await tw._send(live, "POST", f"/projects/tasks/{task}/agent-delete",
+                           body={"expected_version": seen["version"],
+                                 "confirm_title": seen["title"], "subtasks_to_delete": "none"})
+        assert r.status_code == 409 and r.json()["detail"] == tools.AGENT_DELETE_STALE
+        assert _exists(live, task) and _tombstones(live, task) == 0
+
+    async def test_h2c_a_subtask_moved_in_after_the_read_gets_409_and_deletes_nothing(
+            self, live):
+        """WS-55 MCP-G7. ``/move`` bumps only the new parent, and ``fields_at``
+        does not see it. Under the fields rule, ``all`` would delete a subtree
+        that the member never saw."""
+        await _switch(live, True)
+        task = live.task(live.team, live.s.todo, "h2c parent")
+        stray = live.task(live.team, live.s.todo, "h2c moved in")
+        seen = await _read(live, task)
+        r = await _person(live, MEMBER, "POST", f"/projects/tasks/{stray}/move",
+                          {"parent_task_id": task})
+        assert r.status_code == 200, r.text
+        assert str(tw._row(live, stray).parent_task_id) == task
+        r = await tw._send(live, "POST", f"/projects/tasks/{task}/agent-delete",
+                           body={"expected_version": seen["version"],
+                                 "confirm_title": seen["title"], "subtasks_to_delete": "all"})
+        assert r.status_code == 409 and r.json()["detail"] == tools.AGENT_DELETE_STALE
+        assert _exists(live, task) and _exists(live, stray)
+        assert _tombstones(live, task) == 0 and _tombstones(live, stray) == 0
 
     async def test_h3_a_good_call_deletes_lifts_the_subtasks_and_leaves_one_tombstone(
             self, live, events):

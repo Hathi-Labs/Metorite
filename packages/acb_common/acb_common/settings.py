@@ -499,6 +499,26 @@ class Settings(BaseSettings):
     reach_brief_template: str = ""
     reach_needs_you_template: str = ""
     reach_template_language: str = "en"
+
+    # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
+    #
+    # `web_push_enabled` is the switch of the `/push` routes and the sender,
+    # default OFF. Off, each `/push` route answers 404 and nothing sends.
+    # `vapid_public_key` is the base64url of the uncompressed P-256 public
+    # point (65 bytes), the `applicationServerKey` that a browser subscribes
+    # with. `vapid_private_key` is the base64url of the raw 32-byte private
+    # scalar. `vapid_subject` is the `mailto:` or `https:` contact that the
+    # push services read from the VAPID claim. The private key is a secret:
+    # `scripts/secrets.sh`, never chat, never the tree.
+    # The one reader is `gateway.push.flags`. A flip on a box is gate
+    # `enforcement-flip`, and a flip for a real member in production is the
+    # owner's (calendar_events_reminders.md §9). Spec:
+    # calendar_events_reminders.md §5.9 and §10.2. Fence:
+    # tests/unit/test_push_subscriptions.py.
+    web_push_enabled: bool = False
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
@@ -645,9 +665,15 @@ class Settings(BaseSettings):
     # ON adds the member's own profile block to the orchestrator's per-turn
     # context, for a solo run with a verified member
     # (`personalization.md` §5.1). OFF leaves the context byte-identical.
-    # The one reader is `acb_common.assistant_profile.enabled`. Fence:
-    # tests/unit/test_executor_profile_block.py.
+    # `assistant_profile_orgs` (PZ-25, §14.2) is a list of organization ids,
+    # separated by commas. Empty means each organization while the switch is
+    # on. A list means only those organizations. The switch off wins.
+    # The one reader of both is `acb_common.assistant_profile.enabled_for`,
+    # and it takes the bound organization. Restart after a change. Fences:
+    # tests/unit/test_executor_profile_block.py and
+    # tests/unit/test_assistant_profile_org_rollout.py.
     assistant_profile_enabled: bool = False
+    assistant_profile_orgs: str = ""
 
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #

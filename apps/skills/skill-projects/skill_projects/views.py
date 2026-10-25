@@ -367,6 +367,25 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("help_reasons", "Needs help"),
         ],
     },
+    # WS-27bn RA-3. The three counts, then one row for each waiting task.
+    # `_card_section` joins the three lists into one table, with a kind.
+    "waiting": {
+        "title": "Waiting on people",
+        "stats": [
+            ("questions_total", "Questions"),
+            ("reviews_total", "Reviews"),
+            ("handoffs_total", "Handoffs"),
+        ],
+        "rows": "questions",
+        "columns": [
+            ("kind", "Waiting for"),
+            ("title", "Task"),
+            ("agent", "Agent"),
+            ("member", "For"),
+            # `_card_section` copies `since` here, so the date cut applies.
+            ("since_at", "Since"),
+        ],
+    },
     # WS-27bn R3c. The four counts, then one row for each named task.
     "hygiene": {
         "title": "Data hygiene",
@@ -573,6 +592,28 @@ def _card_section(
             "title": title,
             "columns": [label for _, label in columns],
             "rows": cells,
+        }
+    if name == "waiting" and columns:
+        # WS-27bn RA-3. The three lists in one table, in the panel's order,
+        # each row with the kind of wait. The member name wins over the
+        # address, as the panel shows it.
+        joined = [
+            {**r, "kind": kind, "member": r.get("member_name") or r.get("member"),
+             "since_at": r.get("since")}
+            for key, kind in (("questions", "An answer"), ("reviews", "A review"),
+                              ("handoffs", "A handoff"))
+            for r in section.get(key) or []
+            if isinstance(r, dict)
+        ]
+        if not joined:
+            return stats, None
+        return stats, {
+            "title": title,
+            "columns": [label for _, label in columns],
+            "rows": [
+                {"cells": [_card_cell(key, r, numbers) for key, _ in columns]}
+                for r in joined[:rows_max]
+            ],
         }
     if name == "hygiene" and isinstance(rows, list) and rows and columns:
         # WS-27bn R3c. Five rows of each kind, then a count of the rest. The

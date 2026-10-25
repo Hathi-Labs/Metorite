@@ -12,7 +12,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
 | S6 — the activity of the other signed-in accounts | Spec only |
-| S7 — browser push for "needs your answer" and "finished" | Spec only. D-2 is decided: opt-in per member |
+| S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
 | §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
@@ -707,7 +707,7 @@ reads a second identity.
 **Fence.** A vitest on the BFF route. It proves that each slot's request
 carries that slot's cookie only, and that a row keeps its account label.
 
-### S7 — browser push (decided 2026-10-10, not built)
+### S7 — browser push (decided 2026-10-10. The transport is built, 2026-10-25. The two events are not built)
 
 **The decision.** The owner called web push "a good idea" on 2026-10-10. So
 D-2 is decided: push is opt-in, per member. Nothing is built yet.
