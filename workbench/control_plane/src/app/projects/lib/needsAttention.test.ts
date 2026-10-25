@@ -11,12 +11,16 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { ModeSwitch } from "@/components/ModeSwitch";
+
 import { NeedsAttentionList } from "../components/NeedsAttentionList";
 import {
+  ACTION_HINT,
   ACTION_LABEL,
   type AttentionPage,
   type AttentionRow,
   CANNOT_ACT,
+  CONNECTION_GONE,
   EMPTY_COPY,
   attentionGroups,
   attentionPage,
@@ -199,6 +203,22 @@ describe("the acts of a row", () => {
     expect(runActBlocked(blocked)).toBe(false);
   });
 
+  it("offers Close the run only when the run's connection is gone", () => {
+    // The server already sends `actions: ["close_run"]`. The rule also holds
+    // when an older answer still lists Resume.
+    const gone = row({ connection_gone: true, can_resume: false });
+    expect(rowActions(gone)).toEqual(["close_run"]);
+    expect(rowActions(row({ connection_gone: true, actions: ["close_run"] }))).toEqual([
+      "close_run",
+    ]);
+  });
+
+  it("says which act keeps the task and which frees it", () => {
+    expect(ACTION_HINT.resume).toContain("same agent client");
+    expect(ACTION_HINT.resume).toContain("keeps the task");
+    expect(ACTION_HINT.close_run).toContain("free the task for anyone");
+  });
+
   it("asks before it closes a run, and says that the task stays", () => {
     const copy = closeRunCopy(dangling);
     expect(copy.title).toBe("Close this agent run?");
@@ -243,6 +263,19 @@ describe("the list", () => {
     expect(out).toContain("Owner: Alice Archer · Ops");
   });
 
+  it("draws Close the run alone, and says why, when the connection is gone", () => {
+    const out = html(page([row({ connection_gone: true, can_resume: false })]));
+    expect(out).not.toContain(">Resume<");
+    expect(out).toContain(">Close the run<");
+    expect(out).toContain(CONNECTION_GONE.split("so it ")[0].replace("'", "&#x27;"));
+  });
+
+  it("puts what each act does in its tooltip", () => {
+    const out = html(page([stalled]));
+    expect(out).toContain(`title="${ACTION_HINT.resume}"`);
+    expect(out).toContain(`title="${ACTION_HINT.close_run}"`);
+  });
+
   it("draws no button for a run act the caller may not take", () => {
     const out = html(page([row({ can_act: false })]));
     expect(out).not.toContain(">Resume<");
@@ -270,7 +303,28 @@ describe("the page wires the lens", () => {
   it("opens the lens from the badge and the toggle, and a view pick closes it", () => {
     expect(src).toContain("data-attention-badge");
     expect(src).toContain("data-attention-toggle");
-    expect(src).toMatch(/onPick=\{\(next\) => \{\s*setAttentionFor\(null\);/);
+    // The desktop switch picks through `pickMode`, which leaves the lens.
+    expect(src).toMatch(/const pickMode = \(next: ViewMode\) => \{\s*setAttentionFor\(null\);/);
+    expect(src).toMatch(/layout="toolbar"\s*onPick=\{pickMode\}/);
+  });
+
+  it("closes the lens from the phone's view sheet too (fix round)", () => {
+    const sheet = src.slice(src.indexOf('layout="sheet"'));
+    const pick = sheet.slice(0, sheet.indexOf("setSheet(null)"));
+    expect(pick).toContain("setAttentionFor(null)");
+  });
+
+  it("selects no view mode while the lens is on, on both switches", () => {
+    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \? null : mode;/);
+    expect(src.match(/mode=\{shownMode\}/g)?.length).toBe(2);
+    const html = renderToStaticMarkup(
+      createElement(ModeSwitch<"board" | "list">, {
+        modes: [{ id: "board", icon: "Kanban" }, { id: "list", icon: "List" }],
+        mode: null,
+        onPick: () => {},
+      }),
+    );
+    expect(html).not.toContain('aria-pressed="true"');
   });
 
   it("keeps the lens off the view modes", () => {

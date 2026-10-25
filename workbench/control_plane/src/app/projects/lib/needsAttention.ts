@@ -56,6 +56,13 @@ export interface AttentionRow {
   can_act: boolean;
   /** The caller owns the row: the run's member, or an assignee of the blocked task. */
   yours: boolean;
+  /**
+   * The run's agent connection is revoked or expired. No session of that
+   * client can come back, so the server offers Close the run only.
+   */
+  connection_gone?: boolean;
+  /** A stalled row the caller may resume: `can_act`, and a live connection. */
+  can_resume?: boolean;
 }
 
 /** The whole answer of the route. */
@@ -84,7 +91,8 @@ export const KIND_COPY: Readonly<
 > = {
   stalled: {
     heading: "Stalled agent runs",
-    hint: "An agent stopped working, and no session came back after one nudge.",
+    hint:
+      "An agent stopped working, and no session came back after one nudge. Resume asks the same agent client to continue. Close the run frees the task for anyone.",
     hue: "amber",
   },
   dangling: {
@@ -112,6 +120,20 @@ export const ACTION_ICON: Readonly<Record<AttentionAction, string>> = {
   close_run: "LogOut",
   open_blocker: "ArrowUpRight",
 };
+
+/**
+ * What each act does, for the tooltip of its button (spec §12.7). Resume
+ * keeps the task with the same agent client. Close the run frees it.
+ */
+export const ACTION_HINT: Readonly<Record<AttentionAction, string>> = {
+  resume: "Ask the same agent client to continue this run. The run keeps the task.",
+  close_run: "End this run and free the task for anyone. The task keeps its status.",
+  open_blocker: "Open the task that blocks this one.",
+};
+
+/** The line of a stalled row whose agent connection is revoked or expired. */
+export const CONNECTION_GONE =
+  "The agent's connection is revoked or expired, so it cannot resume. Close the run to free the task.";
 
 /** What a row says when the caller may not take its act. */
 export const CANNOT_ACT =
@@ -232,7 +254,11 @@ export function ownerText(row: AttentionRow, labels?: ReadonlyMap<string, string
  */
 export function rowActions(row: AttentionRow): AttentionAction[] {
   const acts = row.actions?.length ? row.actions : [row.action];
-  return acts.filter((act) => act === "open_blocker" || row.can_act);
+  return acts.filter(
+    (act) =>
+      act === "open_blocker" ||
+      (row.can_act && !(act === "resume" && row.connection_gone === true)),
+  );
 }
 
 /** True when a row has a run act that the caller may not take. */

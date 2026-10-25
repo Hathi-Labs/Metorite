@@ -1838,10 +1838,22 @@ ATTENTION_KINDS = {
 #: The next action of each row, for the model to say. No chat tool takes
 #: either write yet (`resume_agent_run` and `release_agent_run` are PLANNED).
 ATTENTION_ACTIONS = {
-    "resume": "Resume (hands the run back to an agent) or Close the run",
-    "close_run": "Close the run (the task keeps its status)",
+    "resume": (
+        "Resume (asks the same agent client to continue, and the run keeps the task)"
+        " or Close the run (frees the task for anyone)"
+    ),
+    "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
     "open_blocker": "open the blocker and give it an owner or move it on",
 }
+
+#: The server's own answer, quoted: `can_act` is false for this caller. The
+#: route reads the rule of Release (`agent_runs.person_may_end_sql`). No line
+#: here names who holds the right (`test_projects_agent_grants.py`).
+ATTENTION_NO_RIGHT = "only a person with the right to end this run can act on it"
+
+#: A stalled run whose agent connection is revoked or expired. No session of
+#: that client can come back, so the server offers Close the run only.
+ATTENTION_CONNECTION_GONE = "the agent's connection is revoked or expired, so it cannot resume"
 
 
 def _hours_ago(hours: Any) -> str:
@@ -1879,8 +1891,10 @@ def _attention_lines(row: dict[str, Any]) -> list[str]:
     if row.get("project_name"):
         facts.append(f"in {data(row['project_name'])}")
     action = ATTENTION_ACTIONS.get(str(row.get("action") or ""), "open the task")
+    if row.get("connection_gone") and kind == "stalled":
+        facts.append(ATTENTION_CONNECTION_GONE)
     if not row.get("can_act"):
-        action += " (only the run's member, an assignee of the task or an admin can do it)"
+        action += f" ({ATTENTION_NO_RIGHT})"
     head = f"- {_number(row)} {data(row.get('title'))} · " + " · ".join(facts)
     out = [head, f"  next: {action}", f"  full_id: {row.get('task_id')}"]
     if row.get("blocker_id"):

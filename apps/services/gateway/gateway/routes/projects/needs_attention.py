@@ -62,6 +62,7 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.filters import (
     AGENT_RUN_OPEN_STATUSES,
     agent_runs_enabled,
+    connection_gone_sql,
     open_block_sql,
     open_recovery_sql,
     task_closed_sql,
@@ -81,11 +82,19 @@ ACTION_CLOSE_RUN = "close_run"
 ACTION_OPEN_BLOCKER = "open_blocker"
 
 #: The one next action of each kind, then any second action.
+#:
+#: Resume asks the SAME agent client to continue, and the run keeps the task.
+#: Close the run frees the task for anyone. A stalled run whose agent
+#: connection is revoked or expired takes Close the run only
+#: (:data:`STALLED_CONNECTION_GONE`): no session of that client can come back,
+#: and the resume route refuses it.
 ACTIONS: dict[str, tuple[str, ...]] = {
     KIND_STALLED: (ACTION_RESUME, ACTION_CLOSE_RUN),
     KIND_DANGLING: (ACTION_CLOSE_RUN,),
     KIND_BLOCKED: (ACTION_OPEN_BLOCKER,),
 }
+#: The acts of a stalled run with a dead connection (spec §12.7).
+STALLED_CONNECTION_GONE: tuple[str, ...] = (ACTION_CLOSE_RUN,)
 
 #: The status category of a parked blocker.
 PARKED_CATEGORY = "backlog"
@@ -135,6 +144,7 @@ def stalled_sql(scope_sql: str, vis: Any) -> str:
         f"       r.member_email AS owner, {_name('r.member_email')} AS owner_name,"
         f"       s2.reason AS reason, r.last_activity_at AS since,"
         f"       {person_may_end_sql('r')} AS may_end,"
+        f"       {connection_gone_sql('r')} AS connection_gone,"
         f"       (r.member_email = :me) AS yours"
         f"  FROM pm_agent_run_strands s2"
         f"  JOIN pm_agent_runs r ON r.id = s2.run_id"
@@ -160,6 +170,7 @@ def dangling_sql(scope_sql: str, vis: Any) -> str:
         f"            ELSE s.category END AS reason,"
         f"       r.last_activity_at AS since,"
         f"       {person_may_end_sql('r')} AS may_end,"
+        f"       {connection_gone_sql('r')} AS connection_gone,"
         f"       (r.member_email = :me) AS yours"
         f"  FROM pm_agent_runs r"
         f"  JOIN pm_tasks t ON t.id = r.task_id"
@@ -196,10 +207,12 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
         f"  JOIN pm_projects tp ON tp.id = t.project_id"
         f"  JOIN pm_tasks b ON b.id = l.source_task_id"
         f"  JOIN pm_task_statuses bs ON bs.id = b.status_id"
-        # The owner of a blocked row is the first assignee of the blocked task.
-        # A blank assignee is no assignee, as RA-1's holder rule reads it.
-        f"  LEFT JOIN LATERAL (SELECT min(x.assignee) AS owner FROM pm_task_assignees x"
-        f"     WHERE x.task_id = t.id AND btrim(coalesce(x.assignee, '')) <> '') ow ON TRUE"
+        # The owner of a blocked row is the EARLIEST assignee of the blocked
+        # task (`assigned_at`), with the address as the tie-break. A blank
+        # assignee is no assignee, as RA-1's holder rule reads it.
+        f"  LEFT JOIN LATERAL (SELECT x.assignee AS owner FROM pm_task_assignees x"
+        f"     WHERE x.task_id = t.id AND btrim(coalesce(x.assignee, '')) <> ''"
+        f"     ORDER BY x.assigned_at ASC, x.assignee ASC LIMIT 1) ow ON TRUE"
         f" WHERE {open_block_sql('l', 'bs')}"
         f"   AND bs.category = :parked"
         f"   AND ({open_where})"
@@ -231,7 +244,9 @@ def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
     """The wire shape of one row. A field that does not apply is null."""
     run_id = getattr(hit, "run_id", None)
     via = getattr(hit, "client_via", None)
-    actions = ACTIONS[kind]
+    gone = bool(getattr(hit, "connection_gone", False))
+    actions = STALLED_CONNECTION_GONE if kind == KIND_STALLED and gone else ACTIONS[kind]
+    can_act = True if kind == KIND_BLOCKED else bool(admin or hit.may_end)
     owner = getattr(hit, "owner", None)
     return {
         "kind": kind,
@@ -262,7 +277,11 @@ def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
         "actions": list(actions),
         # The rule of Release. A blocked row only opens a task, so any reader
         # who sees the row may take its action.
-        "can_act": True if kind == KIND_BLOCKED else bool(admin or hit.may_end),
+        "can_act": can_act,
+        # True when the run's agent connection is revoked or expired. Then
+        # no session of that client can come back, and Resume is refused.
+        "connection_gone": gone,
+        "can_resume": kind == KIND_STALLED and can_act and not gone,
         "yours": bool(hit.yours),
     }
 
@@ -334,6 +353,7 @@ async def needs_attention(
 
 __all__ = [
     "ACTIONS",
+    "STALLED_CONNECTION_GONE",
     "KINDS",
     "MAX_PER_KIND",
     "PARKED_CATEGORY",

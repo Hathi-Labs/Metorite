@@ -34,12 +34,14 @@ import { accentForHue } from "@/lib/statusAccent";
 import { writeFailure } from "../lib/agentRuns";
 import { ProjectsApiError, agentRunsApi } from "../lib/api";
 import {
+  ACTION_HINT,
   ACTION_ICON,
   ACTION_LABEL,
   type AttentionAction,
   type AttentionPage,
   type AttentionRow,
   CANNOT_ACT,
+  CONNECTION_GONE,
   EMPTY_COPY,
   LENS_LABEL,
   attentionGroups,
@@ -196,6 +198,9 @@ export function NeedsAttentionList({
                         Owner: {ownerText(row, personLabels)}
                         {row.project_name ? ` · ${row.project_name}` : ""}
                       </p>
+                      {row.kind === "stalled" && row.connection_gone ? (
+                        <p className="text-[10px] text-muted-foreground">{CONNECTION_GONE}</p>
+                      ) : null}
                       {runActBlocked(row) ? (
                         <p className="text-[10px] text-muted-foreground">{CANNOT_ACT}</p>
                       ) : null}
@@ -214,6 +219,7 @@ export function NeedsAttentionList({
                               href={taskHref(row.blocker_id)}
                               onActivate={() => void act(row, action)}
                               className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-primary hover:underline"
+                              title={ACTION_HINT[action]}
                             >
                               <Icon name={ACTION_ICON[action]} className="h-3.5 w-3.5" aria-hidden />
                               {ACTION_LABEL[action]}
@@ -227,6 +233,7 @@ export function NeedsAttentionList({
                               loading={busy}
                               disabled={busy}
                               data-attention-action={action}
+                              title={ACTION_HINT[action]}
                               onClick={() =>
                                 action === "close_run" ? setClosing(row) : void act(row, action)
                               }

@@ -916,6 +916,7 @@ async def _write_activity(
     request: dict[str, Any] | None = None,
     typed: bool = False,
     extra: dict[str, Any] | None = None,
+    quiet: bool = False,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -927,6 +928,9 @@ async def _write_activity(
     ``content_metadata``, and the question notifies the run's member only.
     *typed* lets a prompt answer such a request, and only the approval route
     passes it. *extra* adds the server's own keys to ``content``.
+
+    SW-11a. *quiet* keeps the timeline comment and sends no bell: Resume
+    writes a note to the agent, not a comment to people (spec §12.7).
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -1015,6 +1019,7 @@ async def _write_activity(
             text_=_comment_body(kind, content, signal_meta) or kind,
             question=(kind == "elicitation" and new_status == "awaiting"),
             member_only=request is not None,
+            quiet=quiet,
         )
 
     await _move_run(
@@ -1028,7 +1033,7 @@ async def _write_activity(
 
 async def _comment(
     db: Any, run: Any, made: Any, *, author: str, via: str | None, text_: str,
-    question: bool, member_only: bool = False,
+    question: bool, member_only: bool = False, quiet: bool = False,
 ) -> Any:
     """The timeline comment of one non-ephemeral activity, and its bell rows.
 
@@ -1041,6 +1046,8 @@ async def _comment(
 
     A typed archive request (EA-6g, *member_only*) notifies the run's member
     only, because nobody else may answer it (EA12-8 as amended by EA3-40).
+
+    *quiet* (SW-11a, Resume) writes the comment and sends no bell at all.
     """
     task_id = str(run.task_id)
     meta: dict[str, Any] = {
@@ -1061,6 +1068,8 @@ async def _comment(
         ),
         {"pm": str(comment.id), "aid": str(made.id)},
     )).fetchone()
+    if quiet:
+        return linked
     audience = [] if member_only else await task_audience(db, task_id)
     snippet = excerpt_of(text_)
     if question:
@@ -1912,6 +1921,19 @@ _OPEN_RECOVERY_SQL = (
     " LIMIT 1"
 )
 
+#: True when the agent connection of the run is revoked or expired
+#: (``filters.connection_gone_sql``). No session of that client can come back,
+#: so Resume refuses, and Close the run is the act (spec §12.7).
+_RUN_CONNECTION_GONE_SQL = (
+    f"SELECT {connection_gone_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+)
+
+#: The refusal of Resume on a run with a dead connection.
+RESUME_CONNECTION_GONE = (
+    "The agent connection of this run is revoked or expired, so no agent can"
+    " resume it. Close the run instead."
+)
+
 #: SW-7: Resume hands the run to the next session of its connection.
 _RESUME_KEY_SQL = "UPDATE pm_agent_runs SET session_key = NULL WHERE id = CAST(:rid AS uuid)"
 
@@ -1944,7 +1966,10 @@ async def resume_agent_run(
     * The rule of Release decides who may (:func:`may_end_run`). An agent
       caller gets 403: it has its own paths.
     * A caller who cannot see the task gets 404. A closed task gets 409, and
-      so does a run with no open recovery record that fits it.
+      so does a run with no open recovery record that fits it, and a run
+      whose agent connection is revoked or expired (Close the run instead).
+    * It is quiet: the timeline keeps the prompt, and no bell and no event
+      go out. It is a note to the agent, not a comment to people.
     * A replay of the key returns the first answer, and it writes nothing.
     * It never changes the task.
     """
@@ -1971,9 +1996,15 @@ async def resume_agent_run(
                     status_code=409,
                     detail="This agent run has no open recovery record, so nothing waits to resume.",
                 )
+            # Resume asks the SAME agent client to continue. A dead connection
+            # can send nothing again, so only Close the run helps (§12.7).
+            if (await db.execute(text(_RUN_CONNECTION_GONE_SQL), {"rid": run_id})).scalar():
+                raise HTTPException(status_code=409, detail=RESUME_CONNECTION_GONE)
+            # `quiet`: a note to the agent, not a comment to people. The
+            # timeline keeps the row, and no bell and no event go out.
             written = await _write_activity(
                 db, run, user, kind="prompt", key=payload.idempotency_key,
-                body=RESUME_BODY, extra={"resume": True},
+                body=RESUME_BODY, extra={"resume": True}, quiet=True,
             )
             # SW-7 (spec §12.5). The session that held the run went quiet past
             # its lease, so its key names nobody. A run with no key is the own
@@ -1984,8 +2015,8 @@ async def resume_agent_run(
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         activity = written.activity if written is not None else replay
         out_activity = _activity_out(activity)
-    if written is not None and written.commented:
-        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    # No `pm.task.comment_added`: a workflow that fires on a comment must not
+    # take a note to the agent for a comment to people.
     return {"run": out_run, "activity": out_activity, "resumed": True,
             "created": written is not None and written.created}
 

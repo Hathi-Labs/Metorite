@@ -1706,8 +1706,8 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 
 **The three kinds.** Each kind joins rules that exist. Do not write a second copy of any of them.
 
-1. **Stalled.** An open recovery record of SW-10a (§12.6) that still fits its run. The record has `recovered_at` and no `cleared_at`. `filters.strand_fits_sql` holds: the run is `in_progress`, and no activity came after the record. `filters.open_recovery_sql` is the one text of this rule, and the Resume route reads it too. The task is not closed (`filters.task_closed_sql`), so a run of a closed task shows only as dangling. The owner is the run's member. The age counts from the last activity of the run. The action is Resume, and Close the run is the second action.
-2. **Blocked by parked work.** An open task that an open `blocks` link blocks, where the blocker is parked. The link rule is `filters.open_block_sql`, the one text that `blocked_by_count` reads too: a finished blocker blocks nothing. A parked blocker has a status in the `backlog` category. RA-1's holder rule (`analytics.holder_label_sql`) gives nobody for it: no assignee, and no open run that keeps it. Both tasks pass the open-work predicate of Load (`analytics.load_open_where`), as the handoffs of RA-3 do. The owner is the first assignee of the blocked task, or nobody. The age counts from the link. The action is "Open the blocker", a link.
+1. **Stalled.** An open recovery record of SW-10a (§12.6) that still fits its run. The record has `recovered_at` and no `cleared_at`. `filters.strand_fits_sql` holds: the run is `in_progress`, and no activity came after the record. `filters.open_recovery_sql` is the one text of this rule, and the Resume route reads it too. The task is not closed (`filters.task_closed_sql`), so a run of a closed task shows only as dangling. The owner is the run's member. The age counts from the last activity of the run. The action is Resume, and Close the run is the second action. A run can lose its agent connection: a member revoked it, or it expired (`filters.connection_gone_sql`). Then the row offers Close the run only. No session of that client can come back.
+2. **Blocked by parked work.** An open task that an open `blocks` link blocks, where the blocker is parked. The link rule is `filters.open_block_sql`, the one text that `blocked_by_count` reads too: a finished blocker blocks nothing. A parked blocker has a status in the `backlog` category. RA-1's holder rule (`analytics.holder_label_sql`) gives nobody for it: no assignee, and no open run that keeps it. Both tasks pass the open-work predicate of Load (`analytics.load_open_where`), as the handoffs of RA-3 do. The owner is the earliest assignee of the blocked task (`assigned_at`, then the address), or nobody. The age counts from the link. The action is "Open the blocker", a link.
 3. **Dangling run.** An open run (`created`, `in_progress`, `awaiting` or `stopping`) of a closed task. `filters.task_closed_sql` decides: the task is archived, or its status is `done` or `cancelled`. The owner is the run's member. The age counts from the last activity of the run. The action is Close the run. SW-10a's sweep closes an `in_progress` one of these after its lease, and only while `agent_run_sweep_enabled` is on. It never closes the other three statuses. So this list is how a person sees and closes them.
 
 **"Waiting on no one" moves to SW-9.** It needs the named waiting path of SW-9, a run that waits on another person or on a system. SW-9 is not built (§12.6). SW-11a builds the three kinds above only.
@@ -1726,6 +1726,7 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 - The run: `run_id`, `run_status`, `client_via`, `client_name` and `reason`. On a stalled row, `reason` is the strand reason (`agent_quiet` or `answer_unread`). On a dangling row, it says why the task is closed (`archived`, `done` or `cancelled`).
 - The blocker: `blocker_id`, `blocker_number` and `blocker_title`.
 - `action`, `actions`, `can_act` and `yours`.
+- `connection_gone` and `can_resume` on a run row. `can_resume` is true for a stalled row whose caller may act and whose connection is live.
 
 **The rules that bind the route.**
 
@@ -1738,10 +1739,13 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 
 **The two actions.** Both are member writes on a run that the member can see, with the rule of Release. An agent caller gets 403. Neither changes the task.
 
+**Which one to press (supervisor's decision, fix round).** Resume asks the SAME agent client to continue, and the run keeps the task, because Resume renews the lease. Close the run frees the task for anyone. The tooltip of each button says this, and so does the line under the stalled heading.
+
 1. **Resume** (stalled rows): `POST /projects/agent-runs/{run_id}/resume`, with an `idempotency_key`. It writes ONE member `prompt` with a fixed server text, through `_write_activity`, the one write path of an activity. The run then reads `needs_agent` `answered`. So `list_agent_runs` with `needs_agent=true` lists it, and `my_work` offers it as `run_answered` to the connection that owns it. The prompt also renews the lease.
    - It also clears the SW-7 session key of the run (§12.5). The session that held the run went quiet past its lease, so the key names nobody. A run with no key is the own run of any session of its connection, so the next session adopts it.
    - The strand stops fitting at once, so the row leaves the list and `needs_agent` stops reading `stranded`. At its next tick the sweep clears the strand with `new_activity`, which is SW-10a's clear path. The sweep stays the only writer of `pm_agent_run_strands`.
-   - It refuses with 404 when the reader cannot see the task, and with 403 for an agent or a person with no right. It refuses with 409 when no open recovery record fits the run, and with 409 when the task is closed. A replay of the key returns 200 and writes nothing.
+   - It refuses with 404 when the reader cannot see the task, and with 403 for an agent or a person with no right. It refuses with 409 when no open recovery record fits the run, and with 409 when the task is closed. It refuses with 409 when the run's agent connection is revoked or expired, and the text says to close the run. A replay of the key returns 200 and writes nothing.
+   - It sends no bell and no `pm.task.comment_added` event. It is a note to the agent, not a comment to people. The task timeline keeps the comment row as the record.
 2. **Close the run** (stalled and dangling rows): `POST /projects/agent-runs/{run_id}/release`, the route of EA-14a, with no change. The run moves to `released`, with the system line "Released by <name>/the app". The task keeps its status and its assignees. A stalled strand stops fitting, because the run left `in_progress`, and the sweep clears it with `run_moved`.
 
 **A recorded deviation: Resume writes a prompt, and it does not clear the record.** The audit asked for a clear (`cleared_at` with a reason such as `resumed_by_member`), so that the run returns to `needs_agent=true`. The code says otherwise. An open strand IS the `stranded` reason of `needs_agent` (`agent_runs._NEEDS_AGENT_REASON_SQL`). A bare clear removes the run from `needs_agent=true` until the next tick writes a new fingerprint and sends a new bell.
@@ -1751,7 +1755,7 @@ A clear also needs a change to the CHECK of `cleared_reason` and a second writer
 **The surface.** The list is a lens, not a canvas: page state, as "Waiting on me" is. `ViewMode` does not change.
 
 - The action row of the project header holds a "Needs attention" toggle beside the view switch, with the count. The title row holds a small badge, "3 need attention", while the count is above zero. A click on the badge opens the lens. On a phone, a one-line button above the canvas opens it.
-- While the lens is on, the filter bar, the strip, the bulk bar and the composer hide, as on the Overview. None of them acts on this list. A pick in the view switch, the toggle, or "Back to the board" goes back to the board.
+- While the lens is on, the filter bar, the strip, the bulk bar and the composer hide, as on the Overview. None of them acts on this list. A pick in either view switch goes back to the board, on a desktop and on a phone. So do the toggle and the "Back to the board" button. While the lens is on, the view switch selects no mode.
 - The list groups the rows by kind, each kind with one plain line that says what it means. A row shows the task, the owner, the age and its actions. A click on the title opens the task panel.
 - Close the run asks first, with the words of Release. Resume asks nothing, because the agent can answer it and a person can reply. Each action reads the list again.
 - A row whose action the caller may not take shows no button. It says who can act.
@@ -1760,7 +1764,8 @@ A clear also needs a change to the CHECK of `cleared_reason` and a second writer
 
 **Fences.**
 
-- `tests/unit/test_needs_attention_r8.py` (R8, `pytestmark = _DB_GATE`) holds one fixture for each kind, and the near misses of each kind. It also holds `mine`, the runs flag and both actions.
+- `tests/unit/test_needs_attention_r8.py` holds one fixture for each kind, and the near misses of each kind. Each R8 class carries `@_DB_GATE`. The hermetic classes need no database. It also holds `mine`, the runs flag and both actions.
+- The same file holds the fence "a list read writes nothing". It counts the bells, the timeline rows, the run activities and the strands before and after three readers read the list. A dead connection and a quiet Resume have their own tests.
 - The same file holds the visibility. A restricted member sees only what they can open, and organization B sees nothing.
 - Resume clears the row, and the run reads `needs_agent` `answered`. Close ends the run and leaves the task. A member with no right gets 403.
 - `test_projects_chat_coverage.py`, `test_projects_field_parity.py` and `test_projects_ui_actions.py` for the two routes, the read tool and the two client methods. `test_read_tool_paging.py` for the tool. `test_chat_placement_classes.py` for its place in the chat.

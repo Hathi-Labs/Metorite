@@ -1667,6 +1667,17 @@ function ProjectsWorkspace() {
     app === "ai-chat" ||
     app === "settings" ||
     isMyWorkId(app);
+  // WS-55 SW-11a — the project the Needs attention lens reads, and whether the
+  // lens is on for it. A new project opens on its board, never on the lens of
+  // the last one. While the lens is on, the view switch selects no mode.
+  const attentionProject = selected && !dashboardOnly ? selected.id : null;
+  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
+  const shownMode: ViewMode | null = attentionLens ? null : mode;
+  /** A pick of a view mode leaves the lens, from every door. */
+  const pickMode = (next: ViewMode) => {
+    setAttentionFor(null);
+    setChosenMode(next);
+  };
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1825,9 +1836,11 @@ function ProjectsWorkspace() {
         ) : (
           <ModeSwitch
             modes={MODE_OPTIONS}
-            mode={mode}
+            mode={shownMode}
             layout="sheet"
             onPick={(next) => {
+              // A pick leaves the Needs attention lens, as on a desktop.
+              setAttentionFor(null);
               setChosenMode(next);
               setSheet(null);
             }}
@@ -1838,7 +1851,7 @@ function ProjectsWorkspace() {
     // `creating` is here so the drawer re-injects when a draft opens or
     // closes. Without it, the "+" in the drawer drew nothing: the snapshot
     // kept the tree as it was before the tap (2026-10-10).
-  }, [isMobile, sheet, mode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
+  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
@@ -2374,7 +2387,6 @@ function ProjectsWorkspace() {
   // and after an act of the list (`attentionVersion`). It only reads, and it
   // is live with no flag of its own. A space or a folder has no board, so it
   // reads nothing there.
-  const attentionProject = selected && !dashboardOnly ? selected.id : null;
   useEffect(() => {
     if (!attentionProject) return;
     let live = true;
@@ -2396,8 +2408,6 @@ function ProjectsWorkspace() {
       live = false;
     };
   }, [attentionProject, agentSig, attentionVersion]);
-  // A new project opens on its board, never on the lens of the last one.
-  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
   const attentionHere =
     attention && attention.projectId === attentionProject ? attention.page : null;
   const attentionErrorHere =
@@ -2925,7 +2935,10 @@ function ProjectsWorkspace() {
       if (!row) return "not visible";
       setApp(null);
       setSelected(row.node as ProjectRow);
-      if (plan.mode) setChosenMode(plan.mode);
+      if (plan.mode) {
+        setAttentionFor(null);
+        setChosenMode(plan.mode);
+      }
       let nextGroup = groupBy;
       let nextLanes = lanes;
       if (plan.view) {
@@ -3035,7 +3048,10 @@ function ProjectsWorkspace() {
   const actions: CommandActions = useMemo(
     () => ({
       navigate: (href) => router.push(href),
-      setMode: (next) => setChosenMode(next),
+      setMode: (next) => {
+        setAttentionFor(null);
+        setChosenMode(next);
+      },
       setPanelMode,
       clearFilters: () => setFilters(EMPTY_FILTERS),
       toggleRail: () => setRailOpen((open) => !open),
@@ -5270,12 +5286,9 @@ function ProjectsWorkspace() {
               <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
                 <ModeSwitch
                   modes={MODE_OPTIONS}
-                  mode={mode}
+                  mode={shownMode}
                   layout="toolbar"
-                  onPick={(next) => {
-                    setAttentionFor(null);
-                    setChosenMode(next);
-                  }}
+                  onPick={pickMode}
                 />
                 {/* WS-55 SW-11a — the lens beside the board's other lenses.
                     Pressed while the list is on screen. */}

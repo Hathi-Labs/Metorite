@@ -43,6 +43,19 @@ Run::
   ``test_r1_resume_hands_the_run_back_to_an_agent``.
 * A14. ``R`` ``resume_agent_run``: no clear of the session key.
   ``test_r1_resume_hands_the_run_back_to_an_agent``.
+
+The fix round (2026-10-25):
+
+* A15. ``N`` ``_row``: a dead connection keeps both acts.
+  ``test_r4_a_dead_connection_offers_close_the_run_only``.
+* A16. ``R`` ``resume_agent_run``: no check of the connection.
+  ``test_r4_a_dead_connection_offers_close_the_run_only``.
+* A17. ``R`` ``resume_agent_run``: the prompt is not ``quiet``.
+  ``test_r5_resume_sends_no_bell_and_keeps_the_timeline_row``.
+* A18. ``N`` ``blocked_sql``: the owner is the first in name order.
+  ``test_k3_the_owner_of_a_blocked_row_is_its_earliest_assignee``.
+* A19. ``N`` ``needs_attention``: the read clears the open strands.
+  ``test_v8_a_list_read_writes_nothing``.
 * A12. ``R`` ``person_may_end_sql``: no assignee arm.
   ``test_v7_can_act_is_the_rule_of_release`` and
   ``test_r3_an_assignee_and_an_admin_may_resume``.
@@ -162,7 +175,7 @@ class TestTheChatRead:
         assert "blocked by #3 «Design»" in out
         assert out.count(f"full_id: {_TASK}") == 3
         assert f"run_id: {_RUN}" in out and f"blocker_id: {_BLOCKER}" in out
-        assert "(only the run's member, an assignee of the task or an admin can do it)" in out
+        assert "(only a person with the right to end this run can act on it)" in out
         assert "no owner" in out and "· yours" in out
         # A title is member text: it is fenced, and its newline forges no row.
         assert "\nnow" not in out
@@ -276,10 +289,11 @@ def _archive(w: Any, task: str) -> None:
                   {"t": task})
 
 
-async def _stalled(w: Any, task: str, *, member: str = ALICE) -> str:
+async def _stalled(w: Any, task: str, *, member: str = ALICE,
+                   connection: str | None = None) -> str:
     """A run of *task* with an open recovery record, made by the REAL sweep:
     the first miss, one lease, then the second miss."""
-    rid = _insert_run(w, task, member=member, idle_s=3 * 3600)
+    rid = _insert_run(w, task, member=member, idle_s=3 * 3600, connection=connection)
     first = await _sweep_org(w)
     assert first.nudged >= 1
     _age_strand(w, rid, LEASE + 60)
@@ -344,6 +358,7 @@ class TestTheKinds:
         assert (row["action"], row["actions"]) == ("resume", ["resume", "close_run"])
         assert row["reason"] == "agent_quiet" and row["client_name"] == "Claude Code"
         assert row["can_act"] is True and row["yours"] is True
+        assert row["connection_gone"] is False and row["can_resume"] is True
         assert row["age_hours"] >= 3 and row["run_status"] == "in_progress"
         assert body["counts"] == {"stalled": 1, "dangling": 0, "blocked": 0}
         assert body["total"] == 1 and body["capped"] is False
@@ -475,6 +490,59 @@ class TestTheKinds:
                 " created_by) VALUES (:o, :p, :s, :e)"),
                 {"o": w.a, "p": other["id"], "s": MALLORY, "e": ALICE})
         assert _kinds(await _list(w, w.mallory, mine)) == [("blocked", blocked)]
+
+
+def _snapshot(w: Any) -> tuple[Any, ...]:
+    """What a read must never change: the row counts of the four tables that
+    a write of this slice could touch, and the state of each run and strand."""
+    tables = ("pm_notifications", "pm_activities", "pm_agent_run_activities",
+              "pm_agent_run_strands")
+    counts = tuple(_rows(w.p, "SELECT count(*) AS n FROM " + t)[0].n for t in tables)
+    runs = tuple((r.id, r.status, r.last_activity_at, r.session_key) for r in _rows(
+        w.p, "SELECT id, status, last_activity_at, session_key FROM pm_agent_runs ORDER BY id"))
+    strands = tuple((r.id, r.cleared_at, r.recovered_at) for r in _rows(
+        w.p, "SELECT id, cleared_at, recovered_at FROM pm_agent_run_strands ORDER BY id"))
+    return counts, runs, strands
+
+
+@_DB_GATE
+class TestTheReadWritesNothing:
+
+    async def test_v8_a_list_read_writes_nothing(self, w):
+        """Rollout is prospective only (spec §12.7): the list sends no bell and
+        writes no row. Each kind is on the list, and three members read it."""
+        proj = _project(w)
+        await _stalled(w, _task(w, proj, assignee=ERIN))
+        done = _task(w, proj, assignee=ERIN)
+        _move(w, done, proj, "done")
+        b.run(w.p, w.a, done, ALICE, "in_progress")
+        _link(w, _task(w, proj, category="backlog"), _task(w, proj, assignee=ERIN))
+        before = _snapshot(w)
+        for user in (w.alice, w.erin, w.dave):
+            body = await _list(w, user, proj)
+            assert body["counts"] == {"stalled": 1, "dangling": 1, "blocked": 1}
+            await _list(w, user)
+        assert _snapshot(w) == before
+
+
+@_DB_GATE
+class TestTheOwner:
+
+    async def test_k3_the_owner_of_a_blocked_row_is_its_earliest_assignee(self, w):
+        """Not the first in name order: `zed` was assigned before `abe`."""
+        proj = _project(w)
+        blocked = _task(w, proj)
+        with w.p.admin_engine.begin() as c:
+            for who, ago in (("sw11-zed@attention.test", 7200), ("sw11-abe@attention.test", 60)):
+                _name(c, w.a, who, who)
+                c.execute(text(
+                    "INSERT INTO pm_task_assignees (organization_id, task_id, assignee,"
+                    " assigned_by, assigned_at) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :a,"
+                    " :e, now() - make_interval(secs => :ago))"),
+                    {"o": w.a, "t": blocked, "a": who, "e": ALICE, "ago": ago})
+        _link(w, _task(w, proj, category="backlog"), blocked)
+        [row] = (await _list(w, w.alice, proj))["rows"]
+        assert row["owner"] == "sw11-zed@attention.test"
 
 
 @_DB_GATE
@@ -665,6 +733,50 @@ class TestResume:
             got = await _post(w, user, f"/projects/agent-runs/{rid}/resume",
                               {"idempotency_key": _key()})
             assert got.status_code == 200, (user.email, got.text)
+
+
+@_DB_GATE
+class TestResumeAsksTheSameClient:
+    """Spec §12.7. Resume asks the SAME agent client to continue. A run whose
+    agent connection is revoked or expired takes Close the run only."""
+
+    async def test_r4_a_dead_connection_offers_close_the_run_only(self, w):
+        proj = _project(w)
+        task = _task(w, proj)
+        conn = b._seed_connection(w.p, w.a, ALICE)
+        rid = await _stalled(w, task, connection=conn)
+        [row] = (await _list(w, w.alice, proj))["rows"]
+        assert row["connection_gone"] is False and row["can_resume"] is True
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE agent_connection SET revoked_at = now()"
+                           " WHERE id = CAST(:c AS uuid)"), {"c": conn})
+        [row] = (await _list(w, w.alice, proj))["rows"]
+        assert (row["kind"], row["run_id"]) == ("stalled", rid)
+        assert row["connection_gone"] is True and row["can_resume"] is False
+        assert (row["action"], row["actions"]) == ("close_run", ["close_run"])
+        got = await _post(w, w.alice, f"/projects/agent-runs/{rid}/resume",
+                          {"idempotency_key": _key()})
+        assert got.status_code == 409, got.text
+        assert got.json()["detail"] == agent_runs.RESUME_CONNECTION_GONE
+        assert _rows(w.p, "SELECT id FROM pm_agent_run_activities WHERE run_id ="
+                          " CAST(:r AS uuid) AND type = 'prompt'", r=rid) == []
+        closed = await _post(w, w.alice, f"/projects/agent-runs/{rid}/release")
+        assert closed.status_code == 200 and closed.json()["run"]["status"] == "released"
+
+    async def test_r5_resume_sends_no_bell_and_keeps_the_timeline_row(self, w):
+        """A note to the agent, not a comment to people (spec §12.7). The task
+        has an assignee and the run's member, and neither gets a bell."""
+        proj = _project(w)
+        task = _task(w, proj, assignee=ERIN)
+        rid = await _stalled(w, task)
+        bells = len(_rows(w.p, "SELECT id FROM pm_notifications"))
+        got = await _post(w, w.alice, f"/projects/agent-runs/{rid}/resume",
+                          {"idempotency_key": _key()})
+        assert got.status_code == 200, got.text
+        assert len(_rows(w.p, "SELECT id FROM pm_notifications")) == bells
+        [comment] = _rows(w.p, "SELECT body, created_by FROM pm_activities WHERE task_id ="
+                               " CAST(:t AS uuid) AND type = 'comment'", t=task)
+        assert comment.body == agent_runs.RESUME_BODY and comment.created_by == ALICE
 
 
 @_DB_GATE
