@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { forgetThisDevice } from "@/lib/push";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -533,7 +534,9 @@ export default function Sidebar() {
                 </div>
               </div>
               <button
-                onClick={() => signOut({ callbackUrl: "/signin" })}
+                // WS-66 PN-1: forget this device's push first. It never
+                // throws and gives up after a few seconds.
+                onClick={() => void forgetThisDevice().then(() => signOut({ callbackUrl: "/signin" }))}
                 className="ml-2 shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
                 title="Sign out"
               >

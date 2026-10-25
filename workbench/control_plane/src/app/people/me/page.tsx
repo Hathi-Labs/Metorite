@@ -32,6 +32,7 @@ import { AvatarPicker } from "../components/AvatarPicker";
 import { ProfilePanels } from "../components/ProfilePanels";
 import { WhatsAppLinkSection } from "../components/WhatsAppLinkSection";
 import { ReachSection } from "../components/ReachSection";
+import { NotificationsSection } from "../components/NotificationsSection";
 import { type PersonDetail, type WorkRow, peopleApi } from "../lib/api";
 import { initials } from "../lib/directory";
 import { PAGE_FRAME } from "../lib/frame";
@@ -301,6 +302,8 @@ export default function MyProfilePage() {
       <WhatsAppLinkSection />
       {/* Messages Metorite starts (WS-59 RE-1a). Draws nothing while Reach is dark. */}
       <ReachSection />
+      {/* Notifications on this device (WS-66 PN-1). Draws nothing while web push is dark. */}
+      <NotificationsSection />
     </main>
   );
 }

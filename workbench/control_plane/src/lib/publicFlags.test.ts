@@ -122,6 +122,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_PROJECTS_MY_WORK",
       // WS-63 PZ-7: the Assistant pane in Settings.
       "NEXT_PUBLIC_ASSISTANT_PROFILE",
+      // WS-66 PN-1: the Notifications section on My Profile (web push).
+      "NEXT_PUBLIC_WEB_PUSH",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

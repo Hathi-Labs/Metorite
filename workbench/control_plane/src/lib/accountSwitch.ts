@@ -19,6 +19,7 @@ import { useEffect } from "react";
 import { leaveAccount } from "@/lib/accountLeave";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
+import { forgetThisDevice } from "@/lib/push";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 import { clearAppearanceForAccounts, pointAppearanceAt } from "@/lib/theme/scope";
 
@@ -349,6 +350,10 @@ export async function signOutThis(
   // This tab leaves, by one path or the other. Its own channel listener must
   // not start a second navigation (see `switchTo`).
   leaving = true;
+  // WS-66 PN-1: forget this device's push subscription NOW, while the cookie
+  // still names the leaving account, so the DELETE deletes ITS row. It never
+  // throws and gives up after a few seconds, so the sign-out goes on anyway.
+  await forgetThisDevice();
   // True once the server swapped the cookie to `next`. From then on this tab
   // must never stay on the leaving account's page.
   let switched = false;
@@ -412,6 +417,9 @@ export async function signOutThis(
  * account's chat namespace (rule 4), then end the active session.
  */
 export async function signOutAll(): Promise<void> {
+  // WS-66 PN-1: first, while the session still names the active account.
+  // It never throws, so the sign-out below always runs.
+  await forgetThisDevice();
   try {
     const res = await act("signout-all");
     const body = res.ok ? ((await res.json()) as { emails?: string[] }) : {};
