@@ -1823,6 +1823,115 @@ async def waiting_agent_requests() -> str:
     return "\n".join(out)
 
 
+# ── WS-55 SW-11a — Needs attention (external_agent_access.md §12.7) ─────────
+
+#: Rows per page of ``needs_attention``. The route pages through ``offset``.
+ATTENTION_PAGE = 25
+
+#: What each kind means, in the words the list on the board uses.
+ATTENTION_KINDS = {
+    "stalled": "stalled: an agent run stopped, and a recovery record waits for a person",
+    "dangling": "an agent run is still open on a closed task",
+    "blocked": "blocked by parked work: the blocker is in the backlog, and nobody holds it",
+}
+
+#: The next action of each row, for the model to say. No chat tool takes
+#: either write yet (`resume_agent_run` and `release_agent_run` are PLANNED).
+ATTENTION_ACTIONS = {
+    "resume": "Resume (hands the run back to an agent) or Close the run",
+    "close_run": "Close the run (the task keeps its status)",
+    "open_blocker": "open the blocker and give it an owner or move it on",
+}
+
+
+def _hours_ago(hours: Any) -> str:
+    """``3.4`` → ``3 h``, ``50`` → ``2 d``. An age that does not parse is
+    unknown."""
+    try:
+        value = float(hours)
+    except (TypeError, ValueError):
+        return "for an unknown time"
+    if value < 1:
+        return "for under an hour"
+    if value < 48:
+        return f"for {int(value)} h"
+    return f"for {int(value // 24)} d"
+
+
+def _attention_lines(row: dict[str, Any]) -> list[str]:
+    """One row: the task line, then its ids. Titles and names are fenced."""
+    kind = str(row.get("kind") or "")
+    facts = [ATTENTION_KINDS.get(kind, kind)]
+    if kind == "stalled":
+        why = "did not read the answer" if row.get("reason") == "answer_unread" else "sent nothing"
+        facts.append(f"{data(row.get('client_name') or 'the agent')} {why} "
+                     f"{_hours_ago(row.get('age_hours'))}")
+    elif kind == "dangling":
+        facts.append(f"the task is {row.get('reason') or 'closed'}, and the run is "
+                     f"{row.get('run_status')}, quiet {_hours_ago(row.get('age_hours'))}")
+    elif kind == "blocked":
+        facts.append(f"blocked by #{row.get('blocker_number')} {data(row.get('blocker_title'))} "
+                     f"{_hours_ago(row.get('age_hours'))}")
+    owner = row.get("owner_name") or row.get("owner")
+    facts.append(f"owner {data(owner)}" if owner else "no owner")
+    if row.get("yours"):
+        facts.append("yours")
+    if row.get("project_name"):
+        facts.append(f"in {data(row['project_name'])}")
+    action = ATTENTION_ACTIONS.get(str(row.get("action") or ""), "open the task")
+    if not row.get("can_act"):
+        action += " (only the run's member, an assignee of the task or an admin can do it)"
+    head = f"- {_number(row)} {data(row.get('title'))} · " + " · ".join(facts)
+    out = [head, f"  next: {action}", f"  full_id: {row.get('task_id')}"]
+    if row.get("blocker_id"):
+        out.append(f"  blocker_id: {row['blocker_id']}")
+    if row.get("run_id"):
+        out.append(f"  run_id: {row['run_id']}")
+    return out
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def needs_attention(project_id: str = "", mine: bool = False, offset: int = 0) -> str:
+    """What is stuck and needs a person: agent runs that stopped and have a
+    recovery record, agent runs still open on closed tasks, and tasks blocked
+    by parked work (a backlog task that nobody holds). Use it for "what is
+    stuck?" and "what needs my attention?". Pass a project_id for one project
+    and its subprojects, or leave it empty for every project the member can
+    see. mine=true keeps the member's own rows. 25 rows a page: offset reads
+    the next. The member resumes or closes a run on the Needs attention list
+    in the app. No tool of yours does it."""
+    start, size = bounds(offset, ATTENTION_PAGE, default=ATTENTION_PAGE)
+    params: dict[str, Any] = {"offset": start, "limit": size}
+    if project_id:
+        params["project_id"] = uuid_of(project_id, "project_id")
+    if mine:
+        params["mine"] = True
+    payload = (await get("/projects/needs-attention", params)) or {}
+    rows = list(payload.get("rows") or [])
+    counts = payload.get("counts") or {}
+    scope = "this project and its subprojects" if project_id else "every project the member can see"
+    whose = "the member's own items" if mine else "items"
+    out = [
+        legend(),
+        f"Needs attention in {scope}: {payload.get('total', 0)} {whose}"
+        f" (stalled {counts.get('stalled', 0)}, open runs of closed tasks"
+        f" {counts.get('dangling', 0)}, blocked by parked work {counts.get('blocked', 0)}).",
+    ]
+    for row in rows:
+        out.extend(_attention_lines(row))
+    if not rows and start == 0:
+        out.append("(nothing needs attention)")
+    listed = payload.get("listed")
+    if isinstance(listed, int) and (line := page_line(listed, start, len(rows), noun="items")):
+        out.append(f"  {line}")
+    if payload.get("capped"):
+        out.append(
+            "  One kind holds more items than the list reads (200 for each kind). "
+            "Name a project to see the rest."
+        )
+    return "\n".join(out)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview

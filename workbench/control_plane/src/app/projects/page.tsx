@@ -45,6 +45,7 @@ import {
   type FinishedReport,
   type ViewRow,
   agentRunsApi,
+  attentionApi,
   projectsApi,
   projectsKey,
   projectWatchersApi,
@@ -56,6 +57,8 @@ import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { NeedsAttentionList } from "./components/NeedsAttentionList";
+import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
 import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
@@ -1060,6 +1063,24 @@ function ProjectsWorkspace() {
     counts: AgentSummary;
   } | null>(null);
   const [askingTasks, setAskingTasks] = useState<string[] | null>(null);
+  /**
+   * WS-55 SW-11a — the "Needs attention" lens (`external_agent_access.md`
+   * §12.7). Page state like "Waiting on me", never a view mode: while it is
+   * on, the list takes the place of the canvas, and a pick in the view switch
+   * turns it off. `attentionFor` is the project the lens is on for, so a new
+   * project opens on its board with no effect to reset it. `attention` holds
+   * the last answer, and the header badge and the toggle read its total.
+   */
+  const [attentionFor, setAttentionFor] = useState<string | null>(null);
+  const [attention, setAttention] = useState<{
+    projectId: string;
+    page: AttentionPage;
+  } | null>(null);
+  const [attentionError, setAttentionError] = useState<{
+    projectId: string;
+    text: string;
+  } | null>(null);
+  const [attentionVersion, setAttentionVersion] = useState(0);
   useEffect(() => {
     let live = true;
     void agentRunsApi.enabled().then((on) => {
@@ -2347,6 +2368,41 @@ function ProjectsWorkspace() {
       live = false;
     };
   }, [agentRunsOn, summaryProject, agentSig]);
+
+  // WS-55 SW-11a — the Needs attention list of the project on screen. One
+  // read when the project changes, when an agent fact of a loaded row changes,
+  // and after an act of the list (`attentionVersion`). It only reads, and it
+  // is live with no flag of its own. A space or a folder has no board, so it
+  // reads nothing there.
+  const attentionProject = selected && !dashboardOnly ? selected.id : null;
+  useEffect(() => {
+    if (!attentionProject) return;
+    let live = true;
+    void attentionApi
+      .list(attentionProject)
+      .then((page) => {
+        if (!live) return;
+        setAttention({ projectId: attentionProject, page });
+        setAttentionError(null);
+      })
+      .catch((err: unknown) => {
+        if (!live) return;
+        setAttentionError({
+          projectId: attentionProject,
+          text: `Could not read the list. ${String((err as Error).message)}`,
+        });
+      });
+    return () => {
+      live = false;
+    };
+  }, [attentionProject, agentSig, attentionVersion]);
+  // A new project opens on its board, never on the lens of the last one.
+  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
+  const attentionHere =
+    attention && attention.projectId === attentionProject ? attention.page : null;
+  const attentionErrorHere =
+    attentionError && attentionError.projectId === attentionProject ? attentionError.text : null;
+  const attentionBadge = badgeText(attentionHere?.total);
 
   const projectName = useCallback(
     (id: string) =>
@@ -4189,9 +4245,43 @@ function ProjectsWorkspace() {
         renderState("loading", "Counting the work below…")
       )}
     </>
+  ) : attentionLens && selected ? (
+    // WS-55 SW-11a — the Needs attention lens. It takes the place of the
+    // canvas, and the filter bar, the strip, the bulk bar, the composer and the
+    // triage rail hide, as on the Overview: none of them acts on this list.
+    <>
+      {shownError ? renderState("error", shownError) : null}
+      {/* No second `LayoutBoundary` here: `layoutBoundary.test.ts` holds the
+          one boundary of the page around the canvases. `attentionPage` drops
+          a row it cannot read before the list draws it. */}
+      <NeedsAttentionList
+        page={attentionHere}
+        error={attentionErrorHere}
+        personLabels={personLabels}
+        onOpenTask={(id) => void openTaskById(id)}
+        onBack={() => setAttentionFor(null)}
+        onChanged={() => setAttentionVersion((v) => v + 1)}
+      />
+    </>
   ) : (
     <>
       {shownError ? renderState("error", shownError) : null}
+
+      {/* WS-55 SW-11a — a phone has no project header, so the count of the
+          Needs attention lens sits above the board and opens it. */}
+      {selected && isMobile && attentionBadge ? (
+        <div className="border-b border-border px-3 py-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="TriangleAlert"
+            data-attention-open=""
+            onClick={() => setAttentionFor(selected.id)}
+          >
+            {attentionBadge}
+          </Button>
+        </div>
+      ) : null}
 
       {selected && !overview ? (
         <FilterChrome
@@ -5150,6 +5240,22 @@ function ProjectsWorkspace() {
                   {subtitle}
                 </p>
               ) : null}
+              {/* WS-55 SW-11a — the count of the Needs attention lens. It
+                  shows only while something waits, and a click opens the
+                  lens. */}
+              {!noProjectChrome && selected && attentionBadge && !attentionLens ? (
+                <Button
+                  className="shrink-0 self-center"
+                  variant="ghost"
+                  size="sm"
+                  icon="TriangleAlert"
+                  data-attention-badge=""
+                  title="Open the work that stopped and waits for a person"
+                  onClick={() => setAttentionFor(selected.id)}
+                >
+                  {attentionBadge}
+                </Button>
+              ) : null}
             </div>
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
@@ -5166,8 +5272,33 @@ function ProjectsWorkspace() {
                   modes={MODE_OPTIONS}
                   mode={mode}
                   layout="toolbar"
-                  onPick={(next) => setChosenMode(next)}
+                  onPick={(next) => {
+                    setAttentionFor(null);
+                    setChosenMode(next);
+                  }}
                 />
+                {/* WS-55 SW-11a — the lens beside the board's other lenses.
+                    Pressed while the list is on screen. */}
+                {selected ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="TriangleAlert"
+                    selected={attentionLens}
+                    data-attention-toggle=""
+                    title={
+                      attentionLens
+                        ? "Back to the board"
+                        : "Show the work that stopped and waits for a person"
+                    }
+                    onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
+                  >
+                    {LENS_LABEL}
+                    {attentionHere && attentionHere.total > 0 ? (
+                      <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
+                    ) : null}
+                  </Button>
+                ) : null}
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {projectActions(false)}
                 </div>

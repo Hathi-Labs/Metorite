@@ -160,6 +160,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "report_recipients": [{"report_id": UUID}],
     # WS-64 OP-6e: the agent requests that wait for the member.
     "waiting_agent_requests": [{}],
+    # WS-55 SW-11a: what needs a person, for one project, and the member's own.
+    "needs_attention": [{"project_id": UUID}, {"mine": True, "offset": 25}],
     "report_render": [{"report_id": UUID}],
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],

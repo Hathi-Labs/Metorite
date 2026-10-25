@@ -10,6 +10,8 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     POST /projects/agent-runs/{run_id}/activities → {activity, run, created}
     POST /projects/agent-runs/{run_id}/finish     → {run, activity}
     POST /projects/agent-runs/{run_id}/release    → {run, released}   (EA-14a)
+    POST /projects/agent-runs/{run_id}/resume     → {run, activity, resumed, created}
+                                                                      (SW-11a)
     POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
     POST /projects/agent-runs/{run_id}/archive-approval
                                                   → {activity, run, created, archived}
@@ -114,6 +116,7 @@ from gateway.routes.projects.filters import (
     holder_free,
     holder_free_sql,
     lease_expired,
+    open_recovery_sql,
     open_strand_sql,
     strand_fits_sql,
     task_closed_sql,
@@ -279,6 +282,16 @@ class ReleaseIn(BaseModel):
     is the path, and the actor is the context."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class ResumeIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/resume`` (WS-55 SW-11a, spec §12.7).
+    The key only. The run is the path, the actor is the context, and the text
+    of the prompt is the server's (:data:`RESUME_BODY`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
 
 
 class ArchiveRequestIn(BaseModel):
@@ -1797,8 +1810,49 @@ async def finish_agent_run(
 # ── Release (WS-55 EA-14a) ──────────────────────────────────────────────────
 
 #: The permission that makes a member an org admin for a release. The same
-#: gate as the billing routes.
+#: gate as the billing routes. HANDOFF H-409 item 2: the Release button of the
+#: run panel reads `access.is_admin`, and the owner has not yet decided
+#: whether a read permission may end another member's run.
 RELEASE_ADMIN_PERMISSION = "admin:members:read"
+
+
+def person_may_end_sql(run: str) -> str:
+    """Who may END a run, for a PERSON, in SQL over the run alias *run*
+    (EA-14a): the run's member, or an assignee of its task. It binds ``:me``,
+    the caller's address in lower case. An org admin may too, and
+    :func:`may_end_run` adds that half from the context.
+
+    ONE text. The release route and the resume route read it through
+    :func:`may_end_run`. Needs attention (``needs_attention.py``, WS-55 SW-11a,
+    spec §12.7) reads it for ``can_act`` on each row, so the list never
+    offers a button that the route refuses.
+    """
+    return (
+        f"({run}.member_email = :me OR EXISTS (SELECT 1 FROM pm_task_assignees ra"
+        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me))"
+    )
+
+
+async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
+    """True when *user* may end *run*: a release (EA-14a) or a resume
+    (SW-11a).
+
+    * An agent ends its OWN run only: the same member and the same stamp.
+    * A person ends a run when they are its member, an assignee of its task
+      (:func:`person_may_end_sql`), or hold :data:`RELEASE_ADMIN_PERMISSION`.
+    """
+    via = _agent_via(user)
+    me = _member(user)
+    if via is not None:
+        return run.member_email == me and run.client_via == via
+    if user.has_permission(RELEASE_ADMIN_PERMISSION):
+        return True
+    held = (await db.execute(
+        text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
+             " WHERE r.id = CAST(:rid AS uuid)"),
+        {"rid": str(run.id), "me": me},
+    )).scalar()
+    return bool(held)
 
 
 @router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
@@ -1824,21 +1878,7 @@ async def release_agent_run(
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
-        if via is not None:
-            allowed = run.member_email == me and run.client_via == via
-        else:
-            assigned = (await db.execute(
-                text(
-                    "SELECT 1 FROM pm_task_assignees WHERE task_id = CAST(:tid AS uuid) "
-                    "AND lower(assignee) = :me LIMIT 1"
-                ),
-                {"tid": str(run.task_id), "me": me},
-            )).fetchone() is not None
-            allowed = (
-                run.member_email == me or assigned
-                or user.has_permission(RELEASE_ADMIN_PERMISSION)
-            )
-        if not allowed:
+        if not await may_end_run(db, run, user):
             raise HTTPException(
                 status_code=403, detail="You may not release this agent run.",
             )
@@ -1853,6 +1893,92 @@ async def release_agent_run(
             )
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
     return {"run": out_run, "released": True}
+
+
+# ── Resume (WS-55 SW-11a, spec §12.7) ───────────────────────────────────────
+
+#: The fixed text of the member prompt that Resume writes. It holds no member
+#: text, and the agent reads it as the member's answer (``needs_agent``
+#: ``answered``).
+RESUME_BODY = "Resume this work: pick this run up where it stopped."
+
+#: The open recovery record of one run that still fits it. The rule is
+#: ``filters.open_recovery_sql``, the text that the "stalled" kind of Needs
+#: attention reads, so Resume takes exactly the rows that the list shows.
+_OPEN_RECOVERY_SQL = (
+    "SELECT s.id FROM pm_agent_run_strands s"
+    " JOIN pm_agent_runs r ON r.id = s.run_id"
+    f" WHERE r.id = CAST(:rid AS uuid) AND {open_recovery_sql('s', 'r')}"
+    " LIMIT 1"
+)
+
+#: True when the task of the run is closed (``filters.task_closed_sql``).
+_RUN_TASK_CLOSED_SQL = (
+    f"SELECT {task_closed_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+)
+
+
+def _is_resume(row: Any) -> bool:
+    """True when *row* is a prompt that Resume wrote (``content.resume``)."""
+    return row.type == "prompt" and bool((from_jsonb(row.content) or {}).get("resume"))
+
+
+@router.post("/agent-runs/{run_id}/resume", dependencies=_ENABLED)
+async def resume_agent_run(
+    run_id: str, payload: ResumeIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mark a stalled run as needing an agent again (SW-11a, spec §12.7).
+
+    A member act on a run whose open recovery record still fits it. It writes
+    ONE member ``prompt`` with :data:`RESUME_BODY`, through
+    :func:`_write_activity`, the one write path of an activity. The run then
+    reads ``needs_agent`` ``answered``, so ``list_agent_runs`` with
+    ``needs_agent=true`` lists it and ``my_work`` offers it as
+    ``run_answered``. The prompt renews the lease, and the strand stops
+    fitting at once. The sweep clears it with ``new_activity`` at its next
+    tick, and it stays the only writer of ``pm_agent_run_strands``.
+
+    * The rule of Release decides who may (:func:`may_end_run`). An agent
+      caller gets 403: it has its own paths.
+    * A caller who cannot see the task gets 404. A closed task gets 409, and
+      so does a run with no open recovery record that fits it.
+    * A replay of the key returns the first answer, and it writes nothing.
+    * It never changes the task.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    if _agent_via(user) is not None:
+        raise HTTPException(status_code=403, detail="Only a member resumes an agent run.")
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(status_code=403, detail="You may not resume this agent run.")
+        replay = await _existing_activity(db, run_id, payload.idempotency_key)
+        if replay is not None and not _is_resume(replay):
+            raise HTTPException(status_code=409, detail=_KEY_USED)
+        if replay is None:
+            if (await db.execute(text(_RUN_TASK_CLOSED_SQL), {"rid": run_id})).scalar():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The task of this agent run is closed. Close the run instead.",
+                )
+            if (await db.execute(text(_OPEN_RECOVERY_SQL), {"rid": run_id})).fetchone() is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This agent run has no open recovery record, so nothing waits to resume.",
+                )
+            written = await _write_activity(
+                db, run, user, kind="prompt", key=payload.idempotency_key,
+                body=RESUME_BODY, extra={"resume": True},
+            )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        activity = written.activity if written is not None else replay
+        out_activity = _activity_out(activity)
+    if written is not None and written.commented:
+        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    return {"run": out_run, "activity": out_activity, "resumed": True,
+            "created": written is not None and written.created}
 
 
 # ── Stranded runs (WS-55 SW-10a, spec §12.6) ────────────────────────────────
