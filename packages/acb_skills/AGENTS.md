@@ -513,6 +513,31 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
      off, the tool and its text are the KR-2 ones. `context_recency_enabled` is the ONE reader of the flag, for the
      gateway and the orchestrator. Fence:
      `tests/unit/test_company_search_recency.py`.
+5n-a. handoff.py + chat_constraints.py -- what crosses a handoff, and the
+   member's corrections and limits of one chat (WS-67, D116, spec
+   `project-docs/specs/one_assistant_context.md` §4).
+   - `handoff.head_task` is the ONE call of every delegation site. It puts
+     the member's words of the chat and the reply rules (quoted or
+     inferred) at the head of each task. `task_of` takes the head away for
+     the tier question.
+   - OA-4: `keep_correction` and `drop_correction` belong to the
+     orchestrator only, behind `CHAT_CONSTRAINTS` (default off). The one
+     reader is `chat_constraints_enabled`.
+   - The list holds 10 items at most, each of 300 characters at most. It
+     lives in tenant Redis at `cc:<org>:chat-limits:<session>:<member hash>`.
+     A Redis fault costs the record, never the turn.
+   - A keep stores a text only when it is whole sentences that the member
+     typed in this turn (`said_by_member` over
+     `assistant_profile.typed_words`). Never use `member_message` for it.
+     A drop needs the member's words of this turn
+     (`assistant_profile.grounded`).
+   - The tools act only in a run that the executor opened
+     (`chat_constraints.OPEN`). The orchestrator's per-turn context shows
+     the list (`orchestrator_block`), and `head_task` puts it in each task.
+   - Fences: `tests/unit/test_chat_constraints.py`,
+     `tests/unit/test_handoff_words.py` and the two trajectories
+     `test_chat_constraints_trajectory.py` and
+     `test_handoff_words_trajectory.py`.
 5n-0. profile_tools.py -- `resolve_person`, the assistant's lookup of a
    colleague by name (WS-63 PZ-5, `project-docs/specs/personalization.md`
    §5.4). It reads `GET /auth/me/assistant-profile/resolve-person` as the

@@ -24,7 +24,9 @@ chat route binds before any server note changes the message. A pasted mail
 grounds nothing there. So a tool result, an email, a file or a guess of the
 model cannot plant an item, and a cut cannot drop the "not" of a sentence.
 A drop needs the member's typed words of this turn to name the item
-(``assistant_profile.grounded``), so a stranger's text cannot remove one.
+(``assistant_profile.grounded``), with one key word that the item holds too
+(:func:`_names_item`). So "the" or "that rule" in a stranger's text cannot
+remove one.
 
 R5. The key is ``cc:<org>:chat-limits:<session>:<member hash>`` through the
 tenant Redis wrapper. The org is the run's bound tenant, and the session and
@@ -196,6 +198,31 @@ def _named_by_member(text: str, words: str) -> bool:
         return grounded(text, words)
     except Exception:
         return False
+
+
+#: A key word: four letters or more.
+_KEY_WORD = re.compile(r"[^\W\d_]{4,}")
+#: Common words of four letters or more that name no item. Almost every
+#: message holds one, so a drop that only they name could come from any
+#: text that tells the model what to call.
+_COMMON = frozenset({
+    "about", "again", "also", "been", "best", "could", "does", "done", "drop",
+    "each", "even", "ever", "every", "forget", "from", "have", "here", "into",
+    "just", "keep", "kept", "like", "more", "much", "must", "never", "only", "please", "remove", "rule", "said", "should", "some", "that",
+    "thanks", "their", "them", "then", "there", "these", "they", "this",
+    "those", "very", "want", "were", "what", "when", "where", "which",
+    "will", "with", "would", "your",
+})
+
+
+def _key_words(value: Any) -> set[str]:
+    return {w for w in _KEY_WORD.findall(_folded(value)) if w not in _COMMON}
+
+
+def _names_item(text: str, item: str, words: str) -> bool:
+    """True when one key word of *text* is in the *item* and in the
+    member's typed *words* too. So "the" or "that rule" names no item."""
+    return bool(_key_words(text) & _key_words(item) & _key_words(words))
 
 
 # ── The store ───────────────────────────────────────────────────────────────
@@ -477,7 +504,8 @@ async def drop_correction(text: str) -> str:
     if not items:
         return DROP_EMPTY
     named = one_line(text)
-    if not _named_by_member(named, _typed_words()):
+    typed = _typed_words()
+    if not _named_by_member(named, typed):
         _log.info("chat_constraints.drop_refused", reason="not_named")
         return f"{DROP_NOT_NAMED}\n{_listed(items)}"
     want = _folded(named)
@@ -489,6 +517,10 @@ async def drop_correction(text: str) -> str:
     if len(hits) > 1:
         return f"{DROP_MANY}\n{_listed(hits)}"
     gone = hits[0]
+    if not _names_item(named, gone, typed):
+        # Only common words name it ("the", "that rule"): any text can say so.
+        _log.info("chat_constraints.drop_refused", reason="no_key_word")
+        return f"{DROP_NOT_NAMED}\n{_listed(items)}"
     after = [i for i in items if i != gone]
     await save_constraints(after, ctx)
     _log.info("chat_constraints.dropped", count=len(after))

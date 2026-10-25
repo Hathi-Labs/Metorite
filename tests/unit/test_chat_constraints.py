@@ -309,6 +309,15 @@ class TestTheDrop:
         assert out.startswith(cc.DROP_NOT_NAMED) and ITEM in out, out
         assert cc.cached_constraints() == [ITEM]
 
+    @pytest.mark.parametrize("named", ["the", "are", "only", "that rule"])
+    def test_a_common_word_names_no_item(self, chat, named) -> None:
+        """Almost every message holds "the", so a drop that only a common
+        word names could come from a stranger's text that told the model."""
+        _keep(ITEM)
+        out = _drop(named, typed=f"Thanks. What are the parts? Is that rule only {named}?")
+        assert out.startswith((cc.DROP_NOT_NAMED, cc.DROP_NO_MATCH)), out
+        assert cc.cached_constraints() == [ITEM]
+
     def test_two_matches_drop_nothing(self, chat) -> None:
         _keep(ITEM)
         _keep("Read the parts from the body of the email, not from the file names.")
