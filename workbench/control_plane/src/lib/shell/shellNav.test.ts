@@ -27,7 +27,7 @@ const shape = (sections: NavSection[]) => sections.map((s) => [s.id, s.items.map
 describe("the sidebar holds places to work, by team", () => {
   it("for a fully granted admin: four groups, Organisation in Admin, and no page about the member", () => {
     expect(shape(shellSidebar(visibleSections(ALL, true)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
+      ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
@@ -53,7 +53,7 @@ describe("the sidebar holds places to work, by team", () => {
     // Integrations is open to every member since D-EA-9 (2026-10-14), for
     // the AI agents view, so Admin holds it and nothing else.
     expect(shape(shellSidebar(visibleSections(["tasks", "email"], false)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email"]],
+      ["personal", ["/calendar", "/email"]],
       ["admin", ["/integrations"]],
     ]);
   });
@@ -227,7 +227,7 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
 describe("All apps lists every app the member holds, never a preference", () => {
   it("for an admin: every held app, Organisation too, and no setting", () => {
     expect(shape(launcherGroups(visibleSections(ALL, true)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
+      ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
@@ -308,13 +308,13 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 
   it("puts Personal Center first, and has no separate group of pins", () => {
-    const groups = shellSidebar(all, starred(["/approvals", "/chat", "/tasks"]));
+    const groups = shellSidebar(all, starred(["/approvals", "/chat", "/calendar"]));
     expect(groups.map((g) => g.id)).toEqual(["personal", "studio", "admin"]);
     expect(groups.map((g) => g.label)).not.toContain("My apps");
   });
 
   it("hides a category with no starred app, and keeps every other one", () => {
-    const groups = shellSidebar(all, starred(["/tasks", "/approvals"]));
+    const groups = shellSidebar(all, starred(["/calendar", "/approvals"]));
     expect(groups.map((g) => g.id)).toEqual(["personal", "admin"]);
   });
 
@@ -324,8 +324,8 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 
   it("draws no star the member does not hold", () => {
-    const groups = shellSidebar(visibleSections(["tasks"], false), starred(["/projects", "/crm", "/tasks"]));
-    expect(shape(groups)).toEqual([["personal", ["/tasks"]]]);
+    const groups = shellSidebar(visibleSections(["tasks"], false), starred(["/projects", "/crm", "/calendar"]));
+    expect(shape(groups)).toEqual([["personal", ["/calendar"]]]);
   });
 
   it("with nothing starred, draws no category at all (Home stays, apart from the groups)", () => {
