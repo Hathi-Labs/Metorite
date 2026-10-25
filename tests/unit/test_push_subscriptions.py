@@ -13,10 +13,17 @@ on the phase-4-promoted catalog, as the NON-privileged role with RLS forced
 * **The key per org**: org B saves the endpoint that org A holds.
 * **Own rows only**: a member deletes only their own row of an endpoint. The
   sign-out path calls the same route.
-* **The 404 and the 410**: the real ``pywebpush`` encrypts and signs. Only
-  the push service is fake, at the ``requests`` session that ``webpush``
-  posts through. A 404 or a 410 deletes the row, a 2xx stamps it, and a 500
-  counts a failure. The payload on the wire decrypts to the fixture.
+* **The 404 and the 410**: pywebpush's own encoder encrypts, and
+  ``Vapid02`` signs. Only the push service is fake, at the door of
+  ``outbound_guard.request_https``. A 404 or a 410 deletes the row, a 2xx
+  stamps it, and a 500 counts a failure. The bytes that the guard gets
+  decrypt to the fixture.
+* **The cap**: a new device at the cap evicts the stale devices first, then
+  the one that went longest without a success. Nobody gets a refusal.
+* **The status read**: ``registered`` answers for the member and the org of
+  the session only.
+* **The member purge**: its real clause deletes the member's devices of the
+  bound org, and no other row.
 
 The hermetic half is ``tests/unit/test_push_platform.py``.
 
@@ -38,6 +45,7 @@ from acb_common import get_settings
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import HTTPException
+from gateway import outbound_guard
 from gateway.push import routes, sender, store
 from requests.structures import CaseInsensitiveDict
 from sqlalchemy import text
@@ -134,48 +142,28 @@ def _rows(p, member: str | None = None) -> list[dict]:
         return [dict(r._mapping) for r in got]
 
 
-# ── The push service, faked under pywebpush ─────────────────────────────────
-
-
-class _Answer:
-    def __init__(self, status: int) -> None:
-        self.status_code = status
-        self.reason = "fake"
-        self.text = ""
-        self.headers = {}
+# ── The push service, faked at the one guard ────────────────────────────────
 
 
 class _PushService:
-    """The push service: it answers each endpoint with the status it holds,
-    and keeps every request that ``webpush`` posted to it."""
+    """The push service, at the door of ``outbound_guard.request_https``: it
+    answers each endpoint with the status it holds, and keeps every request
+    that the sender gave the guard."""
 
     def __init__(self, statuses: dict[str, int]) -> None:
         self.statuses = statuses
         self.posts: list[dict] = []
 
-    def session(self) -> _PushService.Session:
-        return _PushService.Session(self)
-
-    class Session:
-        def __init__(self, service: _PushService) -> None:
-            self.service = service
-
-        def post(self, url, data=None, headers=None, timeout=None, **kw):
-            # webpush hands a CaseInsensitiveDict. Keep it so, as a real
-            # HTTP server reads header names.
-            self.service.posts.append({"url": url, "data": data,
-                                       "headers": CaseInsensitiveDict(headers or {}),
-                                       "timeout": timeout})
-            return _Answer(self.service.statuses[url])
-
-        def close(self) -> None:
-            pass
+    async def request_https(self, method, url, *, headers=None, content=None, json=None):
+        self.posts.append({"method": method, "url": url, "data": content,
+                           "headers": CaseInsensitiveDict(headers or {})})
+        return outbound_guard.Answer(status_code=self.statuses[url], body=b"")
 
 
 @pytest.fixture
 def service(monkeypatch):
     svc = _PushService({})
-    monkeypatch.setattr(sender, "_session", svc.session)
+    monkeypatch.setattr(outbound_guard, "request_https", svc.request_https)
     return svc
 
 
@@ -297,17 +285,132 @@ class TestTheStore:
             assert await store.devices(p.org_a, B) == []
         assert [r["member_email"] for r in _rows(p)] == [A]
 
-    async def test_a_new_device_past_the_cap_is_refused(self, promoted):  # noqa: F811
+async def _fill_to_the_cap(p, member: str) -> None:
+    """MAX_DEVICES devices of *member* in org A, created one second apart,
+    oldest first, so the eviction order is the creation order."""
+    browser = _Browser()
+    async with _as_member(p, p.org_a):
+        for n in range(store.MAX_DEVICES):
+            await store.save(p.org_a, member, browser.sub(_endpoint(f"cap-{n}")))
+    with p.admin_engine.begin() as c:
+        for n in range(store.MAX_DEVICES):
+            c.execute(text(
+                "UPDATE push_subscriptions SET created_at = now() - make_interval(secs => :s) "
+                "WHERE member_email = :m AND endpoint = :e"),
+                {"s": 1000 - n, "m": member, "e": _endpoint(f"cap-{n}")})
+
+
+def _endpoints(p, member: str) -> set[str]:
+    return {r["endpoint"] for r in _rows(p, member)}
+
+
+class TestTheCap:
+    async def test_a_new_device_at_the_cap_evicts_the_oldest_and_is_saved(self, promoted):  # noqa: F811
         p = promoted
-        browser = _Browser()
+        await _fill_to_the_cap(p, A)
         async with _as_member(p, p.org_a):
-            for n in range(store.MAX_DEVICES):
-                await store.save(p.org_a, A, browser.sub(_endpoint(f"cap-{n}")))
-            with pytest.raises(store.TooManyDevices):
-                await store.save(p.org_a, A, browser.sub(_endpoint("cap-new")))
-            # A device the member holds still refreshes at the cap.
-            await store.save(p.org_a, A, browser.sub(_endpoint("cap-0")))
-        assert len(_rows(p, A)) == store.MAX_DEVICES
+            await store.save(p.org_a, A, _Browser().sub(_endpoint("cap-new")))
+        held = _endpoints(p, A)
+        assert len(held) == store.MAX_DEVICES
+        assert _endpoint("cap-new") in held
+        assert _endpoint("cap-0") not in held  # the oldest by creation
+
+    async def test_a_recent_success_outranks_an_old_creation(self, promoted):  # noqa: F811
+        p = promoted
+        await _fill_to_the_cap(p, A)
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE push_subscriptions SET last_success_at = now() "
+                           "WHERE member_email = :m AND endpoint = :e"),
+                      {"m": A, "e": _endpoint("cap-0")})
+        async with _as_member(p, p.org_a):
+            await store.save(p.org_a, A, _Browser().sub(_endpoint("cap-new")))
+        held = _endpoints(p, A)
+        assert _endpoint("cap-0") in held and _endpoint("cap-1") not in held
+
+    async def test_stale_devices_go_first_and_all_of_them(self, promoted):  # noqa: F811
+        p = promoted
+        await _fill_to_the_cap(p, A)
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE push_subscriptions SET expiration_time = now() - interval '1 day' "
+                           "WHERE member_email = :m AND endpoint = :e"),
+                      {"m": A, "e": _endpoint("cap-7")})
+            c.execute(text("UPDATE push_subscriptions SET failure_count = :f "
+                           "WHERE member_email = :m AND endpoint = :e"),
+                      {"f": store.STALE_FAILURES, "m": A, "e": _endpoint("cap-8")})
+        async with _as_member(p, p.org_a):
+            await store.save(p.org_a, A, _Browser().sub(_endpoint("cap-new")))
+        held = _endpoints(p, A)
+        assert _endpoint("cap-7") not in held and _endpoint("cap-8") not in held
+        # The two stale ones made room, so the oldest healthy device stays.
+        assert _endpoint("cap-0") in held
+        assert len(held) == store.MAX_DEVICES - 1
+
+    async def test_a_known_device_refreshes_at_the_cap_and_evicts_nothing(self, promoted):  # noqa: F811
+        p = promoted
+        await _fill_to_the_cap(p, A)
+        async with _as_member(p, p.org_a):
+            await store.save(p.org_a, A, _Browser().sub(_endpoint("cap-0")))
+        assert len(_endpoints(p, A)) == store.MAX_DEVICES
+
+    async def test_the_cap_of_one_member_never_evicts_another(self, promoted):  # noqa: F811
+        p = promoted
+        await _fill_to_the_cap(p, A)
+        async with _as_member(p, p.org_a):
+            await store.save(p.org_a, B, _Browser().sub(_endpoint("b-old")))
+        await _fill_to_the_cap(p, A)  # idempotent: A is already at the cap
+        async with _as_member(p, p.org_a):
+            await store.save(p.org_a, A, _Browser().sub(_endpoint("cap-new")))
+        assert _endpoints(p, B) == {_endpoint("b-old")}
+
+    async def test_the_route_saves_at_the_cap(self, promoted, push_on):  # noqa: F811
+        p = promoted
+        await _fill_to_the_cap(p, A)
+        async with _as_member(p, p.org_a):
+            res = await routes.push_subscribe(_Browser().body(_endpoint("cap-new")),
+                                              _user(p.org_a, A))
+        assert res["state"] == "saved"
+        assert _endpoint("cap-new") in _endpoints(p, A)
+
+
+class TestTheStatusRead:
+    async def test_registered_answers_for_the_session_member_and_org_only(
+            self, promoted, push_on):  # noqa: F811
+        p = promoted
+        async with _as_member(p, p.org_a):
+            await store.save(p.org_a, A, _Browser().sub(_endpoint("status")))
+            mine = await routes.push_status(routes.EndpointBody(endpoint=_endpoint("status")),
+                                            _user(p.org_a, A))
+            theirs = await routes.push_status(routes.EndpointBody(endpoint=_endpoint("status")),
+                                              _user(p.org_a, B))
+        async with _as_member(p, p.org_b):
+            other_org = await routes.push_status(
+                routes.EndpointBody(endpoint=_endpoint("status")), _user(p.org_b, A))
+        assert (mine, theirs, other_org) == (
+            {"registered": True}, {"registered": False}, {"registered": False})
+
+
+class TestTheMemberPurge:
+    def test_the_purge_clause_takes_the_members_devices_of_the_bound_org_only(
+            self, promoted, app_engine):  # noqa: F811
+        from gateway.routes.admin.members import _PURGE_DELETES
+
+        [rows] = [r for r in _PURGE_DELETES if r.table == "push_subscriptions"]
+        p = promoted
+        with p.admin_engine.begin() as c:
+            for org, member, n in ((p.org_a, A, 1), (p.org_a, A, 2), (p.org_b, A, 3),
+                                   (p.org_a, B, 4)):
+                c.execute(text(
+                    "INSERT INTO push_subscriptions (organization_id, member_email, endpoint, "
+                    "p256dh, auth) VALUES (CAST(:o AS uuid), :m, :e, 'p', 'a')"),
+                    {"o": org, "m": member, "e": _endpoint(f"purge-{n}")})
+        with app_engine.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": p.org_a})
+            # The purge binds the address in lower case, as `purge_member` does.
+            counted = c.execute(text(rows.count_sql), {"email": A.lower()}).scalar_one()
+            c.execute(text(rows.delete_sql), {"email": A.lower()})
+        assert counted == 2
+        left = {(r["org"], r["member_email"], r["endpoint"]) for r in _rows(p)}
+        assert left == {(p.org_b, A, _endpoint("purge-3")), (p.org_a, B, _endpoint("purge-4"))}
 
 
 # ── The routes, as the BFF calls them ────────────────────────────────────────

@@ -3,48 +3,65 @@
 Spec: ``project-docs/specs/calendar_events_reminders.md`` §10.2 item 4, and
 ``chat_run_continuity.md`` §S7 items 4 and 5.
 
-* **The send blocks.** ``pywebpush.webpush`` posts with ``requests``, so each
-  send runs in ``asyncio.to_thread``. The sends to one member's devices go one
-  after the other, so one member holds one worker thread at a time.
+* **One network door.** The endpoint is member input, so a send takes two
+  steps, as ``gateway/kb_sources/http.py`` does (KC-1a). First the push
+  service allowlist (``endpoints.endpoint_refusal``). Then
+  ``outbound_guard.request_https``, the gateway's one guard: it resolves the
+  host once, refuses a private address, pins the socket, refuses a redirect,
+  and caps the time and the answer.
+* **pywebpush makes the request, and never sends it.** ``WebPusher.encode``
+  encrypts the payload (RFC 8291, ``aes128gcm``), and ``Vapid02.sign`` makes
+  the ``Authorization`` header (RFC 8292). That work is CPU only, so it runs
+  in ``asyncio.to_thread``.
+* **All devices at once, inside one bound.** The sends to one member's
+  devices run together, and :data:`SEND_BUDGET_S` bounds them all. A send
+  that has not answered by then counts as failed. The BFF waits 30 seconds,
+  so the bound stays well under that.
 * **The outcome.** A 2xx answer stamps ``last_success_at``. A 404 or a 410
-  says the subscription is gone, and the sender deletes that row in a session
-  bound to the same tenant (``store.record``). Any other answer, and a
-  transport fault, counts one failure and keeps the row.
+  says the subscription is gone, and the sender deletes that row in a
+  session bound to the same tenant (``store.record``). Any other answer, a
+  refusal of the guard and a transport fault count one failure and keep the
+  row.
 * **No connection waits on the network.** The sender reads the devices in one
-  short transaction and writes the outcomes in a second one. No transaction
-  stays open across a send.
-* **The network rules.** The endpoint must pass ``endpoints.endpoint_refusal``
-  at send time too. The ``requests`` session refuses each redirect and reads
-  no proxy from the environment (``_session``).
+  short transaction and writes the outcomes in a second one.
 * **No content.** :data:`TEST_MESSAGE` has a fixed title and no body (S7
   item 5). A log line names the host of an endpoint, never its path.
 
 RE-9 will pass its own :class:`PushMessage` (``title``, ``body``, ``url``,
 ``tag``, ``urgency``, ``ttl``). Today only ``POST /push/test`` sends.
 
-Fence: ``tests/unit/test_push_subscriptions.py``. It fakes the push service at
-the ``pywebpush.webpush`` boundary, and runs the SQL on a real Postgres.
+Fence: ``tests/unit/test_push_subscriptions.py`` fakes the network at the
+``outbound_guard.request_https`` boundary, decrypts what goes out, and runs
+the SQL on a real Postgres. ``tests/unit/test_push_platform.py`` covers the
+rest with no database.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
-import requests
+import httpx
 from acb_common import get_logger
 
+from gateway import outbound_guard
 from gateway.push import endpoints, flags, store
 
 _log = get_logger(__name__)
 
-#: Seconds for one send: the connect and the read of the answer.
-SEND_TIMEOUT_S = 10.0
+#: Seconds for the sends to ALL the devices of one call. The guard caps each
+#: request at ``outbound_guard.TOTAL_TIMEOUT_S`` (10) as well.
+SEND_BUDGET_S = 20.0
 
 #: The answers that say the subscription is gone (RFC 8030 §7.3).
 GONE_STATUSES = frozenset({404, 410})
+
+#: How long the VAPID JWT lives. RFC 8292 §2 allows at most 24 hours.
+VAPID_LIFETIME_S = 12 * 3600
 
 Urgency = Literal["very-low", "low", "normal", "high"]
 
@@ -94,65 +111,83 @@ class SendReport:
     failed: int
 
 
-class _NoRedirectSession(requests.Session):
-    """A ``requests`` session that follows no redirect and reads no proxy.
+def _request(device: store.Device, message: PushMessage, key: object,
+             subject: str) -> tuple[bytes, dict[str, str]]:
+    """The encrypted body and the headers of one push. CPU only, no network.
 
-    A redirect target never passed ``endpoints.endpoint_refusal``, so a 3xx
-    comes back as an answer, and ``webpush`` raises on it as a failure."""
+    ``WebPusher.encode`` and ``Vapid02.sign`` are pywebpush's own parts, so the
+    bytes are the ones ``pywebpush.webpush`` would send."""
+    from pywebpush import WebPusher
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.trust_env = False
-        self.max_redirects = 0
+    pusher = WebPusher({"endpoint": device.endpoint,
+                        "keys": {"p256dh": device.p256dh, "auth": device.auth}})
+    body = pusher.encode(message.payload().encode("utf-8"), "aes128gcm")["body"]
+    parts = urlsplit(device.endpoint)
+    claims = {"sub": subject, "aud": f"{parts.scheme}://{parts.netloc}",
+              "exp": int(time.time()) + VAPID_LIFETIME_S}
+    headers = {
+        "Content-Encoding": "aes128gcm",
+        "Content-Type": "application/octet-stream",
+        "TTL": str(max(0, int(message.ttl))),
+        "Urgency": message.urgency,
+    }
+    headers.update(key.sign(claims))  # type: ignore[attr-defined]
+    return body, headers
 
-    def request(self, method, url, *args, **kwargs):  # type: ignore[override]
-        kwargs["allow_redirects"] = False
-        return super().request(method, url, *args, **kwargs)
 
-
-def _session() -> requests.Session:
-    """A fresh session for one send. A test replaces it."""
-    return _NoRedirectSession()
-
-
-def _post(device: store.Device, message: PushMessage, key: object, subject: str) -> str:
-    """Send one push. BLOCKS: the caller runs it in a worker thread.
-
-    Answers ``sent``, ``gone`` or ``failed``. It never raises."""
-    from pywebpush import WebPushException, webpush
-
+async def _post(device: store.Device, message: PushMessage, key: object, subject: str) -> str:
+    """Send one push through the one guard. Answers ``sent``, ``gone`` or
+    ``failed``, and never raises."""
     host = endpoints.endpoint_host(device.endpoint)
-    session = _session()
     try:
-        webpush(
-            subscription_info={"endpoint": device.endpoint,
-                               "keys": {"p256dh": device.p256dh, "auth": device.auth}},
-            data=message.payload(),
-            vapid_private_key=key,  # type: ignore[arg-type]
-            # A NEW dict for each send: webpush writes `aud` into it, and a
-            # shared dict would keep the first endpoint's audience.
-            vapid_claims={"sub": subject},
-            ttl=max(0, int(message.ttl)),
-            timeout=SEND_TIMEOUT_S,
-            headers={"Urgency": message.urgency},
-            requests_session=session,
-        )
-        return "sent"
-    except WebPushException as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status in GONE_STATUSES:
-            _log.info("push.gone", host=host, status=status)
-            return "gone"
-        _log.warning("push.send_failed", host=host, status=status)
+        body, headers = await asyncio.to_thread(_request, device, message, key, subject)
+    except Exception as exc:  # a bad device key: count it, keep the row
+        _log.warning("push.encode_failed", host=host, error=type(exc).__name__)
         return "failed"
-    except Exception as exc:  # a transport fault or a bad key: count it, keep the row
+    try:
+        answer = await outbound_guard.request_https(
+            "POST", device.endpoint, headers=headers, content=body)
+    except outbound_guard.OutboundRefused as exc:
+        # The guard names the host and a reason, never the path.
+        _log.warning("push.send_refused", host=host, reason=exc.reason)
+        return "failed"
+    except (TimeoutError, httpx.HTTPError) as exc:
         _log.warning("push.send_failed", host=host, error=type(exc).__name__)
         return "failed"
-    finally:
-        session.close()
+    status = answer.status_code
+    if 200 <= status < 300:
+        return "sent"
+    if status in GONE_STATUSES:
+        _log.info("push.gone", host=host, status=status)
+        return "gone"
+    _log.warning("push.send_failed", host=host, status=status)
+    return "failed"
 
 
-async def send_to_member(org: str, member: str, message: PushMessage) -> SendReport:
+async def _send_all(jobs: list[tuple[store.Device, PushMessage, object, str]],
+                    budget_s: float) -> list[str]:
+    """Run every send at once. A send still open after *budget_s* is cancelled
+    and counts as ``failed``."""
+    if not jobs:
+        return []
+    tasks = [asyncio.create_task(_post(*job)) for job in jobs]
+    done, pending = await asyncio.wait(tasks, timeout=budget_s)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+        _log.warning("push.send_budget_spent", open_sends=len(pending))
+    results: list[str] = []
+    for task in tasks:
+        if task in done and not task.cancelled() and task.exception() is None:
+            results.append(task.result())
+        else:
+            results.append("failed")
+    return results
+
+
+async def send_to_member(org: str, member: str, message: PushMessage,
+                         *, budget_s: float = SEND_BUDGET_S) -> SendReport:
     """Send *message* to each device of *member* in *org*.
 
     The caller checked ``flags.enabled()``. Raises ``RuntimeError`` when the
@@ -162,13 +197,10 @@ async def send_to_member(org: str, member: str, message: PushMessage) -> SendRep
         raise RuntimeError("web push keys are not configured")
     message.payload()  # refuse a bad url before any send
     found = await store.devices(org, member)
-    outcomes: list[tuple[store.Device, str]] = []
-    for device in found:
-        if endpoints.endpoint_refusal(device.endpoint) is not None:
-            outcomes.append((device, "skipped"))
-            continue
-        outcome = await asyncio.to_thread(_post, device, message, key, subject)
-        outcomes.append((device, outcome))
+    sendable = [d for d in found if endpoints.endpoint_refusal(d.endpoint) is None]
+    sent = await _send_all([(d, message, key, subject) for d in sendable], budget_s)
+    results = dict(zip((d.id for d in sendable), sent, strict=True))
+    outcomes = [(d, results.get(d.id, "skipped")) for d in found]
     await store.record(org, member, outcomes)
     report = SendReport(
         devices=len(found),

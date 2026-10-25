@@ -13,8 +13,9 @@ needs no database, so the deploy run proves it too.
 * **The payload.** The test push has a fixed title and no body. It equals
   ``tests/fixtures/push_test_payload.json``, which ``src/lib/push.test.ts``
   reads too.
-* **The send.** A 404 or a 410 reads as ``gone``, other answers as
-  ``failed``. The session follows no redirect and reads no proxy.
+* **The send.** It goes through ``outbound_guard.request_https`` and no other
+  door. A 404 or a 410 reads as ``gone``, other answers, a refusal and a
+  fault as ``failed``. All devices send at once, inside one bound.
 """
 
 from __future__ import annotations
@@ -24,14 +25,15 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
-import requests
 from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from gateway import outbound_guard
 from gateway.push import endpoints, flags, routes, sender, store
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "push_test_payload.json"
@@ -106,6 +108,7 @@ class TestTheFlag:
     @pytest.mark.parametrize("method,path", [
         ("GET", "/push/public-key"),
         ("POST", "/push/subscriptions"),
+        ("POST", "/push/subscriptions/status"),
         ("DELETE", "/push/subscriptions"),
         ("POST", "/push/test"),
     ])
@@ -114,12 +117,20 @@ class TestTheFlag:
         def refuse(*_a, **_k):
             raise AssertionError("the store must not run with the flag off")
 
-        for name in ("save", "remove", "devices", "record"):
+        for name in ("save", "remove", "registered", "devices", "record"):
             monkeypatch.setattr(store, name, refuse)
         for body in (None, _body(), {"endpoint": ENDPOINT}, {"junk": 1}):
             res = _client().request(method, path, json=body)
             assert res.status_code == 404, (body, res.text)
             assert res.json() == {"detail": "Not found"}
+
+    def test_off_a_body_that_is_not_json_gets_422_and_touches_no_store(self, push_off, monkeypatch):
+        # The docstring of `routes._push_on` says so: FastAPI parses the JSON
+        # text before any dependency runs. Nothing reaches the store.
+        monkeypatch.setattr(store, "save", lambda *_a, **_k: pytest.fail("no save"))
+        res = _client().post("/push/subscriptions", content=b"{not json",
+                             headers={"Content-Type": "application/json"})
+        assert res.status_code == 422
 
     def test_off_a_member_without_feature_chat_gets_404_too(self, push_off):
         # The flag is checked before the feature gate: a closed feature looks
@@ -279,13 +290,30 @@ class TestTheBody:
         assert seen["sub"].expiration_time.year == 2030
         assert len(seen["sub"].user_agent) == routes.MAX_USER_AGENT
 
-    def test_a_device_past_the_cap_gets_409(self, push_on, monkeypatch):
-        async def save(*_a):
-            raise store.TooManyDevices()
+    def test_the_status_read_asks_for_the_session_member_and_takes_the_endpoint_only(
+            self, push_on, monkeypatch):
+        seen = {}
 
-        monkeypatch.setattr(store, "save", save)
-        res = _client().post("/push/subscriptions", json=_body())
-        assert res.status_code == 409
+        async def registered(org, member, endpoint):
+            seen.update(org=org, member=member, endpoint=endpoint)
+            return True
+
+        monkeypatch.setattr(store, "registered", registered)
+        res = _client(email="Member@PN1.test").post(
+            "/push/subscriptions/status", json={"endpoint": ENDPOINT})
+        assert res.status_code == 200 and res.json() == {"registered": True}
+        assert seen == {"org": ORG, "member": "member@pn1.test", "endpoint": ENDPOINT}
+        refused = _client().post("/push/subscriptions/status",
+                                 json={"endpoint": ENDPOINT, "member_email": "b@other.test"})
+        assert refused.status_code == 422
+
+    def test_a_save_at_the_cap_is_never_a_409(self, push_on, monkeypatch):
+        # The store evicts at the cap (R8: test_push_subscriptions.py), so the
+        # route has no refusal of its own to give.
+        import inspect
+
+        assert "TooManyDevices" not in inspect.getsource(store)
+        assert "409" not in inspect.getsource(routes.push_subscribe)
 
 
 # ── The payload ──────────────────────────────────────────────────────────────
@@ -314,66 +342,115 @@ class TestThePayload:
 # ── The send ─────────────────────────────────────────────────────────────────
 
 
-class _Response:
-    def __init__(self, status: int) -> None:
-        self.status_code = status
-        self.reason = "x"
-        self.text = ""
-
-
 DEVICE = store.Device(id="d1", endpoint=ENDPOINT, **device_keys())
+SUBJECT = "mailto:a@b.test"
+
+
+def _guard(monkeypatch, answer):
+    """Replace the one guard's door. ``answer`` is a status, an exception, or a
+    callable of (url, headers, content). Returns the list of calls."""
+    calls: list[dict] = []
+
+    async def request_https(method, url, *, headers=None, content=None, json=None):
+        calls.append({"method": method, "url": url, "headers": dict(headers or {}),
+                      "content": content})
+        if isinstance(answer, BaseException):
+            raise answer
+        if callable(answer):
+            return await answer(url, headers, content)
+        return outbound_guard.Answer(status_code=answer, body=b"")
+
+    monkeypatch.setattr(outbound_guard, "request_https", request_https)
+    return calls
 
 
 class TestTheSend:
     @pytest.mark.parametrize("status,outcome", [
-        (404, "gone"), (410, "gone"), (400, "failed"), (403, "failed"),
-        (413, "failed"), (429, "failed"), (500, "failed"), (307, "failed"),
+        (201, "sent"), (200, "sent"), (404, "gone"), (410, "gone"), (400, "failed"),
+        (403, "failed"), (413, "failed"), (429, "failed"), (500, "failed"),
     ])
-    def test_an_answer_maps_to_its_outcome(self, push_on, monkeypatch, status, outcome):
-        from pywebpush import WebPushException
+    async def test_an_answer_maps_to_its_outcome(self, push_on, monkeypatch, status, outcome):
+        _guard(monkeypatch, status)
+        assert await sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), SUBJECT) == outcome
 
-        def fake(**_kw):
-            raise WebPushException("x", response=_Response(status))
+    @pytest.mark.parametrize("fault", [
+        outbound_guard.OutboundRefused("fcm.googleapis.com", "redirect 307"),
+        outbound_guard.OutboundRefused("fcm.googleapis.com", "timeout"),
+        httpx.ConnectError("down"),
+        TimeoutError(),
+    ])
+    async def test_a_refusal_or_a_fault_is_a_failure_and_never_raises(
+            self, push_on, monkeypatch, fault):
+        _guard(monkeypatch, fault)
+        assert await sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), SUBJECT) == "failed"
 
-        monkeypatch.setattr("pywebpush.webpush", fake)
-        assert sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), "mailto:a@b.test") == outcome
+    async def test_the_request_is_signed_and_encrypted_for_the_guard(self, push_on, monkeypatch):
+        import jwt
 
-    def test_a_transport_fault_is_a_failure_and_never_raises(self, push_on, monkeypatch):
-        def fake(**_kw):
-            raise requests.ConnectionError("down")
-
-        monkeypatch.setattr("pywebpush.webpush", fake)
-        assert sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), "mailto:a@b.test") == "failed"
-
-    def test_each_send_gets_its_own_claims_and_a_hardened_session(self, push_on, monkeypatch):
-        calls = []
-
-        def fake(**kw):
-            calls.append(kw)
-            kw["vapid_claims"]["aud"] = "https://fcm.googleapis.com"  # webpush writes it
-            return _Response(201)
-
-        monkeypatch.setattr("pywebpush.webpush", fake)
+        calls = _guard(monkeypatch, 201)
         for _ in range(2):
-            assert sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), "mailto:a@b.test") == "sent"
-        assert calls[0]["vapid_claims"] is not calls[1]["vapid_claims"]
-        assert calls[1]["vapid_claims"] == {"sub": "mailto:a@b.test", "aud": "https://fcm.googleapis.com"}
-        assert calls[0]["headers"] == {"Urgency": "normal"}
-        assert calls[0]["ttl"] == 60 and calls[0]["timeout"] == sender.SEND_TIMEOUT_S
-        session = calls[0]["requests_session"]
-        assert isinstance(session, sender._NoRedirectSession)
-        assert session.trust_env is False
+            await sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), SUBJECT)
+        first = calls[0]
+        assert (first["method"], first["url"]) == ("POST", ENDPOINT)
+        headers = first["headers"]
+        assert headers["Content-Encoding"] == "aes128gcm"
+        assert (headers["TTL"], headers["Urgency"]) == ("60", "normal")
+        scheme, _, params = headers["Authorization"].partition(" ")
+        token = dict(p.split("=", 1) for p in params.split(","))
+        assert scheme == "vapid" and token["k"] == push_on.public
+        claims = jwt.decode(token["t"], options={"verify_signature": False})
+        assert claims["aud"] == "https://fcm.googleapis.com" and claims["sub"] == SUBJECT
+        # aes128gcm: a 16-byte salt, a 4-byte record size, the key id and the record.
+        assert isinstance(first["content"], bytes) and len(first["content"]) > 86
+        assert first["content"] != calls[1]["content"]  # a fresh salt and key each time
 
-    def test_the_session_never_follows_a_redirect(self, monkeypatch):
-        seen = {}
+    async def test_a_private_address_never_gets_a_socket(self, push_on, monkeypatch):
+        # The real guard, with DNS answering a private address for an allowed
+        # host. The guard refuses it, and `send` never runs.
+        monkeypatch.setattr(outbound_guard, "_resolve", lambda host, port: ["10.0.0.5"])
 
-        def base_request(self, method, url, *args, **kwargs):
-            seen.update(kwargs)
-            return _Response(201)
+        async def no_socket(*_a, **_k):
+            raise AssertionError("the guard must refuse before any socket")
 
-        monkeypatch.setattr(requests.Session, "request", base_request)
-        sender._NoRedirectSession().post(ENDPOINT, data=b"x", allow_redirects=True)
-        assert seen["allow_redirects"] is False
+        monkeypatch.setattr(outbound_guard, "send", no_socket)
+        assert await sender._post(DEVICE, sender.TEST_MESSAGE, flags.vapid(), SUBJECT) == "failed"
+
+    def test_the_sender_reaches_the_network_only_through_the_guard(self):
+        import inspect
+
+        source = inspect.getsource(sender)
+        assert "outbound_guard.request_https(" in source
+        for banned in ("import requests", "requests.", "webpush(", "aiohttp", "httpx.AsyncClient"):
+            assert banned not in source, banned
+
+    async def test_all_devices_send_at_once_inside_one_bound(self, push_on, monkeypatch):
+        import asyncio
+
+        devices = [store.Device(id=f"d{n}", endpoint=f"{ENDPOINT}-{n}", **device_keys())
+                   for n in range(3)]
+        recorded: list = []
+
+        async def answer(url, _headers, _content):
+            if url.endswith("-2"):
+                await asyncio.sleep(30)  # a device that never answers
+            return outbound_guard.Answer(status_code=201, body=b"")
+
+        async def fake_devices(*_a):
+            return devices
+
+        async def fake_record(_org, _member, outcomes):
+            recorded.extend(outcomes)
+
+        _guard(monkeypatch, answer)
+        monkeypatch.setattr(store, "devices", fake_devices)
+        monkeypatch.setattr(store, "record", fake_record)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        report = await sender.send_to_member(ORG, EMAIL, sender.TEST_MESSAGE, budget_s=0.5)
+        assert loop.time() - started < 5
+        assert (report.devices, report.sent, report.failed) == (3, 2, 1)
+        assert [o for _, o in recorded] == ["sent", "sent", "failed"]
+        assert sender.SEND_BUDGET_S < 25
 
     async def test_send_refuses_without_configured_keys(self, push_on, monkeypatch):
         monkeypatch.setattr(get_settings(), "vapid_subject", "")

@@ -1,19 +1,25 @@
-"""The four routes of web push (WS-66 PN-1).
+"""The five routes of web push (WS-66 PN-1).
 
 Spec: ``project-docs/specs/calendar_events_reminders.md`` §10.2 item 3.
 
 * ``GET /push/public-key`` — the ``applicationServerKey`` that the browser
   subscribes with. 503 while the keys are not configured.
 * ``POST /push/subscriptions`` — save this device for the signed-in member,
-  or refresh its keys. A device past the cap gets a 409.
+  or refresh its keys. At the cap the store evicts first (``store.save``).
+* ``POST /push/subscriptions/status`` — ``{registered}``: does the
+  signed-in member hold a row of this endpoint. One browser holds one
+  subscription for every account of the switcher, so the browser alone
+  cannot say whether THIS member gets the pushes. A POST, so the endpoint
+  stays in the body and out of every URL and access log.
 * ``DELETE /push/subscriptions`` — delete the signed-in member's row of one
   endpoint. A sign-out calls it. It never touches another member's row.
 * ``POST /push/test`` — send the test push to the signed-in member's own
   devices. One test at a time for each member, and a second gets a 429.
 
 With ``WEB_PUSH_ENABLED`` off, each route answers 404, so a closed feature
-looks like no feature. The member and the org come from the session only
-(R5, R11). A body that names anything else gets a 422. Gated on
+looks like no feature. The one exception is a body that is not JSON at all
+(``_push_on``). The member and the org come from the session only (R5,
+R11). A body that names anything else gets a 422. Gated on
 ``feature:chat``, as ``/reach`` is.
 """
 
@@ -34,8 +40,12 @@ NOT_FOUND = "Not found"
 
 
 async def _push_on() -> None:
-    """404 while ``WEB_PUSH_ENABLED`` is off. A router dependency runs before
-    FastAPI reads the body, so a bad body also gets the 404, never a 422."""
+    """404 while ``WEB_PUSH_ENABLED`` is off, before the feature gate.
+
+    ⚠️ FastAPI parses the JSON text of a body BEFORE it runs a dependency. So
+    a body that is not JSON at all gets 422 even with the flag off. A JSON
+    body of the wrong shape gets this 404, because FastAPI checks the fields
+    after the dependencies (fence: ``test_push_platform.py``)."""
     if not flags.enabled():
         raise HTTPException(status_code=404, detail=NOT_FOUND)
 
@@ -145,18 +155,20 @@ async def push_public_key(user: UserContext = Depends(get_current_user)) -> dict
 @router.post("/subscriptions")
 async def push_subscribe(body: SubscriptionBody,
                          user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
-    """Save this device for the signed-in member."""
+    """Save this device for the signed-in member. Never refused at the cap:
+    the store evicts the member's stale and oldest devices first."""
     org, email = _scope(user)
     sub = _subscription(body)
-    try:
-        row_id = await store.save(org, email, sub)
-    except store.TooManyDevices:
-        raise HTTPException(
-            status_code=409,
-            detail=(f"You have {store.MAX_DEVICES} devices with notifications on. "
-                    "Turn one off first."),
-        ) from None
-    return {"id": row_id, "state": "saved"}
+    return {"id": await store.save(org, email, sub), "state": "saved"}
+
+
+@router.post("/subscriptions/status")
+async def push_status(body: EndpointBody,
+                      user: UserContext = Depends(get_current_user)) -> dict[str, bool]:
+    """``{registered}``: does the signed-in member hold a row of this
+    endpoint. Reads only."""
+    org, email = _scope(user)
+    return {"registered": await store.registered(org, email, body.endpoint)}
 
 
 @router.delete("/subscriptions")

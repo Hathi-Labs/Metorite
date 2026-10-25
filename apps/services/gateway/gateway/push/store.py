@@ -20,9 +20,14 @@ from typing import Any
 from acb_common.db import tenant_session
 from sqlalchemy import text
 
-#: The most devices of one member. A new device past it gets a 409. Each
-#: test push walks every device, so the cap also bounds that walk.
+#: The most devices of one member. Each send walks every device, so the cap
+#: also bounds that walk. A new device at the cap never gets a refusal: the
+#: save evicts first (``_STALE_SQL``, then ``_OLDEST_SQL``), so a member who
+#: changed phones often is never locked out.
 MAX_DEVICES = 10
+
+#: A device that failed this many sends in a row is stale at the cap.
+STALE_FAILURES = 5
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -30,6 +35,29 @@ _HELD_SQL = (
     "SELECT count(*) AS n, "
     "count(*) FILTER (WHERE endpoint = :e) AS same FROM push_subscriptions "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m"
+)
+
+# At the cap, first the member's devices that cannot receive: an expired
+# subscription, or one that failed STALE_FAILURES sends in a row.
+_STALE_SQL = (
+    "DELETE FROM push_subscriptions "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m AND endpoint <> :e "
+    "AND ((expiration_time IS NOT NULL AND expiration_time < now()) OR failure_count >= :f)"
+)
+
+# Then, if the member is still at the cap, the devices that went longest
+# without a success. A device that never received counts from its creation.
+_OLDEST_SQL = (
+    "DELETE FROM push_subscriptions "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m AND id IN ("
+    "SELECT id FROM push_subscriptions "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m AND endpoint <> :e "
+    "ORDER BY coalesce(last_success_at, created_at), id LIMIT :n)"
+)
+
+_REGISTERED_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM push_subscriptions "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m AND endpoint = :e)"
 )
 
 _UPSERT_SQL = (
@@ -96,22 +124,35 @@ class Device:
     auth: str
 
 
-class TooManyDevices(Exception):
-    """The member holds :data:`MAX_DEVICES` devices, and this one is new."""
-
-
 async def save(org: str, member: str, sub: Subscription) -> str:
     """Save this device for *member*, or refresh its keys. Answers the row id.
 
-    Raises :class:`TooManyDevices` for a new device past the cap."""
+    A new device at :data:`MAX_DEVICES` evicts first, in ONE transaction:
+    every stale device of the member, then the devices that went longest
+    without a success, until the new one fits. A device the member already
+    holds just refreshes."""
     params = {"m": member, "e": sub.endpoint, "p": sub.p256dh, "a": sub.auth,
               "x": sub.expiration_time, "ua": sub.user_agent}
     async with tenant_session(org) as db:
-        held = (await db.execute(text(_HELD_SQL), params)).one()
-        if int(held[0]) >= MAX_DEVICES and not int(held[1]):
-            raise TooManyDevices()
+        held, same = (await db.execute(text(_HELD_SQL), params)).one()
+        if int(held) >= MAX_DEVICES and not int(same):
+            stale: Any = await db.execute(
+                text(_STALE_SQL), {"m": member, "e": sub.endpoint, "f": STALE_FAILURES})
+            left = int(held) - int(getattr(stale, "rowcount", 0) or 0)
+            if left >= MAX_DEVICES:
+                await db.execute(text(_OLDEST_SQL), {"m": member, "e": sub.endpoint,
+                                                     "n": left - MAX_DEVICES + 1})
         row = (await db.execute(text(_UPSERT_SQL), params)).one()
     return str(row[0])
+
+
+async def registered(org: str, member: str, endpoint: str) -> bool:
+    """True when *member* holds a row of *endpoint*. One browser holds one
+    subscription for every account of the switcher, so the browser's own
+    subscription does not say whether THIS member gets the pushes."""
+    async with tenant_session(org) as db:
+        return bool((await db.execute(text(_REGISTERED_SQL),
+                                      {"m": member, "e": endpoint})).scalar())
 
 
 async def remove(org: str, member: str, endpoint: str) -> bool:
