@@ -23,6 +23,11 @@
  * "Write a page" (KB-12) arrives as `?do=write-page`, and `ShellJob` opens
  * the New page form through the leave guard. The form saves nothing by itself.
  *
+ * KC-8b: the rail gets a Directories group, one row for each type that
+ * `GET /knowledge/entity-types` answers. A 404, a 403 or a network error
+ * hides the group and shows nothing else. The open directory keeps its row,
+ * even when its type has emptied.
+ *
  * KB-9a: a manager of Knowledge (`knowledge:manage`) gets the Gaps row in the
  * rail when the gaps read answers. A New page made from a gap marks the gap
  * answered with the new page, after the page is made.
@@ -63,6 +68,7 @@ import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import NewPageDialog from "./components/NewPageDialog";
 import { usePendingCount } from "./components/useProposals";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
+import { ENTITY_TYPES, ENTITY_TYPES_KEY, directoryTypeOf, listEntityTypes, type EntityType } from "./lib/entities";
 import {
   GAPS_KEY,
   KNOWLEDGE_GAPS,
@@ -82,6 +88,13 @@ import {
   sourceCount,
   type SourceList,
 } from "./lib/sources";
+import {
+  KNOWLEDGE_MAINTENANCE,
+  MAINTENANCE_KEY,
+  expiredCount,
+  listMaintenance,
+  type MaintenanceList,
+} from "./lib/maintenance";
 import type { PageSummary, Space } from "./lib/types";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, pageIdOf, spaceHref } from "./lib/links";
 import {
@@ -223,6 +236,12 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const manager = hasCapability(access, MANAGE_CAPABILITY);
   const gapsRead = useCachedResource<GapList>(manager ? GAPS_KEY : null, listGaps);
   const showGaps = (manager && gapsRead.data?.scope === "org" && !gapsRead.data.off) || atGaps;
+  // KB-AI-4: the Maintenance row, for a manager. It has no flag, so the row
+  // shows when the read answers. A refusal or an error hides it.
+  const atMaintenance = pathname === KNOWLEDGE_MAINTENANCE;
+  const maintenanceRead = useCachedResource<MaintenanceList>(manager ? MAINTENANCE_KEY : null, listMaintenance);
+  const showMaintenance = (manager && Boolean(maintenanceRead.data)) || atMaintenance;
+
 
   // KC-1b: the Sources row, for every member, when the sources read answers.
   // The Sources view reads the same key, so the row and the view share one answer.
@@ -256,6 +275,15 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
+
+  // KC-8b: the Directories group. Any failure of the read hides it.
+  const typesRead = useCachedResource<EntityType[]>(ENTITY_TYPES_KEY, listEntityTypes);
+  const openType = directoryTypeOf(pathname);
+  const directoryTypes = useMemo(() => {
+    const seen = new Set<EntityType>(typesRead.data ?? []);
+    if (openType) seen.add(openType);
+    return ENTITY_TYPES.filter((t) => seen.has(t));
+  }, [typesRead.data, openType]);
 
   const setPageFocus = useCallback((next: PageFocus | null) => setFocus(next), []);
   const openNewPage = useCallback((next?: NewPageAsk) => setAsk(next ?? {}), []);
@@ -331,8 +359,12 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     atSearch,
     atReview,
     reviewCount,
+    directories: { types: directoryTypes, selected: openType },
     gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
     sources: showSources ? { selected: atSources, count: sourceCount(sourcesRead.data) } : null,
+    maintenance: showMaintenance
+      ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
+      : null,
     onArchive: setArchiving,
   };
 

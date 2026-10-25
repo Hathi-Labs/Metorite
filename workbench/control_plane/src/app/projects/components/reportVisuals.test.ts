@@ -311,6 +311,58 @@ const PULSE_MEMBER: NonNullable<Sections["pulse"]> = {
   ],
 };
 
+/** `waiting_body` for an admin: one row in each list (WS-27bn RA-3). */
+const WAITING_ROW = {
+  task_number: 12,
+  project_id: "p1",
+  project_name: "Rig",
+  since: "2026-09-20T06:00:00+00:00",
+  age_hours: 3,
+  agent: "Claude Code",
+  client_via: "mcp:claude.ai:claude-code",
+  member: "ana@example.test",
+  member_name: "Ana Rao",
+};
+
+const WAITING: NonNullable<Sections["waiting"]> = {
+  summary:
+    "1 agent question waits for an answer. It is 3 hours old. 1 task waits for a review." +
+    " 1 handoff between a person and an agent is blocked.",
+  agent_runs_seen: true,
+  questions: [{ ...WAITING_ROW, id: "tq", title: "Choose the nozzle 8201" }],
+  questions_total: 1,
+  reviews: [
+    {
+      ...WAITING_ROW,
+      id: "tr",
+      title: "Ship the fix",
+      reasons: ["pull_request"],
+      pr_url: "https://github.com/acme/widgets/pull/9",
+    },
+  ],
+  reviews_total: 1,
+  handoffs: [
+    {
+      ...WAITING_ROW,
+      id: "th",
+      title: "Wire the board",
+      agent: "coder",
+      client_via: null,
+      member: null,
+      member_name: null,
+      blocker_id: "tb",
+      blocker_number: 3,
+      blocker_title: "Order steel",
+      agent_side: "blocked",
+      person: "dee@example.test",
+      person_name: "Dee",
+    },
+  ],
+  handoffs_total: 1,
+  answer_time: { asked: 4, answered: 3, unanswered: 1, median_hours: 3, p90_hours: 4.6 },
+  max_rows: 20,
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -394,6 +446,7 @@ const SECTIONS: Required<Sections> = {
   rebalance: REBALANCE,
   hygiene: HYGIENE,
   pulse: PULSE,
+  waiting: WAITING,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -407,6 +460,7 @@ const SENTINEL: Record<keyof Sections, string> = {
   rebalance: "7801",
   hygiene: "7901",
   pulse: "8101",
+  waiting: "8201",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -457,21 +511,22 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   rebalance: "Who could help",
   hygiene: "Data hygiene",
   pulse: "Team pulse",
+  waiting: "Waiting on people",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all ten panels and ten tables in one report", () => {
+  it("draws all eleven panels and eleven tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(', as a table').length).toBe(11);
+    expect(html.split(', as a table').length).toBe(12);
     // §6.6 D item 5. Each card has one table button in its header.
-    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(10);
+    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(11);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(10);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(11);
   });
 
   it("pulse draws one card a person: the load bar, the status and three focus tasks", () => {
@@ -982,6 +1037,7 @@ const PANELS = [
   "RebalancePanel",
   "HygienePanel",
   "PulsePanel",
+  "WaitingPanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -1000,13 +1056,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the ten panels from ./AnalyticsPanels", () => {
+  it("imports the eleven panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the ten", () => {
+  it("renders each of the eleven", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 

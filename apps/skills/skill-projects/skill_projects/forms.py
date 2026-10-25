@@ -82,6 +82,7 @@ from skill_projects.writes import (
     _vocab,
     _yes_no,
     agent_assignee_refusal_as_text,
+    mailbox_line,
     update_project,
     update_task,
 )
@@ -1228,6 +1229,7 @@ ROW_KEYS: tuple[str, ...] = (
     "leveraged",
     "type",
     "fields",
+    "source",
 )
 #: The create_task arguments a row does not take: the repeat rule (P1) and
 #: the retired ``importance``. A repeating task is create_task's alone.
@@ -1413,6 +1415,7 @@ async def _batch_row(
             parent_task_id=_row_text(item, "parent_task_id"),
             assignees=_row_list(item, "assignees"),
             statuses=statuses,
+            source=_row_text(item, "source"),
         )
     except GatewayRefusal as exc:
         raise _relabel(label, exc) from None
@@ -1545,6 +1548,8 @@ def _describe(
     facts.extend(f"{k} {v}" for k, v in shown.items())
     if payload.get("parent_task_id"):
         facts.append(_parent_words(p.new.parent or {}, p.new.pid))
+    if payload.get("source"):
+        facts.append(f"source {payload['source']}")
     if payload.get("description"):
         # The whole text, as the POST sends it. A cut card is not consent
         # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
@@ -1597,10 +1602,12 @@ def _batch_card(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str
     The title names the project and the count, and the rows carry every
     fact, so the body repeats neither (PR #691 review: "Tasks 4" read wrong
     once a row was unticked). It keeps a warning about an unknown address.
-    ``node`` and ``rows`` stay in the signature for the fit measure.
+    A row from a mail (WS-46 P9) puts the mailbox line first.
     """
-    del node, rows
     card: dict[str, Any] = {}
+    if any(p.new.payload.get("source") == "email" for p in rows):
+        # WS-46 P9: the first line says that mail text leaves the mailbox.
+        card["mailbox"] = mailbox_line(data(node.get("name")))
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
     return card
@@ -1641,8 +1648,8 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     (required), description, status (by NAME), assignees (comma-separated
     emails, agent:<name>, or people's names), due and start (YYYY-MM-DD),
     estimate_mins, tags (comma-separated), parent_task_id, priority or
-    important and leveraged, type (by NAME), and fields (a JSON object keyed
-    by field NAME). A repeating task is create_task with repeat, not this
+    important and leveraged, type (by NAME), fields (a JSON object keyed
+    by field NAME), and source (email for a task made from a mail). A repeating task is create_task with repeat, not this
     tool. Every name is checked before any card, and one bad row refuses the
     whole batch and names the row. The member then sees ONE card with a
     checkbox for each task, and approves the ticked tasks once. A task with

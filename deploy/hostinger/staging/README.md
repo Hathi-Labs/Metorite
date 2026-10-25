@@ -52,6 +52,8 @@ The names it may write:
 | `ARTIFACT_REGISTRY_ENABLED` | The artifact registry hook and its read routes |
 | `CRM_ENABLED` | The CRM kill switch |
 | `CRM_ORGS` | The organizations that the CRM serves |
+| `ASSISTANT_PROFILE_ENABLED` | The master switch of the assistant profile (WS-63 PZ-25). It reaches no one |
+| `ASSISTANT_PROFILE_ORGS` | The organizations that get the assistant profile. Empty means each one |
 
 Three names stay off the list on purpose. `DECIDE_ENABLED` is owner-only and
 sends content to a third party. `DECIDE_FEATURE_MODES` is owner gate H-166 on

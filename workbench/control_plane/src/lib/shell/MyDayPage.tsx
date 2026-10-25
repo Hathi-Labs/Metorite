@@ -42,8 +42,8 @@ import { AppTopBar } from "@/components/AppTopBar";
 import PageHeader from "@/components/PageHeader";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { assistantProfileOn } from "@/lib/assistantProfileFlag";
 import { visibleSections } from "@/lib/nav";
+import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressName";
@@ -85,9 +85,10 @@ export default function MyDay() {
   const now = useMinute();
   const [launcherOpen, setLauncherOpen] = useState(false);
   // WS-63 PZ-4 (`personalization.md` §5.2): the name the assistant calls the
-  // member, behind NEXT_PUBLIC_ASSISTANT_PROFILE. Off, loading or failed, the
-  // header keeps the session name (`addressName.ts`).
-  const profileOn = useSyncExternalStore(noSubscribe, assistantProfileOn, () => false);
+  // member, behind NEXT_PUBLIC_ASSISTANT_PROFILE AND the gateway's yes for
+  // the member's org (PZ-25, §14.2). Off, loading or failed, the header keeps
+  // the session name (`addressName.ts`), and no address read goes out.
+  const profileOn = useAssistantProfileEnabled();
   const address = useCachedResource<string>(
     profileOn ? ADDRESS_KEY : null,
     () => fetchAddressName(),

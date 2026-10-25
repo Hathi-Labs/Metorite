@@ -36,4 +36,11 @@ regexes = [
     # rewritten (no force-push). The entry matches this exact value and no
     # other: never widen it.
     '''ghp_BFF_SENTINEL_0123456789abcdef''',
+    # WS-66 PN-1: the PUBLIC VAPID key of the Google web-push codelab, used as
+    # the applicationServerKey in src/lib/push.test.ts and
+    # notificationsSection.test.ts. It is a public key that the codelab
+    # publishes, never a key of ours (ours come through scripts/secrets.sh). A
+    # PR scan reads the commits that hold it, so it must stay here. The entry
+    # matches this exact value and no other: never widen it.
+    '''BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U''',
 ]

@@ -32,6 +32,7 @@ import functools
 import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -707,10 +708,11 @@ MEMBER_NO_NAME_LINE = (
 _PROFILE_AGENT = "orchestrator"
 #: The rendered block by ``(org, member)``, with the time it was read, the
 #: member's write count (``assistant_profile.generation``), the member's zone
-#: (``people.timezone``) and the greeting of the block. A miss is cached
+#: (``people.timezone``), the greeting of the block and the stored interview
+#: (PZ-26), so the due line is computed per turn with the clock. A miss is cached
 #: too, so a member with no profile costs one read a minute. A write in this
 #: process moves the count, so the next turn reads again.
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str]] = {}
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
 
@@ -753,10 +755,10 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     """``(block, zone, greeting)`` of this turn, or ``("", "", "")``.
 
     ``personalization.md`` §5.1. The block reaches a run only when all hold:
-    ``ASSISTANT_PROFILE_ENABLED`` is on, the agent is ``orchestrator``, the
+    the agent is ``orchestrator``, the run has an org,
+    ``assistant_profile.enabled_for`` is true for that org (PZ-25), the
     run has a verified member (:func:`_verified_run_member`), the run
-    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`), and the run has
-    an org. Each check comes before the read, so a run that fails one reads
+    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`). Each check comes before the read, so a run that fails one reads
     nothing.
 
     The name follows §5.2 (``assistant_profile.resolve_address_name``). The
@@ -771,21 +773,23 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
 
     from acb_common import assistant_profile
 
-    if agent_name != _PROFILE_AGENT or not assistant_profile.enabled():
+    if agent_name != _PROFILE_AGENT:
+        return ("", "", "")
+    # PZ-25 (§14.2): the switch is per organization, so read the run's org
+    # first. The org comes from the run boundary, never from the payload.
+    org = _current_run_org()
+    if not org or not assistant_profile.enabled_for(str(org)):
         return ("", "", "")
     member = _verified_run_member()
     if not member or _RUN_SOLO_ROOM.get() is not True:
-        return ("", "", "")
-    org = _current_run_org()
-    if not org:
         return ("", "", "")
     key = (str(org), member)
     now = time.monotonic()
     gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
-        return (hit[2], hit[3], hit[4])
-    block, zone, greeting = "", "", ""
+        return (_with_interview_line(hit[2], hit[5], key), hit[3], hit[4])
+    block, zone, greeting, interview = "", "", "", None
     try:
         read = _read_member_profile(str(org), member)
         if read is not None:
@@ -795,15 +799,69 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
                 stored["address"].get("name"), preferred, display)
             block = assistant_profile.render_block(raw, name)
             greeting = assistant_profile.effective_greeting(raw) if block else ""
+            if stored["learning"] is True:
+                interview = stored.get("interview")
     except Exception:
-        block, zone, greeting = "", "", ""
+        block, zone, greeting, interview = "", "", "", None
     if not block:
-        zone, greeting = "", ""
+        zone, greeting, interview = "", "", None
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
-    return (block, zone, greeting)
+    return (_with_interview_line(block, interview, key), zone, greeting)
+
+
+def _interview_now() -> Any:
+    """The clock of the due line. A seam for the tests."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+#: When the due line was last shown, by ``(org, member)``, in this process.
+#: If the model asks and never marks the area ``asked``, the stored
+#: ``last_asked_at`` stays old. This map keeps the line to one for each
+#: ``DUE_HOURS``. ADVISORY across processes (R7): a second process has its
+#: own map, so a rare second line can come after a restart or on another box.
+_INTERVIEW_SHOWN: dict[tuple[str, str], Any] = {}
+
+
+def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None) -> str:
+    """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
+
+    *interview* is the stored value of a member whose ``learning`` is on,
+    else None. The line comes only in a run where the member can write from
+    the chat: the room is solo, ``WRITES_OPEN`` is open and the channel's
+    writes are on. It comes at most once for each ``DUE_HOURS`` in this
+    process (:data:`_INTERVIEW_SHOWN`). A line that would push the block over
+    ``RENDER_MAX`` is left out. No exception escapes."""
+    if not block or not interview:
+        return block
+    try:
+        from datetime import timedelta
+
+        from acb_common import assistant_profile
+
+        if _RUN_SOLO_ROOM.get() is not True:
+            return block
+        if not (assistant_profile.writes_open() and assistant_profile.channel_writes()):
+            return block
+        now = _interview_now()
+        shown = _INTERVIEW_SHOWN.get(key) if key is not None else None
+        if shown is not None and now - shown <= timedelta(hours=assistant_profile.DUE_HOURS):
+            return block
+        line = assistant_profile.interview_due_line(interview, now)
+        if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
+            return block
+        if key is not None:
+            _INTERVIEW_SHOWN.pop(key, None)
+            _INTERVIEW_SHOWN[key] = now
+            while len(_INTERVIEW_SHOWN) > _PROFILE_CACHE_MAX:
+                _INTERVIEW_SHOWN.pop(next(iter(_INTERVIEW_SHOWN)))
+        return f"{block}\n{line}"
+    except Exception:
+        return block
 
 
 def _member_profile_block(agent_name: str) -> str:
@@ -912,11 +970,15 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
     :func:`_verified_run_member`, both from the run boundary and never from
     the payload or the model (R5).
 
-    The member must also be the identity the tools act as, the run's memory
-    id. In a shared room the chat route binds the member who typed as the
-    verified member, and the memory id is ``room:<thread>``. That member's
-    spaces must not reach the room, so a room gets no block (review of
-    KB-4a, P1-a).
+    The run boundary must also say the room is solo (:data:`_RUN_SOLO_ROOM`,
+    WS-63 PZ-2, fails closed). In a shared room the chat route binds the
+    member who typed as the verified member. That member's spaces must not
+    reach the room, so a room gets no block (review of KB-4a, P1-a).
+
+    H-406: the memory id is NOT the signal. ``_bind_run_identity`` can rebind
+    it from ``payload.user_email``, a client field, so a member in a shared
+    room could send their own email and match. Fence:
+    ``tests/unit/test_knowledge_index_block.py``.
     """
     if agent_name != _KB_INDEX_AGENT:
         return None
@@ -930,13 +992,7 @@ def _kb_index_key(agent_name: str) -> tuple[str, str] | None:
     member = _verified_run_member()
     if not org or not member:
         return None
-    try:
-        from acb_skills.memory_tools import _get_memory_user_id
-
-        acting = str(_get_memory_user_id() or "").strip().lower()
-    except Exception:
-        return None
-    if acting != member:
+    if _RUN_SOLO_ROOM.get() is not True:
         return None
     if not _knowledge_org_allowed(org):
         return None
@@ -1001,21 +1057,16 @@ _EMAIL_CTX_AGENT = "orchestrator"
 def _email_ctx_member() -> str:
     """The member whose mail the email context may name, or ``""``.
 
-    The run's verified member, and only when the run's tools act as that
-    member. A shared room acts as ``room:<thread>``, so it gets no mailbox
-    list and no working set (the KB-4a rule, P1-a). From the run boundary,
-    never from the payload or the model (R5).
+    The run's verified member, and only when the run boundary says the room
+    is solo (:data:`_RUN_SOLO_ROOM`, fails closed). A shared room gets no
+    mailbox list and no working set (the KB-4a rule, P1-a). From the run
+    boundary, never from the payload or the model (R5). The memory id is not
+    the signal, because a client field can rebind it (H-406).
     """
     member = _verified_run_member()
-    if not member:
+    if not member or _RUN_SOLO_ROOM.get() is not True:
         return ""
-    try:
-        from acb_skills.memory_tools import _get_memory_user_id
-
-        acting = str(_get_memory_user_id() or "").strip().lower()
-    except Exception:
-        return ""
-    return member if acting == member else ""
+    return member
 
 
 async def _prime_email_context(agent_name: str) -> None:
@@ -4209,6 +4260,7 @@ async def _run_agent_inner(
     """
     _disable_agent_telemetry_once()
     settings = get_settings()
+    _batch_started = time.monotonic()
     run_id = run_id or str(uuid.uuid4())
     # H-227 (the batch decision, PR #616): the executor mints the thread of a
     # run with no chat. Only this code knows that, so a client can never claim
@@ -4672,6 +4724,12 @@ async def _run_agent_inner(
                     ),
                     is_copilot=_is_copilot_agent, emit=False,
                 )
+            # Chat speed: a delegated run's setup, up to its first request.
+            _log.info(
+                "executor.run_setup_ms", agent=agent_name, run_id=run_id,
+                setup_ms=round((time.monotonic() - _batch_started) * 1000),
+                path="batch",
+            )
             if agents:
                 _agent0 = agents[0]
                 _cfg_tier = (loaded.config.get("model_tier") or "")
@@ -5390,6 +5448,9 @@ async def run_agent_stream(
     # WS-8c: the MCP tools and clients this run opened. The finally closes
     # each one, however the run ends.
     _mcp_opened: list[Any] = []
+    # Chat speed: the run's tier question, started early (see below). The
+    # finally cancels it when the run ends before it is awaited.
+    _tier_task: asyncio.Future[Any] | None = None
 
     try:
         if _relay_mark_active is not None:
@@ -5592,6 +5653,29 @@ async def run_agent_stream(
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
             )
+
+            # Chat speed (2026-10-25): the tier question asks System 1, and it
+            # took 1.3 to 3.0 s in production. Its inputs are final once the
+            # run is bound, so it starts here and runs beside the email
+            # context, the rehydrate and the skills step below. The tier site
+            # awaits it, as before. The finally cancels it on an early end.
+            def _ask_run_tier(_ag: Any) -> Any:
+                return _tier_policy_for_run(
+                    agent_name, _ag,
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    think_mode=think_mode, event_payload=event_payload,
+                    config=loaded.config,
+                    agent_md_model=(
+                        (_agent_md_spec.model or "").strip()
+                        if _agent_md_spec is not None else ""
+                    ),
+                    is_copilot=_is_copilot_built(_ag, _agent_runtime),
+                    # The member's own turn: read the effort from their words.
+                    effort_from_text=True,
+                )
+
+            if agents:
+                _tier_task = asyncio.ensure_future(_ask_run_tier(agents[0]))
             # §7.1.1: the mailboxes and the email working set of this chat,
             # read now that the session is bound, for the sync context.
             await _prime_email_context(agent_name)
@@ -5655,11 +5739,7 @@ async def run_agent_stream(
             # agents silently skip session resume (re-injecting history every
             # turn) and the ask_user/working_directory wiring (audit
             # follow-up, 2026-07-22).
-            _is_copilot_sdk = (
-                _agent_runtime == "github-copilot"
-                or (hasattr(agent, "_default_options")
-                    and agent._default_options is not None)
-            )
+            _is_copilot_sdk = _is_copilot_built(agent, _agent_runtime)
             # WS-43t2: the stored session of a native run. Tier 1 loads it,
             # and Tier 2 reuses it when Tier 1 fails before any output.
             _session_turn: Any = None
@@ -5697,18 +5777,17 @@ async def run_agent_stream(
             # WS-45 S2 (D90): an agent that AI_TIER_ROUTING covers takes its
             # tier from the policy instead, and ignores 1 and 2. None for
             # every other agent, so this block runs as before.
-            _tier_run = await _tier_policy_for_run(
-                agent_name, agent,
-                run_id=run_id, thread_id=thread_id, model=model,
-                think_mode=think_mode, event_payload=event_payload,
-                config=loaded.config,
-                agent_md_model=(
-                    (_agent_md_spec.model or "").strip()
-                    if _agent_md_spec is not None else ""
-                ),
-                is_copilot=_is_copilot_sdk,
-                # The member's own turn: read the effort from their words.
-                effort_from_text=True,
+            _tier_wait_started = time.monotonic()
+            _tier_run = await (
+                _tier_task if _tier_task is not None else _ask_run_tier(agent)
+            )
+            # Chat speed: the setup of the run, up to the first model request.
+            # `tier_wait_ms` is what the tier question still cost after the
+            # overlap. Fence: tests/unit/test_chat_speed_slice2.py.
+            _log.info(
+                "executor.run_setup_ms", agent=agent_name, run_id=run_id,
+                setup_ms=round((time.monotonic() - _activity_started) * 1000),
+                tier_wait_ms=round((time.monotonic() - _tier_wait_started) * 1000),
             )
             # Owner, 2026-10-07: a covered chat sends `think_mode` "auto", and
             # the member's words may raise it to `thinking`. The run then
@@ -7421,6 +7500,13 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        if _tier_task is not None:
+            if not _tier_task.done():
+                _tier_task.cancel()
+            elif not _tier_task.cancelled():
+                # Read a result nobody awaited, so asyncio logs no "Task
+                # exception was never retrieved" for it.
+                _tier_task.exception()
         # H-363: a turn that was cancelled, or stopped on any other path,
         # pushes nothing. The request goes, and the log says so.
         _drop_agent_push(run_id, "the turn did not finish")
@@ -8540,6 +8626,17 @@ def _agent_for_run(agent: Any, provider: Any, history: Any = None) -> Any:
 # once, and no other line of a run changes.
 
 
+def _is_copilot_built(agent: Any, runtime: str) -> bool:
+    """True when *agent* runs on the Copilot SDK: by capability, or by label.
+
+    An agent built with GitHubCopilotAgent but declared runtime "maf" still
+    needs BYOK provider routing. The label "github-copilot" forces the path
+    even for a genuine MAF agent, which has no ``_default_options``."""
+    return runtime == "github-copilot" or (
+        hasattr(agent, "_default_options") and agent._default_options is not None
+    )
+
+
 def _tier_policy_covers(agent_name: str) -> bool:
     """True when `AI_TIER_ROUTING` covers *agent_name*. Fails closed."""
     try:
@@ -8671,6 +8768,8 @@ async def _tier_policy_for_run(
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
         read_effort=effort_from_text,
+        # A default the kind cannot move asks no question (`pinned`).
+        default=default,
     )
     _log.info(
         "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,

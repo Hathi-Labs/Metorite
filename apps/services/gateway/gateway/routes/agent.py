@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import re
+import time
 import uuid
 from contextvars import ContextVar
 from pathlib import Path
@@ -2669,6 +2670,47 @@ async def _extract_run_memory(
     return extracted
 
 
+#: The first event of each type that the member sees, and the name of its mark.
+_TIMING_MARKS: dict[str, str] = {
+    "RUN_STARTED": "started_ms",
+    "TOOL_CALL_START": "first_tool_ms",
+    "SUB_AGENT_TEXT_DELTA": "first_sub_text_ms",
+    "TEXT_MESSAGE_CONTENT": "first_text_ms",
+}
+
+
+class _RunTiming:
+    """The times the member waits in one streamed run (chat speed, 2026-10-25).
+
+    Each mark counts from the arrival of the request. It reads the TYPE of an
+    event and never its text. :func:`run_agent_stream_endpoint` logs one line,
+    ``agent.run_timing``, when the stream ends: at the finish, at an error, or
+    when the client goes away (the run itself goes on). Fence:
+    ``tests/unit/test_chat_speed_slice2.py``.
+    """
+
+    def __init__(self, started: float) -> None:
+        self._started = started
+        self._marks: dict[str, int] = {}
+        self.outcome = "disconnected"
+
+    def _ms(self) -> int:
+        return round((time.monotonic() - self._started) * 1000)
+
+    def see(self, evt: Any) -> None:
+        kind = evt.get("type") if isinstance(evt, dict) else None
+        mark = _TIMING_MARKS.get(str(kind))
+        if mark and mark not in self._marks:
+            self._marks[mark] = self._ms()
+        if kind == "RUN_FINISHED":
+            self.outcome = "finished"
+        elif kind == "RUN_ERROR":
+            self.outcome = "error"
+
+    def fields(self) -> dict[str, Any]:
+        return {**self._marks, "total_ms": self._ms(), "outcome": self.outcome}
+
+
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
 async def run_agent_stream_endpoint(
     req: AgentRunRequest,
@@ -2689,6 +2731,7 @@ async def run_agent_stream_endpoint(
     Use this instead of ``POST /agent/run`` whenever the caller wants live
     tool-call visibility (e.g. the control-plane chat UI).
     """
+    _route_started = time.monotonic()
     import asyncio
 
     from orchestrator.executor import run_agent_stream  # noqa: PLC0415
@@ -3204,14 +3247,20 @@ async def run_agent_stream_endpoint(
     from acb_common.assistant_profile import member_typed  # noqa: PLC0415
 
     async def _serve():
-        # WS-63 PZ-6a fix round 2: the typed words reach the run through
-        # this ONE binding. The drain task that `run_detached` starts copies
-        # the context here, so the run reads them, and nothing else does.
-        with member_typed(_typed):
-            async for chunk in _serve_run():
-                yield chunk
+        timing = _RunTiming(_route_started)
+        try:
+            # WS-63 PZ-6a fix round 2: the typed words reach the run through
+            # this ONE binding. The drain task that `run_detached` starts
+            # copies the context here, so the run reads them, and nothing
+            # else does.
+            with member_typed(_typed):
+                async for chunk in _serve_run(timing):
+                    yield chunk
+        finally:
+            _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
+                      **timing.fields())
 
-    async def _serve_run():
+    async def _serve_run(timing: _RunTiming):
         try:
             async for evt in run_detached(
                 thread_id, agent_gen, tee=False,
@@ -3232,6 +3281,7 @@ async def run_agent_stream_endpoint(
                     "model": req.model,
                 },
             ):
+                timing.see(evt)
                 yield f"data: {json.dumps(evt)}\n\n"
         except SupersedeRefused:
             # The inner §5.2 invariant fired: between routing this turn and
@@ -3246,6 +3296,7 @@ async def run_agent_stream_endpoint(
             )
             await _release_cap_slot()
             await _give_back_taken()
+            timing.outcome = "superseded"
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
                 "message": (
@@ -3268,6 +3319,9 @@ async def run_agent_stream_endpoint(
             # Redis was unavailable from the start — degrade to direct
             # streaming with no relay (old behaviour).
             _log.warning("agent.stream_relay_unavailable", agent=agent_name)
+            # These lines are SSE text, so the marks stay empty. The outcome
+            # says why, not "disconnected".
+            timing.outcome = "direct"
             async for line in agent_gen:
                 yield line
 

@@ -50,7 +50,9 @@ class AgentScope:
     seal narrow both arms of its clauses. ``None`` on ``UserContext.agent``
     means a human request, and every clause is then byte-identical to before.
 
-    Every field comes from the ``agent_connection`` row, never from a header.
+    Every field comes from the ``agent_connection`` row, never from a header,
+    with one exception: ``session_key`` (SW-7) comes from the SIGNED
+    ``X-Agent-Session`` header of the edge, which the HMAC covers.
     """
 
     connection_id: str
@@ -64,6 +66,10 @@ class AgentScope:
     #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` for the
     #: connection's client id. Without a slug it is the host stamp.
     actor_via: str = ""
+    #: SW-7 (spec §12.5). The MCP session key of the call, from the SIGNED
+    #: ``X-Agent-Session`` header and never from a body. ``None`` when the
+    #: edge served the call outside an MCP session.
+    session_key: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

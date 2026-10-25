@@ -867,6 +867,7 @@ async def create_task(
     start: str = "",
     type: str = "",
     fields: str = "",
+    source: str = "",
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -891,6 +892,10 @@ async def create_task(
     NAME (vocabulary lists them). fields sets custom field values: a JSON
     object keyed by field NAME, for example {"Customer": "Acme"}. A choice
     field takes one of its options, and the card shows every value.
+    source says where the task came from: email, agent or automation. Leave
+    it out for work the member typed. Use email only for a task made from a
+    mail that email-assistant described. The card then says that the text
+    leaves the mailbox.
     The card may flag an open task that looks the same."""
     pid, by_name = await _project_ref(project_id)
     name = str(title or "").strip()
@@ -928,6 +933,7 @@ async def create_task(
         fields=fields,
         parent_task_id=parent_task_id,
         assignees=_split(assignees),
+        source=source,
     )
     card = _priority_card(new.payload)
     # The card names the type and each field by NAME (`extra.card`).
@@ -947,6 +953,10 @@ async def create_task(
         # P1). The id line alone would not tell the member where it goes.
         card = {"project": data(by_name), **{k: v for k, v in card.items() if k != "project_id"}}
         where = f" · in {data(by_name)}"
+    if new.payload.get("source") == "email":
+        # P9: the first line of the card says what leaves the mailbox.
+        shown = data(by_name or (await _node(pid))[1].get("name"))
+        card = {"mailbox": mailbox_line(shown), **card}
     # WS-47 WAC-4: a card that names the project by NAME must still bind the
     # project it resolved, and the people, for a Confirm on WhatsApp.
     _bind_card_facts(project_id=pid, assignees=sorted(new.who))
@@ -969,6 +979,34 @@ async def create_task(
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
     return repeating.receipt(task, lines, saved, failed, new.extra)
+
+
+#: WS-46 P9 (G10). Where a new task came from: the values of
+#: ``core.CLIENT_TASK_SOURCES``. ``mcp`` is the server's own stamp, so a body
+#: that names it gets 422. ``tests/unit/test_projects_context_sources.py``
+#: holds this tuple equal to the route's.
+TASK_SOURCES: tuple[str, ...] = ("manual", "import", "email", "agent", "automation")
+
+
+def _task_source(source: str) -> str:
+    """The ``source`` of a new task, or ``""`` for work the member typed.
+    Raises the refusal, said before the card."""
+    word = str(source or "").strip().lower()
+    if not word:
+        return ""
+    if word not in TASK_SOURCES:
+        raise GatewayRefusal(
+            f"source is one of {', '.join(TASK_SOURCES)}, not {data(word)}. "
+            "Leave it out for work the member typed."
+        )
+    return word
+
+
+def mailbox_line(project: str) -> str:
+    """The first line of a card that makes tasks from a mail (§10.2 step 6)."""
+    return (
+        f"This text leaves your mailbox. Everyone who can see {project} will see it."
+    )
 
 
 class _NewTask:
@@ -1014,6 +1052,7 @@ async def _prepare_new_task(
     parent_task_id: str = "",
     assignees: list[str] | None = None,
     statuses: list[dict[str, Any]] | None = None,
+    source: str = "",
 ) -> _NewTask:
     """Every name of one new task resolved, before any card. Raises the refusal.
 
@@ -1021,6 +1060,9 @@ async def _prepare_new_task(
     caller read it already, so a batch reads it once and not once per row.
     """
     payload: dict[str, Any] = {"project_id": pid, "title": name}
+    where_from = _task_source(source)
+    if where_from:
+        payload["source"] = where_from
     if description.strip():
         payload["description"] = description.strip()
     if status.strip():
@@ -3315,11 +3357,11 @@ async def update_project(
 
 #: The route's `reports.SECTIONS`, held equal by
 #: `tests/unit/test_projects_report_sections_lockstep.py`. `outlook`,
-#: `capacity`, `pulse`, `hygiene`, `conflicts` and `rebalance` are opt-in:
-#: a report carries one only when the member asks.
+#: `capacity`, `pulse`, `waiting`, `hygiene`, `conflicts` and `rebalance` are
+#: opt-in: a report carries one only when the member asks.
 REPORT_SECTIONS = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse", "stuck",
-    "hygiene", "conflicts", "rebalance",
+    "waiting", "hygiene", "conflicts", "rebalance",
 )
 
 #: WS-27bn R5d (§9 Q13). The words of the server's 403, in
@@ -3375,9 +3417,9 @@ async def report_save(
     """Save a report definition, or change one (pass report_id). A report
     stores the question: scope (project_id, or empty for the portfolio),
     sections (comma-separated from finished, throughput, outlook, load,
-    capacity, pulse, stuck, hygiene, conflicts, rebalance; outlook,
-    capacity, pulse, hygiene, conflicts and rebalance are never there
-    unless asked for) and
+    capacity, pulse, stuck, waiting, hygiene, conflicts, rebalance; outlook,
+    capacity, pulse, waiting, hygiene, conflicts and rebalance are never
+    there unless asked for) and
     weeks. Render it
     with report_render. Delivery and schedules stay in the Reports app."""
     label = str(name or "").strip()

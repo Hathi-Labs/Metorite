@@ -183,6 +183,7 @@ MANIFEST: tuple[Route, ...] = (
           reason=_SOURCE_DISCONNECT_REASON),
     # ── Entities (KC-8a, knowledge_curation.md §6) ── the directory under the
     # owner rule of each type. Not on the chat surface yet.
+    Route("GET", "/knowledge/entity-types", "", "X", reason=_ENTITY_REASON),
     Route("GET", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),
     Route("GET", "/knowledge/entities/{entity_id}", "", "X", reason=_ENTITY_REASON),
     Route("POST", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),

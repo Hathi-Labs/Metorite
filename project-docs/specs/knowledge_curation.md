@@ -32,7 +32,12 @@ Verified against the code on 2026-10-25, at `origin/main` `76f3e9875`.
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
 and person resolvers, and the directory routes under the rule of §6.4.
-KC-8b and KC-8c stay open.
+KC-8c stays open.
+
+**KC-8b BUILT 2026-10-25** (branch `kc-8b-directories`, no migration, dark
+under `KNOWLEDGE_ENABLED`). It adds the Directories group in the rail, the
+directory view at `/knowledge/directories/<type>`, and "Write the page" with
+its warning. It adds one read route, `GET /knowledge/entity-types`.
 
 The Metorite project "Knowledge" (Hathi Labs) holds the build plan: six
 epics, #361 to #366, and one task for each slice, #368 to #411 (§23).
@@ -353,6 +358,17 @@ The name and the role stay in `people`, and the People app stays their owner.
   reads the owner row under the rule of §6.4, then calls `ensure_entity`.
   The page route then takes the entity id. A row that the caller cannot see
   gets 404, and nothing is written.
+
+**KC-8b decision, 2026-10-25.** A new page is a draft that only its author sees.
+So the leak that §6.4 warns of starts when the author publishes the
+page, and not when the page is made. The dialog "Write the page" shows a
+warning for a customer, a workstream, a person and a workflow. The warning
+says that everyone who can read the space sees the page and the name of the
+record. That includes people who cannot open the record in its own app.
+
+The dialog also offers another space that the author can write in. The default
+stays `company`, and a `me` space is never offered. KC-9 keeps the hard gate
+that §22 names.
 
 ### 6.3 The directories
 
@@ -824,6 +840,7 @@ All of it lives in the Knowledge app and its rail. No new pane (D-KB-7).
 |---|---|---|
 | Rail → **Sources** (built at KC-1b: the drives and their tree. The filing plan and the exceptions come with KC-7) | The connected drives, their tree, the filing plan, the exceptions | A member sees their own sources. A manager sees every source |
 | Rail → **Directories** | Company, Products, People, Customers, Workstreams, Workflows, Topics | Each type by its owning app's rule (§6.4) |
+| `GET /knowledge/entity-types` (KC-8b) | The types with one visible row or more, in the order of §6.1. The rail draws one Directories row for each | Each type by its owning app's rule (§6.4) |
 | An entity page | The brief and the body (§11) | Through the clause |
 | Rail → **Review** (built) | Proposals: pages, edits, merges, promotions, drafts | The reviewers of KB-5a |
 | Rail → **Health** | The gardener's last run, conflicts, orphans, spend | `knowledge:manage` |
@@ -1059,7 +1076,7 @@ keeps the brain current.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KC-8a** | The entity registry, backend: `kb_entities`, the page types, aliases, `ensure_entity`, the resolver, the directory routes under the rule of §6.4, lazy entity pages. It does not depend on KC-1 to KC-7 | Each person in `people` resolves to one entity. A second insert for one record fails. A member without the owning app's access gets no row of that type, and a GET by id is 404. A project the member cannot see, another member's personal project, and a CRM company outside `crm_settings.access` never show in a list, a get or an alias hit. Org B sees no entity of org A | AGENT-SAFE. HIGH tier |
-| **KC-8b** | The Directories group in the rail, after KC-8a | A rail row shows only for a type with a visible entity. The visual review passes | AGENT-SAFE |
+| **KC-8b** | The Directories group in the rail, after KC-8a. **BUILT 2026-10-25.** | A rail row shows only for a type with a visible entity: `GET /knowledge/entity-types` answers exactly the types whose directory has one visible row, and the client holds no per-type permission rule. A directory lists one type, searches, and shows "Write the page" only for a row with no page. The act calls by-ref before the page route. The dialog warns for a customer, a workstream, a person and a workflow, and lists no `me` space. A 404 and a 409 each show their own words. The visual review passes | AGENT-SAFE. MEDIUM tier |
 | **KC-8c** | After KC-6: a filing makes a product entity | The Products directory lists an entity made from a filing | AGENT-SAFE |
 | **KC-9** | Facts and episodes: `kb_episodes`, `kb_facts`, `kb_fact_episodes`, extraction from documents and pages, the update step, the quote check, fact chunks | A datasheet v3 that changes a value closes the v2 fact and keeps it in history. A fact with no quote in its episode is dropped. `test_kc_fact_audience.py`: a private fact and an org fact never merge. The eval precision is 90% or more. **The rule of a restricted record (KC-8a re-verify, 2026-10-25):** the page of a person, a customer or a workstream defaults to the `company` space, which every member reads. So a fact about a record that its own app hides from a member must not reach that member through the page. KC-9 gates each fact and the page title of such a record by the owner rule of §6.4, or it files the page in a space whose readers all pass that rule. An R8 test proves that a member without CRM access reads no fact and no title of a customer page | AGENT-SAFE to build. HIGH tier. The flip: owner |
 | **KC-10** | The brief zone: drawn per reader, Confirm, Correct, Hide, the confidence floor, the history | Two members with different access see two briefs, and neither sees a fact outside their audience (R8). Correct closes the old fact and adds the new one | AGENT-SAFE. Showing learned facts before a click: §21 Q3 |

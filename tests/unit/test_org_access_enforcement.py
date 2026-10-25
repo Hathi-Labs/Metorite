@@ -173,6 +173,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # the WhatsApp channel. No exemptions: each route serves the signed-in
     # member only.
     "gateway.reach.routes": set(),
+    # WS-66 PN-1 — web push (`/push/public-key`, `/push/subscriptions`,
+    # `/push/test`). Gated on `feature:chat`, as `/reach` is. No exemptions:
+    # each route serves the signed-in member's own devices only.
+    "gateway.push.routes": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
     # WS-54 — the three routers of the Integrations console. Each one is

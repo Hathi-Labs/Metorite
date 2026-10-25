@@ -8,6 +8,15 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-25 BUILT 2026-10-25, dark** (D113). The profile switch is per
+organization: `ASSISTANT_PROFILE_ORGS` limits `ASSISTANT_PROFILE_ENABLED` to
+a list. A change of either name needs a restart. See §14.2 "PZ-25 as built".
+
+**PZ-26 BUILT 2026-10-25, dark** (D113). The `area` key of a fact, the
+`interview` key, the tool `profile_interview`, the four interview routes and
+the due line in the block. See §14.4 "PZ-26 as built". PZ-27 builds the web
+side.
+
 **PZ-8 BUILT 2026-10-25, dark.** The WhatsApp scope rule names the profile
 exception, and asks the model to keep the channel limits. See "PZ-8 as
 built" in §9.
@@ -1078,6 +1087,19 @@ The first release needs one organization.
    My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
    live set of `launch_surface.md` §2 and `nav.test.ts` does not change.
 
+**PZ-25 as built (2026-10-25).**
+
+1. `enabled_for(org)` replaces `enabled()`. The executor reads the run org
+   first.
+2. `build_orchestrator_agent` takes the org from its caller, then the bound
+   tenant. A build with no org gets no profile tool.
+3. `build_payload` takes the org of the WhatsApp link.
+4. The GET route answers `enabled`. `/address` answers an empty name when
+   the org is off. The writes take no flag.
+5. The web hook `useAssistantProfileEnabled` needs the build switch and
+   `enabled`.
+6. The fence is `tests/unit/test_assistant_profile_org_rollout.py`.
+
 ### 14.3 The interview areas
 
 The interview has ten areas. Each area has one starting question and a
@@ -1140,11 +1162,16 @@ starting question. The model asks it only at the end of a reply that fits.
    when `last_asked_at` is more than 24 hours old. The model marks the
    area `asked` when it asks.
 2. **A skip waits 14 days** (D-PZ-13). After that, the area is open again.
+   An area marked `asked` with no answer waits 14 days too, as a skip does.
 3. **"Don't ask again" sets `never`.** That area never comes back, unless
    the member resets it in Settings.
 4. **No question in a shared room**, the same rule as the block (§5.1).
 5. **No outbound question.** On WhatsApp, a question comes only inside a
    chat that the member started. Reach stays the only sender (D-PZ-14).
+
+If the member says no to the first-chat offer, the web app sets `started_at`
+and leaves `last_asked_at` empty. The due line needs both keys, so no due
+line ever comes. This is intended.
 
 **The writes.** An interview answer is the member's own typed words, so it
 is an explicit write (D-PZ-2), with Undo. The sensitive rule of D-PZ-16
@@ -1154,12 +1181,48 @@ needs a second yes. An opinion is never saved.
 **Settings → Assistant.** The pane shows each area and its state, and the
 member can reset one area or the whole interview. A fact shows its area.
 
+**PZ-26 as built (2026-10-25).**
+
+1. `acb_common.assistant_profile` holds the one table `AREAS`, the states, and
+   the numbers `DUE_HOURS` (24) and `WAIT_DAYS` (14). Three pure functions
+   take the clock as an argument: `apply_interview_mark`, `open_areas` and
+   `interview_due_line`. The parser keeps a valid `interview`. It drops an
+   unknown area, state or time. It also drops a fact `area` that it does not
+   know.
+2. The routes are under `/auth/me/assistant-profile`. `POST .../interview`
+   starts it. `POST .../interview/{area}` marks it. The two `DELETE` routes
+   reset one area or all. The server sets every time. A mark writes no
+   `last_change`, and it does not count in the 6,000-character budget.
+   A reset from the chat is a 422. The routes take no org flag, as the other
+   write routes take none.
+3. `profile_interview` reads the open areas (`next`, `next_sitting` with five)
+   and marks one area. `profile_remember` takes `area` and marks the area
+   `answered` after the save. The undo of that fact opens the area again.
+4. The executor keeps the stored `interview` in its 60 second cache. It
+   computes the due line on each turn. The line comes only in a solo run with
+   open profile writes, WhatsApp writes on and `learning` on.
+5. `profile_interview(next)` gives only the area that is due now. A member
+   who said no gets nothing. `next_sitting` starts a sitting: it sets
+   `sitting_at`, and for two hours the chat may mark an area `asked`. Outside
+   a sitting, the route refuses `asked` from the chat unless a question is
+   due. Settings is not limited.
+6. `profile_interview(stop)` marks `never` each area that is not `answered`.
+   `profile_interview(start)` sets `started_at` only. It is the "no thanks"
+   said in the chat. A learning switch that is off refuses both.
+7. The model may ask and never mark `asked`. So the executor shows the due
+   line at most once in `DUE_HOURS` for each member in one process.
+   This limit is ADVISORY across processes (R7). A restart, or a second box,
+   can show the line once more. `profile_remember` with `replaces` and an
+   area marks the area `answered` too.
+8. The fences are `tests/unit/test_assistant_profile_interview.py` and
+   `tests/unit/test_assistant_profile_interview_r8.py`.
+
 ### 14.5 The slices
 
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
-| **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block) |
-| **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM |
+| **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block). **BUILT 2026-10-25, dark** |
+| **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM. **BUILT 2026-10-25, dark** |
 | **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 

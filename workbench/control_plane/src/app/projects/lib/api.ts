@@ -656,6 +656,76 @@ export interface HygieneReport {
   rows: HygieneRow[];
 }
 
+/**
+ * WS-27bn RA-3 — one row of the `waiting` section: a task that waits on a
+ * person, the agent, and the member the agent works for (§6.8 E2).
+ */
+export interface WaitingRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** When the wait began, and its age, from the database clock. */
+  since: string | null;
+  age_hours: number | null;
+  /** The client name, from the one client map of the server. */
+  agent: string;
+  client_via: string | null;
+  /** The member the agent works for. `null` for an in-app agent. */
+  member: string | null;
+  member_name: string | null;
+  /** A question row only: the run that asks. The client keys the row on it. */
+  run_id?: string;
+}
+
+/** A task that an agent put up for a review (§5, "Waiting on a person"). */
+export interface WaitingReview extends WaitingRow {
+  reasons: ("review_lane" | "pull_request")[];
+  pr_url: string | null;
+}
+
+/** An open `blocks` link between a person's task and an agent's task. */
+export interface WaitingHandoff extends WaitingRow {
+  blocker_id: string;
+  blocker_number: number | null;
+  blocker_title: string;
+  /** Which task of the link the agent holds. */
+  agent_side: "blocker" | "blocked";
+  /** The person who holds the other task. */
+  person: string | null;
+  person_name: string | null;
+}
+
+/**
+ * WS-27bn RA-3 — the `waiting` section (`analytics_waiting.py`
+ * `waiting_body`). The three lists read the state now, and each names up to
+ * `max_rows` rows beside a total. The answer time reads the report period.
+ */
+export interface WaitingReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** False when no task of the scope has an agent run. */
+  agent_runs_seen: boolean;
+  questions: WaitingRow[];
+  questions_total: number;
+  reviews: WaitingReview[];
+  reviews_total: number;
+  handoffs: WaitingHandoff[];
+  handoffs_total: number;
+  answer_time: {
+    asked: number;
+    answered: number;
+    unanswered: number;
+    median_hours: number | null;
+    p90_hours: number | null;
+  };
+  max_rows: number;
+}
+
 /** WS-27bn R3d — the three reasons a person needs help. */
 export type PulseHelpReason = "blocked" | "stale" | "waiting_overdue";
 
@@ -1141,6 +1211,11 @@ export interface RenderedReportBody {
       blocked?: StuckReport["blocked"];
       blocked_total?: number;
     };
+    /**
+     * WS-27bn RA-3. What waits on a person: agent questions, agent work for
+     * a review and blocked handoffs, with the answer time of the period.
+     */
+    waiting?: WaitingReport;
     /**
      * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
      * estimate, and tasks in progress with no change. It reads the state now.

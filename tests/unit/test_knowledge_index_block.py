@@ -27,7 +27,11 @@ Mutations this file catches (R7):
   ``test_an_org_off_the_list_gets_no_block``;
 * the flag-off path reads or shows the block -> ``TestAbsentWhenOff``;
 * the cap goes -> ``test_the_block_is_capped``;
-* the cache goes -> ``test_two_turns_give_the_same_bytes_from_one_read``.
+* the cache goes -> ``test_two_turns_give_the_same_bytes_from_one_read``;
+* the solo-room bit goes back to the memory-id compare (H-406) ->
+  ``test_a_shared_room_with_the_members_own_email_gets_no_block``;
+* the solo-room bit stops failing closed ->
+  ``test_an_unset_solo_room_bit_fails_closed``.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import orchestrator.executor as ex
 import pytest
 from acb_common import get_settings
 from acb_skills import knowledge_tools as kt
+from acb_skills.memory_tools import _get_memory_user_id as _real_get_memory_user_id
 
 ORG = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
@@ -99,9 +104,12 @@ def run(monkeypatch) -> dict[str, Any]:
 
     monkeypatch.setattr(memory_tools, "_get_memory_user_id", lambda: state["memory"])
     monkeypatch.setattr(ex, "_run_org_display_name", lambda: "Acme Tools")
+    # WS-63 PZ-2: the run boundary says this run is the member's own room.
+    solo = ex._RUN_SOLO_ROOM.set(True)
     ex._KB_INDEX_CACHE.clear()
     yield state
     ex._KB_INDEX_CACHE.clear()
+    ex._RUN_SOLO_ROOM.reset(solo)
 
 
 def _turn(agent: str = "orchestrator", payload: dict[str, Any] | None = None) -> list[str]:
@@ -199,18 +207,49 @@ class TestAbsentWhenOff:
         """Review of KB-4a, P1-a. In a shared room the chat route binds the
         member who typed as the verified member, and the run's memory id is
         the room's. The block would list that member's spaces to the room."""
+        ex._RUN_SOLO_ROOM.set(False)
         run["memory"] = "room:thread-1"
         assert _block(_turn()) == ""
         assert run["gw"].requests == []
 
-    def test_a_memory_id_of_another_member_gets_no_block(self, run) -> None:
-        run["memory"] = "someone-else@customer.example"
-        assert _block(_turn()) == ""
+    def test_a_shared_room_with_the_members_own_email_gets_no_block(
+            self, run, monkeypatch) -> None:
+        """H-406. ``_bind_run_identity`` rebinds the memory id from
+        ``payload.user_email``, a client field. A member in a shared room
+        sends their own email, so the memory id matches the verified member.
+        The run boundary still says the room is shared, so no block."""
+        from acb_skills import memory_tools
+
+        monkeypatch.setattr(memory_tools, "_get_memory_user_id", _real_get_memory_user_id)
+        ex._RUN_SOLO_ROOM.set(False)
+        payload = {"user_email": MEMBER, "message": "hi"}
+        binding = ex._bind_run_identity(payload, "orchestrator")
+        try:
+            assert _real_get_memory_user_id() == MEMBER  # the client's claim won
+            assert _block(_turn(payload=payload)) == ""
+        finally:
+            ex._unbind_run_identity(binding)
+        assert run["gw"].requests == []
+
+    def test_a_true_solo_room_gets_the_block(self, run) -> None:
+        assert ex._RUN_SOLO_ROOM.get() is True
+        assert _block(_turn()) == EXPECTED
+        assert len(run["gw"].requests) == 1
+
+    def test_an_unset_solo_room_bit_fails_closed(self, run) -> None:
+        """A caller that passes no ``solo_room`` leaves the default, False."""
+        import contextvars
+
+        def _fresh() -> str:
+            assert ex._RUN_SOLO_ROOM.get() is False
+            return _block(_turn())
+
+        assert contextvars.Context().run(_fresh) == ""
         assert run["gw"].requests == []
 
     def test_a_cached_block_is_not_served_in_a_room(self, run) -> None:
         assert _block(_turn()) == EXPECTED
-        run["memory"] = "room:thread-1"
+        ex._RUN_SOLO_ROOM.set(False)
         assert _block(ex._context_preamble_parts({}, {}, "orchestrator")) == ""
 
     def test_a_flag_turned_off_drops_a_cached_block_at_once(self, run, monkeypatch) -> None:

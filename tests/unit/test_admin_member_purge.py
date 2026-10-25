@@ -477,6 +477,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "knowledge_favorites": 0,
         # WS-63 PZ-9: her settings row of this org, with the profile.
         "member_settings": 1,
+        # WS-66 PN-1: the fake holds no push device of the member.
+        "push_devices": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -632,6 +634,24 @@ def test_the_settings_row_of_this_org_goes_and_no_other() -> None:
     # Before the member record, as every other row of the member.
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("member_settings") < keys.index("member_record")
+
+
+def test_the_push_devices_of_this_org_go_and_no_other() -> None:
+    """WS-66 PN-1: a purged member leaves no web push device behind. A device
+    row would keep a push going to the leaver's browser.
+
+    One browser endpoint can sit in two orgs (one account each), so the
+    clause names the bound org, as the settings row does.
+    ``test_push_subscriptions.py`` runs this clause on a real Postgres (R8).
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "push_subscriptions"]
+    assert rows.key == "push_devices"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("push_devices") < keys.index("member_record")
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
