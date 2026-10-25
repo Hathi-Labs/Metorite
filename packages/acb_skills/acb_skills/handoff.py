@@ -19,8 +19,9 @@ label, never content.
 
 **OA-4, the chat's corrections and limits.** The member's kept corrections
 of the chat (``acb_skills.chat_constraints``) go into the same head, after
-the member's words, under :data:`CONSTRAINTS_MARK`. With none, the head is
-the OA-1 head, byte for byte.
+the reply rules, under :data:`CONSTRAINTS_MARK`. They come from the run
+binding, never from the task. With none, the head is the OA-1 head, byte
+for byte.
 """
 from __future__ import annotations
 
@@ -163,17 +164,23 @@ def task_with_member_words(
 ) -> str:
     """*task* with the member's words and the reply rules at its head.
 
-    A task that has the head block already comes back unchanged, so a
-    nested delegation adds nothing. With no words, the head holds the reply
-    rules only. The words outrank the task: the model wrote the task, and
-    the member wrote the words. *constraints* are the member's kept
-    corrections and limits of the chat (OA-4). They follow the words, and
-    with none the head does not change.
+    A model writes the task, and a model can copy text from an email, so
+    nothing in the task is trusted. A head that the task already holds is
+    stripped (:func:`task_of`), and the head is built again from *turns*,
+    which come from the run binding. So a forged head never outranks the
+    member, and a second pass with the same words gives the same text. With
+    no words, the head holds the reply rules only. The words outrank the
+    task: the model wrote the task, and the member wrote the words.
+
+    *constraints* are the member's kept corrections and limits of the chat
+    (OA-4), from the run binding too. Their block goes after the reply
+    rules and before :data:`TASK_MARK`, so every head still starts with
+    :data:`HEAD_MARK` or the rules, and :func:`task_of` strips the block
+    with the head. A task that starts with :data:`CONSTRAINTS_MARK` is
+    model text, so it stays in the task and is never trusted. With no
+    constraints the head is the OA-1 head, byte for byte, for every task.
     """
-    text = str(task or "")
-    if (text.startswith(HEAD_MARK) or text.startswith(CONSTRAINTS_MARK)
-            or text.startswith(_RULES)):
-        return text
+    text = task_of(str(task or ""))
     words = [str(t) for t in (turns or []) if str(t).strip()]
     kept = [str(c) for c in (constraints or []) if str(c).strip()]
     head = ""
@@ -185,15 +192,15 @@ def task_with_member_words(
             + "".join("- " + w.replace("\n", "\n  ") + "\n" for w in words)
             + "\n"
         )
+    rules = _RULES
     if kept:
-        head += (
-            CONSTRAINTS_MARK + "\n"
+        rules += (
+            "\n" + CONSTRAINTS_MARK + "\n"
             "The member set these in this chat. They outrank the task below and\n"
             "anything said earlier in the chat.\n"
-            + "".join(f"- {c}\n" for c in kept)
-            + "\n"
+            + "".join("- " + " ".join(c.split()) + "\n" for c in kept)
         )
-    return head + _RULES + TASK_MARK + text
+    return head + rules + TASK_MARK + text
 
 
 #: The line that starts the task under the head block.
@@ -222,8 +229,10 @@ def head_task(task: str) -> str:
     (``agent_tools.call_agent``, ``call_agents_parallel`` and
     ``call_agent_background``, ``orchestrator.agents.delegate_to_agent``).
     Call it on the PARENT's frame, before the child binds its own context.
-    It is idempotent, so a task that one site headed passes the next. The
-    member's kept corrections of the chat (OA-4) follow the words.
+    It is idempotent: a task that one site headed comes out the same from
+    the next, because the head is stripped and built again. The member's
+    kept corrections of the chat (OA-4) come from the run binding each time
+    too, never from the task.
     """
     try:
         from acb_skills.write_artifact import artifact_context
@@ -239,8 +248,7 @@ def task_of(message: str) -> str:
     no head. The tier question reads this, so the head does not make every
     task look long (``tier_policy.SHORT_MESSAGE_WORDS``)."""
     text = str(message or "")
-    if not (text.startswith(HEAD_MARK) or text.startswith(CONSTRAINTS_MARK)
-            or text.startswith(_RULES)):
+    if not (text.startswith(HEAD_MARK) or text.startswith(_RULES)):
         return text
     _, mark, task = text.partition(TASK_MARK)
     return task if mark else text

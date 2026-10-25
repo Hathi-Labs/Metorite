@@ -2041,7 +2041,6 @@ async def _run_sub_agent_streaming(
     # PARENT's binding, on the parent's frame. WS-67 OA-4: `head_task` puts
     # the member's kept corrections and limits of the chat after the words.
     from acb_skills.handoff import head_task
-    from acb_skills.write_artifact import artifact_context
     message_str = head_task(message_str)
     _repo_name: str | None = None
     _local_path: str | None = None
