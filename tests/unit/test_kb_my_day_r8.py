@@ -218,7 +218,9 @@ async def test_an_archived_page_an_archived_space_and_a_me_space_give_no_new_car
     # The reader reads `live` only. The me page is the reader's own space.
     assert _ids((await _read(kb, reader)).shared) == [live]
     # A manager reads archived pages through the clause, and gets no card.
-    assert _ids((await _read(kb, admin)).shared) == [live]
+    managers = _ids((await _read(kb, admin)).shared)
+    assert managers == [live]
+    assert gone not in managers and shelved not in managers
 
 
 # ── F2: twelve expired pages give ten review cards and still the new page ───
