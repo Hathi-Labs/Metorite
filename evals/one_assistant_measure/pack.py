@@ -52,7 +52,7 @@ REFUSED = (
 #: The rules block of the pack. Each rule is drawn from ``instructions.md``
 #: of the email assistant, or from the email bullets of the orchestrator's
 #: persona that :func:`persona_for_pack` takes out. It is short on purpose:
-#: about 2,700 characters, against about 28,000 of ``instructions.md``.
+#: about 2,200 characters, against about 28,000 of ``instructions.md``.
 RULES = """\
 EMAIL TOOLS. You hold the tools of the member's mailboxes. Use them yourself.
 No email agent exists to hand a task to.

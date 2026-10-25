@@ -22,8 +22,8 @@ Spec: `project-docs/specs/one_assistant_context.md`, §4 and §5, slice OA-5
 
 The tool pack in this measure is an eval fixture (`pack.py`). It changes
 the agents that the real factory built. No production code changed. The
-fixture removes the `email_assistant` tool, and it adds 59 email tools. It
-replaces 8 email bullets of the persona with a rules block of about 2,800
+fixture removes the `email_assistant` tool, and it adds 58 email tools. It
+replaces 8 email bullets of the persona with a rules block of about 2,200
 characters. The email assistant's own `instructions.md` has about 28,000.
 
 ## 2. Method
@@ -46,7 +46,7 @@ the five-turn email test.
 - a reply after a correction in an earlier turn, and a reply with the
   member's exact text
 
-**The checks.** Each turn has machine checks, 31 kinds in all. Examples are
+**The checks.** Each turn has machine checks: 31 named checks of 19 kinds. Examples are
 the right tool, the facts of the answer, the reply card, the member's
 correction in the reply, and "no file name as content". The pack arm has
 one more check on each turn: it handed no task to an email agent.
