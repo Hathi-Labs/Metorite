@@ -276,6 +276,14 @@ def test_whatsapp_has_the_profile_sentences_only_on_the_list(monkeypatch) -> Non
         assert off == bot_run.SCOPE_RULE_WRITES
 
 
+def test_whatsapp_with_no_org_has_no_sentences_also_for_each_org(monkeypatch) -> None:
+    """An empty list means each org, and never no org."""
+    _switch(monkeypatch, True, "")
+    assert bot_run.PROFILE_CHANNEL_RULE in _rule(OUT)
+    for off in (_rule(None), _rule("")):
+        assert off == bot_run.SCOPE_RULE_WRITES
+
+
 def test_whatsapp_master_off_wins(monkeypatch) -> None:
     _switch(monkeypatch, False, IN)
     assert _rule(IN) == bot_run.SCOPE_RULE_WRITES
