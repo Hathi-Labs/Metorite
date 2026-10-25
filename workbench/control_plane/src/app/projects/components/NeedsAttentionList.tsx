@@ -179,7 +179,10 @@ export function NeedsAttentionList({
                     className="flex flex-wrap items-start gap-x-3 gap-y-1.5 px-3 py-2"
                     data-attention-row={row.kind}
                   >
-                    <div className="min-w-0 flex-1">
+                    {/* `basis-56`: on a phone the acts wrap under the
+                        words, so the title of the task never clips to a few
+                        letters (visual review, 390 px). */}
+                    <div className="min-w-0 flex-1 basis-56">
                       <ControlLink
                         href={taskHref(row.task_id)}
                         onActivate={() => onOpenTask(row.task_id)}
