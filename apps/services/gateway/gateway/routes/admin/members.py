@@ -39,7 +39,7 @@ from acb_auth.console_resolve import (
     remove_member_on_console,
 )
 from acb_auth.permissions import matched_by
-from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE
+from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE, mark_changed
 from fastapi import Depends, HTTPException
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
@@ -92,6 +92,28 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 VALID_STATUSES = ("invited", "active", "suspended", "removed")
+
+
+async def forget_member_profile(db: Any, email: str) -> None:
+    """Forget the member's assistant profile in the bound org (WS-63 PZ-9).
+
+    ONE helper for every door that sets the status to ``removed``: the
+    removal body and the lifecycle PATCH. It runs in the caller's session,
+    so the clear commits with the status write, or neither does. The
+    settings row and its other columns stay, because a removal can be
+    reversed. A suspension keeps the profile (``personalization.md`` §7
+    point 6). The privacy fence of PZ-9 fails on a status write of
+    ``removed`` in a function that does not call this.
+
+    It then moves the member's change count, so the executor reads the
+    block again. A read before the commit can cache the old block until
+    its TTL. The member has no access by then, so no turn of theirs runs.
+    """
+    await db.execute(
+        text(CLEAR_FOR_MEMBER_SQL_TEMPLATE.replace("{org}", _BOUND_ORG)),
+        {"email": email},
+    )
+    mark_changed(email)
 
 
 # ── Models ──────────────────────────────────────────────────────────────────
@@ -369,6 +391,10 @@ async def update_member(
                 ),
                 {"status": patch.status, "uid": member["id"]},
             )
+            # WS-63 PZ-9: a removal by PATCH forgets the profile, as the
+            # DELETE door does. A suspension keeps it (§7 point 6).
+            if patch.status == "removed":
+                await forget_member_profile(db, member["email"])
             # D63 (H-49) — the personal tree follows the member's standing.
             #
             # IN THE SAME TRANSACTION as the status write, deliberately. A
@@ -534,13 +560,8 @@ async def remove_member_rows(
         {"email": member["email"]},
     )
     # WS-63 PZ-9 (personalization.md §7 point 6): access ended, so the
-    # assistant forgets the member at once. The settings row stays, because
-    # a removal is reversible and the other columns are not the profile. The
-    # statement names the bound org, so another organization keeps its row.
-    await db.execute(
-        text(CLEAR_FOR_MEMBER_SQL_TEMPLATE.replace("{org}", _BOUND_ORG)),
-        {"email": member["email"]},
-    )
+    # assistant forgets the member at once. The settings row stays.
+    await forget_member_profile(db, member["email"])
     # D63 (H-49) — the SECOND door, and it reaches the same seal.
     #
     # ⚠️ The remove route's own docstring records why: it "used to hold its
@@ -1045,6 +1066,9 @@ async def purge_member_rows(
     await purge_crm_member(db, org_id, addr)
     # WS-61 KB-9a: the member's address in the Knowledge gaps.
     await purge_knowledge_member(db, org_id, addr)
+    # WS-63 PZ-9: the settings row went above, so the executor must read the
+    # member's block again (`forget_member_profile` says why this is early).
+    mark_changed(addr)
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.
