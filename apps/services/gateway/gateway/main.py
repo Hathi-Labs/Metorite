@@ -514,6 +514,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.kb_proposal_expiry_skipped", error=str(exc))
 
+    # Start the sweep of stranded agent runs (gateway/agent_run_sweep.py;
+    # spec external_agent_access.md §12.6, WS-55 SW-10a). Every 5 minutes it
+    # nudges the member of a stranded run once, and later opens one recovery
+    # record. Dark by default: with AGENT_RUN_SWEEP_ENABLED off it starts no
+    # task and logs once. The gate lives inside the start function.
+    try:
+        from gateway.agent_run_sweep import start_agent_run_sweep
+        agent_run_sweep_started = await start_agent_run_sweep()
+        _log.info("gateway.agent_run_sweep", started=agent_run_sweep_started)
+    except Exception as exc:
+        _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -644,6 +656,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.knowledge.proposal_expiry import stop_kb_proposal_expiry
         await stop_kb_proposal_expiry()
+    except Exception:
+        pass
+
+    # Stop the sweep of stranded agent runs and wait for a tick in progress.
+    try:
+        from gateway.agent_run_sweep import stop_agent_run_sweep
+        await stop_agent_run_sweep()
     except Exception:
         pass
 

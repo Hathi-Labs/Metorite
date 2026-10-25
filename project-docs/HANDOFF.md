@@ -5899,7 +5899,10 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:**
   1. A task that goes to done, cancelled or archived keeps its open run until
      the lease ends. End the run on that status change, or let a closed task
-     not hold. Metorite task SW-10 (#341) covers the same ground.
+     not hold. **SW-10a (spec §12.6, step 2) covers the run side:** the sweep
+     closes a run of a closed task once its lease ended, while `agent_run_sweep_enabled` is
+     on. The task side stays open here: an end of the run at the moment the
+     task closes, with the flag off too.
   2. The Release button uses `access.is_admin`. The server uses
      `admin:members:read`. Make them the same rule, and ask whether a read
      permission should release another member's run.

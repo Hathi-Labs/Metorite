@@ -580,13 +580,20 @@ class TestAgentRunsOnARealDatabase:
             assert task.json()["agent_state"] == "answered"
             assert task.json()["agent_client_via"] == VIA
             assert task.json()["agent_member_email"] == w.a_email
-            # `answered` comes before `stale`: six minutes later it is still answered.
+            # SW-10a (spec §12.6): `answered` has an age limit, the stale band.
+            # Six minutes after the answer, with no agent activity since, the
+            # run reads `stale`. Before SW-10a it read `answered` for ever.
+            # `needs_agent` keeps the run, and its reason still says
+            # `answered`, so `my_work` still offers the answer.
             with w.p.admin_engine.begin() as c:
                 c.execute(text(
                     "UPDATE pm_agent_runs SET last_activity_at = last_activity_at - interval "
                     "'6 minutes', last_agent_activity_at = last_agent_activity_at - interval "
                     "'7 minutes' WHERE id = CAST(:r AS uuid)"), {"r": rid})
-            assert await _status(call, w.a, rid) == ("in_progress", "answered")
+            assert await _status(call, w.a, rid) == ("in_progress", "stale")
+            needs = await call(w.agent_a, "GET", "/projects/agent-runs?needs_agent=true")
+            assert [(r["id"], r["state"], r["needs_agent"]) for r in needs.json()["rows"]] == [
+                (rid, "stale", "answered")]
             # The agent's next activity is the acknowledgement: working.
             await _act(call, w.agent_a, rid, type="thought", body="Got it")
             assert await _status(call, w.a, rid) == ("in_progress", "working")

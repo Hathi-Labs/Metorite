@@ -1624,6 +1624,12 @@ class Settings(BaseSettings):
     # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_mcp_sessions_enabled: bool = False
+    # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
+    # While it is false, the gateway starts no sweep task, so no fingerprint
+    # and no recovery record exist, and no member gets a nudge. Only the
+    # gateway reads it. `gateway.agent_run_sweep.sweep_enabled`
+    # is the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_run_sweep_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

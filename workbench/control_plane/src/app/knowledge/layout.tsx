@@ -31,9 +31,15 @@
  * KB-9a: a manager of Knowledge (`knowledge:manage`) gets the Gaps row in the
  * rail when the gaps read answers. A New page made from a gap marks the gap
  * answered with the new page, after the page is made.
+ *
+ * KC-1b: every member gets the Sources row when the sources read answers (a
+ * 404 hides it). The Google return lands HERE, on `/knowledge`, with
+ * `?source_connected=google_drive` or `?source_error=<code>`. The layout shows
+ * one toast, then replaces the address with `/knowledge/sources`, so a reload
+ * does not show the toast again.
  */
 
-import { Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { AppTopBar } from "@/components/AppTopBar";
@@ -72,6 +78,16 @@ import {
   markGapAnswered,
   type GapList,
 } from "./lib/gaps";
+import {
+  KNOWLEDGE_SOURCES,
+  SOURCES_KEY,
+  SOURCE_CONNECTED_PARAM,
+  SOURCE_ERROR_PARAM,
+  listSources,
+  returnMessage,
+  sourceCount,
+  type SourceList,
+} from "./lib/sources";
 import {
   KNOWLEDGE_MAINTENANCE,
   MAINTENANCE_KEY,
@@ -225,6 +241,37 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const atMaintenance = pathname === KNOWLEDGE_MAINTENANCE;
   const maintenanceRead = useCachedResource<MaintenanceList>(manager ? MAINTENANCE_KEY : null, listMaintenance);
   const showMaintenance = (manager && Boolean(maintenanceRead.data)) || atMaintenance;
+
+
+  // KC-1b: the Sources row, for every member, when the sources read answers.
+  // The Sources view reads the same key, so the row and the view share one answer.
+  const atSources = pathname === KNOWLEDGE_SOURCES;
+  const sourcesRead = useCachedResource<SourceList>(SOURCES_KEY, listSources);
+  const showSources = (sourcesRead.data !== undefined && !sourcesRead.data.off) || atSources;
+
+  // KC-1b: the return of the Google consent. Once: the toast, a fresh read,
+  // and the address of the Sources view without the query.
+  const connectedParam = searchParams.get(SOURCE_CONNECTED_PARAM);
+  const errorParam = searchParams.get(SOURCE_ERROR_PARAM);
+  const returnHandled = useRef(false);
+  useEffect(() => {
+    if (returnHandled.current || (!connectedParam && errorParam === null)) return;
+    returnHandled.current = true;
+    if (connectedParam === "google_drive") {
+      toast.show({
+        key: "kb-source-return",
+        title: "Google Drive connected. Metorite is reading your folders.",
+      });
+    } else {
+      toast.show({
+        key: "kb-source-return",
+        variant: "error",
+        title: returnMessage(errorParam),
+      });
+    }
+    invalidate(KNOWLEDGE_CACHE);
+    router.replace(KNOWLEDGE_SOURCES);
+  }, [connectedParam, errorParam, router, toast]);
   const spaceParam = atHomePath ? searchParams.get("space") : null;
   const selectedSpaceId = pageId ? (focus?.pageId === pageId ? focus.spaceId : null) : spaceParam;
   const selectedSpace = spaces.find((s) => s.id === selectedSpaceId) ?? null;
@@ -314,6 +361,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     reviewCount,
     directories: { types: directoryTypes, selected: openType },
     gaps: showGaps ? { selected: atGaps, count: gapCount(gapsRead.data) } : null,
+    sources: showSources ? { selected: atSources, count: sourceCount(sourcesRead.data) } : null,
     maintenance: showMaintenance
       ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
       : null,

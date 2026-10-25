@@ -768,6 +768,13 @@ CREATE POLICY pm_agent_run_activities_tenant_isolation ON pm_agent_run_activitie
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_agent_run_strands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_run_strands FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands;
+CREATE POLICY pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_agent_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_agent_runs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_agent_runs_tenant_isolation ON pm_agent_runs;
