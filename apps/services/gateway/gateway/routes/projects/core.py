@@ -2057,13 +2057,15 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 # writer that waited on the row lock cannot stamp a field change OLDER than a
 # token a client already holds. A NULL ``fields_at`` narrows nothing.
 #
-# ⚠️ A write that changes a column of the task must SET ``updated_at`` in the
-# SAME statement (``update_row`` does). The trigger fires only then. A field
-# write with no stamp, followed by ``touch_task`` in the same request, leaves
-# ``fields_at`` behind, and a stale token then passes. The promote paths
+# The trigger fires on every UPDATE. A field write that did not move
+# ``updated_at`` (a tag rename, a status remap, an FK ``SET NULL``) sets
+# ``fields_at`` ABOVE ``updated_at``. The range below is then empty, so only
+# equality passes: the token that was current still works, and after the next
+# bump it gets 412, as on main. The promote paths
 # (``lift_subtasks_to_grandparent``, ``merge._reparent_children``, the kept
-# subtasks of ``tasks.delete_task_in``) stamp for this reason. Each one has
-# its own R8 case in ``test_task_precondition_fields_at.py`` (M5 to M8).
+# subtasks of ``tasks.delete_task_in``) also stamp ``updated_at`` in the same
+# statement, as defence in depth. Each one has its own R8 case in
+# ``test_task_precondition_fields_at.py`` (M5 to M8).
 #
 # ``tasks.agent_delete_task`` keeps STRICT equality and does not call
 # :func:`precondition_holds`. A delete is one-way, and ``fields_at`` does not
@@ -2114,7 +2116,9 @@ def precondition_holds(row: Any, expected: datetime) -> bool:
     of WS-27bi, unchanged. Or the token lies from ``fields_at`` up to
     ``updated_at``: only a satellite bump moved the stamp since the client read
     the row. The upper bound refuses a made-up future token, which no read ever
-    gave. Rule 2 holds in both arms: parsed instants, never strings.
+    gave. A ``fields_at`` above ``updated_at`` (a field write with no stamp)
+    leaves the range empty, so only equality passes. Rule 2 holds in both arms:
+    parsed instants, never strings.
     """
     stamp = row.updated_at
     if stamp == expected:

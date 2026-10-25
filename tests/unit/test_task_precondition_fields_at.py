@@ -41,6 +41,14 @@ Mutations (each must turn a named test red):
   moves. ``test_a_subtask_kept_by_a_partial_delete_gives_412``.
 * M8. ``merge._reparent_children``: drop ``updated_at = now()`` from the lift
   of the target. ``test_a_target_lifted_by_a_merge_gives_412``.
+
+  Since fix round 2 the trigger also catches a field write with no stamp
+  (step 4), so the four stamps are defence in depth. M5 to M8 each go red
+  when M9 is applied with them, and stay green alone. Each one went red alone
+  at ``b7e3ea8e4``, before step 4.
+* M9. The migration: the trigger back to ``BEFORE INSERT OR UPDATE OF
+  updated_at``. ``test_a_tag_rename_then_a_comment_gives_412`` and
+  ``test_a_type_delete_then_a_comment_gives_412``.
 * B. The migration: the trigger treats ``description`` as a stamp (it drops it
   from the comparison as well). ``test_a_field_change_by_someone_else_gives_412``
   with ``description``. Each column of the parametrize has the same guard.
@@ -96,9 +104,13 @@ def test_the_migration_adds_the_column_the_trigger_and_the_backfill() -> None:
     sql = _migration().read_text(encoding="utf-8")
     assert "ADD COLUMN IF NOT EXISTS fields_at TIMESTAMPTZ;" in sql
     assert "CREATE OR REPLACE TRIGGER trg_pm_tasks_stamp_fields" in sql
-    # OF updated_at: a request that bumps first and writes a field second
-    # stamps one `now()` twice, so a test of the value would skip the field.
-    assert "BEFORE INSERT OR UPDATE OF updated_at ON pm_tasks" in sql
+    # Every UPDATE (fix round 2): a sweep does not SET updated_at, and under
+    # `UPDATE OF updated_at` it left `fields_at` behind.
+    assert "BEFORE INSERT OR UPDATE ON pm_tasks" in sql
+    assert "BEFORE INSERT OR UPDATE OF updated_at ON pm_tasks" not in sql
+    # A request that bumps first and writes a field second stamps one `now()`
+    # twice, so "equals now()" must count as stamped.
+    assert "NEW.updated_at IS DISTINCT FROM OLD.updated_at OR NEW.updated_at = now()" in sql
     assert "WHERE fields_at IS NULL" in sql
     assert "OLD.updated_at + interval '1 microsecond'" in sql
     # R6: nullable, no default, so the ADD rewrites nothing.
@@ -319,18 +331,82 @@ class TestTheVersionOnARealDatabase:
         assert after.updated_at == stamp
         assert after.fields_at == stamp
 
-    async def test_a_write_that_keeps_updated_at_keeps_fields_at(self, world):
-        """``touch=False`` writes never moved the token, so they do not move
-        ``fields_at`` either."""
+    async def test_a_write_with_no_stamp_keeps_the_current_token_good(self, world):
+        """A ``touch=False`` write leaves ``updated_at``, so the current token
+        still passes by equality, as on main. ``fields_at`` goes ABOVE
+        ``updated_at``: equality only, until the next stamped write."""
         w = world
-        before = _stamps(w.p, w.task_a)
+        async with _session(w.p) as call:
+            version = await _version(call, w)
+            before = _stamps(w.p, w.task_a)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_tasks SET recurrence_spawned_at = now() "
+                    "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a})
+            after = _stamps(w.p, w.task_a)
+            assert after.updated_at == before.updated_at
+            assert after.fields_at > after.updated_at
+            done = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "Still mine"}, if_match=version)
+        assert done.status_code == 200, done.text
+
+    async def test_a_tag_rename_then_a_comment_gives_412(self, world):
+        """Read A, rename a tag A wears (the sweep, with no stamp), comment
+        on A, PATCH A with the old token: 412. Under ``UPDATE OF updated_at``
+        the sweep did not fire the trigger, and the comment made the old
+        token pass. Main gave it 412."""
+        w = world
+        async with _session(w.p) as call:
+            tagged = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                               {"tags": ["urgent"]})
+            assert tagged.status_code == 200, tagged.text
+            version = await _version(call, w)
+            with w.p.admin_engine.connect() as c:
+                tag = c.execute(text(
+                    "SELECT g.id FROM pm_tags g JOIN pm_tasks t "
+                    "  ON g.project_id = t.root_project_id "
+                    "WHERE t.id = CAST(:t AS uuid) AND lower(g.name) = 'urgent'"),
+                    {"t": w.task_a}).scalar()
+            renamed = await _as(call, w.me, "PATCH", f"/projects/tags/{tag}",
+                                {"name": "critical"})
+            assert renamed.status_code == 200, renamed.text
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "Bumped."})
+            assert said.status_code == 201, said.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["tags"] == ["critical"]
+
+    async def test_a_type_delete_then_a_comment_gives_412(self, world):
+        """Read A, delete the type A carries (FK ``ON DELETE SET NULL``, a
+        cascade under FORCE RLS), comment on A, PATCH A with the old token:
+        412. The cascade fires the trigger and does not fail."""
+        w = world
         with w.p.admin_engine.begin() as c:
+            row = c.execute(text(
+                "SELECT project_id, organization_id FROM pm_tasks "
+                "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a}).one()
+            kind = str(uuid.uuid4())
             c.execute(text(
-                "UPDATE pm_tasks SET recurrence_spawned_at = now() "
-                "WHERE id = CAST(:t AS uuid)"), {"t": w.task_a})
-        after = _stamps(w.p, w.task_a)
-        assert after.updated_at == before.updated_at
-        assert after.fields_at == before.fields_at
+                "INSERT INTO pm_task_types (id, organization_id, project_id, name) "
+                "VALUES (:id, :o, :p, 'Chore')"),
+                {"id": kind, "o": row.organization_id, "p": row.project_id})
+        async with _session(w.p) as call:
+            typed = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                              {"type_id": kind})
+            assert typed.status_code == 200, typed.text
+            version = await _version(call, w)
+            gone = await _as(call, w.me, "DELETE", f"/projects/types/{kind}")
+            assert gone.status_code == 200, gone.text
+            assert gone.json()["tasks_untyped"] == 1
+            said = await _as(call, w.other, "POST", f"/projects/tasks/{w.task_a}/comments",
+                             {"body": "Bumped."})
+            assert said.status_code == 201, said.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "My title"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["type_id"] is None
 
     async def test_a_new_task_gets_fields_at_from_its_stamp(self, world):
         w = world

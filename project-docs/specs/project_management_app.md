@@ -3965,15 +3965,19 @@ The owner's agents met this many times on 2026-10-25.
 * Migration 304 adds `pm_tasks.fields_at`. It holds the `updated_at` of the last write that
   changed a field of the row. The trigger `trg_pm_tasks_stamp_fields` keeps it, so no writer can
   forget it.
-* The trigger fires on INSERT and on each UPDATE that sets `updated_at`. On UPDATE it lifts a
-  `now()` stamp that is older than the old stamp to the old stamp plus one microsecond. Then it
-  copies `updated_at` to `fields_at` if any other column changed.
+* The trigger fires on INSERT and on every UPDATE. On UPDATE it lifts a `now()` stamp that is
+  older than the old stamp to the old stamp plus one microsecond. If no other column changed, it
+  stops there.
+* If a field changed and the row carries this transaction's stamp, `fields_at` takes
+  `updated_at`. If a field changed and `updated_at` did not move, `fields_at` goes above
+  `updated_at`. That means equality only.
+* The backfill sets `fields_at` on each existing task, one tenant at a time.
 * `core.precondition_holds` passes a token that equals `updated_at`, as before. It also passes a
   token from `fields_at` up to `updated_at`. The PATCH and the claim use it.
 * The agent delete keeps strict equality on `updated_at`. It does not use the new rule.
-* A write that changes a column of a task must set `updated_at` in the same statement. The
-  promote paths now do: `core.lift_subtasks_to_grandparent`, `merge._reparent_children` and the
-  kept subtasks of `tasks.delete_task_in`.
+* The promote paths also stamp `updated_at` in the same statement, as defence in depth:
+  `core.lift_subtasks_to_grandparent`, `merge._reparent_children` and the kept subtasks of
+  `tasks.delete_task_in`.
 
 **Why a delete by an agent keeps equality.** A delete is one-way. `fields_at` does not see a subtask
 that `/move` puts under the task, because `/move` bumps only the parent. A My Tasks step and a
@@ -3983,12 +3987,27 @@ a subtree that the member never saw.
 So any change after the read makes the member's yes stale, and a comment does too. The
 coordinator decided this on 2026-10-25 (review P1).
 
+**Why the trigger fires on every UPDATE.** A sweep changes a field and does not set
+`updated_at`. The tag rename, the custom-field delete, the status remap, the recurrence detach
+and an FK `ON DELETE SET NULL` are sweeps. Under `UPDATE OF updated_at` a sweep did not fire the
+trigger. A later comment then moved the token, and a token from before the sweep passed, where
+main gave it 412.
+
+The coordinator chose the fix in the trigger (fix round 2, item 4).
+
+Now a sweep sets `fields_at` above `updated_at`. The token that was current still passes by
+equality, as on main. After the next bump, that token gets 412, as on main. A token read after
+the sweep but before the bump also gets 412. That is fail-closed, and main does the same.
+
 **Why the promote paths stamp.** Each path changed `parent_task_id` with no stamp, and then
-touched the row. The touch moved the token, and the trigger saw no field change at the touch. So
-an old token of a promoted task passed. Before migration 304, that touch gave the old token its
-412. The stamp in the same statement restores the 412. A write with no stamp and no later touch
-keeps the token where it was, as before migration 304. The tag sweep and the status remap are
-two of those writes.
+touched the row. Under `UPDATE OF updated_at` the touch hid the change, and an old token of a
+promoted task passed. The stamp in the same statement restores the 412. The every-UPDATE trigger
+now catches the unstamped move too, so the stamps are defence in depth.
+
+**Why the backfill loops per tenant.** The production runner owns `pm_tasks`. It is not a
+superuser and has no BYPASSRLS, and FORCE row security binds it. With no tenant bound it sees no
+task, so a bare UPDATE backfilled nothing. The backfill now binds each tenant in turn, in the
+shape of migration 297.
 
 **An accepted gap: a second claim of a started task.** A claim of a task that is already
 `in_progress` only adds an assignee. An assignee is a satellite, so a stale token of a second
@@ -4012,14 +4031,19 @@ the row lock can stamp a time older than a token a client holds. Without the lif
 would pass the `fields_at` arm across a real change. A stamp equal to the old stamp stays, so one
 request keeps one instant. An explicit time, such as a test fixture, stays as written.
 
-**Why `UPDATE OF updated_at`.** The claim adds the assignee and then moves the status, both at one
-`now()`. The second statement does not move `updated_at`. A trigger that tested the value skipped
-it, and the claim race of `test_mcp_edge_claim.py` gave two 200s for one version.
+**Why "equals `now()`" counts as stamped.** The claim adds the assignee and then moves the
+status, both at one `now()`. The second statement does not move `updated_at`. A trigger that
+tested only "the value moved" read it as a sweep. The first draft then gave two 200s for one
+version in the claim race of `test_mcp_edge_claim.py`.
 
 **Fences.** `tests/unit/test_task_precondition_fields_at.py` runs on R8. A link and a comment keep
-the old token good for a field PATCH and a status move. A field change still gives 412, and a
-bump leaves `fields_at`. A subtask that a parent delete or a merge moves gives 412 to an old token.
-The repair of a future stamp holds.
+the old token good for a field PATCH and a status move. A change of each of ten user-visible
+columns still gives 412, and a bump leaves `fields_at`. Each promote path gives 412 to an old
+token. A tag rename or a type delete, then a comment, gives 412.
+
+The same file proves that a write with no stamp keeps the current token good, and that the repair
+of a future stamp holds. `tests/unit/test_task_fields_at_backfill_r8.py` runs the migration as a
+NOSUPERUSER NOBYPASSRLS owner of `pm_tasks` under FORCE, with a task in each of two tenants.
 
 `tests/unit/test_projects_precondition.py` holds the pure rule. H2b and H2c of
 `tests/unit/test_mcp_edge_delete.py` fence the strict delete: a comment, or

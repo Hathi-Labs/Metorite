@@ -26,8 +26,8 @@
 -- forget it. Its name sorts after `trg_pm_tasks_org_from_*`, so it runs last of
 -- the BEFORE triggers and sees the final row.
 --
--- On UPDATE, the trigger fires only when the statement SETs `updated_at`
--- (`UPDATE OF updated_at`), whatever the value:
+-- The trigger fires on INSERT, where `fields_at` takes `updated_at`, and on
+-- EVERY UPDATE:
 --
 --   1. The stamp is monotonic. `now()` is the START of the transaction, so a
 --      writer that waited on the row lock would stamp a time OLDER than the
@@ -38,37 +38,46 @@
 --      transaction's own earlier stamp, so the stamp of one request stays one
 --      instant. A writer that sets an explicit or older time (a test fixture, a
 --      repair) keeps the value it wrote.
---   2. If any column other than `updated_at` and `fields_at` differs, then
---      `fields_at` takes the new `updated_at`.
+--   2. If no column other than `updated_at` and `fields_at` differs, the
+--      trigger stops there. That is the satellite bump (`touch_task`), the
+--      backfill, and a write of the same values. `fields_at` keeps its value.
+--   3. A field changed, and the row carries this transaction's stamp:
+--      `updated_at` moved, or it equals `now()`. Then `fields_at` takes the
+--      new `updated_at`.
+--   4. A field changed, and `updated_at` did not move. That is a sweep with
+--      no stamp: the tag rename and the tag delete, the custom-field delete,
+--      the status remap and the status delete, the recurrence detach, the
+--      root move of `tree.py`, `touch=False`, and an FK `ON DELETE SET NULL`
+--      (`type_id`, `parent_task_id`). Then `fields_at` takes
+--      GREATEST(`now()`, old stamp plus one microsecond), and `updated_at`
+--      stays. `fields_at` above `updated_at` means "equality only". A token
+--      equal to the unmoved `updated_at` still passes, as before this file.
+--      After a later bump, that token is below `fields_at` and gets 412.
 --
--- ⚠️ Why `UPDATE OF updated_at` and not "the value moved". One request often
+-- ⚠️ Why "equals `now()`" counts as stamped in step 3. One request often
 -- bumps first and writes a field second (the claim adds the assignee, then
--- moves the status). Both statements stamp the same `now()`, so the second one
--- does NOT move `updated_at`. A value test skipped it, and the claim race of
--- `test_mcp_edge_claim.py` then gave two 200s for one version. Measured
--- 2026-10-25.
+-- moves the status). Both statements stamp the same `now()`, so the second
+-- one does NOT move `updated_at`. A test of "the value moved" alone treated
+-- it as a sweep. The first draft (`UPDATE OF updated_at` with that test)
+-- gave two 200s for one version in the claim race of `test_mcp_edge_claim.py`.
+-- A sweep that comes AFTER a bump in one transaction also counts as stamped,
+-- which is right: the row's token is then this transaction's stamp.
 --
--- A write that does not SET `updated_at` does not fire the trigger and does
--- not move `fields_at`. On INSERT, `fields_at` takes `updated_at`.
+-- ⚠️ Why every UPDATE and not `UPDATE OF updated_at` (fix round 2). A sweep
+-- does not SET `updated_at`. Under `UPDATE OF updated_at` it did not fire the
+-- trigger, so `fields_at` stayed behind. A later comment then moved the token,
+-- and a token from before the sweep passed. Main gave it 412. Fence:
+-- `test_a_tag_rename_then_a_comment_gives_412`.
 --
--- ⚠️ So a write that changes a column of the task must SET `updated_at` in the
--- SAME statement, or `fields_at` cannot see it. The danger is a field write
--- with no stamp and a `touch_task` of the same row later in the same request:
--- the touch moves the token, the trigger sees no field change at the touch,
--- and a stale token passes. Before this file, that touch gave the stale token
--- its 412. The promote paths had this shape, and this change stamps them:
--- `core.lift_subtasks_to_grandparent`, the two UPDATEs of
--- `merge._reparent_children`, and the kept subtasks of
--- `tasks.delete_task_in`. Fences, one for each path, all in
--- `test_task_precondition_fields_at.py`: the parent delete (the lift), the
--- delete that keeps some subtasks (the kept moves), the merge of a parent (the
--- children's move), and the merge into a task below the source (the target's
--- lift).
+-- The promote paths (`core.lift_subtasks_to_grandparent`, the two UPDATEs of
+-- `merge._reparent_children`, the kept subtasks of `tasks.delete_task_in`)
+-- stamp `updated_at` in the same statement. Step 4 now covers an unstamped
+-- move too, so the stamps are defence in depth. Each path has an R8 case in
+-- `test_task_precondition_fields_at.py` (M5 to M8), and each case goes red
+-- when its stamp AND step 4 are both removed.
 --
--- A write with no stamp and NO later touch keeps the token where it was, as
--- it did before this file: `touch=False` (recurrence and import bookkeeping),
--- the tag and custom-field sweeps, the status remaps, and the root move of
--- `tree.py`. This file does not change what those writes do to a token.
+-- An FK cascade fires this trigger too. The function reads no table, so row
+-- security cannot refuse it, whoever runs the cascade.
 --
 -- ⚠️ Known limit: the lift pins a FUTURE stamp. After a restore or a clock
 -- skew leaves `updated_at` ahead of the clock, each later `now()` write moves
@@ -124,8 +133,10 @@
 -- and a backfill whose WHERE matches nothing on the second run, in each pass.
 --
 -- Fences: `tests/unit/test_task_precondition_fields_at.py` (R8: a link and a
--- comment keep the old token good, a field change still gives 412, and the
--- trigger leaves `fields_at` alone on a bump) and
+-- comment keep the old token good, a change of each user-visible column still
+-- gives 412, a sweep then a comment gives 412, each promote path gives 412,
+-- and a bump leaves `fields_at`), `tests/unit/test_task_fields_at_backfill_r8.py`
+-- (R8: the backfill under FORCE, run by a NOSUPERUSER NOBYPASSRLS owner) and
 -- `tests/unit/test_projects_precondition.py` (the pure rule).
 -- ============================================================================
 
@@ -136,9 +147,10 @@ BEGIN;
 ALTER TABLE pm_tasks ADD COLUMN IF NOT EXISTS fields_at TIMESTAMPTZ;
 
 COMMENT ON COLUMN pm_tasks.fields_at IS
-    'The updated_at of the last write that changed a field of this row. '
-    'A satellite bump (core.touch_task) leaves it. Read only by '
-    'core.require_precondition (WS-55 MCP-G7). Kept by trg_pm_tasks_stamp_fields.';
+    'The updated_at of the last write that changed a field of this row. A '
+    'satellite bump (core.touch_task) leaves it. A field write that did not move '
+    'updated_at sets it above updated_at, which means equality only. Read only by '
+    'core.precondition_holds (WS-55 MCP-G7). Kept by trg_pm_tasks_stamp_fields.';
 
 CREATE OR REPLACE FUNCTION pm_tasks_stamp_fields() RETURNS trigger
 LANGUAGE plpgsql AS $pm_fields$
@@ -148,30 +160,40 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    -- The statement SETs updated_at (`UPDATE OF updated_at` below).
     -- 1. Monotonic, for the `now()` idiom only (see the header). An equal old
     --    stamp is this transaction's own, and it stays.
     IF NEW.updated_at = now() AND OLD.updated_at > NEW.updated_at THEN
         NEW.updated_at := OLD.updated_at + interval '1 microsecond';
     END IF;
 
-    -- 2. A field changed. `to_jsonb` compares every column type, where a
-    --    record comparison needs an equality operator for each one.
+    -- 2. No field changed: a bump, the backfill, or the same values. `to_jsonb`
+    --    compares every column type, where a record comparison needs an
+    --    equality operator for each one.
     IF (to_jsonb(NEW) - 'updated_at' - 'fields_at')
-       IS DISTINCT FROM (to_jsonb(OLD) - 'updated_at' - 'fields_at') THEN
+       IS NOT DISTINCT FROM (to_jsonb(OLD) - 'updated_at' - 'fields_at') THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.updated_at IS DISTINCT FROM OLD.updated_at OR NEW.updated_at = now() THEN
+        -- 3. A field changed, with this transaction's stamp.
         NEW.fields_at := NEW.updated_at;
+    ELSE
+        -- 4. A field changed, and the stamp did not move: equality only.
+        NEW.fields_at := GREATEST(
+            now(), OLD.updated_at + interval '1 microsecond', OLD.fields_at
+        );
     END IF;
     RETURN NEW;
 END;
 $pm_fields$;
 
 CREATE OR REPLACE TRIGGER trg_pm_tasks_stamp_fields
-    BEFORE INSERT OR UPDATE OF updated_at ON pm_tasks
+    BEFORE INSERT OR UPDATE ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_tasks_stamp_fields();
 
 -- The backfill, in the shape of 297 (see the header). It does not SET
--- `updated_at`, and it changes no field, so the trigger leaves the value it
--- writes.
+-- `updated_at`, and it changes no field, so the trigger stops at step 2 and
+-- leaves the value it writes.
 DO $pm_fill$
 DECLARE
     org uuid;
