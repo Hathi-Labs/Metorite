@@ -2329,3 +2329,15 @@ ALTER TABLE kb_entities ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_entities ADD CONSTRAINT kb_entities_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_entities_org_idx ON kb_entities (organization_id);
+
+-- push_subscriptions
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM push_subscriptions WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: push_subscriptions still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE push_subscriptions ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE push_subscriptions ADD CONSTRAINT push_subscriptions_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS push_subscriptions_org_idx ON push_subscriptions (organization_id);

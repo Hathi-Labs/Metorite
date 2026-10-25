@@ -596,3 +596,6 @@ UPDATE email_mailbox_member_prefs SET organization_id = (SELECT id FROM organiza
 
 UPDATE kb_entities SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE push_subscriptions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
