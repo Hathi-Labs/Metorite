@@ -984,15 +984,18 @@ async def _move_run(
 
     SW-7 (spec §12.5), the session key of the run, ONE assignment:
 
-    * A terminal status clears it, and so does a person's answer to a
-      question or reopen of a finished run. A waiting run then keeps no
-      key of a terminal that closed, and the next session adopts it. A
-      plain prompt to a working run keeps the key.
+    * A terminal status clears it (a takeover clears it in ``_take_over``).
+      A reopen of a finished run then finds no key, and the next session
+      adopts the run.
+    * A person's move that is not terminal keeps the key: a plain prompt,
+      an answer to the session's question, and a Stop. The asking session
+      may be alive and polling, so an answer must not hand its run to a
+      sibling. A sibling sees a waiting run once its lease ended
+      (``my_work``, group 1).
     * An agent move on the SAME connection adopts a run with no key and
       keeps a key that is set (``COALESCE``).
     * An agent move from ANOTHER connection writes the caller's key, which
       may be NULL. A key minted for the old connection never survives.
-    * A Stop keeps the key, so the session that runs the work sees it.
     """
     sets = ["status = :status", "last_activity_at = :ts"]
     params: dict[str, Any] = {"rid": str(run.id), "status": new_status, "ts": ts}
@@ -1004,12 +1007,10 @@ async def _move_run(
         params["sk"] = getattr(agent, "session_key", None) if agent is not None else None
     if new_status == "in_progress" and run.started_at is None:
         sets.append("started_at = :ts")
-    # A person's answer (to an `awaiting` run) or reopen (of a terminal run)
-    # clears the key. A plain prompt to a working run keeps it, so a live
-    # session is not handed to a sibling.
-    person_resets = via is None and not stop and (
-        run.status == "awaiting" or run.status in TERMINAL_STATUSES)
-    if new_status in TERMINAL_STATUSES or person_resets:
+    # Only a terminal status clears the key. Every run that reached one went
+    # through here or `_take_over`, and a run that ended before migration 302
+    # never had a key, so a reopen needs no clear of its own.
+    if new_status in TERMINAL_STATUSES:
         sets.append("session_key = NULL")
     elif via is not None:
         sets.append(

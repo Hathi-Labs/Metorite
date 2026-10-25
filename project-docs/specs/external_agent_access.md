@@ -1572,9 +1572,10 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 - **The column.** Migration 302 adds `pm_agent_runs.session_key TEXT NULL`, with a CHECK on its shape. It changes no index. The per-task index already allows one open run for each task, and `pm_agent_runs_one_open` stays.
 - **The own run.** For an agent, the own run is member + stamp + connection + session key. One read, `_OPEN_RUN_SQL`, holds it. A person binds no connection and keeps the old rule.
 - **The transition rule.** A run with NO key counts as the own run of any session of its connection. These are a member start ("Ask an agent") and a run from before SW-7, so a run in flight keeps working. The first agent session that the gate finds such a run for adopts it: the gate stamps its key, guarded on NULL. A sibling that loses the race reads the run again and meets a holder.
-- **The life of a key (fix round).** `_move_run` writes the key in one assignment:
-  - A terminal status clears it, and so does a takeover. A person's answer to a question, or reopen of a finished run, clears it too. So a waiting run never keeps the key of a terminal that closed, and the next session adopts it.
-  - A plain prompt to a working run keeps the key, so a live session is not handed to a sibling. A Stop keeps it too.
+- **The life of a key (fix rounds 1 and 2).** `_move_run` writes the key in one assignment:
+  - The key stays until a terminal status or a takeover clears it. A reopen of a finished run then finds no key, and the next session adopts the run.
+  - A person's move that is not terminal keeps the key: a plain prompt, an answer to the session's question, and a Stop. The asking session may be alive and polling `get_agent_run`, so an answer must not hand its run to a sibling.
+  - A sibling session sees a waiting run of another terminal once the lease of that run ended (`my_work`, group 1).
   - An agent move on the same connection adopts a run with no key, and keeps a key that is set.
   - An agent move from ANOTHER connection writes the caller's key, also NULL. A key minted for the old connection never survives a connection change.
 - **A call outside a session** owns only runs with no key. So leaving the header out never reaches the run of a session.

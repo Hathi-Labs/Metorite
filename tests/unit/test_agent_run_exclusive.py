@@ -102,8 +102,10 @@ SW-7 (one key for each MCP session; spec §12.5):
   ``test_k7_the_adoption_guard_gives_a_run_to_one_session`` (R8).
 * K6. ``G`` ``_move_run``: no ``session_key = NULL`` for a terminal status.
   ``test_k8_a_terminal_status_clears_the_key`` (R8).
-* K7. ``G`` ``_move_run``: no reset on a person's answer or reopen.
-  ``test_k12_a_members_answer_clears_the_key_and_a_plain_prompt_keeps_it`` (R8).
+* K7. ``G`` ``_move_run``: a member's answer to an ``awaiting`` run clears the key.
+  ``test_k12_a_members_answer_and_a_plain_prompt_keep_the_key`` (R8).
+* K11 (M3). ``G`` ``_move_run``: a Stop clears the key.
+  ``test_k13_a_stop_keeps_the_key`` (R8).
 * K8. ``G`` ``_move_run``: ``COALESCE`` on a connection change too.
   ``test_k10_an_agent_move_adopts_keeps_and_replaces_the_key`` (R8).
 * K9 (M5). ``G`` ``_OPEN_RUN_SQL``: add ``OR CAST(:sk AS text) IS NULL``.
@@ -610,6 +612,9 @@ class TestTheEdge:
             assert own in text[name], name
             assert "from this client" not in text[name], name
         assert f"own open run {own}" in text["claim_task"]
+        tell = "Two terminals on one connection share one name, and a claim cannot tell"
+        for name in ("claim_task", "ask_on_task"):
+            assert (tell in text[name]) is (not sessions), name
         shared = "two terminals on one connection share one name, and a claim cannot"
         if sessions:
             assert "another terminal or another machine" in text["start_agent_run"]
@@ -1288,7 +1293,8 @@ class TestOneAiForEachTask:
 
     async def test_k9_a_closed_terminal_leaves_no_key_and_a_sibling_adopts(self, w):
         """Session A finishes, the member prompts the run open again, and
-        session B's claim adopts it. Mutation K7 (and K6)."""
+        session B's claim adopts it. The terminal status cleared the key, so
+        the reopen finds none. Mutation K6."""
         task = _fresh(w)
         a = _in_session(w.alice, "TerminalA_of-22chars__")
         b = _in_session(w.alice, "TerminalB_of-22chars__")
@@ -1342,12 +1348,13 @@ class TestOneAiForEachTask:
                 assert beat.status_code == 201, beat.text
                 assert key() == expected, (who.agent.connection_id, expected)
 
-    async def test_k12_a_members_answer_clears_the_key_and_a_plain_prompt_keeps_it(
-            self, w):
-        """Session A asks a question and its terminal may have closed. The
-        member's answer clears the key, so the next session adopts the run.
-        A plain prompt to a working run keeps the key, so a live session is
-        not handed to a sibling. Mutation K7."""
+    async def test_k12_a_members_answer_and_a_plain_prompt_keep_the_key(self, w):
+        """Fix round 2. The asking session may be alive and polling
+        ``get_agent_run``, so a member's answer KEEPS its key, and so does a
+        plain prompt. Session B's claim then gets the 409 with the run id,
+        and A's key stands. A dead asker is covered by the lease: ``my_work``
+        lists a sibling's waiting run once its lease ended (y21). Mutation K7:
+        the answer clears the key."""
         task = _fresh(w)
         a = _in_session(w.alice, "TerminalA_of-22chars__")
 
@@ -1369,10 +1376,30 @@ class TestOneAiForEachTask:
             answered = await call(w.alice_person, "POST", f"/projects/agent-runs/{run}/activities",
                                   {"type": "prompt", "selected": ["a"], "idempotency_key": _key()})
             assert answered.status_code == 201, answered.text
-            assert (row().status, row().session_key) == ("in_progress", None)
-            adopted = await _claim(call, _in_session(w.alice, "TerminalB_of-22chars__"), task)
-        assert adopted.status_code == 200 and adopted.json()["agent_run_id"] == run
-        assert row().session_key == "TerminalB_of-22chars__"
+            assert (row().status, row().session_key) == ("in_progress", "TerminalA_of-22chars__")
+            refused = await _claim(call, _in_session(w.alice, "TerminalB_of-22chars__"), task)
+        assert refused.status_code == 409, refused.text
+        assert _detail(refused)["same_client"] is True and _detail(refused)["run_id"] == run
+        assert row().session_key == "TerminalA_of-22chars__"
+
+    async def test_k13_a_stop_keeps_the_key(self, w):
+        """Fix round 2 (R7). A member's Stop on an ``awaiting`` keyed run moves
+        it to ``stopping`` and keeps the key, so the session that runs the
+        work sees the Stop. Mutation K11 (M3): a Stop clears the key."""
+        task = _fresh(w)
+        a = _in_session(w.alice, "TerminalA_of-22chars__")
+        async with _session(w.p) as call:
+            run = (await _claim(call, a, task)).json()["agent_run_id"]
+            asked = await call(a, "POST", f"/projects/agent-runs/{run}/activities", {
+                "type": "elicitation", "body": "Which one?", "idempotency_key": _key(),
+                "options": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]})
+            assert asked.status_code == 201 and asked.json()["run"]["status"] == "awaiting"
+            stop = await call(w.alice_person, "POST", f"/projects/agent-runs/{run}/activities",
+                              {"type": "prompt", "signal": "stop", "idempotency_key": _key()})
+            assert stop.status_code == 201, stop.text
+        [row] = _rows(w.p, "SELECT status, session_key FROM pm_agent_runs "
+                           "WHERE id = CAST(:i AS uuid)", i=run)
+        assert (row.status, row.session_key) == ("stopping", "TerminalA_of-22chars__")
 
     async def test_k11_a_call_with_no_session_meets_a_keyed_run_as_a_holder(self, w):
         """The flip back of §12.5: a call outside a session owns only runs

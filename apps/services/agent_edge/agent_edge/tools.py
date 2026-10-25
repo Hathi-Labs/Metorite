@@ -883,6 +883,10 @@ SESSION_TEXTS: Mapping[str, tuple[str, str]] = {
         " connection share one name, and a claim cannot tell them apart. A run"
         " of another connection, such as one on another machine, is never"
         " yours, and the list leaves it out."),
+    "[[SHARED]]": (
+        "",
+        " Two terminals on one connection share one name, and a claim cannot"
+        " tell them apart."),
 }
 
 
@@ -2887,7 +2891,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             _my_runs(ctx, via, needs_agent=True), _my_runs(ctx, via, state=HELD_STATE))
         # SW-7: a waiting run of a SIBLING session of this connection is
         # that session's, until its lease ended. A run with no session key
-        # (a member start, a member's answer or reopen, or a run from before
+        # (a member start, a reopen of a finished run, or a run from before
         # SW-7) waits for any session of the connection.
         waiting = [r for r in needs if r.get("state") in WAITING_REASONS
                    and (_this_session(r, ctx.session)
@@ -3842,7 +3846,7 @@ CLAIM_TASK = Tool(
         " [[OWN]] that it found, or null when agent"
         " runs are off. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
-        " claim this one again. A holder with no activity for 2 hours loses"
+        " claim this one again.[[SHARED]] A holder with no activity for 2 hours loses"
         " the task to the next claim." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -4131,7 +4135,7 @@ ASK_ON_TASK = Tool(
     description=(
         "Ask the member a question on a task when you need a decision before"
         " you go on. The tool starts an agent run on the task, or uses the open"
-        " run of this member from [[OWN]], and writes the question. Give 2"
+        " run of this member from [[OWN]], and writes the question.[[SHARED]] Give 2"
         " to 10 options, each with a short id and a label, and mark the one you"
         " recommend with recommended true. Set allow_multiple when more than"
         " one option can apply. With no options, the member answers in free"
