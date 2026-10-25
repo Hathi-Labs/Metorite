@@ -38,6 +38,7 @@ import json
 import logging
 import re
 import unicodedata
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -268,9 +269,19 @@ def _parse_orgs(raw: str) -> frozenset[str]:
     """The ids in *raw*, trimmed and in lower case. Cached on the raw value.
 
     The precedent is ``gateway.routes.crm.flags._parse_orgs``. An empty
-    entry, as in ``"a,,b"``, is dropped.
+    entry, as in ``"a,,b"``, is dropped. An entry that is not a uuid stays,
+    and no org id, which is a uuid, matches it. It logs one warning, and the
+    cache makes it one for each raw value. The list holds org ids only, never
+    a secret, so the warning names the entry.
     """
-    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+    orgs = frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+    for org in sorted(orgs):
+        try:
+            uuid.UUID(org)
+        except ValueError:
+            logger.warning("assistant_profile.orgs.not_a_uuid",
+                           extra={"entry": org[:64]})
+    return orgs
 
 
 def enabled_for(org_id: str | None) -> bool:

@@ -869,3 +869,23 @@ class TestTheRoutesPerOrg:
         res = _put({"key": "enabled", "value": True})
         assert res.status_code == 422
         assert _writes(fake) == []
+
+
+def test_an_entry_that_is_not_a_uuid_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from acb_common import assistant_profile as shared
+    from acb_common import get_settings
+
+    shared._parse_orgs.cache_clear()
+    raw = f"{_IN}, hathi-labs ,"
+    monkeypatch.setattr(get_settings(), "assistant_profile_enabled", True, raising=False)
+    monkeypatch.setattr(get_settings(), "assistant_profile_orgs", raw, raising=False)
+    with caplog.at_level(logging.WARNING, logger=shared.__name__):
+        assert shared.enabled_for(_IN) is True
+        assert shared.enabled_for(_OUT) is False
+    warned = [r for r in caplog.records if r.getMessage() == "assistant_profile.orgs.not_a_uuid"]
+    assert [getattr(r, "entry", None) for r in warned] == ["hathi-labs"]
+    shared._parse_orgs.cache_clear()
