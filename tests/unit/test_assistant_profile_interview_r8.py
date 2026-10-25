@@ -19,6 +19,7 @@ What it proves:
 - an organization outside ``ASSISTANT_PROFILE_ORGS`` behaves as the sibling
   write routes do: the routes never read the org switch, so a write works.
 """
+# ruff: noqa: F811 — the imported fixture `db` is the argument of each test
 from __future__ import annotations
 
 import json
