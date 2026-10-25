@@ -759,6 +759,13 @@ class Settings(BaseSettings):
     # 🔴 OWNER-GATE on production: to add an agent changes what a live
     # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
     ai_tier_routing: str = ""
+    # The covered agents whose `auto` chat turns run with the model's thinking
+    # OFF (`reasoning_effort: "none"`, chat speed 2026-10-25). A comma list of
+    # agent names, or `*`. Empty means OFF. A Thinking or Max turn, and a
+    # `plan`, `analysis` or `code` turn, keep thinking. The one reader is
+    # `acb_skills.tier_policy.reasoning_off`, and it fails closed. Fence:
+    # tests/unit/test_reasoning_off.py.
+    ai_reasoning_off_agents: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
