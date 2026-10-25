@@ -326,11 +326,31 @@ def _close_profile_writes() -> None:
         pass
 
 
-def _assistant_profile_enabled() -> bool:
-    """The one reader of ``ASSISTANT_PROFILE_ENABLED``, in ``acb_common`` (PZ-5)."""
-    from acb_common.assistant_profile import enabled
+def _assistant_profile_enabled(org: str | None = None) -> bool:
+    """True when the profile is on for this agent's organization (PZ-25).
 
-    return enabled()
+    The rule is ``acb_common.assistant_profile.enabled_for``. *org* is the
+    organization that the caller holds from the server-side ``UserContext``.
+    With no *org*, the bound tenant (``acb_common.db.current_tenant``) and
+    then the run's org (``executor._current_run_org``) answer. A caller with
+    none of them fails closed, so a build at startup gets no profile tools.
+    Never raises. Fence: ``tests/unit/test_assistant_profile_org_rollout.py``.
+    """
+    try:
+        from acb_common.assistant_profile import enabled_for
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            # Lazy, so a build at import does not load the executor.
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return enabled_for(org)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _context_recency_enabled() -> bool:
@@ -823,12 +843,17 @@ def _make_openai_client(
 def build_orchestrator_agent(
     *,
     with_history: bool = True,
+    organization_id: str | None = None,
 ) -> Agent:
     """Build the core orchestrator MAF agent with dynamic specialist agent tools.
 
     Loads every registered agent as a native MAF tool via agent.as_tool().
     The orchestrator LLM sees each specialist's description and routes to the
     right one automatically — no hard-coded routing table needed.
+
+    *organization_id* is the org of the caller's server-side ``UserContext``,
+    for a caller that builds the agent before it binds the run (PZ-25). With
+    none, :func:`_assistant_profile_enabled` reads the bound run.
     """
     settings = get_settings()
     client = _make_openai_client()
@@ -853,7 +878,8 @@ def build_orchestrator_agent(
     # Off until KB-5b ships the Review view, where a person accepts.
     proposals = company_search and _knowledge_propose_enabled()
     # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
-    profile_on = _assistant_profile_enabled()
+    # PZ-25: per organization, so read it on the bound run, never at import.
+    profile_on = _assistant_profile_enabled(organization_id)
 
     # Build the instructions; append memory context when present.
     instructions = _orchestrator_instructions(company_search, recency, proposals,
@@ -900,7 +926,7 @@ def build_orchestrator_agent(
             retrieval_tools += [propose_page, propose_edit]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
-    # WS-63 PZ-5: `resolve_person`, with ASSISTANT_PROFILE_ENABLED on only.
+    # WS-63 PZ-5: `resolve_person`, only with the profile on for the org (PZ-25).
     # The ONE path of the tool, as for `search_company`: not config.json
     # tool_scope, not the floor, not the injection chain.
     # Fence: tests/unit/test_resolve_person.py.
