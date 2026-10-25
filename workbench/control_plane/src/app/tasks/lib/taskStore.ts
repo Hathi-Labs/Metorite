@@ -1339,6 +1339,9 @@ interface TaskState {
    *  to it on the board's routes, so the card and the strip agree with the
    *  board. A no-op on the demo backend. */
   refreshItem: (id: string) => Promise<void>;
+  /** Re-read the whole list quietly (live backend only). WS-64 live refresh:
+   *  My work calls it when a chat write or another process changed tasks. */
+  reloadItems: () => Promise<void>;
   /**
    * D79 — put a task in ONE exact status of its own status set, and say so
    * in a receipt with Undo (`statusReceipt.ts`). `lanes` saves a second read
@@ -2924,6 +2927,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectLedProject: (id) => {
     get().selectView("projects");
     set({ selectedLedProjectId: id });
+  },
+
+  reloadItems: async () => {
+    // A quiet re-read of the list, for a write made by another process or
+    // tab. Unlike `hydrate` it never falls back to the demo mocks, so a
+    // failed read on a wake leaves the real rows in place.
+    if (get().backend !== "live") return;
+    try {
+      const items = await fetchItems("all");
+      set({ items });
+    } catch {
+      /* keep current */
+    }
   },
 
   refreshItem: async (id) => {

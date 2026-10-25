@@ -276,6 +276,34 @@ def covered_agents() -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
+#: The ``reasoning_effort`` that turns a DeepSeek model's thinking off. litellm
+#: sends it as ``thinking: {type: disabled}``. Any other value turns thinking
+#: ON, so "low" is not a shorter think.
+REASONING_OFF = "none"
+
+
+def reasoning_off(agent: str | None, *, kind: str, effort: str | None) -> bool:
+    """True when a turn of *agent* runs with the model's thinking off.
+
+    Only an ``auto`` turn of kind ``chat``, for an agent that
+    ``AI_REASONING_OFF_AGENTS`` names (a comma list, or ``*``). Thinking,
+    Max, and a ``plan``, ``analysis`` or ``code`` turn keep thinking. A
+    pinned turn reads as ``chat``, so do not list an agent whose default
+    tier cannot move until it measures well. Any fault reads as off.
+    """
+    name = str(agent or "").strip()
+    if not name or kind != "chat" or normalise_effort(effort) != "auto":
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(get_settings().ai_reasoning_off_agents or "")
+    except Exception:  # never change a request on a fault
+        return False
+    names = {part.strip() for part in raw.split(",") if part.strip()}
+    return ALL_AGENTS in names or name in names
+
+
 def tier_routing_on(agent: str | None) -> bool:
     """True when the tier policy covers *agent*. ONE reader, and it fails closed.
 
@@ -635,6 +663,17 @@ class RunTierPolicy:
         """The tier of the next main request: the turn's tier, always."""
         return self.run_choice()
 
+    def reasoning_effort(self) -> str | None:
+        """:data:`REASONING_OFF` for every request of a turn that runs with
+        thinking off (:func:`reasoning_off`), else None. The turn decides
+        once, so no request of it mixes thinking on and off: DeepSeek refused
+        that with a 400 in the probe of 2026-09-24."""
+        if not reasoning_off(self.agent, kind=self.kind, effort=self.effort):
+            return None
+        if self._requests == 0:
+            _log.info("ai_route.reasoning_off", agent=self.agent, run_id=self.run_id)
+        return REASONING_OFF
+
     def record(self, choice: Choice) -> None:
         """Log ``ai_route.chosen`` and emit ``ai.route`` for one request."""
         self._requests += 1
@@ -664,6 +703,11 @@ class TierPolicyMiddleware(ChatMiddleware):
         choice = self._policy.next_choice()
         options = context.options if isinstance(context.options, dict) else {}
         context.options = {**options, "model": choice.tier}
+        # Chat speed: thinking off for the whole turn, never over an effort
+        # that the request already carries.
+        effort = self._policy.reasoning_effort()
+        if effort is not None and "reasoning_effort" not in options:
+            context.options["reasoning_effort"] = effort
         self._policy.record(choice)
         await call_next()
 

@@ -60,15 +60,15 @@ export async function completeFromHome(
   }
   // ⚠️ A hydrate that failed leaves the DEMO store, with mock rows. A done
   // there writes nothing, so it must fail loudly here.
-  if (store.getState().backend !== "live") throw new Error("My Tasks could not load. Try again.");
+  if (store.getState().backend !== "live") throw new Error("My work could not load. Try again.");
   const held = () => store.getState().items.some((i) => i.id === id);
   if (!held() && !fresh) {
     // A task that reached My Day after the store loaded.
     await hydrateOnce(store);
     fresh = true;
-    if (store.getState().backend !== "live") throw new Error("My Tasks could not load. Try again.");
+    if (store.getState().backend !== "live") throw new Error("My work could not load. Try again.");
   }
-  if (!held()) throw new Error("Open it in My Tasks to finish it.");
+  if (!held()) throw new Error("Open it in My work to finish it.");
   // The row the store holds may be older than the one My Day drew.
   // ⚠️ This is a second read of the task, and both are needed. The store
   // decides to ASK (D-PM-38) from the row it holds, BEFORE it writes, so the

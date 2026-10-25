@@ -1,13 +1,31 @@
-"""The Google Drive adapter of a member source (WS-61 KC-1a).
+"""The Google Drive adapter of a member source (WS-61 KC-1a and KC-3).
 
-Spec: ``project-docs/specs/knowledge_curation.md`` §7.1 and §7.2 step 1, and
-``project-docs/specs/knowledge_base.md`` §7.1 and §7.2.
+Spec: ``project-docs/specs/knowledge_curation.md`` §7.1 and §7.2 steps 1 and
+5, and ``project-docs/specs/knowledge_base.md`` §7.1 and §7.2.
 
 **Metadata only.** Discovery reads ``files.list`` with a ``fields`` mask and
-``drives.list``. It never asks ``alt=media`` and never calls ``files.export``.
-:meth:`GoogleDriveSource.fetch_text` and :meth:`GoogleDriveSource.fetch_bytes`
-raise ``NotImplementedError`` until KC-5, and
-:meth:`GoogleDriveSource.list_changed` until KC-3.
+``drives.list``. The change feed (KC-3) reads ``changes.getStartPageToken``
+and ``changes.list`` with a ``fields`` mask. Nothing asks ``alt=media`` and
+nothing calls ``files.export``. :meth:`GoogleDriveSource.fetch_text` and
+:meth:`GoogleDriveSource.fetch_bytes` raise ``NotImplementedError`` until KC-5.
+
+**The change feed (KC-3).** One page of ``changes.list`` becomes one
+:class:`ChangePage`. A removed change and a trashed file are a removal. A
+shared-drive change that is removed is a removal of the drive root, and one
+with a name is an upsert of the drive root. The adapter keeps the LAST event
+of each id, in feed order, so one upsert never changes a row twice.
+``content_hash`` is ``md5Checksum`` when Google gives one, else ``v`` and
+the ``version`` (a native Google Doc has no MD5). Discovery reads the same
+two fields, so both fill ``content_hash`` the same way.
+
+**A dead page token.** Google's reference for ``changes.list`` names no
+error code for an expired or unknown ``pageToken``. KC-3 could not check it
+against live Google, because the build has no Drive test account. So the
+adapter maps each answer that can mean "this cursor is dead" to
+:class:`CursorExpired`: HTTP 404, HTTP 410, and HTTP 400 whose error names
+the location ``pageToken`` (the answer Google gives for a token that it
+cannot read). The engine then takes a new start token and relists. A check
+against a live account is open (``knowledge_curation.md`` §22 KC-3).
 
 **The phases of one discovery.** The cursor walks four phases:
 
@@ -42,6 +60,8 @@ from gateway.kb_sources.base import (
     KIND_FOLDER,
     NOT_IN_KC1,
     AccountIdentity,
+    ChangePage,
+    CursorExpired,
     DiscoverCursor,
     DiscoverPage,
     OAuthClientConfig,
@@ -68,10 +88,33 @@ PAGE_SIZE = 100
 MIN_PAGE = 10
 
 #: The fields of each file. Metadata only: no content, no export link.
+#: ``md5Checksum`` and ``version`` fill ``content_hash`` (KC-3).
 FILE_FIELDS = (
-    "nextPageToken,files(id,name,mimeType,size,modifiedTime,parents,driveId,webViewLink)"
+    "nextPageToken,files(id,name,mimeType,size,modifiedTime,parents,driveId,webViewLink,"
+    "md5Checksum,version)"
 )
 DRIVE_FIELDS = "nextPageToken,drives(id,name)"
+
+#: The fields of one page of the change feed (KC-3). Metadata only: no
+#: content and no export link, as :data:`FILE_FIELDS`.
+CHANGE_FIELDS = (
+    "nextPageToken,newStartPageToken,changes(changeType,removed,fileId,driveId,"
+    "file(id,name,mimeType,size,modifiedTime,parents,driveId,webViewLink,trashed,"
+    "md5Checksum,version),drive(id,name))"
+)
+START_FIELDS = "startPageToken"
+
+#: The change type of a file. The only other type that Google sends is the
+#: change of a shared drive.
+CHANGE_FILE = "file"
+
+#: The longest change cursor the adapter sends. A longer one is dead.
+MAX_TOKEN = 500
+
+#: Google's ``md5Checksum``: 32 hex characters.
+_MD5 = re.compile(r"^[0-9a-f]{32}$")
+#: Google's ``version``: a whole number, as text.
+_VERSION = re.compile(r"^[0-9]{1,30}$")
 
 #: A Drive id. Anything else is skipped, because an id goes into a query.
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
@@ -127,6 +170,19 @@ def _name(value: Any) -> str:
     return str(value or "").strip()[:MAX_NAME] or "(no name)"
 
 
+def _content_hash(item: Mapping[str, Any], kind: str) -> str | None:
+    """``md5Checksum``, else ``v<version>``, else ``None``. A folder has none."""
+    if kind == KIND_FOLDER:
+        return None
+    md5 = str(item.get("md5Checksum") or "").strip().lower()
+    if _MD5.match(md5):
+        return md5
+    version = str(item.get("version") or "").strip()
+    if _VERSION.match(version):
+        return f"v{version}"
+    return None
+
+
 def _node(item: Mapping[str, Any]) -> SourceNode | None:
     """One ``files.list`` item as a node, or ``None`` for a malformed id."""
     ext_id = _safe_id(item.get("id"))
@@ -135,16 +191,82 @@ def _node(item: Mapping[str, Any]) -> SourceNode | None:
     parents = item.get("parents") or []
     parent = _safe_id(parents[0]) if isinstance(parents, list) and parents else None
     mime = str(item.get("mimeType") or "") or None
+    kind = KIND_FOLDER if mime == FOLDER_MIME else KIND_FILE
     return SourceNode(
         ext_id=ext_id,
         parent_ext_id=parent,
-        kind=KIND_FOLDER if mime == FOLDER_MIME else KIND_FILE,
+        kind=kind,
         name=_name(item.get("name")),
         mime=mime,
         size=_size(item.get("size")),
         modified_at=_when(item.get("modifiedTime")),
         web_url=_link(item.get("webViewLink")),
         drive_id=_safe_id(item.get("driveId")),
+        content_hash=_content_hash(item, kind),
+    )
+
+
+def _drive_root(drive_id: str, name: Any) -> SourceNode:
+    """The root folder of one shared drive. Its id is the drive id."""
+    return SourceNode(
+        ext_id=drive_id, parent_ext_id=None, kind=KIND_FOLDER, name=_name(name),
+        mime=FOLDER_MIME, size=None, modified_at=None,
+        web_url=f"https://drive.google.com/drive/folders/{drive_id}",
+        drive_id=drive_id,
+    )
+
+
+def _change_event(change: Mapping[str, Any]) -> tuple[str, SourceNode | None] | None:
+    """One change as ``(id, node)`` for an upsert, ``(id, None)`` for a
+    removal, or ``None`` for a change to skip (a malformed id)."""
+    removed = change.get("removed") is True
+    if str(change.get("changeType") or "") == CHANGE_FILE:
+        ext_id = _safe_id(change.get("fileId"))
+        if ext_id is None:
+            return None
+        item = change.get("file")
+        if removed or (isinstance(item, Mapping) and item.get("trashed") is True):
+            return ext_id, None
+        node = _node(item) if isinstance(item, Mapping) else None
+        if node is None or node.ext_id != ext_id:
+            return None
+        return ext_id, node
+    # The change of a shared drive. Its root node has the drive id.
+    drive_id = _safe_id(change.get("driveId"))
+    if drive_id is None:
+        return None
+    if removed:
+        return drive_id, None
+    drive = change.get("drive")
+    if isinstance(drive, Mapping) and str(drive.get("name") or "").strip():
+        return drive_id, _drive_root(drive_id, drive.get("name"))
+    return None
+
+
+def change_page(body: Any) -> ChangePage:
+    """One ``changes.list`` answer as a :class:`ChangePage`.
+
+    The last event of each id wins, and the ids keep the order of their last
+    event in the feed. So an id is an upsert or a removal, never both.
+    """
+    changes = body.get("changes") if isinstance(body, Mapping) else None
+    events: dict[str, SourceNode | None] = {}
+    for change in changes or []:
+        if not isinstance(change, Mapping):
+            continue
+        event = _change_event(change)
+        if event is None:
+            continue
+        ext_id, node = event
+        events.pop(ext_id, None)  # the last event moves to the end
+        events[ext_id] = node
+    nxt = body.get("nextPageToken") if isinstance(body, Mapping) else None
+    start = body.get("newStartPageToken") if isinstance(body, Mapping) else None
+    return ChangePage(
+        upserts=tuple(n for n in events.values() if n is not None),
+        removed=tuple(i for i, n in events.items() if n is None),
+        next_token=str(nxt) if nxt else None,
+        new_start_token=str(start) if start and not nxt else None,
     )
 
 
@@ -189,8 +311,14 @@ class GoogleDriveSource:
 
     async def _get(
         self, cred: SourceCredential, path: str, params: Mapping[str, str],
+        *, cursor_read: bool = False,
     ) -> HttpAnswer:
-        """One GET of the Drive API, with the backoff of the module doc."""
+        """One GET of the Drive API, with the backoff of the module doc.
+
+        *cursor_read* marks a read of the change feed on a stored page token.
+        An answer that means "this cursor is dead" then raises
+        :class:`CursorExpired` (the module doc).
+        """
         headers = {"Authorization": f"Bearer {cred.access_token}"}
         for attempt in range(len(_BACKOFF) + 1):
             answer = await self._http.get(f"{API}/{path}", params=params, headers=headers)
@@ -200,6 +328,8 @@ class GoogleDriveSource:
                 exc = SourceError("Google refused the Drive token")
                 exc.code = "unauthorized"
                 raise exc
+            if cursor_read and self._dead_cursor(answer):
+                raise CursorExpired(f"Google refused the change cursor ({answer.status_code})")
             if not self._throttled(answer):
                 exc = SourceError(f"Google answered {answer.status_code}")
                 exc.code = f"http_{answer.status_code}"
@@ -207,6 +337,18 @@ class GoogleDriveSource:
             if attempt < len(_BACKOFF):
                 await self._sleep(_BACKOFF[attempt])
         raise RateLimited("Google kept throttling the Drive read", tries=len(_BACKOFF) + 1)
+
+    @staticmethod
+    def _dead_cursor(answer: HttpAnswer) -> bool:
+        """404, 410, or a 400 whose error names the location ``pageToken``."""
+        if answer.status_code in (404, 410):
+            return True
+        if answer.status_code != 400:
+            return False
+        body = answer.json()
+        errors = (body.get("error") or {}).get("errors") if isinstance(body, Mapping) else None
+        return any(isinstance(e, Mapping) and e.get("location") == "pageToken"
+                   for e in errors or [])
 
     @staticmethod
     def _throttled(answer: HttpAnswer) -> bool:
@@ -319,12 +461,59 @@ class GoogleDriveSource:
                                  parent_ext_id=cursor.parent_ext_id, page_size=size)
         return DiscoverPage(nodes=nodes, next_cursor=nxt)
 
-    # ── Later slices ──────────────────────────────────────────────────────
+    # ── The change feed (KC-3) ────────────────────────────────────────────
+
+    async def changes_start_token(self, cred: SourceCredential) -> str:
+        """``changes.getStartPageToken`` for each drive that the member reads."""
+        answer = await self._get(cred, "changes/startPageToken", {
+            "supportsAllDrives": "true", "fields": START_FIELDS,
+        })
+        body = answer.json()
+        token = body.get("startPageToken") if isinstance(body, Mapping) else None
+        if not token or len(str(token)) > MAX_TOKEN:
+            exc = SourceError("Google gave no start page token")
+            exc.code = "no_start_token"
+            raise exc
+        return str(token)
 
     async def list_changed(
         self, cred: SourceCredential, cursor: str | None, folder_ext_ids: Sequence[str],
-    ) -> DiscoverPage:
-        raise NotImplementedError(NOT_IN_KC1)
+    ) -> ChangePage:
+        """One page of ``changes.list`` after *cursor*. Metadata only.
+
+        The feed covers each drive that the member reads, so the adapter
+        does not use *folder_ext_ids*. A page that reaches the guard's cap is
+        read again with half the page size, as discovery does.
+        """
+        token = str(cursor or "")
+        if not token or len(token) > MAX_TOKEN:
+            raise CursorExpired("the change feed has no cursor that Google can read")
+        size = PAGE_SIZE
+        while True:
+            params = {
+                "pageToken": token,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+                "includeRemoved": "true",
+                "pageSize": str(size),
+                "fields": CHANGE_FIELDS,
+            }
+            answer = await self._get(cred, "changes", params, cursor_read=True)
+            if not answer.truncated:
+                break
+            if size <= MIN_PAGE:
+                exc = SourceError("a Drive change page is larger than the guard's cap")
+                exc.code = "page_too_large"
+                raise exc
+            size = max(MIN_PAGE, size // 2)
+        page = change_page(answer.json())
+        if page.next_token is None and page.new_start_token is None:
+            exc = SourceError("Google gave no next cursor for the change feed")
+            exc.code = "no_next_cursor"
+            raise exc
+        return page
+
+    # ── Later slices ──────────────────────────────────────────────────────
 
     async def fetch_text(self, cred: SourceCredential, node: SourceNode) -> str:
         raise NotImplementedError(NOT_IN_KC1)
@@ -336,4 +525,4 @@ class GoogleDriveSource:
         return node.web_url or f"https://drive.google.com/open?id={node.ext_id}"
 
 
-__all__ = ["PROVIDER", "GoogleDriveSource"]
+__all__ = ["CHANGE_FIELDS", "FILE_FIELDS", "PROVIDER", "GoogleDriveSource", "change_page"]
