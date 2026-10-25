@@ -187,6 +187,8 @@ class Gateway:
                                   "value": "bank.test", "exclude": False}]}
         if path == "/email/assistant/settings":
             return dict(self.settings)
+        if path == "/email/assistant/always-copy":  # §21.16, H-411
+            return {"rules": [], "version": "v-empty"}
         if path == "/email/knowledge":
             return {"entries": [{"id": "k1", "title": "Prices", "content": "c"}]}
         if path == "/email/unsubscribe/target":
@@ -625,11 +627,16 @@ SETTING_NO_CARD: dict[str, str] = {
     "digest_time_of_day": "it moves when a digest that is on goes out",
     "digest_send_to_email": "the digest frequency is OFF, so no mail goes out",
 }
+#: H-411: a parameter that only goes with another one, and its value. The
+#: version of the always-copy list goes with ``always_copy``.
+SETTING_WITH: dict[str, tuple[str, Any]] = {
+    "always_copy_version": ("always_copy", "v-empty"),
+}
 
 
 def test_each_setting_has_a_value_or_a_reason() -> None:
     params = set(inspect.signature(agents.update_assistant_settings).parameters)
-    assert params - {"account_id"} == set(SETTING_ON)
+    assert params - {"account_id"} == set(SETTING_ON) | set(SETTING_WITH)
 
 
 @pytest.mark.parametrize("key", sorted(SETTING_ON))
@@ -637,7 +644,8 @@ async def test_each_setting_that_turns_on_asks(gw: Gateway, key: str) -> None:
     """Fix round 1 (P1-d): from a mailbox with each setting off, each change
     asks a card, unless ``SETTING_NO_CARD`` gives the reason."""
     gw.answer = False
-    out = await agents.update_assistant_settings(BOX, **{key: SETTING_ON[key]})
+    extra = {k: v for k, (base, v) in SETTING_WITH.items() if base == key}
+    out = await agents.update_assistant_settings(BOX, **{key: SETTING_ON[key]}, **extra)
     if key in SETTING_NO_CARD:
         assert gw.cards == [], key
         return

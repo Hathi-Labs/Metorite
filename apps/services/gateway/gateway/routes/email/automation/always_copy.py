@@ -57,6 +57,12 @@ READ_SQL = "SELECT always_copy FROM email_assistant_settings WHERE account_id = 
 #: The read of the PUT. It locks the row, so two writers check the version
 #: one after the other (review P2).
 READ_FOR_UPDATE_SQL = READ_SQL + " FOR UPDATE"
+#: The lock of the PUT on the mailbox itself (HANDOFF H-411). A mailbox with
+#: no settings row locks nothing under ``FOR UPDATE``, so two first writes
+#: both passed the version check. This lock holds until the transaction
+#: ends, and it holds also when no row exists. The key is the account id,
+#: a UUID, so two tenants never share a key.
+LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended('email_always_copy:' || :aid, 0))"
 #: The answer when the list changed after the caller read it (review P2).
 VERSION_CHANGED = ("Nothing changed. The always-copy rules changed after you read them. "
                    "Read them again, and make the change on the new list.")
@@ -283,6 +289,7 @@ async def put_always_copy(
             raise HTTPException(status_code=422, detail=(
                 f"Nothing changed. {mine[0]} is your own address, and a rule never "
                 "copies you."))
+        await db.execute(text(LOCK_SQL), {"aid": req.account_id})
         row = (await db.execute(text(READ_FOR_UPDATE_SQL), {"aid": req.account_id})).fetchone()
         current = _stored(getattr(row, "always_copy", None) if row is not None else None)
         if version_of(current) != req.expected:

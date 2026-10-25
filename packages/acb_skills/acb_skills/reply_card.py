@@ -389,6 +389,15 @@ _PLAIN_LATIN: tuple[tuple[int, int], ...] = (
     (0x0218, 0x021B),                     # Romanian Ș ș Ț ț
     (0x1EA0, 0x1EF9),                     # Vietnamese, Latin Extended Additional
 )
+#: The letters of Latin Extended-B and IPA that real text uses and that have
+#: no ASCII twin (HANDOFF H-410). A letter here passes only when
+#: ``held_card.confusable_of`` names no twin for it, so an entry of the one
+#: look-alike table stays a look-alike. Any other letter of those two blocks,
+#: such as the IPA iota U+0269 or the small capital R U+0280, is still odd.
+_REAL_EXTENDED: tuple[tuple[int, int], ...] = (
+    (0x01CD, 0x01DC),                     # Pinyin tone letters, Ǎ ǎ … ǚ Ǜ ǜ
+    (0x018F, 0x018F), (0x0259, 0x0259),   # Azerbaijani Ə ə (schwa)
+)
 
 
 def _script_of(ch: str) -> str:
@@ -407,7 +416,13 @@ def _script_of(ch: str) -> str:
 
 def _plain_latin(ch: str) -> bool:
     cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _PLAIN_LATIN)
+    if any(lo <= cp <= hi for lo, hi in _PLAIN_LATIN):
+        return True
+    if any(lo <= cp <= hi for lo, hi in _REAL_EXTENDED):
+        from acb_skills.held_card import confusable_of
+
+        return not confusable_of(ch)
+    return False
 
 
 #: The kinds of a :class:`LookalikeWord`.

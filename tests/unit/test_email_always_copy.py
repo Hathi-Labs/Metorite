@@ -81,9 +81,15 @@ class _SettingsDb(_Db):
         super().__init__()
         self.rules: list[dict[str, Any]] = [{"match": JAIN, "cc": [KIRAN, VEENA]}]
         self.written: list[dict[str, Any]] = []
+        self.order: list[str] = []
 
     async def execute(self, sql: Any, params: dict[str, Any] | None = None) -> Any:
         q = str(sql)
+        if q == ac.LOCK_SQL:
+            self.order.append("lock")
+            return types.SimpleNamespace(fetchone=lambda: None)
+        if q == ac.READ_FOR_UPDATE_SQL:
+            self.order.append("read")
         if q in (ac.READ_SQL, ac.READ_FOR_UPDATE_SQL):
             row = types.SimpleNamespace(always_copy=list(self.rules))
             return types.SimpleNamespace(fetchone=lambda: row)
@@ -132,6 +138,14 @@ async def test_the_put_saves_a_colleague(routes: _SettingsDb) -> None:
     assert out["rules"] == [{"match": JAIN, "cc": [KIRAN]}]
     assert out["version"] == ac.version_of(out["rules"])
     assert len(routes.written) == 1
+    # H-411: the PUT locks the mailbox before it reads the version, so a
+    # mailbox with no settings row is locked too.
+    assert routes.order == ["lock", "read"]
+
+
+def test_the_lock_names_the_mailbox_and_ends_with_the_transaction() -> None:
+    """H-411: an advisory lock that a commit or a rollback lets go."""
+    assert "pg_advisory_xact_lock" in ac.LOCK_SQL and ":aid" in ac.LOCK_SQL
 
 
 async def test_the_put_refuses_a_list_that_changed_after_the_read(routes: _SettingsDb) -> None:
@@ -291,12 +305,95 @@ async def test_the_tool_asks_a_card_then_puts_the_whole_list(monkeypatch) -> Non
     monkeypatch.setattr(agents, "_put", put)
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
     out = await agents.update_assistant_settings(
-        BOX, always_copy=[{"match": "@JAINUNIVERSITY.ac.in", "cc": [KIRAN]}])
+        BOX, always_copy=[{"match": "@JAINUNIVERSITY.ac.in", "cc": [KIRAN]}],
+        always_copy_version="v-empty")
     assert len(cards) == 1 and "Always copy" in cards[0]["context"]
     assert puts == [("/email/assistant/always-copy",
                      {"account_id": BOX, "rules": [{"match": JAIN, "cc": [KIRAN]}],
                       "expected": "v-empty"})]
     assert out.startswith("Always-copy rules updated")
+
+
+def _copy_agent(monkeypatch, name: str, versions: list[str], put_error: Any = None):
+    """The email agent with a fake gateway. Each read of the list answers
+    the next version of *versions*. A PUT records its body, and raises
+    *put_error* when one is given."""
+    agents = F.load_email_agent(name)
+    puts: list[dict[str, Any]] = []
+    cards: list[dict[str, Any]] = []
+    left = list(versions)
+
+    async def get(path: str, params: Any = None) -> Any:
+        if path == "/email/accounts":
+            return [{"id": BOX, "email_address": MEMBER, "display_label": "Work"}]
+        if path == "/email/assistant/always-copy":
+            return {"rules": [], "version": left.pop(0) if len(left) > 1 else left[0]}
+        if path == "/email/rules":
+            return {"rules": []}
+        return {}
+
+    async def put(path: str, body: Any) -> Any:
+        puts.append(body)
+        if put_error is not None:
+            raise put_error(agents)
+        return {}
+
+    async def card(**kw: Any) -> bool:
+        cards.append(kw)
+        return True
+
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
+    monkeypatch.setattr(agents, "_get", get)
+    monkeypatch.setattr(agents, "_put", put)
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    return agents, puts, cards
+
+
+async def test_the_list_read_names_its_version(monkeypatch) -> None:
+    """H-411: the model reads the version with the list, so it can pass it back."""
+    agents, _puts, _cards = _copy_agent(monkeypatch, "ea_always_copy_read", ["v-read"])
+    out = await agents.get_rules_and_settings(BOX)
+    assert "Always-copy version: v-read." in out
+
+
+async def test_the_tool_sends_the_version_that_the_model_read(monkeypatch) -> None:
+    """H-411: the member changes the list in the settings screen while the
+    card waits. The PUT carries the version that the model read, so the
+    gateway answers 409 and the tool says so in a plain sentence. Mutation:
+    read the version again after the card and send it, and the PUT carries
+    ``v-ui``."""
+    detail = "Nothing changed. The always-copy rules changed after you read them."
+
+    def conflict(agents: Any) -> Exception:
+        return agents.GatewayError("PUT failed (409)", 409, detail=detail)
+
+    agents, puts, cards = _copy_agent(monkeypatch, "ea_always_copy_stale",
+                                      ["v-model", "v-ui"], put_error=conflict)
+    out = await agents.update_assistant_settings(
+        BOX, always_copy=[{"match": JAIN, "cc": [KIRAN]}], always_copy_version="v-model")
+    assert [p["expected"] for p in puts] == ["v-model"]
+    assert out == detail and len(cards) == 1
+
+
+async def test_the_tool_refuses_a_version_that_is_old_already(monkeypatch) -> None:
+    """H-411: the list changed after the model read it and before the tool
+    ran. Nothing changes, no card shows, and nothing is put. Mutation: send
+    the version of the tool's own read, as before H-411, and the PUT goes."""
+    agents, puts, cards = _copy_agent(monkeypatch, "ea_always_copy_old", ["v-ui"])
+    out = await agents.update_assistant_settings(
+        BOX, always_copy=[{"match": JAIN, "cc": [KIRAN]}], always_copy_version="v-model")
+    assert out == agents._COPY_VERSION_CHANGED and out.startswith("Nothing changed.")
+    assert puts == [] and cards == []
+
+
+async def test_the_tool_needs_the_version(monkeypatch) -> None:
+    """H-411: a write with no version is refused, so the tool never falls
+    back to a read of its own."""
+    agents, puts, cards = _copy_agent(monkeypatch, "ea_always_copy_none", ["v-ui"])
+    out = await agents.update_assistant_settings(
+        BOX, always_copy=[{"match": JAIN, "cc": [KIRAN]}])
+    assert out == agents._COPY_VERSION_MISSING
+    assert puts == [] and cards == []
 
 
 async def test_a_new_mail_gets_the_colleagues_of_the_rule_on_its_card(monkeypatch) -> None:
