@@ -1944,12 +1944,14 @@ _WAITING_LISTS: tuple[tuple[str, str], ...] = (
 def _waiting_row(kind: str, row: dict[str, Any]) -> str:
     """One waiting row as one line: the task, the agent and its member.
 
-    The title and the member are text that a member typed, so they print as
-    data. The agent name comes from the one client map, and is not fenced.
+    The title, the member and the agent print as data. An MCP agent's name
+    comes from the client map, but an in-app agent's name is the text after
+    ``agent:`` in an assignee or an actor, which a member typed. So every
+    name is fenced, and a newline in it cannot forge a second row.
     """
     number = row.get("task_number")
     task = f"#{number} " if isinstance(number, int) else ""
-    facts = [f"agent {row.get('agent') or 'Agent'}"]
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
     member = row.get("member_name") or row.get("member")
     if member:
         facts.append(f"for {data(member)}")
@@ -1979,6 +1981,7 @@ def _waiting_lines(section: dict[str, Any]) -> list[str]:
         if more > 0:
             out.append(f"  (and {more} more of the {key})")
     return out
+
 
 #: The facts one row prints, as ``(path, plain label, fenced)``, for a
 #: section whose rows nest what matters (WS-27bn R3b). A section with no

@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { reportLayout } from "@/lib/reportEmail";
+
 import type { RenderedReportBody, WaitingReport, WaitingRow } from "./api";
 import { overviewShown } from "./overviewLive";
 import {
@@ -126,10 +128,44 @@ describe("the lists keep the server's order and say what they cut", () => {
     expect(lists.map((l) => l.kind)).toEqual(["questions", "reviews", "handoffs"]);
     expect(lists[0].total).toBe(9);
     expect(lists[0].rows[0]).toEqual({
+      key: "question:t1",
       id: "t1",
       label: "#12 Choose the nozzle",
       detail: "Claude Code for Ana Rao · 3 hours · asks for an answer",
     });
+  });
+
+  it("keys each row on its run or its blocker, so one task can make two rows", () => {
+    const twoRuns = waitingLists(
+      section({
+        questions: [
+          { ...ROW, run_id: "run-a" },
+          { ...ROW, run_id: "run-b", member_name: "Bo" },
+        ],
+        questions_total: 2,
+      })
+    );
+    const keys = twoRuns[0].rows.map((r) => r.key);
+    expect(keys).toEqual(["question:run-a", "question:run-b"]);
+    const handoff = {
+      ...ROW,
+      blocker_number: 3,
+      blocker_title: "Order steel",
+      agent_side: "blocked" as const,
+      person: "dee@example.test",
+      person_name: "Dee",
+    };
+    const twoBlockers = waitingLists(
+      section({
+        handoffs: [
+          { ...handoff, blocker_id: "b1" },
+          { ...handoff, blocker_id: "b2" },
+        ],
+        handoffs_total: 2,
+      })
+    );
+    expect(twoBlockers[2].rows.map((r) => r.key)).toEqual(["handoff:b1:t1", "handoff:b2:t1"]);
+    expect(new Set(twoBlockers[2].rows.map((r) => r.id)).size).toBe(1);
   });
 
   it("counts the cut from the server's total, never from the rows sent", () => {
@@ -149,15 +185,37 @@ describe("the answer time", () => {
     );
   });
 
-  it("says nothing when no question had an answer, never a zero", () => {
+  it("says nothing when no question came in the period", () => {
     expect(answerLine(section())).toBeNull();
-    expect(
-      answerLine(
-        section({
-          answer_time: { asked: 2, answered: 0, unanswered: 2, median_hours: null, p90_hours: null },
-        })
-      )
-    ).toBeNull();
+  });
+
+  it("says how many questions got no answer when none got one, with no figure", () => {
+    const none = (n: number) =>
+      section({
+        answer_time: { asked: n, answered: 0, unanswered: n, median_hours: null, p90_hours: null },
+      });
+    expect(answerLine(none(3))).toBe("3 questions in this period got no answer.");
+    expect(answerLine(none(1))).toBe("1 question in this period got no answer.");
+    expect(answerLine(none(3))).not.toMatch(/median|0 hours/);
+  });
+
+  it("the email says the same line", () => {
+    const wait = section({
+      agent_runs_seen: true,
+      answer_time: { asked: 3, answered: 0, unanswered: 3, median_hours: null, p90_hours: null },
+    });
+    const layout = reportLayout(
+      {
+        report: { name: "Weekly", scope: "portfolio" },
+        period_start: "2026-10-19",
+        period_end: "2026-10-25",
+        sections: { waiting: wait },
+      },
+      10,
+      new Date(2026, 9, 25)
+    );
+    expect(layout.parts).toHaveLength(1);
+    expect(layout.parts[0].notes).toContain("3 questions in this period got no answer.");
   });
 });
 

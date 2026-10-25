@@ -88,6 +88,8 @@ def w(world, monkeypatch):
     world.root = b.project(world.p, world.p.org_a, A_EMAIL)
     world.root["lanes"]["review"] = _lane(world, "In review", "in_progress")
     world.root["lanes"]["in_progress"] = _lane(world, "In progress", "in_progress")
+    # "Preview" holds "review" as a substring and not as a word.
+    world.root["lanes"]["preview"] = _lane(world, "Preview", "in_progress")
     return world
 
 
@@ -231,6 +233,18 @@ class TestQuestions:
         assert "The oldest is 3 days old." in got["summary"]
         assert got["agent_runs_seen"] is True
 
+    async def test_q1_two_members_on_one_task_make_two_rows(self, w):
+        """RA-3 review. Each run is its own row, and `run_id` tells the two
+        apart, so the client keys each row on it."""
+        tid = _task(w)
+        for who in (A_EMAIL, PERSON):
+            rid = b.run(w.p, w.p.org_a, tid, who, "awaiting")
+            _run_activity(w, rid, tid, "elicitation", minutes_ago=60)
+        got = await _waiting(w, w.a)
+        assert [r["id"] for r in got["questions"]] == [tid, tid]
+        assert len({r["run_id"] for r in got["questions"]}) == 2
+        assert {r["member"] for r in got["questions"]} == {A_EMAIL, PERSON}
+
     async def test_q1_an_answered_awaiting_run_has_no_open_question(self, w):
         """The run still reads `awaiting`, and its only question has an
         answer. `_OPEN_ELICITATIONS_SQL` finds none, so it is not listed."""
@@ -249,6 +263,8 @@ REVIEWS = {
     "lane_agent_then_person": False,
     "lane_person": False,
     "progress_agent": False,
+    # RA-3 review: "Preview" holds "review" and is not a review lane.
+    "preview_agent": False,
     "pr_worked": True,
     "pr_not_worked": False,
     "pr_draft": False,
@@ -256,13 +272,17 @@ REVIEWS = {
 }
 
 
+def _lane_of(name: str) -> str:
+    """The lane each seeded task sits in, from the start of its name."""
+    for prefix, lane in (("lane", "review"), ("progress", "in_progress"),
+                         ("preview", "preview")):
+        if name.startswith(prefix):
+            return lane
+    return "todo"
+
+
 def _seed_reviews(w: Any) -> dict[str, str]:
-    t = {
-        name: _task(w, "review" if name.startswith("lane") else
-                    "in_progress" if name.startswith("progress") else "todo",
-                    title=name)
-        for name in REVIEWS
-    }
+    t = {name: _task(w, _lane_of(name), title=name) for name in REVIEWS}
     _move(w, t["lane_agent"], A_EMAIL, via=b.VIA, minutes_ago=300)
     _move(w, t["lane_agent_then_github"], A_EMAIL, via=b.VIA, minutes_ago=200)
     _act(w, t["lane_agent_then_github"], GITHUB, via="github", minutes_ago=100)
@@ -270,6 +290,7 @@ def _seed_reviews(w: Any) -> dict[str, str]:
     _act(w, t["lane_agent_then_person"], PERSON, minutes_ago=100)
     _move(w, t["lane_person"], PERSON, minutes_ago=200)
     _move(w, t["progress_agent"], A_EMAIL, via=b.VIA, minutes_ago=200)
+    _move(w, t["preview_agent"], A_EMAIL, via=b.VIA, minutes_ago=200)
     for name in ("pr_worked", "pr_draft", "pr_worked_then_person"):
         b.run(w.p, w.p.org_a, t[name], A_EMAIL, "completed",
               created="now() - interval '10 hours'")
@@ -300,6 +321,26 @@ class TestReviews:
         # The longest wait first: the lane move of five hours ago.
         assert got["reviews"][0]["id"] == t["lane_agent"]
         assert by_id[t["lane_agent"]]["member"] == A_EMAIL
+
+    async def test_r1_the_lane_rule_is_one_rule_in_python_and_in_sql(self, w):
+        """The SQL twin and the Python twin answer one table of names."""
+        from gateway.routes.projects import analytics_waiting as wt
+
+        names = ["In review", "Code REVIEW", "Reviewing", "In-review", "Preview",
+                 "Peer_review", "In progress", "Reviewed and done", "", "review"]
+        values = ", ".join(f"(:n{i})" for i in range(len(names)))
+        with w.p.admin_engine.begin() as c:
+            rows = c.execute(text(
+                f"SELECT s.name, {wt.review_lane_sql('s')} AS lane"
+                f"  FROM (SELECT CAST(v.n AS text) AS name,"
+                f"               CAST(:started_cat AS text) AS category"
+                f"          FROM (VALUES {values}) AS v(n)) s"),
+                {"started_cat": "in_progress",
+                 **{f"n{i}": n for i, n in enumerate(names)}}).fetchall()
+        sql = {r.name: bool(r.lane) for r in rows}
+        assert sql == {n: wt.is_review_lane("in_progress", n) for n in names}
+        assert sql["Preview"] is False and sql["Peer_review"] is False
+        assert sql["In review"] and sql["Reviewing"] and sql["In-review"]
 
 
 # ── H1 ───────────────────────────────────────────────────────────────────────
@@ -391,13 +432,23 @@ class TestVisibility:
         _assign(w, blocker, PERSON)
         _assign(w, blocked, IN_APP)
         _link(w, blocker, blocked)
+        # RA-3 review (R7). M can open the blocked task, which an agent holds,
+        # and NOT the blocker, which a person holds. The row would print the
+        # blocker's title, so M must get no row at all.
+        m_blocked = _task(w, title="m blocked")
+        _assign(w, m_blocked, M_EMAIL)
+        _assign(w, m_blocked, IN_APP)
+        hidden_blocker = _task(w, title="hidden blocker")
+        _assign(w, hidden_blocker, PERSON)
+        _link(w, hidden_blocker, m_blocked)
         admin = await _waiting(w, w.a)
         assert admin["questions_total"] == 2
-        assert admin["reviews_total"] == 1 and admin["handoffs_total"] == 1
+        assert admin["reviews_total"] == 1 and admin["handoffs_total"] == 2
         m = await _waiting(w, w.m, project=False)
         assert _ids(m["questions"]) == [mine]
         assert m["questions_total"] == 1
-        assert m["reviews"] == [] and m["handoffs"] == []
+        assert m["reviews"] == []
+        assert m["handoffs"] == [] and m["handoffs_total"] == 0
         assert m["answer_time"]["asked"] == 1
         other_org = await _waiting(w, w.b, project=False)
         assert other_org["questions"] == [] and other_org["questions_total"] == 0

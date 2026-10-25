@@ -1297,7 +1297,7 @@ export function WaitingPanel({ data }: { data: WaitingReport }) {
               </p>
               <ul className="space-y-0.5">
                 {shown.map((r) => (
-                  <WaitingTaskRow key={`${l.kind}:${r.id}`} line={r} open={open} />
+                  <WaitingTaskRow key={r.key} line={r} open={open} />
                 ))}
               </ul>
               {more > 0 && (

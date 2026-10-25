@@ -678,6 +678,11 @@ export interface WaitingRow {
   /** The member the agent works for. `null` for an in-app agent. */
   member: string | null;
   member_name: string | null;
+  /**
+   * A question row only: the run that asks. Two members' runs can wait on
+   * one task, so the run, not the task, names the row.
+   */
+  run_id?: string;
 }
 
 /** A task that an agent put up for a review (§5, "Waiting on a person"). */

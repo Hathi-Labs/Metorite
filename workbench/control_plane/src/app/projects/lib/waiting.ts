@@ -81,6 +81,12 @@ export function handoffWhy(
 
 /** One row as words: the task, then who waits and why. */
 export interface WaitingLine {
+  /**
+   * The one key of the row. A task can make two rows: two members' runs
+   * wait on it, or two tasks block it. So the key names the run or the
+   * blocker as well as the task.
+   */
+  key: string;
   /** The task id. A row opens this task. */
   id: string;
   label: string;
@@ -107,7 +113,8 @@ export function waitingLists(
   section: WaitingReport,
   name: (email: string) => string = (e) => e
 ): WaitingList[] {
-  const line = (r: WaitingRow, why: string): WaitingLine => ({
+  const line = (r: WaitingRow, why: string, key: string): WaitingLine => ({
+    key,
     id: r.id,
     label: taskLabel(r),
     detail: `${agentLine(r, name)} · ${waitedFor(r.age_hours)} · ${why}`,
@@ -117,19 +124,24 @@ export function waitingLists(
       kind: "questions",
       heading: WAITING_HEADINGS.questions,
       total: section.questions_total ?? 0,
-      rows: rowsOf(section.questions).map((r) => line(r, "asks for an answer")),
+      rows: rowsOf(section.questions).map((r) =>
+        line(r, "asks for an answer", `question:${r.run_id ?? r.id}`)
+      ),
     },
     {
       kind: "reviews",
       heading: WAITING_HEADINGS.reviews,
       total: section.reviews_total ?? 0,
-      rows: rowsOf(section.reviews).map((r) => line(r, reviewWhy(r))),
+      // One row for each task: the server picks the task once.
+      rows: rowsOf(section.reviews).map((r) => line(r, reviewWhy(r), `review:${r.id}`)),
     },
     {
       kind: "handoffs",
       heading: WAITING_HEADINGS.handoffs,
       total: section.handoffs_total ?? 0,
-      rows: rowsOf(section.handoffs).map((r) => line(r, handoffWhy(r, name))),
+      rows: rowsOf(section.handoffs).map((r) =>
+        line(r, handoffWhy(r, name), `handoff:${r.blocker_id}:${r.id}`)
+      ),
     },
   ];
 }
@@ -175,7 +187,15 @@ export function waitingHidden(section: WaitingReport | null | undefined): boolea
 /** The answer time as one line, or `null` when no question had an answer. */
 export function answerLine(section: Pick<WaitingReport, "answer_time">): string | null {
   const a = section.answer_time;
-  if (!a || a.answered === 0 || a.median_hours === null) return null;
+  if (!a) return null;
+  // No answer at all is a finding, not a gap: say how many questions got
+  // none, as the chat does. No figure is printed, because none exists.
+  if (a.answered === 0 || a.median_hours === null) {
+    if (a.unanswered <= 0) return null;
+    return a.unanswered === 1
+      ? "1 question in this period got no answer."
+      : `${a.unanswered} questions in this period got no answer.`;
+  }
   const p90 = a.p90_hours === null ? "" : `, p90 ${waitedFor(a.p90_hours)}`;
   const open = a.unanswered > 0 ? `. ${a.unanswered} with no answer yet` : "";
   return `Answer time: median ${waitedFor(a.median_hours)}${p90}, over ${a.answered} answered${open}.`;

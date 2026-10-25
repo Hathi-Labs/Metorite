@@ -729,7 +729,7 @@ export function RenderedBody({
                       <ul className="mt-0.5 space-y-0.5">
                         {l.rows.map((r) => (
                           <li
-                            key={`${l.kind}:${r.id}`}
+                            key={r.key}
                             className="truncate pr-px text-muted-foreground"
                             title={r.label}
                           >

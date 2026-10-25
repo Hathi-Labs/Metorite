@@ -36,6 +36,7 @@ answer time read nothing then, as `agent_summary.py` does for its counts.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
@@ -74,7 +75,15 @@ AWAITING = "awaiting"
 #: pick "a status of the category in_progress whose name says review" when
 #: its pull request opens (`agent_edge/prompts.py`), so the server reads the
 #: same two facts.
+#:
+#: ⚠️ **A word, not a substring** (RA-3 review). "In review", "Code review"
+#: and "Reviewing" match. "Preview" does not. The word must start a word of
+#: the name, case blind. The Python twin uses ``\b`` and the SQL twin uses
+#: Postgres ``\m``, and both count a letter, a digit and ``_`` as word
+#: characters. The match is English only: a lane named in another language
+#: does not count.
 REVIEW_WORD = "review"
+_REVIEW_RE = re.compile(rf"\b{REVIEW_WORD}", re.IGNORECASE)
 
 #: The prefix of an automation actor, such as a workflow or GitHub. An act
 #: with it is not a person's act. `github_merge._person_took_it_back` reads
@@ -105,8 +114,9 @@ def is_open_question(state: str | None, open_question: Any) -> bool:
 
 
 def is_review_lane(category: str | None, name: str | None) -> bool:
-    """A status of the ``in_progress`` category whose name says review."""
-    return category == STARTED_CATEGORY and REVIEW_WORD in str(name or "").lower()
+    """A status of the ``in_progress`` category with a word of its name that
+    starts with "review" (see :data:`REVIEW_WORD`)."""
+    return category == STARTED_CATEGORY and bool(_REVIEW_RE.search(str(name or "")))
 
 
 def is_person_act(created_by: str | None, via: str | None) -> bool:
@@ -273,10 +283,11 @@ def agent_of(
 
 def review_lane_sql(status: str = "s") -> str:
     """The SQL twin of :func:`is_review_lane`, over the status alias. It
-    binds ``:started_cat``. ``review`` holds no LIKE wildcard."""
+    binds ``:started_cat``. ``~*`` is case blind, and ``\\m`` is the start
+    of a word, as ``\\b`` before a letter is in Python."""
     return (
         f"({status}.category = :started_cat"
-        f" AND lower({status}.name) LIKE '%{REVIEW_WORD}%')"
+        f" AND {status}.name ~* '\\m{REVIEW_WORD}')"
     )
 
 
@@ -546,6 +557,9 @@ async def _questions(
     return [
         {
             **_task_row(run, clock, question.created_at),
+            # Two members' runs can wait on one task, so the run names the
+            # row. The client keys each row on it.
+            "run_id": str(run.run_id),
             **agent_of(run.client_via, run.member_email),
             "member_name": run.member_name or None,
         }
@@ -601,6 +615,10 @@ async def waiting_body(
     ]
 
     blocked_where = f"({open_where}) AND {_links_to('target_task_id')}"
+    # ⚠️ §7 rule 1 on the BLOCKING side too. A handoff row prints the title
+    # of the blocking task, so the blocker must be a task the reader can
+    # open. `load_open_where` carries the reader's visibility. A bare "open
+    # task" filter would leak the title. R8 `test_v1` holds it.
     blocking_where = f"({load_open_where('TRUE', vis)}) AND {_links_to('source_task_id')}"
     handoff_rows = (
         await db.execute(text(handoffs_sql(blocked_where, blocking_where)), params)

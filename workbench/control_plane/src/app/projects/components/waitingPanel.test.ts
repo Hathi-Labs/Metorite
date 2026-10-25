@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RenderedReportBody, WaitingReport, WaitingRow } from "../lib/api";
 import { OpenTaskContext, WaitingPanel } from "./AnalyticsPanels";
@@ -168,6 +168,35 @@ describe("§6.8 E1 and E2: no rank, and the agent names its person", () => {
 
   it("puts a title on each count", () => {
     expect(panel).toMatch(/title="2 in total, the longest wait first"/);
+  });
+});
+
+describe("RA-3 review: one task can make two rows, and no question can lack a word", () => {
+  it("keys two runs of one task apart, so React sees two rows", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const twice: WaitingReport = {
+      ...BUSY,
+      questions: [
+        { ...ROW, run_id: "run-a" },
+        { ...ROW, run_id: "run-b", member_name: "Bo" },
+      ],
+      questions_total: 2,
+    };
+    const panel = html(createElement(WaitingPanel, { data: twice }));
+    const keyWarnings = spy.mock.calls.filter((c) => String(c[0]).includes("same key"));
+    spy.mockRestore();
+    expect(keyWarnings).toEqual([]);
+    expect(panel.match(/href="\/projects\?task=q-old"/g)?.length).toBe(2);
+  });
+
+  it("says how many questions got no answer when none got one", () => {
+    const none: WaitingReport = {
+      ...BUSY,
+      answer_time: { asked: 3, answered: 0, unanswered: 3, median_hours: null, p90_hours: null },
+    };
+    const panel = html(createElement(WaitingPanel, { data: none }));
+    expect(panel).toContain("3 questions in this period got no answer.");
+    expect(panel).not.toContain("Answer time: median");
   });
 });
 
