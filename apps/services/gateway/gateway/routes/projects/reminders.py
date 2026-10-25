@@ -44,15 +44,23 @@ a change. ``edited`` is the fifteenth event of migration 307: an engineering
 decision of 2026-10-25, taken before 307 shipped.
 
 **Who counts what** (§5.4). A move that the member asks for adds 1 to
-``snoozes``: a snooze, a reschedule to a named time, and a PATCH of
-``fire_at``. Nothing here touches ``cycles``. Only the loop (RM-2) moves a
-reminder with no answer, and only that adds to ``cycles``.
+``snoozes``: a snooze, a reschedule to a named time or to the smart slot,
+and a PATCH of ``fire_at``. Only the loop (``gateway/reminders/loop.py``,
+RM-2) moves a reminder with no answer, and only that adds to ``cycles``. A
+member move out of ``unconfirmed`` is a fresh start (RM-2): ``cycles`` goes
+back to 0 and ``first_fired_at`` clears, so the give-up limit does not trip
+again at once.
 
 **Time.** A time with no UTC offset is a 422, because a naive instant reads
 in the zone of the database session and fires at the wrong minute. ``tz``
 is the IANA zone the member was in, stored as given once ``zoneinfo`` knows
-it. ``/reschedule`` takes a named time only. The ``smart`` slot of §5.5 is
-RM-2.
+it. ``/reschedule`` also takes ``"smart"``: the slot of §5.5
+(``gateway/reminders/slot.py``), read in the session of the move. Every
+other route answers 422 to it.
+
+**The feed.** :func:`my_open_cards` is the read of the ``reminders`` source
+of My Day (``routes/shell/feed.py``): the member's ``due`` and
+``unconfirmed`` rows, each with its last step of the ladder.
 
 **The gate.** The ``/projects`` router gives ``feature:projects``. No second
 gate applies. ``CALENDAR_REMINDERS`` off makes every route here answer 404
@@ -243,13 +251,21 @@ def _member(user: Any) -> str:
     return email
 
 
+#: The value of ``fire_at`` that asks ``/reschedule`` for the smart slot.
+SMART = "smart"
+
+
+def _is_smart(value: Any) -> bool:
+    return str(value or "").strip().lower() == SMART
+
+
 def _instant(value: Any, field: str) -> datetime:
     """An ISO 8601 instant WITH an offset, as UTC. A naive time is a 422."""
     raw = str(value or "").strip()
-    if raw.lower() == "smart":
+    if _is_smart(raw):
         raise HTTPException(
             status_code=422,
-            detail=f"{field}: the smart slot is not built yet (RM-2). Name a time.",
+            detail=f"{field}: only /reschedule takes the smart slot. Name a time.",
         )
     try:
         when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -556,7 +572,7 @@ async def update_reminder(
         if moved:
             assignments += [
                 "state = 'scheduled'", "next_check_at = NULL",
-                "snoozes = snoozes + 1",
+                "snoozes = snoozes + 1", *_fresh_start(row),
             ]
         assignments.append("updated_at = now()")
         updated = (await db.execute(
@@ -569,24 +585,56 @@ async def update_reminder(
         if moved:
             await _ledger(db, row.id, "rescheduled", {
                 "from": _iso(row.fire_at), "to": _iso(values["fire_at"]),
-                "from_state": row.state, "by": "member",
+                "from_state": row.state, "by": "member", **_fresh_detail(row),
             })
         if edited:
             await _ledger(db, row.id, "edited", {"fields": edited, "by": "member"})
         return _out(updated)
 
 
+def _fresh_start(row: Any) -> list[str]:
+    """The assignments of a member move out of ``unconfirmed`` (§5.4, RM-1
+    review): ``cycles`` back to 0 and no ``first_fired_at``. The member is
+    engaged again, so the give-up limit counts from the next fire."""
+    if row.state != "unconfirmed":
+        return []
+    return ["cycles = 0", "first_fired_at = NULL"]
+
+
+def _fresh_detail(row: Any) -> dict[str, Any]:
+    """The ledger fact of :func:`_fresh_start`: the counts it cleared."""
+    if row.state != "unconfirmed":
+        return {}
+    return {"fresh_start": True, "from_cycles": int(row.cycles or 0)}
+
+
+async def _smart_slot(db: Any, row: Any, me: str) -> datetime:
+    """The smart slot of §5.5 for *row*, after now: ``slot.next_slot`` on the
+    member's day and busy blocks, read on *db*, the reads of the loop."""
+    from gateway.reminders import slot
+    from gateway.reminders.loop import member_busy, member_day
+
+    now = datetime.now(UTC)
+    day = await member_day(db, me)
+    busy = await member_busy(db, me, now)
+    return slot.next_slot(slot.MemberDay(day, busy), row, now)
+
+
 async def _move(
-    reminder_id: UUID, payload: MoveIn, user: Any, event: str,
+    reminder_id: UUID, payload: MoveIn, user: Any, event: str, *,
+    smart: bool = False,
 ) -> dict:
-    """A member move to a named time: snooze and reschedule share it.
+    """A member move: snooze and reschedule share it.
 
     The reminder goes back to ``scheduled`` at the new time, ``snoozes``
-    gains 1, ``next_check_at`` clears, and the ledger gains ``event``.
+    gains 1, ``next_check_at`` clears, and the ledger gains ``event``. A move
+    out of ``unconfirmed`` is a fresh start (:func:`_fresh_start`). With
+    *smart*, the new time is the smart slot of §5.5, read in the session of
+    the move.
     """
     me = _member(user)
-    fire_at = _instant(payload.fire_at, "fire_at")
-    if event == "snoozed":
+    fire_at = None if smart else _instant(payload.fire_at, "fire_at")
+    if event == "snoozed" and fire_at is not None:
         now = datetime.now(UTC)
         if not now < fire_at <= now + SNOOZE_MAX:
             raise HTTPException(
@@ -601,12 +649,15 @@ async def _move(
     async with _tenant_session() as db:
         row = await _load_mine(db, reminder_id, me)
         _require_open(row)
+        if smart:
+            fire_at = await _smart_slot(db, row, me)
+        fresh = "".join(f", {a}" for a in _fresh_start(row))
         updated = (await db.execute(
             text(
                 "UPDATE reminders SET fire_at = :fire_at, "
                 + ("tz = :tz, " if tz_sent else "")
                 + "state = 'scheduled', next_check_at = NULL, "
-                "snoozes = snoozes + 1, updated_at = now() "
+                "snoozes = snoozes + 1" + fresh + ", updated_at = now() "
                 "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
             ),
             {"fire_at": fire_at, "tz": tz, "id": str(reminder_id), "me": me},
@@ -614,6 +665,7 @@ async def _move(
         await _ledger(db, row.id, event, {
             "from": _iso(row.fire_at), "to": _iso(fire_at),
             "from_state": row.state, "by": "member",
+            **({"slot": SMART} if smart else {}), **_fresh_detail(row),
         })
         return _out(updated)
 
@@ -632,8 +684,10 @@ async def reschedule_reminder(
     reminder_id: UUID, payload: MoveIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """A named time only: ``smart`` is RM-2. A ``rescheduled`` ledger row."""
-    return await _move(reminder_id, payload, user, "rescheduled")
+    """A named time, or ``"smart"`` for the smart slot of §5.5 (RM-2). A
+    ``rescheduled`` ledger row. "Not yet" with no time is the smart one."""
+    return await _move(reminder_id, payload, user, "rescheduled",
+                       smart=_is_smart(payload.fire_at))
 
 
 @router.post("/my/reminders/{reminder_id}/resolve", dependencies=_ON)
@@ -787,3 +841,53 @@ async def promote_reminder(
     # promote.
     await link_from_text(user, [(task_id, [(row.title, False, None), (row.notes, True, None)])])
     return result
+
+
+# ── The read of My Day (RM-2) ──────────────────────────────────────────────
+
+#: The ladder events that say which card a row makes: the last of them since
+#: the row was made. ``fired`` gives ``reminder_due``, ``check_back`` gives
+#: ``reminder_check``, and ``gave_up`` comes before ``unconfirmed``.
+CARD_STEPS: tuple[str, ...] = ("fired", "check_back", "gave_up")
+
+#: My rows that make a card, each with its last ladder step. The ledger has
+#: no member column, so the read joins it through my own rows only.
+_CARDS_SQL = (
+    "SELECT r.id, r.title, r.kind, r.state, r.fire_at, r.next_check_at, "
+    "r.cycles, r.important, s.step, s.step_at "
+    "FROM reminders r LEFT JOIN LATERAL ("
+    "  SELECT e.event AS step, e.at AS step_at FROM reminder_events e "
+    "   WHERE e.reminder_id = r.id AND e.event = ANY(CAST(:steps AS text[])) "
+    "   ORDER BY e.at DESC, e.id DESC LIMIT 1) s ON true "
+    "WHERE r.member_email = :me AND r.state IN ('due', 'unconfirmed') "
+    "ORDER BY r.fire_at, r.id LIMIT :limit"
+)
+
+#: The next instant at which the loop changes one of my rows: a fire, or the
+#: next step of a `due` row.
+_EDGE_SQL = (
+    "SELECT min(CASE WHEN state = 'scheduled' THEN fire_at ELSE next_check_at END) "
+    "FROM reminders WHERE member_email = :me "
+    "AND ((state = 'scheduled' AND fire_at > :now) "
+    "  OR (state = 'due' AND kind = 'action' AND next_check_at > :now))"
+)
+
+
+async def my_open_cards(
+    user: Any, *, now: datetime, limit: int,
+) -> tuple[list[Any], datetime | None]:
+    """My reminders that make a My Day card, and the next edge (RM-2).
+
+    The rows are the ``due`` and ``unconfirmed`` ones, oldest ``fire_at``
+    first, at most *limit*. The edge is the next ``fire_at`` or
+    ``next_check_at`` after *now*, or None. The member comes from the
+    session (:func:`_member`), and one tenant session reads both. The
+    caller checks the flag: the feed provider raises ``SourceAbsent`` first.
+    """
+    me = _member(user)
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(_CARDS_SQL), {
+            "me": me, "steps": list(CARD_STEPS), "limit": limit,
+        })).fetchall()
+        edge = (await db.execute(text(_EDGE_SQL), {"me": me, "now": now})).scalar()
+    return list(rows), edge
