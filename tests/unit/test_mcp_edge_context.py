@@ -59,6 +59,7 @@ SW-7 (one key for each MCP session, spec §12.5):
 * Y18. ``E`` ``_this_session``: always ``True``. ``test_y18_a_run_of_another_terminal_is_not_listed``.
 * Y19. ``E`` ``_my_work``: drop the ``lease_expired`` arm of the held group. ``test_y19_a_sibling_run_whose_lease_ended_is_offered``.
 * Y20. ``E`` ``_this_session``: drop the ``key is None`` arm. ``test_y20_a_run_with_no_key_shows_to_each_session``.
+* Y21. ``E`` ``_my_work``: drop the ``lease_expired`` arm of the waiting group. ``test_y21_a_sibling_waiting_run_whose_lease_ended_is_offered``.
 """
 from __future__ import annotations
 
@@ -691,6 +692,30 @@ class TestOneSessionOfAConnection:
         ]
         rows = await self._work_in(self.MINE)
         assert [(r["task_id"], r["reason"]) for r in rows] == [(gone, "held_by_you")]
+
+    async def test_y21_a_sibling_waiting_run_whose_lease_ended_is_offered(self, board):
+        """A LIVE waiting run of another terminal is not listed (y18). Once
+        its lease ended, its terminal most likely closed, so it is offered."""
+        live, gone = _uuid(8541), _uuid(8542)
+        for task_id in (live, gone):
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6541), live, state="answered", session=self.SIBLING),
+            _run(_uuid(6542), gone, state="answered", session=self.SIBLING,
+                 lease_expired=True),
+        ]
+        rows = await self._work_in(self.MINE)
+        assert [(r["task_id"], r["reason"]) for r in rows] == [(gone, "run_answered")]
+
+    async def test_a_closed_terminal_run_reopened_by_a_member_shows_to_a_sibling(
+            self, board):
+        """Session A finished, and the member prompted the run open again:
+        the gateway cleared the key, so session B lists it."""
+        reopened = _uuid(8551)
+        board.tasks[reopened] = _task_row(reopened)
+        board.runs = [_run(_uuid(6551), reopened, state="answered")]
+        rows = await self._work_in(self.SIBLING)
+        assert [(r["task_id"], r["reason"]) for r in rows] == [(reopened, "run_answered")]
 
     async def test_y20_a_run_with_no_key_shows_to_each_session(self, board):
         queued = _uuid(8521)

@@ -980,7 +980,20 @@ async def _move_run(
     error_body: str | None = None, error_activity: str | None = None, stop: bool = False,
 ) -> None:
     """Set the run's status and stamps. Column names are fixed here, and
-    only the values are bound."""
+    only the values are bound.
+
+    SW-7 (spec §12.5), the session key of the run, ONE assignment:
+
+    * A terminal status clears it, and so does a person's answer to a
+      question or reopen of a finished run. A waiting run then keeps no
+      key of a terminal that closed, and the next session adopts it. A
+      plain prompt to a working run keeps the key.
+    * An agent move on the SAME connection adopts a run with no key and
+      keeps a key that is set (``COALESCE``).
+    * An agent move from ANOTHER connection writes the caller's key, which
+      may be NULL. A key minted for the old connection never survives.
+    * A Stop keeps the key, so the session that runs the work sees it.
+    """
     sets = ["status = :status", "last_activity_at = :ts"]
     params: dict[str, Any] = {"rid": str(run.id), "status": new_status, "ts": ts}
     if via is not None:
@@ -988,12 +1001,20 @@ async def _move_run(
         sets.append("last_agent_activity_at = :ts")
         sets.append("connection_id = CAST(:cid AS uuid)")
         params["cid"] = str(agent.connection_id) if agent is not None else None
-        # SW-7: the first agent session that touches a run with no session
-        # key adopts it. A run of another session keeps its key.
-        sets.append("session_key = COALESCE(session_key, CAST(:sk AS text))")
         params["sk"] = getattr(agent, "session_key", None) if agent is not None else None
     if new_status == "in_progress" and run.started_at is None:
         sets.append("started_at = :ts")
+    # A person's answer (to an `awaiting` run) or reopen (of a terminal run)
+    # clears the key. A plain prompt to a working run keeps it, so a live
+    # session is not handed to a sibling.
+    person_resets = via is None and not stop and (
+        run.status == "awaiting" or run.status in TERMINAL_STATUSES)
+    if new_status in TERMINAL_STATUSES or person_resets:
+        sets.append("session_key = NULL")
+    elif via is not None:
+        sets.append(
+            "session_key = CASE WHEN connection_id IS DISTINCT FROM CAST(:cid AS uuid)"
+            " THEN CAST(:sk AS text) ELSE COALESCE(session_key, CAST(:sk AS text)) END")
     if new_status in TERMINAL_STATUSES:
         sets.append("ended_at = :ts")
     elif run.status in TERMINAL_STATUSES:
@@ -1095,9 +1116,10 @@ async def _member_name(db: Any, email: str) -> str:
 #: terminal (SW-7), another machine, or an earlier sign-in (SW-13c). The
 #: release checks the member and the stamp only, so the agent may end it.
 SAME_CLIENT_HINT = (
-    "This is your own run from another session of the same client (another"
-    " terminal, another machine, or an earlier sign-in). If that session has"
-    " ended, release it with release_task and this run_id, then claim again."
+    "This is your own run from another session of this client: another"
+    " machine, an earlier sign-in, or another terminal when MCP sessions are"
+    " on. If that session has ended, release it with release_task and this"
+    " run_id, then claim again."
 )
 
 
@@ -1172,7 +1194,7 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     ts = await _clock(db)
     moved = (await db.execute(
         text(
-            "UPDATE pm_agent_runs SET status = :to, ended_at = :ts "
+            "UPDATE pm_agent_runs SET status = :to, ended_at = :ts, session_key = NULL "
             " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
             "   AND last_activity_at = :seen RETURNING id"
         ),
