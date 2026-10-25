@@ -354,6 +354,12 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_tag": {"project_id": UUID, "tag": "urgent", "name": "p1"},
     "update_task": {"task_id": UUID, "title": "Fix the extruder now"},
     "update_type": {"project_id": UUID, "type_name": "bug", "name": "Defect"},
+    # WS-66 RM-3: the member's reminders. The fake saves the zone UTC.
+    "list_reminders": {},
+    "set_reminder": {"title": "Call the bank", "at": "2099-10-31 09:00"},
+    "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
+    "resolve_reminder": {"reminder_id": tw.REMINDER},
+    "reschedule_reminder": {"reminder_id": tw.REMINDER, "at": "2099-11-02 08:00"},
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
@@ -462,6 +468,13 @@ _SAMPLE: dict[str, Any] = {
     "expected_by": "2026-10-09",
     "filters": '{"overdue": true}',
     "personal": '{"disposition": "someday", "context": "@home"}',
+    # WS-66 RM-3: a reminder's time, kind, estimate, answer and list state.
+    "at": "2099-11-01 10:00",
+    "in_minutes": 60,
+    "kind": "notice",
+    "estimate_minutes": 30,
+    "answer": "drop",
+    "state": "done",
 }
 #: A row key's sample, where the argument of the same name takes another form.
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
@@ -602,6 +615,30 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("POST", "/projects/tasks/bulk", "personal"): {
         "task_ids": f"{UUID},{OTHER}",
         "personal": '{"disposition": "someday"}',
+    },
+    # WS-66 RM-3: a link is both parts or neither, and a snooze is in_minutes.
+    ("POST", "/projects/my/reminders", "subject_kind"): {
+        "title": "Call the bank", "at": "2099-10-31 09:00",
+        "subject_kind": "task", "subject_id": UUID,
+    },
+    ("POST", "/projects/my/reminders", "subject_id"): {
+        "title": "Call the bank", "at": "2099-10-31 09:00",
+        "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "subject_kind"): {
+        "reminder_id": tw.REMINDER, "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "subject_id"): {
+        "reminder_id": tw.REMINDER, "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "tz"): {
+        "reminder_id": tw.REMINDER, "at": "2099-11-01 10:00",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze", "fire_at"): {
+        "reminder_id": tw.REMINDER, "in_minutes": 60, "snooze": "yes",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze", "tz"): {
+        "reminder_id": tw.REMINDER, "in_minutes": 60, "snooze": "yes",
     },
 }
 
