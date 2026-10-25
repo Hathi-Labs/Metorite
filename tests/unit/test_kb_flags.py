@@ -115,6 +115,7 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_gaps"].default == ""
     assert fields["knowledge_sources"].default == ""
     assert fields["knowledge_source_google"].default == ""
+    assert fields["knowledge_sync"].default == ""
 
 
 def _template(path: str) -> str:
@@ -183,7 +184,8 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
 @pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED",
                                   "KNOWLEDGE_EMBED_SWEEP", "KNOWLEDGE_GAPS",
                                   "KNOWLEDGE_PROPOSAL_EXPIRY",
-                                  "KNOWLEDGE_SOURCES", "KNOWLEDGE_SOURCE_GOOGLE"])
+                                  "KNOWLEDGE_SOURCES", "KNOWLEDGE_SOURCE_GOOGLE",
+                                  "KNOWLEDGE_SYNC"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""
     assert is_platform_env(name)
@@ -291,6 +293,46 @@ def test_only_the_flags_module_reads_the_source_settings() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in (
-                    "knowledge_sources", "knowledge_source_google"):
+                    "knowledge_sources", "knowledge_source_google", "knowledge_sync"):
                 readers.add(path.name)
     assert readers == {"flags.py"}, readers
+
+
+# ── KC-3: KNOWLEDGE_SYNC ────────────────────────────────────────────────────
+
+def _sync(monkeypatch: pytest.MonkeyPatch, orgs: str) -> None:
+    monkeypatch.setattr(get_settings(), "knowledge_sync", orgs, raising=False)
+
+
+def test_sync_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "*", "*")
+    _sync(monkeypatch, "")
+    assert not kb_flags.knowledge_sync_named()
+    assert not kb_flags.knowledge_sync_allowed(ORG)
+
+
+def test_sync_reads_the_org_list_and_the_star(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "*", "")
+    _sync(monkeypatch, f" {ORG.upper()} ")
+    assert kb_flags.knowledge_sync_named()
+    assert kb_flags.knowledge_sync_allowed(ORG)
+    assert not kb_flags.knowledge_sync_allowed(OTHER)
+    _sync(monkeypatch, "*")
+    assert kb_flags.knowledge_sync_allowed(OTHER)
+    assert not kb_flags.knowledge_sync_allowed(None)
+
+
+def test_sync_needs_the_sources_flag_and_knowledge_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop reads no source of an org that may not connect one."""
+    _switch(monkeypatch, True, "*")
+    _sync(monkeypatch, "*")
+    _sources(monkeypatch, "", "*")
+    assert not kb_flags.knowledge_sync_allowed(ORG)
+    _sources(monkeypatch, OTHER, "*")
+    assert not kb_flags.knowledge_sync_allowed(ORG)
+    _sources(monkeypatch, "*", "*")
+    _switch(monkeypatch, False, "*")
+    assert not kb_flags.knowledge_sync_allowed(ORG)
+    assert not kb_flags.knowledge_sync_named(), "Knowledge off names no sync org"

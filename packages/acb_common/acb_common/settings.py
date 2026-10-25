@@ -491,6 +491,13 @@ class Settings(BaseSettings):
     # Google scope, so outside the test users a flip waits for the Google
     # verification. A flip is the owner's. Fence: tests/unit/test_kb_flags.py.
     knowledge_source_google: str = ""
+    # WS-61 KC-3 (knowledge_curation.md §17). The organization ids whose ready
+    # file sources the sync loop reads, in the grammar of `knowledge_orgs`.
+    # `*` is each org. It needs `knowledge_sources` too. Empty, the default,
+    # means no organization: `start_kb_sync()` starts no task. The one reader
+    # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_sync: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
