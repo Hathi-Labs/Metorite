@@ -37,6 +37,7 @@ import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
 import { PersonName } from "@/components/PersonName";
 import Button from "@/components/ui/Button";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { personDisplayName } from "@/lib/personName";
 
 import {
@@ -59,6 +60,7 @@ import type {
   StuckReport,
   ThroughputReport,
   WaitingReport,
+  WhoDidTheWorkReport,
 } from "../lib/api";
 import { asList, bandCount, staleBands } from "../lib/analyticsRead";
 import {
@@ -102,7 +104,14 @@ import {
   slipRange,
   velocityLine,
 } from "../lib/outlook";
-import { FINISHED_HINT_LEAD, PANEL_HINTS } from "../lib/panelHints";
+import {
+  ACTOR_SEGMENTS,
+  WHO_DID_THE_WORK,
+  actorAccent,
+  hiddenMembersLine,
+  memberAgentLine,
+} from "../lib/kpiStrip";
+import { FINISHED_HINT_LEAD, PANEL_HINTS, WHO_HINT_LEAD } from "../lib/panelHints";
 import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT } from "../lib/hrHints";
 import { sectionName } from "../lib/reportBuilder";
 import { usePersonNames } from "../lib/usePersonNames";
@@ -346,6 +355,8 @@ export function Stat({
   display,
   tone,
   title,
+  detail,
+  help,
   className = "",
 }: {
   label: string;
@@ -355,6 +366,17 @@ export function Stat({
   tone?: string;
   /** What this figure counts. The dash below still wins when it is absent. */
   title?: string;
+  /**
+   * WS-27bn RA-2. Short lines under the figure, such as the split of people
+   * and agents. Each line carries the tile's `title`, so a hover anywhere on
+   * the tile gives its rule.
+   */
+  detail?: readonly string[];
+  /**
+   * WS-27bn RA-2. The tile's rule behind an `InfoTip` beside the label, so a
+   * keyboard and a touch reach it too. A `title` reaches a mouse only.
+   */
+  help?: string;
   className?: string;
 }) {
   const known =
@@ -362,13 +384,28 @@ export function Stat({
     (typeof value === "number" && Number.isFinite(value));
   return (
     <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      {help ? (
+        <div className="flex items-start justify-between gap-1">
+          <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+          <InfoTip label={`How ${label} is counted`} title={label}>
+            {help}
+          </InfoTip>
+        </div>
+      ) : (
+        <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      )}
       <p
         className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
         title={known ? title : `${label} did not come back from the server`}
       >
         {known ? (display ?? value) : "—"}
       </p>
+      {known &&
+        detail?.map((line) => (
+          <p key={line} className="text-[11px] text-muted-foreground" title={title}>
+            {line}
+          </p>
+        ))}
     </div>
   );
 }
@@ -1586,6 +1623,11 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
       title={sectionName("throughput")}
       hint={PANEL_HINTS.throughput}
     >
+      {/* WS-27bn RA-2. The sentence of the split comes first (§6.8 E5). The
+          server writes it. */}
+      {data.actor_summary && (
+        <p className="mb-2 text-xs text-foreground">{data.actor_summary}</p>
+      )}
       {/* ⚠️ A CHART WITH NO AXIS IS A PICTURE. Photographed 2026-09-17: six
           green bars with no label anywhere, so a reader could see that the
           last one was tallest and not which week it was, nor how many. The
@@ -1688,6 +1730,10 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
         )}
       </dl>
 
+      {/* WS-27bn RA-2. The median and the slowest 10% of people and of
+          agents. Agents holds agent-finished and agent-assisted tasks. */}
+      {data.actor_cycle && <CycleSplit cycle={data.actor_cycle} />}
+
       {((summary.no_start ?? 0) > 0 || (summary.cancelled ?? 0) > 0) && (
         <p className="mt-2 text-[11px] text-muted-foreground">
           {(summary.no_start ?? 0) > 0 && (
@@ -1713,6 +1759,208 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
           )}
         </p>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn RA-2 — the cycle time of people and of agents, under the
+ * Throughput figures. Each figure is the server's (`actor_cycle`).
+ */
+function CycleSplit({ cycle }: { cycle: NonNullable<ThroughputReport["actor_cycle"]> }) {
+  const rows = [
+    {
+      key: "people",
+      label: "People",
+      group: cycle.people,
+      rule: "Tasks that no agent worked before they finished.",
+    },
+    {
+      key: "agents",
+      label: "Agents",
+      group: cycle.agents,
+      rule: "Tasks that an agent worked before they finished, also when a person finished them.",
+    },
+  ];
+  return (
+    <table className="mt-2 w-full border-t border-border text-[11px]">
+      <caption className="sr-only">Cycle time of people and of agents</caption>
+      <thead>
+        <tr className="text-left text-muted-foreground">
+          <th className="pt-2 font-normal">Who</th>
+          <th className="pt-2 text-right font-normal">Median</th>
+          <th className="pt-2 text-right font-normal">Slowest 10%</th>
+          <th className="pt-2 text-right font-normal">Measured</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.key}>
+            <th scope="row" className="py-0.5 text-left font-medium text-foreground" title={r.rule}>
+              {r.label}
+            </th>
+            <td
+              className="py-0.5 text-right font-semibold tabular-nums"
+              title={
+                r.group.median_hours === null
+                  ? `No task of ${r.label.toLowerCase()} in this period has a measured cycle time.`
+                  : `Half of the ${r.group.measured} measured tasks of ${r.label.toLowerCase()} took less than this.`
+              }
+            >
+              {duration(r.group.median_hours)}
+            </td>
+            <td
+              className="py-0.5 text-right tabular-nums"
+              title={`One task in ten of ${r.label.toLowerCase()} took longer than this.`}
+            >
+              {duration(r.group.p90_hours)}
+            </td>
+            <td
+              className="py-0.5 text-right tabular-nums text-muted-foreground"
+              title={
+                `${r.group.measured} of ${r.group.completed} finished tasks recorded a start` +
+                (r.group.assisted ? `. A person finished ${r.group.assisted} of them.` : ".")
+              }
+            >
+              {r.group.measured} of {r.group.completed}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * WS-27bn RA-2 — "Who did the work" (`projects_reports.md` §6.8 B). It
+ * replaces "What we finished" in the Overview when the scope is one project
+ * (`whoDidTheWorkShown`).
+ *
+ * ⚠️ **Draws the server's figures and decides nothing.** The weeks, the
+ * split, the sentence and the member rows are `analytics_agents.py`'s. The
+ * sentence comes first (§6.8 E5). The chart is the Throughput chart's
+ * style, with each week stacked by label.
+ *
+ * ⚠️ **An agent never hides its person (E2), and no rank (E1).** Each agent
+ * sits under the member it works for. The server sorts the members by name.
+ */
+export function WhoDidTheWorkPanel({ data }: { data: WhoDidTheWorkReport }) {
+  const series = asList<WhoDidTheWorkReport["actor_series"][number]>(data?.actor_series);
+  const peak = Math.max(1, ...series.map((w) => w.completed));
+  const members = asList<WhoDidTheWorkReport["agent_members"][number]>(data?.agent_members);
+  const names = usePersonNames(members.map((m) => m.member));
+  const hidden = hiddenMembersLine(data?.hidden_people);
+
+  return (
+    <Panel
+      title={WHO_DID_THE_WORK}
+      hint={`${WHO_HINT_LEAD}, ${period(data?.period_start, data?.period_end)}.`}
+    >
+      <p className="text-xs text-foreground">{data.actor_summary}</p>
+
+      <div className="mt-2 flex items-baseline justify-between text-[11px] text-muted-foreground">
+        <span title={`Peak week: ${peak} finished`}>{peak}</span>
+        <span>finished per week</span>
+      </div>
+      <div className="flex h-24 items-end gap-1">
+        {series.map((w, i) => {
+          const partial = i === series.length - 1 && data.current_week_partial;
+          return (
+            <div
+              key={w.week_start}
+              className={`flex h-full flex-1 flex-col justify-end ${partial ? "opacity-50" : ""}`}
+              title={
+                `Week of ${w.week_start}: ${w.completed} finished, ${w.people} by people,` +
+                ` ${w.agents} by agents` +
+                (w.agent_assisted ? ` (a person finished ${w.agent_assisted} of them)` : "") +
+                (partial ? " — this week is not over yet" : "")
+              }
+            >
+              {w.completed === 0 ? (
+                <div className="h-[2%] w-full rounded-sm bg-muted" />
+              ) : (
+                // The people sit on the axis, and the agents above them.
+                <div
+                  className="flex w-full flex-col overflow-hidden rounded-sm"
+                  style={{ height: `${Math.max(6, (w.completed / peak) * 100)}%` }}
+                >
+                  {[...ACTOR_SEGMENTS].reverse().map((seg) =>
+                    w[seg.key] > 0 ? (
+                      <div
+                        key={seg.key}
+                        className={actorAccent(seg.key).dot}
+                        style={{ flexGrow: w[seg.key] }}
+                      />
+                    ) : null
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1 flex items-baseline justify-between text-[11px] text-muted-foreground">
+        <span>{weekLabel(series[0]?.week_start)}</span>
+        <span>
+          {data.current_week_partial
+            ? "this week, so far"
+            : weekLabel(series[series.length - 1]?.week_start)}
+        </span>
+      </div>
+
+      {/* The legend carries the meaning, never the hue alone. */}
+      <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        {ACTOR_SEGMENTS.map((seg) => (
+          <li key={seg.key} className="inline-flex items-center gap-1.5" title={seg.title}>
+            <span className={`h-2 w-2 shrink-0 rounded-full ${actorAccent(seg.key).dot}`} aria-hidden />
+            {seg.label}
+            <span
+              className="font-medium tabular-nums text-foreground"
+              title={`${data.actor_split[seg.key]} in this period. ${seg.title}`}
+            >
+              {data.actor_split[seg.key]}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {members.length > 0 && (
+        <div className="mt-3 border-t border-border pt-2">
+          <p className="mb-1 text-[11px] text-muted-foreground">Agent work, by the member it works for</p>
+          <ul className="space-y-1">
+            {members.map((m) => (
+              <li key={m.member ?? "__in_app"} className="text-[11px]">
+                <div className="flex min-w-0 items-baseline gap-2">
+                  {m.member ? (
+                    <PersonName
+                      email={m.member}
+                      name={m.member_name || names.get(m.member.toLowerCase())}
+                      className="min-w-0 pr-px"
+                    />
+                  ) : (
+                    <span
+                      className="min-w-0 truncate pr-px text-muted-foreground"
+                      title="In-app agents work for no member."
+                    >
+                      In-app agents
+                    </span>
+                  )}
+                  <span
+                    className="ml-auto shrink-0 font-medium tabular-nums"
+                    title={`${m.total} tasks of this period that these agents worked`}
+                  >
+                    {m.total}
+                  </span>
+                </div>
+                <p className="truncate pr-px text-[10px] text-muted-foreground">
+                  {m.agents.map(memberAgentLine).join(" · ")}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {hidden && <p className="mt-2 text-[10px] text-muted-foreground">{hidden}</p>}
     </Panel>
   );
 }

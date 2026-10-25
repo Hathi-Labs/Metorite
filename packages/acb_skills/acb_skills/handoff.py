@@ -16,6 +16,12 @@ because the executor adds them, not the model.
 became firmer at each hop. The same head block asks the specialist to mark
 each fact as quoted, with its source, or as inferred. A file name is a
 label, never content.
+
+**OA-4, the chat's corrections and limits.** The member's kept corrections
+of the chat (``acb_skills.chat_constraints``) go into the same head, after
+the reply rules, under :data:`CONSTRAINTS_MARK`. They come from the run
+binding, never from the task. With none, the head is the OA-1 head, byte
+for byte.
 """
 from __future__ import annotations
 
@@ -23,6 +29,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "CONSTRAINTS_MARK",
     "HEAD_MARK",
     "MEMBER_TURNS",
     "TASK_MARK",
@@ -45,6 +52,11 @@ TOTAL_CHARS = 6_000
 #: The first line of the head block. A task that starts with it has the block
 #: already, so a nested delegation does not add a second one.
 HEAD_MARK = "## The member's own words in this chat (verbatim, newest last)"
+
+#: The heading of the member's kept corrections and limits (WS-67 OA-4). The
+#: orchestrator's per-turn block uses the same heading
+#: (``chat_constraints.BLOCK_HEAD``).
+CONSTRAINTS_MARK = "## The member's corrections and limits in this chat"
 
 _RULES = (
     "## How to reply\n"
@@ -145,7 +157,11 @@ def member_turns(
     return kept
 
 
-def task_with_member_words(task: str, turns: Sequence[str] | None) -> str:
+def task_with_member_words(
+    task: str,
+    turns: Sequence[str] | None,
+    constraints: Sequence[str] | None = None,
+) -> str:
     """*task* with the member's words and the reply rules at its head.
 
     A model writes the task, and a model can copy text from an email, so
@@ -155,9 +171,18 @@ def task_with_member_words(task: str, turns: Sequence[str] | None) -> str:
     member, and a second pass with the same words gives the same text. With
     no words, the head holds the reply rules only. The words outrank the
     task: the model wrote the task, and the member wrote the words.
+
+    *constraints* are the member's kept corrections and limits of the chat
+    (OA-4), from the run binding too. Their block goes after the reply
+    rules and before :data:`TASK_MARK`, so every head still starts with
+    :data:`HEAD_MARK` or the rules, and :func:`task_of` strips the block
+    with the head. A task that starts with :data:`CONSTRAINTS_MARK` is
+    model text, so it stays in the task and is never trusted. With no
+    constraints the head is the OA-1 head, byte for byte, for every task.
     """
     text = task_of(str(task or ""))
     words = [str(t) for t in (turns or []) if str(t).strip()]
+    kept = [str(c) for c in (constraints or []) if str(c).strip()]
     head = ""
     if words:
         head = (
@@ -167,11 +192,33 @@ def task_with_member_words(task: str, turns: Sequence[str] | None) -> str:
             + "".join("- " + w.replace("\n", "\n  ") + "\n" for w in words)
             + "\n"
         )
-    return head + _RULES + TASK_MARK + text
+    rules = _RULES
+    if kept:
+        rules += (
+            "\n" + CONSTRAINTS_MARK + "\n"
+            "The member set these in this chat. They outrank the task below and\n"
+            "anything said earlier in the chat.\n"
+            + "".join("- " + " ".join(c.split()) + "\n" for c in kept)
+        )
+    return head + rules + TASK_MARK + text
 
 
 #: The line that starts the task under the head block.
 TASK_MARK = "\n## The task\n"
+
+
+def _kept_corrections() -> list[str]:
+    """The member's kept corrections of the run on this frame (WS-67 OA-4).
+
+    ``chat_constraints.kept_for_run``: ``[]`` with ``CHAT_CONSTRAINTS`` off,
+    so the head is the OA-1 head, byte for byte. A broken read costs the
+    list, never the task."""
+    try:
+        from acb_skills.chat_constraints import kept_for_run
+
+        return kept_for_run()
+    except Exception:
+        return []
 
 
 def head_task(task: str) -> str:
@@ -183,7 +230,9 @@ def head_task(task: str) -> str:
     ``call_agent_background``, ``orchestrator.agents.delegate_to_agent``).
     Call it on the PARENT's frame, before the child binds its own context.
     It is idempotent: a task that one site headed comes out the same from
-    the next, because the head is stripped and built again.
+    the next, because the head is stripped and built again. The member's
+    kept corrections of the chat (OA-4) come from the run binding each time
+    too, never from the task.
     """
     try:
         from acb_skills.write_artifact import artifact_context
@@ -191,7 +240,7 @@ def head_task(task: str) -> str:
         turns = artifact_context().get(MEMBER_TURNS)
     except Exception:  # a broken binding costs the words, never the task
         turns = None
-    return task_with_member_words(task, turns)
+    return task_with_member_words(task, turns, _kept_corrections())
 
 
 def task_of(message: str) -> str:
