@@ -454,8 +454,9 @@ async def discover_source(org: str, source_id: str, source: KbSource) -> str:
         else:
             await _walk(org, source_id, owner, source, write=run.write)
         async with tenant_session(org) as db:
-            # KC-3h: the source row before the run row. This transaction read
-            # the run row first, and a stale takeover could deadlock it.
+            # KC-3h: the source row before the run row. Before KC-3h this
+            # wrote the run row first, so a stale takeover (the source row
+            # FOR SHARE, then the run row) could deadlock it.
             await lock_source(db, org, source_id, update=True)
             await runs.progress(db, org, run.id, run.counts)
             await db.execute(text(_FINISH_SQL), {"org": org, "source": source_id})
