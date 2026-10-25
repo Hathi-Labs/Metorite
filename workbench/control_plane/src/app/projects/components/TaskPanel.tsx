@@ -340,7 +340,7 @@ export function TaskPanel({
             <Badge
               tone="neutral"
               icon="UserRound"
-              title="How you filed this task in My Tasks"
+              title="How you filed this task in My work"
             >
               {shownMine.isTriaged ? shownMine.disposition : "Untriaged"}
               {shownMine.context ? ` · ${shownMine.context}` : ""}
