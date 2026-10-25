@@ -229,6 +229,29 @@ clone cache.
    one later).
    Fences: tests/unit/test_attachment_xlsx.py and section 14 of
    tests/unit/test_read_attachment.py.
+5f-1. attachment_ocr.py + attachment_ocr_worker.py -- OCR of a scanned file
+   (WS-67 OA-3, D116, spec `one_assistant_context.md` §4). It ships dark
+   behind `ATTACHMENT_OCR`, and `ocr_enabled()` is its one reader. With the
+   flag on, `parse_bounded` sends two kinds of file to `ocr_bounded`: a PDF
+   whose text layer gives no words, and a `.png`, `.jpg` or `.jpeg` image.
+   `attachment_text.text_state` is the ONE rule for "no words". So the chat
+   tool and the email text route both get OCR, and no second reader exists.
+   `attachment_text` stays free of processes.
+   The OCR runs in a child, never in the gateway process. The parent starts
+   `attachment_ocr_worker.py` as `python -I <path>`, never with `-m`, because
+   the package `__init__` imports every tool. The child imports nothing from
+   `acb_` packages. It gets the `child_env` allowlist and the thread names,
+   and no secret. On Linux it sets `RLIMIT_AS` (1.5 GiB) and `RLIMIT_CPU` on
+   itself. Each library in it runs on one thread, and it never downloads a
+   model.
+   At most one child lives in the process (`_SLOT`, process-wide). The wait
+   for it is an `await`, and a wait past 5 s answers busy. The parent kills
+   the child at 45 s, and the child stops between pages at 30 s. A read takes
+   15 pages at most, at 150 DPI and 4 million pixels for each page. The text
+   starts with `OCR_MARKER`, and `Extracted.ocr` is true. A capped read ends
+   with a sentence that gives the count. Each failure gives one sentence.
+   With the flag off, no child starts and both paths answer as before.
+   Fence: tests/unit/test_attachment_ocr.py.
 5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
    binds `no_egress=True` in its artifact context and holds only the
