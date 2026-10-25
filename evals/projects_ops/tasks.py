@@ -19,9 +19,9 @@ Each task is one session on projects-assistant, as the member
 card responder of :mod:`evals.projects_ops.run` approves or declines. A card
 past the end of the list is declined, so an extra card never writes.
 
-PO-3 needs P8 (subprojects in a plan) and P9 (context from email). Until both
-ship, it is ``xfail`` with the slice ids, and the runner reports it as such
-and does not run it (§11.2).
+PO-3 needs P8 (subprojects in a plan) and P9 (context from email). P9 is
+built (2026-10-25). Until P8 ships, it is ``xfail`` with that slice id, and the
+runner reports it as such and does not run it (§11.2).
 """
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ TASKS: tuple[TaskSpec, ...] = (
         "Create a subproject under Launch with three tasks from Priya's email about the "
         "launch kits.",
         cards=(APPROVE,),
-        xfail="needs P8 (subprojects in a plan) and P9 (context from email)",
+        xfail="needs P8 (subprojects in a plan)",
     ),
     TaskSpec(
         "PO-4", "A bulk move with approval",

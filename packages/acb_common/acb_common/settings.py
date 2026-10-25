@@ -477,6 +477,20 @@ class Settings(BaseSettings):
     # org is the owner's, gate `enforcement-flip`.
     # Fence: tests/unit/test_kb_gaps.py.
     knowledge_gaps: str = ""
+    # WS-61 KC-1a (knowledge_curation.md §17). The organization ids that may
+    # connect a company file source, in the grammar of `knowledge_orgs`. `*`
+    # is each org. Empty, the default, means no organization: every
+    # `/knowledge/sources` route answers 404. The one reader is
+    # `gateway.routes.knowledge.flags`. A flip on production is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_sources: str = ""
+    # WS-61 KC-1a (knowledge_curation.md §17 and §21 Q1). The organization
+    # ids that may connect Google Drive, in the same grammar. It needs
+    # `knowledge_sources` too. Empty, the default, means no organization: the
+    # Drive connect and callback answer 404. `drive.readonly` is a restricted
+    # Google scope, so outside the test users a flip waits for the Google
+    # verification. A flip is the owner's. Fence: tests/unit/test_kb_flags.py.
+    knowledge_source_google: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -1558,6 +1572,13 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
     # box is gate `enforcement-flip`.
     agent_runs_enabled: bool = False
+    # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
+    # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
+    # still sends is read as no session (never a 404), and no
+    # `X-Agent-Session` is signed, so every call behaves as before SW-7.
+    # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
+    # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_mcp_sessions_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

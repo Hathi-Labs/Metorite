@@ -847,9 +847,23 @@ class TestTheProtocolRules:
         r = await _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, token=None)
         assert r.status_code == 401
 
-    async def test_no_answer_carries_a_session_id(self, armed):
+    @pytest.mark.parametrize("sessions", [False, True])
+    async def test_only_initialize_carries_a_session_id(self, armed, monkeypatch,
+                                                        sessions):
+        """SW-7 (spec §12.5). With ``agent_mcp_sessions_enabled`` off (the
+        default) no answer carries ``Mcp-Session-Id``, as before. With it on,
+        ``initialize`` starts a session and answers its id, and no other
+        answer carries one."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", sessions)
+        first = await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}),
+                            version=None)
+        if sessions:
+            assert first.headers["mcp-session-id"].startswith("s1.")
+        else:
+            assert "mcp-session-id" not in first.headers
         answers = [
-            await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}), version=None),
             await _post(_rpc("tools/list")),
             await _post({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             await _post(_rpc("ping"), token=None),

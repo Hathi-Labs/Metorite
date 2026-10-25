@@ -664,6 +664,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "start_date": ("create_task.start", "create_tasks.tasks.start"),
         "type_id": ("create_task.type", "create_tasks.tasks.type"),
         "custom_fields": ("create_task.fields", "create_tasks.tasks.fields"),
+        # WS-46 P9 (G10): where a task came from. The chat sends `email` for
+        # a task made from a mail that email-assistant described.
+        "source": ("create_task.source", "create_tasks.tasks.source"),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "status_id": "update_task.status",
@@ -957,6 +960,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "importance": "capture_intake.important",
         "leveraged": "capture_intake.leveraged",
         "due_at": "capture_intake.due",
+        # WS-46 P9 (G11): the app that sent it, and the reference there.
+        "source": "capture_intake.source",
+        "source_ref": "capture_intake.source_ref",
     },
     ("GET", "/projects/intake"): {
         "project_id": "intake_queue.project_id",
@@ -1148,6 +1154,9 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     },
     ("PATCH", "/projects/tags/{tag_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
     ("POST", "/projects/nodes"): {
+        # WS-46 P9 decided G10 for a node: no. Only mail and the CRM give the
+        # chat an origin, and a space or a project is not made from either.
+        "source": "A node the chat makes starts as manual. P9 gives the chat an origin for tasks only.",
         "status": "A new node starts active. update_project sets another status.",
         # WS-46 P7: the app's create sends a name, a parent and a kind only
         # (page.tsx `submitProject`). The settings are set after the create.
@@ -1225,9 +1234,8 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
 #: must be a row of the gap table, and its slice must not be marked built.
 FIELD_GAPS: dict[str, str] = {
     # G5 to G9 closed in WS-46 P6 (2026-10-06), and G12 to G18 in P7
-    # (2026-10-06). Their rows are in SENDS or FIELD_EXEMPT.
-    "G10": "P9",
-    "G11": "P9",
+    # (2026-10-06), and G10 and G11 in P9 (2026-10-25). Their rows are in
+    # SENDS or FIELD_EXEMPT.
     # WS-55 EA-12a (EA12-9): the agent-run routes, for the chat in EA-12e.
     "G23": "EA-12e",
 }
@@ -1235,10 +1243,6 @@ FIELD_GAPS: dict[str, str] = {
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
-    ("POST", "/projects/tasks"): {"source": "G10"},
-    ("POST", "/projects/intake"): {"source": "G11", "source_ref": "G11"},
-    # G10's rule, on a node: the route takes `agent` as a source.
-    ("POST", "/projects/nodes"): {"source": "G10"},
     # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
     # EA-12e. Today an outside agent reaches them over MCP.
     # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
