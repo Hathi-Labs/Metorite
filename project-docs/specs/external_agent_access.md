@@ -2,7 +2,7 @@
 
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-16 (EA-6e and EA-6g are MERGED and live). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
-**MCP-G7 is BUILT and not merged (2026-10-25, branch `g7-link-version-mt-baa82d19`, task #367).** A comment, a link or an attachment on a task no longer stales the `version` that an agent holds. A field change still gives 412. `delete_task` keeps strict equality, so any change after the read gives 409. `project_management_app.md` §9.10.3 holds the decision, and migration 303 adds `pm_tasks.fields_at`.
+**MCP-G7 is BUILT and not merged (2026-10-25, branch `g7-link-version-mt-baa82d19`, task #367).** A comment, a link or an attachment on a task no longer stales the `version` that an agent holds. A field change still gives 412. `delete_task` keeps strict equality, so any change after the read gives 409. `project_management_app.md` §9.10.3 holds the decision, and migration 304 adds `pm_tasks.fields_at`.
 
 **EA-6h is BUILT and not merged (2026-10-23, branch `ea6h-delete-mt-709eaf47`).** An agent may delete a task after the member says yes in the agent (EA3-51). The member's switch is off by default, and migration 295 adds it. The member picks each subtask to delete or keep (D-OP-10, the owner, 2026-10-23). H1 to H14 pass on R8, and each is red under a named mutation in `test_mcp_edge_delete.py`.
 

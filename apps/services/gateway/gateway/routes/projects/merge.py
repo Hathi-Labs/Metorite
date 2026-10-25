@@ -410,7 +410,7 @@ async def _reparent_children(db: Any, source_id: str, target: Any) -> list[str]:
     own promote path.
 
     WS-55 MCP-G7: both UPDATEs stamp ``updated_at`` themselves. The trigger
-    of migration 303 then sees the parent change and moves ``fields_at``, so
+    of migration 304 then sees the parent change and moves ``fields_at``, so
     an old token of a moved task is 412. The touches in ``merge_tasks`` come
     second and are no-ops at the same ``now()``.
     """

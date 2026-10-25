@@ -1,5 +1,5 @@
 -- ============================================================================
--- 303_pm_tasks_fields_at.sql — WS-55 MCP-G7: a comment or a link no longer
+-- 304_pm_tasks_fields_at.sql — WS-55 MCP-G7: a comment or a link no longer
 --                              breaks a pending task write.
 --
 -- What: one column, `pm_tasks.fields_at`, and one BEFORE trigger that keeps
@@ -96,9 +96,10 @@
 -- R5: a column on a table that already carries `organization_id` and its
 -- policies. No new table, policy or exemption.
 --
--- The number was taken at build time (R1). On 2026-10-25 main held 301, and
--- open branches held 300 (`kc-1a-drive`) and 302 (`kb-ai-4-verified`). Check
--- it again at merge.
+-- The number was taken at build time (R1), and taken again on 2026-10-25:
+-- this file was 303 until `303_kb_page_verification.sql` (#1316) merged first.
+-- Then main held 301 and 303, and open branches held 300 (`kc-1a-drive`) and
+-- 302 (`sw7-session-key`). Check it again at merge.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION/TRIGGER,
 -- and a backfill whose WHERE matches nothing on the second run.

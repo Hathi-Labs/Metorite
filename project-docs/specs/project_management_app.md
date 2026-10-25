@@ -13,7 +13,7 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-10-25**
-> 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 303). A comment or a link
+> 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
 > on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
 > · **Previously updated 2026-08-25**
 > 🟢 **WS-27bg SLICE 2 REMAINDER — RENAME — BUILT 2026-08-21 on `ws-27bg-project-rename`
@@ -3951,8 +3951,8 @@ contract that deserves its own row and its own decision.
 #### 9.10.3 A comment does not stale the token — WS-55 MCP-G7 (BUILT 2026-10-25, not merged)
 
 **Status: BUILT 2026-10-25 on branch `g7-link-version-mt-baa82d19`, not merged.** Task #367.
-Migration `303_pm_tasks_fields_at.sql`. The builder took the number at build time (R1). Check it
-again at merge.
+Migration `304_pm_tasks_fields_at.sql`. The builder took the number at build time (R1). It was 303
+until `303_kb_page_verification.sql` merged first. Check it again at merge.
 
 **The defect.** `core.touch_task` moves `updated_at` for each comment, link, attachment and
 assignee, because the delta feed must see them. `If-Match` compared `updated_at` for equality. So
@@ -3962,7 +3962,7 @@ The owner's agents met this many times on 2026-10-25.
 
 **The decision.**
 
-* Migration 303 adds `pm_tasks.fields_at`. It holds the `updated_at` of the last write that
+* Migration 304 adds `pm_tasks.fields_at`. It holds the `updated_at` of the last write that
   changed a field of the row. The trigger `trg_pm_tasks_stamp_fields` keeps it, so no writer can
   forget it.
 * The trigger fires on INSERT and on each UPDATE that sets `updated_at`. On UPDATE it lifts a
@@ -3985,9 +3985,9 @@ coordinator decided this on 2026-10-25 (review P1).
 
 **Why the promote paths stamp.** Each path changed `parent_task_id` with no stamp, and then
 touched the row. The touch moved the token, and the trigger saw no field change at the touch. So
-an old token of a promoted task passed. Before migration 303, that touch gave the old token its
+an old token of a promoted task passed. Before migration 304, that touch gave the old token its
 412. The stamp in the same statement restores the 412. A write with no stamp and no later touch
-keeps the token where it was, as before migration 303. The tag sweep and the status remap are
+keeps the token where it was, as before migration 304. The tag sweep and the status remap are
 two of those writes.
 
 **An accepted gap: a second claim of a started task.** A claim of a task that is already

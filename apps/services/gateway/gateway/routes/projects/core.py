@@ -3293,7 +3293,7 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
     Returns the ids that moved. The caller bumps them with :func:`touch_task`,
     because ``parent_task_id`` changes and ``updated_at`` does not.
     (Since WS-55 MCP-G7 the UPDATE stamps ``updated_at`` itself, so the
-    trigger of migration 303 moves ``fields_at``. The caller's bump stays,
+    trigger of migration 304 moves ``fields_at``. The caller's bump stays,
     and it is a no-op at the same ``now()``.)
 
     ⚠️ **Why this exists.** The FK is ``ON DELETE SET NULL``, so until
