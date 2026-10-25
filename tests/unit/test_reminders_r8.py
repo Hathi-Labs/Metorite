@@ -627,7 +627,10 @@ async def test_r8_a_naive_time_is_refused_and_writes_nothing(world) -> None:
             ("PATCH", f"{BASE}/{rid}", {"fire_at": "2099-11-01T10:00:00"}),
             ("POST", f"{BASE}/{rid}/snooze", {"fire_at": "2099-11-01T10:00:00"}),
             ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": "2099-11-01T10:00:00"}),
-            ("POST", f"{BASE}/{rid}/reschedule", {"fire_at": "smart"}),
+            # RM-2: only /reschedule takes the smart slot
+            # (test_reminder_loop.py), so a snooze and a PATCH refuse it.
+            ("POST", f"{BASE}/{rid}/snooze", {"fire_at": "smart"}),
+            ("PATCH", f"{BASE}/{rid}", {"fire_at": "smart"}),
         ):
             resp = await c.request(method, path, json=body, headers=_as(ALICE))
             assert resp.status_code == 422, (method, path, resp.text)

@@ -122,6 +122,14 @@ def _real(kind: str) -> shell.Signal | None:
         return feed._no_answer_signal({
             "thread_id": THREAD, "message_id": "m-2", "subject": "S", "who": "dana",
             "last_message_at": (NOW - timedelta(days=6)).isoformat()}, ACCT)
+    if kind in feed.REMINDER_KINDS:
+        # WS-66 RM-2: one reminder, in the state that gives each kind.
+        state, step = {"reminder_due": ("due", "fired"),
+                       "reminder_check": ("due", "check_back"),
+                       "reminder_unconfirmed": ("unconfirmed", "gave_up")}[kind]
+        return feed._reminder_signal({
+            "id": "r-1", "title": "Get a haircut", "kind": "action", "state": state,
+            "step": step, "step_at": NOW, "fire_at": NOW - timedelta(hours=1), "cycles": 0})
     return None
 
 
