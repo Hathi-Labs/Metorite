@@ -1016,6 +1016,10 @@ HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
         # because it changes the recipients of each later card. The gateway
         # takes only an org or a sent colleague in any chat.
         "always_copy",
+        # H-411: the version of the always-copy list that the model read. It
+        # names no person and no address. Its row in ``HELD_SETTING_DECISIONS``
+        # refuses it in a held run, the same as ``always_copy``.
+        "always_copy_version",
     }),
 }
 

@@ -277,6 +277,8 @@ def test_the_batch_path_reads_a_fresh_block(monkeypatch) -> None:
                     return await asyncio.wait_for(executor.run_agent(
                         ORCHESTRATOR, payload, thread_id=f"wa:{PAGE}",
                         organization_id=ds.ORG, session_user=ds.MEMBER,
+                        # The WhatsApp run binds ``solo_room=not shared``.
+                        solo_room=True,
                     ), timeout=LIMIT)
                 finally:
                     release_tenant(token)

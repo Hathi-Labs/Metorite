@@ -3149,11 +3149,16 @@ async def reply_zero(
             db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous", level="read")
         want = {"awaiting": "AWAITING", "done": "DONE"}.get(type, "NEEDS_REPLY")
-        # Trash is hidden from every bucket; archiving a thread also drops it from
-        # the ACTIVE buckets ("archived = off my reply queue") while it still shows
-        # under Done. (Controlled literal — safe to inline.)
-        excluded = ("'trash', 'archive'"
-                    if want in ("NEEDS_REPLY", "AWAITING") else "'trash'")
+        # Trash is hidden from every bucket. The ACTIVE buckets read the ONE
+        # live-thread rule of the digest and the shell's needs feed
+        # (``digest._LIVE_THREAD``, HANDOFF H-286): a last message in trash,
+        # junk or the archive, or one the member snoozed, is off the reply
+        # queue. Done still shows an archived thread, so it hides trash only.
+        # (Controlled literals — safe to inline.)
+        from gateway.routes.email.digest import _LIVE_THREAD
+
+        hidden = (_LIVE_THREAD if want in ("NEEDS_REPLY", "AWAITING")
+                  else "LOWER(COALESCE(em.folder, '')) <> 'trash'")
         rows = (await db.execute(text(
             f"""SELECT ts.thread_id, ts.reason, ts.last_message_at,
                       em.id, em.subject, em.from_address, em.is_read,
@@ -3169,8 +3174,8 @@ async def reply_zero(
                  LIMIT 1
                ) d ON true
                WHERE ts.account_id = :aid AND ts.status = :st
-                 -- Hide trashed (all buckets) / archived (active buckets) threads.
-                 AND LOWER(COALESCE(em.folder, '')) NOT IN ({excluded})
+                 -- Trash (all buckets). Junk, archive, snoozed (active buckets).
+                 AND {hidden}
                -- The thread id breaks a tie, so a bigger LIMIT begins with
                -- the smaller one and the chat's next page repeats nothing.
                ORDER BY ts.last_message_at DESC NULLS LAST, ts.thread_id DESC
