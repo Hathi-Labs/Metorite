@@ -6365,15 +6365,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/knowledge_base.md` §17 KB-9a
 - **Added:** 2026-10-23 · Knowledge session
 
-### H-405 · Confirm that migration 297 stamped each private tree in production · [AGENT]
-- **Check:** after the release that carries 297, run this SQL once on production, as a role that bypasses RLS. It prints 0. Then delete this entry.
-  `WITH RECURSIVE tree AS (SELECT id, personal_owner AS owner FROM pm_projects WHERE parent_project_id IS NULL AND personal_owner IS NOT NULL UNION ALL SELECT c.id, t.owner FROM pm_projects c JOIN tree t ON c.parent_project_id = t.id WHERE c.personal_owner IS NOT NULL OR NOT EXISTS (SELECT 1 FROM pm_project_grants g WHERE g.project_id = c.id AND lower(g.subject) <> lower(t.owner))) SELECT count(*) FROM pm_projects p JOIN tree ON p.id = tree.id WHERE p.personal_owner IS NULL;`
-- **Why:** R6 applies 297 before the services restart. In that window the old `create_node` can still write a child with no `personal_owner` under a private tree. The SQL uses the walk of 297, so it does not count a team node that 297 kept on purpose.
-- **Do this:** if the count is not 0, run the `DO` block of `infra/postgres/297_personal_owner_stamp_backfill.sql` again by hand. It is idempotent. Read its NOTICE lines too. Each one names a team node T under a private tree. A lead of T or a Projects admin moves T out to a team space, because `move_node` asks `assert_may_move_project` for that right.
-- **Also:** `seal.py` `_TREE_SQL` walks down from a personal root with no stop rule. So the seal of a deactivated member still reaches a team node T that 297 kept. Until a lead or an admin moves T out, a seal hides T from its team. Fix `_TREE_SQL` with the stop rule of `core.PERSONAL_TREE_OWNER_SQL`, or move every T out before a seal.
-- **Authority:** `specs/one_projects_app.md` OP-3, the precondition of task #304
-- **Added:** 2026-10-24 · WS-64 task #304 fix round 1
-
 ### H-406 · The Knowledge index block trusts a client email to decide that a room is solo · [AGENT] · security
 - **Check:** `grep -n "_payload_user\|_memory_user_id" apps/services/orchestrator/orchestrator/executor.py` shows that `_kb_index_key` no longer compares the memory id with the verified member, and reads the `_RUN_SOLO_ROOM` bit of WS-63 PZ-2 instead. If it holds, delete this entry.
 - **Why:** `_kb_index_key` (`executor.py`, WS-61 KB-4a) treats "memory id differs from the verified member" as a shared room. `_bind_run_identity` rebinds the memory id from `_payload_user(event_payload)`, which is `payload.user_email`, a client field. A member in a shared room can send their own email and get the solo Knowledge index there. Found by the PZ-2 audit on 2026-10-23.
@@ -6387,19 +6378,6 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
-
-### H-408 · Stray grants on personal nodes in production, for the owner to review · [AGENT] · privacy
-- **Check:** run this query on production. If it prints 0, delete this entry.
-
-      SELECT count(*) FROM pm_project_grants g
-        JOIN pm_projects p ON p.id = g.project_id
-       WHERE p.personal_owner IS NOT NULL
-         AND lower(g.subject) <> lower(p.personal_owner);
-
-- **Why:** WS-64 OP-9 (D-OP-15) makes a grant on a personal node inert. Such a grant shows the tree to nobody but its owner. A grant from before OP-6b still sits in the table. It is noise, and a later change could make it live again.
-- **Do this:** if the count is not 0, list each row for the owner to review. Give the project, the owner, the subject and `created_at`. Do not delete or change a row without the owner's word.
-- **Authority:** `specs/one_projects_app.md` §8 D-OP-15 and §9 OP-9
-- **Added:** 2026-10-24 · WS-64 OP-9 fix round 1
 
 ### H-410 · The look-alike guard refuses Pinyin tone letters and the Azerbaijani ə in a held chat · [AGENT]
 - **Check:** `lookalike_words("Nǐ hǎo")` and `lookalike_words("Azərbaycan")` in `acb_skills/reply_card.py` both return `[]`. If they do, delete this entry.
