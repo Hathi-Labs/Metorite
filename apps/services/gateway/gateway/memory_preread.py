@@ -25,7 +25,22 @@ Fences: ``tests/unit/test_wac_channel_parity.py`` (the WhatsApp turn) and
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+
+# Mem0 keeps five database connections for the whole process, and it refuses a
+# sixth caller at once, which reads as "no memory" and the block is cached for
+# ten minutes. So all the Mem0 searches of every turn share two slots.
+# One semaphore for each event loop, because a semaphore binds to one loop.
+_MEM0_SLOTS = 2
+_gates: dict[int, asyncio.Semaphore] = {}
+
+
+async def _limited(coro: Any) -> Any:
+    loop_id = id(asyncio.get_running_loop())
+    gate = _gates.setdefault(loop_id, asyncio.Semaphore(_MEM0_SLOTS))
+    async with gate:
+        return await coro
 
 
 async def _private_parts(user_id: str, message: str, has_user: bool) -> list[str]:
@@ -37,7 +52,7 @@ async def _private_parts(user_id: str, message: str, has_user: bool) -> list[str
 
     if not has_user:
         return []
-    mem_ctx = await get_memory_context(user_id, message)
+    mem_ctx = await _limited(get_memory_context(user_id, message))
     return ["## Memory from past conversations\n" + mem_ctx] if mem_ctx else []
 
 
@@ -45,29 +60,36 @@ async def _scoped_parts(clearance: Any, agent_name: str, message: str) -> list[s
     """The room, the preferences, the agent's and the org's memory."""
     from acb_memory import get_scoped_context, scope_key
 
+    # The four lookups do not depend on each other, so they run together.
+    # gather keeps the order, so the block is byte-identical to a serial read.
+    async def _none() -> str:
+        return ""
+
+    room, prefs, agent_ctx, org_ctx = await asyncio.gather(
+        _limited(get_scoped_context(clearance.room, message, header="Room memory"))
+        if clearance.room else _none(),
+        _limited(get_scoped_context(clearance.prefs, message, header="Preferences"))
+        if clearance.prefs else _none(),
+        _limited(get_scoped_context(
+            scope_key(agent=agent_name), message, header="Agent memory")),
+        _limited(get_scoped_context(
+            scope_key(org=True), message, header="Organisation memory")),
+    )
     parts: list[str] = []
     # What this room has established. Replaces the personal compartment
     # rather than adding to it: shared work is remembered where everyone in
     # the room can see it.
-    if clearance.room:
-        room_ctx = await get_scoped_context(clearance.room, message, header="Room memory")
-        if room_ctx:
-            parts.append("## What this room has established\n" + room_ctx)
+    if room:
+        parts.append("## What this room has established\n" + room)
     # How the person being answered likes to work. Safe to carry into a
     # room: they are in it, and preferences describe them rather than
     # disclosing what they told the agent in private.
-    if clearance.prefs:
-        prefs_ctx = await get_scoped_context(clearance.prefs, message, header="Preferences")
-        if prefs_ctx:
-            parts.append("## How to answer this person\n" + prefs_ctx)
+    if prefs:
+        parts.append("## How to answer this person\n" + prefs)
     # Agent memory: shared across every user of this agent
-    agent_ctx = await get_scoped_context(
-        scope_key(agent=agent_name), message, header="Agent memory")
     if agent_ctx:
         parts.append("## This agent's shared memory\n" + agent_ctx)
     # Org memory: organisation-wide, shared by every agent + user
-    org_ctx = await get_scoped_context(
-        scope_key(org=True), message, header="Organisation memory")
     if org_ctx:
         parts.append("## Organisation-wide memory\n" + org_ctx)
     return parts
@@ -126,12 +148,12 @@ async def memory_preread(
     has_user = user_id != "anonymous" and not shared
 
     async def _build_memory_block() -> str:
-        parts = [
-            *await _private_parts(user_id, message, has_user),
-            *await _scoped_parts(clearance, agent_name, message),
-            *await _graph_parts(message, has_user),
-        ]
-        return "\n\n".join(parts)
+        private, scoped, graph = await asyncio.gather(
+            _private_parts(user_id, message, has_user),
+            _scoped_parts(clearance, agent_name, message),
+            _graph_parts(message, has_user),
+        )
+        return "\n\n".join([*private, *scoped, *graph])
 
     return await get_session_memory(
         redis=await _redis_client(),
