@@ -1856,6 +1856,24 @@ async def _record_email_working_set(
             _log.warning("executor.email_mark_unsent", error=type(exc).__name__)
 
 
+async def _load_agent_off_loop(agent_name: str, **kwargs: Any) -> Any:
+    """``load_agent`` on a worker thread, with its duration logged.
+
+    The loader runs git, file copies and a dependency check. On the event loop
+    it stalled every other chat on the worker for the length of one fetch.
+    ``to_thread`` copies the context, so the run binding still holds.
+    """
+    import time as _t  # noqa: PLC0415
+    started = _t.monotonic()
+    try:
+        return await asyncio.to_thread(load_agent, agent_name, **kwargs)
+    finally:
+        _log.info(
+            "executor.load_agent_ms", agent=agent_name,
+            elapsed_ms=round((_t.monotonic() - started) * 1000),
+        )
+
+
 async def _run_sub_agent_streaming(
     agent_name: str,
     message_str: str,
@@ -1989,7 +2007,9 @@ async def _run_sub_agent_streaming(
         # D84, D92: a delegated run never takes the retired Copilot runtime.
         # The label refuses before the load, so no clone and no import run.
         refuse_copilot_specialist(agent_name, label=_runtime)
-        with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
+        with await _load_agent_off_loop(
+            agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path,
+        ) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
             integrations, _sub_warnings = build_integrations(
@@ -4378,7 +4398,7 @@ async def _run_agent_inner(
         # WS-61 KB-4a: the orchestrator's Knowledge index block, as the
         # stream path reads it. The WhatsApp channel runs this path.
         await _prime_knowledge_index(agent_name)
-        with load_agent(
+        with await _load_agent_off_loop(
             agent_name,
             run_id=run_id,
             repo_name=_registry_repo_name,
@@ -5390,7 +5410,7 @@ async def run_agent_stream(
         # WS-61 KB-4a: read the orchestrator's Knowledge index block here,
         # because the per-turn context is built by sync code.
         await _prime_knowledge_index(agent_name)
-        with load_agent(
+        with await _load_agent_off_loop(
             agent_name,
             run_id=run_id,
             repo_name=_registry_repo_name,

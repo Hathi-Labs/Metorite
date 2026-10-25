@@ -25,6 +25,7 @@ Fences: ``tests/unit/test_wac_channel_parity.py`` (the WhatsApp turn) and
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 
@@ -45,29 +46,36 @@ async def _scoped_parts(clearance: Any, agent_name: str, message: str) -> list[s
     """The room, the preferences, the agent's and the org's memory."""
     from acb_memory import get_scoped_context, scope_key
 
+    # The four lookups do not depend on each other, so they run together.
+    # gather keeps the order, so the block is byte-identical to a serial read.
+    async def _none() -> str:
+        return ""
+
+    room, prefs, agent_ctx, org_ctx = await asyncio.gather(
+        get_scoped_context(clearance.room, message, header="Room memory")
+        if clearance.room else _none(),
+        get_scoped_context(clearance.prefs, message, header="Preferences")
+        if clearance.prefs else _none(),
+        get_scoped_context(
+            scope_key(agent=agent_name), message, header="Agent memory"),
+        get_scoped_context(
+            scope_key(org=True), message, header="Organisation memory"),
+    )
     parts: list[str] = []
     # What this room has established. Replaces the personal compartment
     # rather than adding to it: shared work is remembered where everyone in
     # the room can see it.
-    if clearance.room:
-        room_ctx = await get_scoped_context(clearance.room, message, header="Room memory")
-        if room_ctx:
-            parts.append("## What this room has established\n" + room_ctx)
+    if room:
+        parts.append("## What this room has established\n" + room)
     # How the person being answered likes to work. Safe to carry into a
     # room: they are in it, and preferences describe them rather than
     # disclosing what they told the agent in private.
-    if clearance.prefs:
-        prefs_ctx = await get_scoped_context(clearance.prefs, message, header="Preferences")
-        if prefs_ctx:
-            parts.append("## How to answer this person\n" + prefs_ctx)
+    if prefs:
+        parts.append("## How to answer this person\n" + prefs)
     # Agent memory: shared across every user of this agent
-    agent_ctx = await get_scoped_context(
-        scope_key(agent=agent_name), message, header="Agent memory")
     if agent_ctx:
         parts.append("## This agent's shared memory\n" + agent_ctx)
     # Org memory: organisation-wide, shared by every agent + user
-    org_ctx = await get_scoped_context(
-        scope_key(org=True), message, header="Organisation memory")
     if org_ctx:
         parts.append("## Organisation-wide memory\n" + org_ctx)
     return parts
@@ -126,12 +134,12 @@ async def memory_preread(
     has_user = user_id != "anonymous" and not shared
 
     async def _build_memory_block() -> str:
-        parts = [
-            *await _private_parts(user_id, message, has_user),
-            *await _scoped_parts(clearance, agent_name, message),
-            *await _graph_parts(message, has_user),
-        ]
-        return "\n\n".join(parts)
+        private, scoped, graph = await asyncio.gather(
+            _private_parts(user_id, message, has_user),
+            _scoped_parts(clearance, agent_name, message),
+            _graph_parts(message, has_user),
+        )
+        return "\n\n".join([*private, *scoped, *graph])
 
     return await get_session_memory(
         redis=await _redis_client(),
