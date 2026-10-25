@@ -297,9 +297,11 @@ class _SourceRun:
         while True:
             if self.should_stop():
                 raise _Shutdown()
+            async def read(cred: SourceCredential, t: str = token) -> ChangePage:
+                return await self.source.list_changed(cred, t, ())
+
             try:
-                page = await self._call(
-                    lambda cred, t=token: self.source.list_changed(cred, t, ()))
+                page = await self._call(read)
             except CursorExpired:
                 self.counts["cursor_expired"] = True
                 await self.bootstrap()
@@ -346,7 +348,8 @@ class _SourceRun:
 
     async def _now(self) -> datetime:
         async with tenant_session(self.org) as db:
-            return (await db.execute(text(_NOW_SQL))).first().at
+            at: datetime = (await db.execute(text(_NOW_SQL))).first().at
+        return at
 
     async def relist(self) -> None:
         """The slim relist of the module doc. Metadata only."""
