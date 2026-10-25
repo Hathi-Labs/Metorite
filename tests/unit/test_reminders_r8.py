@@ -522,6 +522,80 @@ async def test_r8_a_naive_time_is_refused_and_writes_nothing(world) -> None:
         ).scalar_one() == 1
 
 
+@pytest.mark.parametrize("role", ["app", "superuser"])
+async def test_r8_a_member_purge_leaves_no_reminder_behind(
+    world, monkeypatch, role: str,
+) -> None:
+    """The admin purge deletes the member's reminders of THIS org, and their
+    ledger by cascade. A colleague's reminders stay, and so do the reminders
+    of the same address in another org. The superuser run bypasses RLS, so
+    only the clause's own org predicate keeps org A's row safe there."""
+    from gateway.db import tenant_session
+    from gateway.routes.admin import members
+    from gateway.routes.admin._common import get_member
+    from gateway.routes.crm import questions
+
+    async def _no_keys(org: str, email: str) -> int:
+        return 0
+
+    monkeypatch.setattr(members, "record_admin_change", lambda *a, **k: None)
+    monkeypatch.setattr(questions, "forget_member_keys", _no_keys)
+    # The purge refuses to leave org B with no owner, so org B gets one.
+    owner = "owner-b@reminders-r8.test"
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'executive', 'active', CAST(:o AS uuid))"),
+            {"e": owner, "o": world.org})
+        role_id = c.execute(text(
+            "INSERT INTO org_role (organization_id, slug, display_name, is_system, rank) "
+            "VALUES (CAST(:o AS uuid), 'owner', 'Owner', true, 0) "
+            "ON CONFLICT DO NOTHING RETURNING id"), {"o": world.org}).scalar()
+        if role_id is None:
+            role_id = c.execute(text(
+                "SELECT id FROM org_role WHERE organization_id = CAST(:o AS uuid) "
+                "AND slug = 'owner'"), {"o": world.org}).scalar()
+        c.execute(text(
+            "INSERT INTO user_role (user_id, role_id, organization_id) "
+            "SELECT id, :r, CAST(:o AS uuid) FROM app_user WHERE email = :e"),
+            {"r": role_id, "e": owner, "o": world.org})
+    try:
+        await _purge_and_check(world, members, get_member, tenant_session, role)
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text(
+                "DELETE FROM user_role WHERE user_id IN "
+                "(SELECT id FROM app_user WHERE email = :e)"), {"e": owner})
+            c.execute(text("DELETE FROM app_user WHERE email = :e"), {"e": owner})
+
+
+async def _purge_and_check(
+    world: Any, members: Any, get_member: Any, tenant_session: Any, role: str,
+) -> None:
+    async with _client(world, world.other) as c:
+        theirs = (await _create(c, ALICE, title="Org A only"))["id"]
+    async with _client(world, world.org) as c:
+        mine = [(await _create(c, ALICE))["id"],
+                (await _create(c, ALICE, title="Call the bank"))["id"]]
+        await c.patch(f"{BASE}/{mine[0]}", json={"title": "Haircut"}, headers=_as(ALICE))
+        bobs = (await _create(c, BOB, title="Bob's own"))["id"]
+    assert _ledger(world, mine[0]) == ["created", "edited"]
+
+    engine = world.p.app_url if role == "app" else world.p.admin_engine.url
+    async with (
+        tenant_engine_scope(engine.render_as_string(hide_password=False)),
+        tenant_session(world.org) as session,
+    ):
+        member = await get_member(session, world.org, ALICE)
+        deleted, _kept, _plans = await members.purge_member_rows(
+            session, world.org, member, actor_email="owner-b@reminders-r8.test")
+    assert deleted["reminders"] == 2
+    for rid in mine:
+        assert _row(world, rid) is None and _ledger(world, rid) == []
+    assert _row(world, bobs).title == "Bob's own" and _ledger(world, bobs) == ["created"]
+    assert _row(world, theirs).title == "Org A only" and _ledger(world, theirs) == ["created"]
+
+
 async def test_r8_the_flag_off_answers_404_on_every_route(world, monkeypatch) -> None:
     async with _client(world, world.org) as c:
         rid = (await _create(c, ALICE))["id"]
