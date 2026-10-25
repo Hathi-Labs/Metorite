@@ -1586,7 +1586,9 @@ export function AgentRunsPanel({ data }: { data: AgentRunsReport }) {
                   <span className="w-24 shrink-0 text-muted-foreground">{sz.label}</span>
                   <span className="h-2 min-w-0 flex-1 rounded-sm bg-muted" aria-hidden>
                     <span
-                      className={`block h-full rounded-sm ${isLong ? flag.dot : "bg-primary/50"}`}
+                      // A size is a count, not a control: the quiet tone, so
+                      // a changed accent never repaints the data.
+                      className={`block h-full rounded-sm ${isLong ? flag.dot : "bg-muted-foreground/60"}`}
                       style={{ width: `${n === 0 ? 0 : Math.max(4, (n / sized) * 100)}%` }}
                     />
                   </span>
