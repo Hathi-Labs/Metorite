@@ -332,6 +332,22 @@ def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize("table", ["reminders", "reminder_events"])
+def test_the_reminder_tables_are_tenant_scoped(table: str) -> None:
+    """WS-66 RM-1 (``calendar_events_reminders.md`` §5.2, D114). A reminder
+    and its ledger hold the private nudges of one member of one
+    organization. Neither may be exempt, and the committed policy phase must
+    carry each (R5). RLS covers the org, and the routes add the member."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the
