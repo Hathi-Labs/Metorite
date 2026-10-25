@@ -1872,6 +1872,13 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
     )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
+    # WS-27bn RA-3. Three lists. `_waiting_lines` prints each of them, so
+    # the list key here is the first only. The answer time is nested.
+    "waiting": ("questions", "title", (
+        "questions_total", "reviews_total", "handoffs_total",
+        "answer_time.median_hours", "answer_time.p90_hours",
+        "answer_time.unanswered",
+    )),
     # WS-27bn R3c. One row per task, each with its kind. The four counts sit
     # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
     "hygiene": ("rows", "title", (
@@ -1914,7 +1921,69 @@ _REPORT_LABELS: dict[str, str] = {
     "pulse:people_total": "people",
     "load:people_total": "people with open work",
     "pulse:hidden_people": "hidden people",
+    "waiting:questions_total": "agent questions with no answer",
+    "waiting:reviews_total": "tasks waiting for a review",
+    "waiting:handoffs_total": "blocked handoffs",
+    "waiting:answer_time.median_hours": "median answer hours",
+    "waiting:answer_time.p90_hours": "p90 answer hours",
+    "waiting:answer_time.unanswered": "questions with no answer in the period",
 }
+
+#: The three waiting lists, in the panel's order, with the words of each.
+_WAITING_LISTS: tuple[tuple[str, str], ...] = (
+    ("questions", "question"),
+    ("reviews", "review"),
+    ("handoffs", "handoff"),
+)
+
+
+def _waiting_row(kind: str, row: dict[str, Any]) -> str:
+    """One waiting row as one line: the task, the agent and its member.
+
+    The title, the member and the agent print as data. An MCP agent's name
+    comes from the client map, but an in-app agent's name is the text after
+    ``agent:`` in an assignee or an actor, which a member typed. So every
+    name is fenced, and a newline in it cannot forge a second row.
+    """
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if kind == "handoff":
+        facts.append(f"blocked by {data(row.get('blocker_title'))}")
+        if row.get("person_name") or row.get("person"):
+            facts.append(f"person {data(row.get('person_name') or row.get('person'))}")
+        facts.append(f"agent holds the {row.get('agent_side')} task")
+    if isinstance(row.get("age_hours"), int | float):
+        facts.append(f"waiting {row['age_hours']} hours")
+    return f"- {kind} · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _waiting_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every row of each list.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server already names 20 rows at most of each list
+    (`analytics_waiting.MAX_NAMED`), so the text prints each row it got.
+    The line after a list says how many the server's cap left out, from the
+    list's own total, and the Reports app shows the same panel."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    cap = section.get("max_rows")
+    past = f", past the {cap} the report names" if isinstance(cap, int) else ""
+    for key, kind in _WAITING_LISTS:
+        rows = [r for r in section.get(key) or [] if isinstance(r, dict)]
+        out.extend(_waiting_row(kind, r) for r in rows)
+        total = section.get(f"{key}_total")
+        more = (total if isinstance(total, int) else len(rows)) - len(rows)
+        if more > 0:
+            out.append(f"  (and {more} more of the {key}{past})")
+    return out
+
 
 #: The facts one row prints, as ``(path, plain label, fenced)``, for a
 #: section whose rows nest what matters (WS-27bn R3b). A section with no
@@ -2113,6 +2182,10 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     if name in HIDDEN_LINE_SECTIONS and (line := hidden_people_line(section)):
         # WS-27bn R3d and R5a. The rows this reader cannot see.
         out.append(f"  {line}")
+    if name == "waiting":
+        # WS-27bn RA-3. Three lists, each with its own cap.
+        out.extend(_waiting_lines(section))
+        return out
     rows = section.get(list_key) if list_key else None
     rows = rows or []
     if not isinstance(rows, list):

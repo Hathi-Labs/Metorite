@@ -486,7 +486,9 @@ def test_a_report_of_every_section_keeps_to_twelve_visuals() -> None:
                             "overdue": rows, "rows": rows, "at_risk": rows}
                      for name in rep.SECTIONS},
     }
-    assert len(payload["sections"]) == 10
+    # WS-27bn RA-3 adds `waiting`. Its card reads `questions`, which this
+    # payload does not carry, so it adds no visual.
+    assert len(payload["sections"]) == 11
     spec = views._report_spec(payload)
     visuals = [s["visual"] for s in spec["sections"] if "visual" in s]
     assert len(visuals) + (1 if spec.get("kpis") else 0) <= 12

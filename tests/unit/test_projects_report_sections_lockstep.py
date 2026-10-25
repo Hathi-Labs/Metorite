@@ -266,8 +266,11 @@ def test_the_builder_knows_which_sections_ignore_the_period() -> None:
     branches = _render_branches()
     free = [s for s in reports.SECTIONS if not _reads_the_period(branches[s])]
     assert _ts_list("PERIOD_FREE_SECTIONS") == free
-    # The two sections that read the period, by name, so a change is seen.
-    assert [s for s in reports.SECTIONS if s not in free] == ["finished", "throughput"]
+    # The sections that read the period, by name, so a change is seen.
+    # WS-27bn RA-3: `waiting` reads it for the answer time.
+    assert [s for s in reports.SECTIONS if s not in free] == [
+        "finished", "throughput", "waiting",
+    ]
 
 
 def test_a_period_free_branch_calls_no_query_that_binds_weeks() -> None:
