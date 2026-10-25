@@ -1031,3 +1031,61 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
         logger.info("assistant_profile.block_shed",
                     extra={"size": len(block), "dropped": dropped})
     return block
+
+
+# ── The export (PZ-9, §13.3 item 7) ────────────────────────────────────────
+
+#: The first line of the text export.
+EXPORT_HEADER = "Your assistant profile"
+#: The one line of the text export of a member who set nothing.
+EXPORT_EMPTY = "The assistant keeps nothing about you."
+#: The words for the source of a fact, as Settings → Assistant shows them.
+EXPORT_SOURCES: dict[str, str] = {
+    "settings": "added in Settings",
+    "chat": "learned in chat",
+    "whatsapp": "learned on WhatsApp",
+}
+
+
+def render_export(raw: Any) -> str:
+    """The text export of the stored value *raw*, for the member to keep.
+
+    Pure. It reads the value through :func:`stored_profile`, so the text
+    holds what the routes answer and nothing else: the form of address, the
+    style, every fact with its kind, source and date, and every alias. The
+    switch, the version and the record of the last chat change stay out.
+    A member who set nothing gets the one line :data:`EXPORT_EMPTY`. Each
+    value is one line, so a stored line break cannot add a line.
+    """
+    profile = stored_profile(raw)
+    address, style = profile["address"], profile["style"]
+    notes = [_one_line(n) for n in style.get("notes", []) if _one_line(n)]
+    if not (address or style or profile["facts"] or profile["aliases"]):
+        return EXPORT_EMPTY
+    lines = [EXPORT_HEADER]
+    if address:
+        lines += ["", "How the assistant addresses you"]
+        for key, label in (("name", "Name"), ("formality", "Tone"),
+                           ("greeting", "Greeting")):
+            if address.get(key):
+                lines.append(f"- {label}: {_one_line(address[key])}")
+    if style:
+        lines += ["", "How the assistant answers you"]
+        for key, label in (("length", "Answer length"), ("language", "Language")):
+            if style.get(key):
+                lines.append(f"- {label}: {_one_line(style[key])}")
+        lines += [f"- Note: {n}" for n in notes]
+    if profile["facts"]:
+        lines += ["", "What you asked the assistant to remember"]
+        for fact in profile["facts"]:
+            tail = [fact["kind"]]
+            if fact.get("source") in EXPORT_SOURCES:
+                tail.append(EXPORT_SOURCES[fact["source"]])
+            if fact.get("at"):
+                tail.append(_one_line(fact["at"])[:10])
+            lines.append(f"- {_one_line(fact['text'])} ({', '.join(tail)})")
+    if profile["aliases"]:
+        lines += ["", "Names you use for people"]
+        lines += [f"- {_one_line(a['alias'])}: {_one_line(a['email'])}"
+                  for a in profile["aliases"]]
+    return "\n".join(lines)
