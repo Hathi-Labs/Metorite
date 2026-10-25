@@ -831,7 +831,8 @@ def test_the_path_check_can_fail():
     assert any("calls no finish_teardowns" in p
                for p in _three_paths(accounts_src, members_src, skipped))
     # The admin door tears down inside its transaction.
-    anchor = "            db, org_id, member, actor_email=admin.email,\n        )\n"
+    anchor = ("            db, org_id, member, actor_email=admin.email,\n"
+              "            knowledge_revokes=knowledge_revokes,\n        )\n")
     assert anchor in members_src
     inside = members_src.replace(anchor, anchor + (
         "        await finish_teardowns(org_id, plans, open_session=None,\n"
@@ -993,6 +994,10 @@ class _DoorDB:
         self.events.append(("sql", sql.split(" ")[0], sql[:60]))
         if "r.slug = 'owner'" in sql:
             return _DoorResult(scalar=self.owners)
+        # WS-61 KC-1a: the purge lists the connection registry for the
+        # member's Knowledge sources. This door holds none.
+        if "FROM integration_connections" in sql:
+            return _DoorResult(rows=[])
         if sql.startswith("SELECT id, organization_id, provider"):
             return _DoorResult(rows=[SimpleNamespace(
                 id=m["id"], organization_id=DOOR_ORG, provider=m["provider"],

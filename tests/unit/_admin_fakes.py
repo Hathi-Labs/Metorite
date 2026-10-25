@@ -250,6 +250,8 @@ class _FakeDB:
         #: WS-53 CRM-Q33: each statement of the CRM half of a purge, in order.
         self.crm_purge: list[str] = []
         self.kb_purge: list[str] = []
+        #: WS-61 KC-1a: the reads of the connection registry by the purge.
+        self.registry_reads: list[str] = []
         #: The statements on email_scheduled_sends (H-375), in order.
         self.send_later: list[str] = []
         #: WS-63 PZ-9: the statements that forget a removed member's
@@ -844,7 +846,7 @@ class _FakeDB:
         # `connections/store.py`, to find the member's Knowledge sources. This
         # fake holds none. The real delete is proven in `test_kc_sources_r8.py`.
         if s.startswith("SELECT") and "FROM integration_connections" in s:
-            self.kb_purge.append(s)
+            self.registry_reads.append(s)
             return _Rows([], rowcount=0)
 
         # H-375: a removal cancels the member's queued sends, and a purge
