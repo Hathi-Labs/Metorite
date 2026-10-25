@@ -31,7 +31,9 @@ dependencies = [
     # old at the pin. Each license is permissive: rapidocr Apache-2.0 (models
     # Apache-2.0), onnxruntime MIT, pypdfium2 Apache-2.0 / BSD-3-Clause,
     # Pillow MIT-CMU. rapidocr brings opencv-python-headless (Apache-2.0),
-    # which needs no system library.
+    # which needs no system library. Its wheel bundles FFmpeg as a shared
+    # library under LGPL-2.1 (cv2/LICENSE-3RD-PARTY.txt). The OCR child never
+    # calls the video code.
     "rapidocr==3.10.0",
     "onnxruntime==1.30.0",
     "pypdfium2==5.14.0",

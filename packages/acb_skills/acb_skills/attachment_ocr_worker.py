@@ -21,13 +21,31 @@ stdin. The child writes ONE JSON object to stdout and exits 0:
 * ``{"status": "refused", "reason": "<code>"}``. The parent owns every
   sentence for the member, so the child sends a code only.
 
-**The limits.** On Linux the child sets ``RLIMIT_AS`` and ``RLIMIT_CPU`` on
-itself and lowers its priority, before it imports a native library. Every
-library runs on one thread: the parent sets the thread env names, the child
-calls ``cv2.setNumThreads(1)``, and onnxruntime gets one intra-op and one
-inter-op thread. The parent kills the child at its hard timeout. The child
-stops at the soft deadline between two pages, so a slow scan gives the pages
-that it read.
+**The order of the steps** is the control (fix round 1, P1). The child runs
+as the gateway's user, with the gateway's file system and network. So a bug
+in a native parser must find nothing to read and nowhere to send it:
+
+1. ``_limit_self``: the memory cap, the CPU cap and a low priority.
+2. ``_check_landlock``: on Linux, a kernel with Landlock below the ABI that
+   the spec asks for (4: the file system, and TCP bind and connect) refuses
+   with ``unavailable``. It fails closed.
+3. ``_preload``: every native library loads, all three models load, and one
+   small OCR run warms the engine. After this step no library needs to open
+   a new file or start a thread.
+4. ``_confine``: Landlock lets the child READ only the Python dirs and the
+   shared library dirs, and write nowhere. With ABI 4 or later it refuses
+   each TCP bind and connect. Then ``RLIMIT_NPROC`` is 0, so no fork and no
+   new thread, and ``RLIMIT_FSIZE`` is 0, so no file grows.
+5. Only then does the child read the untrusted bytes from stdin.
+
+Landlock is a Linux feature. On Windows, the dev box only, steps 2 and 4 do
+nothing, and the parent logs ``attachment_ocr.unconfined``.
+
+**The limits.** Every library runs on one thread: the parent sets the thread
+env names, the child calls ``cv2.setNumThreads(1)``, and onnxruntime gets one
+intra-op and one inter-op thread. The parent kills the child's process group
+at its hard timeout. The child stops at the soft deadline between two pages,
+so a slow scan gives the pages that it read.
 
 **No download.** rapidocr can fetch a model over the network. The child names
 each bundled model file by path, and it replaces rapidocr's downloader with a
@@ -36,6 +54,7 @@ refusal, so a missing file fails the read and never fetches.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import io
 import json
 import math
@@ -70,7 +89,41 @@ _SPEC_FIELDS: dict[str, type] = {
     "soft_seconds": float,
     "memory_bytes": int,
     "cpu_seconds": int,
+    "landlock_abi": int,
 }
+
+# ── Landlock (Linux), by syscall through ctypes ──────────────────────────────
+# The numbers are the same on every architecture. See
+# https://docs.kernel.org/userspace-api/landlock.html.
+_SYS_CREATE_RULESET = 444
+_SYS_ADD_RULE = 445
+_SYS_RESTRICT_SELF = 446
+_CREATE_RULESET_VERSION = 1
+_RULE_PATH_BENEATH = 1
+_PR_SET_NO_NEW_PRIVS = 38
+_FS_READ_FILE = 1 << 2
+_FS_READ_DIR = 1 << 3
+_NET_BIND_TCP = 1 << 0
+_NET_CONNECT_TCP = 1 << 1
+_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
+_SCOPE_SIGNAL = 1 << 1
+#: The shared library dirs that a later ``dlopen`` can need.
+_LIBRARY_DIRS = ("/lib", "/lib64", "/usr/lib", "/usr/lib64")
+#: Mapped paths that are not library files.
+_NOT_LIBRARIES = ("/dev/", "/proc/", "/sys/", "/memfd:")
+
+
+class _RulesetAttr(ctypes.Structure):
+    _fields_ = [
+        ("handled_access_fs", ctypes.c_uint64),
+        ("handled_access_net", ctypes.c_uint64),
+        ("scoped", ctypes.c_uint64),
+    ]
+
+
+class _PathBeneath(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
 
 
 class _Refused(Exception):
@@ -92,9 +145,29 @@ def _spec(raw: str) -> dict[str, Any]:
         if not isinstance(value, kind) or isinstance(value, bool):
             raise _Refused("failed")
         spec[name] = value
-    if spec["kind"] not in ("pdf", "image"):
+    if spec["kind"] not in ("pdf", "image") or spec["landlock_abi"] < 1:
         raise _Refused("failed")
     return spec
+
+
+def _libc() -> Any:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    return libc
+
+
+def landlock_abi() -> int:
+    """The Landlock ABI of this kernel, or 0 when it has none."""
+    if sys.platform != "linux":
+        return 0
+    try:
+        got = _libc().syscall(
+            ctypes.c_long(_SYS_CREATE_RULESET), None, ctypes.c_size_t(0),
+            ctypes.c_uint32(_CREATE_RULESET_VERSION),
+        )
+    except Exception:  # no libc symbol is no Landlock
+        return 0
+    return max(int(got), 0)
 
 
 def _limit_self(spec: dict[str, Any]) -> None:
@@ -104,6 +177,7 @@ def _limit_self(spec: dict[str, Any]) -> None:
     thread for each library: a dense A4 page peaks at 874 MB of address
     space and 506 MB resident (2026-10-25). Windows is the dev box only.
     """
+    sys.dont_write_bytecode = True
     if os.name != "posix":
         return
     import resource
@@ -114,6 +188,112 @@ def _limit_self(spec: dict[str, Any]) -> None:
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
     with contextlib.suppress(OSError):
         os.nice(10)
+
+
+def _check_landlock(spec: dict[str, Any]) -> None:
+    """Refuse with ``unavailable`` on a Linux kernel below the asked ABI."""
+    if sys.platform == "linux" and landlock_abi() < spec["landlock_abi"]:
+        raise _Refused("unavailable")
+
+
+def _beneath(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _read_dirs() -> list[str]:
+    """The dirs that the confined child may read, and no other.
+
+    The Python dirs on ``sys.path`` that lie in the venv or in the Python
+    install, the dir of each mapped shared library, and the system library
+    dirs. A dir that holds the cwd (the app dir, with its ``.env``) or this
+    file never joins, so no rule can reach the app dir. Each dir is a real
+    path, and a dir inside another one is dropped.
+    """
+    prefixes = {os.path.realpath(p) for p in (
+        sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix,
+    ) if p}
+    found: set[str] = set()
+    for entry in sys.path:
+        real = os.path.realpath(entry) if entry else ""
+        if real and os.path.isdir(real) and any(_beneath(real, p) for p in prefixes):
+            found.add(real)
+    with open("/proc/self/maps", encoding="utf-8", errors="replace") as maps:
+        for line in maps:
+            parts = line.split(None, 5)
+            path = parts[5].strip() if len(parts) == 6 else ""
+            if not path.startswith("/") or path.startswith(_NOT_LIBRARIES):
+                continue
+            if os.path.isfile(path):
+                found.add(os.path.realpath(os.path.dirname(path)))
+    found.update(os.path.realpath(d) for d in _LIBRARY_DIRS if os.path.isdir(d))
+    guards = (os.path.realpath(os.getcwd()), os.path.dirname(os.path.realpath(__file__)))
+    allowed = sorted(d for d in found if not any(_beneath(g, d) for g in guards))
+    return [d for d in allowed if not any(o != d and _beneath(d, o) for o in allowed)]
+
+
+def _handled_fs(abi: int) -> int:
+    """Each file system right that this ABI knows, so each one is denied
+    unless a rule grants it."""
+    bits = (1 << 13) - 1  # ABI 1: EXECUTE up to MAKE_SYM
+    if abi >= 2:
+        bits |= 1 << 13  # REFER
+    if abi >= 3:
+        bits |= 1 << 14  # TRUNCATE
+    if abi >= 5:
+        bits |= 1 << 15  # IOCTL_DEV
+    return bits
+
+
+def _confine(spec: dict[str, Any]) -> None:
+    """Landlock and the process caps, after the preload, before the bytes.
+
+    It raises ``_Refused("unavailable")`` when a step fails, so the child
+    never parses unconfined on Linux. It does nothing on other systems.
+    """
+    if sys.platform != "linux":
+        return
+    import resource
+    import signal
+
+    abi = landlock_abi()
+    if abi < spec["landlock_abi"]:
+        raise _Refused("unavailable")
+    libc = _libc()
+    attr = _RulesetAttr(
+        handled_access_fs=_handled_fs(abi),
+        handled_access_net=(_NET_BIND_TCP | _NET_CONNECT_TCP) if abi >= 4 else 0,
+        scoped=(_SCOPE_ABSTRACT_UNIX_SOCKET | _SCOPE_SIGNAL) if abi >= 6 else 0,
+    )
+    ruleset = libc.syscall(
+        ctypes.c_long(_SYS_CREATE_RULESET), ctypes.byref(attr),
+        ctypes.c_size_t(ctypes.sizeof(attr)), ctypes.c_uint32(0),
+    )
+    if ruleset < 0:
+        raise _Refused("unavailable")
+    try:
+        for path in _read_dirs():
+            fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            try:
+                rule = _PathBeneath(allowed_access=_FS_READ_FILE | _FS_READ_DIR, parent_fd=fd)
+                if libc.syscall(
+                    ctypes.c_long(_SYS_ADD_RULE), ctypes.c_int(ruleset),
+                    ctypes.c_int(_RULE_PATH_BENEATH), ctypes.byref(rule), ctypes.c_uint32(0),
+                ) != 0:
+                    raise _Refused("unavailable")
+            finally:
+                os.close(fd)
+        if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+            raise _Refused("unavailable")
+        if libc.syscall(
+            ctypes.c_long(_SYS_RESTRICT_SELF), ctypes.c_int(ruleset), ctypes.c_uint32(0),
+        ) != 0:
+            raise _Refused("unavailable")
+    finally:
+        os.close(ruleset)
+    # A write past the cap fails with EFBIG and does not kill the child.
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+    resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
 
 
 def _scale(width_pt: float, height_pt: float, spec: dict[str, Any]) -> float | None:
@@ -233,6 +413,29 @@ def _engine() -> Any:
     })
 
 
+def _preload(kind: str) -> Any:
+    """Load every library and model that the read uses, and warm the engine.
+
+    rapidocr loads each model at its first use, and onnxruntime sets up its
+    threads at its first run. Both must happen here, before ``_confine``
+    stops new files and new threads.
+    """
+    from PIL import Image, ImageDraw, ImageFont, ImageOps, TiffImagePlugin  # noqa: F401
+
+    Image.preinit()
+    if kind == "pdf":
+        import pypdfium2  # noqa: F401
+    engine = _engine()
+    for name in ("_load_det_model", "_load_cls_model", "_load_rec_model"):
+        load = getattr(engine, name, None)
+        if callable(load):
+            load()
+    warm = Image.new("L", (240, 64), 255)
+    ImageDraw.Draw(warm).text((10, 10), "OCR 42", fill=0, font=ImageFont.load_default(size=36))
+    engine(warm.convert("RGB"))
+    return engine
+
+
 def _page_text(engine: Any, image: Any, spec: dict[str, Any]) -> str:
     """The lines that OCR read on one page, top to bottom."""
     result = engine(image)
@@ -241,13 +444,11 @@ def _page_text(engine: Any, image: Any, spec: dict[str, Any]) -> str:
     return text[: spec["max_page_chars"]]
 
 
-def _read(data: bytes, spec: dict[str, Any], started: float) -> dict[str, Any]:
+def _read(data: bytes, spec: dict[str, Any], started: float, engine: Any) -> dict[str, Any]:
     if spec["kind"] == "pdf":
         loaders, total = _pdf_pages(data, spec)
     else:
         loaders, total = _image_pages(data, spec)
-    # The file opened, so the engine loads now. A fault here is "failed".
-    engine = _engine() if total else None
     pages: list[str | None] = []
     stop: str | None = None
     for load in loaders:
@@ -271,10 +472,14 @@ def main(argv: list[str]) -> int:
     try:
         spec = _spec(argv[1] if len(argv) > 1 else "")
         _limit_self(spec)
+        _check_landlock(spec)
+        engine = _preload(spec["kind"])
+        _confine(spec)
+        # The untrusted bytes arrive only now, after the confinement.
         data = sys.stdin.buffer.read(spec["max_bytes"] + 1)
         if len(data) > spec["max_bytes"]:
             raise _Refused("size")
-        answer = _read(data, spec, started)
+        answer = _read(data, spec, started, engine)
     except _Refused as exc:
         answer = {"status": "refused", "reason": exc.reason}
     except Exception:  # no traceback reaches the parent, only a code

@@ -17,15 +17,35 @@ stays pure: it starts no process.
 reads untrusted bytes. None of them runs in the gateway process. The child is
 ``attachment_ocr_worker.py``, started as ``python -I <path>`` with the
 allowlisted env of :func:`acb_common.child_env.child_env` and no secret. It
-gets the bytes on stdin and gives one JSON object on stdout. The parent kills
-it at :data:`OCR_TIMEOUT_S`. On Linux the child caps its own memory
-(``RLIMIT_AS``), its CPU time (``RLIMIT_CPU``) and its priority. Every
-library in it runs on one thread, because the box has two cores.
+gets the bytes on stdin and gives one JSON object on stdout. On Linux the
+child caps its own memory (``RLIMIT_AS``), its CPU time (``RLIMIT_CPU``) and
+its priority. Every library in it runs on one thread, because the box has two
+cores.
+
+**Confinement** (fix round 1, P1). The child runs as the gateway's user. So
+before it reads one untrusted byte, it confines itself with Landlock: it may
+read only the Python and library dirs, it may write nowhere, and it may not
+bind or connect a TCP socket (Landlock ABI :data:`MIN_LANDLOCK_ABI`). It may
+not fork or grow a file. A Linux kernel below that ABI makes the child answer
+``unavailable``, so it fails closed. The worker's docstring gives the steps.
+
+**The child dies with its read.** It starts in a new session. The parent
+kills its process group at :data:`OCR_TIMEOUT_S`, on a cancel, and when its
+answer grows past :data:`_MAX_ANSWER_BYTES`. The parent reads stdout in
+chunks and never holds more than that cap.
 
 **Fairness.** At most :data:`MAX_OCR_CHILDREN` children live in the process.
 The wait for that slot is an ``await`` that holds no thread, and it gives up
 after :data:`OCR_SLOT_WAIT_S`. The child is an ``asyncio`` subprocess, so a
 read holds no pool thread and the event loop keeps serving every other run.
+The slot has no share for each organization (spec §4.1, a condition before
+the flag turns on).
+
+**The wait budget** (fix round 1, P2). The email assistant waits 60 s for the
+text route. The worst case is the text parse, then the slot wait, then the
+OCR kill and the reap: ``DEADLINE_SECONDS + _WAIT_MARGIN + OCR_SLOT_WAIT_S +
+OCR_TIMEOUT_S + _REAP_S``, 20 + 2 + 3 + 28 + 2 = 55 s. The fence holds the
+sum at 55 s or less.
 
 **Caps.** At most :data:`MAX_OCR_PAGES` pages, each at :data:`OCR_DPI` and at
 most :data:`MAX_PAGE_PIXELS` pixels. An image is at most
@@ -46,7 +66,10 @@ Fence: ``tests/unit/test_attachment_ocr.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -113,24 +136,34 @@ MAX_IMAGE_BYTES = 15 * 1024 * 1024
 MAX_IMAGE_PIXELS = 50_000_000
 #: The text of one page that the child keeps.
 MAX_PAGE_CHARS = 20_000
-#: The child starts no new page after this many seconds. Measured on Linux
-#: with one thread: about 5.5 s for a dense A4 page of 40 lines (2026-10-25).
-OCR_SOFT_SECONDS = 30.0
-#: The parent kills the child after this many seconds. It stays under the
-#: 60 s that the email assistant waits for the text route.
-OCR_TIMEOUT_S = 45.0
+#: The child starts no new page after this many seconds, from its start.
+#: Measured on Linux with one thread: about 5.5 s for a dense A4 page of 40
+#: lines (2026-10-25).
+OCR_SOFT_SECONDS = 20.0
+#: The parent kills the child after this many seconds. With the text parse
+#: and the slot wait, the worst case stays under 55 s (see the docstring).
+OCR_TIMEOUT_S = 28.0
 #: The address space of the child on Linux. A dense page peaked at 874 MB.
 OCR_MEMORY_BYTES = 1536 * 1024 * 1024
 #: The CPU seconds of the child on Linux. One thread, so CPU time is about
 #: wall time, and the wall-clock kill comes first.
-OCR_CPU_SECONDS = 60
+OCR_CPU_SECONDS = 40
+#: The Landlock ABI that the child needs on Linux: 4 adds TCP bind and
+#: connect to the file system rules. A kernel below it fails closed.
+MIN_LANDLOCK_ABI = 4
 #: The OCR children that live at one time in the process.
 MAX_OCR_CHILDREN = 1
 #: How long a read waits for a free child slot, then answers busy.
-OCR_SLOT_WAIT_S = 5.0
+OCR_SLOT_WAIT_S = 3.0
 _SLOT_POLL_S = 0.1
-#: The bytes of the child's answer that the parent reads.
+#: The bytes of the child's answer that the parent reads. One more byte kills
+#: the child (fix round 1, P1: a child that wrote 600 MB once grew the parent
+#: by 870 MB).
 _MAX_ANSWER_BYTES = 4 * 1024 * 1024
+#: The bytes of one read of the child's stdout.
+_CHUNK = 64 * 1024
+#: The longest wait for a killed child to end. It is part of the budget.
+_REAP_S = 2.0
 
 #: Each library in the child runs on one thread. glibc keeps two malloc
 #: arenas, which took the address space from 3.0 GB to 0.9 GB. None of these
@@ -161,6 +194,10 @@ _REASONS = {
         "pixels, so I did not read it."
     ),
     "size": f"This image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB, so I did not read it.",
+    "unavailable": (
+        "I cannot read scanned files on this server, because it cannot isolate "
+        "the OCR reader."
+    ),
 }
 _NOT_AN_IMAGE = (
     "I could not read this file as an image. Its name says image, but its "
@@ -254,6 +291,7 @@ def _spec(kind: str, max_bytes: int) -> dict[str, Any]:
         "soft_seconds": OCR_SOFT_SECONDS,
         "memory_bytes": OCR_MEMORY_BYTES,
         "cpu_seconds": OCR_CPU_SECONDS,
+        "landlock_abi": MIN_LANDLOCK_ABI,
     }
 
 
@@ -282,29 +320,178 @@ def _answer_of(out: bytes) -> dict[str, Any] | None:
     return answer if isinstance(answer, dict) else None
 
 
-def _run_blocking(argv: list[str], data: bytes, timeout: float, held: _Held) -> dict[str, Any] | str:
-    """The child, for a loop that cannot spawn one. It runs on :data:`_POOL`
-    and releases the slot when it ends."""
+def _kill_group(proc: Any) -> None:
+    """Kill the child and, on POSIX, its process group.
+
+    The child starts in a new session, so its group id is its pid. A kill
+    of the pid follows, for a child that has not called ``setsid`` yet. The
+    caller reaps it. A child that has gone already is no error.
+    """
+    if os.name == "posix":
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
+_ALREADY_LOGGED_UNCONFINED: list[bool] = []
+
+
+def _note_unconfined() -> None:
+    """Log once that this system has no Landlock (a dev box, never the box)."""
+    if sys.platform != "linux" and not _ALREADY_LOGGED_UNCONFINED:
+        _ALREADY_LOGGED_UNCONFINED.append(True)
+        _log.warning("attachment_ocr.unconfined", platform=sys.platform)
+
+
+class _Running:
+    """The child of the blocking path, so that a cancel can kill it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: Any = None
+        self._cancelled = False
+
+    def started(self, proc: Any) -> None:
+        with self._lock:
+            self._proc = proc
+            cancelled = self._cancelled
+        if cancelled:
+            _kill_group(proc)
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            proc = self._proc
+        if proc is not None and proc.poll() is None:
+            _kill_group(proc)
+
+
+def _feed_blocking(stdin: Any, data: bytes) -> None:
+    with contextlib.suppress(OSError, ValueError):
+        stdin.write(data)
+    with contextlib.suppress(OSError, ValueError):
+        stdin.close()
+
+
+def _read_capped_blocking(stdout: Any) -> bytes | None:
+    """At most ``_MAX_ANSWER_BYTES`` of stdout, else ``None``."""
+    out = bytearray()
+    while chunk := stdout.read1(_CHUNK):
+        out += chunk
+        if len(out) > _MAX_ANSWER_BYTES:
+            return None
+    return bytes(out)
+
+
+def _run_blocking(
+    argv: list[str], data: bytes, timeout: float, held: _Held, running: _Running,
+) -> dict[str, Any] | str:
+    """The child, for a loop that cannot spawn one (a Windows dev server).
+
+    It runs on :data:`_POOL`, and releases the slot when it ends. A timer
+    kills the child at *timeout*, and a cancel of the caller kills it at once
+    through *running*.
+    """
     try:
-        done = subprocess.run(  # our own worker file, no shell
-            argv, input=data, capture_output=True, timeout=timeout,
-            check=False, env=_child_env(),
-        )
-    except subprocess.TimeoutExpired:
-        return _TOO_SLOW
-    except OSError:
-        return _NO_START
+        try:
+            proc = subprocess.Popen(  # our own worker file, no shell
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, env=_child_env(), start_new_session=True,
+            )
+        except OSError:
+            return _NO_START
+        running.started(proc)
+        expired = threading.Event()
+
+        def _expire() -> None:
+            expired.set()
+            _kill_group(proc)
+
+        timer = threading.Timer(timeout, _expire)
+        timer.daemon = True
+        timer.start()
+        feeder = threading.Thread(target=_feed_blocking, args=(proc.stdin, data), daemon=True)
+        feeder.start()
+        try:
+            out = _read_capped_blocking(proc.stdout)
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                _kill_group(proc)
+            proc.wait()
+            with contextlib.suppress(OSError):
+                proc.stdout.close()
+        if expired.is_set():
+            return _TOO_SLOW
+        if out is None:
+            _log.warning("attachment_ocr.answer_too_large", path="blocking")
+            return _FAILED
+        return _answer_of(out) or _FAILED
     finally:
         held.release()
-    return _answer_of(done.stdout) or _FAILED
+
+
+async def _feed(stdin: Any, data: bytes) -> None:
+    """Write *data* to the child, and close its stdin. A child that stopped
+    reading is no error: its answer decides."""
+    try:
+        stdin.write(data)
+        await stdin.drain()
+    except (OSError, RuntimeError):
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            stdin.close()
+
+
+async def _talk(proc: Any, data: bytes) -> dict[str, Any] | str:
+    """Feed the child and read its answer, at most ``_MAX_ANSWER_BYTES``."""
+    feed = asyncio.ensure_future(_feed(proc.stdin, data))
+    out = bytearray()
+    try:
+        while chunk := await proc.stdout.read(_CHUNK):
+            out += chunk
+            if len(out) > _MAX_ANSWER_BYTES:
+                _kill_group(proc)
+                _log.warning("attachment_ocr.answer_too_large", path="async")
+                return _FAILED
+        await proc.wait()
+    finally:
+        feed.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await feed
+    return _answer_of(bytes(out)) or _FAILED
+
+
+async def _reap(proc: Any) -> None:
+    """Wait for a killed child, within :data:`_REAP_S`.
+
+    ``Process.wait()`` returns only when every pipe has closed. A stdout pipe
+    that nobody reads stays open, so the wait would never end (found by the
+    flood fence). The rest of stdout is read and thrown away: the child is
+    dead, so that is at most one pipe buffer.
+    """
+    async def _drain_and_wait() -> None:
+        with contextlib.suppress(Exception):
+            while await proc.stdout.read(_CHUNK):
+                pass
+        await proc.wait()
+
+    try:
+        await asyncio.wait_for(_drain_and_wait(), _REAP_S)
+    except TimeoutError:
+        _log.warning("attachment_ocr.reap_timeout", pid=proc.pid)
 
 
 async def _run_child(data: bytes, spec: dict[str, Any], held: _Held) -> dict[str, Any] | str:
     """The child's answer, or a sentence that says why there is none.
 
-    The child is killed and reaped on a timeout, and also when the caller is
-    cancelled, so no OCR outlives its read.
+    The child's process group is killed and the child reaped on a timeout,
+    on a cancel of the caller and on an answer past the cap, so no OCR
+    outlives its read.
     """
+    _note_unconfined()
     argv = _worker_argv(spec)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -313,23 +500,31 @@ async def _run_child(data: bytes, spec: dict[str, Any], held: _Held) -> dict[str
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=_child_env(),
+            start_new_session=True,
         )
     except NotImplementedError:
         loop = asyncio.get_running_loop()
-        job = loop.run_in_executor(_POOL, _run_blocking, argv, data, OCR_TIMEOUT_S, held)
+        running = _Running()
+        job = loop.run_in_executor(
+            _POOL, _run_blocking, argv, data, OCR_TIMEOUT_S, held, running,
+        )
         held.thread_owns = True
-        return await asyncio.shield(job)
+        try:
+            return await asyncio.shield(job)
+        except asyncio.CancelledError:
+            running.cancel()
+            raise
     except OSError:
         return _NO_START
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(data), OCR_TIMEOUT_S)
+        return await asyncio.wait_for(_talk(proc, data), OCR_TIMEOUT_S)
     except TimeoutError:
         return _TOO_SLOW
     finally:
         if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-    return _answer_of(out) or _FAILED
+            _kill_group(proc)
+        # Always: a child that exited can still hold an unread pipe open.
+        await _reap(proc)
 
 
 # ── The answer ───────────────────────────────────────────────────────────────
@@ -344,6 +539,8 @@ def _pages_of(answer: dict[str, Any]) -> tuple[list[str | None], int, str | None
     """The checked fields of an ``ok`` answer, else ``None``."""
     pages, total, stop = answer.get("pages"), answer.get("total"), answer.get("stop")
     if not isinstance(pages, list) or not all(p is None or isinstance(p, str) for p in pages):
+        return None
+    if len(pages) > MAX_OCR_PAGES:  # the child never reads more than the cap
         return None
     if not isinstance(total, int) or isinstance(total, bool) or total < len(pages):
         return None

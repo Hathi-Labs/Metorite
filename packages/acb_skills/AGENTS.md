@@ -244,9 +244,21 @@ clone cache.
    and no secret. On Linux it sets `RLIMIT_AS` (1.5 GiB) and `RLIMIT_CPU` on
    itself. Each library in it runs on one thread, and it never downloads a
    model.
+   ⚠️ The order of `main()` is the control (fix round 1, P1). The child
+   checks Landlock, preloads every library and model, and confines itself
+   with `_confine`. Only then does it read the bytes. Landlock lets it read
+   only the Python and library dirs, never a dir that holds the cwd. It may
+   write nowhere, and with ABI 4 it may not bind or connect TCP.
+   `RLIMIT_NPROC` and `RLIMIT_FSIZE` are 0. A Linux kernel below ABI 4 answers
+   `unavailable`, so it fails closed. A new lazy import or lazy thread in
+   the parse breaks under the confinement, so put it in `_preload`. The
+   fence `TestTheConfinement` runs on Linux only.
    At most one child lives in the process (`_SLOT`, process-wide). The wait
-   for it is an `await`, and a wait past 5 s answers busy. The parent kills
-   the child at 45 s, and the child stops between pages at 30 s. A read takes
+   for it is an `await`, and a wait past 3 s answers busy. The child starts
+   in a new session. The parent kills its process group at 28 s, on a
+   cancel and when stdout passes 4 MiB, and reads stdout in chunks. The child
+   stops between pages at 20 s. The worst wait of the email text route is
+   55 s, and a fence holds that sum. A read takes
    15 pages at most, at 150 DPI and 4 million pixels for each page. The text
    starts with `OCR_MARKER`, and `Extracted.ocr` is true. A capped read ends
    with a sentence that gives the count. Each failure gives one sentence.

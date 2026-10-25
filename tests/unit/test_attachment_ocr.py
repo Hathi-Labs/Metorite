@@ -26,6 +26,23 @@ R7 fences, each a test class:
 8. **The child file** (:class:`TestTheWorker`). It imports nothing from the
    platform, it names model files that the wheel holds, it never downloads,
    and a page size cannot ask for a huge bitmap.
+9. **The answer cap** (:class:`TestTheAnswerCap`, fix round 1, P1). A child
+   that floods stdout is killed at the cap. The parent never holds more.
+10. **The blocking path** (:class:`TestTheBlockingPath`). The dev loop that
+    cannot spawn a child uses a thread. A flood, a hang and a cancel each
+    kill the child there too.
+11. **The confinement** (:class:`TestTheConfinement`, Linux only, fix round
+    1, P1). A probe child confined by the worker's own ``_confine`` cannot
+    read a file of the app dir, cannot read its parent's environ, cannot
+    write a file, cannot fork and, with Landlock ABI 4, cannot connect a TCP
+    socket. The same probe unconfined can do each, so each attack is real. A
+    kernel below the ABI fails closed, and real OCR still reads inside the
+    confinement.
+
+Real OCR runs only where the child can confine itself: on a non-Linux dev
+box, or on a Linux kernel with Landlock ABI 4 or later. On an older kernel
+(WSL2 has ABI 1) those tests skip with that reason, and section 11 proves the
+refusal there.
 
 The tests build every file at test time with Pillow. No binary file is in
 the repo. The tests of sections 1 to 3 start the real child, about 3 s each.
@@ -41,6 +58,9 @@ import asyncio
 import importlib.util
 import io
 import json
+import os
+import re
+import socket
 import subprocess
 import sys
 import time
@@ -82,6 +102,35 @@ CANARIES = {
     "ACB_MASTER_KEY": "oa3canary-master",
     "OA3_CANARY_SECRET": "oa3canary",
 }
+
+
+def _load_worker() -> Any:
+    spec = importlib.util.spec_from_file_location("oa3_worker_under_test", WORKER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: The worker module, loaded by path. It imports the standard library only.
+_W = _load_worker()
+LANDLOCK_ABI = _W.landlock_abi()
+#: Real OCR runs where the child can confine itself.
+REAL_OCR = sys.platform != "linux" or LANDLOCK_ABI >= ocr.MIN_LANDLOCK_ABI
+needs_real_ocr = pytest.mark.skipif(
+    not REAL_OCR,
+    reason=(
+        f"this Linux kernel offers Landlock ABI {LANDLOCK_ABI}, below "
+        f"{ocr.MIN_LANDLOCK_ABI}, so the OCR child fails closed here. "
+        "TestTheConfinement proves the refusal and reads OCR at the lower ABI."
+    ),
+)
+#: Landlock, setsid and RLIMIT_NPROC are Linux features. The box and the CI
+#: run Linux, so CI runs every test that carries this mark.
+linux_only = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Landlock, setsid and RLIMIT_NPROC exist on Linux only; the box and CI run Linux",
+)
 
 
 # ── Files, built at test time ───────────────────────────────────────────────
@@ -153,6 +202,7 @@ def spawn_trap(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _trap("create_subprocess_exec"))
     monkeypatch.setattr(subprocess, "run", _trap("subprocess.run"))
+    monkeypatch.setattr(subprocess, "Popen", _trap("subprocess.Popen"))
     return calls
 
 
@@ -194,6 +244,7 @@ def _slot_is_free() -> bool:
 # ── 1. It reads ─────────────────────────────────────────────────────────────
 
 
+@needs_real_ocr
 class TestItReads:
     async def test_a_scanned_pdf_gives_its_text_marked_as_ocr(self, ocr_on) -> None:
         data = _scan([["PURCHASE ORDER 4471", "Navy Dockyard Mumbai"]])
@@ -259,6 +310,7 @@ class TestThePageCap:
         assert ocr.MAX_OCR_PAGES == 15
         assert ocr._spec("pdf", 1)["max_pages"] == 15
 
+    @needs_real_ocr
     async def test_a_200_page_scan_stops_at_the_cap_with_a_sentence(
         self, ocr_on, monkeypatch,
     ) -> None:
@@ -280,10 +332,24 @@ class TestThePageCap:
         )
         assert ocr._pdf_answer(["", ""], 9, "time", None) == ocr._TOO_SLOW
 
-    def test_the_waits_fit_inside_the_email_assistants_wait(self) -> None:
-        # read_email_attachment waits 60 s for the text route.
-        assert ocr.OCR_SLOT_WAIT_S + ocr.OCR_TIMEOUT_S <= 50
+    def test_the_whole_worst_case_fits_inside_the_email_assistants_wait(self) -> None:
+        """Fix round 1, P2. The text parse runs first, then the slot wait,
+        then the OCR child. The whole sum stays under 55 s, and 5 s under the
+        wait of read_email_attachment."""
+        worst = (at.DEADLINE_SECONDS + tools._WAIT_MARGIN
+                 + ocr.OCR_SLOT_WAIT_S + ocr.OCR_TIMEOUT_S + ocr._REAP_S)
+        assert worst <= 55, worst
+        src = (REPO / "apps/agents/agent-email-assistant/agents.py").read_text(encoding="utf-8")
+        found = re.search(r'/email/attachments/\{aid\}/text", timeout=([0-9.]+)', src)
+        assert found, "read_email_attachment no longer names its wait for the text route"
+        assert worst <= float(found.group(1)) - 5, (worst, found.group(1))
         assert ocr.OCR_SOFT_SECONDS < ocr.OCR_TIMEOUT_S
+
+    def test_an_answer_with_more_pages_than_the_cap_is_refused(self) -> None:
+        many = {"status": "ok", "pages": ["x"] * (ocr.MAX_OCR_PAGES + 1), "total": 99,
+                "stop": "pages"}
+        assert ocr._pages_of(many) is None
+        assert ocr._pages_of({**many, "pages": ["x"] * ocr.MAX_OCR_PAGES}) is not None
 
 
 # ── 3. Clean refusals ───────────────────────────────────────────────────────
@@ -301,10 +367,12 @@ class TestCleanRefusals:
         assert isinstance(before, str) and after == before
         assert spawn_trap == []
 
+    @needs_real_ocr
     async def test_a_broken_image_gives_one_sentence(self, ocr_on) -> None:
         got = await tools.parse_bounded(b"\x89PNG\r\n\x1a\n" + b"junk" * 50, ".png")
         assert got == "I could not read this file. It can be damaged."
 
+    @needs_real_ocr
     async def test_a_decompression_bomb_is_refused(self, ocr_on) -> None:
         got = await tools.parse_bounded(_bomb(), ".png")
         assert got == ocr._REASONS["pixels"]
@@ -379,16 +447,18 @@ class TestOneChildAtATime:
             proc = await real(*args, **kwargs)
             live += 1
             peak = max(peak, live)
-            talk = proc.communicate
+            real_wait = proc.wait
+            ended: list[bool] = []
 
-            async def _talk(*a: Any) -> Any:
+            async def _wait() -> Any:
                 nonlocal live
-                try:
-                    return await talk(*a)
-                finally:
+                code = await real_wait()
+                if not ended:  # a child ends once, however often it is awaited
+                    ended.append(True)
                     live -= 1
+                return code
 
-            proc.communicate = _talk
+            proc.wait = _wait
             return proc
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _count)
@@ -524,14 +594,6 @@ class TestTheFlagOff:
 # ── 8. The child file ───────────────────────────────────────────────────────
 
 
-def _load_worker() -> Any:
-    spec = importlib.util.spec_from_file_location("oa3_worker_under_test", WORKER)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 class TestTheWorker:
     def test_it_imports_nothing_from_the_platform(self) -> None:
         tree = ast.parse(WORKER.read_text(encoding="utf-8"))
@@ -580,3 +642,310 @@ class TestTheWorker:
         spec = ocr._spec("pdf", 1)
         assert worker._scale(0.0, 842.0, spec) is None
         assert worker._scale(float("inf"), 842.0, spec) is None
+
+    def test_the_spec_asks_for_landlock_abi_four(self) -> None:
+        assert ocr.MIN_LANDLOCK_ABI == 4
+        assert ocr._spec("pdf", 1)["landlock_abi"] == 4
+        bad = {**ocr._spec("pdf", 1), "landlock_abi": 0}
+        with pytest.raises(_W._Refused):
+            _W._spec(json.dumps(bad))
+
+    def test_the_child_confines_itself_before_it_reads_the_bytes(self) -> None:
+        """The order of main() is the control: check, preload, confine, then
+        stdin. A refactor that reads stdin earlier fails here."""
+        tree = ast.parse(WORKER.read_text(encoding="utf-8"))
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        calls = [
+            ast.unparse(n.func) for n in ast.walk(main) if isinstance(n, ast.Call)
+        ]
+        order = [c for c in calls if c in {
+            "_limit_self", "_check_landlock", "_preload", "_confine",
+            "sys.stdin.buffer.read", "_read",
+        }]
+        assert order == [
+            "_limit_self", "_check_landlock", "_preload", "_confine",
+            "sys.stdin.buffer.read", "_read",
+        ], order
+
+
+# ── 9. The answer cap ───────────────────────────────────────────────────────
+
+#: A child that writes to stdout for ever.
+_FLOOD = "import sys\nchunk = b'x' * 65536\nwhile True:\n    sys.stdout.buffer.write(chunk)\n"
+
+
+class TestTheAnswerCap:
+    async def test_a_child_that_floods_stdout_is_killed_at_the_cap(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(ocr, "_MAX_ANSWER_BYTES", 1024 * 1024)
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 20.0)
+        _fake_child(monkeypatch, _FLOOD)
+        held: list[Any] = []
+        read = 0
+        real = asyncio.create_subprocess_exec
+
+        async def _count(*args: Any, **kwargs: Any) -> Any:
+            proc = await real(*args, **kwargs)
+            held.append(proc)
+            take = proc.stdout.read
+
+            async def _counted(n: int = -1) -> bytes:
+                nonlocal read
+                chunk = await take(n)
+                read += len(chunk)
+                return chunk
+
+            proc.stdout.read = _counted
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _count)
+        at_kill: list[int] = []
+        real_kill = ocr._kill_group
+
+        def _kill(proc: Any) -> None:
+            at_kill.append(read)
+            real_kill(proc)
+
+        monkeypatch.setattr(ocr, "_kill_group", _kill)
+        start = time.monotonic()
+        got = await ocr.ocr_bounded(_image(["x"], "PNG"), ".png")
+        assert got == ocr._FAILED
+        assert time.monotonic() - start < 10, "the parent waited for the timeout"
+        # What the parent HELD when it killed the child: the cap and one chunk.
+        assert at_kill and at_kill[0] <= 1024 * 1024 + ocr._CHUNK, at_kill
+        # The reap then reads what the dead child left in the pipe, and keeps
+        # none of it. That is bounded too.
+        assert read <= 1024 * 1024 + 2 * 1024 * 1024, read
+        assert held and held[0].returncode is not None, "the child still runs"
+        assert _slot_is_free()
+
+
+# ── 10. The blocking path ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def blocking_path(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """A loop that cannot spawn a child, so the thread path runs. Each
+    ``Popen`` is recorded."""
+    async def _no_spawn(*_args: Any, **_kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_spawn)
+    procs: list[Any] = []
+    real = subprocess.Popen
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        proc = real(*args, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _spy)
+    return procs
+
+
+async def _wait_until(test: Any, seconds: float = 15.0) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if test():
+            return True
+        await asyncio.sleep(0.05)
+    return test()
+
+
+class TestTheBlockingPath:
+    async def test_it_reads_an_answer(self, ocr_on, monkeypatch, blocking_path) -> None:
+        _fake_child(monkeypatch, _ok_child())
+        got = await ocr.ocr_bounded(_image(["x"], "PNG"), ".png")
+        assert isinstance(got, at.Extracted) and "fake words" in got.text
+        assert blocking_path and blocking_path[0].poll() is not None
+        assert _slot_is_free()
+
+    async def test_a_flood_is_killed_at_the_cap(self, ocr_on, monkeypatch, blocking_path) -> None:
+        monkeypatch.setattr(ocr, "_MAX_ANSWER_BYTES", 1024 * 1024)
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 20.0)
+        _fake_child(monkeypatch, _FLOOD)
+        start = time.monotonic()
+        assert await ocr.ocr_bounded(_image(["x"], "PNG"), ".png") == ocr._FAILED
+        assert time.monotonic() - start < 10
+        assert blocking_path[0].poll() is not None
+        assert _slot_is_free()
+
+    async def test_a_hang_is_killed_at_the_timeout(self, ocr_on, monkeypatch, blocking_path) -> None:
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 1.5)
+        _fake_child(monkeypatch, "import time; time.sleep(120)")
+        assert await ocr.ocr_bounded(_image(["x"], "PNG"), ".png") == ocr._TOO_SLOW
+        assert blocking_path[0].poll() is not None
+        assert _slot_is_free()
+
+    async def test_a_cancel_kills_the_child_at_once(
+        self, ocr_on, monkeypatch, blocking_path,
+    ) -> None:
+        """The verifier's finding: the thread path once waited for the
+        timeout after a cancel. Now the cancel kills the child."""
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 120.0)
+        _fake_child(monkeypatch, "import time; time.sleep(120)")
+        task = asyncio.create_task(ocr.ocr_bounded(_image(["x"], "PNG"), ".png"))
+        assert await _wait_until(lambda: bool(blocking_path))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await _wait_until(lambda: blocking_path[0].poll() is not None), (
+            "the child outlived its cancelled read"
+        )
+        assert await _wait_until(_slot_is_free)
+
+
+# ── 11. The confinement (Linux) ─────────────────────────────────────────────
+
+#: The probe child. It loads the worker by path, confines itself with the
+#: worker's own `_confine` (or not, for the control), then tries each attack.
+_PROBE = r'''
+import errno, importlib.util, json, os, socket, sys
+spec = importlib.util.spec_from_file_location("w", sys.argv[1])
+w = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(w)
+mode, abi, secret, out_path, port = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], int(sys.argv[6])
+
+def attempt(fn):
+    try:
+        got = fn()
+        return "allowed" + (":" + got if isinstance(got, str) else "")
+    except OSError as exc:
+        return "refused:" + errno.errorcode.get(exc.errno, str(exc.errno))
+
+def read(path):
+    with open(path, "rb") as fh:
+        return "canary" if b"oa3canary" in fh.read() else "read"
+
+def write():
+    with open(out_path, "w") as fh:
+        fh.write("x")
+
+def connect():
+    socket.create_connection(("127.0.0.1", port), timeout=3).close()
+
+def fork():
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    os.waitpid(pid, 0)
+
+def lazy_import():
+    try:
+        import sqlite3  # noqa: F401  (a module and a library that no step loaded)
+        return "imported"
+    except ImportError:
+        raise OSError(errno.EACCES, "import refused") from None
+
+if mode == "confine":
+    try:
+        w._confine({"landlock_abi": abi})
+    except w._Refused as exc:
+        print(json.dumps({"confine": exc.reason}))
+        sys.exit(0)
+print(json.dumps({
+    "confine": "done" if mode == "confine" else "none",
+    "secret_file": attempt(lambda: read(secret)),
+    "parent_environ": attempt(lambda: read(f"/proc/{os.getppid()}/environ")),
+    "write_file": attempt(write),
+    "tcp_connect": attempt(connect),
+    "fork": attempt(fork),
+    "stdlib_read": attempt(lambda: read(os.path.join(os.path.dirname(os.__file__), "json", "__init__.py"))),
+    "lazy_import": attempt(lazy_import),
+}))
+'''
+
+#: The gateway stand-in. It holds a canary in its environ, and starts the
+#: probe with a bare env from the app dir, as the gateway starts the worker.
+_SHIM = (
+    "import os, subprocess, sys\n"
+    "done = subprocess.run([sys.executable, '-I', '-c', *sys.argv[1:]],"
+    " env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')}, capture_output=True, timeout=60)\n"
+    "sys.stdout.write(done.stdout.decode())\n"
+)
+
+
+@pytest.fixture
+def listener():
+    """A TCP port on the loopback that a probe may try to connect to."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    yield server.getsockname()[1]
+    server.close()
+
+
+def _probe(tmp_path: Path, mode: str, abi: int, port: int) -> dict[str, str]:
+    app = tmp_path / "opt" / "acb" / "app"
+    app.mkdir(parents=True, exist_ok=True)
+    secret = app / ".env"
+    secret.write_text("DATABASE_URL=postgresql://u:oa3canary@h/db\n", encoding="utf-8")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "OA3_CANARY_SECRET": "oa3canary"}
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", _SHIM, _PROBE, str(WORKER), mode, str(abi),
+         str(secret), str(app / "written.txt"), str(port)],
+        cwd=app, env=env, capture_output=True, timeout=120, check=False,
+    )
+    assert done.stdout, done.stderr.decode(errors="replace")[-2000:]
+    return json.loads(done.stdout)
+
+
+@linux_only
+@pytest.mark.skipif(
+    sys.platform == "linux" and LANDLOCK_ABI < 1,
+    reason="this Linux kernel has no Landlock at all",
+)
+class TestTheConfinement:
+    def test_each_attack_works_unconfined(self, tmp_path, listener) -> None:
+        """The control: without the confinement each attack succeeds, so the
+        refusals below are real."""
+        got = _probe(tmp_path, "none", 0, listener)
+        assert got["secret_file"] == "allowed:canary", got
+        assert got["parent_environ"] == "allowed:canary", got
+        assert got["write_file"] == "allowed", got
+        assert got["tcp_connect"] == "allowed", got
+        assert got["fork"] == "allowed", got
+
+    def test_the_confined_child_reads_only_the_python_and_library_dirs(
+        self, tmp_path, listener,
+    ) -> None:
+        got = _probe(tmp_path, "confine", min(LANDLOCK_ABI, ocr.MIN_LANDLOCK_ABI), listener)
+        assert got["confine"] == "done", got
+        assert got["secret_file"] == "refused:EACCES", got
+        assert got["parent_environ"] == "refused:EACCES", got
+        assert got["write_file"] == "refused:EACCES", got
+        assert not (Path(tmp_path) / "opt/acb/app/written.txt").exists()
+        assert got["stdlib_read"] == "allowed:read", got
+        assert got["lazy_import"] == "allowed:imported", got
+        if os.geteuid() != 0:  # root ignores RLIMIT_NPROC
+            assert got["fork"] in ("refused:EAGAIN", "refused:EWOULDBLOCK"), got
+
+    @pytest.mark.skipif(sys.platform == "linux" and LANDLOCK_ABI < 4, reason=(
+        f"Landlock ABI {LANDLOCK_ABI} has no network rules; ABI 4 (Linux 6.7) adds TCP. "
+        "The box (6.8) and the dev VPS have it"))
+    def test_the_confined_child_cannot_connect_tcp(self, tmp_path, listener) -> None:
+        got = _probe(tmp_path, "confine", ocr.MIN_LANDLOCK_ABI, listener)
+        assert got["confine"] == "done", got
+        assert got["tcp_connect"] == "refused:EACCES", got
+
+    def test_a_kernel_below_the_abi_fails_closed(self, tmp_path, listener) -> None:
+        got = _probe(tmp_path, "confine", LANDLOCK_ABI + 1, listener)
+        assert got == {"confine": "unavailable"}
+
+    async def test_the_parent_answers_unavailable_on_such_a_kernel(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(ocr, "MIN_LANDLOCK_ABI", LANDLOCK_ABI + 1)
+        got = await ocr.ocr_bounded(_image(["x"], "PNG"), ".png")
+        assert got == ocr._REASONS["unavailable"]
+
+    async def test_ocr_reads_inside_the_confinement(self, ocr_on, monkeypatch) -> None:
+        """Real OCR, confined at the ABI that this kernel has (WSL2: 1, the
+        box: 4). The preload leaves nothing for the parse to open or start."""
+        monkeypatch.setattr(ocr, "MIN_LANDLOCK_ABI", min(LANDLOCK_ABI, 4))
+        got = await tools.parse_bounded(_scan([["PURCHASE ORDER 4471"]]), ".pdf")
+        assert isinstance(got, at.Extracted), got
+        assert got.ocr and "4471" in got.text
+        img = await tools.parse_bounded(_image(["Total 1200 INR"], "JPEG"), ".jpg")
+        assert isinstance(img, at.Extracted) and "1200" in img.text, img

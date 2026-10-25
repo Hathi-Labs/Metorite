@@ -6,10 +6,8 @@ for OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446
 (OA-1) to #455 (OA-10).
 
 **OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
-on, and it is off by default. The code is `acb_skills/attachment_ocr.py` and
-its child `attachment_ocr_worker.py`. The fence is
-`tests/unit/test_attachment_ocr.py`. With the flag off, both read paths are
-byte-identical.
+on, and it is off by default. §4.1 records what was built, and the two
+conditions to meet before the flag turns on.
 
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
 "specialists behind it" changes to "tool packs in it" for conversational
@@ -85,6 +83,53 @@ moves them.
 | **OA-8** | The Projects and CRM tool packs. | MEDIUM | OA-7 |
 | **OA-9** | The sub-agent contract of §6 for heavy jobs. | MEDIUM | OA-6 |
 | **OA-10** | Retire conversational delegation. A specialist agent stays for a scheduled job, a workflow and an external agent. | HIGH | OA-8, OA-9 |
+
+### 4.1 OA-3 as built (2026-10-25)
+
+**What it does.** With `ATTACHMENT_OCR` on, the one bounded parse
+(`attachment_tools.parse_bounded`) reads two kinds of file by OCR: a PDF whose
+text layer gives no words, and a `.png`, `.jpg` or `.jpeg` image. The chat
+tool `read_attachment` and the email text route both get it through that
+function. The text starts with the OCR marker. A read takes 15 pages at most,
+and a capped read says how many it read. With the flag off, both paths are
+byte-identical.
+
+**How the child stays apart.** The OCR runs in a child process
+(`acb_skills/attachment_ocr_worker.py`), never in the gateway. The child gets
+the `child_env` allowlist and no secret. Before it reads one byte of the
+file, it confines itself on Linux:
+
+- Landlock lets it read only the Python and shared library dirs. It may
+  write nowhere, and it may not bind or connect a TCP socket (ABI 4).
+- A kernel below Landlock ABI 4 makes it answer "unavailable". It fails
+  closed. The box runs kernel 6.8, which has ABI 4.
+- `RLIMIT_NPROC` is 0 (no fork), `RLIMIT_FSIZE` is 0, and `RLIMIT_AS` and
+  `RLIMIT_CPU` cap memory and CPU.
+
+The parent kills the child's process group at 28 s, on a cancel, and when
+its answer passes 4 MiB. The worst wait of the email text route is 55 s,
+under the 60 s of `read_email_attachment`.
+
+**Residual risk.** Landlock ABI 4 does not cover UDP, or a connect to an
+existing Unix socket. A Windows dev box runs the child unconfined, because
+Windows has no Landlock.
+
+**Conditions before the flag turns on.** The fix round of 2026-10-25 records
+these two, and builds neither:
+
+1. **A share for each organization.** One child slot serves the whole
+   process. A long scan of one organization makes every other organization
+   answer busy for up to 31 s. Add a share for each organization, or accept
+   this in writing.
+2. **The tool descriptions.** The docstring of `read_email_attachment` says
+   that it reads no image. The docstring of `read_attachment` names only
+   document, sheet and text files. `addendum.ATTACHMENT_FAILURE_RULE` tells
+   the model to suggest a .docx or a .pdf. So the model does not try an
+   image. The pull request that turns the flag on changes these three texts,
+   because they are prompt text.
+
+Fence: `tests/unit/test_attachment_ocr.py`. Its Linux class
+`TestTheConfinement` runs on the Linux CI.
 
 ## 5. Acceptance
 
