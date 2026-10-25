@@ -348,7 +348,8 @@ def test_the_batch_sub_run_gets_the_preamble_as_context(monkeypatch, tenant) -> 
         "email-assistant", "send it", "run-1", queue))
     assert out == "Sent."
     (payload,) = seen
-    assert payload["message"] == "send it", payload
+    # WS-67 OA-1: the task sits under the head of the member's words.
+    assert payload["message"].endswith("## The task\nsend it"), payload
     ctx = payload["system_context"]
     assert "draft_id: d-9" in ctx and "«Work» (account_id: acc-work)" in ctx, ctx
     # The send cleared the draft, and the set keeps the mail.
