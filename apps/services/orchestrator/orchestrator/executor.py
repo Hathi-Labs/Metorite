@@ -1967,11 +1967,9 @@ async def _run_sub_agent_streaming(
     # rules (quoted or inferred) head every delegated task. The executor adds
     # them, so no prompt and no model can leave them out. Read from the
     # PARENT's binding, on the parent's frame.
-    from acb_skills.handoff import MEMBER_TURNS, task_with_member_words
+    from acb_skills.handoff import head_task
     from acb_skills.write_artifact import artifact_context
-    message_str = task_with_member_words(
-        message_str, artifact_context().get(MEMBER_TURNS),
-    )
+    message_str = head_task(message_str)
     _repo_name: str | None = None
     _local_path: str | None = None
     _runtime: str = "maf"
@@ -8780,6 +8778,10 @@ async def _tier_policy_for_run(
         message = str(
             event_payload.get("message") or event_payload.get("user_query") or ""
         )
+    # WS-67: the question reads the task only. The head of a delegated task
+    # (the member's words and the reply rules) would make every task look long.
+    from acb_skills.handoff import task_of
+    message = task_of(message)
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
         read_effort=effort_from_text,
