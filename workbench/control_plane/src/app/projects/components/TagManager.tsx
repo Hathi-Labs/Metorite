@@ -44,7 +44,7 @@ const ORG_WIDE_NOTE =
 import { useEffect, useState } from "react";
 
 import { projectsApi } from "../lib/api";
-import { TAG_COLORS, type TagRow, byUsage, chipClass, normaliseTag } from "../lib/tags";
+import { COLOR_SELECT_OPTIONS, TAG_COLORS, type TagRow, byUsage, chipClass, normaliseTag } from "../lib/tags";
 import { orgRenameCopy, tagDeleteCopy } from "../lib/tagCopy";
 
 interface Props {
@@ -285,7 +285,7 @@ export function TagManager({
                           return null;
                         })
                       }
-                      options={TAG_COLORS.map((c) => ({ value: c, label: c }))}
+                      options={COLOR_SELECT_OPTIONS}
                     />
                     <Button
                       variant="ghost"

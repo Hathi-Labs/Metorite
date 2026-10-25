@@ -51,6 +51,7 @@ import Icon from "@/components/Icon";
 import AnchoredPanel, { type PanelLayer } from "@/components/ui/AnchoredPanel";
 import Input from "@/components/ui/Input";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { statusAccent } from "@/lib/statusAccent";
 
 /**
  * Which arrow the trigger wears — the one decision in this file worth a test.
@@ -195,6 +196,48 @@ export interface SelectOption {
    * list keeps the caller's order, so the caller keeps each group together.
    */
   group?: string;
+  /**
+   * Task #417. An icon name, drawn with the shared `Icon` before the label.
+   * For a list whose options ARE icons, such as a task type's icon. The
+   * glyph is decoration, so the label stays the accessible name.
+   */
+  icon?: string;
+  /**
+   * Task #417. A colour NAME from `statusAccent` ("gray", "green" …), drawn
+   * as a solid dot before the label. For a list whose options ARE colours.
+   * It is a name and never a class or a value, so the dot follows the tokens.
+   */
+  swatch?: string;
+}
+
+/**
+ * The icon or the colour dot before an option's label (task #417).
+ *
+ * Drawn in the list row AND on the closed trigger, so the member sees the
+ * choice, not only its name. `aria-hidden`, because the label already says
+ * it. An option with neither field draws nothing, so the other callers
+ * render as before. The sizes are in `rem`, so they follow the density.
+ *
+ * The dot is `statusAccent`'s `dot` slot, the same solid fill the tag
+ * picker's `swatchClass` draws. A chip tint would be a grey smudge at this
+ * size.
+ */
+export function OptionMark({ option }: { option: Pick<SelectOption, "icon" | "swatch"> }) {
+  if (!option.icon && !option.swatch) return null;
+  return (
+    <>
+      {option.icon ? (
+        <Icon name={option.icon} size={14} aria-hidden className="h-3.5 w-3.5 shrink-0" />
+      ) : null}
+      {option.swatch ? (
+        <span
+          aria-hidden="true"
+          data-swatch={option.swatch}
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusAccent({ color: option.swatch }).dot}`}
+        />
+      ) : null}
+    </>
+  );
 }
 
 export interface SelectButtonProps {
@@ -375,6 +418,8 @@ export function SelectButton({
         onClick={() => dispatch({ type: "toggle" })}
         className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
       >
+        {/* Task #417: the chosen icon or colour, before its name. */}
+        {current ? <OptionMark option={current} /> : null}
         <span className="min-w-0 flex-1 truncate pr-px">
           {prefix ? (
             <span className="text-muted-foreground">{prefix} </span>
@@ -450,6 +495,7 @@ function OptionRow({
         option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
       }
     >
+      <OptionMark option={option} />
       {option.description ? (
         <span className="min-w-0 flex-1 pr-px">
           <span className="block truncate">{option.label}</span>
