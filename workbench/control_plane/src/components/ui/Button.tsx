@@ -173,6 +173,12 @@ export type ButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "c
    * loading control has nowhere to go, so it draws as the disabled button.
    */
   href?: string;
+  /**
+   * Only with `href`: where the link opens. A link that leaves the app sets
+   * `target="_blank"` with `rel="noopener noreferrer"`. A button ignores both.
+   */
+  target?: React.HTMLAttributeAnchorTarget;
+  rel?: string;
   /** Extra classes for layout only — never for colour, radius or weight. */
   className?: string;
   children?: React.ReactNode;
