@@ -530,11 +530,12 @@ async def _talk(proc: Any, data: bytes, stream: _Stream) -> None:
 async def _reap(proc: Any) -> None:
     """Wait for a killed child, within :data:`_REAP_S`.
 
-    ``Process.wait()`` returns only when every pipe has closed. A stdout pipe
-    that nobody reads stays open, so the wait would not end until the reap
-    bound (found on Windows by the flood fence; ``test_the_reap_drains_the_pipe``
-    holds it). The rest of stdout is read and thrown away: the child is
-    dead, so that is at most one pipe buffer.
+    After a flood kill, stdout holds bytes that nobody read. On Windows,
+    ``Process.wait()`` then returns only when that pipe closes, so the wait
+    ran to the reap bound (the flood fence found it there). On Linux the
+    wait ends without it. So the rest of stdout is read and thrown away on
+    every system: the child is dead, so that ends.
+    ``test_the_reap_drains_the_pipe`` checks that the pipe is at its end.
     """
     async def _drain_and_wait() -> None:
         with contextlib.suppress(Exception):

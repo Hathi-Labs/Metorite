@@ -881,11 +881,12 @@ class TestTheAnswerCap:
         assert held and held[0].returncode is not None, "the child still runs"
         assert _slot_is_free()
 
-    async def test_the_reap_drains_the_pipe(self, ocr_on, monkeypatch) -> None:
-        """Verifier LOW-3. After a flood kill, stdout holds unread bytes, and
-        ``Process.wait()`` returns only when every pipe has closed. The reap
-        reads the rest and throws it away. Without that drain, the wait runs
-        to the reap bound, set high here, and the read takes 30 s."""
+    async def test_the_reap_drains_the_pipe(self, ocr_on, monkeypatch, spawned) -> None:
+        """Verifier LOW-3. After a flood kill, stdout holds unread bytes. The
+        reap reads the rest and throws it away, so the pipe closes. On
+        Windows, ``Process.wait()`` then hangs without the drain, to the reap
+        bound that is set high here. On Linux the wait does not hang, so the
+        fence also checks the drain itself: the pipe is at its end."""
         monkeypatch.setattr(ocr, "_MAX_ANSWER_BYTES", 1024 * 1024)
         monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 60.0)
         monkeypatch.setattr(ocr, "_REAP_S", 30.0)
@@ -893,6 +894,7 @@ class TestTheAnswerCap:
         start = time.monotonic()
         assert await ocr.ocr_bounded(_image(["x"], "PNG"), ".png") == ocr._FAILED
         assert time.monotonic() - start < 10, "the reap waited for its bound"
+        assert spawned and spawned[0].stdout.at_eof(), "the reap left bytes in the pipe"
 
 
 # ── 10. The blocking path ───────────────────────────────────────────────────
