@@ -336,6 +336,9 @@ UPDATE pm_activities SET organization_id = (SELECT id FROM organization WHERE sl
 UPDATE pm_agent_run_activities SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE pm_agent_run_strands SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE pm_agent_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
