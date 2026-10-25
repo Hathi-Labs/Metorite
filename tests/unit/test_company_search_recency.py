@@ -511,7 +511,7 @@ class TestTheToolAnswer:
         assert cst.search_company_dated.__name__ == "search_company"
         assert cst.search_company_dated.__tool_risk__ == TOOL_ANNOTATIONS["search_company"]
         params = inspect.signature(cst.search_company_dated).parameters
-        assert list(params) == ["query", "apps", "after"]
+        assert list(params) == ["query", "apps", "after", "verified_only"]
         assert list(inspect.signature(cst.search_company).parameters) == ["query", "apps"]
 
 
@@ -686,3 +686,123 @@ class TestSearchedNamesOnlyAppsThatRan:
         assert "crm" not in answer["searched"]
         assert "artifacts" not in answer["searched"]
         assert "knowledge" in answer["searched"]
+
+
+# ── KB-AI-4: the care flag and "verified only" ──────────────────────────────
+
+def _page_hit(page_id: str, review_at: str | None, owner: str | None) -> dict[str, Any]:
+    return {
+        "page_id": page_id, "space_id": "s-1", "space_name": "Company",
+        "title": f"Page {page_id}", "heading_path": None, "text": "words",
+        "score": 0.03, "updated_at": "2026-10-05T00:00:00+00:00",
+        "href": f"/knowledge/pages/{page_id}", "review_at": review_at,
+        "owner_email": owner,
+    }
+
+
+@pytest.fixture()
+def flagged(apps, monkeypatch):  # noqa: F811 — a fixture
+    """Three Knowledge hits: expired+owned, current+owned, current+unowned.
+
+    The fake records the ``verified_only`` it gets, and the gap calls."""
+    import gateway.routes.knowledge.search as kb_search
+
+    soon = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    past = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    apps.verified = []
+    apps.gaps = []
+    apps.empty = False
+
+    async def _pages(**kw: Any) -> dict[str, Any]:
+        apps.verified.append(kw.get("verified_only"))
+        hits = [] if kw.get("verified_only") and apps.empty else [
+            _page_hit("old", past, "a@x.test"),
+            _page_hit("new", soon, "a@x.test"),
+            _page_hit("anon", soon, None),
+        ]
+        return {"query": kw["q"], "degraded": True, "hits": hits}
+
+    monkeypatch.setattr(kb_search, "search_pages", _pages)
+    monkeypatch.setattr(
+        company, "_note_gap", lambda bg, user, words, n: apps.gaps.append(n))
+    return apps
+
+
+class TestTheCareFlag:
+    def test_an_expired_page_carries_the_flag_and_the_date(self, flagged, recency):
+        recency(True)
+        hits = {h["id"]: h for h in run(member("knowledge"))["hits"]}
+        assert hits["old"]["flag"] == "expired"
+        assert hits["old"]["review_at"]
+        assert "flag" not in hits["new"] and "review_at" not in hits["new"]
+        assert hits["anon"]["flag"] == "unowned"
+
+    def test_the_other_apps_keep_nine_keys(self, world, recency):
+        recency(True)
+        for hit in run(member(*ALL))["hits"]:
+            if hit["app"] != "knowledge":
+                assert len(hit) == 9 and "flag" not in hit
+
+    def test_the_tool_prints_the_flag(self, flagged, recency):
+        recency(True)
+        text_out = cst.format_answer(run(member("knowledge")), dated=True)
+        lines = {ln.split("»")[0]: ln for ln in text_out.splitlines()
+                 if ln.startswith("- «")}
+        day = (datetime.now(UTC) - timedelta(days=3)).date()
+        assert lines["- «Page old"].endswith(f" [review overdue since {day}]")
+        assert lines["- «Page anon"].endswith(" [no owner]")
+        assert not lines["- «Page new"].endswith("]")
+
+    def test_the_undated_tool_prints_nothing_new(self):
+        body = {"hits": [{"app": "knowledge", "kind": "page", "id": "k", "title": "T",
+                          "hint": "H", "snippet": "", "when": None, "href": "/k",
+                          "flag": "expired", "review_at": "2026-01-01T00:00:00+00:00"}]}
+        assert "overdue" not in cst.format_answer(body)
+        assert "overdue" in cst.format_answer(body, dated=True)
+
+    def test_off_the_answer_is_kr1s_and_verified_is_ignored(self, flagged, recency):
+        recency(False)
+        plain = run(member("knowledge"))
+        asked = asyncio.run(company.company_search(
+            q="acme", apps=None, k=5, user=member("knowledge"), verified=True))
+        assert json.dumps(asked) == json.dumps(plain)
+        for hit in plain["hits"]:
+            assert "flag" not in hit and "review_at" not in hit
+        assert True not in flagged.verified
+
+
+class TestVerifiedOnly:
+    def test_it_reaches_the_source_only_with_recency_on(self, flagged, recency):
+        recency(True)
+        asyncio.run(company.company_search(
+            q="acme", apps=None, k=5, user=member("knowledge"), verified=True))
+        assert flagged.verified == [True]
+        flagged.verified.clear()
+        asyncio.run(company.company_search(
+            q="acme", apps=None, k=5, user=member("knowledge")))
+        assert flagged.verified == [False]
+
+    def test_no_gap_is_written_when_verified_is_set(self, flagged, recency):
+        recency(True)
+        flagged.empty = True
+        asyncio.run(company.company_search(
+            q="acme", apps=None, k=5, user=member("knowledge"), verified=True))
+        assert flagged.gaps == [None]
+        flagged.empty = False
+        asyncio.run(company.company_search(
+            q="acme", apps=None, k=5, user=member("knowledge")))
+        assert flagged.gaps[-1] == 3
+
+    def test_the_dated_tool_sends_verified_only_when_asked(self, monkeypatch):
+        seen: list[dict[str, Any]] = []
+
+        async def _get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+            seen.append(params)
+            return {"query": "x", "hits": [], "searched": [], "skipped": []}
+
+        monkeypatch.setattr(cst, "_get", _get)
+        asyncio.run(cst.search_company_dated("pricing"))
+        asyncio.run(cst.search_company_dated("pricing", verified_only=True))
+        assert "verified" not in seen[0]
+        assert seen[1]["verified"] == "true"
+        assert list(inspect.signature(cst.search_company).parameters) == ["query", "apps"]

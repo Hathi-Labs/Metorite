@@ -772,6 +772,50 @@ def test_every_person_keyed_cascade_child_is_reported_on_one_side_or_other(
     )
 
 
+#: WS-61 KC-1a (review P1). The person-keyed tables under the connection
+#: registry, and the one function of the purge that deletes each. The registry
+#: may be named in ``connections/store.py`` only, so the purge reaches it
+#: through ``store.delete`` and never through ``_PURGE_DELETES``.
+_PURGED_THROUGH_THE_REGISTRY = {
+    "integration_connections": "sources.purge_member_sources (store.delete)",
+    "kb_sources": "the cascade of that delete (migration 300)",
+}
+
+
+def test_a_member_keyed_table_under_the_registry_cannot_be_forgotten() -> None:
+    """The sibling of the rule above, for the tables ``_PURGE_DELETES`` cannot name.
+
+    ``_blast_radius`` starts from ``_PURGE_DELETES``, and the connection
+    registry is never on it (``test_crm_connection.py`` keeps its name in the
+    store). So a member-keyed table that hangs off the registry is invisible
+    to the rule above. KC-1a shipped that shape: ``kb_sources`` carries
+    ``owner_email`` under ``integration_connections``, and the first purge
+    left the leaver's Drive token and tree behind.
+
+    This test reads the schema. Each person-keyed table in the cascade of the
+    registry must be named in ``_PURGED_THROUGH_THE_REGISTRY``, and the purge
+    body must reach ``sources.purge_member_sources``. A migration that adds a
+    new one fails here until its author decides how the purge takes it.
+    """
+    import inspect
+
+    from gateway.routes.admin import members
+    from gateway.routes.knowledge import sources
+
+    from tests.unit._schema_cascade import cascade_closure, columns_of
+
+    registry = "integration_" + "connections"
+    person_columns = {"user_id", "owner_email", "user_email", "member_email"}
+    keyed = {t for t in {registry, *cascade_closure(registry)}
+             if columns_of(t) & person_columns}
+    assert keyed == set(_PURGED_THROUGH_THE_REGISTRY), (
+        f"person-keyed tables under the registry: {sorted(keyed)}. Each needs a "
+        "purge path, named in _PURGED_THROUGH_THE_REGISTRY.")
+    assert "purge_member_sources(" in inspect.getsource(members.purge_knowledge_member)
+    assert "purge_knowledge_member(" in inspect.getsource(members.purge_member_rows)
+    assert "store.delete(" in inspect.getsource(sources.purge_member_sources)
+
+
 def test_the_cascade_map_is_the_one_the_schema_declares() -> None:
     """`_CREDENTIAL_CASCADES` is hand-maintained, so it is pinned.
 

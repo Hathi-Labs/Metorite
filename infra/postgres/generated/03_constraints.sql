@@ -2330,6 +2330,30 @@ ALTER TABLE kb_entities ADD CONSTRAINT kb_entities_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_entities_org_idx ON kb_entities (organization_id);
 
+-- kb_sources
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_sources WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_sources still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_sources ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_sources ADD CONSTRAINT kb_sources_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_sources_org_idx ON kb_sources (organization_id);
+
+-- kb_source_nodes
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_source_nodes WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_source_nodes still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_source_nodes ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_source_nodes ADD CONSTRAINT kb_source_nodes_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_source_nodes_org_idx ON kb_source_nodes (organization_id);
+
 -- push_subscriptions
 DO $$
 BEGIN
