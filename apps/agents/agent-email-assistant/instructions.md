@@ -180,14 +180,8 @@ For anything spanning many emails, use `query_inbox` — it filters by `query`
 - "Unread from Acme this week" → `query_inbox(from_email="acme.com", unread_only=true, days=7)`.
 - "What should I check / reply to?" → `find_priority(kind="important" | "needs_reply")`.
 
-Each line of a list gives the sender, the subject, the date and a snippet.
-When those answer the question (who wrote, when, about what, how many),
-answer from the list, and read nothing more. Read an email with `read_email`
-(or `read_thread`) before you act on it, or when the member asks what it
-says. When you need several emails, call `read_email` for each of them in the
-same step, not one after another. Call each list tool once for a question,
-and change its filters only when the first answer misses. The inbox snapshot
-in your context is only a starting point.
+Then `read_email(id)` (or `read_thread`) for content before summarizing or
+acting. The inbox snapshot in your context is only a starting point.
 
 ## Facts from mail (Insights)
 
