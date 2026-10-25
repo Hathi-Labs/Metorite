@@ -724,6 +724,122 @@ export interface WaitingReport {
     p90_hours: number | null;
   };
   max_rows: number;
+  /**
+   * WS-27bn RA-2. The three totals added on the server, for the KPI tile. A
+   * task that waits in two ways counts two times. Absent before RA-2.
+   */
+  waiting_total?: number;
+  /** WS-27bn RA-2. The age of the oldest wait in hours, or null for none. */
+  oldest_hours?: number | null;
+}
+
+/** WS-27bn RA-1. The done tasks of a window, by finish label. */
+export interface ActorSplit {
+  agent_finished: number;
+  agent_assisted: number;
+  person: number;
+}
+
+/**
+ * WS-27bn RA-2. One week of `actor_series`: each label, the two groups and
+ * the total, all added on the server. `agents` is `agent_finished` plus
+ * `agent_assisted`, and `people` is `person`.
+ */
+export interface ActorWeek extends ActorSplit {
+  week_start: string;
+  agents: number;
+  people: number;
+  completed: number;
+}
+
+/** WS-27bn RA-2. The cycle time of one group. A median is null, never 0. */
+export interface ActorCycleGroup {
+  completed: number;
+  /** The `agent_assisted` tasks of the group. Always 0 for people. */
+  assisted: number;
+  measured: number;
+  median_hours: number | null;
+  p90_hours: number | null;
+}
+
+/** WS-27bn RA-2. One agent of a member, with its finishes of the window. */
+export interface MemberAgent {
+  agent: string;
+  client_via: string | null;
+  agent_finished: number;
+  agent_assisted: number;
+  total: number;
+}
+
+/**
+ * WS-27bn RA-2. The agent finishes of one member (§6.8 E2). `member` is
+ * null for the in-app agents, which work for no member. The server sorts
+ * the rows by name, never by count (§6.8 E1).
+ */
+export interface AgentMember {
+  member: string | null;
+  member_name: string | null;
+  total: number;
+  agents: MemberAgent[];
+}
+
+/** WS-27bn RA-2. "Who did the work", as `WhoDidTheWorkPanel` takes it. */
+export interface WhoDidTheWorkReport {
+  period_start: string;
+  period_end: string;
+  actor_summary: string;
+  actor_series: ActorWeek[];
+  actor_split: ActorSplit;
+  agent_members: AgentMember[];
+  agent_members_total?: number;
+  hidden_people?: number;
+  /** The last week of the series is the running week. */
+  current_week_partial: boolean;
+}
+
+/**
+ * WS-27bn RA-2. The figures of the Overview's KPI strip that no section
+ * holds (`analytics_agents.kpis_body`). Only a preview with `kpis: true`
+ * carries them.
+ */
+export interface KpisReport {
+  runs: {
+    /** False while `agent_runs_enabled` is off. Then every count is 0. */
+    on: boolean;
+    working: number;
+    silent: number;
+    failed_today: number;
+    silent_after_minutes: number;
+    members: { member: string; member_name: string | null; working: number; silent: number }[];
+    hidden_people?: number;
+  };
+  merge: {
+    days: number;
+    merged: number;
+    closed: number;
+    /** Merged over merged plus closed, 0 to 1, or null when none closed. */
+    rate: number | null;
+    merged_before: number;
+    closed_before: number;
+    rate_before: number | null;
+    trend: "up" | "down" | "flat" | null;
+  };
+  time: {
+    finished: number;
+    run_tasks: number;
+    median_hours: number | null;
+    total_hours: number | null;
+    basis: string;
+  };
+  cost: {
+    /** Always null until usage capture (SW-20) exists. Never 0. */
+    per_task: number | null;
+    source: string | null;
+    known_tasks: number;
+    finished: number;
+    share: number | null;
+    reason: string;
+  };
 }
 
 /** WS-27bn R3d — the three reasons a person needs help. */
@@ -964,6 +1080,10 @@ export interface ThroughputReport {
   /** The last bucket is the current week, and the week is not over. */
   current_week_partial: boolean;
   summary: Partial<Omit<ThroughputWeek, "week_start">>;
+  /** WS-27bn RA-2. A report's section only: the split of people and agents. */
+  actor_cycle?: { people: ActorCycleGroup; agents: ActorCycleGroup };
+  /** WS-27bn RA-2. The one sentence of the split (§6.8 E5), from the server. */
+  actor_summary?: string;
 }
 
 export interface FinishedProject {
@@ -1118,6 +1238,11 @@ export interface ReportStub {
 /** What `POST /projects/reports/preview` answers: a render with a stub. */
 export type PreviewReportBody = Omit<RenderedReportBody, "report"> & {
   report: ReportStub;
+  /**
+   * WS-27bn RA-2. The KPI strip's own figures. Only the Overview asks for
+   * them (`kpis: true`), so a saved report and the builder never get them.
+   */
+  kpis?: KpisReport;
 };
 
 /** What `GET /projects/reports/{id}/render` answers. */
@@ -1142,6 +1267,15 @@ export interface RenderedReportBody {
       }[];
       total_completed: number;
       total_cancelled: number;
+      /** WS-27bn RA-1. Who finished `total_completed`, by label. */
+      actor_split?: ActorSplit;
+      /** WS-27bn RA-2. "Who did the work": its sentence, weeks and members. */
+      actor_summary?: string;
+      actor_series?: ActorWeek[];
+      agent_members?: AgentMember[];
+      agent_members_total?: number;
+      /** WS-27bn RA-2. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     throughput?: {
       /**
@@ -1157,6 +1291,11 @@ export interface RenderedReportBody {
       p90_hours?: number | null;
       no_start?: number;
       cancelled?: number;
+      /** WS-27bn RA-1. Who finished `completed`, by label. */
+      actor_split?: ActorSplit;
+      /** WS-27bn RA-2. The median and the p90 of people and of agents. */
+      actor_cycle?: { people: ActorCycleGroup; agents: ActorCycleGroup };
+      actor_summary?: string;
     };
     /**
      * WS-27bn R3a. Opt-in. The outlook route's own body, for the report's
@@ -1844,6 +1983,8 @@ export const projectsApi = {
     project_id: string | null;
     name: string;
     config: ReportConfig;
+    /** WS-27bn RA-2. The Overview asks for its KPI strip. */
+    kpis?: boolean;
   }) =>
     call<PreviewReportBody>("reports/preview", {
       method: "POST",

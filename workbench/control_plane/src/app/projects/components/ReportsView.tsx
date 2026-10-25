@@ -80,6 +80,7 @@ import {
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
 import { answerLine, waitingLists, waitingRowCount } from "../lib/waiting";
+import { WHO_DID_THE_WORK, overviewTiles, whoDidTheWorkShown } from "../lib/kpiStrip";
 import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
@@ -109,6 +110,7 @@ import {
   stuckPanelData,
   throughputPanelData,
   waitingPanelData,
+  whoDidTheWorkPanelData,
 } from "../lib/reportPanels";
 import {
   AS_OF_TODAY,
@@ -211,6 +213,7 @@ import {
   StuckPanel,
   ThroughputPanel,
   WaitingPanel,
+  WhoDidTheWorkPanel,
 } from "./AnalyticsPanels";
 import { ReportFileButtons } from "./ReportFileButtons";
 import SpaceSummary from "./SpaceSummary";
@@ -465,6 +468,11 @@ export function RenderedBody({
       node
     );
   const tiles = reportTiles(sections);
+  // WS-27bn RA-2 (§6.8 B). The live Overview draws the six tiles of its KPI
+  // strip when the server sent them. A saved report keeps its four tiles.
+  const strip = grid ? overviewTiles({ ...body, sections }) : [];
+  // §6.8 B. "Who did the work" replaces "What we finished" for one project.
+  const who = grid && whoDidTheWorkShown({ ...body, sections });
   const tone = { done: done.text, late: late.text };
   // §6.6 D item 3. Every chosen section is clear: one calm card, and no row
   // for each section.
@@ -484,7 +492,25 @@ export function RenderedBody({
         </header>
       )}
 
-      {tiles.length > 0 && (
+      {strip.length > 0 ? (
+        // Six tiles divide by 2, 3 and 6, so no tile sits alone on a row.
+        <div
+          className="grid grid-cols-2 gap-2 sm:grid-cols-3 2xl:grid-cols-6"
+          role="group"
+          aria-label="Key figures"
+        >
+          {strip.map((t) => (
+            <Stat
+              key={t.key}
+              label={t.label}
+              display={t.display}
+              detail={t.detail}
+              tone={t.tone ? tone[t.tone] : undefined}
+              title={t.title}
+            />
+          ))}
+        </div>
+      ) : tiles.length > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {tiles.map((t) => (
             <Stat
@@ -522,6 +548,33 @@ export function RenderedBody({
           "finished",
           sectionIsClear("finished", sections.finished) ? (
           <ClearRow sectionKey="finished" title="What we finished" />
+        ) : who ? (
+          <SectionFrame
+            sectionKey="finished"
+            fill={grid}
+            table={
+              <Table title={WHO_DID_THE_WORK} count={sections.finished.actor_series?.length ?? 0}>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {sections.finished.actor_summary}
+                </p>
+                <ul className="space-y-0.5">
+                  {(sections.finished.actor_series ?? []).map((w) => (
+                    <Row
+                      key={w.week_start}
+                      name={`Week of ${w.week_start}`}
+                      value={w.completed}
+                      aside={`${w.people} people · ${w.agents} agents`}
+                      title={`${w.completed} finished in the week of ${w.week_start}: ${w.people} by people, ${w.agents} by agents`}
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="who did the work">
+              <WhoDidTheWorkPanel data={whoDidTheWorkPanelData(sections.finished, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
         ) : (
           <SectionFrame
             sectionKey="finished"
@@ -1241,7 +1294,14 @@ export function ReportBuilder({
   const [ctl] = useState(() =>
     createPreviewController<PreviewReportBody>({
       initial: initialPreview,
-      fetch: ({ project_id, config }) => projectsApi.previewReport({ project_id, name: "", config }),
+      // WS-27bn RA-2. The Overview asks for the figures of its KPI strip.
+      fetch: ({ project_id, config }) =>
+        projectsApi.previewReport({
+          project_id,
+          name: "",
+          config,
+          ...(mode === "reportsOverview" ? { kpis: true } : {}),
+        }),
       now: () => Date.now(),
       errorMessage: (e) => message(e, "The preview could not be drawn."),
     })
