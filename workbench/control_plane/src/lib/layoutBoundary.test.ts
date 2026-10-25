@@ -271,7 +271,9 @@ describe("every report panel renders inside its own boundary (WS-27bm S12, WS-27
     expect(view, "RenderedBody moved: point this scan at it").not.toBe("");
   });
 
-  it("renders the eleven panels", () => {
+  // WS-27bn RA-2 adds `WhoDidTheWorkPanel`, which replaces `FinishedPanel`
+  // in the Overview of one project. It gets its own boundary too.
+  it("renders the twelve panels", () => {
     expect(panels.map((m) => m[1]).sort()).toEqual([
       "CapacityPanel",
       "ConflictsPanel",
@@ -284,6 +286,7 @@ describe("every report panel renders inside its own boundary (WS-27bm S12, WS-27
       "StuckPanel",
       "ThroughputPanel",
       "WaitingPanel",
+      "WhoDidTheWorkPanel",
     ]);
   });
 

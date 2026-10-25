@@ -867,11 +867,20 @@ def _window(skip_current_week: bool) -> tuple[str, str]:
     Monday, which no `created_at` can reach. It is written anyway, so the
     query states its own period instead of implying one.
     """
-    back = 1 if skip_current_week else 0
-    last = f"({_WEEK_NOW} - make_interval(weeks => {back}))"
+    last = last_week_sql(skip_current_week)
     start = f"(({last} - make_interval(weeks => :weeks - 1)) AT TIME ZONE 'UTC')"
     end = f"(({last} + interval '1 week') AT TIME ZONE 'UTC')"
     return start, end
+
+
+def last_week_sql(skip_current_week: bool) -> str:
+    """The Monday of the last week in the window, in UTC, with no time zone.
+
+    :func:`_window` reads it, and so does the week spine of WS-27bn RA-2's
+    ``actor_series``. So the spine and the window name the same weeks.
+    """
+    back = 1 if skip_current_week else 0
+    return f"({_WEEK_NOW} - make_interval(weeks => {back}))"
 
 
 #: The dashboard's window start. Kept as a name because three docstrings and
@@ -1265,10 +1274,15 @@ def finish_labels_sql(
     Throughput and Finished count. A cancelled task gets no label.
     ``finished_at`` is the completion the window counts, which bounds the
     done move that the label reads.
+
+    WS-27bn RA-2 reads two more columns: ``hours`` (the cycle time of
+    ``cyc``) for the people and agents split of "How long it took", and
+    ``done_at`` (the done move) for the member of an agent finish.
     """
     return (
         f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
         f" SELECT c.task_id AS task_id, c.finished_at AS finished_at,"
+        f"        c.hours AS hours, fm.done_at AS done_at,"
         f"        {finish_label_sql()} AS label"
         f"   FROM cyc c{finish_actor_join('c.task_id', 'c.finished_at')}"
         f"  WHERE c.to_category = :done_cat"

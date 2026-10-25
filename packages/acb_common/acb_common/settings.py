@@ -503,6 +503,13 @@ class Settings(BaseSettings):
     # Google scope, so outside the test users a flip waits for the Google
     # verification. A flip is the owner's. Fence: tests/unit/test_kb_flags.py.
     knowledge_source_google: str = ""
+    # WS-61 KC-3 (knowledge_curation.md §17). The organization ids whose ready
+    # file sources the sync loop reads, in the grammar of `knowledge_orgs`.
+    # `*` is each org. It needs `knowledge_sources` too. Empty, the default,
+    # means no organization: `start_kb_sync()` starts no task. The one reader
+    # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_sync: str = ""
 
     reach_enabled: bool = False
     reach_orgs: str = ""
@@ -700,6 +707,18 @@ class Settings(BaseSettings):
     # tests/unit/test_company_search_recency.py.
     context_recency: bool = False
 
+    # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
+    #
+    # ON gives the orchestrator `keep_correction` and `drop_correction` and
+    # their persona line. Each turn of the member's own chat then lists the
+    # corrections and limits that the member set in it, and each delegated
+    # task carries them. OFF leaves the tool list, the persona and every
+    # prompt byte-identical. The one reader is
+    # `acb_skills.chat_constraints.chat_constraints_enabled`. AGENT-SAFE: it
+    # spends nothing and sends nothing out (one_assistant_context.md §4).
+    # Fence: tests/unit/test_chat_constraints.py.
+    chat_constraints: bool = False
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between
@@ -759,6 +778,13 @@ class Settings(BaseSettings):
     # 🔴 OWNER-GATE on production: to add an agent changes what a live
     # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
     ai_tier_routing: str = ""
+    # The covered agents whose `auto` chat turns run with the model's thinking
+    # OFF (`reasoning_effort: "none"`, chat speed 2026-10-25). A comma list of
+    # agent names, or `*`. Empty means OFF. A Thinking or Max turn, and a
+    # `plan`, `analysis` or `code` turn, keep thinking. The one reader is
+    # `acb_skills.tier_policy.reasoning_off`, and it fails closed. Fence:
+    # tests/unit/test_reasoning_off.py.
+    ai_reasoning_off_agents: str = ""
 
     # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
     #
