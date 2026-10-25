@@ -292,6 +292,19 @@ MANIFEST: tuple[Route, ...] = (
     # WS-64 OP-6c (D-OP-9, 2026-10-23): a card names the person and the task, and
     # the route writes one in-app notification. It sends no mail.
     Route("POST", "/projects/tasks/{task_id}/nudge", "nudge_task", "C"),
+    # ── reminders.py (WS-66 RM-1, D114) ──────────────────────────────────
+    # The member's private reminders (calendar_events_reminders.md §5.8).
+    # Each tool is PLANNED for RM-3. A write acts at once with Undo, as
+    # D-CF-5 allows for a reversible write on the member's own record, so
+    # the writes are class B. The route finds a reminder by its OWNER only.
+    Route("GET", "/projects/my/reminders", "list_reminders", "A"),
+    Route("POST", "/projects/my/reminders", "set_reminder", "B"),
+    Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/resolve", "resolve_reminder", "B"),
+    Route("POST", "/projects/my/reminders/{reminder_id}/snooze", "reschedule_reminder", "B"),
+    Route(
+        "POST", "/projects/my/reminders/{reminder_id}/reschedule", "reschedule_reminder", "B"
+    ),
     # ── planning.py ──────────────────────────────────────────────────────
     Route("POST", "/projects/my/calendar/plan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
@@ -498,6 +511,14 @@ PLANNED: dict[str, str] = {
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
+    # WS-66 RM-1 (2026-10-25) added the reminder routes. RM-3 builds the
+    # tools of calendar_events_reminders.md §5.8. `reschedule_reminder`
+    # reaches both member moves, the snooze and the reschedule.
+    "list_reminders": "WS-66 RM-3, the reminder tools",
+    "set_reminder": "WS-66 RM-3, the reminder tools",
+    "update_reminder": "WS-66 RM-3, the reminder tools",
+    "resolve_reminder": "WS-66 RM-3, the reminder tools",
+    "reschedule_reminder": "WS-66 RM-3, the reminder tools",
 }
 
 
@@ -1056,9 +1077,42 @@ _TASK_PREFIX_REASON = (
     "(page.tsx saveSpaceSettings), and no route checks a prefix."
 )
 
+#: WS-66 RM-1. The reminder routes have no chat tool until RM-3 builds the
+#: four tools of `calendar_events_reminders.md` §5.8. ⚠️ These rows belong in
+#: FIELD_PLANNED, but that table needs a gap row in
+#: `projects_agent_parity.md` §3.3, and RM-1 does not edit that spec. RM-3
+#: moves each row to SENDS as it builds the tool that sends the field.
+_REMINDER_TOOLS_REASON = (
+    "No chat tool sends it until WS-66 RM-3 builds the reminder tools "
+    "(calendar_events_reminders.md §5.8). RM-3 moves this row to SENDS."
+)
+_REMINDER_BODY = (
+    "title", "fire_at", "tz", "kind", "notes", "subject_kind", "subject_id",
+    "estimate_minutes", "important",
+)
+
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # ── reminders (WS-66 RM-1) ───────────────────────────────────────────
+    ("GET", "/projects/my/reminders"): {
+        name: _REMINDER_TOOLS_REASON for name in ("state", "start", "end", "limit")
+    },
+    ("POST", "/projects/my/reminders"): {
+        name: _REMINDER_TOOLS_REASON for name in _REMINDER_BODY
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
+        name: _REMINDER_TOOLS_REASON for name in _REMINDER_BODY
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {
+        "action": _REMINDER_TOOLS_REASON,
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
+        name: _REMINDER_TOOLS_REASON for name in ("fire_at", "tz")
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
+        name: _REMINDER_TOOLS_REASON for name in ("fire_at", "tz")
+    },
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
