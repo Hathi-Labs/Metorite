@@ -700,6 +700,19 @@ class Settings(BaseSettings):
     # tests/unit/test_company_search_recency.py.
     context_recency: bool = False
 
+    # ── OCR of a scanned file (WS-67 OA-3, D116) ────────────────────────────
+    #
+    # ON lets the one attachment reader read a PDF with no text layer, and a
+    # .png, .jpg or .jpeg image, by OCR in a child process. The chat tool
+    # `read_attachment` and the email text route both get it, because both
+    # call `acb_skills.attachment_tools.parse_bounded`. OFF leaves both paths
+    # byte-identical: a scan answers "no text" and an image is refused. The
+    # one reader is `acb_skills.attachment_ocr.ocr_enabled`. The flip is the
+    # agent's under the dev-phase `enforcement-flip` grant. It spends CPU on
+    # the box and no money, and it sends nothing to a third party. Fence:
+    # tests/unit/test_attachment_ocr.py.
+    attachment_ocr: bool = False
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between

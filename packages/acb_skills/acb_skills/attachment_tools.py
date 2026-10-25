@@ -49,8 +49,16 @@ fix round 2).
 route and this tool share the one pool and the :data:`MAX_PARSES` slots. A
 second pool would double the bound on parse threads.
 
-Fences: ``tests/unit/test_read_attachment.py``, ``tests/unit/test_attachment_formats.py`` and
-``tests/unit/test_email_attachment_text.py``.
+**OCR** (WS-67 OA-3, behind ``ATTACHMENT_OCR``, default off). With the flag
+on, :func:`parse_bounded` hands a PDF with no text layer and a ``.png``,
+``.jpg`` or ``.jpeg`` image to :mod:`acb_skills.attachment_ocr`. That module
+reads the file in ONE child process at a time, with the scrubbed env, and
+both callers get it through this one function. This tool then starts a
+process, which H-229 did not. With the flag off it starts none, and its
+answers are byte-identical.
+
+Fences: ``tests/unit/test_read_attachment.py``, ``tests/unit/test_attachment_formats.py``,
+``tests/unit/test_email_attachment_text.py`` and ``tests/unit/test_attachment_ocr.py``.
 """
 from __future__ import annotations
 
@@ -67,7 +75,7 @@ from typing import Any
 
 from acb_common import get_logger
 
-from acb_skills import attachment_text, safe_open
+from acb_skills import attachment_ocr, attachment_text, safe_open
 from acb_skills.agent_paths import state_root, upload_dir_rel
 from acb_skills.attachment_text import (
     KIND_NAMES,
@@ -78,6 +86,7 @@ from acb_skills.attachment_text import (
     AttachmentRefused,
     Extracted,
     extract_text,
+    text_state,
     unsupported_sentence,
 )
 from acb_skills.write_artifact import artifact_context
@@ -278,7 +287,23 @@ async def parse_bounded(data: bytes, suffix: str) -> Extracted | str:
     a refusal, a busy pool, a parse past its deadline and a bug each return
     one sentence. The answer comes at most ``DEADLINE_SECONDS +
     _WAIT_MARGIN`` seconds after the call, 22 s by default.
+
+    With ``ATTACHMENT_OCR`` on (WS-67 OA-3), an image of
+    ``attachment_ocr.IMAGE_SUFFIXES`` and a PDF whose text layer gives no
+    words go to :func:`acb_skills.attachment_ocr.ocr_bounded`, after the text
+    parse has freed its slot. That adds at most ``OCR_SLOT_WAIT_S +
+    OCR_TIMEOUT_S`` seconds. With the flag off, nothing here changes.
     """
+    if attachment_ocr.image_suffix(suffix):
+        return await attachment_ocr.ocr_bounded(data, suffix)
+    got = await _parse_text(data, suffix)
+    if isinstance(got, Extracted) and attachment_ocr.wants_ocr(got):
+        return await attachment_ocr.ocr_bounded(data, ".pdf", text_layer=got)
+    return got
+
+
+async def _parse_text(data: bytes, suffix: str) -> Extracted | str:
+    """The text parse of :func:`parse_bounded`, on the bounded pool."""
     if not _SLOTS.acquire(blocking=False):
         return "Another file is being read now. Try again in a moment."
     slot = _Slot()
@@ -313,6 +338,8 @@ def _render(name: str, got: Extracted, offset: int) -> str:
     end = min(start + MAX_OUTPUT_CHARS, total)
     count = f"{got.read} {got.unit}{'' if got.read == 1 else 's'}"
     kind = _KINDS.get(got.kind, got.kind)
+    if got.ocr:
+        kind = f"{kind}, read by OCR"
     lines = [f"Attachment: {name} ({kind}, {count} read)", _DATA_NOTE, "---"]
     lines.append(got.text[start:end] if total else "(This file holds no text.)")
     lines.append("---")
@@ -367,6 +394,8 @@ async def read_attachment(name: str, offset: int = 0) -> str:
     if isinstance(got, str):
         _log.info("attachment.refused", kind=where.suffix, size=len(found.data))
         return f"I could not read {where.name}. {got}"
+    if got.ocr and text_state(got) != "words":
+        return f"I could not read {where.name}. {attachment_ocr.NO_WORDS_SENTENCE}"
     _log.info(
         "attachment.read", kind=where.suffix, size=len(found.data), chars=len(got.text),
         legacy=found.legacy, stopped=got.stopped,
@@ -437,8 +466,13 @@ def _where(name: object, *, readable: bool = True) -> _Where | str:
     # whole needs no parser, so the list of readable kinds does not bind it.
     if readable and suffix in LEGACY_OFFICE:
         return f"I cannot read {clean}. {unsupported_sentence(suffix)}"
-    if readable and suffix not in SUPPORTED_SUFFIXES:
-        return f"I cannot read {clean}. {SUPPORTED_SENTENCE} Ask the member for one of those."
+    if readable and suffix not in SUPPORTED_SUFFIXES and not attachment_ocr.image_suffix(suffix):
+        # With OCR on (WS-67 OA-3) the sentence names the image kinds too.
+        images = f" {attachment_ocr.IMAGES_SENTENCE}" if attachment_ocr.ocr_enabled() else ""
+        return (
+            f"I cannot read {clean}. {SUPPORTED_SENTENCE}{images} "
+            "Ask the member for one of those."
+        )
     agent, instance = _store_key(Path(str(root)), ctx.get("instance"))
     try:
         folder = upload_dir_rel(instance, session_id)

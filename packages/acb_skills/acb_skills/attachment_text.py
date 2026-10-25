@@ -80,6 +80,10 @@ The rules, each with a test in ``tests/unit/test_read_attachment.py``,
 
 The module reads no file and no context. ``acb_skills.attachment_tools``
 finds the file, and calls :func:`extract_text` on its bytes.
+
+OCR (WS-67 OA-3) is NOT here, and this module stays free of processes. A
+scanned PDF gives page heads and no words here. :func:`text_state` says so,
+and ``acb_skills.attachment_ocr`` then reads the pages in a child process.
 """
 from __future__ import annotations
 
@@ -125,6 +129,7 @@ __all__ = [
     "AttachmentRefused",
     "Extracted",
     "extract_text",
+    "text_state",
     "unsupported_sentence",
 ]
 
@@ -276,7 +281,11 @@ class AttachmentRefused(ValueError):
 
 @dataclass(frozen=True)
 class Extracted:
-    """The text of one file, and how much of the file it covers."""
+    """The text of one file, and how much of the file it covers.
+
+    ``ocr`` is true when ``acb_skills.attachment_ocr`` read the file by OCR
+    (WS-67 OA-3). This module never sets it.
+    """
 
     text: str
     kind: str
@@ -284,6 +293,28 @@ class Extracted:
     read: int
     total: int | None
     stopped: bool
+    ocr: bool = False
+
+
+#: A ``[Page N]`` head line of :func:`_page_text`.
+_PAGE_HEAD = re.compile(r"\[Page \d+\]")
+
+
+def text_state(got: Extracted) -> str:
+    """``"words"``, ``"none"`` (no text) or ``"unread"`` (no page parsed).
+
+    The ONE rule for "this file gave no text". A line of a PDF is a
+    ``[Page N]`` head, :data:`PAGE_UNREADABLE` or words. A PDF of heads only
+    has no text layer, and a PDF of placeholders only is ``"unread"``, never
+    words. The email text route and ``attachment_ocr`` both ask it.
+    """
+    if got.kind != "pdf":
+        return "words" if got.text.strip() else "none"
+    lines = [line.strip() for line in got.text.splitlines()]
+    body = [line for line in lines if line and not _PAGE_HEAD.fullmatch(line)]
+    if any(line != PAGE_UNREADABLE for line in body):
+        return "words"
+    return "unread" if body else "none"
 
 
 _TOO_SLOW = (

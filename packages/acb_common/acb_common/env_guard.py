@@ -161,6 +161,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # text that every member's assistant reads, so only the operator writes
     # it (company_context.md §11).
     "CONTEXT_RECENCY",
+    # WS-67 OA-3: OCR of a scanned file. It starts a child process for each
+    # scan that any member reads, so only the operator writes it
+    # (one_assistant_context.md §4).
+    "ATTACHMENT_OCR",
     # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
     # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
     "MY_DAY_CACHE",

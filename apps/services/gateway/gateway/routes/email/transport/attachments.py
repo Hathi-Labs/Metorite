@@ -29,10 +29,10 @@ from acb_common.tenant_redis import (
     key,
     organization_scope,
 )
+from acb_skills import attachment_ocr
 from acb_skills.attachment_text import (
-    PAGE_UNREADABLE,
     SUPPORTED_SUFFIXES,
-    Extracted,
+    text_state,
     unsupported_sentence,
 )
 from acb_skills.attachment_tools import parse_bounded
@@ -384,9 +384,6 @@ _SUFFIX_OF_MIME = {
 _IMAGE_SUFFIXES = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic",
 })
-#: A ``[Page N]`` head line of ``attachment_text._page_text``. A PDF whose
-#: lines are all heads has no text layer.
-_PAGE_HEAD = re.compile(r"^\[Page \d+\]$")
 #: A UUID as hex digits and hyphens only, the forms that asyncpg also reads.
 #: ``uuid.UUID`` also takes braces and ``urn:uuid:``, and asyncpg refuses both.
 _UUID_TEXT = re.compile(r"[0-9A-Fa-f-]+")
@@ -492,26 +489,26 @@ def _no_fetch(row: Any) -> tuple[str, str] | None:
     if suffix == ".eml" or mime == "message/rfc822":
         return "unsupported", _ATTACHED_MAIL_REASON
     if suffix in _IMAGE_SUFFIXES or (not named and mime.startswith("image/")):
+        # WS-67 OA-3: with ATTACHMENT_OCR on, a .png, .jpg or .jpeg image
+        # is fetched and read by OCR. Any other image kind says so.
+        if attachment_ocr.image_suffix(named, mime):
+            return None
+        if attachment_ocr.ocr_enabled():
+            return "no_text", attachment_ocr.OTHER_IMAGE_SENTENCE
         return "no_text", _IMAGE_REASON
     if suffix not in SUPPORTED_SUFFIXES:
         return "unsupported", unsupported_sentence(suffix)
     return None
 
 
-def _text_state(got: Extracted) -> str:
-    """``"words"``, ``"none"`` (no text) or ``"unread"`` (no page parsed).
+def _cache_namespace() -> str:
+    """The tenant Redis namespace of the text cache.
 
-    A line of a PDF is a ``[Page N]`` head, the reader's placeholder for a page
-    that did not parse (``attachment_text.PAGE_UNREADABLE``), or words. A PDF
-    of placeholders only is ``"unread"``, never words (review round 1).
+    With ``ATTACHMENT_OCR`` on (WS-67 OA-3) the answers live under their own
+    name. So a "no text" answer that was cached before the flag turned on
+    does not hide the OCR text for the hour of its TTL.
     """
-    if got.kind != "pdf":
-        return "words" if got.text.strip() else "none"
-    lines = [line.strip() for line in got.text.splitlines()]
-    body = [line for line in lines if line and not _PAGE_HEAD.match(line)]
-    if any(line != PAGE_UNREADABLE for line in body):
-        return "words"
-    return "unread" if body else "none"
+    return "email-att-text-ocr" if attachment_ocr.ocr_enabled() else "email-att-text"
 
 
 def _canonical_uuid(value: str) -> str | None:
@@ -638,7 +635,7 @@ async def _cached_text(org_id: str | None, row: Any) -> AttachmentTextModel | No
         return None
     try:
         with organization_scope(org_id):
-            raw = await get_tenant_redis().get(key("email-att-text", str(row.id)))
+            raw = await get_tenant_redis().get(key(_cache_namespace(), str(row.id)))
         if not raw:
             return None
         data = json.loads(raw)
@@ -658,7 +655,7 @@ async def _remember_text(org_id: str | None, row: Any, answer: AttachmentTextMod
             {**{f: getattr(answer, f) for f in _CACHED_FIELDS}, "whole": True})
         with organization_scope(org_id):
             await get_tenant_redis().setex(
-                key("email-att-text", str(row.id)), ATTACHMENT_CACHE_TTL_SECS, payload,
+                key(_cache_namespace(), str(row.id)), ATTACHMENT_CACHE_TTL_SECS, payload,
             )
     except Exception:
         pass
@@ -730,17 +727,20 @@ async def attachment_text(
         if len(got.content) > MAX_TEXT_INPUT_BYTES:
             raise HTTPException(status_code=413, detail=_too_large(MAX_TEXT_INPUT_BYTES))
 
-        suffix = _text_suffix(row.filename, row.mime_type)
+        # An image with no name suffix has an OCR suffix by its type (OA-3).
+        suffix = (_text_suffix(row.filename, row.mime_type)
+                  or attachment_ocr.image_suffix("", row.mime_type or "") or "")
         parsed = await parse_bounded(got.content, suffix)
         if isinstance(parsed, str):
             # Not cached: a busy pool and a deadline pass with time.
             _log.info("attachment_text.refused", aid=aid, kind=suffix, size=len(got.content))
             return AttachmentTextModel(**base, kind="unreadable", reason=parsed)
-        state = _text_state(parsed)
+        state = text_state(parsed)
         if state == "unread":
             answer = AttachmentTextModel(**base, kind="unreadable", reason=_NO_PAGE_REASON)
         elif state == "none":
-            answer = AttachmentTextModel(**base, kind="no_text", reason=_NO_TEXT_REASON)
+            reason = attachment_ocr.NO_WORDS_SENTENCE if parsed.ocr else _NO_TEXT_REASON
+            answer = AttachmentTextModel(**base, kind="no_text", reason=reason)
         else:
             full = parsed.text
             _log.info("attachment_text.read", aid=aid, kind=parsed.kind,
