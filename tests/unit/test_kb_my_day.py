@@ -25,7 +25,9 @@ Mutations this file catches (R7):
 * the author test goes -> ``TestTheSql::test_the_new_page_read_skips_the_viewers_own_page``;
 * the cap of 5 goes -> ``TestTheSql::test_the_new_page_read_is_capped``;
 * the bump moves before the commit -> ``TestTheBump``;
-* the hash loses the manage grant -> ``TestTheCacheKey``.
+* the hash loses the manage grant -> ``TestTheCacheKey``;
+* ``review_at`` leaves ``state.STATE_FACTS`` -> ``TestTheStateOfAPageCard``;
+* the review cap goes -> ``TestOneSession::test_twelve_expired_pages_leave_room``.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ pytest.importorskip("gateway.routes.knowledge", reason="gateway not installed")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from gateway.routes.knowledge import core, maintenance, my_day, pages, proposals
-from gateway.routes.shell import cache, feed, feed_rank, needs
+from gateway.routes.shell import cache, feed, feed_rank, needs, state
 
 ROOT = Path(__file__).resolve().parents[2]
 ORG = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0001"
@@ -413,3 +415,82 @@ class TestTheDarkList:
         assert "knowledge" not in answer["sources"]
         assert ran == []
         assert not any(c["app"] == "knowledge" for c in answer["cards"])
+
+
+# ── The state of a page card (KB-9b fix round 1, F1) ────────────────────────
+
+class TestTheStateOfAPageCard:
+    CTX = state.Context(now=NOW, day=state.Day(tz=UTC))
+
+    def _card(self, kind: str, review_at: datetime) -> dict[str, Any]:
+        row = {"id": "p-1", "title": "Refund policy", "space": "Finance",
+               "review_at": review_at, "published_at": NOW - timedelta(hours=1)}
+        [card] = feed.build_cards([feed._page_signal(row, kind)], NOW, UTC, NOW.date())
+        return {**card, "state_fp": state.state_fp(card["signal_id"], card["facts"])}
+
+    def test_a_dismissed_review_card_returns_with_a_new_review_date(self) -> None:
+        first = self._card("doc_needs_review", NOW - timedelta(days=2))
+        dismissed = {"state": "dismissed", "kind": "doc_needs_review",
+                     "fingerprint": first["state_fp"]}
+        # The same date stays hidden.
+        assert state.decide(first, dismissed, self.CTX).visible is False
+        # The next review cycle, 180 days later, is a new card.
+        later = self._card("doc_needs_review", NOW + timedelta(days=178))
+        assert later["state_fp"] != first["state_fp"]
+        assert state.decide(later, dismissed, self.CTX).visible is True
+
+    def test_a_dismissed_new_page_card_does_not_hide_the_review_card(self) -> None:
+        shared = self._card("doc_shared_with_me", NOW - timedelta(days=2))
+        dismissed = {"state": "dismissed", "kind": "doc_shared_with_me",
+                     "fingerprint": shared["state_fp"]}
+        review = self._card("doc_needs_review", NOW - timedelta(days=2))
+        assert review["state_fp"] != shared["state_fp"]
+        assert state.decide(review, dismissed, self.CTX).visible is True
+
+    def test_only_the_page_kinds_carry_review_at(self) -> None:
+        assert "review_at" in state.STATE_FACTS
+        assert set(state.STATE_FACTS) == {
+            "due_at", "note_ids", "waiting_since", "message_id", "review_at"}
+
+
+# ── The review cap (F2), the cache key (F3) and the reads (F4) ──────────────
+
+class TestTheCapAndTheKey:
+    def test_twelve_expired_pages_leave_room(self, gates, world) -> None:
+        world.db = _Db([_page(n) for n in range(1, 13)], [_page(30)], [_gap_row()])
+        found = asyncio.run(feed._knowledge(_user("a@x.test", "knowledge:manage")))
+        kinds = [s.kind for s in found.signals()]
+        assert world.db.ran[0][1]["kb_limit"] == my_day.REVIEW_MAX == 10
+        assert "kb_gap" in kinds and "doc_shared_with_me" in kinds
+
+    def test_the_review_read_asks_for_ten_at_most(self, gates, world) -> None:
+        asyncio.run(my_day.read(_user("a@x.test"), gaps_on=False, limit=16))
+        [(sql, params)] = [(q, p) for q, p in world.db.ran if "review_at <= now()" in q]
+        assert params["kb_limit"] == 10 and "LIMIT :kb_limit" in sql
+
+    def test_the_hash_follows_the_org_switch_while_knowledge_is_listed(
+        self, gates, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(get_settings(), "my_day_providers", "knowledge")
+        member = _user("a@x.test")
+        on = cache.features_hash(member)
+        gates.knowledge_enabled = False
+        assert cache.features_hash(member) != on
+
+    def test_the_hash_ignores_the_switch_while_knowledge_is_unlisted(
+        self, gates, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(get_settings(), "my_day_providers", "")
+        member = _user("a@x.test")
+        on = cache.features_hash(member)
+        gates.knowledge_enabled = False
+        assert cache.features_hash(member) == on
+
+    def test_both_reads_name_the_live_published_page_rules(self, gates, world) -> None:
+        asyncio.run(my_day.read(_user("a@x.test"), gaps_on=False, limit=16))
+        reads = [sql for sql, _ in world.db.ran if "kb_pages" in sql]
+        assert len(reads) == 2
+        for sql in reads:
+            assert "p.state = 'published'" in sql
+            assert "s.kind <> 'me'" in sql
+            assert "s.archived_at IS NULL" in sql

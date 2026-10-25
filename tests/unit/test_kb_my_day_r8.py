@@ -188,3 +188,58 @@ async def test_the_read_opens_one_session(kb, app_engine, monkeypatch) -> None: 
     assert opened == ["kb"]
     kinds = {s.kind for s in found.signals()}
     assert kinds == {"doc_shared_with_me"}
+
+
+# ── F4: an archived page, an archived space and a me space give no card ─────
+
+async def test_an_archived_page_an_archived_space_and_a_me_space_give_no_new_card(
+        kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    writer = _principal(_address("w"), kb.org_a)
+    reader = _principal(_address("r"), kb.org_a)
+    team = await _space_for(kb, admin, writer)
+    live = await _page(kb, writer, team, "Live", BODY)
+    gone = await _page(kb, writer, team, "Archived page", BODY)
+    shelved_space = await _space(kb, admin, "Shelved", [
+        {"subject": "org", "level": "read"}, {"subject": writer.email, "level": "write"}])
+    shelved = await _page(kb, writer, shelved_space, "In a shelved space", BODY)
+    # The writer's own me space holds a published page that someone else wrote.
+    mine = await _ok(kb, reader, "POST", "/knowledge/pages",
+                     {"title": "Reader me page", "body_md": "private"}, status=201)
+    await _ok(kb, reader, "POST", f"/knowledge/pages/{mine['id']}/publish")
+    _sql(kb, "UPDATE kb_pages SET author_email = :a WHERE id = CAST(:p AS uuid)",
+         a=writer.email, p=mine["id"])
+    _sql(kb, "UPDATE kb_pages SET state = 'archived', archived_from_state = 'published', "
+             "archived_at = now() WHERE id = CAST(:p AS uuid)", p=gone)
+    _sql(kb, "UPDATE kb_spaces SET archived_at = now() WHERE id = CAST(:s AS uuid)",
+         s=shelved_space)
+
+    # The reader reads `live` only. The me page is the reader's own space.
+    assert _ids((await _read(kb, reader)).shared) == [live]
+    # A manager reads archived pages through the clause, and gets no card.
+    assert _ids((await _read(kb, admin)).shared) == [live]
+
+
+# ── F2: twelve expired pages give ten review cards and still the new page ───
+
+async def test_twelve_expired_pages_give_ten_review_rows_and_the_shared_card(
+        kb, app_engine) -> None:  # noqa: F811
+    from gateway.routes.shell import feed
+
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    owner = _principal(_address("o"), kb.org_a)
+    space = await _org_space(kb, admin)
+    for i in range(12):
+        pid = await _page(kb, admin, space, f"Old {i}", BODY)
+        _sql(kb, "UPDATE kb_pages SET owner_email = :o, author_email = :a, "
+                 "review_at = now() - make_interval(days => :d) WHERE id = CAST(:p AS uuid)",
+             o=owner.email, a=admin.email, d=i + 1, p=pid)
+    # Published a moment ago by someone else, and not past review.
+    fresh = await _page(kb, admin, space, "Fresh", BODY)
+    found = await _bound(kb, owner, lambda: feed._knowledge(owner))
+    kinds = [s.kind for s in found.signals()]
+    assert kinds.count("doc_needs_review") == 10
+    assert kinds.count("doc_shared_with_me") >= 1
+    assert f"knowledge:page:{fresh}" in [s.signal_id for s in found.signals()]

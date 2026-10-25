@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/knowledge_base.md`` §9 and §17 (the KB-9b row),
 ``my_day_feed.md`` §5.8 and MD-3.
 
-    read(user, gaps=...)    the rows of ``kb_gap``, ``doc_needs_review`` and
+    read(user, gaps_on=...)  the rows of ``kb_gap``, ``doc_needs_review`` and
                             ``doc_shared_with_me`` for the viewer
 
 **One session.** ``read`` opens ONE tenant session, and it reads the gaps,
@@ -41,8 +41,13 @@ from sqlalchemy import text
 
 #: The most ``doc_shared_with_me`` rows (OQ6).
 SHARED_MAX = 5
-#: How long a published page stays new, in hours (OQ5).
+#: The most ``doc_needs_review`` rows (OQ10). A dismissed card keeps its
+#: slot, so the cap leaves room for the gap and new-page cards.
+REVIEW_MAX = 10
+#: How long a published page stays new, in hours (OQ5). The card expires
+#: after the same time, and ``feed.py`` imports this value.
 NEW_HOURS = 24
+
 
 @dataclass(frozen=True)
 class Rows:
@@ -108,7 +113,7 @@ async def read(user: UserContext, *, gaps_on: bool, limit: int) -> Rows:
     if not viewer and not manager:
         return Rows()
     async with core._tenant_session() as db:
-        review = await _review_rows(db, user, limit) if viewer else []
+        review = await _review_rows(db, user, min(limit, REVIEW_MAX)) if viewer else []
         found = await gaps.my_day_rows_in(db, user, limit) if manager else []
         shared = await _shared_rows(db, user, SHARED_MAX) if viewer else []
     return Rows(review=review, gaps=found, shared=shared)

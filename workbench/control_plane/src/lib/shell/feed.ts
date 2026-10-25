@@ -986,7 +986,7 @@ const FEED_ONLY_MISSING: Readonly<Record<keyof typeof FEED_ONLY_APP_HREF, string
   crm: "follow-ups and deals",
   people: "news about colleagues",
   chat: "questions from the assistant",
-  knowledge: "unanswered questions",
+  knowledge: "pages to review, new pages and unanswered questions",
 };
 
 /**

@@ -159,6 +159,13 @@ def features_hash(user: Any) -> str:
 
         allowed = crm_org_allowed(getattr(user, "organization_id", None))
         held.append(f"crm_org={int(allowed)}")
+    if "knowledge" in listed:
+        # KB-9b: the Knowledge kill switch gates the `knowledge` source per
+        # org, as the CRM one does. Only while `knowledge` is listed.
+        from gateway.routes.knowledge.flags import knowledge_org_allowed
+
+        allowed = knowledge_org_allowed(getattr(user, "organization_id", None))
+        held.append(f"knowledge_org={int(allowed)}")
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 

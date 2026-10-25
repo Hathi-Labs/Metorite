@@ -1112,17 +1112,24 @@ and an answer each call `cache.bump_org_safe`.
 
 **KB-9b slice 1 as built (2026-10-26).** The source `knowledge` no longer
 names `knowledge:manage` as its `permission`, because a plain member gets the
-page cards. `Provider.hash_permission` holds the grant, and
-`cache.features_hash` reads it with `permission`, so there is one hash and the
-key still covers `knowledge:manage`. The gates moved into `_knowledge`.
-Knowledge off for the org raises `SourceAbsent` before any read. The gap read
-runs only with `KNOWLEDGE_GAPS` open and a manager. `my_day.read` reads the
-gaps, the expired pages and the new pages in one session. The order before the
-cut of 15 is review, then gaps, then shared. Both page kinds key on
-`knowledge:page:<id>`, so one page makes one card. The publish route and the
-accept of a page proposal call `cache.bump_org_safe` after the session closes.
-Fences: `tests/unit/test_kb_my_day.py` and `tests/unit/test_kb_my_day_r8.py`
-(R8). The restore of a page and a verify call no bump (OQ9).
+page cards. `Provider.hash_permission` holds the grant. `cache.features_hash`
+reads it with `permission`, so there is one hash and the key still covers
+`knowledge:manage`. While `knowledge` is listed, the hash also holds
+`knowledge_org=<0|1>`, as `crm_org` does for the CRM.
+
+The gates moved into `_knowledge`. Knowledge off for the org raises
+`SourceAbsent` before any read. The gap read runs only with `KNOWLEDGE_GAPS`
+open and a manager. `my_day.read` reads the gaps, the expired pages and the new
+pages in one session. The order before the cut of 15 is review, then gaps, then
+shared.
+
+Both page kinds key on `knowledge:page:<id>`, so one page makes one card.
+`review_at` is a state fact (`state.STATE_FACTS`). So a dismissed review card
+returns with the next review date, and a dismissed new-page card never hides
+the review card of the same page. The publish route and the accept of a page
+proposal call `cache.bump_org_safe` after the session closes. Fences:
+`tests/unit/test_kb_my_day.py` and `tests/unit/test_kb_my_day_r8.py` (R8). The
+restore of a page and a verify call no bump (OQ9).
 
 The decisions of slice 1:
 
@@ -1136,8 +1143,13 @@ The decisions of slice 1:
 - **OQ6.** At most 5 new-page cards, the newest first.
 - **OQ7.** `doc_needs_review` ranks 21 and `doc_shared_with_me` ranks 19, both
   in the group `fyi`. `kb_gap` stays at 20.
+- **OQ8.** Archived spaces and `me` spaces give no card. Both reads name
+  `s.archived_at IS NULL` and `s.kind <> 'me'`.
 - **OQ9.** The restore of a page and a verify may bump the cache, and slice 1
   adds neither.
+- **OQ10.** The review read returns 10 rows at most (`my_day.REVIEW_MAX`). A
+  dismissed review card keeps its slot among the 15, so the cap leaves room for
+  the gap and new-page cards.
 
 The feed is where insight lives, and the four kinds are deliberately dumb.
 A fifth kind that uses a model, "the handbook contradicts the CRM's price

@@ -522,7 +522,7 @@ class TestTheMyDayCard:
             raise AssertionError("no read with Knowledge off")
 
         monkeypatch.setattr(my_day, "read", read)
-        monkeypatch.setattr(gaps, "my_day_rows", read)
+        monkeypatch.setattr(gaps, "my_day_rows_in", read)
         with pytest.raises(needs.SourceAbsent):
             asyncio.run(feed._knowledge(_user("a@x.test", "knowledge:manage")))
 

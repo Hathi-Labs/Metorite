@@ -1054,14 +1054,12 @@ def _gap_signal(row: dict[str, Any]) -> Signal:
     )
 
 
-#: How long a new page stays a card, in hours (KB-9b OQ5).
-SHARED_CARD_HOURS = 24
-
-
 def _page_signal(row: dict[str, Any], kind: str) -> Signal:
     """``doc_needs_review`` or ``doc_shared_with_me``: one page. The title is
     the page title. The facts are the space and one time. No person name and
     no read count (KB-9b OQ2 to OQ4)."""
+    from gateway.routes.knowledge import my_day
+
     page_id = str(row["id"])
     title = str(row.get("title") or "").strip() or "(untitled)"
     href = f"/knowledge/pages/{page_id}"
@@ -1075,7 +1073,7 @@ def _page_signal(row: dict[str, Any], kind: str) -> Signal:
             acts=(link("review", "Review", href),), at=review_at,
         )
     published = row.get("published_at")
-    expires = published + timedelta(hours=SHARED_CARD_HOURS) if published else None
+    expires = published + timedelta(hours=my_day.NEW_HOURS) if published else None
     return Signal(
         signal_id=f"knowledge:page:{page_id}", app="knowledge", kind=kind,
         entity={"type": "page", "id": page_id, "label": title}, title=title,
