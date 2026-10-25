@@ -601,6 +601,184 @@ async def test_a_capped_reconcile_reads_explored_folders_and_deletes_nothing(
     assert phases and set(phases) == {"children"}, phases
 
 
+# ── Review round: a gone folder takes its descendants ───────────────────────
+
+async def test_a_trashed_folder_takes_its_descendants_gone(kc, app_engine) -> None:  # noqa: F811
+    """The feed reports a trashed folder as ONE event (reviewer P2, F3)."""
+    _assert_non_priv(app_engine)
+    files = [
+        *_tree("G1"),
+        {"id": "sub-G1", "name": "Sub", "parents": ["fold-G1"], "mimeType": FOLDER},
+        {"id": "y-G1", "name": "Deep.pdf", "parents": ["sub-G1"],
+         "mimeType": "application/pdf"},
+    ]
+    _ana, sid, feed = await _source(kc, "G1", files)
+    before = _nodes(kc, sid)
+    assert all(before[k].state == "live" for k in ("fold-G1", "file-G1", "sub-G1", "y-G1"))
+    feed.pages["spt-G1"] = {"newStartPageToken": "spt-G1b", "changes": [_trash("fold-G1")]}
+    out = await _run(kc, sid, "changes", feed)
+    assert out.status == "ok" and out.counts["gone"] == 4, out
+    after = _nodes(kc, sid)
+    for ext in ("fold-G1", "file-G1", "sub-G1", "y-G1"):
+        assert after[ext].state == "gone", f"{ext} outlived its trashed folder"
+        assert after[ext].id == before[ext].id, "a cascade deleted a row"
+    for ext in ("root-G1", "sd-G1", "deck-G1", "orph-G1"):
+        assert after[ext].state == "live", f"{ext} went gone with no reason"
+
+
+async def test_a_capped_reconcile_takes_the_nodes_below_a_vanished_folder(
+    kc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from gateway.kb_sync import discovery
+
+    monkeypatch.setattr(discovery, "NODE_CAP", 5)
+    monkeypatch.setattr(discovery, "LEVELS", 1)
+    _ana, sid, feed = await _source(kc, "C5")
+    with kc.admin_engine.begin() as c:  # a subtree below the unexplored folder
+        for ext, parent, kind in (("dir-C5", "fold-C5", "folder"), ("leaf-C5", "dir-C5", "file")):
+            c.execute(text(
+                "INSERT INTO kb_source_nodes (organization_id, source_id, ext_id, "
+                "parent_ext_id, kind, name, updated_at) VALUES (CAST(:o AS uuid), "
+                "CAST(:s AS uuid), :e, :p, :k, :e, now() - interval '1 day')"),
+                {"o": kc.org_a, "s": sid, "e": ext, "p": parent, "k": kind})
+    feed.google.files = [f for f in feed.google.files if f["id"] != "fold-C5"]
+    out = await _run(kc, sid, "reconcile", feed)
+    assert out.status == "ok", out
+    after = _nodes(kc, sid)
+    for ext in ("fold-C5", "dir-C5", "leaf-C5"):
+        assert after[ext].state == "gone", f"{ext} outlived its vanished folder"
+    assert after["deck-C5"].state == "live" and after["root-C5"].state == "live"
+
+
+# ── Review round: an uncapped source that grew past the cap ─────────────────
+
+async def test_an_uncapped_source_past_the_cap_becomes_capped_with_no_delete(
+    kc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from gateway.kb_sync import discovery
+
+    monkeypatch.setattr(discovery, "NODE_CAP", 6)
+    monkeypatch.setattr(discovery, "LEVELS", 1)
+    _ana, sid, feed = await _source(kc, "U1")
+    before = _nodes(kc, sid)
+    assert len(before) == 6 and all(v.explored for v in before.values()), "not flat"
+    feed.google.files += [
+        {"id": f"extra{i}-U1", "name": f"Extra {i}.pdf", "parents": ["root-U1"],
+         "mimeType": "application/pdf"} for i in (1, 2)]
+    out = await _run(kc, sid, "reconcile", feed)
+    assert out.status == "ok" and out.counts["over_cap"] is True, out
+    after = _nodes(kc, sid)
+    assert set(after) >= set(before), "the conversion deleted a node"
+    assert all(v.state == "live" for k, v in after.items() if k in before)
+    assert after["fold-U1"].explored is False, "a folder below the levels stayed explored"
+    assert after["root-U1"].explored and after["sd-U1"].explored
+    mark = _cursor(kc, sid, "reconcile").cursor_state
+    assert (json.loads(mark) if isinstance(mark, str) else mark) == {"capped": True}
+    # The next reconcile takes the capped path: children reads, and a gone sweep.
+    feed.calls.clear()
+    feed.google.files = [f for f in feed.google.files if f["id"] != "deck-U1"]
+    again = await _run(kc, sid, "reconcile", feed)
+    assert again.status == "ok" and "over_cap" not in again.counts, again
+    phases = {ph for verb, ph in feed.calls if verb == "discover"}
+    assert phases == {"children"}, phases
+    assert _nodes(kc, sid)["deck-U1"].state == "gone"
+
+
+# ── Review round: the consent race ──────────────────────────────────────────
+
+async def test_the_loop_waits_for_a_reconsent_and_runs_nothing(kc, app_engine) -> None:  # noqa: F811
+    """A re-consent holds the source row while it sets ``discovering``. The
+    loop's read waits for it, reads ``discovering`` and takes no lock."""
+    from gateway.kb_sync import engine
+
+    _assert_non_priv(app_engine)
+    _ana, sid, feed = await _source(kc, "W1")
+    done: dict[str, Any] = {}
+
+    def _loop() -> None:
+        async def go() -> Any:
+            async with tenant_engine_scope(_app_dsn(kc)):
+                return await engine.run_source(kc.org_a, sid, "changes", source=feed)
+        done["out"] = asyncio.run(go())
+        done["at"] = time.monotonic()
+
+    with app_engine.connect() as hold, hold.begin():
+        hold.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": kc.org_a})
+        hold.execute(text("UPDATE kb_sources SET state = 'discovering' "
+                          "WHERE id = CAST(:s AS uuid)"), {"s": sid})
+        worker = threading.Thread(target=_loop)
+        worker.start()
+        time.sleep(1.5)
+        assert "at" not in done, "the loop read the source past an open re-consent"
+        released = time.monotonic()
+    worker.join(30)
+    assert done.get("at", 0) >= released
+    assert done["out"].status == "skipped", done["out"]
+    assert feed.calls == [], "the loop called Google for a source in discovering"
+    assert [r.kind for r in _runs(kc, sid)] == ["discover"]
+
+
+# ── Review round: the retention sweep, and the provider flag ────────────────
+
+async def test_the_retention_sweep_keeps_50_runs_for_each_source(
+    kc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from acb_common import get_settings
+    from gateway.kb_sync import scheduler
+
+    monkeypatch.setattr(get_settings(), "knowledge_sync", "*", raising=False)
+    _ana, sid_a, _feed = await _source(kc, "P1")
+    bo = _principal(_address("bo"), kc.org_b)
+    sid_b = await _connect(kc, bo, email="bo-p2@kc3-g.test", account_id="P2")
+    insert = text(
+        "INSERT INTO kb_sync_runs (organization_id, source_id, kind, status, started_at, "
+        "finished_at) SELECT CAST(:o AS uuid), CAST(:s AS uuid), 'changes', 'ok', "
+        "now() - make_interval(mins => i), now() - make_interval(mins => i) "
+        "FROM generate_series(1, 60) AS i")
+    with kc.admin_engine.begin() as c:
+        c.execute(insert, {"o": kc.org_a, "s": sid_a})
+        c.execute(insert, {"o": kc.org_b, "s": sid_b})
+        running = str(c.execute(text(
+            "INSERT INTO kb_sync_runs (organization_id, source_id, kind, started_at) "
+            "VALUES (CAST(:o AS uuid), CAST(:s AS uuid), 'changes', "
+            "now() - interval '2 hours') RETURNING id"), {"o": kc.org_a, "s": sid_a}).scalar())
+    async with tenant_engine_scope(_app_dsn(kc)):
+        gone = await scheduler.prune_runs(kc.org_a)
+    # 62 rows: the discover run, 60 ended runs, and a running row older than
+    # all of them. The newest 50 stay, and so does the running row.
+    kept = _runs(kc, sid_a)
+    assert len(kept) == 51 and gone == 11, (len(kept), gone)
+    assert running in {str(r.id) for r in kept}, "the sweep deleted a running row"
+    with kc.admin_engine.connect() as c:
+        oldest = c.execute(text(
+            "SELECT min(started_at) > now() - interval '50 minutes' FROM kb_sync_runs "
+            "WHERE source_id = CAST(:s AS uuid) AND status <> 'running'"),
+            {"s": sid_a}).scalar()
+    assert oldest, "the sweep kept an old run and deleted a newer one"
+    assert len(_runs(kc, sid_b)) == 61, "the sweep of org A reached org B"
+
+
+async def test_the_loop_calls_no_google_for_an_org_off_the_google_flag(
+    kc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from acb_common import get_settings
+    from gateway.kb_sync import scheduler
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "knowledge_sync", "*", raising=False)
+    scheduler._stopping.clear()
+    _ana, _sid, feed = await _source(kc, "F1")
+    feed.pages["spt-F1"] = {"newStartPageToken": "spt-F1b", "changes": []}
+    monkeypatch.setattr(settings, "knowledge_source_google", kc.org_b, raising=False)
+    async with tenant_engine_scope(_app_dsn(kc)):
+        assert await scheduler.run_tick(lambda: feed) == 0
+    assert feed.calls == [], "the loop called Google for an org off KNOWLEDGE_SOURCE_GOOGLE"
+    monkeypatch.setattr(settings, "knowledge_source_google", kc.org_a, raising=False)
+    async with tenant_engine_scope(_app_dsn(kc)):
+        assert await scheduler.run_tick(lambda: feed) == 1
+    assert feed.listed() == ["spt-F1"]
+
+
 # ── A disconnect wins the race ──────────────────────────────────────────────
 
 def _race(p: Any, app_eng: Any, sid: str, sql: str, params: dict[str, Any]) -> None:

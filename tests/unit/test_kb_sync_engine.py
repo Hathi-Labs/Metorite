@@ -314,6 +314,9 @@ _NAMES = {
     engine._SOURCE_OK_SQL: "source_ok",
     engine._SOURCE_ERROR_SQL: "source_error",
     engine._SOURCE_RECONNECT_SQL: "source_reconnect",
+    engine._CASCADE_GONE_SQL: "cascade",
+    engine._CAP_SQL: "cap",
+    runs._PRUNE_SQL: "prune",
     runs._TAKEOVER_SQL: "takeover",
     runs._PREEMPT_SQL: "preempt",
     runs._INSERT_SQL: "insert_run",
@@ -355,6 +358,12 @@ class World:
         self.disconnected = False
         self.lost = False
         self.status: list[tuple[str, str | None]] = []
+        #: The params of each cascade and each cap statement.
+        self.cascades: list[dict[str, Any]] = []
+        self.caps: list[dict[str, Any]] = []
+        #: The capped relist: the explored folders, and what each sweep took.
+        self.explored: list[str] = []
+        self.swept: dict[str, list[str]] = {}
 
     @contextlib.asynccontextmanager
     async def session(self, org: str):
@@ -432,6 +441,20 @@ class _Db:
 
     def _source_ok(self, p: dict[str, Any]) -> _Result:
         return _Result([SimpleNamespace(connection_id="conn-1")])
+
+    def _explored_folders(self, p: dict[str, Any]) -> _Result:
+        return _Result([SimpleNamespace(ext_id=f) for f in self.w.explored])
+
+    def _gone_folder(self, p: dict[str, Any]) -> _Result:
+        return _Result([SimpleNamespace(ext_id=i) for i in self.w.swept.get(p["folder"], [])])
+
+    def _cascade(self, p: dict[str, Any]) -> _Result:
+        self.w.cascades.append(dict(p))
+        return _Result(rowcount=0)
+
+    def _cap(self, p: dict[str, Any]) -> _Result:
+        self.w.caps.append(dict(p))
+        return _Result(rowcount=1)
 
     def _now(self, p: dict[str, Any]) -> _Result:
         return _Result([SimpleNamespace(at=datetime.now(UTC))])
@@ -537,7 +560,8 @@ class TestTheEnginePage:
         txns = _txns(world.events)
         pages = [t for t in txns if "upsert_cursor" in t]
         assert pages == [
-            ["upsert_changes", "last_new", "remove", "upsert_cursor", "progress", "commit"],
+            ["upsert_changes", "last_new", "remove", "cascade", "upsert_cursor", "progress",
+             "commit"],
             ["upsert_changes", "last_new", "upsert_cursor", "progress", "commit"],
         ], txns
         assert [json.loads(s["state"])["page_token"] for s in world.stored] == ["t1", "t2"]
@@ -649,6 +673,49 @@ class TestTheEnginePage:
         names = [e[1] for e in world.events if e[0] == "sql"]
         assert "explored_folders" in names and "gone" not in names
 
+    def test_a_removal_cascades_in_its_page_and_spares_the_page_upserts(self, world) -> None:
+        adapter = FakeAdapter(world, {"t0": _page(_node("keep"), removed=("dir", "f"),
+                                                  start="t1")})
+        assert _run(runs.KIND_CHANGES, adapter).status == runs.STATUS_OK
+        [c] = world.cascades
+        assert (c["ids"], c["kept"], c["before"]) == (["dir", "f"], ["keep"], None)
+        page = next(t for t in _txns(world.events) if "upsert_cursor" in t)
+        assert page.index("remove") < page.index("cascade") < page.index("upsert_cursor")
+
+    def test_a_page_with_no_removal_runs_no_cascade(self, world) -> None:
+        _run(runs.KIND_CHANGES, FakeAdapter(world, {"t0": _page(_node("a"), start="t1")}))
+        assert world.cascades == []
+
+    def test_a_capped_sweep_cascades_with_the_relist_start(self, world) -> None:
+        world.capped = True
+        world.explored = ["root-1"]
+        world.swept = {"root-1": ["old-dir"]}
+        assert _run(runs.KIND_RECONCILE, FakeAdapter(world, {})).status == runs.STATUS_OK
+        [c] = world.cascades
+        assert c["ids"] == ["old-dir"] and c["kept"] == [] and c["before"] is not None
+        sweep = next(t for t in _txns(world.events) if "gone_folder" in t)
+        assert sweep[:3] == ["gone_folder", "cascade", "progress"]
+
+    def test_an_uncapped_relist_past_the_cap_becomes_capped(self, world, monkeypatch) -> None:
+        monkeypatch.setattr(discovery, "NODE_CAP", 1)
+        adapter = FakeAdapter(world, {}, tree=(_node("a"), _node("b")))
+        out = _run(runs.KIND_RECONCILE, adapter)
+        assert out.status == runs.STATUS_OK and out.counts["over_cap"] is True
+        assert [c["levels"] for c in world.caps] == [discovery.LEVELS]
+        names = [e[1] for e in world.events if e[0] == "sql"]
+        assert "gone" not in names, "a partial listing marked nodes gone"
+        [mark] = [s for s in world.stored if s["kind"] == runs.CURSOR_RECONCILE]
+        assert json.loads(mark["state"]) == {"capped": True}
+
+    def test_a_capped_source_keeps_its_mark(self, world) -> None:
+        world.capped = True
+        _run(runs.KIND_RECONCILE, FakeAdapter(world, {}))
+        [mark] = [s for s in world.stored if s["kind"] == runs.CURSOR_RECONCILE]
+        assert json.loads(mark["state"]) == {"capped": True}
+
+    def test_the_lock_read_takes_a_share_lock(self) -> None:
+        assert engine._SOURCE_SQL.rstrip().endswith("FOR SHARE")
+
     def test_the_loop_runs_no_discover_kind(self, world) -> None:
         with pytest.raises(ValueError):
             _run(runs.KIND_DISCOVER, FakeAdapter(world, {}))
@@ -744,10 +811,11 @@ class TestTheDueRule:
         assert runs.STALE_AFTER_SECONDS == 900
 
 
-def _flags(monkeypatch: pytest.MonkeyPatch, sync: str) -> None:
+def _flags(monkeypatch: pytest.MonkeyPatch, sync: str, google: str = "*") -> None:
     settings = get_settings()
     for name, value in (("knowledge_enabled", True), ("knowledge_orgs", "*"),
-                        ("knowledge_sources", "*"), ("knowledge_sync", sync)):
+                        ("knowledge_sources", "*"), ("knowledge_sync", sync),
+                        ("knowledge_source_google", google)):
         monkeypatch.setattr(settings, name, value, raising=False)
 
 
@@ -785,8 +853,19 @@ def loop(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(scheduler, "tenant_session", session)
     monkeypatch.setattr(runs, "due_rows", due_rows)
     monkeypatch.setattr(engine, "run_source", run_source)
+    pruned: list[str] = []
+
+    async def prune(db: Any, org: str, keep: int = runs.RUNS_KEPT) -> int:
+        assert db.org == org, "the sweep ran in another org's session"
+        pruned.append(org)
+        if "prune" in failing:
+            raise RuntimeError("the sweep broke")
+        return 0
+
+    monkeypatch.setattr(runs, "prune", prune)
     scheduler._stopping.clear()
-    yield SimpleNamespace(sessions=sessions, ran=ran, rows=rows, failing=failing, listed=listed)
+    yield SimpleNamespace(sessions=sessions, ran=ran, rows=rows, failing=failing, listed=listed,
+                          pruned=pruned)
     scheduler._stopping.clear()
 
 
@@ -795,10 +874,42 @@ def _adapter() -> Any:
 
 
 class TestTheTick:
+    def test_an_org_off_the_google_flag_gets_no_google_call(self, monkeypatch, loop) -> None:
+        _flags(monkeypatch, "*", google=OTHER)
+        assert asyncio.run(scheduler.run_tick(_adapter)) == 1
+        assert loop.ran == [(OTHER, SOURCE, runs.KIND_CHANGES)]
+        _flags(monkeypatch, "*", google="")
+        loop.ran.clear()
+        assert asyncio.run(scheduler.run_tick(_adapter)) == 0 and loop.ran == []
+
+    def test_a_provider_with_no_flag_is_off(self) -> None:
+        from gateway.routes.knowledge import flags as kb_flags
+
+        assert kb_flags.knowledge_provider_allowed(ORG, "onedrive") is False
+
+    def test_the_retention_sweep_runs_for_each_named_org_in_its_session(
+        self, monkeypatch, loop,
+    ) -> None:
+        _flags(monkeypatch, OTHER)
+        asyncio.run(scheduler.run_tick(_adapter))
+        assert loop.pruned == [OTHER]
+        assert loop.sessions == [OTHER, OTHER], "the sweep shared the due read's session"
+
+    def test_a_failed_sweep_does_not_stop_the_tick(self, monkeypatch, loop) -> None:
+        _flags(monkeypatch, "*")
+        loop.failing.add("prune")
+        assert asyncio.run(scheduler.run_tick(_adapter)) == 2
+        assert loop.pruned == [ORG, OTHER]
+
+    def test_the_due_read_takes_the_newest_run_on_the_index(self) -> None:
+        sql = runs._DUE_SQL
+        assert "ORDER BY r.started_at DESC LIMIT 1" in sql and "max(" not in sql
+        assert runs.RUNS_KEPT == 50
+
     def test_a_flag_off_org_opens_no_session(self, monkeypatch, loop) -> None:
         _flags(monkeypatch, OTHER)
         assert asyncio.run(scheduler.run_tick(_adapter)) == 1
-        assert loop.sessions == [OTHER] and loop.ran == [(OTHER, SOURCE, runs.KIND_CHANGES)]
+        assert set(loop.sessions) == {OTHER} and loop.ran == [(OTHER, SOURCE, runs.KIND_CHANGES)]
 
     def test_no_org_named_lists_nothing_and_opens_nothing(self, monkeypatch, loop) -> None:
         _flags(monkeypatch, "")

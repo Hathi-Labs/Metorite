@@ -9,18 +9,27 @@ DUE when all of these hold:
 
 * ``KNOWLEDGE_SYNC`` names the org, and Knowledge and its sources serve it
   (``flags.knowledge_sync_allowed``);
+* the flag of the source's provider names the org too
+  (``flags.knowledge_provider_allowed``), so an org off
+  ``KNOWLEDGE_SOURCE_GOOGLE`` gets no Google call;
 * ``kb_sources.state`` is ``ready``. A source that is ``discovering``,
   ``failed``, ``needs_reconnect`` or ``disconnected`` is skipped, so a dead
   token gets no provider call until a member connects again;
 * no running row of the source has a heartbeat newer than 15 minutes;
-* the last ``changes`` or ``reconcile`` run of the source ended
+* the newest ``changes`` or ``reconcile`` run of the source ended
   :data:`INTERVAL_SECONDS` ago or more, or never ran.
 
 A due source runs a ``reconcile`` when its reconcile cursor is absent or older
-than :data:`RECONCILE_SECONDS`, and a ``changes`` run otherwise. Up to
-:data:`CONCURRENCY` sources run at the same time, and each source is
+than :data:`RECONCILE_SECONDS`, and a ``changes`` run otherwise. Each
+gateway worker runs its own loop. In one worker, up to :data:`CONCURRENCY`
+sources run at the same time. Across the workers each source is
 single-flight by its run lock. One failure for one source or one org is
 logged, and the loop goes on.
+
+**The retention sweep.** Each tick, each org that the flag names gets
+``runs.prune`` in its own tenant session: each source keeps its newest
+:data:`runs.RUNS_KEPT` ended runs. A failure there is logged, and the tick
+goes on.
 
 **Dark by default.** With ``KNOWLEDGE_SYNC`` empty, :func:`start_kb_sync`
 starts no task, logs once and returns False. ``main.py`` calls the start and
@@ -66,7 +75,8 @@ INTERVAL_SECONDS = 15 * 60
 #: How often a source gets the slim relist.
 RECONCILE_SECONDS = 24 * 60 * 60
 
-#: Sources that run at the same time, across the box.
+#: Sources that run at the same time in ONE gateway worker. Each worker runs
+#: its own loop, and the run lock keeps each source single-flight across them.
 CONCURRENCY = 3
 
 #: Time to wait for a run in progress when the gateway stops.
@@ -114,7 +124,22 @@ async def due_sources(org: str) -> list[tuple[str, str, str]]:
     async with tenant_session(org) as db:
         rows = await runs.due_rows(db, org)
     return [(r.source_id, r.provider, kind) for r in rows
-            if (kind := due_kind(r)) is not None]
+            if flags.knowledge_provider_allowed(org, r.provider)
+            and (kind := due_kind(r)) is not None]
+
+
+async def prune_runs(org: str) -> int:
+    """The retention sweep of one org, in its own tenant session. A flag-off
+    org opens no session. A failure is logged and never raised."""
+    if not flags.knowledge_sync_allowed(org):
+        return 0
+    try:
+        async with tenant_session(org) as db:
+            return await runs.prune(db, org)
+    except Exception as exc:  # the sweep never stops a tick
+        _log.warning("knowledge.sync_prune_failed", organization_id=org,
+                     error=type(exc).__name__)
+        return 0
 
 
 async def due_work() -> list[tuple[str, str, str, str]]:
@@ -124,6 +149,7 @@ async def due_work() -> list[tuple[str, str, str, str]]:
     if not flags.knowledge_sync_named():
         return work
     for org in await _organization_ids():
+        await prune_runs(org)
         try:
             work.extend((org, *item) for item in await due_sources(org))
         except Exception as exc:  # one org must not hide the others
@@ -245,6 +271,7 @@ __all__ = [
     "due_sources",
     "due_work",
     "loop_running",
+    "prune_runs",
     "run_tick",
     "start_kb_sync",
     "stop_kb_sync",

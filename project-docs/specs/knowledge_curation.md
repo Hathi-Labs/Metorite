@@ -28,10 +28,30 @@ minutes for each ready source, and relists it slim once a day. It keeps
 `kb_source_nodes` current as metadata, and reads no text. KC-5 compares
 `content_hash` with its own hash.
 
+**The audit narrowed the KC-3 acceptance.** The supervisor accepted the
+narrowing on 2026-10-25. The text re-index and the rule of one embed for each
+changed chunk moved to KC-5. The `source_sync_failed` card moved to KB-9b.
+
 A discovery ends a live loop run of its source, so a consent never leaves a
-source in `discovering`. Two checks against a live Google account are open.
-The first is the HTTP code of a dead page token. The second is the order of
-the change feed on a real drive.
+source in `discovering`. The loop reads the source row `FOR SHARE`, so a
+re-consent and the loop take turns. ⚠️ Discovery takes the run lock and a
+start token on each connect, also when `KNOWLEDGE_SYNC` is empty. So
+`KNOWLEDGE_SOURCES` alone writes `kb_sync_runs` and `kb_sync_cursors` rows.
+
+The review round of 2026-10-25 added four rules:
+
+- A gone folder takes each live node below it, to a fixed point, in the same
+  transaction. The feed reports a trashed folder as one event.
+- An uncapped source that grows past 50 000 nodes becomes capped, and the loop
+  deletes no node. Each folder below the walk levels becomes `explored = false`,
+  and the reconcile cursor keeps the mark `capped`.
+- Each tick keeps the newest 50 runs of each source, and the due check reads
+  the newest run on the index.
+- The loop reads a source only when the flag of its provider names the org.
+
+Two checks against a live Google account are open. The first is the HTTP code
+of a dead page token. The second is the order of the change feed on a real
+drive.
 
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias

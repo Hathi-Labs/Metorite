@@ -18,6 +18,14 @@ Three fences, each with a self-test that proves it is not vacuous:
    statement after it runs with no tenant.
 3. **One unbound read.** ``scheduler._organization_ids`` holds exactly one
    ``get_db()``, and no other function of the package calls ``get_db``.
+4. **Each tenant table names the org** (R7 fence ``kb-sync-org-predicate``,
+   verifier F4). Each ``*_SQL`` constant of ``gateway/kb_sync/`` that reads
+   or writes ``kb_sources``, ``kb_source_nodes``, ``kb_sync_cursors`` or
+   ``kb_sync_runs`` carries an ``organization_id`` predicate for EACH such
+   reference: ``<alias>.organization_id =`` for an alias, and a bare
+   ``organization_id =`` for a reference with no alias. An INSERT names
+   ``CAST(:org AS uuid)``. Row level security is the first wall. This is the
+   second, for a session with row level security off.
 
 And one runtime fence: with ``KNOWLEDGE_SYNC`` empty, a tick of the loop opens
 no session at all, on any opener.
@@ -167,6 +175,87 @@ def test_one_unbound_read_and_only_in_the_scheduler() -> None:
 def test_the_get_db_count_is_not_vacuous() -> None:
     tree = ast.parse("async def a():\n    db = await get_db()\n    db2 = await get_db()\n")
     assert _get_db_calls(tree) == {"a": 2}
+
+
+# ── Each tenant table names the org (R7 fence kb-sync-org-predicate) ────────
+
+import re  # noqa: E402
+
+_TENANT = r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs)"
+#: A read or a write of a tenant table, and its alias. SQL words are upper
+#: case here, and an alias is lower case, so a keyword is never an alias.
+_REF = re.compile(rf"\b(FROM|JOIN|UPDATE|DELETE FROM)\s+{_TENANT}\b(?:\s+(?:AS\s+)?([a-z]\w*))?")
+_INSERT = re.compile(rf"\bINSERT INTO\s+{_TENANT}\b")
+_BARE_PRED = re.compile(r"(?<![\w.])organization_id\s*=")
+_ORG = "CAST(:org AS uuid)"
+
+
+def org_predicate_findings(name: str, sql: str) -> list[str]:
+    """What *sql* reads or writes of a tenant table with no org predicate."""
+    out: list[str] = []
+    refs: dict[str | None, int] = {}
+    for m in _REF.finditer(sql):
+        if m.group(1) == "UPDATE" and sql[max(0, m.start() - 3):m.start()] == "DO ":
+            continue  # ON CONFLICT ... DO UPDATE SET names no table
+        refs[m.group(3)] = refs.get(m.group(3), 0) + 1
+    for alias, n in refs.items():
+        if alias is None:
+            preds = len(_BARE_PRED.findall(sql))
+        else:
+            preds = len(re.findall(rf"\b{re.escape(alias)}\.organization_id\s*=", sql))
+        if preds < n:
+            out.append(f"{name}: {n} reference(s) as {alias or 'no alias'} and "
+                       f"{preds} organization_id predicate(s)")
+    if _INSERT.search(sql) and _ORG not in sql:
+        out.append(f"{name}: an INSERT that does not name {_ORG}")
+    if (refs or _INSERT.search(sql)) and _ORG not in sql:
+        out.append(f"{name}: no {_ORG} anywhere, so nothing binds the org of the caller")
+    return out
+
+
+def _sql_constants() -> dict[str, str]:
+    from gateway.kb_sync import discovery, engine, runs
+
+    out: dict[str, str] = {}
+    for mod in (discovery, engine, runs, scheduler):
+        for attr in dir(mod):
+            value = getattr(mod, attr)
+            if attr.endswith("_SQL") and isinstance(value, str):
+                out[f"{mod.__name__.rsplit('.', 1)[-1]}.{attr}"] = value
+    return out
+
+
+def test_the_org_fence_sees_the_sql() -> None:
+    names = _sql_constants()
+    for must in ("runs.UPSERT_CURSOR_SQL", "engine._CASCADE_GONE_SQL", "engine._CAP_SQL",
+                 "runs._PRUNE_SQL", "runs._DUE_SQL", "discovery.UPSERT_NODES_SQL"):
+        assert must in names, must
+    assert sum(1 for s in names.values() if re.search(_TENANT, s)) >= 25
+
+
+def test_each_tenant_table_reference_names_the_org() -> None:
+    """R7 fence ``kb-sync-org-predicate``."""
+    findings = [f for name, sql in _sql_constants().items()
+                for f in org_predicate_findings(name, sql)]
+    assert findings == [], findings
+
+
+@pytest.mark.parametrize(("sql", "found"), [
+    # The mutation of verifier F4: the guard of the cursor write lost its org.
+    ("INSERT INTO kb_sync_cursors (organization_id) SELECT CAST(:org AS uuid) "
+     "WHERE EXISTS (SELECT 1 FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+     "FOR KEY SHARE OF s) ON CONFLICT (organization_id, kind) DO UPDATE SET x = 1", True),
+    ("SELECT 1 FROM kb_sync_runs WHERE source_id = :s", True),
+    ("DELETE FROM kb_sync_runs d WHERE d.source_id = :s AND organization_id = 1", True),
+    ("UPDATE kb_source_nodes n SET state = 'gone' FROM kb_source_nodes c "
+     "WHERE n.organization_id = CAST(:org AS uuid)", True),
+    ("INSERT INTO kb_sync_runs (organization_id) VALUES (:org)", True),
+    ("SELECT 1 FROM kb_sync_runs r WHERE r.organization_id = CAST(:org AS uuid)", False),
+    ("UPDATE kb_sources SET x = 1 WHERE organization_id = CAST(:org AS uuid)", False),
+    ("SELECT id FROM organization ORDER BY id", False),
+])
+def test_the_org_fence_is_not_vacuous(sql: str, found: bool) -> None:
+    assert bool(org_predicate_findings("planted", sql)) is found
 
 
 # ── With the flag off, a tick opens nothing ─────────────────────────────────

@@ -16,8 +16,9 @@ of its code.
 
 **The steps.**
 
-(a) ONE session takes the run lock and reads the source row and the cursor.
-    The member comes from the source row, never from a request.
+(a) ONE session reads the source row ``FOR SHARE``, takes the run lock and
+    reads the cursor. The member comes from the source row, never from a
+    request. The share lock orders the loop and a re-consent.
 (b) For each page: the provider call with NO session open, then ONE
     transaction that applies the page, upserts the cursor and beats the
     heartbeat. A page and its cursor commit together, or neither commits.
@@ -32,7 +33,9 @@ Fence: ``tests/unit/test_kb_sync_tenancy.py``.
 
 **The node writes.** An upsert keeps the row and its id, so a rename or a move
 changes the name and ``parent_ext_id`` and keeps every child. A removal sets
-``state = 'gone'`` and never deletes the row. Each write has the guard of
+``state = 'gone'`` and never deletes the row. A gone folder takes each live
+node below it, to a fixed point, in the same transaction, because the feed
+reports a trashed folder as ONE event. Each write has the guard of
 ``discovery.SOURCE_GUARD_SQL``, and the cursor write has the same guard. So a
 disconnect that holds the source row ``FOR UPDATE`` wins, and the page and the
 cursor write nothing.
@@ -49,7 +52,10 @@ the relist is read again by the next run.
 **The relist** (the daily reconcile, and a dead cursor):
 
 * uncapped: ``discovery._flat`` with this engine's read and write, then the
-  ``gone`` sweep of the nodes that the relist did not write again;
+  ``gone`` sweep of the nodes that the relist did not write again. A source
+  that grew past the cap becomes capped with NO delete: each folder deeper
+  than the levels of a capped walk becomes ``explored = false``, and the
+  reconcile cursor keeps the mark ``capped``. The next relist is capped;
 * capped: the children of each stored folder with ``explored = true``. A node
   becomes ``gone`` only when its folder was read in full and the relist did
   not write it again. It never calls ``discovery._walk``, which deletes every
@@ -113,16 +119,72 @@ STATE_READY = discovery.STATE_READY
 #: The code of a token that Google refused with HTTP 401.
 UNAUTHORIZED = "unauthorized"
 
+#: ⚠️ ``FOR SHARE`` (review P2, the consent race). A re-consent sets the row to
+#: ``discovering`` and starts a discovery. Without the lock, the loop could
+#: read ``ready``, lose the race, and hold the run lock while the discovery
+#: gave up, so the source stayed ``discovering`` for ever. With it, the
+#: callback's write waits for this transaction, or this read waits for the
+#: callback and then reads ``discovering`` and runs nothing. Fence, R8:
+#: ``test_kc_sync_r8.py::test_the_loop_waits_for_a_reconsent_and_runs_nothing``.
 _SOURCE_SQL = (
     "SELECT id, provider, owner_email, state, connection_id FROM kb_sources "
-    "WHERE id = CAST(:source AS uuid) AND organization_id = CAST(:org AS uuid)"
+    "WHERE id = CAST(:source AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "FOR SHARE"
 )
 
-#: Any folder with ``explored = false`` makes a source capped.
+#: A source is capped when a folder has ``explored = false`` (a capped
+#: discovery), or when its reconcile cursor says so (an uncapped source that
+#: grew past the cap, :data:`_CAP_SQL`).
 _CAPPED_SQL = (
-    "SELECT EXISTS (SELECT 1 FROM kb_source_nodes "
+    "SELECT (EXISTS (SELECT 1 FROM kb_source_nodes "
     "WHERE organization_id = CAST(:org AS uuid) AND source_id = CAST(:source AS uuid) "
-    "AND kind = 'folder' AND NOT explored) AS capped"
+    "AND kind = 'folder' AND NOT explored) "
+    "OR EXISTS (SELECT 1 FROM kb_sync_cursors "
+    "WHERE organization_id = CAST(:org AS uuid) AND source_id = CAST(:source AS uuid) "
+    "AND kind = 'reconcile' AND cursor_state ->> 'capped' = 'true')) AS capped"
+)
+
+#: An uncapped source that grew past the cap becomes capped, with NO delete
+#: (review P2). Each folder deeper than the levels of a capped walk becomes
+#: ``explored = false``, as ``discovery._walk`` would leave it. The nodes stay.
+_CAP_SQL = (
+    "WITH RECURSIVE shallow(ext_id, depth) AS ("
+    "SELECT n.ext_id, 0 FROM kb_source_nodes n "
+    "WHERE n.organization_id = CAST(:org AS uuid) AND n.source_id = CAST(:source AS uuid) "
+    "AND n.state = 'live' AND (n.parent_ext_id IS NULL OR NOT EXISTS ("
+    "SELECT 1 FROM kb_source_nodes p WHERE p.organization_id = CAST(:org AS uuid) "
+    "AND p.source_id = CAST(:source AS uuid) AND p.ext_id = n.parent_ext_id "
+    "AND p.state = 'live')) "
+    "UNION "
+    "SELECT c.ext_id, s.depth + 1 FROM kb_source_nodes c "
+    "JOIN shallow s ON c.parent_ext_id = s.ext_id "
+    "WHERE c.organization_id = CAST(:org AS uuid) AND c.source_id = CAST(:source AS uuid) "
+    "AND c.state = 'live' AND s.depth + 1 < :levels) "
+    "UPDATE kb_source_nodes f SET explored = false, updated_at = now() "
+    "WHERE f.organization_id = CAST(:org AS uuid) AND f.source_id = CAST(:source AS uuid) "
+    "AND f.kind = 'folder' AND f.explored AND f.ext_id NOT IN (SELECT ext_id FROM shallow)"
+)
+
+#: When nodes go ``gone``, each live node below them goes too, to a fixed
+#: point (review P2). A trashed folder is ONE event in the change feed, and
+#: the capped relist reads live folders only, so without this the children of
+#: a gone folder stayed live for ever. *kept* holds the ids that the same
+#: page stores, so a change of the page wins. *before* (the relist) spares
+#: each node that the relist saw again. The seed must be ``gone`` already.
+_CASCADE_GONE_SQL = (
+    "WITH RECURSIVE dead(ext_id) AS ("
+    "SELECT n.ext_id FROM kb_source_nodes n "
+    "WHERE n.organization_id = CAST(:org AS uuid) AND n.source_id = CAST(:source AS uuid) "
+    "AND n.state = 'gone' AND n.ext_id = ANY(CAST(:ids AS text[])) "
+    "UNION "
+    "SELECT c.ext_id FROM kb_source_nodes c JOIN dead d ON c.parent_ext_id = d.ext_id "
+    "WHERE c.organization_id = CAST(:org AS uuid) AND c.source_id = CAST(:source AS uuid) "
+    "AND c.state = 'live' AND NOT (c.ext_id = ANY(CAST(:kept AS text[]))) "
+    "AND (CAST(:before AS timestamptz) IS NULL "
+    "OR c.updated_at < CAST(:before AS timestamptz))) "
+    "UPDATE kb_source_nodes g SET state = 'gone', updated_at = now() FROM dead d "
+    "WHERE g.organization_id = CAST(:org AS uuid) AND g.source_id = CAST(:source AS uuid) "
+    "AND g.ext_id = d.ext_id AND g.state = 'live'"
 )
 
 #: The upsert of the change feed. It differs from the discovery upsert in two
@@ -161,7 +223,7 @@ _GONE_IN_FOLDER_SQL = (
     "UPDATE kb_source_nodes SET state = 'gone', updated_at = now() "
     "WHERE organization_id = CAST(:org AS uuid) AND source_id = CAST(:source AS uuid) "
     "AND parent_ext_id = :folder AND state = 'live' "
-    "AND updated_at < CAST(:started AS timestamptz)"
+    "AND updated_at < CAST(:started AS timestamptz) RETURNING ext_id"
 )
 
 _NOW_SQL = "SELECT now() AS at"
@@ -262,6 +324,18 @@ class _SourceRun:
             self.counts["inserted"] += inserted
             await runs.progress(db, self.org, self.run_id, self.counts)
 
+    async def _cascade(self, db: Any, ids: list[str], *, kept: list[str],
+                       before: datetime | None) -> None:
+        """Each live node below the gone *ids*, gone too, in the caller's
+        transaction (:data:`_CASCADE_GONE_SQL`)."""
+        if not ids:
+            return
+        result = await db.execute(text(_CASCADE_GONE_SQL), {
+            "org": self.org, "source": self.source_id, "ids": ids, "kept": kept,
+            "before": before,
+        })
+        self.counts["gone"] += result.rowcount or 0
+
     async def _apply_page(self, page: ChangePage, cursor: str) -> None:
         """One page of the change feed, its cursor and the heartbeat, in ONE
         transaction (the module doc, step b)."""
@@ -276,6 +350,9 @@ class _SourceRun:
                     "org": self.org, "source": self.source_id, "ids": list(page.removed),
                 })
                 self.counts["gone"] += result.rowcount or 0
+                # A gone folder takes each live node below it, in this page.
+                await self._cascade(db, list(page.removed),
+                                    kept=[n.ext_id for n in page.upserts], before=None)
             status = runs.CURSOR_PARTIAL if page.next_token else runs.CURSOR_OK
             wrote = await runs.write_cursor(db, self.org, self.source_id,
                                             runs.CURSOR_CHANGES, {"page_token": cursor}, status)
@@ -341,8 +418,10 @@ class _SourceRun:
                                                 runs.CURSOR_OK)
                 if not wrote:
                     raise _Disconnected()
+            # A capped source keeps the mark, so the next relist is capped too.
+            mark = {"capped": True} if self.capped else None
             if not await runs.write_cursor(db, self.org, self.source_id,
-                                           runs.CURSOR_RECONCILE, None, runs.CURSOR_OK):
+                                           runs.CURSOR_RECONCILE, mark, runs.CURSOR_OK):
                 raise _Disconnected()
             await runs.progress(db, self.org, self.run_id, self.counts)
 
@@ -358,8 +437,18 @@ class _SourceRun:
             full = await discovery._flat(self.org, self.source_id, self.owner, self.source,
                                          read=self._discover, write=self._write_nodes)
             if not full:
-                # Past the cap: the listing is not whole, so nothing is gone.
+                # Past the cap: the listing is not whole, so nothing is gone
+                # now. The source becomes capped with no delete, and the next
+                # relist takes the capped path (review P2).
                 self.counts["over_cap"] = True
+                async with tenant_session(self.org) as db:
+                    result = await db.execute(text(_CAP_SQL), {
+                        "org": self.org, "source": self.source_id,
+                        "levels": discovery.LEVELS,
+                    })
+                    self.counts["unexplored"] = result.rowcount or 0
+                    await runs.progress(db, self.org, self.run_id, self.counts)
+                self.capped = True
                 return
             async with tenant_session(self.org) as db:
                 result = await db.execute(text(discovery.GONE_SQL), {
@@ -382,12 +471,15 @@ class _SourceRun:
                 await self._write_nodes(discovery.node_rows(page.nodes, unexplored_folders=True))
                 child = page.next_cursor
             # The folder was read in full: what it did not list again is gone.
+            # A gone child folder takes each node below it that this relist
+            # did not see again.
             async with tenant_session(self.org) as db:
-                result = await db.execute(text(_GONE_IN_FOLDER_SQL), {
+                gone = [str(r.ext_id) for r in (await db.execute(text(_GONE_IN_FOLDER_SQL), {
                     "org": self.org, "source": self.source_id, "folder": folder,
                     "started": started,
-                })
-                self.counts["gone"] += result.rowcount or 0
+                })).fetchall()]
+                self.counts["gone"] += len(gone)
+                await self._cascade(db, gone, kept=[], before=started)
                 await runs.progress(db, self.org, self.run_id, self.counts)
 
     # ── The end ──────────────────────────────────────────────────────────

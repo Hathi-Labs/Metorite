@@ -139,14 +139,18 @@ _DELETE_CURSORS_SQL = (
 )
 
 #: The loop's view of every source of one org (``scheduler.due_kind``).
-#: ``last_finished`` counts the loop's own runs, ``changes`` and
-#: ``reconcile``. ``running`` is a live lock: a heartbeat newer than
+#: ``last_finished`` is the end of the NEWEST run of the loop (``changes`` or
+#: ``reconcile``), read by ``started_at DESC LIMIT 1`` on the index
+#: ``kb_sync_runs_source_started_idx``, so the read does not grow with the
+#: history (review P2). A newest run that has not ended answers NULL, and the
+#: lock decides. ``running`` is a live lock: a heartbeat newer than
 #: :data:`STALE_AFTER_SECONDS`.
 _DUE_SQL = (
     "SELECT s.id, s.provider, s.state, now() AS db_now, "
-    "(SELECT max(r.finished_at) FROM kb_sync_runs r "
+    "(SELECT r.finished_at FROM kb_sync_runs r "
     " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
-    " AND r.kind IN ('changes', 'reconcile') AND r.finished_at IS NOT NULL) "
+    " AND r.kind IN ('changes', 'reconcile') "
+    " ORDER BY r.started_at DESC LIMIT 1) "
     "AS last_finished, "
     "EXISTS (SELECT 1 FROM kb_sync_runs r "
     " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
@@ -157,6 +161,21 @@ _DUE_SQL = (
     " AND c.kind = 'reconcile') AS reconciled_at "
     "FROM kb_sources s WHERE s.organization_id = CAST(:org AS uuid) "
     "ORDER BY s.created_at, s.id"
+)
+
+
+#: How many ended runs the retention sweep keeps for each source.
+RUNS_KEPT = 50
+
+#: The retention sweep of one org (review P2): each run past the newest
+#: :data:`RUNS_KEPT` of its source goes. A running row never goes.
+_PRUNE_SQL = (
+    "DELETE FROM kb_sync_runs d "
+    "WHERE d.organization_id = CAST(:org AS uuid) AND d.status <> 'running' "
+    "AND d.id IN (SELECT ranked.id FROM (SELECT r.id, row_number() OVER ("
+    "PARTITION BY r.source_id ORDER BY r.started_at DESC, r.id DESC) AS n "
+    "FROM kb_sync_runs r WHERE r.organization_id = CAST(:org AS uuid)) ranked "
+    "WHERE ranked.n > :keep)"
 )
 
 
@@ -281,6 +300,13 @@ async def delete_cursors(db: Any, org: str, source_id: str) -> None:
     await db.execute(text(_DELETE_CURSORS_SQL), {"org": org, "source": source_id})
 
 
+async def prune(db: Any, org: str, keep: int = RUNS_KEPT) -> int:
+    """Delete each ended run of *org* past the newest *keep* of its source.
+    Returns how many went. A running row stays."""
+    result = await db.execute(text(_PRUNE_SQL), {"org": org, "keep": int(keep)})
+    return int(result.rowcount or 0)
+
+
 async def due_rows(db: Any, org: str) -> list[DueRow]:
     """Each source of *org*, with its lock and its last runs. No provider call."""
     rows = (await db.execute(text(_DUE_SQL), {
@@ -304,6 +330,7 @@ __all__ = [
     "KIND_CHANGES",
     "KIND_DISCOVER",
     "KIND_RECONCILE",
+    "RUNS_KEPT",
     "STALE_AFTER_SECONDS",
     "STATUS_FAILED",
     "STATUS_OK",
@@ -319,6 +346,7 @@ __all__ = [
     "due_rows",
     "finish",
     "progress",
+    "prune",
     "read_cursor",
     "start",
     "write_cursor",

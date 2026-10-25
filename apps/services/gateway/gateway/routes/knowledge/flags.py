@@ -203,6 +203,19 @@ def knowledge_source_google_allowed(organization_id: str | None) -> bool:
         get_settings().knowledge_source_google, organization_id)
 
 
+def knowledge_provider_allowed(organization_id: str | None, provider: str) -> bool:
+    """True when the flag of *provider* names the org (KC-3 review).
+
+    The sync loop asks this for each source, so an org off
+    ``KNOWLEDGE_SOURCE_GOOGLE`` gets no Google call. It reads no setting of
+    its own: it asks the reader of that provider. A provider with no reader
+    here is off for each org (OneDrive waits for KC-2).
+    """
+    if provider == "google_drive":
+        return knowledge_source_google_allowed(organization_id)
+    return False
+
+
 def knowledge_sync_named() -> bool:
     """True when Knowledge is on and ``KNOWLEDGE_SYNC`` names any org (KC-3).
 
