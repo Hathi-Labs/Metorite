@@ -155,8 +155,12 @@ def _coverage_problems(cases: list[Case], reg: dict[str, dict[str, Any]],
         if specialist_tool(agent) not in tools:
             out.append(f"ALSO_SERVES names {agent!r}, and the orchestrator holds no tool for it")
             continue
+        # A case may start only on a live pane (``_catalog``), so a preview
+        # href in ALSO_SERVES needs no case. /tasks stays there after the
+        # OP-4 flip (2026-10-25) so an old link keeps its agent.
+        live = shell.live_panes()
         out.extend(f"ALSO_SERVES sends {href} to {agent!r}, and no case asks it there"
-                   for href in hrefs if (href, agent) not in pairs)
+                   for href in hrefs if href in live and (href, agent) not in pairs)
     if not any(c.expected is None and not c.asks and c.opens is None for c in cases):
         out.append("no case expects the orchestrator to answer itself")
     if not any(c.opens for c in cases):

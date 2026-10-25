@@ -117,8 +117,8 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
 
   it("never pins a page about the member, even when one is named", () => {
     const sections = visibleSections(ALL, true);
-    const stars = { pins: ["/people/me", "/settings/appearance", "/tasks"], known: PANES.map((p) => p.href) };
-    expect([...starredHrefs(stars, sections)!]).toEqual(["/tasks"]);
+    const stars = { pins: ["/people/me", "/settings/appearance", "/calendar"], known: PANES.map((p) => p.href) };
+    expect([...starredHrefs(stars, sections)!]).toEqual(["/calendar"]);
   });
 });
 
@@ -300,13 +300,13 @@ describe("the star model: only starred apps show, under their own category", () 
     const personal = PANES.filter((p) => p.team === "personal" && !p.setting && hrefs(sections).has(p.href)).map(
       (p) => p.href,
     );
-    expect(personal).toEqual(["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]);
+    expect(personal).toEqual(["/calendar", "/email", "/whatsapp", "/artifacts"]);
     expect(answerStars(presetById("founder")!, sections)).toEqual([...personal, "/projects", "/chat", "/approvals"]);
     // Approvals is starred for every answer of a member who holds it.
     expect(answerStars(presetById("accounts-assistant")!, sections)).toEqual([...personal, "/approvals"]);
     // A member who lacks an app gets no star for it.
     const few = visibleSections(["tasks", "projects"], false);
-    expect(answerStars(presetById("founder")!, few)).toEqual(["/tasks", "/calendar", "/projects"]);
+    expect(answerStars(presetById("founder")!, few)).toEqual(["/calendar", "/projects"]);
     // Each answer names only its extras, which the member holds.
     expect(presetExtras(presetById("founder")!, sections).map((p) => p.label)).toEqual([
       "Projects",
@@ -325,11 +325,11 @@ describe("the star model: only starred apps show, under their own category", () 
   });
 
   it("a new app shows starred until a save covers it (the known rule)", () => {
-    const stars = { pins: ["/projects"], known: ["/projects", "/people", "/tasks"] };
+    const stars = { pins: ["/projects"], known: ["/projects", "/people", "/calendar"] };
     const shown = starredHrefs(stars, sections)!;
     // Known and not starred: hidden.
     expect(shown.has("/people")).toBe(false);
-    expect(shown.has("/tasks")).toBe(false);
+    expect(shown.has("/calendar")).toBe(false);
     // Not known: new to the member, so it shows.
     expect(shown.has("/chat")).toBe(true);
     expect(shown.has("/email")).toBe(true);
@@ -377,10 +377,10 @@ describe("the star model: only starred apps show, under their own category", () 
 
   it("keeps a star for an app the member lost, so it shows again when the grant returns", () => {
     const few = visibleSections(["tasks"], false);
-    const saved = starsToSave(["/tasks"], few, { pins: ["/projects"], known: ["/projects"] });
-    expect(saved.pins).toEqual(["/tasks", "/projects"]);
+    const saved = starsToSave(["/calendar"], few, { pins: ["/projects"], known: ["/projects"] });
+    expect(saved.pins).toEqual(["/calendar", "/projects"]);
     // Integrations is held by every member since D-EA-9 (2026-10-14).
-    expect(saved.known).toEqual(["/tasks", "/calendar", "/integrations"]);
+    expect(saved.known).toEqual(["/calendar", "/integrations"]);
   });
 });
 

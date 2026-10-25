@@ -47,8 +47,14 @@ async def fresh_credential(
     needs_refresh: Callable[[SourceCredential, datetime], bool],
     now: Callable[[], datetime],
     accept: Callable[[store.Connection], bool] | None = None,
+    scope_kind: str = store.SCOPE_ORG,
+    member_email: str | None = None,
 ) -> SourceCredential | None:
-    """The credential of the org connection, refreshed and stored when due.
+    """The credential of the connection, refreshed and stored when due.
+
+    *scope_kind* and *member_email* (WS-61 KC-1a) name a member connection,
+    such as the Google Drive source of one member. The defaults are the org
+    connection, so the CRM and MCP callers read the row they read before.
 
     *accept* (WS-54 IN-8b) checks the row before its blob is read. A row
     that it refuses gives ``None`` and is never marked. The MCP runtime
@@ -63,7 +69,10 @@ async def fresh_credential(
     stop: SourceError | None = None
     code = ""
     async with tenant_session(org) as db:
-        row = await store.get(db, org, provider, owning_app)
+        row = await store.get(
+            db, org, provider, owning_app,
+            scope_kind=scope_kind, member_email=member_email,
+        )
         if row is None or row.status == store.STATUS_DISCONNECTED:
             return None
         if accept is not None and not accept(row):
