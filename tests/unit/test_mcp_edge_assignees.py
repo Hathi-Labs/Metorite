@@ -14,10 +14,11 @@ refusal. No refusal sends a request.
 **R8 (a real database, as a NON-privileged role, on a phase-4-promoted
 catalog of its own).** The edge calls the REAL gateway app. It proves the
 rules of §9.2: one bell for each new assignee, which names the client; the
-refusal of a person who is not an active member who can see the task, with
-one text for a hidden member and a made-up address; the version rule of the
-PUT and of the move; a move to another project and a cycle refused; and the
-write scope.
+refusal of a new person who cannot already open the task through its grants
+(an agent never widens who sees a task), with one text for a hidden member
+and a made-up address; the strict version rule of the agent's PUT and the
+version rule of the move; a move to another project and a cycle refused; the
+caps; and the write scope.
 
 Run::
 
@@ -33,7 +34,7 @@ Run::
 * A2. ``G/tasks.py``: ``_refuse_agent_assignees`` checks a member caller too. ``test_r10_a_members_put_is_not_narrowed``.
 * A3. ``G/tasks.py``: ``_write_assignees`` notifies ``wanted``, not ``added``. ``test_r2_one_bell_for_the_added_person_only``.
 * A4. ``G/tasks.py``: ``_agent_via_note`` returns None. ``test_r1_create_with_an_assignee_and_the_planning_fields`` and ``test_r2_one_bell_for_the_added_person_only``.
-* A5. ``G/tasks.py``: ``set_assignees`` drops ``_check_version``. ``test_r4_a_stale_version_is_refused_for_set_assignees``.
+* A5. ``G/tasks.py``: ``set_assignees`` drops the agent's ``_require_exact_version``. ``test_r4_a_stale_version_is_refused_for_set_assignees`` and ``test_r14_an_agent_put_keeps_strict_equality``.
 * A6. ``G/tasks.py``: ``move_task`` drops ``_check_version``. ``test_r5_a_stale_version_is_refused_for_the_move``.
 * A7. ``G/tasks.py``: ``move_task_in`` drops ``_refuse_agent_parent``. ``test_r6_a_move_to_another_project_is_refused``.
 * A8. ``G/tasks.py``: ``AGENT_MOVE_FIELDS`` gains ``project_id``. ``test_r6_a_move_to_another_project_is_refused``.
@@ -46,6 +47,18 @@ Run::
 * A15. ``E/tools.py``: ``_update_task`` sends a PATCH and a move in one call. ``test_parent_and_fields_together_are_refused``.
 * A16. ``E/tools.py``: ``_assignee_codes`` names the gateway's entries too. ``test_a_refused_entry_is_named_and_only_from_the_call``.
 * A17. ``E/tools.py``: ``_create_task`` drops ``_refuse_bad_start_date``. ``test_the_planning_limits_are_refused_with_no_request``.
+
+Fix round 1 adds these.
+
+* A18. ``G/tasks.py``: ``_refuse_agent_assignees`` as the first build had it, after the insert and with the assignee arm. ``test_r13_an_agent_cannot_widen_who_sees_a_task``.
+* A19. ``G/notifications.py``: ``grant_holders`` reads ``task_visibility_clause``. ``test_r19_the_grant_only_seam_leaves_out_the_assignee_arm``.
+* A20. ``G/tasks.py``: the agent's PUT uses ``_check_version`` (``precondition_holds``). ``test_r14_an_agent_put_keeps_strict_equality``.
+* A21. ``G/tasks.py``: the member's PUT drops ``_check_version``. ``test_r10_a_members_put_is_not_narrowed``.
+* A22. ``E/tools.py``: ``ASSIGN_ANNOTATIONS`` loses ``destructiveHint``. ``test_set_assignees_is_listed_with_the_hints_of_a_write``.
+* A23. ``G/tasks.py``: ``_assert_agent_may_assign_here`` gives the plain 422. ``test_r18_a_personal_project_gets_its_own_text``.
+* A24. ``G/tasks.py``: ``_write_assignees`` drops the cap of an agent. ``test_r15_the_gateway_caps_an_agent_at_50_assignees``.
+* A25. ``G/tasks.py``: ``_refuse_agent_values`` drops the upper bound of ``estimate_mins``. ``test_r16_the_gateway_holds_the_estimate_ceiling``.
+* A26. ``G/tasks.py``: ``_refuse_agent_assignees`` checks ``wanted``, not ``added``. ``test_r17_a_person_who_stays_is_not_checked_or_notified``.
 """
 from __future__ import annotations
 
@@ -159,10 +172,12 @@ class TestTheToolRecords:
     """§9.2 and §9.5: the records in ``tools/list``, database-free."""
 
     async def test_set_assignees_is_listed_with_the_hints_of_a_write(self, edge):
+        """Fix round 1: ``destructiveHint`` is true, because an empty list
+        removes every assignee."""
         listed = await _listed("set_assignees")
         assert listed["annotations"] == {
             "title": "Set the assignees of a task", "readOnlyHint": False,
-            "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+            "destructiveHint": True, "idempotentHint": True, "openWorldHint": False}
         schema = listed["inputSchema"]
         assert schema["required"] == ["task_id", "assignees", "expected_version"]
         assert schema["additionalProperties"] is False
@@ -190,6 +205,8 @@ class TestTheToolRecords:
         from gateway.routes.projects import tasks as gw
 
         assert tools.ASSIGNEE_REFUSED_CODE == gw.AGENT_ASSIGNEE_REFUSED
+        assert tools.ASSIGNEE_PERSONAL_CODE == gw.AGENT_ASSIGNEE_PERSONAL
+        assert tools.MAX_ASSIGNEES == gw.AGENT_MAX_ASSIGNEES == 50
         assert set(tools.IMPORTANCE_VALUES) == set(gw.AGENT_IMPORTANCE_VALUES) == {0, IMPORTANT_AT}
         assert tools.MAX_ESTIMATE_MINS == gw.AGENT_MAX_ESTIMATE_MINS
         assert set(tools.CREATE_BODY_KEYS) == set(gw.AGENT_CREATE_FIELDS)
@@ -199,13 +216,19 @@ class TestTheToolRecords:
     def test_the_descriptions_teach_the_rules(self):
         assign = tools.SET_ASSIGNEES.description
         assert "Replace the whole assignee set" in assign and "agent:<name>" in assign
-        assert "active member" in assign and "release_task" in assign
+        assert "already open" in assign and "anybody new" in assign
+        assert "a comment too" in assign and "release_task" in assign
+        assert "An empty list removes every assignee" in assign
         assert "expected_version" in assign and "untrusted_text" in assign
         update = tools.UPDATE_TASK.description
         assert "parent_task_id" in update and "set_assignees" in update
         assert "Metorite app" in update and "2 for Important" in update
         create = tools.CREATE_TASK.description
         assert "assignees" in create and "no task is made" in create
+        assert "anybody new" in create
+        # Fix round 1: no text claims that the host always asks first.
+        for described in (assign, create):
+            assert "asks the person" not in described and "active member" not in described
 
     @pytest.mark.parametrize("name,args", [
         ("set_assignees", _assign_args()),
@@ -312,6 +335,14 @@ class TestCreateTaskFields:
         # A refusal before any row frees the key (EA-6d).
         assert edge.redis.slots() == {}
 
+    async def test_create_in_a_personal_project_gets_the_personal_text(self, edge):
+        """Fix round 1 (P3): not the bad-request text."""
+        edge.gateway.answers[("POST", "/projects/tasks")] = (422, {"detail": {
+            "error": tools.ASSIGNEE_PERSONAL_CODE, "message": "m"}})
+        result = await _tool("create_task", {
+            "project_id": PROJECT, "title": "x", "assignees": [ANN_FAKE]})
+        assert _text(result) == tools.TEXT_ASSIGNEES_PERSONAL
+
 
 class TestUpdateTaskFields:
     """The PATCH and the move of ``update_task``, database-free."""
@@ -416,8 +447,9 @@ class TestSetAssigneesAtTheEdge:
             tools.TEXT_ASSIGNEES_REFUSED.format(names="one or more of these people"))
 
     @pytest.mark.parametrize("status,body,text", [
-        (422, {"detail": "This task is in a personal project, so ..."},
+        (422, {"detail": {"error": tools.ASSIGNEE_PERSONAL_CODE, "message": "m"}},
          tools.TEXT_ASSIGNEES_PERSONAL),
+        (422, {"detail": "Some other refusal."}, tools.TEXT_BAD_REQUEST),
         (412, {"detail": {}}, STALE),
         (404, {"detail": "Task not found"}, tools.TEXT_TASK_NOT_FOUND),
         (403, {"detail": "no"}, tools.TEXT_WRITE_FORBIDDEN),
@@ -436,6 +468,7 @@ _APP_PW = "mcpassign_scratch_pw"
 MEMBER = w.MEMBER
 ANN = "ann@mcpwrites.test"
 BOB = "bob@mcpwrites.test"
+CAROL = "carol@mcpwrites.test"  # a grant on the team project only
 SAM = "sam@mcpwrites.test"     # a suspended member of this organization
 EVE = "eve@mcpwrites.test"     # an active member of ANOTHER organization
 GHOST = "ghost@mcpwrites.test"  # no member at all
@@ -444,7 +477,12 @@ GHOST = "ghost@mcpwrites.test"  # no member at all
 @pytest.fixture(scope="module")
 def world():
     """A private promoted catalog: two tenants. The first holds the member of
-    the connection, two more members, a suspended one and two projects."""
+    the connection, three more members, a suspended one, two team projects
+    and a personal project of the member.
+
+    Ann, Bob and Carol hold a grant on the team project, and none on the
+    other project. So an agent may assign them on a team task, and may not
+    assign them on a task of the other project (fix round 1)."""
     if not w._URL:
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
@@ -480,18 +518,26 @@ def world():
                            "VALUES (:id, :s, :s)"), {"id": oid, "s": slug})
     a = w._Seeder(eng, org)
     a.number = 100_000
-    for who in (MEMBER, ANN, BOB, SAM):
+    for who in (MEMBER, ANN, BOB, CAROL, SAM):
         a.member(who, ["feature:projects"])
     a.one("UPDATE app_user SET status = 'suspended' WHERE email = :e RETURNING id", e=SAM)
     w._Seeder(eng, org2).member(EVE, ["feature:projects"])
     team, other = a.project("Team"), a.project("Other team")
+    for who in (ANN, BOB, CAROL):
+        a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+              " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
+              " RETURNING project_id", p=team, s=who, a=w.OWNER, o=org)
+    mine = a.project("Mine")
+    a.one("UPDATE pm_projects SET personal_owner = :m WHERE id = CAST(:p AS uuid)"
+          " RETURNING id", m=MEMBER, p=mine)
     s = SimpleNamespace(
         todo=a.status(team, "To do", "todo", 0),
         doing=a.status(team, "Doing", "in_progress", 1),
         other=a.status(other, "To do", "todo", 0),
+        mine=a.status(mine, "To do", "todo", 0),
     )
-    world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other, s=s,
-                             c={}, tok={}, task=a.task)
+    world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other,
+                             mine=mine, s=s, c={}, tok={}, task=a.task)
     for name, scopes in (("write", w.WRITE_SCOPES), ("read", ("projects:read",))):
         world_.c[name], world_.tok[name] = a.connection(scopes=scopes)
     world_.app_dsn = admin_url.set(
@@ -711,14 +757,29 @@ class TestTheRulesOnARealDatabase:
 
     async def test_r10_a_members_put_is_not_narrowed(self, live):
         """The app's own calls send no ``If-Match`` and keep the app's rules:
-        an address that no member holds is assigned and not notified."""
-        task = live.task(live.team, live.s.todo, "g2 member put")
+        an address that no member holds is assigned and not notified, and a
+        member may delegate outward. A member's ``If-Match`` follows
+        ``precondition_holds``: an assignment does not stale it, and a field
+        change does (fix round 1)."""
+        task = live.task(live.other, live.s.other, "g2 member put")
+        old = await _version(live, task)
         r = await _send(live, "PUT", f"/projects/tasks/{task}/assignees", signed=None,
                         body={"assignees": [GHOST, ANN]})
         assert r.status_code == 200, r.text
+        # Ann holds no grant on this project: the assignee arm opens it to her.
         assert r.json()["not_notified"] == [GHOST]
         assert _assignees(live, task) == [ANN, GHOST]
         assert [b.excerpt for b in _bells(live, task, ANN)] == [None]
+        held = await _send(live, "PUT", f"/projects/tasks/{task}/assignees", signed=None,
+                           body={"assignees": [GHOST, ANN, BOB]}, headers={"If-Match": old})
+        assert held.status_code == 200, held.text
+        r = await _send(live, "PATCH", f"/projects/tasks/{task}", signed=None,
+                        body={"title": "g2 member put, edited"})
+        assert r.status_code == 200, r.text
+        stale = await _send(live, "PUT", f"/projects/tasks/{task}/assignees", signed=None,
+                            body={"assignees": []}, headers={"If-Match": old})
+        assert stale.status_code == 412, stale.text
+        assert _assignees(live, task) == [ANN, BOB, GHOST]
         moved = await _send(live, "POST", f"/projects/tasks/{task}/move", signed=None,
                             body={"parent_task_id": None})
         assert moved.status_code == 200, moved.text
@@ -751,3 +812,136 @@ class TestTheRulesOnARealDatabase:
         assert result["isError"] is False, result
         assert _assignees(live, task) == []
         assert _scalar(live, status, r=run) == before
+
+    async def test_r13_an_agent_cannot_widen_who_sees_a_task(self, live):
+        """Fix round 1 (P1, EA3-52). Carol is an active member with no grant
+        on the other project. An agent cannot assign her there, because the
+        assignment would open the task to her. The text is the text of a
+        made-up address. On a project she can open, the same call lands."""
+        hidden = live.task(live.other, live.s.other, "g2 restricted")
+        refused = await _mcp(live, "write", "set_assignees", {
+            "task_id": hidden, "assignees": [CAROL],
+            "expected_version": await _version(live, hidden)})
+        assert _text(refused) == tools.TEXT_ASSIGNEES_REFUSED.format(names=CAROL)
+        ghost = await _mcp(live, "write", "set_assignees", {
+            "task_id": hidden, "assignees": [GHOST],
+            "expected_version": await _version(live, hidden)})
+        assert _text(ghost).replace(GHOST, CAROL) == _text(refused)
+        assert _assignees(live, hidden) == [] and _bells(live, hidden, CAROL) == []
+        made = await _mcp(live, "write", "create_task", {
+            "project_id": live.other, "title": "g2 restricted create", "assignees": [CAROL]})
+        assert _text(made) == tools.TEXT_ASSIGNEES_REFUSED.format(names=CAROL)
+        assert t._count(live, "g2 restricted create") == 0
+        # The same person on a task that she can open already.
+        open_task = live.task(live.team, live.s.todo, "g2 open to carol")
+        landed = await _mcp(live, "write", "set_assignees", {
+            "task_id": open_task, "assignees": [CAROL],
+            "expected_version": await _version(live, open_task)})
+        assert landed["isError"] is False, landed
+        assert [(b.actor, b.excerpt) for b in _bells(live, open_task, CAROL)] == [
+            (MEMBER, _via_label())]
+
+    async def test_r14_an_agent_put_keeps_strict_equality(self, live):
+        """Fix round 1 (P2). An assignment does not move ``fields_at``, so
+        ``precondition_holds`` would pass the agent's old version, and the
+        replaced set would drop Bob in silence. Any change after the read,
+        a comment too, refuses the agent's PUT."""
+        task = live.task(live.team, live.s.todo, "g2 strict put")
+        old = await _version(live, task)
+        r = await _send(live, "PUT", f"/projects/tasks/{task}/assignees", signed=None,
+                        body={"assignees": [BOB]})
+        assert r.status_code == 200, r.text
+        stale = await _mcp(live, "write", "set_assignees", {
+            "task_id": task, "assignees": [MEMBER, CAROL], "expected_version": old})
+        assert _text(stale) == STALE
+        assert _assignees(live, task) == [BOB]
+        # A comment stales the version too.
+        fresh = await _version(live, task)
+        c = await _send(live, "POST", f"/projects/tasks/{task}/comments", signed=None,
+                        body={"body": "a note"})
+        assert c.status_code in (200, 201), c.text
+        again = await _mcp(live, "write", "set_assignees", {
+            "task_id": task, "assignees": [BOB, CAROL], "expected_version": fresh})
+        assert _text(again) == STALE
+        # Read again and resend the full set: it lands.
+        done = await _mcp(live, "write", "set_assignees", {
+            "task_id": task, "assignees": [BOB, CAROL],
+            "expected_version": await _version(live, task)})
+        assert done["isError"] is False, done
+        assert _assignees(live, task) == [BOB, CAROL]
+
+    async def test_r15_the_gateway_caps_an_agent_at_50_assignees(self, live):
+        """Fix round 1 (P3). The gateway's own copy of the edge's cap. The
+        entries are agents, which the grant rule does not check, so only the
+        cap can refuse them."""
+        task = live.task(live.team, live.s.todo, "g2 capped")
+        many = [f"agent:bot{n}" for n in range(51)]
+        r = await _send(live, "PUT", f"/projects/tasks/{task}/assignees",
+                        body={"assignees": many})
+        assert r.status_code == 422, r.text
+        r = await _send(live, "POST", "/projects/tasks", body={
+            "project_id": live.team, "title": "g2 capped create", "assignees": many})
+        assert r.status_code == 422, r.text
+        assert _assignees(live, task) == [] and t._count(live, "g2 capped create") == 0
+
+    async def test_r16_the_gateway_holds_the_estimate_ceiling(self, live):
+        """Fix round 1 (P3, the verifier's mutation C). One more than the INT
+        limit is a 422, never the 500 of an overflow. The limit itself lands."""
+        top = 2_147_483_647
+        r = await _send(live, "POST", "/projects/tasks", body={
+            "project_id": live.team, "title": "g2 too long", "estimate_mins": top + 1})
+        assert r.status_code == 422, r.text
+        assert t._count(live, "g2 too long") == 0
+        r = await _send(live, "POST", "/projects/tasks", body={
+            "project_id": live.team, "title": "g2 longest", "estimate_mins": top})
+        assert r.status_code == 201, r.text
+        assert _row(live, r.json()["id"]).estimate_mins == top
+
+    async def test_r17_a_person_who_stays_is_not_checked_or_notified(self, live):
+        """Fix round 1 (P3, the verifier's mutation D). A member put Ghost (no
+        member) and Bob on the task. The agent keeps both and adds Ann. Only
+        the NEW person is checked and notified."""
+        task = live.task(live.team, live.s.todo, "g2 stays")
+        _assign(live, task, GHOST)
+        _assign(live, task, BOB)
+        result = await _mcp(live, "write", "set_assignees", {
+            "task_id": task, "assignees": [GHOST, BOB, ANN],
+            "expected_version": await _version(live, task)})
+        assert result["isError"] is False, result
+        assert _assignees(live, task) == [ANN, BOB, GHOST]
+        assert len(_bells(live, task, ANN)) == 1
+        assert _bells(live, task, BOB) == [] and _bells(live, task, GHOST) == []
+
+    async def test_r18_a_personal_project_gets_its_own_text(self, live):
+        """Fix round 1 (P3). A task in the member's personal project takes
+        only its owner, for a create and for a PUT."""
+        made = await _mcp(live, "write", "create_task", {
+            "project_id": live.mine, "title": "g2 mine", "assignees": [ANN]})
+        assert _text(made) == tools.TEXT_ASSIGNEES_PERSONAL
+        assert t._count(live, "g2 mine") == 0
+        mine = live.task(live.mine, live.s.mine, "g2 mine already")
+        put = await _mcp(live, "write", "set_assignees", {
+            "task_id": mine, "assignees": [ANN],
+            "expected_version": await _version(live, mine)})
+        assert _text(put) == tools.TEXT_ASSIGNEES_PERSONAL
+        assert _assignees(live, mine) == []
+
+    async def test_r19_the_grant_only_seam_leaves_out_the_assignee_arm(self, live):
+        """Fix round 1 (P1). ``notifications.grant_holders`` is the seam of
+        the agent's rule. Ann is an assignee of a task in a project where she
+        holds no grant: ``deliverable`` counts her, and the grant arm does
+        not."""
+        from gateway.routes.projects import core
+        from gateway.routes.projects.notifications import deliverable, grant_holders
+
+        task = live.task(live.other, live.s.other, "g2 seam")
+        _assign(live, task, ANN)
+
+        async def both() -> tuple[list[str], list[str]]:
+            async with core._tenant_session(live.org) as db:
+                return (await deliverable(db, [ANN, MEMBER], task),
+                        await grant_holders(db, [ANN, MEMBER], task))
+
+        default, grants = await _in_scope(live, both)
+        assert default == [ANN, MEMBER]
+        assert grants == [MEMBER]

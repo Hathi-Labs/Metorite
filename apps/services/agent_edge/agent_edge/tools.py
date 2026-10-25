@@ -175,15 +175,20 @@ TEXT_MOVE_CYCLE = (
 TEXT_MOVE_TOO_DEEP = "That move makes the task tree too deep."
 TEXT_MOVE_EPIC = "An epic is the top level, so it cannot have a parent task."
 TEXT_ASSIGNEES_REFUSED = (
-    "Metorite cannot assign the task to {names}. Each assignee must be an"
-    " active member of this organization who can see the task. Nothing changed.")
+    "Metorite cannot assign the task to {names}. An agent can assign only a"
+    " person who can already open the task through its project. A person must"
+    " assign anybody else in the Metorite app. Nothing changed.")
 TEXT_ASSIGNEES_PERSONAL = (
     "This task is in a personal project, so only its owner can hold it. Move the"
     " task to a team project in the Metorite app first. Nothing changed.")
-#: The code of the gateway's 422 for an assignee who is not an active member
-#: who can see the task. A copy of ``tasks.AGENT_ASSIGNEE_REFUSED``, and
-#: ``test_mcp_edge_assignees.py`` pins the two equal.
-ASSIGNEE_REFUSED_CODE = "assignee_not_member"
+#: The code of the gateway's 422 for a new assignee who cannot already open
+#: the task through its grants (fix round 1). A copy of
+#: ``tasks.AGENT_ASSIGNEE_REFUSED``, and ``test_mcp_edge_assignees.py`` pins
+#: the two equal.
+ASSIGNEE_REFUSED_CODE = "assignee_refused"
+#: The code of the gateway's 422 for another person on a task in a personal
+#: project. A copy of ``tasks.AGENT_ASSIGNEE_PERSONAL``, pinned the same way.
+ASSIGNEE_PERSONAL_CODE = "assignee_personal_project"
 #: The idempotency key of ``create_task`` (EA-6d, ``agent_edge.idempotency``).
 TEXT_KEY_REUSED = (
     "This idempotency_key was used for a different task. Send a new key.")
@@ -324,6 +329,12 @@ DELETE_ANNOTATIONS: Mapping[str, bool] = {
     "idempotentHint": False,
     "openWorldHint": False,
 }
+
+#: The annotations of ``set_assignees`` (MCP-G2, fix round 1). It replaces
+#: the whole set, and an empty list removes every assignee, so
+#: ``destructiveHint`` is true. The same call twice changes nothing more,
+#: so it stays idempotent.
+ASSIGN_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
 
 #: The closing status categories, and the one of them that means finished
 #: (§9.2). Copies of ``CLOSING_CATEGORIES`` and ``COMPLETED_CATEGORY`` in
@@ -3314,9 +3325,9 @@ _CREATE_INPUT: dict[str, Any] = {
         "assignees": {
             **_ASSIGNEES_INPUT,
             "description": "The first assignees: member addresses, or agent:<name>."
-                           " Each person must be an active member of this"
-                           " organization who can see the task. Each one gets one"
-                           " notification that names this agent."},
+                           " Each person must already open the project of the task"
+                           " through its grants. Each one gets one notification"
+                           " that names this agent."},
         "idempotency_key": {
             "type": "string", "pattern": idempotency.KEY_PATTERN,
             "description": "8 to 128 letters, digits and . _ : -. The same key"
@@ -3465,14 +3476,15 @@ def _refuse_bad_start_date(args: Mapping[str, Any]) -> None:
         raise ToolError(TEXT_START_DATE) from None
 
 
-def _assignee_codes(sent: Any) -> dict[str, Callable[[Mapping[str, Any]], str]]:
+def _assignee_codes(sent: Any) -> dict[str, str | Callable[[Mapping[str, Any]], str]]:
     """The ``coded`` map of a write that sends assignees (MCP-G2).
 
     The gateway's 422 :data:`ASSIGNEE_REFUSED_CODE` lists the refused
     entries. The text names only the entries of *sent*, the caller's own
     list, so no text of the gateway reaches the agent. The text is the same
-    for an address that no member holds and for a member of another
-    organization, so it does not say whether a hidden member exists.
+    for a made-up address, a member of another organization and a member
+    with no grant, so it does not say whether a hidden member exists. The
+    422 :data:`ASSIGNEE_PERSONAL_CODE` gets its fixed text (fix round 1).
     """
     mine = {str(s).strip().lower() for s in sent if isinstance(s, str)}
 
@@ -3483,7 +3495,7 @@ def _assignee_codes(sent: Any) -> dict[str, Callable[[Mapping[str, Any]], str]]:
         names = ", ".join(refused) if refused else "one or more of these people"
         return TEXT_ASSIGNEES_REFUSED.format(names=names)
 
-    return {ASSIGNEE_REFUSED_CODE: text}
+    return {ASSIGNEE_REFUSED_CODE: text, ASSIGNEE_PERSONAL_CODE: TEXT_ASSIGNEES_PERSONAL}
 
 
 async def _created(ctx: Context, row: dict[str, Any],
@@ -3673,9 +3685,10 @@ CREATE_TASK = Tool(
         " cancelled status. importance is 2 for Important or 0 for not"
         " Important. estimate_mins is whole minutes, 0 or more. start_date is a"
         " date such as 2026-10-31. assignees are member addresses or"
-        " agent:<name>. Each person must be an active member of this"
-        " organization who can see the task, and gets one notification that"
-        " names this agent. When one person is refused, no task is made. Send"
+        " agent:<name>. Each person must already open the project through its"
+        " grants: an agent cannot show a task to anybody new. Each person gets"
+        " one notification that names this agent. When one person is refused,"
+        " no task is made. A person assigns anybody else in the app. Send"
         " an idempotency_key when you may retry: the same key gives back the"
         " first task with created false, and makes no second task. Returns the"
         " task with its version." + _UNTRUSTED_NOTE
@@ -4125,12 +4138,14 @@ async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """PUT the whole assignee set with ``If-Match`` (MCP-G2, §9.2).
 
     The gateway's ``set_assignees`` replaces the set in one transaction. For
-    a signed agent it refuses a person who is not an active member who can
-    see the task, and the edge names the refused entries of the call's own
-    list (:func:`_assignee_codes`). Any other 422 is the personal-project
-    guard. Each NEW person gets one notification, with ``via <client>``.
-    Then the edge reads the task again for the version and the set. A failed
-    re-read gives the set that the PUT answered, and a null version.
+    a signed agent it refuses a new person who cannot already open the task
+    through its grants, and the edge names the refused entries of the call's
+    own list (:func:`_assignee_codes`). The personal-project guard has its
+    own code. Each NEW person gets one notification, with ``via <client>``.
+    The version rule is strict equality (fix round 1): any change after the
+    read, a comment too, gives 412. Then the edge reads the task again for
+    the version and the set. A failed re-read gives the set that the PUT
+    answered, and a null version.
 
     It needs no ``_refuse_nul``: each input must match a pattern.
     """
@@ -4139,8 +4154,7 @@ async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     _, after = await _write(
         ctx, "PUT", ASSIGNEES_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body={"assignees": sent},
-        if_match=str(args["expected_version"]),
-        coded=_assignee_codes(sent), texts={422: TEXT_ASSIGNEES_PERSONAL})
+        if_match=str(args["expected_version"]), coded=_assignee_codes(sent))
     if not isinstance(after, dict):
         raise ToolError(TEXT_BUSY)
     written: dict[str, Any] = {"id": task_id, "assignees": after.get("assignees")}
@@ -4158,16 +4172,18 @@ SET_ASSIGNEES = Tool(
     description=(
         "Replace the whole assignee set of one task this member can see. Send"
         " every assignee that must stay, and leave out each one to remove. An"
-        " assignee is a member address or agent:<name>. Each new person must be"
-        " an active member of this organization who can see the task. When one"
-        " is refused, nothing changes, and the text names the refused entries."
+        " empty list removes every assignee. An assignee is a member address or"
+        " agent:<name>. Each new person must already open the project of the"
+        " task through its grants: an agent cannot show a task to anybody new."
+        " A person assigns anybody else in the Metorite app. When one entry is"
+        " refused, nothing changes, and the text names the refused entries."
         " Each new person gets one notification in Metorite that names this"
         " agent. A task in a personal project takes only its owner. Send the"
-        " version that get_task returned as expected_version. When the task"
-        " changed after that read, the tool refuses, and you read the task"
-        " again. Removing a person does not stop an agent run that holds the"
-        " task. To give back your own task, call release_task. Returns the task"
-        " id, its assignees and its new version." + _UNTRUSTED_NOTE
+        " version that get_task returned as expected_version. Any change to the"
+        " task after your read, a comment too, refuses the call. Read it again"
+        " and resend the full set. Removing a person does not stop an agent run"
+        " that holds the task. To give back your own task, call release_task."
+        " Returns the task id, its assignees and its new version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_SET_ASSIGNEES_INPUT,
@@ -4179,7 +4195,7 @@ SET_ASSIGNEES = Tool(
     run=_set_assignees,
     routes=(TASK_ROUTE,),
     method="PUT",
-    annotations=dict(WRITE_ANNOTATIONS),
+    annotations=dict(ASSIGN_ANNOTATIONS),
 )
 
 
@@ -5073,7 +5089,9 @@ __all__ = [
     "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "ASSIGNEES_ROUTE",
+    "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
+    "ASSIGN_ANNOTATIONS",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
     "CLAIM_TASK",

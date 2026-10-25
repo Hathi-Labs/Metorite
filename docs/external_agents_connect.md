@@ -84,14 +84,14 @@ Seven tools make or change a task:
 | `create_task` | It makes a task in a project or a sub-project that you can see, and it can make a subtask. It can set the `important` flag, the `leveraged` flag, the estimate, the start date and the first assignees. In Projects, the task shows the source "AI agent". With the same `idempotency_key`, a second call gives back the first task and makes no second task |
 | `update_task` | It changes the title, the description, the tags, the due date, the custom fields, the `important` flag, the `leveraged` flag, the estimate or the start date of a task. It can also move a task under another task of the same project, or to the top level |
 | `claim_task` | It makes you an assignee of a task, and the other assignees stay. A task in a backlog or to do status moves to the first in progress status. The agent calls it when it starts the work |
-| `set_assignees` | It replaces the assignees of a task. Each new person must be an active member of your organization who can see the task. When Metorite refuses one person, nothing changes |
+| `set_assignees` | It replaces the assignees of a task. Each new person must already be able to open the task through the grants of its project. When Metorite refuses one person, nothing changes. Any change to the task after the agent read it refuses the call |
 | `set_task_status` | It moves a task to another status. It can move a task to a done status when the agent finishes the work. It never moves a task to a cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too. A connection makes at most 120 changes in 10 minutes.
 
-**An assignment notifies people.** Each person that the agent adds gets one notification in the bell. It shows your name, and on a second line the name of the agent, such as `via Claude Code`. Before each tool call, Claude Code asks you, unless your permission settings allow that tool. Metorite shows no second approval for an assignment.
+**An assignment notifies people.** Each person that the agent adds gets one notification in the bell. It shows your name, and on a second line the name of the agent, such as `via Claude Code`. The agent can assign only a person who can already open the task, so an assignment never shows a task to somebody new. To assign anybody else, do it in Metorite.
 
 **A comment notifies people.** Each comment that the agent writes notifies the watchers and the assignees of the task, as your own comment does. An `@` followed by the address of a member who can see the task notifies that member too. These notifications go to the bell and the inbox in Metorite. Metorite does not send them by email.
 
@@ -128,7 +128,7 @@ Six tools work with these runs:
 ## What the agent cannot do
 
 - It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
-- It cannot move a task to another project, or delete a task. Do those steps in Metorite.
+- It cannot move a task to another project, delete a task, or assign a person who cannot already open the task. Do those steps in Metorite.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 

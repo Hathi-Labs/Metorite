@@ -255,6 +255,10 @@ DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
     # EA-6h (EA3-51 layer 2). The client asks the person before each call.
     "delete_task": {"readOnlyHint": False, "destructiveHint": True,
                     "idempotentHint": False, "openWorldHint": False},
+    # MCP-G2 fix round 1. It replaces the whole set, and an empty list
+    # removes every assignee. The same call twice changes nothing more.
+    "set_assignees": {"readOnlyHint": False, "destructiveHint": True,
+                      "idempotentHint": True, "openWorldHint": False},
 }
 
 
