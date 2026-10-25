@@ -382,23 +382,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `customer_console.md` §4.3a, H-171
 - **Added:** 2026-10-10 · branch `ai-call-attribution`
 
-### H-286 · Reply Zero lists snoozed and junk threads as needing a reply, and the digest and My Day do not · [AGENT]
-- **Check:** run `rg -n "excluded = " apps/services/gateway/gateway/routes/email/automation/replyzero.py`.
-  If the active buckets still exclude only `'trash', 'archive'`, this is open.
-- **Why.** The email app has two rules for "needs a reply". The digest's
-  `_LIVE_THREAD` (`routes/email/digest.py`) leaves out a thread when its last
-  message is in trash, junk or the archive, or the member snoozed it. The shell's needs
-  feed reads the same rule (`needs_reply_threads`, WS-44 NS-3). Reply Zero
-  (`replyzero.reply_zero`) leaves out only trash and archive. So a member sees
-  a snoozed or junk thread in the Reply list, and not in the digest count or
-  on My Day.
-- **Do this:** the email app decides which rule is right. If Reply Zero
-  should match, make its active buckets read `digest._LIVE_THREAD`, and do
-  not write a third copy. Fence it with a snoozed and a junk case in the
-  Reply Zero suite.
-- **Authority:** `email_app_master_plan.md` (Reply Zero), `navigation_shell.md` §7.2
-- **Added:** 2026-10-09 · WS-44 NS-3 slice A
-
 ### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
 - **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
   No hit means this is open.
@@ -6378,20 +6361,6 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
-
-### H-410 · The look-alike guard refuses Pinyin tone letters and the Azerbaijani ə in a held chat · [AGENT]
-- **Check:** `lookalike_words("Nǐ hǎo")` and `lookalike_words("Azərbaycan")` in `acb_skills/reply_card.py` both return `[]`. If they do, delete this entry.
-- **Why:** #1288 (H-393) refuses a Latin letter outside Basic Latin, Latin-1, Latin Extended-A and the Vietnamese ranges, in a chat that read outside mail. Pinyin tone letters (U+01CE, U+01D0) and ə (U+0259) are real text, not look-alikes, so a held send that holds them is refused. Other chats only warn.
-- **Do this:** allow the letters of Latin Extended-B and IPA that have no ASCII twin in `held_card._CONFUSABLE`. Keep ɑ, ɡ and ı-style twins refused. Add a test for each language.
-- **Authority:** the final check of #1288, 2026-10-24.
-- **Added:** 2026-10-24 · email single-mailbox session
-
-### H-411 · Two first writes of the always-copy list at once can both pass · [AGENT]
-- **Check:** `PUT /email/assistant/always-copy` locks the mailbox even when it has no settings row. The agent sends the version that the model read. If both hold, delete this entry.
-- **Why:** #1288 guards the list with a version and `SELECT … FOR UPDATE`. A mailbox with no settings row locks nothing. So two first writes can both pass, and the last one wins. The agent also reads the version just before its PUT. So it misses a change in the UI after the model read the list.
-- **Do this:** lock on the account row, or take an advisory lock on the account id. Carry the version from the model's read into the tool call.
-- **Authority:** the final check of #1288, 2026-10-24.
-- **Added:** 2026-10-24 · email single-mailbox session
 
 # DONE — deleted, not archived
 

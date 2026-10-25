@@ -192,4 +192,6 @@ def test_the_h404_pin_changes_are_named() -> None:
     # the key (``HELD_SETTING_DECISIONS``), because it changes the people of
     # each later card.
     assert "always_copy" in settings
-    assert len(settings) == 22
+    # H-411: the version of the list that the model read, refused in a held run.
+    assert "always_copy_version" in settings
+    assert len(settings) == 23
