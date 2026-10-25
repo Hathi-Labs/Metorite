@@ -667,6 +667,77 @@ The owner asked to read the live analytics at once, on the full page, with no ex
 
 **E. Home.** The gallery and "Your reports" stay under the dashboard. The template strip above the panels goes. The gallery under the dashboard has the same heading and the same templates. The "Change what you see" button goes, because "Filters" replaces it.
 
+### 6.8 People and agents in the Overview (product decision, 2026-10-25)
+
+The owner delegated this design on 2026-10-25: "think of yourself as the product manager". External AI agents now claim, work and finish tasks over MCP (`external_agent_access.md` §12.1 to §12.4). The Overview must show how work gets done by people AND by agents: speed, cost, quality, and how the two coordinate. The decisions below rest on a survey of Paperclip, Linear, Jira, GitHub Copilot, Swarmia, Jellyfish, Devin, Factory, LangSmith and Langfuse (2026-10-25).
+
+**A. The five questions.** The Overview answers five questions, in this order. A panel that answers none of them does not belong on it.
+
+1. Will this finish, and when?
+2. Who is carrying the work: which people, which agents?
+3. What is stuck or waiting, and on whom?
+4. Is the output good?
+5. What does it cost?
+
+**B. What we keep, change and add.**
+
+| Panel | Decision | Why |
+|---|---|---|
+| **KPI strip** | CHANGE. Six tiles: finished this week (people and agents), median cycle time (people and agents), waiting on a person (count and oldest), agents working now (working, silent, failed today), agent PR merge rate (14 days), cost for each finished task | Each tile is one of the five questions at a glance |
+| **Forecast** | CHANGE. Forecast by COUNT with a Monte Carlo of weekly throughput, at 50% and 85%. Keep "Not converging", and add the finishes a week that would converge it | Estimates are rare. The screenshot of 2026-10-25 shows 26 open tasks and none sized, so "Nothing sized" answered nothing. A count forecast needs no estimate |
+| **Who did the work** | NEW. Replaces "What we finished" when the scope is one project. Weekly finishes, stacked by people and by agents. Each agent rolls up under its member | A bar of one project, inside that same project, says nothing |
+| **How long it took** | CHANGE. Split the median and p90 by people and agents | "Are agent tasks really faster, end to end?" |
+| **Waiting on people** | NEW. The coordination panel (C below) | No surveyed product does this well. Our agent runs already hold the data |
+| **Agent runs** | NEW. 14 days of run outcomes (completed, failed, stopped, abandoned, released), the success rate, silent runs now, and run sizes | "Can I trust agents with this work?" Paperclip's Run Activity and Success Rate |
+| **Quality** | NEW. Agent PR outcomes (merged, closed unmerged, open), work reopened after done, CI red on agent PRs | Speed without quality is the trap every survey names |
+| **Cost** | NEW. Cost by project and for each finished task, with its source on every figure (D below) | "What does this throughput cost?" |
+| **Stuck work** | CHANGE. Add silent agent runs. Mark a task older than this project's own p85 age | One place for "what is dying quietly" |
+| **Open work** | CHANGE. Add the open runs of each agent. Show "Needs an owner" first when unassigned work leads | 25 of the 26 open tasks in that screenshot had no owner. That is the finding |
+
+**C. The coordination panel: "Waiting on people".** This is the panel no competitor has, and we build it first. It lists:
+
+1. **Agent questions with no answer.** Each row shows the task, the agent, the member it asks and the age. The oldest question shows first. The source is runs in `awaiting`, with an open elicitation.
+2. **Agent work waiting for review.** Tasks that an agent moved to a review lane, and agent PRs that are open with no review yet.
+3. **Handoff blockers.** Open `blocks` links where a person's task blocks an agent's task, or the reverse.
+4. **Answer time.** The median and p90 from an agent's question to the person's answer, over the window.
+
+Each row opens the task. A reader sees only the rows of tasks they can open (§7 rule 1).
+
+**D. Cost, and how sure each figure is.** Cost has three sources, decided in the swarm plan (Metorite #330, SW-20). Each figure prints its source:
+
+1. **Measured.** In-app agents spend our AI credits, and the credits ledger joins to the task and the run.
+2. **Reported.** External agents may send their own `usage` (tokens, model, an estimate). It shows as "reported by the agent", never as billed.
+3. **Time.** Agent run time (start to end, minus waits on a person) and person wait time. Always measured. It shows as hours, never as money.
+
+A figure with no known usage shows "unknown", never $0. The panel shows the share of finished tasks with any cost data, so a reader knows how much the number covers. Budgets and prices wait for H-42.
+
+**E. Rules that bind every panel.**
+
+1. **No leaderboard and no rank of people.** Show load and who is waiting, never "the top performer". Per-person rows follow §7.1 exactly. SPACE and Swarmia both warn that individual output scores are counter-productive.
+2. **An agent never hides its person.** Each agent figure names the member it works for, as Linear does with delegation.
+3. **Adoption is not productivity.** Do not show agent sessions, messages or tool calls as output. Count finished tasks, merged PRs and time.
+4. **No 100% target.** The merge rate shows its trend. The text never calls 100% the goal, because Swarmia names "close to, never at" as healthy.
+5. **Summary first.** Each panel opens with one plain sentence, as Forecast does. The run log stays one click away, never on the Overview (Paperclip's "no log worship").
+6. **Every word is a rule.** §5 Signals gains the rows below. The Overview prints the reason beside each status.
+7. **Chat first.** The assistant answers "how are the agents doing on this project?" from the same sections (owner rule, 2026-10-20). It is a read, so it asks nothing.
+
+**F. New signal words for §5.**
+
+| Word | Rule |
+|---|---|
+| **Agent-finished** | A done task whose move to done came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>` |
+| **Agent-assisted** | A done task that held at least one agent run, and that a person finished |
+| **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since |
+| **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more |
+| **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task |
+| **Needs an owner** | An open task with no assignee and no open run |
+
+**G. What we do not build.** No per-agent token charts beyond the cost panel. That is observability, a LangSmith job. No lines-of-code counts and no acceptance rates. No DORA deploy metrics, because no deploy data lives here.
+
+**H. Slices.** RA-1 to RA-8 in §8, after R-final. Order: RA-1, then RA-3 (coordination), then RA-2, RA-4, RA-6, RA-5, then RA-7 when SW-20 captures usage, and RA-8 last.
+
+*Verified against code: 2026-10-25, at `origin/main`. `pm_task_refs.state` is `open`, `draft`, `merged` or `closed` (migration 255). The run statuses and elicitations are in migrations 267 and 289. `meta.via` comes from `record_activity`.*
+
 ## 7. Data and privacy rules
 
 1. **The viewer's scope.** Every section uses `task_visibility_clause` and
@@ -1967,6 +2038,54 @@ rule, the fallback to the server, the case rule, the choice list and the
 first-name match.
 
 ---
+
+### RA-1 — Who did it: people, agents and agent-assisted · AGENT-SAFE
+
+**What:** one server rule in `analytics.py` that labels each done task as agent-finished, agent-assisted or person, and each open task's live holder (§6.8 F). Every later RA slice reads this rule. Nothing reads `meta.via` twice.
+
+**Done when:** a pure test pins each label, and an R8 test pins the SQL on a real ladder. No panel changes yet.
+
+### RA-2 — The KPI strip and "Who did the work" · AGENT-SAFE
+
+**What:** the six tiles of §6.8 B, and weekly finishes stacked by people and agents, with each agent under its member. "How long it took" splits its median and p90 by people and agents. "What we finished" stays for a scope of more than one project.
+
+**Done when:** `visual-review` passes at four widths, in light mode and at compact density, and each tile's rule is in its tooltip.
+
+### RA-3 — Waiting on people · AGENT-SAFE
+
+**What:** the coordination panel of §6.8 C. It lists open agent questions (oldest first), agent work waiting for review and handoff blockers. It shows the answer time at the median and p90.
+
+**Done when:** each row opens its task, a reader sees only tasks they can open, and an R8 test covers the answer time.
+
+### RA-4 — Agent runs · AGENT-SAFE
+
+**What:** 14 days of run outcomes, the success rate and silent runs now (the §6.8 F rule). Run sizes: under 15 minutes, under 1 hour, under 4 hours, and longer. A long run is flagged as "maybe a poorly specified task".
+
+**Done when:** the panel hides itself when the scope has no agent runs.
+
+### RA-5 — Quality · AGENT-SAFE
+
+**What:** agent PR outcomes from `pm_task_refs.state`, rework (§6.8 F) and CI red on agent PRs.
+
+**Done when:** the merge rate shows a trend, with no 100% target in its text.
+
+### RA-6 — The forecast by count · AGENT-SAFE
+
+**What:** a Monte Carlo of weekly finishes. It gives the 50% and 85% dates for the open count, with no estimates needed. It keeps "Not converging" and adds the finishes a week that would converge it. "Needs an owner" shows first in Open work when unassigned tasks lead.
+
+**Done when:** the same seed gives the same dates, and a pure test pins the converge line.
+
+### RA-7 — Cost · BLOCKED on SW-20 usage capture
+
+**What:** cost by project and for each finished task (§6.8 D). Every figure prints its source. The panel shows the coverage share, and "unknown" in place of $0.
+
+**Done when:** a task with no usage reads "unknown", and the coverage share counts it.
+
+### RA-8 — The chat · AGENT-SAFE
+
+**What:** the assistant reads the same sections for "how are the agents doing on this project?". It is a class A read with no card.
+
+**Done when:** the manifest maps the tool, and an answer quotes the panel's own summary sentence.
 
 ## 8a. Later phases — recorded, not scheduled
 
