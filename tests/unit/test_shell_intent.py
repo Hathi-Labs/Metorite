@@ -310,6 +310,38 @@ class TestOneJobList:
             assert py[job_id] == href, job_id
             assert labels[job_id] == label, f"{job_id}: the bar says {label!r}, the coordinator {labels[job_id]!r}"
 
+    def _ts_job_fallbacks(self) -> dict[str, tuple[str, str]]:
+        """The jobs of `registry.ts` that name a `fallback` (WS-64)."""
+        src = REGISTRY_TS.read_text(encoding="utf-8")
+        block = src[src.index("export const JOBS"):src.index("];", src.index("export const JOBS"))]
+        out: dict[str, tuple[str, str]] = {}
+        for chunk in re.split(r"\n  \{", block)[1:]:
+            job_id = re.search(r'id: "([^"]+)"', chunk)
+            fb = re.search(r'fallback: \{ feature: "([^"]+)", href: "([^"]+)" \}', chunk)
+            if job_id and fb:
+                out[job_id.group(1)] = (fb.group(1), fb.group(2))
+        return out
+
+    def test_the_fallbacks_of_the_bar_and_the_server_are_equal(self):
+        ts = self._ts_job_fallbacks()
+        py = {
+            j.id: (j.fallback_feature, j.fallback_href)
+            for j in intent.JOBS if j.fallback_feature
+        }
+        assert ts == py == {"capture": ("tasks", "/tasks?do=capture")}
+
+    def test_new_task_falls_back_to_tasks_for_a_member_without_projects(self):
+        held = {j.id: j.href for j in intent.held_jobs(member("tasks"))}
+        assert held["capture"] == "/tasks?do=capture"
+        # Both features: the Projects target, once.
+        both = [j for j in intent.held_jobs(member("tasks", "projects")) if j.id == "capture"]
+        assert [j.href for j in both] == ["/projects?do=capture"]
+        # Projects alone: the Projects target.
+        only = {j.id: j.href for j in intent.held_jobs(member("projects"))}
+        assert only["capture"] == "/projects?do=capture"
+        # Neither: no job.
+        assert "capture" not in {j.id for j in intent.held_jobs(member("email"))}
+
     def _ts_job_features(self) -> dict[str, str]:
         """The jobs of `registry.ts` that name a `feature` of their own (EA-4b)."""
         src = REGISTRY_TS.read_text(encoding="utf-8")
@@ -317,7 +349,8 @@ class TestOneJobList:
         out: dict[str, str] = {}
         for chunk in re.split(r"\n  \{", block)[1:]:
             job_id = re.search(r'id: "([^"]+)"', chunk)
-            feature = re.search(r'\bfeature: "([^"]+)"', chunk)
+            # A line of its own, so the `fallback: { feature: ... }` object is not read (WS-64).
+            feature = re.search(r'^\s+feature: "([^"]+)"', chunk, re.M)
             if job_id and feature:
                 out[job_id.group(1)] = feature.group(1)
         return out
