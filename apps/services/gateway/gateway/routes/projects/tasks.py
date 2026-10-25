@@ -79,7 +79,6 @@ from gateway.routes.projects.core import (
     now,
     parent_lane_status,
     parse_precondition,
-    precondition_holds,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -1229,9 +1228,11 @@ async def delete_task_in(
         # The moves go BEFORE the deletes. The FK's SET NULL would otherwise
         # make each kept row top-level first.
         for kid, parent in moves.items():
+            # WS-55 MCP-G7: stamped here, so the trigger sees the parent
+            # change and moves `fields_at`. The touch below comes second.
             await db.execute(
-                text("UPDATE pm_tasks SET parent_task_id = CAST(:p AS uuid)"
-                     " WHERE id = CAST(:k AS uuid)"),
+                text("UPDATE pm_tasks SET parent_task_id = CAST(:p AS uuid),"
+                     " updated_at = now() WHERE id = CAST(:k AS uuid)"),
                 {"p": parent, "k": kid},
             )
         children = list(moves)
@@ -1477,8 +1478,14 @@ async def agent_delete_task(
         # WS-64 OP-8 (D-OP-12). The member's own authority, the rule of the
         # app route. The edge maps this 403 to the same sentence.
         await assert_may_delete_task(db, user, doomed)
-        # MCP-G7: the one version rule, so a comment does not stale the yes.
-        if not precondition_holds(doomed, expected):
+        # MCP-G7: the ONE place that keeps strict equality, on purpose. A
+        # delete is one-way, and `fields_at` does not see a subtask moved under
+        # this task (`/move` bumps only the parent), a My Tasks step or a
+        # merge into it. So with `subtasks_to_delete: all`, the fields rule
+        # could delete a subtree the member never saw. Any change after the
+        # read, a comment too, makes the member's yes stale.
+        # Fence: `test_task_precondition_fields_at.py`, the agent delete case.
+        if doomed.updated_at != expected:
             raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
         if doomed.title != payload.confirm_title:
             raise HTTPException(status_code=409, detail=AGENT_DELETE_TITLE)

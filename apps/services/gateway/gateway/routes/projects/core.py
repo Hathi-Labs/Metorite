@@ -2057,6 +2057,17 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 # writer that waited on the row lock cannot stamp a field change OLDER than a
 # token a client already holds. A NULL ``fields_at`` narrows nothing.
 #
+# ⚠️ A write that changes a column of the task must SET ``updated_at`` in the
+# SAME statement (``update_row`` does). The trigger fires only then. A field
+# write with no stamp, followed by ``touch_task`` in the same request, leaves
+# ``fields_at`` behind, and a stale token then passes. The promote paths
+# (``lift_subtasks_to_grandparent``, ``merge._reparent_children``, the kept
+# subtasks of ``tasks.delete_task_in``) stamp for this reason.
+#
+# ``tasks.agent_delete_task`` keeps STRICT equality and does not call
+# :func:`precondition_holds`. A delete is one-way, and ``fields_at`` does not
+# see a subtask moved under the task, so any change after the read stales it.
+#
 # ⚠️ The two rules below are not stylistic — both were MEASURED against a real
 # database (spec §9.10.1), and both are cases where the obvious implementation
 # reports a safety it does not have:
@@ -2131,18 +2142,17 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
         return
     expected = parse_precondition(if_match)
     # MCP-G7: the one rule. A token that it passes goes ahead, and each other
-    # token is a mismatch, so the check below always raises when it runs.
+    # token is a mismatch. Rule 2 holds inside it: instants, never strings.
     if precondition_holds(row, expected):
         return
-    if row.updated_at != expected:          # rule 2: instants, never strings
-        raise HTTPException(
-            status_code=412,
-            detail={
-                "error": "precondition_failed",
-                "message": "This row changed since you loaded it.",
-                "current": current,
-            },
-        )
+    raise HTTPException(
+        status_code=412,
+        detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+            "current": current,
+        },
+    )
 
 
 async def count_where(db: Any, table: str, column: str, value: str) -> int:
@@ -3282,6 +3292,9 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
 
     Returns the ids that moved. The caller bumps them with :func:`touch_task`,
     because ``parent_task_id`` changes and ``updated_at`` does not.
+    (Since WS-55 MCP-G7 the UPDATE stamps ``updated_at`` itself, so the
+    trigger of migration 303 moves ``fields_at``. The caller's bump stays,
+    and it is a no-op at the same ``now()``.)
 
     ⚠️ **Why this exists.** The FK is ``ON DELETE SET NULL``, so until
     2026-09-26 deleting a subtask that had subtasks of its own made them
@@ -3309,6 +3322,11 @@ async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
     moved = (await db.execute(
         text(
             "UPDATE pm_tasks SET parent_task_id = CAST(:grandparent AS uuid) "
+            # WS-55 MCP-G7: the stamp makes the trigger see the parent change,
+            # so `fields_at` moves and an old token of a promoted task is 412.
+            # Without it the caller's touch came second, saw no field change,
+            # and the old token passed the `fields_at` arm.
+            "    , updated_at = now() "
             "WHERE parent_task_id = CAST(:tid AS uuid) RETURNING id"
         ),
         {

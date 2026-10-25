@@ -48,10 +48,37 @@
 -- `test_mcp_edge_claim.py` then gave two 200s for one version. Measured
 -- 2026-10-25.
 --
--- A write that does not SET `updated_at` (`touch=False`, the tag rename, the
--- status remap) does not fire the trigger and does not move `fields_at`. Such
--- a write never changed the token before this file, so it must not start to
--- break a pending edit now. On INSERT, `fields_at` takes `updated_at`.
+-- A write that does not SET `updated_at` does not fire the trigger and does
+-- not move `fields_at`. On INSERT, `fields_at` takes `updated_at`.
+--
+-- ⚠️ So a write that changes a column of the task must SET `updated_at` in the
+-- SAME statement, or `fields_at` cannot see it. The danger is a field write
+-- with no stamp and a `touch_task` of the same row later in the same request:
+-- the touch moves the token, the trigger sees no field change at the touch,
+-- and a stale token passes. Before this file, that touch gave the stale token
+-- its 412. The promote paths had this shape, and this change stamps them:
+-- `core.lift_subtasks_to_grandparent`, the two UPDATEs of
+-- `merge._reparent_children`, and the kept subtasks of
+-- `tasks.delete_task_in`. Fence: the promoted-subtask case of
+-- `test_task_precondition_fields_at.py`.
+--
+-- A write with no stamp and NO later touch keeps the token where it was, as
+-- it did before this file: `touch=False` (recurrence and import bookkeeping),
+-- the tag and custom-field sweeps, the status remaps, and the root move of
+-- `tree.py`. This file does not change what those writes do to a token.
+--
+-- ⚠️ Known limit: the lift pins a FUTURE stamp. After a restore or a clock
+-- skew leaves `updated_at` ahead of the clock, each later `now()` write moves
+-- it by one microsecond only, and `SET updated_at = now()` is lifted too. The
+-- repair is an explicit time that is not `now()`, written to both columns:
+--     UPDATE pm_tasks
+--        SET updated_at = now() - interval '1 microsecond',
+--            fields_at  = now() - interval '1 microsecond'
+--      WHERE updated_at > now();
+-- The trigger keeps an explicit time as written, and it compares no field, so
+-- `fields_at` keeps the value the repair wrote. A client that holds a token
+-- from before the repair then gets 412 once, and reads the task again.
+-- Fence: `test_a_future_stamp_is_repaired_by_an_explicit_time`.
 --
 -- `SECURITY DEFINER` is not used. The trigger runs as the writer, and it reads
 -- no other table.

@@ -33,6 +33,13 @@ Mutations (each must turn a named test red):
   ``updated_at`` did not move (the first draft).
   ``test_a_bump_then_a_field_in_one_transaction_stamps_fields_at``, and the
   claim race of ``test_mcp_edge_claim.py`` (two 200s for one version).
+* M5. ``core.lift_subtasks_to_grandparent``: drop ``updated_at = now()``.
+  ``test_a_subtask_promoted_by_a_parent_delete_gives_412``.
+* M6. ``merge._reparent_children``: drop ``updated_at = now()`` from the
+  move of the children. ``test_a_subtask_moved_by_a_merge_gives_412``.
+
+The agent delete keeps strict equality on purpose. Its fences are H2b and
+H2c of ``test_mcp_edge_delete.py`` (mutation D30 there).
 """
 
 from __future__ import annotations
@@ -116,8 +123,10 @@ def _lane(p: Any, task: str, name: str, category: str, position: int) -> str:
     return lane
 
 
-def _second_task(p: Any, task: str) -> str:
-    """Task B, in the same project as task A, so the member sees both."""
+def _second_task(p: Any, task: str, *, number: int = 2, title: str = "Order the nozzles",
+                 parent: str | None = None) -> str:
+    """Task B, in the same project as task A, so the member sees both. With
+    *parent*, a subtask of that task."""
     with p.admin_engine.begin() as c:
         row = c.execute(text(
             "SELECT project_id, organization_id, status_id FROM pm_tasks "
@@ -125,10 +134,10 @@ def _second_task(p: Any, task: str) -> str:
         other = str(uuid.uuid4())
         c.execute(text(
             "INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, "
-            "task_number, status_id, title, created_by) "
-            "VALUES (:id, :o, :p, :p, 2, :s, 'Order the nozzles', :e)"),
-            {"id": other, "o": row.organization_id, "p": row.project_id,
-             "s": row.status_id, "e": ME})
+            "task_number, status_id, title, created_by, parent_task_id) "
+            "VALUES (:id, :o, :p, :p, :n, :s, :title, :e, CAST(:parent AS uuid))"),
+            {"id": other, "o": row.organization_id, "p": row.project_id, "n": number,
+             "s": row.status_id, "title": title, "e": ME, "parent": parent})
     return other
 
 
@@ -320,3 +329,76 @@ class TestTheVersionOnARealDatabase:
         w = world
         made = _stamps(w.p, w.task_b)
         assert made.fields_at == made.updated_at
+
+    async def test_a_subtask_promoted_by_a_parent_delete_gives_412(self, world):
+        """Read child C, delete its parent (C moves up a level), PATCH C with
+        the old token: 412. The lift stamps ``updated_at`` itself, so the
+        trigger sees the parent change. The touch that follows it saw none."""
+        w = world
+        child = _second_task(w.p, w.task_a, number=3, title="Clean the nozzle",
+                             parent=w.task_a)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{child}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            # The creator deletes it (`assert_may_delete_task`).
+            gone = await _as(call, w.me, "DELETE", f"/projects/tasks/{w.task_a}")
+            assert gone.status_code == 200, gone.text
+            assert gone.json()["cascaded"]["subtasks_promoted"] == 1
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{child}",
+                             {"title": "Clean the nozzle today"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] is None
+        moved = _stamps(w.p, child)
+        assert moved.fields_at == moved.updated_at
+
+    async def test_a_subtask_moved_by_a_merge_gives_412(self, world):
+        """Read child C of task B, merge B into A (C moves under A), PATCH C
+        with the old token: 412."""
+        w = world
+        child = _second_task(w.p, w.task_a, number=3, title="Clean the nozzle",
+                             parent=w.task_b)
+        async with _session(w.p) as call:
+            seen = await _as(call, w.me, "GET", f"/projects/tasks/{child}")
+            assert seen.status_code == 200, seen.text
+            version = seen.json()["updated_at"]
+            merged = await _as(call, w.me, "POST", f"/projects/tasks/{w.task_a}/merge",
+                               {"sources": [w.task_b]})
+            assert merged.status_code == 200, merged.text
+            late = await _as(call, w.me, "PATCH", f"/projects/tasks/{child}",
+                             {"title": "Clean the nozzle today"}, if_match=version)
+        assert late.status_code == 412, late.text
+        assert late.json()["detail"]["current"]["parent_task_id"] == w.task_a
+
+    async def test_a_future_stamp_is_repaired_by_an_explicit_time(self, world):
+        """The known limit of the lift (migration header): a future stamp pins
+        each later ``now()`` write. ``SET updated_at = now()`` is lifted too.
+        The repair of the header, an explicit time below ``now()`` written to
+        both columns, is kept as written."""
+        w = world
+        ahead = datetime.now().astimezone() + timedelta(days=1)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE pm_tasks SET updated_at = :u, fields_at = :u "
+                "WHERE id = CAST(:t AS uuid)"), {"u": ahead, "t": w.task_a})
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET updated_at = now() WHERE id = CAST(:t AS uuid)"),
+                      {"t": w.task_a})
+        assert _stamps(w.p, w.task_a).updated_at == ahead + timedelta(microseconds=1)
+        with w.p.admin_engine.begin() as c:
+            stamp = c.execute(text("SELECT now() - interval '1 microsecond'")).scalar()
+            c.execute(text(
+                "UPDATE pm_tasks SET updated_at = now() - interval '1 microsecond', "
+                "fields_at = now() - interval '1 microsecond' "
+                "WHERE id = CAST(:t AS uuid) AND updated_at > now()"), {"t": w.task_a})
+        repaired = _stamps(w.p, w.task_a)
+        assert repaired.updated_at == stamp
+        assert repaired.fields_at == stamp
+        # The next ordinary write stamps the clock again, not the old future.
+        async with _session(w.p) as call:
+            done = await _as(call, w.me, "PATCH", f"/projects/tasks/{w.task_a}",
+                             {"title": "Back on the clock"})
+            assert done.status_code == 200, done.text
+        after = _stamps(w.p, w.task_a)
+        assert stamp < after.updated_at < ahead
+        assert after.fields_at == after.updated_at

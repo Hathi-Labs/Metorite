@@ -3969,7 +3969,38 @@ The owner's agents met this many times on 2026-10-25.
   `now()` stamp that is older than the old stamp to the old stamp plus one microsecond. Then it
   copies `updated_at` to `fields_at` if any other column changed.
 * `core.precondition_holds` passes a token that equals `updated_at`, as before. It also passes a
-  token from `fields_at` up to `updated_at`. The PATCH, the claim and the agent delete use it.
+  token from `fields_at` up to `updated_at`. The PATCH and the claim use it.
+* The agent delete keeps strict equality on `updated_at`. It does not use the new rule.
+* A write that changes a column of a task must set `updated_at` in the same statement. The
+  promote paths now do: `core.lift_subtasks_to_grandparent`, `merge._reparent_children` and the
+  kept subtasks of `tasks.delete_task_in`.
+
+**Why a delete by an agent keeps equality.** A delete is one-way. `fields_at` does not see a subtask
+that `/move` puts under the task, because `/move` bumps only the parent. A My Tasks step and a
+merge into the task act the same way. Under the new rule, `subtasks_to_delete: all` could delete
+a subtree that the member never saw.
+
+So any change after the read makes the member's yes stale, and a comment does too. The
+coordinator decided this on 2026-10-25 (review P1).
+
+**Why the promote paths stamp.** Each path changed `parent_task_id` with no stamp, and then
+touched the row. The touch moved the token, and the trigger saw no field change at the touch. So
+an old token of a promoted task passed. Before migration 303, that touch gave the old token its
+412. The stamp in the same statement restores the 412. A write with no stamp and no later touch
+keeps the token where it was, as before migration 303. The tag sweep and the status remap are
+two of those writes.
+
+**An accepted gap: a second claim of a started task.** A claim of a task that is already
+`in_progress` only adds an assignee. An assignee is a satellite, so a stale token of a second
+member now passes the claim. The coordinator accepts this. While `agent_runs_enabled` is on, the run hold
+still refuses a second agent session on the task. The claim tool text changes after SW-7 merges.
+
+**A known limit: the lift pins a future stamp.** A restore or a clock skew can leave
+`updated_at` ahead of the clock. Then each later `now()` write moves it by one microsecond only.
+`SET updated_at = now()` cannot repair it, because the trigger lifts that stamp too.
+
+The repair is an explicit time that is not `now()`, written to both columns. The trigger keeps an
+explicit time as written. The migration header gives the statement.
 
 **Why this is not a second version.** §9.10 refused a `version` column, because two monotonic
 facts about one row disagree in time. `updated_at` stays the one token and the one feed stamp.
@@ -3986,8 +4017,13 @@ request keeps one instant. An explicit time, such as a test fixture, stays as wr
 it, and the claim race of `test_mcp_edge_claim.py` gave two 200s for one version.
 
 **Fences.** `tests/unit/test_task_precondition_fields_at.py` runs on R8. A link and a comment keep
-the old token good for a field PATCH and a status move. A field change still gives 412. A bump
-leaves `fields_at`. `tests/unit/test_projects_precondition.py` holds the pure rule.
+the old token good for a field PATCH and a status move. A field change still gives 412, and a
+bump leaves `fields_at`. A subtask that a parent delete or a merge moves gives 412 to an old token.
+The repair of a future stamp holds.
+
+`tests/unit/test_projects_precondition.py` holds the pure rule. H2b and H2c of
+`tests/unit/test_mcp_edge_delete.py` fence the strict delete: a comment, or
+a subtask moved in, after the read gives 409 and deletes nothing.
 
 **Not in scope.** The PATCH still loads the row with no lock before it writes. That gap is the
 open follow-up of `external_agent_access.md` §17, and this change does not close it.
