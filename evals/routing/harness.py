@@ -483,6 +483,7 @@ class RoutingHarness:
         agent: str = ORCHESTRATOR,
         thread_id: str | None = None,
         solo_room: bool = True,
+        history: list[dict[str, Any]] | None = None,
     ) -> RunRecord:
         """One chat turn of the one assistant, through ``run_agent_stream``.
 
@@ -494,7 +495,9 @@ class RoutingHarness:
         next turn of the same chat (``test_one_assistant_email.py``).
         *solo_room* is the bit that the chat route binds with
         ``room_is_solo(room)``. A member alone in their own chat is solo, so
-        it is True by default (H-406)."""
+        it is True by default (H-406). *history* is the chat's earlier turns
+        as the browser sends them (``messages``), for a test of what a
+        delegated task carries (WS-67 OA-1)."""
         from acb_common.db import bind_tenant, release_tenant
         from acb_skills.write_artifact import bind_artifact_context
         from orchestrator import executor
@@ -506,6 +509,8 @@ class RoutingHarness:
         agents = frozenset(self._registry)
         payload = {"mode": "chat", "message": words, "user_email": member,
                    "system_context": system_context}
+        if history:
+            payload["messages"] = list(history)
 
         async def consume() -> None:
             async for line in executor.run_agent_stream(

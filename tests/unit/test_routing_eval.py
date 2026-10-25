@@ -160,16 +160,29 @@ def test_a_case_that_asks_and_does_not_fails() -> None:
             in result.problems), result.problems
 
 
-def test_a_message_that_drops_the_members_words_fails() -> None:
-    def vague(case: Case, form: str) -> dict[str, ReplyModel]:
-        models = run.script_for(case, form)
-        models[ORCHESTRATOR] = ReplyModel([
-            tool_turn("call_agent", {"agent_name": case.expected, "message": "Do the thing."}),
-            text_turn("Done."),
-        ])
-        return models
+def _vague(case: Case, form: str) -> dict[str, ReplyModel]:
+    """The orchestrator's model writes a task with none of the member's words."""
+    models = run.script_for(case, form)
+    models[ORCHESTRATOR] = ReplyModel([
+        tool_turn("call_agent", {"agent_name": case.expected, "message": "Do the thing."}),
+        text_turn("Done."),
+    ])
+    return models
 
-    result = _one("P1", vague)
+
+def test_a_vague_task_still_carries_the_members_words() -> None:
+    """WS-67 OA-1: the executor puts the member's words at the head of every
+    delegated task, so a vague task from the model still carries them."""
+    result = _one("P1", _vague)
+    assert not [p for p in result.problems if "never got the member's words" in p], \
+        result.problems
+
+
+def test_without_the_handoff_seam_a_vague_task_drops_the_members_words(monkeypatch) -> None:
+    from acb_skills import handoff
+
+    monkeypatch.setattr(handoff, "task_with_member_words", lambda task, _turns: task)
+    result = _one("P1", _vague)
     assert "'projects-assistant''s model never got the member's words" in result.problems, \
         result.problems
 

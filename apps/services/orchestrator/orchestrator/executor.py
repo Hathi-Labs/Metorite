@@ -1963,6 +1963,15 @@ async def _run_sub_agent_streaming(
     Returns the final text response.
     """
     settings = get_settings()
+    # WS-67 OA-1 and OA-2: the member's own words, verbatim, and the reply
+    # rules (quoted or inferred) head every delegated task. The executor adds
+    # them, so no prompt and no model can leave them out. Read from the
+    # PARENT's binding, on the parent's frame.
+    from acb_skills.handoff import MEMBER_TURNS, task_with_member_words
+    from acb_skills.write_artifact import artifact_context
+    message_str = task_with_member_words(
+        message_str, artifact_context().get(MEMBER_TURNS),
+    )
     _repo_name: str | None = None
     _local_path: str | None = None
     _runtime: str = "maf"
@@ -4289,6 +4298,8 @@ async def _run_agent_inner(
     _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
     # CRM-Q29: the member's own words, a source of the number check.
     _member_words = _member_words_for_run(_parent_ctx, event_payload)
+    # WS-67 OA-1: the member's messages of the chat, for each delegated task.
+    _member_turns = _member_turns_for_run(_parent_ctx, event_payload)
     # H-236: decide this run's no_egress once, from the parent's binding and
     # this agent's own cover, and bind it before anything can fail. A load
     # error then retries (self-anneal) with this answer, never the parent's.
@@ -4594,6 +4605,7 @@ async def _run_agent_inner(
                 run_id=run_id,
                 workspace_root=_effective_agent_dir,
                 member_message=_member_words,  # CRM-Q29
+                member_turns=_member_turns,  # WS-67 OA-1
                 # H-227: True only when this executor minted the thread of a
                 # run with no chat and no parent (see `_batch_thread`).
                 batch_thread=_batch_thread,
@@ -5372,6 +5384,8 @@ async def run_agent_stream(
     # CRM-Q29: the member's own words of this turn, a source of the number
     # check. A delegated run takes its parent's words, never its payload.
     _member_words = _member_words_for_run(artifact_context(), event_payload)
+    # WS-67 OA-1: the member's messages of the chat, for each delegated task.
+    _member_turns = _member_turns_for_run(artifact_context(), event_payload)
     _artifact_token = enter_artifact_context()
     # H-236: decide this run's no_egress ONCE, before anything can fail, and
     # bind it. A covered agent's run is a covered run, whatever its parent.
@@ -5605,6 +5619,7 @@ async def run_agent_stream(
                 run_id=run_id,
                 workspace_root=_effective_ws,
                 member_message=_member_words,  # CRM-Q29
+                member_turns=_member_turns,  # WS-67 OA-1
                 batch_thread=_batch_thread,  # H-227
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
@@ -8806,6 +8821,18 @@ async def _tier_policy_for_run(
         emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
         context_tokens=context_tokens,
     )
+
+
+def _member_turns_for_run(parent: Any, event_payload: dict[str, Any]) -> list[str]:
+    """The member's own messages of the chat, for each task that this run
+    delegates (WS-67 OA-1). ``acb_skills.handoff.member_turns`` decides.
+    *parent* is the run context read BEFORE this run sets its own. With no
+    ``acb_skills``, none."""
+    try:
+        from acb_skills.handoff import member_turns
+    except ImportError:
+        return []
+    return member_turns(parent or {}, event_payload or {})
 
 
 def _member_words_for_run(parent: Any, event_payload: dict[str, Any]) -> str:
