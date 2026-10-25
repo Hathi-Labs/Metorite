@@ -22,7 +22,7 @@ it revokes each free Google grant once (§19).
 questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
 
-**KC-3 BUILT 2026-10-25, dark** (branch `kc-3-sync`, migration 305,
+**KC-3 BUILT 2026-10-25, dark** (branch `kc-3-sync`, migration 308,
 `KNOWLEDGE_SYNC` empty). The loop reads the Drive change feed every 15
 minutes for each ready source, and relists it slim once a day. It keeps
 `kb_source_nodes` current as metadata, and reads no text. KC-5 compares
@@ -868,9 +868,9 @@ nullable with a default (R6).
 |---|---|---|
 | `kb_sources` | `connection_id`, `provider`, `kind` (`member`, `org`), `owner_email`, `state` (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), `default_space_id`, `account_email`, `account_id`, `node_count`, `discovered_at`, `last_error` | KC-1 (built at KC-1a, migration 300) |
 | `kb_source_nodes` | `source_id`, `ext_id`, `parent_ext_id`, `drive_id`, `kind`, `name`, `mime`, `size`, `modified_at`, `content_hash`, `web_url`, `state` (`live`, `gone`), `explored` | KC-1 (built at KC-1a, migration 300) |
-| `kb_sync_cursors` | `source_id`, `kind` (`changes`, `reconcile`), `cursor_state`, `last_run_at`, `last_status`. UNIQUE (`organization_id`, `source_id`, `kind`) | KC-3 (built at KC-3, migration 305) |
-| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 305) |
-| `kb_sources.last_new_at` | When a run last inserted a node. CX-5 reads it for Knowledge | KC-3 (built at KC-3, migration 305) |
+| `kb_sync_cursors` | `source_id`, `kind` (`changes`, `reconcile`), `cursor_state`, `last_run_at`, `last_status`. UNIQUE (`organization_id`, `source_id`, `kind`) | KC-3 (built at KC-3, migration 308) |
+| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 308) |
+| `kb_sources.last_new_at` | When a run last inserted a node. CX-5 reads it for Knowledge | KC-3 (built at KC-3, migration 308) |
 | `kb_watch_channels` | `source_id`, `provider_channel_id`, `resource_id`, `expires_at` | KC-3b |
 | `kb_node_access` | `node_id`, `principal_kind`, `principal`, `role`, `synced_at` | KC-4 |
 | `kb_documents` | `node_id`, `text`, `sha`, `extracted_at`, `parser`, `truncated`, `summary` | KC-5 |

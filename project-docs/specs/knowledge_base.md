@@ -1222,11 +1222,11 @@ compact density, a changed accent, and four widths.
 | `kb_links` | §5.5 | as the page |
 | `kb_chunks` | §6.1 | as the page or the document |
 | `kb_gaps` | id, organization_id, norm_query, sample_query, askers TEXT[] (20 at most), ask_count, first_asked_at, last_asked_at, status (`open`, `answered`, `dismissed`), answered_page_id (→ `kb_pages`, ON DELETE SET NULL), dismissed_by, dismissed_at, created_at. UNIQUE (organization_id, norm_query). KB-9a, §8.4 | org scope: `knowledge:manage`. A member: the gaps the member asked |
-| `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, kind (`member`, `org`), owner_email, state (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), default_space_id, account_email, account_id, node_count, discovered_at, last_error, last_new_at, created_at, updated_at. Migration 300 (KC-1a). `last_new_at` is migration 305 (KC-3) | org scope: `knowledge:manage`. member scope: the member |
+| `kb_sources` | id, organization_id, connection_id (→ `integration_connections`), provider, kind (`member`, `org`), owner_email, state (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), default_space_id, account_email, account_id, node_count, discovered_at, last_error, last_new_at, created_at, updated_at. Migration 300 (KC-1a). `last_new_at` is migration 308 (KC-3) | org scope: `knowledge:manage`. member scope: the member |
 | `kb_source_nodes` | organization_id, source_id, ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url, path, included_space_id, explored, seen_at | as the source |
 | `kb_documents` | id, organization_id, source_id, node_ext_id, space_id, title, text, text_sha, extracted_at, pages, truncated, copied_attachment_id | the space it was included into |
-| `kb_sync_runs` | id, organization_id, source_id, kind (`discover`, `changes`, `reconcile`), status, started_at, finished_at, heartbeat_at, counts JSONB, error. Migration 305 (KC-3) | as the source |
-| `kb_sync_cursors` | organization_id, source_id, kind (`changes`, `reconcile`), cursor_state JSONB, last_run_at, last_status. Migration 305 (KC-3) | as the source |
+| `kb_sync_runs` | id, organization_id, source_id, kind (`discover`, `changes`, `reconcile`), status, started_at, finished_at, heartbeat_at, counts JSONB, error. Migration 308 (KC-3) | as the source |
+| `kb_sync_cursors` | organization_id, source_id, kind (`changes`, `reconcile`), cursor_state JSONB, last_run_at, last_status. Migration 308 (KC-3) | as the source |
 
 Every table carries `organization_id`, defaults it from `app.tenant_id`,
 and takes FORCE RLS from the generated policies. `test_tenant_coverage.py`'s

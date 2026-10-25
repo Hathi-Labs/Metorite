@@ -149,7 +149,7 @@ UPSERT_NODES_SQL = (
     "RETURNING (xmax = 0) AS inserted"
 )
 
-#: When a run last added a node (KC-3, migration 305). CX-5 reads it.
+#: When a run last added a node (KC-3, migration 308). CX-5 reads it.
 _LAST_NEW_SQL = (
     "UPDATE kb_sources SET last_new_at = now() "
     "WHERE id = CAST(:source AS uuid) AND organization_id = CAST(:org AS uuid) "

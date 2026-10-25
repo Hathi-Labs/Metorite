@@ -1,5 +1,5 @@
 -- ============================================================================
--- 305_kb_sync.sql — the sync loop of a Knowledge file source: cursors, runs,
+-- 308_kb_sync.sql — the sync loop of a Knowledge file source: cursors, runs,
 -- and the time of the last new node.
 --
 -- What: two new tables, three indexes and one new nullable column.
@@ -38,9 +38,10 @@
 -- `ADD CONSTRAINT <table>_org_fk`, because generated phase 3 adds that name.
 -- ⚠️ Neither table holds a person column. The cascade from kb_sources removes
 -- both with the source, so the member purge needs no new path.
--- The number is taken at build time (R1). On 2026-10-25 main held 300, 301,
--- 302 and 303, and the open PR #1317 held 304. Check it again at merge. The
--- tests find this file by CONTENT, never by number.
+-- The number is taken at build time (R1). It was 305 until the merge of
+-- 2026-10-25: then main held 300 to 304, 306 and 307, and the open PR #1333
+-- held 305. Check it again at merge. The tests find this file by CONTENT,
+-- never by number.
 --
 -- Fences: tests/unit/test_kc_sync_r8.py (FORCE RLS as a role that is not a
 -- superuser, not the owner and not BYPASSRLS, the run lock on the real

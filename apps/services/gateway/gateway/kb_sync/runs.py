@@ -1,4 +1,4 @@
-"""The SQL of the Knowledge sync: runs and cursors (WS-61 KC-3, migration 305).
+"""The SQL of the Knowledge sync: runs and cursors (WS-61 KC-3, migration 308).
 
 Spec: ``project-docs/specs/knowledge_curation.md`` §7.2 step 5 and §16, and
 ``project-docs/specs/knowledge_base.md`` §7.1.
