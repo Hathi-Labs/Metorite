@@ -353,10 +353,10 @@ async def needs_attention(
 
 __all__ = [
     "ACTIONS",
-    "STALLED_CONNECTION_GONE",
     "KINDS",
     "MAX_PER_KIND",
     "PARKED_CATEGORY",
+    "STALLED_CONNECTION_GONE",
     "blocked_sql",
     "dangling_sql",
     "needs_attention",
