@@ -11,6 +11,8 @@
  * answer, the full profile, as the new state.
  */
 
+import { filenameFromDisposition } from "@/lib/export";
+
 export const FACT_KINDS = ["about", "routine", "preference", "work", "relationship"] as const;
 export type FactKind = (typeof FACT_KINDS)[number];
 export const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -213,4 +215,43 @@ export function sourceLabel(source: string | undefined): string {
   if (source === "chat") return "Learned in chat";
   if (source === "whatsapp") return "Learned on WhatsApp";
   return `Source: ${source}`;
+}
+
+// ── The export (PZ-9) ─────────────────────────────────────────────────────
+
+export const EXPORT_FORMATS = ["json", "text"] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+
+/** The file name of each export, when the server names none. */
+export const EXPORT_FALLBACK: Record<ExportFormat, string> = {
+  json: "assistant-profile.json",
+  text: "assistant-profile.txt",
+};
+
+/** The proxy path of one export. */
+export function exportPath(format: ExportFormat): string {
+  return `/api/auth/me/assistant-profile/export${format === "text" ? "?format=text" : ""}`;
+}
+
+/**
+ * Fetch the member's own profile as a file. The bytes stay a `Blob`, and the
+ * name is the server's, read off `Content-Disposition` (`src/lib/export.ts`).
+ * A failed call throws a `ProfileError`, as every other call here does.
+ */
+export async function fetchExport(format: ExportFormat): Promise<{ body: Blob; filename: string }> {
+  let res: Response;
+  try {
+    res = await fetch(exportPath(format), { cache: "no-store" });
+  } catch {
+    throw new ProfileError(errorText("", 502), 0);
+  }
+  if (!res.ok) {
+    const data: unknown = await res.json().catch(() => null);
+    const detail = data && typeof data === "object" ? (data as { detail?: unknown }).detail : undefined;
+    throw new ProfileError(errorText(detail, res.status), res.status);
+  }
+  return {
+    body: await res.blob(),
+    filename: filenameFromDisposition(res.headers.get("content-disposition"), EXPORT_FALLBACK[format]),
+  };
 }

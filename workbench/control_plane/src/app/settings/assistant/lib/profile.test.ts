@@ -4,6 +4,8 @@ import {
   EMPTY_PROFILE,
   ProfileError,
   errorText,
+  exportPath,
+  fetchExport,
   fetchProfile,
   forgetAll,
   mergeAddress,
@@ -115,5 +117,44 @@ describe("fetch helpers", () => {
     const f = stub(() => new Response(null, { status: 204 }));
     expect(await forgetAll()).toEqual(EMPTY_PROFILE);
     expect(f.mock.calls[0][1]?.method).toBe("DELETE");
+  });
+});
+
+// PZ-9: the download. Mutation: drop the `?format=text`, and the text case
+// fails. Make a failed export resolve, and the 503 case fails.
+describe("fetchExport", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the proxy for each format and names no member", () => {
+    expect(exportPath("json")).toBe("/api/auth/me/assistant-profile/export");
+    expect(exportPath("text")).toBe("/api/auth/me/assistant-profile/export?format=text");
+  });
+
+  it("keeps the bytes and takes the server's file name", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      seen.push(url);
+      return new Response("Your assistant profile\n", {
+        status: 200,
+        headers: { "Content-Disposition": 'attachment; filename="assistant-profile.txt"' },
+      });
+    }));
+    const file = await fetchExport("text");
+    expect(seen).toEqual(["/api/auth/me/assistant-profile/export?format=text"]);
+    expect(file.filename).toBe("assistant-profile.txt");
+    expect(await file.body.text()).toBe("Your assistant profile\n");
+  });
+
+  it("falls back to its own name when the header is missing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    expect((await fetchExport("json")).filename).toBe("assistant-profile.json");
+  });
+
+  it("throws a ProfileError on a failed export, never an empty file", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 })));
+    await expect(fetchExport("json")).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    await expect(fetchExport("text")).rejects.toMatchObject({ status: 0 });
   });
 });

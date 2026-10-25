@@ -5,7 +5,8 @@
  * rest: it resolves the session identity, forwards the body as text, and
  * passes the gateway's status through. A 204 stays a 204. A 422 or a 404 keeps
  * its JSON body. A gateway that cannot be reached answers 502 and never an
- * empty profile.
+ * empty profile. The export (PZ-9) is a file, so the relay also passes the
+ * gateway's `Content-Disposition` and `Cache-Control` through.
  *
  * The identity is the session's. The body names no member and no tenant
  * (R5, R11), and the gateway forbids an extra field.
@@ -17,6 +18,9 @@ import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/li
 const MAX_BODY = 16_384;
 
 const PATH = "/auth/me/assistant-profile";
+
+/** The gateway headers that a download needs. Nothing else passes. */
+const PASSED_HEADERS = ["Content-Disposition", "Cache-Control"] as const;
 
 export async function relay(
   req: NextRequest,
@@ -45,10 +49,14 @@ export async function relay(
     });
     if (res.status === 204) return new Response(null, { status: 204 });
     const text = await res.text();
-    return new Response(text, {
-      status: res.status,
-      headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": res.headers.get("content-type") ?? "application/json",
+    };
+    for (const name of PASSED_HEADERS) {
+      const value = res.headers.get(name);
+      if (value) headers[name] = value;
+    }
+    return new Response(text, { status: res.status, headers });
   } catch {
     return NextResponse.json({ detail: "assistant_profile_unavailable" }, { status: 502 });
   }
