@@ -8,16 +8,9 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
-**PZ-25 BUILT 2026-10-25, dark** (D113, §14.2 "PZ-25 as built"). The switch is
-per organization. `enabled_for(org)` is the one reader, and the bare
-`enabled()` is gone. With `ASSISTANT_PROFILE_ENABLED` off, no org gets the
-profile. With it on, an empty `ASSISTANT_PROFILE_ORGS` gives each org, and a
-list gives only those orgs. No org gives nothing. The block, the tools, the
-WhatsApp sentences and the GET routes read the bound org. The GET answers
-`enabled`, and the web app shows the page, the "Assistant" account row and
-the My Day name only when it is true. The writes take no flag, because the
-member writes only their own data. A change of either name needs a restart.
-Fence: `tests/unit/test_assistant_profile_org_rollout.py`.
+**PZ-25 BUILT 2026-10-25, dark** (D113). The profile switch is per
+organization: `ASSISTANT_PROFILE_ORGS` limits `ASSISTANT_PROFILE_ENABLED` to
+a list. A change of either name needs a restart. See §14.2 "PZ-25 as built".
 
 **PZ-8 BUILT 2026-10-25, dark.** The WhatsApp scope rule names the profile
 exception, and asks the model to keep the channel limits. See "PZ-8 as
