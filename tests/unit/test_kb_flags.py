@@ -59,6 +59,15 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/gaps/{OTHER}/dismiss", None),
     ("POST", f"/knowledge/gaps/{OTHER}/answered", {"page_id": OTHER}),
     ("POST", f"/knowledge/gaps/{OTHER}/reopen", None),
+    # KC-1a: the sources.
+    ("POST", "/knowledge/sources/google_drive/connect", None),
+    ("GET", "/knowledge/sources/google_drive/callback?code=c&state=s", None),
+    ("GET", "/knowledge/sources", None),
+    ("GET", f"/knowledge/sources/{OTHER}/tree", None),
+    ("DELETE", f"/knowledge/sources/{OTHER}", None),
+    # KB-AI-4: the maintenance list and the verify.
+    ("GET", "/knowledge/maintenance", None),
+    ("POST", f"/knowledge/pages/{OTHER}/verify", None),
     # KC-8a: the entity registry.
     ("GET", "/knowledge/entities?type=person", None),
     ("GET", f"/knowledge/entities/{OTHER}", None),
@@ -104,6 +113,8 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_orgs"].default == ""
     assert fields["knowledge_embed"].default == ""
     assert fields["knowledge_gaps"].default == ""
+    assert fields["knowledge_sources"].default == ""
+    assert fields["knowledge_source_google"].default == ""
 
 
 def _template(path: str) -> str:
@@ -112,6 +123,8 @@ def _template(path: str) -> str:
         name = "{proposal_id}"
     elif "/gaps/" in path:
         name = "{gap_id}"
+    elif "/sources/" in path:
+        name = "{source_id}"
     elif "/entities/" in path:
         name = "{entity_id}"
     else:
@@ -169,7 +182,8 @@ def test_the_switch_runs_before_the_feature_gate() -> None:
 
 @pytest.mark.parametrize("name", ["KNOWLEDGE_ENABLED", "KNOWLEDGE_ORGS", "KNOWLEDGE_EMBED",
                                   "KNOWLEDGE_EMBED_SWEEP", "KNOWLEDGE_GAPS",
-                                  "KNOWLEDGE_PROPOSAL_EXPIRY"])
+                                  "KNOWLEDGE_PROPOSAL_EXPIRY",
+                                  "KNOWLEDGE_SOURCES", "KNOWLEDGE_SOURCE_GOOGLE"])
 def test_both_names_are_platform_env(name: str) -> None:
     """A tenant cannot set the switch through an Integrations write."""
     assert is_platform_env(name)
@@ -204,3 +218,79 @@ def test_embed_needs_knowledge_on_for_the_org(monkeypatch: pytest.MonkeyPatch) -
     assert not kb_flags.knowledge_embed_allowed(ORG)
     _switch(monkeypatch, True, OTHER)
     assert not kb_flags.knowledge_embed_allowed(ORG)
+
+
+# ── KC-1a: KNOWLEDGE_SOURCES and KNOWLEDGE_SOURCE_GOOGLE ────────────────────
+
+SOURCE_CALLS = [c for c in CALLS if "/knowledge/sources" in c[1]]
+GOOGLE_CALLS = [c for c in SOURCE_CALLS if "/google_drive/" in c[1]]
+
+
+def _sources(monkeypatch: pytest.MonkeyPatch, sources: str, google: str) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "knowledge_sources", sources, raising=False)
+    monkeypatch.setattr(settings, "knowledge_source_google", google, raising=False)
+
+
+def _source_codes(user: UserContext, calls: list[Any]) -> set[int]:
+    client = _client(user)
+    return {client.request(m, p, json=b).status_code for m, p, b in calls}
+
+
+def test_the_source_routes_are_404_with_the_flag_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Knowledge on, the feature held, the manager verb held: still 404."""
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "", "*")
+    user = _user(ORG, "feature:knowledge", "knowledge:manage")
+    assert _source_codes(user, SOURCE_CALLS) == {404}
+
+
+def test_an_org_off_the_source_list_gets_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, OTHER, "*")
+    assert _source_codes(_user(ORG, "feature:knowledge"), SOURCE_CALLS) == {404}
+
+
+def test_google_needs_its_own_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """KNOWLEDGE_SOURCES alone opens the list, the tree and the delete, and
+    never the Drive connect or callback."""
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "*", "")
+    assert _source_codes(_user(ORG, "feature:knowledge"), GOOGLE_CALLS) == {404}
+    _sources(monkeypatch, "*", OTHER)
+    assert _source_codes(_user(ORG, "feature:knowledge"), GOOGLE_CALLS) == {404}
+
+
+def test_the_google_flag_alone_opens_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "", "*")
+    assert not kb_flags.knowledge_source_google_allowed(ORG)
+    _sources(monkeypatch, f" {ORG.upper()} ", f"{ORG}")
+    assert kb_flags.knowledge_sources_allowed(ORG)
+    assert kb_flags.knowledge_source_google_allowed(ORG)
+    assert not kb_flags.knowledge_sources_allowed(OTHER)
+
+
+def test_the_source_flags_need_knowledge_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    _sources(monkeypatch, "*", "*")
+    _switch(monkeypatch, False, "*")
+    assert not kb_flags.knowledge_sources_allowed(ORG)
+    assert not kb_flags.knowledge_source_google_allowed(ORG)
+    _switch(monkeypatch, True, "*")
+    assert not kb_flags.knowledge_sources_allowed(None)
+
+
+def test_only_the_flags_module_reads_the_source_settings() -> None:
+    """The flags module is the one reader (``knowledge_curation.md`` §17)."""
+    import ast
+    from pathlib import Path
+
+    gateway = Path(kb_flags.__file__).resolve().parents[2]
+    readers = set()
+    for path in gateway.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in (
+                    "knowledge_sources", "knowledge_source_google"):
+                readers.add(path.name)
+    assert readers == {"flags.py"}, readers

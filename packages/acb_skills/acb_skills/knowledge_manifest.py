@@ -104,11 +104,27 @@ _FAVORITE_REASON = (
     "company knowledge. The member stars a page in the app."
 )
 
+#: KC-1a: a consent and a disconnect are the member's own acts, in the browser.
+_SOURCE_CONSENT_REASON = (
+    "A member connects a file source in the browser: the consent page of the "
+    "provider needs the member, and the callback checks the member of the "
+    "session (knowledge_curation.md §7.1). The chat does not connect a drive."
+)
+_SOURCE_DISCONNECT_REASON = (
+    "A disconnect can end the shared Google grant of the member, Gmail "
+    "included (knowledge_base.md §7.4). The member or a manager does it in "
+    "the Knowledge app, never the chat."
+)
 #: KC-8a: the entity registry. No chat tool reads or writes it yet. KC-10 and
 #: KC-13 decide how the chat and an agent reach it (knowledge_curation.md §22).
 _ENTITY_REASON = (
     "KC-8a builds the entity registry for the Knowledge app only. No chat tool "
     "maps to it yet, and KC-10 and KC-13 decide that (knowledge_curation.md §22)."
+)
+
+#: KB-AI-4: verifying a page is a person's act.
+_VERIFY_REASON = (
+    "A person verifies a page in the app. An agent never vouches for knowledge."
 )
 
 MANIFEST: tuple[Route, ...] = (
@@ -149,9 +165,22 @@ MANIFEST: tuple[Route, ...] = (
     # ── Gaps (KB-9a, §8.4 door 3) ── the questions Knowledge could not
     # answer. A read may join the chat later. A person decides each close.
     Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)"),
+    Route("GET", "/knowledge/maintenance", "", "A", planned="KB-AI-3 (§22)"),
+    Route("POST", "/knowledge/pages/{page_id}/verify", "", "X", reason=_VERIFY_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/dismiss", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X", reason=_GAP_DECISION_REASON),
     Route("POST", "/knowledge/gaps/{gap_id}/reopen", "", "X", reason=_GAP_DECISION_REASON),
+    # ── Sources (KC-1a, knowledge_curation.md §7) ── the tree is names only. A
+    # read may join the chat with `search_knowledge` (knowledge_base.md §7.2).
+    Route("POST", "/knowledge/sources/google_drive/connect", "", "X",
+          reason=_SOURCE_CONSENT_REASON),
+    Route("GET", "/knowledge/sources/google_drive/callback", "", "X",
+          reason=_SOURCE_CONSENT_REASON),
+    Route("GET", "/knowledge/sources", "", "A", planned="search_knowledge, deferred (§8.1)"),
+    Route("GET", "/knowledge/sources/{source_id}/tree", "", "A",
+          planned="search_knowledge, deferred (§8.1)"),
+    Route("DELETE", "/knowledge/sources/{source_id}", "", "X",
+          reason=_SOURCE_DISCONNECT_REASON),
     # ── Entities (KC-8a, knowledge_curation.md §6) ── the directory under the
     # owner rule of each type. Not on the chat surface yet.
     Route("GET", "/knowledge/entities", "", "X", reason=_ENTITY_REASON),

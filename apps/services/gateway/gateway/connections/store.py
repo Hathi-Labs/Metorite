@@ -69,6 +69,14 @@ META_ACCOUNT_ID = "account_id"
 SCOPE_ORG = "org"
 SCOPE_MEMBER = "member"
 
+#: The owning app of the CRM mirror (WS-61 KC-1a lift). Two side effects of
+#: this store belong to the CRM alone: the drop or stale of
+#: ``crm_source_profiles`` in :func:`save_credential`, and the strip of the
+#: discovered keys in :func:`disconnect`. They run for this app only. The CRM
+#: routes and the sync use the same value (``routes/crm/connection.OWNING_APP``,
+#: ``crm_sync/engine.OWNING_APP``). Fence: ``tests/unit/test_kc_sources_store_lift.py``.
+CRM_OWNING_APP = "crm"
+
 #: Each column except the blob. A SELECT list is built from this string only.
 _PUBLIC_COLUMNS = (
     "id, organization_id, provider, owning_app, scope_kind, member_email, "
@@ -225,11 +233,25 @@ _STALE_PROFILES_SQL = (
     "AND organization_id = CAST(:org AS uuid)"
 )
 
+#: The CRM disconnect. It also strips the keys that the CRM sync discovered
+#: (:data:`_DISCOVERED_KEYS`), because the next consent may be another Zoho org.
 _DISCONNECT_SQL = (
     "UPDATE integration_connections SET status = 'disconnected', "
     "provider_meta = provider_meta - 'domain_name' - 'edition' - 'tabs', "
     "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"AND owning_app = '{CRM_OWNING_APP}' "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: The disconnect of every other app (WS-61 KC-1a). It deletes the blob and
+#: keeps ``provider_meta`` as it is: the CRM keys mean nothing there, and the
+#: Knowledge Drive row keeps ``account_email`` for the shared-grant check.
+_DISCONNECT_OTHER_SQL = (
+    "UPDATE integration_connections SET status = 'disconnected', "
+    "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"AND owning_app <> '{CRM_OWNING_APP}' "
     f"RETURNING {_PUBLIC_COLUMNS}"
 )
 
@@ -590,6 +612,8 @@ async def save_credential(
     the same provider account. The source profile stays and becomes stale, so
     the sync keeps the edition budget and discovers again at its next run.
     Without it, the profile is dropped, because the account may be another one.
+    Both apply to the CRM only (:data:`CRM_OWNING_APP`). Any other app touches
+    no ``crm_source_profiles`` row, and ``keep_profile`` means nothing there.
     """
     params = _key(org, provider, owning_app, scope_kind, member_email)
     params["member_email"] = params.pop("member") or None
@@ -600,11 +624,13 @@ async def save_credential(
         connected_by=(connected_by or "").strip().lower() or None,
     )
     row = (await db.execute(text(_UPSERT_SQL), params)).first()
-    # A new consent may be another org or data centre: the profile and the
-    # discovered keys are the old account's. Discovery runs again at the next run.
-    # A confirmed same account keeps the profile, stale (CRM-Q10).
-    profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
-    await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
+    if owning_app == CRM_OWNING_APP:
+        # A new consent may be another org or data centre: the profile and the
+        # discovered keys are the old account's. Discovery runs again at the next
+        # run. A confirmed same account keeps the profile, stale (CRM-Q10). No
+        # other app has a source profile, so no other app touches one (KC-1a).
+        profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
+        await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
     return _connection(row)
 
 
@@ -751,12 +777,19 @@ async def forget_account(db: Any, org: str, connection_id: str) -> None:
 async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None:
     """Delete the blob and set ``disconnected``. The row stays as a record.
 
+    The SQL follows the ``owning_app`` of the row (WS-61 KC-1a). A CRM row
+    also loses the discovered keys (:data:`_DISCOVERED_KEYS`), in ONE
+    statement, as before. Any other row keeps its ``provider_meta``. Each
+    statement names its app in the WHERE, so the CRM statement runs first and
+    the other one runs only when it changed no row.
+
     The source profile stays too (CRM-X0), so the next consent can tell the
     same account from another one. The start over deletes it.
     """
-    row = (await db.execute(
-        text(_DISCONNECT_SQL), {"id": str(connection_id), "org": str(org)},
-    )).first()
+    params = {"id": str(connection_id), "org": str(org)}
+    row = (await db.execute(text(_DISCONNECT_SQL), params)).first()
+    if row is None:
+        row = (await db.execute(text(_DISCONNECT_OTHER_SQL), params)).first()
     return _connection(row) if row is not None else None
 
 

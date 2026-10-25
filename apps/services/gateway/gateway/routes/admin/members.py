@@ -928,8 +928,10 @@ async def purge_member(
         assert_not_self_lockout(admin, member, status=PURGE_OUTCOME)
         # Invariant 1, the counts, the deletes and the pre-commit audit entry
         # all live in the shared body. The operator door calls the same body.
+        knowledge_revokes: list[Any] = []
         deleted, kept, plans = await purge_member_rows(
             db, org_id, member, actor_email=admin.email,
+            knowledge_revokes=knowledge_revokes,
         )
 
     addr = (member["email"] or "").strip().lower()
@@ -963,6 +965,15 @@ async def purge_member(
     mailboxes = await finish_teardowns(
         org_id, plans, open_session=partial(_tenant_session, org_id),
         stop_loops=True, bump_owners=False)
+
+    # WS-61 KC-1a (review P1): the Google revokes of the leaver's Drive, after
+    # the email teardown. Its check ran with the Drive rows already gone, so
+    # an address that a Gmail plan covers is left to it: one grant, one revoke.
+    from gateway.routes.knowledge import sources as kb_sources
+
+    await kb_sources.finish_purge_revokes(
+        org_id, knowledge_revokes,
+        gmail_addresses={p.email_address or "" for p in plans if p.provider == "gmail"})
     return PurgeResult(email=member["email"], deleted=deleted, kept=kept,
                        mailboxes=mailboxes)
 
@@ -982,13 +993,19 @@ async def purge_crm_member(db: Any, org_id: str, email: str) -> None:
     await crm_questions.forget_member_keys(str(org_id), email)
 
 
-async def purge_knowledge_member(db: Any, org_id: str, email: str) -> None:
-    """The Knowledge half of a purge (WS-61 KB-9a). The address leaves the
+async def purge_knowledge_member(db: Any, org_id: str, email: str) -> list[Any]:
+    """The Knowledge half of a purge (WS-61 KB-9a, KC-1a). The address leaves the
     ``askers`` and the ``dismissed_by`` of each gap (``gaps.scrub_member``).
-    The gap and its count stay. The SQL runs in the caller's transaction."""
+    The gap and its count stay. Each member-scope Knowledge source of the
+    member goes with its token, its tree and its connection row
+    (``sources.purge_member_sources``, ``knowledge_curation.md`` §19). The SQL
+    runs in the caller's transaction. Returns the Google revokes owed after
+    the commit (``sources.finish_purge_revokes``)."""
     from gateway.routes.knowledge import gaps as kb_gaps
+    from gateway.routes.knowledge import sources as kb_sources
 
     await kb_gaps.scrub_member(db, str(org_id), email)
+    return await kb_sources.purge_member_sources(db, str(org_id), email)
 
 
 async def purge_member_rows(
@@ -997,8 +1014,15 @@ async def purge_member_rows(
     member: dict[str, Any],
     *,
     actor_email: str | None,
+    knowledge_revokes: list[Any] | None = None,
 ) -> tuple[dict[str, int], dict[str, int], list[TeardownPlan]]:
     """The in-transaction body of a purge. Returns ``(deleted, kept, plans)``.
+
+    WS-61 KC-1a (review P1): the member's Knowledge sources go in this
+    transaction too. Their pending Google revokes are added to
+    *knowledge_revokes* when the caller passes a list. Each door passes one
+    and hands it to ``sources.finish_purge_revokes`` AFTER
+    ``finish_teardowns``.
 
     ONE copy, two callers: ``DELETE /admin/members/{email}/purge`` above and
     the operator door with ``mode=purge`` (``routes/operator.py``). Each caller
@@ -1064,8 +1088,11 @@ async def purge_member_rows(
     # WS-53 CRM-Q33: the member's address in the CRM state that no delete
     # above reaches, in this transaction, and the member's CRM keys.
     await purge_crm_member(db, org_id, addr)
-    # WS-61 KB-9a: the member's address in the Knowledge gaps.
-    await purge_knowledge_member(db, org_id, addr)
+    # WS-61 KB-9a: the member's address in the Knowledge gaps. KC-1a: the
+    # member's Drive sources, with their token and their tree.
+    revokes = await purge_knowledge_member(db, org_id, addr)
+    if knowledge_revokes is not None:
+        knowledge_revokes.extend(revokes)
     # WS-63 PZ-9: the settings row went above, so the executor must read the
     # member's block again (`forget_member_profile` says why this is early).
     mark_changed(addr)
