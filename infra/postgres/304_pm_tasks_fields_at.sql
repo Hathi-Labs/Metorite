@@ -39,8 +39,9 @@
 --      instant. A writer that sets an explicit or older time (a test fixture, a
 --      repair) keeps the value it wrote.
 --   2. If no column other than `updated_at` and `fields_at` differs, the
---      trigger stops there. That is the satellite bump (`touch_task`), the
---      backfill, and a write of the same values. `fields_at` keeps its value.
+--      trigger stops there. That is the satellite bump (`touch_task`) and a
+--      write of the same values. `fields_at` keeps its value. (The backfill
+--      runs before the trigger exists. On a replay it matches no row.)
 --   3. A field changed, and the row carries this transaction's stamp:
 --      `updated_at` moved, or it equals `now()`. Then `fields_at` takes the
 --      new `updated_at`.
@@ -49,10 +50,14 @@
 --      the status remap and the status delete, the recurrence detach, the
 --      root move of `tree.py`, `touch=False`, and an FK `ON DELETE SET NULL`
 --      (`type_id`, `parent_task_id`). Then `fields_at` takes
---      GREATEST(`now()`, old stamp plus one microsecond), and `updated_at`
---      stays. `fields_at` above `updated_at` means "equality only". A token
---      equal to the unmoved `updated_at` still passes, as before this file.
---      After a later bump, that token is below `fields_at` and gets 412.
+--      GREATEST(`now()`, old stamp plus one microsecond, old `fields_at`),
+--      and `updated_at` stays. `fields_at` above `updated_at` means "equality
+--      only". A token equal to the unmoved `updated_at` still passes, as
+--      before this file. After a later bump, that token is below `fields_at`
+--      and gets 412.
+--      ADVISORY (R7): the old `fields_at` term only keeps `fields_at`
+--      monotonic. It is an equivalent mutant, because the precondition reads
+--      no difference without it, and no test fences it.
 --
 -- ⚠️ Why "equals `now()`" counts as stamped in step 3. One request often
 -- bumps first and writes a field second (the claim adds the assignee, then
@@ -113,7 +118,8 @@
 -- and FORCE binds the owner too. With no tenant bound, the policy shows that
 -- role NO row, so a bare UPDATE backfills nothing and every existing task keeps
 -- a NULL `fields_at`. 221 and 297 record the same trap. So the backfill runs
--- twice, in the shape of 297. Once with no tenant bound, which serves the
+-- twice, in the shape of 297, and BEFORE the trigger is created, in the same
+-- transaction. Once with no tenant bound, which serves the
 -- ladder shape that has no policy yet. Then, only when the table has row
 -- security, it binds each tenant in turn with a local
 -- `set_config('app.tenant_id', ...)` and runs the UPDATE for that tenant.
@@ -151,6 +157,32 @@ COMMENT ON COLUMN pm_tasks.fields_at IS
     'satellite bump (core.touch_task) leaves it. A field write that did not move '
     'updated_at sets it above updated_at, which means equality only. Read only by '
     'core.precondition_holds (WS-55 MCP-G7). Kept by trg_pm_tasks_stamp_fields.';
+
+-- The backfill, in the shape of 297 (see the header). It runs BEFORE the
+-- trigger exists. The ACCESS EXCLUSIVE lock of the ADD COLUMN above holds until
+-- COMMIT, so no writer comes between the backfill and the trigger. It does not
+-- SET `updated_at`, so it needs no trigger, and without one a big table fills
+-- about five times faster (measured: 50k rows with a 2 KB description). On a
+-- replay the trigger exists, and the WHERE matches no row.
+DO $pm_fill$
+DECLARE
+    org uuid;
+BEGIN
+    -- No tenant bound. This pass serves a database with no policy on the
+    -- table. Under the policy, `current_setting` is NULL and it sees no row.
+    UPDATE pm_tasks SET fields_at = updated_at WHERE fields_at IS NULL;
+
+    -- Only when the table has row security. A replay of the ladder runs in
+    -- one transaction and has no policy yet. A bind there would stay set for
+    -- the rest of that transaction and then read as '' in the next one.
+    IF EXISTS (SELECT 1 FROM pg_class
+                WHERE oid = 'pm_tasks'::regclass AND relrowsecurity) THEN
+        FOR org IN SELECT id FROM organization LOOP
+            PERFORM set_config('app.tenant_id', org::text, true);
+            UPDATE pm_tasks SET fields_at = updated_at WHERE fields_at IS NULL;
+        END LOOP;
+    END IF;
+END $pm_fill$;
 
 CREATE OR REPLACE FUNCTION pm_tasks_stamp_fields() RETURNS trigger
 LANGUAGE plpgsql AS $pm_fields$
@@ -190,28 +222,5 @@ $pm_fields$;
 CREATE OR REPLACE TRIGGER trg_pm_tasks_stamp_fields
     BEFORE INSERT OR UPDATE ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_tasks_stamp_fields();
-
--- The backfill, in the shape of 297 (see the header). It does not SET
--- `updated_at`, and it changes no field, so the trigger stops at step 2 and
--- leaves the value it writes.
-DO $pm_fill$
-DECLARE
-    org uuid;
-BEGIN
-    -- No tenant bound. This pass serves a database with no policy on the
-    -- table. Under the policy, `current_setting` is NULL and it sees no row.
-    UPDATE pm_tasks SET fields_at = updated_at WHERE fields_at IS NULL;
-
-    -- Only when the table has row security. A replay of the ladder runs in
-    -- one transaction and has no policy yet. A bind there would stay set for
-    -- the rest of that transaction and then read as '' in the next one.
-    IF EXISTS (SELECT 1 FROM pg_class
-                WHERE oid = 'pm_tasks'::regclass AND relrowsecurity) THEN
-        FOR org IN SELECT id FROM organization LOOP
-            PERFORM set_config('app.tenant_id', org::text, true);
-            UPDATE pm_tasks SET fields_at = updated_at WHERE fields_at IS NULL;
-        END LOOP;
-    END IF;
-END $pm_fill$;
 
 COMMIT;

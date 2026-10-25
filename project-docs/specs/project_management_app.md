@@ -3971,7 +3971,8 @@ The owner's agents met this many times on 2026-10-25.
 * If a field changed and the row carries this transaction's stamp, `fields_at` takes
   `updated_at`. If a field changed and `updated_at` did not move, `fields_at` goes above
   `updated_at`. That means equality only.
-* The backfill sets `fields_at` on each existing task, one tenant at a time.
+* The backfill sets `fields_at` on each existing task, one tenant at a time. It runs before the
+  trigger exists, in the same transaction, because it does not set `updated_at`.
 * `core.precondition_holds` passes a token that equals `updated_at`, as before. It also passes a
   token from `fields_at` up to `updated_at`. The PATCH and the claim use it.
 * The agent delete keeps strict equality on `updated_at`. It does not use the new rule.
@@ -3994,6 +3995,10 @@ trigger. A later comment then moved the token, and a token from before the sweep
 main gave it 412.
 
 The coordinator chose the fix in the trigger (fix round 2, item 4).
+
+The GREATEST of a sweep also takes the old `fields_at`. That term only keeps `fields_at`
+monotonic. It is ADVISORY (R7): no test fences it, because the precondition reads no difference
+without it.
 
 Now a sweep sets `fields_at` above `updated_at`. The token that was current still passes by
 equality, as on main. After the next bump, that token gets 412, as on main. A token read after

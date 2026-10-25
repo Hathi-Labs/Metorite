@@ -117,6 +117,17 @@ def test_the_migration_adds_the_column_the_trigger_and_the_backfill() -> None:
     assert "fields_at TIMESTAMPTZ NOT NULL" not in sql
 
 
+def test_the_backfill_runs_before_the_trigger_exists() -> None:
+    """The backfill sets no `updated_at`, so it needs no trigger, and the
+    trigger made it about five times slower on a big table. The lock of the
+    ADD COLUMN holds to COMMIT, so no writer comes between the two."""
+    sql = _migration().read_text(encoding="utf-8")
+    add = sql.index("ADD COLUMN IF NOT EXISTS fields_at TIMESTAMPTZ;")
+    fill = sql.index("DO $pm_fill$")
+    trigger = sql.index("CREATE OR REPLACE TRIGGER trg_pm_tasks_stamp_fields\n")
+    assert add < fill < trigger
+
+
 def test_the_trigger_sorts_after_the_org_triggers() -> None:
     """BEFORE triggers run in name order. The stamp must see the final row."""
     assert "trg_pm_tasks_stamp_fields" > "trg_pm_tasks_org_from_root"
