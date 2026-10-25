@@ -347,6 +347,8 @@ async def _run_cases(harness: RoutingHarness, chosen: list[Case],
         record = await harness.drive(
             case.words, shell.system_context(case.app, case.facts),
             member=ds.MEMBER, org=ds.ORG,
+            # The member typed the words, as the chat route binds them (WS-67).
+            typed=case.words,
         )
         results.append(Result(case, form, record,
                               check_scripted(case, record, models, harness, loaded, sent)))
@@ -428,6 +430,7 @@ async def _live_cases(harness: RoutingHarness, cases: list[Case], tier: str,
             record = await harness.drive(
                 case.words, shell.system_context(case.app, case.facts),
                 member=ds.MEMBER, org=ds.ORG, tier=tier, timeout=300.0,
+                typed=case.words,
             )
             stand_ins = harness.delegated[mark:]
             got = first_routed(record, stand_ins)
