@@ -8,7 +8,7 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
-**PZ-25 BUILT 2026-10-25, dark** (D113, §14.2 on PR #1318). The switch is
+**PZ-25 BUILT 2026-10-25, dark** (D113, §14.2 "PZ-25 as built"). The switch is
 per organization. `enabled_for(org)` is the one reader, and the bare
 `enabled()` is gone. With `ASSISTANT_PROFILE_ENABLED` off, no org gets the
 profile. With it on, an empty `ASSISTANT_PROFILE_ORGS` gives each org, and a
@@ -1089,6 +1089,15 @@ The first release needs one organization.
    My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
    live set of `launch_surface.md` §2 and `nav.test.ts` does not change.
 
+**PZ-25 as built (2026-10-25).** `enabled_for(org)` replaces `enabled()`.
+The executor reads the run org first. `build_orchestrator_agent` takes the
+org from its caller, then the bound tenant, and a build with no org gets no
+profile tool. `build_payload` takes the org of the WhatsApp link. The GET
+route answers `enabled`, and `/address` answers an empty name when the org
+is off. The writes take no flag. The web hook
+`useAssistantProfileEnabled` needs the build switch and `enabled`. The
+fence is `tests/unit/test_assistant_profile_org_rollout.py`.
+
 ### 14.3 The interview areas
 
 The interview has ten areas. Each area has one starting question and a
@@ -1169,7 +1178,7 @@ member can reset one area or the whole interview. A fact shows its area.
 
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
-| **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block) |
+| **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block). **BUILT 2026-10-25, dark** |
 | **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM |
 | **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
