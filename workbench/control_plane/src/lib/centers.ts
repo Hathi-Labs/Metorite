@@ -16,6 +16,8 @@
 // Phase 2), groups_sessions_authority.md §1 (org_group is the primitive),
 // docs/multiplayer/agent-kinds.md §6 (team-instanced agents per department).
 
+import { tasksLink } from "@/app/projects/lib/tasksRedirect";
+
 export type CenterAppStatus = "live" | "planned";
 
 type CenterAppBase = {
@@ -92,7 +94,7 @@ export const CENTERS: Center[] = [
         note: "The sales team's slice of tasks and projects",
         icon: "CheckSquare",
         status: "live",
-        href: "/tasks",
+        href: tasksLink("/tasks"),
         caveat: "Opens the full My Tasks app today — the team-scoped slice arrives with groups",
       },
       {
