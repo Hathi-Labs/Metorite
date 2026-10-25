@@ -791,6 +791,9 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: task card and answers nothing.
 #: 2026-10-24 (WS-64 OP-10, D-OP-16): convert_folder_to_project joined. It writes only through
 #: the gateway, behind one card, and says open_world=False.
+#: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
+#: joined. Each write is the member's own reminder, through the gateway, behind one
+#: card, and says open_world=False. None sends anything outside Metorite.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -825,6 +828,8 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "triage_intake", "unarchive_project", "unarchive_task", "unlink_tasks",
     "update_field", "update_project", "update_status", "update_tag", "update_task",
     "update_type", "vocabulary", "watch", "watchers",
+    "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
+    "reopen_reminder", "reschedule_reminder", "promote_reminder",
 })
 
 

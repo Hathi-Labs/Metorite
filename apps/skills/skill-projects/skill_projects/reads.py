@@ -2342,7 +2342,7 @@ def when_text(value: Any, zone: str | None) -> str:
     tz = ZoneInfo(name)
     local = instant.astimezone(tz)
     short = local.tzname() or name
-    if short[:1] in "+-" or short[:1].isdigit():
+    if short.startswith(("+", "-")) or short[0].isdigit():
         short = name
     year = f" {local.year}" if local.year != datetime.now(tz).year else ""
     return f"{local:%a} {local.day} {local:%b}{year}, {local:%H:%M} {short}"
