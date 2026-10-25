@@ -382,6 +382,72 @@ async def test_a_tree_past_the_cap_keeps_the_first_levels(
     assert {n["ext_id"]: n["explored"] for n in folder["nodes"]}["fold-C1"] is False
 
 
+# ── A disconnect racing discovery (review P2) ───────────────────────────────
+
+async def test_an_upsert_that_waits_on_a_disconnect_writes_no_node(kc, app_engine) -> None:  # noqa: F811
+    """The disconnect holds the source row FOR UPDATE. A page upsert in
+    flight must wait for it, see ``disconnected`` and write nothing. Without
+    the row lock in the upsert's guard, it reads the old committed state and
+    leaves orphan nodes behind the disconnect."""
+    import json
+    import threading
+    import time
+
+    from gateway.kb_sync import discovery
+
+    _assert_non_priv(app_engine)
+    ana = _principal(_address("ana"), kc.org_a)
+    sid = await _connect(kc, ana, email="ana-race@kc1a-g.test", account_id="R1")
+    rows = json.dumps([{"ext_id": "late-R1", "parent_ext_id": None, "drive_id": None,
+                        "kind": "file", "name": "Late.pdf", "mime": None, "size": None,
+                        "modified_at": None, "web_url": None, "explored": True}])
+    done: dict[str, Any] = {}
+
+    def _upsert() -> None:
+        with app_engine.connect() as c, c.begin():
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": kc.org_a})
+            c.execute(text("SET LOCAL lock_timeout = '20s'"))
+            c.execute(text(discovery.UPSERT_NODES_SQL),
+                      {"org": kc.org_a, "source": sid, "rows": rows})
+        done["at"] = time.monotonic()
+
+    with app_engine.connect() as hold, hold.begin():
+        hold.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": kc.org_a})
+        hold.execute(text("SELECT 1 FROM kb_sources WHERE id = CAST(:s AS uuid) FOR UPDATE"),
+                     {"s": sid})
+        hold.execute(text("DELETE FROM kb_source_nodes WHERE source_id = CAST(:s AS uuid)"),
+                     {"s": sid})
+        hold.execute(text("UPDATE kb_sources SET state = 'disconnected' "
+                          "WHERE id = CAST(:s AS uuid)"), {"s": sid})
+        worker = threading.Thread(target=_upsert)
+        worker.start()
+        time.sleep(1.5)
+        assert "at" not in done, "the upsert did not wait for the disconnect's row lock"
+        released = time.monotonic()
+    worker.join(30)
+    assert done.get("at", 0) >= released
+    with kc.admin_engine.connect() as c:
+        left = c.execute(text("SELECT count(*) FROM kb_source_nodes "
+                              "WHERE source_id = CAST(:s AS uuid)"), {"s": sid}).scalar()
+    assert left == 0, "a page upsert left orphan nodes behind a disconnect"
+
+
+async def test_the_tree_of_a_disconnected_source_is_empty(kc, app_engine) -> None:  # noqa: F811
+    """A node that outlived its source (an orphan) never reaches a tree answer."""
+    ana = _principal(_address("ana"), kc.org_a)
+    sid = await _connect(kc, ana, email="ana-gone@kc1a-g.test", account_id="R2")
+    await _ok(kc, ana, "DELETE", f"/knowledge/sources/{sid}")
+    with kc.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO kb_source_nodes (organization_id, source_id, ext_id, kind, name) "
+            "VALUES (CAST(:o AS uuid), CAST(:s AS uuid), 'orphan-R2', 'file', 'Orphan')"),
+            {"o": kc.org_a, "s": sid})
+    roots = await _ok(kc, ana, "GET", f"/knowledge/sources/{sid}/tree")
+    assert roots["nodes"] == [] and roots["source"]["state"] == "disconnected"
+    kids = await _ok(kc, ana, "GET", f"/knowledge/sources/{sid}/tree?parent=root-R2")
+    assert kids["nodes"] == []
+
+
 # ── FORCE RLS, for a role that is not the owner and not BYPASSRLS ───────────
 
 def test_both_tables_force_rls_and_refuse_another_org(kc, app_engine) -> None:  # noqa: F811
