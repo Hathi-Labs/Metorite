@@ -959,6 +959,31 @@ def lease_expired(status: str, idle_s: float) -> bool:
     the same constants in SQL (:func:`unheld_clause`)."""
     return idle_s > agent_run_hold_s(status)
 
+
+def connection_gone_sql(alias: str) -> str:
+    """SW-13c. True in SQL when the agent connection of the run *alias* is
+    revoked or expired (``agent_connection``, migration 248). Such a run can
+    never send a heartbeat again, so it keeps its task no longer than a run
+    whose lease ended. A run with no ``connection_id`` is NOT gone: no code
+    deletes a connection, so that state has no meaning to act on, and the
+    lease rule alone decides. ONE text for the gate (``agent_runs._HOLDER_SQL``),
+    the ``unheld`` filter and ``held_by``, so the three cannot disagree."""
+    # The organization arm is defence in depth beside FORCE RLS, as
+    # `agent_tokens._CONNECTION_LIVE_SQL` has it (fix round 1, P3).
+    return (
+        f"EXISTS (SELECT 1 FROM agent_connection gc WHERE gc.id = {alias}.connection_id"
+        f" AND gc.organization_id = {alias}.organization_id"
+        " AND (gc.revoked_at IS NOT NULL OR gc.expires_at <= now()))"
+    )
+
+
+def holder_free(status: str, idle_s: float, connection_gone: bool) -> bool:
+    """True when an open run no longer keeps its task, so the next claim
+    takes it over (EA-14a, SW-13c): its lease ended, or its connection is
+    revoked or expired. The ONE Python rule of the gate and of
+    ``held_by.stale``. :func:`unheld_clause` is its SQL twin."""
+    return connection_gone is True or lease_expired(status, idle_s)
+
 #: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
 #: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
 #: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
@@ -1001,9 +1026,10 @@ def unheld_clause() -> str:
     """The fragment of the ``unheld`` filter, over the task alias ``t``.
 
     A task is unheld when no open run keeps it. A run whose lease ended does
-    not keep it, because the next claim takes the task over. The lease is
-    read when the clause is built, never at import, so the environment
-    override works in a running process.
+    not keep it, because the next claim takes the task over. SW-13c: nor does
+    a run whose connection is revoked or expired (:func:`holder_free`). The
+    lease is read when the clause is built, never at import, so the
+    environment override works in a running process.
     """
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     lease = agent_run_lease_s()
@@ -1013,7 +1039,8 @@ def unheld_clause() -> str:
         " WHERE h.task_id = t.id"
         f"   AND h.status IN ({open_list})"
         f"   AND h.last_activity_at >= now() - (CASE WHEN h.status = 'awaiting'"
-        f"        THEN {hold} ELSE {lease} END) * interval '1 second')"
+        f"        THEN {hold} ELSE {lease} END) * interval '1 second'"
+        f"   AND NOT {connection_gone_sql('h')})"
     )
 
 
@@ -1041,6 +1068,7 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
        EXTRACT(EPOCH FROM (clock_timestamp() - r.last_activity_at)) AS idle_s,
+       {connection_gone_sql('r')} AS connection_gone,
        (SELECT u.display_name FROM app_user u
          WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
   FROM pm_agent_runs r
@@ -1072,7 +1100,9 @@ def agent_runs_enabled() -> bool:
 def held_by_of(hit: Any) -> dict[str, Any]:
     """The ``held_by`` of a task: who keeps it, through which client, since
     when, and whether the lease ended (EA-14a). ``stale`` here is the LEASE
-    (hours). It is not the idle pill state of five minutes."""
+    (hours). It is not the idle pill state of five minutes. SW-13c: a run
+    whose connection is revoked or expired reads ``stale`` too, by the same
+    rule as the gate (:func:`holder_free`)."""
     from acb_auth import agent_oauth
 
     return {
@@ -1082,7 +1112,8 @@ def held_by_of(hit: Any) -> dict[str, Any]:
         "client_name": agent_oauth.client_label(hit.client_via),
         "since": wire(hit.held_since),
         "last_activity_at": wire(hit.held_last),
-        "stale": lease_expired(hit.run_status, float(hit.idle_s)),
+        "stale": holder_free(hit.run_status, float(hit.idle_s),
+                             getattr(hit, "connection_gone", False) is True),
     }
 
 

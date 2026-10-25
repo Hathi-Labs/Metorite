@@ -51,6 +51,7 @@ export function MoveDialog({
   moving,
   roots,
   busy,
+  topLevel = true,
   onClose,
   onMove,
 }: {
@@ -58,6 +59,12 @@ export function MoveDialog({
   moving: ProjectRow;
   roots: readonly ProjectNode[];
   busy?: boolean;
+  /**
+   * WS-64 OP-3 — false for a node of the personal tree. `roots` is then the
+   * personal tree alone, and the "Top level" row is not drawn, so a private
+   * node cannot be filed in a team space.
+   */
+  topLevel?: boolean;
   onClose: () => void;
   onMove: (parentId: string | null) => void;
 }) {
@@ -93,7 +100,7 @@ export function MoveDialog({
     [roots, picked],
   );
 
-  const lead: PickerLeadGroup[] = [
+  const lead: PickerLeadGroup[] = !topLevel ? [] : [
     {
       key: "top",
       rows: [

@@ -301,6 +301,7 @@ _BASE: dict[str, dict[str, Any]] = {
     "set_report_schedule": {"report_id": UUID},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
     "complete": {"task_id": UUID},
+    "convert_folder_to_project": {"project_id": tw.FOLDER},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
     "create_personal_task": {"title": "Renew the domain"},
     "create_project": {"name": "Q4 launch"},

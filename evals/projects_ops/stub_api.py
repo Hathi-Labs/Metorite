@@ -51,6 +51,8 @@ from evals.projects_ops.dataset import (
     AREAS,
     CLOSED,
     DELEGATED,
+    FOLDER,
+    FOLDER_PROJECTS,
     LED_PROJECTS,
     REPORT_BOARD,
     REPORT_WEEKLY,
@@ -151,6 +153,8 @@ class OpsStub:
     #: WS-64 OP-6e: the agent runs of the acting member, newest first. The stub has no route
     #: that answers a run, so a request for one answers 404 and shows as a write.
     agent_runs: list[dict[str, Any]] = field(default_factory=list)
+    #: WS-64 OP-10: the folders of the space, by id, each with the projects inside it.
+    folders: dict[str, dict[str, Any]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
@@ -165,6 +169,11 @@ class OpsStub:
         self.recipients = {ident("report", REPORT_WEEKLY): [self._recipient(me.email, me.email)],
                            ident("report", REPORT_BOARD): []}
         self.agent_runs = self._seed_agent_runs()
+        folder_id = ident("folder", FOLDER)
+        self.folders = {folder_id: {
+            "id": folder_id, "name": FOLDER, "kind": "folder",
+            "children": [{"id": ident("project", n), "name": n} for n in FOLDER_PROJECTS],
+        }}
         launch = self.dataset.project("Launch").id
         priya = self.dataset.members[1].email
         self.grants = {launch: [{
@@ -235,6 +244,7 @@ class OpsStub:
             ("GET", f"/projects/tasks/{_ID}/timeline",
              lambda i, _q, _b: self._exists(i, {"rows": [], "total": 0})),
             ("GET", f"/projects/nodes/{_ID}", lambda i, _q, _b: self.node(i)),
+            ("POST", f"/projects/nodes/{_ID}/convert", lambda i, _q, b: self.convert(i, b)),
             ("GET", f"/projects/nodes/{_ID}/grants", lambda i, _q, _b: self.list_grants(i)),
             ("POST", f"/projects/nodes/{_ID}/grants", lambda i, _q, b: self.add_grant(i, b)),
             # The grant id is the named group. The project id is in the path too.
@@ -300,9 +310,16 @@ class OpsStub:
              "children": children(p.id)}
             for p in self.dataset.projects
         ]
+        folders = [
+            {"id": f["id"], "name": f["name"], "kind": f["kind"], "status": "active",
+             "children": [{"id": c["id"], "name": c["name"], "kind": "project",
+                           "status": "active", "children": []} for c in f["children"]]}
+            for f in self.folders.values()
+        ]
         space = {"id": self.dataset.space_id, "name": self.dataset.space, "kind": "space",
-                 "status": "active", "children": projects}
-        return {"rows": [space], "total": 1 + len(projects) + len(self.nodes)}
+                 "status": "active", "children": projects + folders}
+        held = sum(1 + len(f["children"]) for f in folders)
+        return {"rows": [space], "total": 1 + len(projects) + len(self.nodes) + held}
 
     def node(self, node_id: str) -> dict[str, Any]:
         for p in self.dataset.projects:
@@ -313,7 +330,23 @@ class OpsStub:
         for n in self.nodes:
             if n["id"] == node_id:
                 return dict(n)
+        folder = self.folders.get(node_id)
+        if folder is not None:
+            return {"id": folder["id"], "name": folder["name"], "kind": folder["kind"],
+                    "parent_id": self.dataset.space_id, "status": "active",
+                    "can_convert": folder["kind"] == "folder"}
         raise StubError(404, NOT_VISIBLE)
+
+    def convert(self, node_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /projects/nodes/{id}/convert`` (WS-64 OP-10): a folder becomes a project."""
+        folder = self.folders.get(node_id)
+        if folder is None:
+            raise StubError(404, NOT_VISIBLE)
+        if (body or {}).get("to") != "project" or folder["kind"] != "folder":
+            raise StubError(422, "Only a folder converts, and only to a project.")
+        folder["kind"] = "project"
+        return {"id": folder["id"], "name": folder["name"], "kind": "project",
+                "parent_id": self.dataset.space_id, "status": "active"}
 
     # ── who can see a project (WS-64 OP-6b) ─────────────────────────────────
 

@@ -13,7 +13,7 @@
  * `hydrate()` runs only then. The store is the one store of D52 to D54.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import Button from "@/components/ui/Button";
 import { DelegatePopup } from "@/app/tasks/components/DelegatePopup";
@@ -28,7 +28,6 @@ import { ReclarifyModal } from "@/app/tasks/components/ReclarifyModal";
 import { SchedulePopup } from "@/app/tasks/components/SchedulePopup";
 import { StagePromptHost } from "@/app/tasks/components/StagePromptHost";
 import { SyncFailureToast } from "@/app/tasks/components/SyncFailureToast";
-import { TaskFocusModal } from "@/app/tasks/components/TaskFocusModal";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 
@@ -36,9 +35,16 @@ import { useUndoScope } from "@/components/UndoProvider";
 
 import { tasksEntryView } from "@/app/tasks/lib/today";
 
-import { myWorkView, type MyWorkId } from "../lib/myWork";
+import { myWorkView, watchInsideFocus, type MyWorkId } from "../lib/myWork";
 
-export default function MyWorkHost({ app }: { app: MyWorkId }) {
+export default function MyWorkHost({
+  app,
+  onOpenTask,
+}: {
+  app: MyWorkId;
+  /** Opens the ONE Projects task panel (OP-2b, `one_projects_app.md` §4.3). */
+  onOpenTask: (taskId: string) => void;
+}) {
   const hydrate = useTaskStore((s) => s.hydrate);
   const loadMyToday = useTaskStore((s) => s.loadMyToday);
   const loadDone = useTaskStore((s) => s.loadDone);
@@ -50,6 +56,32 @@ export default function MyWorkHost({ app }: { app: MyWorkId }) {
   // My work has its own undo scope, so Ctrl+Z never reaches the board history.
   // The page returns the board scope when this host unmounts.
   useUndoScope("projects:my-work");
+
+  // OP-2b — a row click, Enter on a row and the undo toast all raise the
+  // store's `openFocus`. In My work that opens the Projects panel and not
+  // the My Tasks focus modal, which this host does not mount. `/tasks` is
+  // unchanged. Only a focus raised by a gesture inside this subtree counts:
+  // a chat card or a search hit raises the same field and is left alone.
+  const inside = useRef(false);
+  const openRef = useRef(onOpenTask);
+  useEffect(() => {
+    openRef.current = onOpenTask;
+  }, [onOpenTask]);
+  useEffect(
+    () =>
+      watchInsideFocus(
+        useTaskStore,
+        () => inside.current,
+        (id) => openRef.current(id),
+      ),
+    [],
+  );
+  const markInside = () => {
+    inside.current = true;
+    setTimeout(() => {
+      inside.current = false;
+    }, 0);
+  };
 
   // The store is shared with /tasks. Put its view back when My work closes.
   useEffect(() => {
@@ -92,7 +124,12 @@ export default function MyWorkHost({ app }: { app: MyWorkId }) {
   const ready = wanted !== null && view === wanted;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-work-host">
+    <div
+      className="flex min-w-0 flex-1 flex-col overflow-hidden"
+      data-testid="my-work-host"
+      onClickCapture={markInside}
+      onKeyDownCapture={markInside}
+    >
       {ready ? (
         wanted === "inbox" ? (
           <div className="min-h-0 flex-1 overflow-hidden">
@@ -117,7 +154,6 @@ export default function MyWorkHost({ app }: { app: MyWorkId }) {
         )
       ) : null}
       <QuickCapture />
-      <TaskFocusModal />
       <ReclarifyModal />
       <UndoToast />
       <StagePromptHost />
