@@ -717,3 +717,53 @@ async def test_backfill_holds_no_session_across_a_model_call() -> None:
     )
     # The read phase and the filed-FYI phase each opened a block of their own.
     assert state["opens"] == 2 and state["open"] == 0
+
+
+# ── H-286: the active buckets read the digest's one live-thread rule ─────────
+
+async def _reply_zero_sql(monkeypatch, bucket: str) -> str:
+    """The SELECT of the Reply Zero list for one bucket, as the route sends it."""
+    from fastapi import BackgroundTasks
+
+    sent: list[str] = []
+    row = SimpleNamespace(thread_id="t-1", reason="", last_message_at=None, id="m-1",
+                          subject="s", from_address={}, is_read=False, draft_id=None,
+                          draft_text=None)
+
+    async def execute(sql, params=None):
+        sent.append(str(sql))
+        return _result(fetchone=None, fetchall=[row])
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=execute)
+    monkeypatch.setattr(_rz, "_tenant_session", bind_db(db))
+    monkeypatch.setattr(_rz, "_assert_account_owner", AsyncMock())
+    monkeypatch.setattr(_rz, "resolve_account_filter", AsyncMock(return_value="acc-1"))
+    user = SimpleNamespace(email="me@x.test", organization_id="o-1")
+    await _rz.reply_zero(BackgroundTasks(), account_id="acc-1", type=bucket, limit=5,
+                         user=user)
+    return next(q for q in sent if "FROM email_thread_status ts" in q)
+
+
+async def test_the_reply_list_hides_a_snoozed_and_a_junk_thread(monkeypatch) -> None:
+    """H-286: Reply Zero's active buckets read ``digest._LIVE_THREAD``, so a
+    snoozed thread and a junk thread are off the Reply list, as they are off
+    the digest count and My Day. The R8 half seeds both on a real database:
+    ``test_email_reply_zero_r8.py``. Mutation: put back the trash and
+    archive list, and each assert is red."""
+    from gateway.routes.email.digest import _LIVE_THREAD
+
+    assert "'junk'" in _LIVE_THREAD and "snoozed_until > now()" in _LIVE_THREAD
+    for bucket in ("needs_reply", "awaiting"):
+        sql = await _reply_zero_sql(monkeypatch, bucket)
+        assert _LIVE_THREAD in sql, bucket
+
+
+async def test_done_still_shows_an_archived_thread(monkeypatch) -> None:
+    """H-286: Done is not an active bucket. It hides trash only, so an
+    archived thread still shows there."""
+    from gateway.routes.email.digest import _LIVE_THREAD
+
+    sql = await _reply_zero_sql(monkeypatch, "done")
+    assert _LIVE_THREAD not in sql
+    assert "<> 'trash'" in sql and "'archive'" not in sql

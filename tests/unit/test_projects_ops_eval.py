@@ -40,9 +40,9 @@ pytest.importorskip("skill_projects", reason="skill-projects not installed")
 from evals.coding_engine.checkers import Session, ToolCall
 from evals.projects_ops import checkers as C
 from evals.projects_ops import dataset as D
+from evals.projects_ops import email_stub, stub_api
 from evals.projects_ops import run as R
 from evals.projects_ops import scripted as S
-from evals.projects_ops import stub_api
 from evals.projects_ops import tasks as T
 from evals.projects_ops.scripted import tool
 
@@ -124,7 +124,7 @@ def test_the_twenty_eight_tasks_each_have_a_checker_and_a_script_or_an_xfail() -
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
     po3 = T.by_id("PO-3")
-    assert po3.xfail and "P8" in po3.xfail and "P9" in po3.xfail
+    assert po3.xfail and "P8" in po3.xfail and "P9" not in po3.xfail
 
 
 def test_the_task_selector() -> None:
@@ -725,7 +725,7 @@ def _po3(source: str = "email", parent: str = LAUNCH.id, delegations: int = 1,
     card = C.Card("Create this plan?", "", "This text leaves your mailbox.\n"
                   "Pack 40 kits by Friday.", T.APPROVE, at=0)
     return _evidence("PO-3", calls=calls, cards=[card], requests=[
-        _req("POST", "/projects/nodes", {"name": "Kits", "parent_id": parent}, node), *tasks,
+        _req("POST", "/projects/nodes", {"name": "Kits", "parent_project_id": parent}, node), *tasks,
     ])
 
 
@@ -745,6 +745,73 @@ def test_po3_its_checker_passes_a_right_run_and_fails_each_wrong_one() -> None:
     outside = _po3()
     outside.requests.append(_req("GET", "/email/messages/1"))
     assert failed(outside) == {"no_email_route"}
+    # WS-46 P9 (§10.3 rule 4): a memory write that holds the callee's text fails.
+    saved = _po3()
+    saved.sessions[0].tool_calls.append(ToolCall(
+        "save_memory", json.dumps({"text": f"Priya wrote: {email_stub.ANSWER}"}), "saved", True))
+    assert failed(saved) == {"no_memory_of_the_callee"}
+    harmless = _po3()
+    harmless.sessions[0].tool_calls.append(ToolCall(
+        "save_memory", json.dumps({"text": "The member likes short answers."}), "saved", True))
+    assert C.passed(C.check_po3(harmless))
+
+
+# ── 3b. P9: the stub email agent, and the email half of PO-3 ────────────────
+
+
+def test_the_stub_email_agent_answers_email_assistant_only() -> None:
+    stub = email_stub.EmailStub()
+    assert asyncio.run(stub.run_sub_agent("email-assistant", "the requests", "r1")) == (
+        email_stub.ANSWER)
+    with pytest.raises(LookupError):
+        asyncio.run(stub.run_sub_agent("crm-assistant", "the deals", "r2"))
+    assert [name for name, _ in stub.calls] == ["email-assistant", "crm-assistant"]
+
+
+def _email_half(ds: D.Dataset) -> list[Any]:
+    """What PO-3 does once P8 ships, less the subproject: ask, then ONE batch."""
+    rows = [{"title": "Pack 40 kits", "source": "email", "assignees": "Asha Iyer",
+             "description": f"From email: {email_stub.SUBJECT}, {email_stub.SENT}. Pack 40 kits."},
+            {"title": "Print the kit labels", "source": "email",
+             "description": f"From email: {email_stub.SUBJECT}, {email_stub.SENT}. Print labels."},
+            {"title": "Book the courier", "source": "email",
+             "description": f"From email: {email_stub.SUBJECT}, {email_stub.SENT}. Book it."}]
+    return [
+        tool("projects_tree"),
+        tool("call_agent", agent_name="email-assistant",
+             message="List each request in Priya's mail about the launch kits: the subject, "
+                     "the date, the message id, and for each request who and by when."),
+        tool("create_tasks", project_id=ds.project("Launch").id, tasks=json.dumps(rows)),
+        ("text", "I made 3 tasks in Launch from Priya's mail."),
+    ]
+
+
+@pytest.mark.parametrize("covered", [False, True], ids=["uncovered", "covered"])
+def test_the_email_half_of_po3_delegates_once_and_sends_source_email(
+    tmp_path: Path, covered: bool,
+) -> None:
+    spec = dataclasses.replace(T.by_id("PO-3"), xfail=None)
+    with _harness(tmp_path, covered=covered) as h:
+        record = _run(h, "PO-3", steps=_email_half(h.dataset), spec=spec)
+        delegations = list(h.email.calls)
+    # One call_agent, and the stub is the only callee.
+    assert [name for name, _ in delegations] == ["email-assistant"]
+    session = record["sessions"][0]
+    names = [c["name"] for c in session["tool_calls"]]
+    assert names.count("call_agent") == 1 and "save_memory" not in names
+    # No route outside /projects/, and three creates that name the source.
+    assert all(q["path"].startswith("/projects/") for q in record["requests"])
+    posts = [q for q in record["requests"]
+             if q["method"] == "POST" and q["path"] == "/projects/tasks"]
+    assert [q["body"]["source"] for q in posts] == ["email"] * 3
+    # One card. Its first body line is the mailbox line, and it shows each description.
+    assert len(record["cards"]) == 1
+    card = record["cards"][0]
+    assert card["context"].splitlines()[1].startswith("mailbox:"), card["context"]
+    assert "This text leaves your mailbox" in card["context"]
+    shown = " ".join(r["hint"] for r in card["rows"])
+    assert all(q["body"]["description"].split(".")[0] in shown for q in posts)
+    assert record["no_egress"] == [covered]
 
 
 # ── 4. the CLI, and the gate on the model sweep ─────────────────────────────

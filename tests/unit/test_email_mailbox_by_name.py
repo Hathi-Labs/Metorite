@@ -194,18 +194,31 @@ def test_no_other_agent_and_no_shared_room_gets_the_block(monkeypatch) -> None:
     assert not any("mailboxes" in p for p in parts)
 
 
-def test_a_room_member_is_not_the_acting_member(monkeypatch) -> None:
-    """``_email_ctx_member`` gives "" when the tools act as ``room:<thread>``."""
+def test_only_a_solo_room_names_the_member(monkeypatch) -> None:
+    """``_email_ctx_member`` reads the run boundary's solo-room bit.
+
+    H-406: the memory id is not the signal. A member in a shared room can
+    send their own email as ``payload.user_email``, and the memory id then
+    matches. The bit stays False, so the room gets no mailbox list.
+    """
+    import contextvars
+
     import acb_common
     from acb_skills import memory_tools
     from orchestrator import executor
 
     monkeypatch.setattr(acb_common, "get_run_context",
                         lambda: {"user": "vj@hathilabs.test", "member_verified": "1"})
-    monkeypatch.setattr(memory_tools, "_get_memory_user_id", lambda: "room:t-1")
-    assert executor._email_ctx_member() == ""
-    monkeypatch.setattr(memory_tools, "_get_memory_user_id", lambda: "VJ@hathilabs.test")
-    assert executor._email_ctx_member() == "vj@hathilabs.test"
+    monkeypatch.setattr(memory_tools, "_get_memory_user_id", lambda: "vj@hathilabs.test")
+
+    def _with(solo: bool | None) -> str:
+        if solo is not None:
+            executor._RUN_SOLO_ROOM.set(solo)
+        return executor._email_ctx_member()
+
+    assert contextvars.Context().run(_with, None) == ""  # unset fails closed
+    assert contextvars.Context().run(_with, False) == ""  # shared, own email
+    assert contextvars.Context().run(_with, True) == "vj@hathilabs.test"
 
 
 def test_a_failed_read_costs_the_block_and_never_the_turn(monkeypatch) -> None:

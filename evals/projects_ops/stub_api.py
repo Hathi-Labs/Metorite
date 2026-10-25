@@ -913,7 +913,8 @@ class OpsStub:
 
     def create_node(self, body: dict[str, Any]) -> dict[str, Any]:
         name = str(body.get("name") or "").strip()
-        parent = str(body.get("parent_id") or "")
+        # The wire name of the route (`ProjectIn.parent_project_id`).
+        parent = str(body.get("parent_project_id") or body.get("parent_id") or "")
         if not name:
             raise StubError(422, [{"loc": ["body", "name"], "msg": "A node needs a name."}])
         self._project_of(parent)  # 404 for a parent the member cannot see
