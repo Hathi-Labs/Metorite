@@ -60,6 +60,19 @@ describe("buildItems", () => {
     expect(keys).not.toContain("do:plan-day");
   });
 
+  it("WS-64: New task falls back to /tasks for a member with feature:tasks and no Projects pane", () => {
+    const noProjects = HELD.filter((p) => p.href !== "/projects");
+    const find = (items: ReturnType<typeof buildItems>) => items.find((i) => i.key === "do:capture");
+    // Both held: the Projects target, and one item.
+    const both = buildItems(HELD, false, ["tasks", "projects"]);
+    expect(both.filter((i) => i.key === "do:capture")).toHaveLength(1);
+    expect(find(both)!.href).toBe("/projects?do=capture");
+    // No Projects pane, feature:tasks: the old target.
+    expect(find(buildItems(noProjects, false, ["tasks"]))!.href).toBe("/tasks?do=capture");
+    // Neither: no job.
+    expect(find(buildItems(noProjects, false, []))).toBeUndefined();
+  });
+
   it("offers every held app, and no app the member does not hold", () => {
     const go = buildItems(HELD).filter((i) => i.group === "go");
     expect(go.map((i) => i.href)).toEqual(HELD.map((p) => p.href));
