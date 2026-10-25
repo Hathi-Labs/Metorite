@@ -30,9 +30,9 @@ Run (a private ladder database, one R8 suite at a time)::
     eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_projects_analytics_actor_r8.py -v -rs
 
-**The mutations (R7).** Each one turns the named test red. They need the
-database, so this PC did not run them (no Docker on 2026-10-25). CI runs the
-suite.
+**The mutations (R7).** Each one turns the named test red. R1 to R5 were
+written without a database and are not run. R6 and R7 ran red on a private
+ladder database on 2026-10-25, each after a commit.
 
 * R1. ``finish_actor_join`` orders ``ASC`` (the earliest finish)
   -> ``test_d1_each_done_task_carries_its_label``.
