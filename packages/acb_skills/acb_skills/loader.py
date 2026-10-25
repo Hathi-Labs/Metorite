@@ -39,9 +39,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -208,6 +210,30 @@ def _check_built_runtime(agent_name: str, built: list[Any]) -> None:
 _cache_meta_lock = threading.Lock()
 # Per-repo locks prevent concurrent clone/pull races for the same repo.
 _repo_locks: dict[str, threading.Lock] = {}
+
+
+# Chat speed: every run used to fetch from origin before the first model call.
+# One refresh per repo each TTL is enough, because a push from a person takes
+# effect on the next run after the TTL. ``AGENT_REPO_REFRESH_TTL_SECONDS=0``
+# restores the old fetch-on-every-run behaviour.
+_REFRESHED_AT: dict[str, float] = {}
+
+
+def _refresh_ttl() -> float:
+    try:
+        return max(0.0, float(os.environ.get("AGENT_REPO_REFRESH_TTL_SECONDS", "60")))
+    except ValueError:
+        return 60.0
+
+
+def _refresh_due(local_name: str) -> bool:
+    ttl = _refresh_ttl()
+    last = _REFRESHED_AT.get(local_name)
+    return ttl <= 0 or last is None or (time.monotonic() - last) >= ttl
+
+
+def _mark_refreshed(local_name: str) -> None:
+    _REFRESHED_AT[local_name] = time.monotonic()
 
 
 def _get_repo_lock(repo_name: str) -> threading.Lock:
@@ -1254,8 +1280,12 @@ def _ensure_repo(
         if clone_dir.exists() and (clone_dir / ".git").exists():
             # Already cloned — scrub any token from the clone's config and
             # set the public URL (H-363), then pull through the seam.
+            # The scrub is local and cheap, so it runs on every call. Only the
+            # fetch waits for the TTL (H-363).
             _refresh_remote_auth(clone_dir, org, repo_name)
-            _pull_latest(clone_dir)
+            if _refresh_due(local_name):
+                _pull_latest(clone_dir)
+                _mark_refreshed(local_name)
         else:
             # First use — full clone. The URL holds no token (H-363).
             _log.info("loader.clone_new", repo=repo_name, org=org, local=local_name)
@@ -1263,10 +1293,13 @@ def _ensure_repo(
             _clone_repo(url, clone_dir)
             _configure_bot_identity(clone_dir, settings)
             _install_push_guard(clone_dir)
+            _mark_refreshed(local_name)
         # Keep generated workspace dirs untracked (idempotent) so a mutation
         # reset can't wipe them and outputs/ persists across redeploys.
         _ensure_workspace_gitignore(clone_dir)
-        # After every pull/clone, auto-sync any new skill scripts into agents.py
+        # On every load, auto-sync any new skill scripts into agents.py. The
+        # scan reads the working tree, so a script that a coding session
+        # committed locally is wired without waiting for the next fetch.
         _sync_new_skills(clone_dir, settings)
         # Install the repo's declared deps into agent-site (WS-49 BH-7). Agents
         # are imported in-process, and agent-site is on the gateway's sys.path.
