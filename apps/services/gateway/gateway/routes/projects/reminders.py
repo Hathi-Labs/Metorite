@@ -1,0 +1,619 @@
+"""Projects · reminders — the private reminder store of one member.
+
+Spec: ``project-docs/specs/calendar_events_reminders.md`` §5.1 to §5.3, §5.8
+and §10.3 · **D114** · board WS-66 RM-1.
+
+    GET   /projects/my/reminders                          → my reminders, by state and window
+    POST  /projects/my/reminders                          → set one, in state ``scheduled``
+    PATCH /projects/my/reminders/{reminder_id}            → change its text, kind, link or time
+    POST  /projects/my/reminders/{reminder_id}/resolve    → done, drop or promote
+    POST  /projects/my/reminders/{reminder_id}/snooze     → a member move to a named time
+    POST  /projects/my/reminders/{reminder_id}/reschedule → a member move to a named time
+
+**A reminder is a nudge, not work** (D114.1), so it lives in its own table,
+``reminders`` (migration 305), and never in ``pm_tasks``. "Make it a task"
+promotes one into the member's personal project when it is work.
+
+**Private to one member.** RLS binds the ORGANIZATION only. The member is a
+second axis, so every statement here also filters on ``member_email``, and
+the value comes from the session (:func:`_member`), never from a request
+body or a query parameter (R5e). A colleague and an admin of the same org
+read nothing, change nothing and count nothing. A miss is 404, never 403, so
+the code does not tell a caller that a reminder of somebody else exists.
+
+**One transaction for each change.** Each write and its ``reminder_events``
+row run in one ``async with _tenant_session() as db:`` block. The session
+commits on a clean exit and rolls back on any exception, so a 409 after a
+partial write leaves nothing behind.
+
+**The ledger is the lifecycle of §5.3**: ``created``, each move of the time
+(``snoozed``, ``rescheduled``) and each answer (``done``, ``dropped``,
+``promoted``). A PATCH that changes only text, kind, link, estimate or
+``important`` moves no state and no time. The event list of §5.2 has no
+event for it, so it writes no ledger row. RM-1 does not widen that CHECK.
+
+**Who counts what** (§5.4). A move that the member asks for adds 1 to
+``snoozes``: a snooze, a reschedule to a named time, and a PATCH of
+``fire_at``. Nothing here touches ``cycles``. Only the loop (RM-2) moves a
+reminder with no answer, and only that adds to ``cycles``.
+
+**Time.** A time with no UTC offset is a 422, because a naive instant reads
+in the zone of the database session and fires at the wrong minute. ``tz``
+is the IANA zone the member was in, stored as given once ``zoneinfo`` knows
+it. ``/reschedule`` takes a named time only. The ``smart`` slot of §5.5 is
+RM-2.
+
+**The gate.** The ``/projects`` router gives ``feature:projects``. No second
+gate applies. ``CALENDAR_REMINDERS`` off makes every route here answer 404
+before the body is read (:func:`_require_on`, a route dependency).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Any, Literal
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
+from fastapi import Depends, HTTPException, Query
+from gateway.routes.projects.core import (
+    ACTOR_VIA,
+    ListResponse,
+    _tenant_session,
+    actor,
+    clean_payload,
+    load_default_status,
+    router,
+    wire,
+)
+from gateway.routes.projects.personal import (
+    create_personal_task,
+    ensure_personal_project,
+)
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+
+#: Migration 305's state CHECK, in the order of §5.3.
+STATES: tuple[str, ...] = (
+    "scheduled", "due", "unconfirmed", "done", "dropped", "cancelled",
+)
+#: The states that still wait on the member or on the loop (§5.3, "Open?").
+OPEN_STATES: tuple[str, ...] = ("scheduled", "due", "unconfirmed")
+KINDS: tuple[str, ...] = ("action", "notice")
+#: §5.1. The link is a pointer, and it copies nothing from the object.
+SUBJECT_KINDS: tuple[str, ...] = (
+    "task", "email_thread", "crm_contact", "wa_chat", "project",
+)
+#: The link kinds whose id is a row UUID. A thread id and a chat id are text.
+_UUID_SUBJECTS = frozenset({"task", "crm_contact", "project"})
+_SUBJECT_ID_MAX = 200
+TITLE_MAX = 200
+
+#: §5.1 and the answer of §5.4 -> (state, resolution, ledger event).
+RESOLUTIONS: dict[str, tuple[str, str, str]] = {
+    "done": ("done", "done", "done"),
+    "drop": ("dropped", "dropped", "dropped"),
+    "promote": ("done", "promoted", "promoted"),
+}
+
+
+# ── The flag ───────────────────────────────────────────────────────────────
+
+
+def reminders_enabled() -> bool:
+    """The switch of the whole store (``calendar_reminders``, default off).
+
+    The ONE reader of the setting. ``/version`` calls it, and so does
+    :func:`_require_on`.
+    """
+    return bool(getattr(get_settings(), "calendar_reminders", False))
+
+
+async def _require_on() -> None:
+    """404 while the flag is off.
+
+    A route dependency, so it runs before FastAPI reads the body: a flag-off
+    POST with a bad body answers 404, not 422, and writes nothing.
+    """
+    if not reminders_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+_ON = [Depends(_require_on)]
+
+
+# ── Models ─────────────────────────────────────────────────────────────────
+
+
+class ReminderIn(BaseModel):
+    """A new reminder. ``fire_at`` is ISO 8601 WITH an offset."""
+
+    title: str
+    fire_at: str
+    tz: str | None = None
+    kind: Literal["action", "notice"] = "action"
+    notes: str | None = None
+    subject_kind: str | None = None
+    subject_id: str | None = None
+    estimate_minutes: int | None = Field(None, ge=1)
+    important: bool = False
+
+
+class ReminderPatch(BaseModel):
+    """A change to an open reminder. Only the fields sent change. ``null``
+    clears ``notes``, ``tz``, ``estimate_minutes`` or the link."""
+
+    title: str | None = None
+    fire_at: str | None = None
+    tz: str | None = None
+    kind: Literal["action", "notice"] | None = None
+    notes: str | None = None
+    subject_kind: str | None = None
+    subject_id: str | None = None
+    estimate_minutes: int | None = Field(None, ge=1)
+    important: bool | None = None
+
+
+class MoveIn(BaseModel):
+    """A member move to a named time (§5.4). ``tz`` replaces the stored zone
+    when it is sent."""
+
+    fire_at: str
+    tz: str | None = None
+
+
+class ResolveIn(BaseModel):
+    """The member's answer: done, drop, or promote to a task."""
+
+    action: Literal["done", "drop", "promote"]
+
+
+class ReminderModel(BaseModel):
+    """One reminder on the wire. It carries no tenant and no owner: the caller
+    is the owner, and a response never shows the tenant."""
+
+    id: str
+    title: str
+    notes: str | None = None
+    kind: str
+    subject_kind: str | None = None
+    subject_id: str | None = None
+    fire_at: str | None = None
+    tz: str | None = None
+    state: str
+    next_check_at: str | None = None
+    first_fired_at: str | None = None
+    cycles: int = 0
+    snoozes: int = 0
+    estimate_minutes: int | None = None
+    important: bool = False
+    resolution: str | None = None
+    resolved_at: str | None = None
+    promoted_task_id: str | None = None
+    source: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+def _out(row: Any) -> dict[str, Any]:
+    data = {name: wire(getattr(row, name, None)) for name in ReminderModel.model_fields}
+    return ReminderModel(**data).model_dump()
+
+
+# ── Inputs, checked before any write ─────────────────────────────────────
+
+
+def _member(user: Any) -> str:
+    """The owner, from the authenticated session only (R5e), lower case.
+
+    A caller with no address would share one bucket with every other caller
+    with no address, so it is refused rather than keyed as ``anonymous``.
+    """
+    email = actor(user).lower()
+    if "@" not in email:
+        raise HTTPException(
+            status_code=403, detail="A reminder needs a signed-in member.",
+        )
+    return email
+
+
+def _instant(value: Any, field: str) -> datetime:
+    """An ISO 8601 instant WITH an offset, as UTC. A naive time is a 422."""
+    raw = str(value or "").strip()
+    if raw.lower() == "smart":
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field}: the smart slot is not built yet (RM-2). Name a time.",
+        )
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"{field} is not an ISO 8601 time: {raw!r}.",
+        ) from None
+    if when.tzinfo is None or when.utcoffset() is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field} needs a UTC offset, such as 2026-10-31T09:00:00+05:30.",
+        )
+    return when.astimezone(UTC)
+
+
+def _zone(value: str | None) -> str | None:
+    """An IANA zone, stored as given, or None. An unknown zone is a 422."""
+    clean = (value or "").strip()
+    if not clean:
+        return None
+    try:
+        ZoneInfo(clean)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(
+            status_code=422, detail=f"tz is not an IANA zone: {clean!r}.",
+        ) from None
+    return clean
+
+
+def _title(value: str | None) -> str:
+    clean = (value or "").strip()
+    if not clean:
+        raise HTTPException(status_code=422, detail="A reminder needs a title.")
+    if len(clean) > TITLE_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"A title is at most {TITLE_MAX} characters.",
+        )
+    return clean
+
+
+def _subject(kind: str | None, subject_id: str | None) -> tuple[str | None, str | None]:
+    """The link of §5.1: both parts or neither. Migration 305 holds the pair."""
+    kind = (kind or "").strip() or None
+    subject_id = (subject_id or "").strip() or None
+    if (kind is None) != (subject_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="A link needs both subject_kind and subject_id, or neither.",
+        )
+    if kind is None:
+        return None, None
+    if kind not in SUBJECT_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"subject_kind must be one of {', '.join(SUBJECT_KINDS)}.",
+        )
+    if kind in _UUID_SUBJECTS:
+        try:
+            subject_id = str(UUID(subject_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail=f"subject_id of a {kind} is a UUID.",
+            ) from None
+    elif len(subject_id) > _SUBJECT_ID_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"subject_id is at most {_SUBJECT_ID_MAX} characters.",
+        )
+    return kind, subject_id
+
+
+def _source(user: Any) -> str:
+    """Where the reminder came from (§5.2 ``source``), from the request's own
+    provenance, never from a body field. ``X-Actor-Via`` is bound by the
+    router (``core.capture_actor_via``)."""
+    via = ACTOR_VIA.get("")
+    if getattr(user, "agent", None) is not None or via.startswith("mcp:"):
+        return "api"
+    if via.startswith("chat:"):
+        return "chat"
+    if via.startswith("whatsapp"):
+        return "whatsapp"
+    return "app"
+
+
+# ── SQL ────────────────────────────────────────────────────────────────────
+#
+# Every statement names `member_email = :me`. RLS adds the organization.
+
+_MINE_FOR_UPDATE_SQL = (
+    "SELECT * FROM reminders "
+    "WHERE id = CAST(:id AS uuid) AND member_email = :me FOR UPDATE"
+)
+
+
+async def _load_mine(db: Any, reminder_id: UUID, me: str) -> Any:
+    """My reminder, locked for this transaction, or 404.
+
+    The lock serialises two answers to one reminder: the second waits, then
+    reads the closed state and gets 409. So two promotes make one task.
+    """
+    row = (await db.execute(
+        text(_MINE_FOR_UPDATE_SQL), {"id": str(reminder_id), "me": me},
+    )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    return row
+
+
+def _require_open(row: Any) -> None:
+    if row.state not in OPEN_STATES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This reminder is closed ({row.state}). It cannot change.",
+        )
+
+
+async def _ledger(
+    db: Any, reminder_id: Any, event: str, detail: dict[str, Any] | None = None,
+) -> None:
+    """One ``reminder_events`` row, in the caller's transaction.
+
+    ``organization_id`` comes from the column default, the bound tenant. The
+    ledger has no member column: a read of it must join ``reminders`` on
+    ``member_email``.
+    """
+    await db.execute(
+        text(
+            "INSERT INTO reminder_events (reminder_id, event, detail) "
+            "VALUES (CAST(:rid AS uuid), :event, CAST(:detail AS jsonb))"
+        ),
+        {"rid": str(reminder_id), "event": event, "detail": json.dumps(detail or {})},
+    )
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+#: The columns a PATCH may write, in a fixed order. Identifiers come from
+#: this tuple only. Every value is a bound parameter.
+_PATCH_COLUMNS: tuple[str, ...] = (
+    "title", "notes", "kind", "subject_kind", "subject_id", "fire_at", "tz",
+    "estimate_minutes", "important",
+)
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/my/reminders", dependencies=_ON)
+async def list_reminders(
+    state: str | None = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    user: UserContext = Depends(get_current_user),
+) -> ListResponse:
+    """My reminders, by ``fire_at``.
+
+    With no ``state``, the open ones (§5.3). ``state=unconfirmed`` is the
+    Unconfirmed list. ``start`` and ``end`` bound ``fire_at`` as
+    ``start <= fire_at < end``, each with an offset. ``total`` counts every
+    match, past ``limit`` too, and only mine.
+    """
+    me = _member(user)
+    if state is None:
+        states = list(OPEN_STATES)
+    elif state in STATES:
+        states = [state]
+    else:
+        raise HTTPException(
+            status_code=422, detail=f"state must be one of {', '.join(STATES)}.",
+        )
+    where = ["member_email = :me", "state = ANY(:states)"]
+    params: dict[str, Any] = {"me": me, "states": states}
+    lower = _instant(start, "start") if start is not None else None
+    upper = _instant(end, "end") if end is not None else None
+    if lower is not None and upper is not None and upper <= lower:
+        raise HTTPException(status_code=422, detail="end must be after start.")
+    if lower is not None:
+        where.append("fire_at >= :start")
+        params["start"] = lower
+    if upper is not None:
+        where.append("fire_at < :end")
+        params["end"] = upper
+    clause = " AND ".join(where)
+    async with _tenant_session() as db:
+        rows = (await db.execute(
+            text(
+                f"SELECT * FROM reminders WHERE {clause} "
+                "ORDER BY fire_at, created_at, id LIMIT :limit"
+            ),
+            {**params, "limit": limit},
+        )).fetchall()
+        total = (await db.execute(
+            text(f"SELECT count(*) AS n FROM reminders WHERE {clause}"), params,
+        )).scalar_one()
+    return ListResponse(rows=[_out(r) for r in rows], total=int(total))
+
+
+@router.post("/my/reminders", status_code=201, dependencies=_ON)
+async def create_reminder(
+    payload: ReminderIn, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Set one reminder. It starts ``scheduled`` and writes a ``created`` row."""
+    me = _member(user)
+    title = _title(payload.title)
+    fire_at = _instant(payload.fire_at, "fire_at")
+    tz = _zone(payload.tz)
+    subject_kind, subject_id = _subject(payload.subject_kind, payload.subject_id)
+    source = _source(user)
+    async with _tenant_session() as db:
+        row = (await db.execute(
+            text(
+                "INSERT INTO reminders (member_email, title, notes, kind, "
+                "subject_kind, subject_id, fire_at, tz, estimate_minutes, "
+                "important, source) "
+                "VALUES (:me, :title, :notes, :kind, :subject_kind, :subject_id, "
+                ":fire_at, :tz, :estimate_minutes, :important, :source) "
+                "RETURNING *"
+            ),
+            {
+                "me": me, "title": title, "notes": payload.notes,
+                "kind": payload.kind, "subject_kind": subject_kind,
+                "subject_id": subject_id, "fire_at": fire_at, "tz": tz,
+                "estimate_minutes": payload.estimate_minutes,
+                "important": payload.important, "source": source,
+            },
+        )).fetchone()
+        await _ledger(db, row.id, "created", {"fire_at": _iso(fire_at), "tz": tz})
+        return _out(row)
+
+
+@router.patch("/my/reminders/{reminder_id}", dependencies=_ON)
+async def update_reminder(
+    reminder_id: UUID, payload: ReminderPatch,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Change an open reminder. A new ``fire_at`` is a member move: the
+    reminder goes back to ``scheduled``, ``snoozes`` gains 1, and the ledger
+    gains a ``rescheduled`` row. A closed reminder is 409."""
+    me = _member(user)
+    changes = clean_payload(payload)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Nothing to change.")
+    for field in ("title", "fire_at", "kind", "important"):
+        if field in changes and changes[field] is None:
+            raise HTTPException(status_code=422, detail=f"{field} cannot be null.")
+    values: dict[str, Any] = {}
+    if "title" in changes:
+        values["title"] = _title(changes["title"])
+    if "fire_at" in changes:
+        values["fire_at"] = _instant(changes["fire_at"], "fire_at")
+    if "tz" in changes:
+        values["tz"] = _zone(changes["tz"])
+    for field in ("notes", "kind", "estimate_minutes", "important"):
+        if field in changes:
+            values[field] = changes[field]
+    async with _tenant_session() as db:
+        row = await _load_mine(db, reminder_id, me)
+        _require_open(row)
+        if "subject_kind" in changes or "subject_id" in changes:
+            kind, subject_id = _subject(
+                changes.get("subject_kind", row.subject_kind),
+                changes.get("subject_id", row.subject_id),
+            )
+            values["subject_kind"], values["subject_id"] = kind, subject_id
+        moved = "fire_at" in values
+        assignments = [f"{c} = :{c}" for c in _PATCH_COLUMNS if c in values]
+        if moved:
+            assignments += [
+                "state = 'scheduled'", "next_check_at = NULL",
+                "snoozes = snoozes + 1",
+            ]
+        assignments.append("updated_at = now()")
+        updated = (await db.execute(
+            text(
+                f"UPDATE reminders SET {', '.join(assignments)} "
+                "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
+            ),
+            {**values, "id": str(reminder_id), "me": me},
+        )).fetchone()
+        if moved:
+            await _ledger(db, row.id, "rescheduled", {
+                "from": _iso(row.fire_at), "to": _iso(values["fire_at"]),
+                "state_before": row.state, "by": "member",
+            })
+        return _out(updated)
+
+
+async def _move(
+    reminder_id: UUID, payload: MoveIn, user: Any, event: str,
+) -> dict:
+    """A member move to a named time: snooze and reschedule share it.
+
+    The reminder goes back to ``scheduled`` at the new time, ``snoozes``
+    gains 1, ``next_check_at`` clears, and the ledger gains ``event``.
+    """
+    me = _member(user)
+    fire_at = _instant(payload.fire_at, "fire_at")
+    tz_sent = "tz" in payload.model_fields_set
+    tz = _zone(payload.tz) if tz_sent else None
+    async with _tenant_session() as db:
+        row = await _load_mine(db, reminder_id, me)
+        _require_open(row)
+        updated = (await db.execute(
+            text(
+                "UPDATE reminders SET fire_at = :fire_at, "
+                + ("tz = :tz, " if tz_sent else "")
+                + "state = 'scheduled', next_check_at = NULL, "
+                "snoozes = snoozes + 1, updated_at = now() "
+                "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
+            ),
+            {"fire_at": fire_at, "tz": tz, "id": str(reminder_id), "me": me},
+        )).fetchone()
+        await _ledger(db, row.id, event, {
+            "from": _iso(row.fire_at), "to": _iso(fire_at),
+            "state_before": row.state, "by": "member",
+        })
+        return _out(updated)
+
+
+@router.post("/my/reminders/{reminder_id}/snooze", dependencies=_ON)
+async def snooze_reminder(
+    reminder_id: UUID, payload: MoveIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """"Later", or a named time: a ``snoozed`` ledger row."""
+    return await _move(reminder_id, payload, user, "snoozed")
+
+
+@router.post("/my/reminders/{reminder_id}/reschedule", dependencies=_ON)
+async def reschedule_reminder(
+    reminder_id: UUID, payload: MoveIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """A named time only: ``smart`` is RM-2. A ``rescheduled`` ledger row."""
+    return await _move(reminder_id, payload, user, "rescheduled")
+
+
+@router.post("/my/reminders/{reminder_id}/resolve", dependencies=_ON)
+async def resolve_reminder(
+    reminder_id: UUID, payload: ResolveIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The member's answer. A closed reminder is 409.
+
+    ``done`` and ``drop`` close the row. ``promote`` makes exactly one private
+    task in the member's personal project through the capture path
+    (``ensure_personal_project``, ``load_default_status``,
+    ``create_personal_task``, as ``POST /projects/my/tasks`` does), in this
+    same session, and ends the reminder in ``done`` with resolution
+    ``promoted``. A failure anywhere rolls the task back with the reminder.
+    """
+    me = _member(user)
+    state, resolution, event = RESOLUTIONS[payload.action]
+    async with _tenant_session() as db:
+        row = await _load_mine(db, reminder_id, me)
+        _require_open(row)
+        task_id: str | None = None
+        if payload.action == "promote":
+            project = await ensure_personal_project(db, me)
+            project_id = str(project.id)
+            status = await load_default_status(db, project_id)
+            task = await create_personal_task(
+                db, me, project_id, project_id, str(status.id), {
+                    "title": row.title,
+                    "description": row.notes,
+                    "source": "manual",
+                })
+            task_id = str(task.id)
+        updated = (await db.execute(
+            text(
+                "UPDATE reminders SET state = :state, resolution = :resolution, "
+                "resolved_at = now(), next_check_at = NULL, "
+                "promoted_task_id = COALESCE(CAST(:task AS uuid), promoted_task_id), "
+                "updated_at = now() "
+                "WHERE id = CAST(:id AS uuid) AND member_email = :me RETURNING *"
+            ),
+            {
+                "state": state, "resolution": resolution, "task": task_id,
+                "id": str(reminder_id), "me": me,
+            },
+        )).fetchone()
+        detail: dict[str, Any] = {"state_before": row.state}
+        if task_id is not None:
+            detail["task_id"] = task_id
+        await _ledger(db, row.id, event, detail)
+        return _out(updated)

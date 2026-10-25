@@ -2022,6 +2022,10 @@ class Version(BaseModel):
     #: Null when the box holds no readable marker.
     applied_sha: str | None = None
     applied_at: str | None = None
+    #: WS-66 RM-1 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_REMINDERS` flag, so a mismatch with the browser's
+    #: `NEXT_PUBLIC_CALENDAR_REMINDERS` shows with `curl`. Off by default.
+    calendar_reminders: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2114,6 +2118,8 @@ async def version() -> Version:
     only store. The key stays for one release so the monitoring that reads it
     does not break. S9 may drop it.
     """
+    from gateway.routes.projects.reminders import reminders_enabled
+
     applied_sha, applied_at = applied_marker()
     return Version(
         sha=build_sha(),
@@ -2121,6 +2127,7 @@ async def version() -> Version:
         tasks_lens=True,
         applied_sha=applied_sha,
         applied_at=applied_at,
+        calendar_reminders=reminders_enabled(),
     )
 
 
