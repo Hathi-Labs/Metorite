@@ -2438,7 +2438,7 @@ function ForecastBandBar({ band }: { band: ForecastBand }) {
           style={{ width: `${band.p50}%` }}
         />
         <div
-          className={`absolute inset-y-0 opacity-40 ${hue.dot}`}
+          className={`absolute inset-y-0 opacity-50 ${hue.dot}`}
           style={{ left: `${band.p50}%`, width: `${Math.max(1, band.p85 - band.p50)}%` }}
         />
         {band.plan !== null && (
@@ -2455,7 +2455,7 @@ function ForecastBandBar({ band }: { band: ForecastBand }) {
           50% by {band.p50Label}
         </span>
         <span className="flex items-center gap-1">
-          <span className={`size-2 rounded-full opacity-40 ${hue.dot}`} aria-hidden />
+          <span className={`size-2 rounded-full opacity-50 ${hue.dot}`} aria-hidden />
           85% by {band.p85Label}
         </span>
         {band.planLabel && (
@@ -2523,7 +2523,7 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
           set in the third quadrant at the same size as "3 people". BLUF, on
           a screen: the conclusion, then the evidence for whoever checks it. */}
       <div className="mb-3">
-        <div className="flex items-start gap-1">
+        <div className="flex items-start gap-1.5">
           <p className={`text-2xl font-semibold leading-tight ${TONE[verdict.tone]}`}>
             {verdict.headline}
           </p>
