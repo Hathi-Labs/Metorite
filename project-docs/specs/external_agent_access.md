@@ -851,7 +851,7 @@ After the eight checks, the edge dispatches the method. A notification, or a JSO
 **The transport.**
 
 1. One `POST /mcp`. Each answer is `application/json`. The edge ignores the `Accept` header.
-2. ~~The edge never sends `Mcp-Session-Id`.~~ SW-7 (§12.5) changed this rule. `initialize` answers an `Mcp-Session-Id` that the edge signs, and the edge keeps no state. A later request may echo it. An id that does not verify gets 404, so the client starts a new session. A request with no id is served with no session.
+2. ~~The edge never sends `Mcp-Session-Id`.~~ SW-7 (§12.5) changed this rule, behind the flag `agent_mcp_sessions_enabled`. With the flag on, `initialize` answers an `Mcp-Session-Id` that the edge signs, and the edge keeps no state. A later request may echo it. An id that does not verify gets 404, so the client starts a new session. A request with no id is served with no session.
 
 **The error body (EA3-13).** A 400, 401 or 403 answer carries a JSON-RPC error with `id: null`. The `code` is `-32700` for a body that is not JSON, and `-32600` for every other case. A 503 carries the same shape with the code `-32603`. A 404 from the flag and a 405 carry no rule for the body.
 
@@ -1543,6 +1543,14 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 ### 12.5 One key for each agent session (SW-7)
 
 **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged (Metorite task #338, which takes in the SW-6 design #337 and MCP-G4).**
+
+**Ships dark behind `agent_mcp_sessions_enabled` (default off).** Turn it on on staging, and check it with a real Claude Code: two terminals, a resume, and a 404 after a key change. Then turn it on in production.
+
+- **While it is off**, the edge mints no `Mcp-Session-Id`. It reads an id that a client still sends as no session. It never answers 404 for such an id, because the client may hold one from a time the flag was on. It signs no `X-Agent-Session`. So every client sees the transport of before SW-7.
+- **The gateway needs no flag.** With no signed session, a call owns only runs with no key, and every run has no key while the flag is off. So the own run, the adoption, the 409 and `my_work` all act as they did after SW-13c.
+- **The texts follow the flag.** Step 3 of the protocol and the prompt say "each terminal is its own session" only while the flag is on. While it is off, they say that two terminals on one connection are not told apart.
+- **Who flips it.** The dev-phase window (CLAUDE.md §3a, gate `enforcement-flip`) lets an agent flip it. The agent names the flag and the box in the same message. Only the edge reads it, so set it on the edge unit (`acb-agent-edge`) and restart that unit.
+- **A flip back to off.** A run that a session adopted keeps its key. A call with no session then meets it as a holder, and the 409 names `release_task` with its `run_id`.
 
 **The gap.** Two Claude Code terminals on ONE machine share one `agent_connection` and one stamp. After SW-13c the own run of an agent was member + stamp + connection. So terminal B got the run of terminal A back as its own, and worked its task.
 

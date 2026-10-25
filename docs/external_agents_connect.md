@@ -40,7 +40,7 @@ Each agent session follows the same six steps. The server instructions and the c
 1. At the start of a session, the agent calls `my_work`.
 2. The agent takes the top row. When you asked it to stop, it ends that run at once. For another run that waits, it reads the run with `get_agent_run`. For a task, it calls `claim_task`.
 3. A refusal with `409 task_held` means that another session holds the task. The agent does not try that task again. It takes the next row.
-   A run of another connection, such as one on another machine, is never the work of this agent. Each terminal is its own session, so a run of another terminal is not the work of this agent either. So the agent takes only a row that `my_work` gives.
+   A run of another connection, such as one on another machine, is never the work of this agent. Two terminals that share one connection also share one client name. Metorite cannot tell them apart until the MCP sessions of spec §12.5 are on. So the agent takes only a row that `my_work` gives.
 4. The agent calls `get_task_context`. Then it calls `start_agent_run` when the claim opened no run.
 5. The agent posts a progress line at least once a minute.
 6. The agent ends with exactly one result. The task moves to review or done. Or a question waits for a named member. Or the agent gives the task back with `release_task`. A comment is a record of the work, and it is never a result.
@@ -51,7 +51,7 @@ Each agent session follows the same six steps. The server instructions and the c
 2. The tasks of a run of this connection whose session went quiet for five minutes. The agent can take that work back. A run that another session of this connection works on now does not show.
 3. The tasks assigned to you that no AI session holds and that no open task blocks.
 
-It never gives a task that is not assigned to you and that this connection does not hold. A run of another client or of another connection does not show. Each computer that you connect gets its own connection, so the work of your other computer stays with it. Each terminal that you open is its own session, so `my_work` gives each terminal only its own runs.
+It never gives a task that is not assigned to you and that this connection does not hold. A run of another client or of another connection does not show. Each computer that you connect gets its own connection, so the work of your other computer stays with it. Two terminals on one connection share it, so `my_work` cannot tell them apart until the MCP sessions of spec §12.5 are on.
 
 The description of the task is the brief of the agent. Metorite limits what the connection can reach. It cannot limit the tools of the agent on your computer, such as the shell and `git push`. Your Claude Code permission settings control those tools.
 

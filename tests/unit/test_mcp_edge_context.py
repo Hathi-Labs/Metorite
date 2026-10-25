@@ -646,6 +646,11 @@ class TestOneSessionOfAConnection:
 
     MINE, SIBLING = "TerminalA_of-22chars__", "TerminalB_of-22chars__"
 
+    @pytest.fixture(autouse=True)
+    def _sessions_on(self, monkeypatch):
+        """The sessions ship dark (spec §12.5). These tests turn them on."""
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+
     async def _work_in(self, session: str) -> list[dict[str, Any]]:
         from agent_edge import app as edge_app_module
         from agent_edge import mcp

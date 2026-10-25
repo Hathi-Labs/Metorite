@@ -7,7 +7,8 @@ Spec ``project-docs/specs/external_agent_access.md`` §5.3, §7.1 and §9.6.
 and ``tools/call``. EA-6e adds ``prompts/list`` and ``prompts/get``, and
 :mod:`agent_edge.prompts` holds the prompt. It ignores ``Accept``.
 
-**The session (SW-7, spec §12.5).** ``initialize`` answers with an
+**The session (SW-7, spec §12.5), dark behind ``agent_mcp_sessions_enabled``.**
+With the flag on, ``initialize`` answers with an
 ``Mcp-Session-Id`` that ``agent_signing.mint_mcp_session`` makes: a random
 session key and an HMAC that binds it to the connection. The edge keeps no
 state. Each later request that echoes the id is read back with
@@ -134,11 +135,9 @@ _PROTOCOL_RUNS_ON = (
     " call claim_task with the task_id and the version of the row."
     " 3. A 409 task_held means that another session holds the task. Do not try"
     " it again. Take the next row. A run of another connection, such as one"
-    " on another machine, is never yours, and my_work does not list it. Each"
-    " terminal is its own session (SW-7), so a run of another terminal on"
-    " your connection is never yours either: the claim refuses it, and the"
-    " refusal names release_task for a session that has ended. Take only a"
-    " row that my_work lists."
+    " on another machine, is never yours, and my_work does not list it."
+    "{terminals}"
+    " Take only a row that my_work lists."
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
     " 5. Post a thought with post_agent_activity at least once a minute."
@@ -158,6 +157,27 @@ _PROTOCOL_RUNS_OFF = (
     " 6. End with exactly one disposition: the task moves to review or done."
     " A comment is evidence, never a disposition."
 )
+
+#: SW-7 (spec §12.5). The terminal sentence of step 3 follows
+#: ``agent_mcp_sessions_enabled``, so the text stays true while the flag is
+#: off. Fence: ``test_mcp_edge_prompts.py`` ``TestTheProtocol``.
+TERMINALS_IN_SESSIONS = (
+    " Each terminal is its own session (SW-7), so a run of another terminal"
+    " on your connection is never yours either: the claim refuses it, and the"
+    " refusal names release_task for a session that has ended."
+)
+TERMINALS_SHARED = (
+    " Two terminals on ONE connection share one stamp, and Metorite does not"
+    " tell them apart (SW-7 is off). So a claim does not refuse a task that"
+    " another terminal of your connection holds."
+)
+
+
+def _terminals() -> str:
+    """The terminal sentence of step 3, by the session flag."""
+    return (TERMINALS_IN_SESSIONS if agent_oauth.mcp_sessions_enabled()
+            else TERMINALS_SHARED)
+
 
 #: The agent-run part (WS-55 EA-12, §12.1). It shows only while
 #: ``agent_runs_enabled`` is on, as the six tools do. Fence:
@@ -195,7 +215,9 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     if not prompts.offered(held):
         return text
     runs = agent_oauth.runs_enabled()
-    text += (_PROTOCOL_RUNS_ON if runs else _PROTOCOL_RUNS_OFF) + _ROUTINE_INSTRUCTIONS
+    protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()) if runs \
+        else _PROTOCOL_RUNS_OFF
+    text += protocol + _ROUTINE_INSTRUCTIONS
     if runs:
         text += _RUN_INSTRUCTIONS
     return text
@@ -323,8 +345,10 @@ def _session_of(request: Request, caller: bearer.Caller,
     Check 7, the version: after ``initialize``, ``MCP-Protocol-Version``
     must be absent or one of :data:`SUPPORTED_VERSIONS`, or 400.
 
-    Check 7b, the session (SW-7). ``initialize`` reads no session, because
-    it starts one. Any other
+    Check 7b, the session (SW-7). While ``agent_mcp_sessions_enabled`` is
+    off, any id is read as no session and never refused, because a client
+    may hold an id from a time the flag was on. ``initialize`` reads no
+    session, because it starts one. Any other
     message with no ``Mcp-Session-Id`` has no session. Two ids are 400. An
     id that no usable key minted for THIS connection is 404, so the client
     starts a new session (the transport rule of 2025-03-26 and later).
@@ -334,6 +358,8 @@ def _session_of(request: Request, caller: bearer.Caller,
     versions = request.headers.getlist("mcp-protocol-version")
     if len(versions) > 1 or (versions and versions[0] not in SUPPORTED_VERSIONS):
         return None, http_error(400, INVALID_REQUEST, "Unsupported protocol version")
+    if not agent_oauth.mcp_sessions_enabled():
+        return None, None
     sent = request.headers.getlist(SESSION_HEADER)
     if len(sent) > 1:
         return None, http_error(400, INVALID_REQUEST, "Send one Mcp-Session-Id.")
@@ -428,9 +454,12 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             "serverInfo": dict(SERVER_INFO),
             "instructions": instructions(caller.scopes),
         })
-        # SW-7: each `initialize` starts a new session, with a new key.
-        answer.headers[SESSION_HEADER] = agent_signing.mint_mcp_session(
-            key, str(caller.lookup.connection_id))
+        # SW-7: each `initialize` starts a new session, with a new key, while
+        # `agent_mcp_sessions_enabled` is on. Off, no id: the transport of
+        # before SW-7.
+        if agent_oauth.mcp_sessions_enabled():
+            answer.headers[SESSION_HEADER] = agent_signing.mint_mcp_session(
+                key, str(caller.lookup.connection_id))
         return answer
     if method == "ping":
         return _result(request_id, {})

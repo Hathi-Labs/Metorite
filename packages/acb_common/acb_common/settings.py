@@ -1558,6 +1558,13 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
     # box is gate `enforcement-flip`.
     agent_runs_enabled: bool = False
+    # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
+    # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
+    # still sends is read as no session (never a 404), and no
+    # `X-Agent-Session` is signed, so every call behaves as before SW-7.
+    # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
+    # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_mcp_sessions_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

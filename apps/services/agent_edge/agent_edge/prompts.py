@@ -163,6 +163,18 @@ def _task_text(value: str, *, runs: bool) -> str:
     return head + "\n\n" + _steps(first, runs=runs, start_run=runs) + "\n\n" + _rules()
 
 
+def _terminals() -> str:
+    """SW-7 (spec §12.5). The terminal sentence, by the session flag, so the
+    message stays true while ``agent_mcp_sessions_enabled`` is off."""
+    if agent_oauth.mcp_sessions_enabled():
+        return (" Each terminal is its own session, so a run of another terminal"
+                " on your connection is never yours either, and the claim"
+                " refuses it.")
+    return (" Two terminals on one connection share one stamp, and Metorite"
+            " does not tell them apart. So a claim does not refuse a task that"
+            " another terminal of your connection holds.")
+
+
 def _queued_text() -> str:
     """The message with no argument: the protocol of EA-15c (§12.4). The
     agent takes its next work from ``my_work``, and the same work steps as
@@ -182,9 +194,7 @@ def _queued_text() -> str:
         " step 2 again. When claim_task refuses for another reason, tell me"
         " why, and take the next row. A waiting run of another connection, such"
         " as one on another machine, is never yours, and my_work does not list"
-        " it. Each terminal is its own session, so a run of another terminal on"
-        " your connection is never yours either, and the claim refuses it. Take"
-        " only a row that my_work lists.",
+        " it." + _terminals() + " Take only a row that my_work lists.",
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]

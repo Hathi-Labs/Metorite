@@ -22,6 +22,14 @@ and ``M`` is ``apps/services/agent_edge/agent_edge/mcp.py``.
   ``test_v4_a_call_in_a_session_signs_its_key_into_the_gateway_call``.
 * V5. ``M`` ``_dispatch``: no ``Mcp-Session-Id`` on ``initialize``.
   ``test_v5_initialize_starts_a_new_session_each_time``.
+* F1. ``M`` ``_dispatch``: mint the id with no check of the flag.
+  ``test_f1_with_the_flag_off_initialize_mints_no_id``.
+* F2. ``M`` ``_session_of``: read the id with no check of the flag.
+  ``test_f2_with_the_flag_off_an_id_is_no_session_and_never_a_404``.
+
+**Dark (spec §12.5).** The sessions ship behind ``agent_mcp_sessions_enabled``,
+default off. :class:`TestTheTransport` turns it on. :class:`TestTheFlagIsOff`
+proves that, off, the edge behaves exactly as before SW-7.
 """
 from __future__ import annotations
 
@@ -33,7 +41,8 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth import agent_signing
+from acb_auth import agent_oauth, agent_signing
+from acb_common import get_settings
 from agent_edge import app as edge_app_module
 from agent_edge import mcp
 
@@ -99,9 +108,43 @@ class TestTheSessionId:
         assert len(keys) == 50
 
 
+@pytest.fixture
+def sessions_on(edge, monkeypatch):  # noqa: F811 — a fixture
+    monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+    return edge
+
+
+class TestTheFlagIsOff:
+    """The default. The edge mints no id, reads no id and signs no session,
+    so every client sees the transport of before SW-7."""
+
+    def test_the_flag_defaults_off(self) -> None:
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["agent_mcp_sessions_enabled"].default is False
+        assert agent_oauth.mcp_sessions_enabled() is False
+
+    async def test_f1_with_the_flag_off_initialize_mints_no_id(self, edge):  # noqa: F811
+        r = await _send(_rpc("initialize", {"protocolVersion": "2025-11-25"}))
+        assert r.status_code == 200, r.text
+        assert mcp.SESSION_HEADER.lower() not in {k.lower() for k in r.headers}
+
+    async def test_f2_with_the_flag_off_an_id_is_no_session_and_never_a_404(
+            self, edge):  # noqa: F811
+        """A client may hold an id from a time the flag was on. It gets the
+        answer of before SW-7, never a 404, and no session is signed."""
+        good = agent_signing.mint_mcp_session(KEY, CONN)
+        for sent in (good, agent_signing.mint_mcp_session(OTHER_KEY, CONN),
+                     "s1.x.y", [good, good]):
+            r = await _send(_call("get_task", {"task_id": TASK}), session=sent)
+            assert r.status_code == 200, (sent, r.text)
+        assert edge.gateway.requests
+        assert all("x-agent-session" not in q.headers for q in edge.gateway.requests)
+
+
 class TestTheTransport:
 
-    async def test_v5_initialize_starts_a_new_session_each_time(self, edge):  # noqa: F811
+    async def test_v5_initialize_starts_a_new_session_each_time(self, edge, sessions_on):  # noqa: F811
         first, second = await _initialize(), await _initialize()
         assert first != second
         for sid in (first, second):
@@ -112,7 +155,7 @@ class TestTheTransport:
         assert r.status_code == 200 and r.headers[mcp.SESSION_HEADER] not in (first, second)
 
     async def test_v4_a_call_in_a_session_signs_its_key_into_the_gateway_call(
-            self, edge):  # noqa: F811
+            self, edge, sessions_on):  # noqa: F811
         sid = await _initialize()
         key = agent_signing.read_mcp_session(sid, CONN, [KEY])
         r = await _send(_call("get_task", {"task_id": TASK}), session=sid)
@@ -128,13 +171,13 @@ class TestTheTransport:
         assert agent_signing.verify(headers["x-agent-signature"], canonical,
                                     {agent_signing.key_id(KEY): KEY})
 
-    async def test_a_call_with_no_id_sends_no_session(self, edge):  # noqa: F811
+    async def test_a_call_with_no_id_sends_no_session(self, edge, sessions_on):  # noqa: F811
         r = await _send(_call("get_task", {"task_id": TASK}))
         assert r.status_code == 200, r.text
         assert all("x-agent-session" not in q.headers for q in edge.gateway.requests)
 
     async def test_v3_an_id_that_does_not_verify_is_404_with_no_gateway_call(
-            self, edge):  # noqa: F811
+            self, edge, sessions_on):  # noqa: F811
         for bad in (agent_signing.mint_mcp_session(KEY, OTHER_CONN),
                     agent_signing.mint_mcp_session(OTHER_KEY, CONN), "s1.x.y"):
             r = await _send(_call("get_task", {"task_id": TASK}), session=bad)
@@ -142,7 +185,7 @@ class TestTheTransport:
             assert r.json()["error"]["code"] == -32600
         assert edge.gateway.requests == []
 
-    async def test_two_ids_are_400(self, edge):  # noqa: F811
+    async def test_two_ids_are_400(self, edge, sessions_on):  # noqa: F811
         sid = await _initialize()
         r = await _send(_call("get_task", {"task_id": TASK}), session=[sid, sid])
         assert r.status_code == 400
