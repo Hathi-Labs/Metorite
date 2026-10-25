@@ -186,6 +186,52 @@ test.fixme("each count equals the count that /tasks shows", async ({ page }) => 
 });
 
 /**
+ * OP-2b (`one_projects_app.md` §4.3): a row click in a My work view opens the
+ * ONE Projects task panel, with the overlay strip, and not the My Tasks focus
+ * modal. A change of disposition moves the row out of Today with no reload.
+ * Fixtures are exact: the sub-requests of the panel get explicit empties, and
+ * the disposition write answers with the updated row.
+ */
+test("a Today row opens the Projects panel with the overlay strip", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mock(page);
+  const one = row("n1", { due_at: "2026-10-24" });
+  FIXTURES["projects/tasks/n1"] = { ...one, root_project_id: "root-1", status: "To do" };
+  FIXTURES["my/tasks/n1"] = one;
+  for (const sub of ["timeline", "refs", "subtasks", "links", "comments", "activities", "attachments"]) {
+    FIXTURES[`projects/tasks/n1/${sub}`] = { rows: [], items: [], total: 0 };
+  }
+  // The disposition write answers with the updated row, and the next read of
+  // the task carries it.
+  await page.route("**/api/projects/tasks/n1/personal", async (route) => {
+    const patch = route.request().postDataJSON() as Record<string, unknown>;
+    const updated = { ...(FIXTURES["projects/tasks/n1"] as object), ...patch };
+    FIXTURES["projects/tasks/n1"] = updated;
+    FIXTURES["my/tasks/n1"] = { ...one, ...patch };
+    await route.fulfill({ json: updated });
+  });
+
+  await page.goto("/projects");
+  const target = page.getByText("Task n1", { exact: true }).first();
+  await expect(target).toBeVisible({ timeout: 30_000 });
+  await target.click();
+
+  // The Projects panel opens, with the strip, and the My Tasks modal does not.
+  await expect(page.getByTestId("my-work-strip")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Edit Disposition" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit Defer until" })).toBeVisible();
+  // Today stays under the panel.
+  await expect(page.getByRole("button", { name: /^Today/ }).first()).toHaveAttribute("aria-pressed", "true");
+
+  // Waiting is not a Today disposition, so the row leaves Today at once.
+  await page.getByRole("button", { name: "Edit Disposition" }).click();
+  await page.getByRole("button", { name: "Waiting", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("Task n1", { exact: true })).toHaveCount(0);
+});
+
+/**
  * WS-64 OP-3 — the Personal section. The tree answer carries the caller's own
  * tree in `personal`, and a team node kept under the caller's root in `rows`.
  * Playwright runs the last registered route first, so this overrides `mock`.

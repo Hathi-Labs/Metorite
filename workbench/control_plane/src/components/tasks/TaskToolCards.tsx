@@ -26,7 +26,9 @@ import ShowMore from "@/components/ui/ShowMore";
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+
+import { chatTaskTarget, myWorkEnabled } from "@/app/projects/lib/myWork";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { apiPatchItem, apiAgentPlanToday } from "@/app/tasks/lib/api";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
@@ -34,7 +36,6 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
-import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -209,25 +210,26 @@ function parseScheduleRows(result: string): TaskRow[] {
 
 // ── Navigation helper ─────────────────────────────────────────────────────────
 
-/** Open a task in the Tasks app: select it (the detail modal keys off the
- *  store) and route to /tasks — a no-op route change inside the Tasks app,
- *  navigation from the chat app. */
+/** Open a task. On `/projects` with My work on, that is the ONE Projects
+ *  panel, through its deep link, and the store focus is NOT raised (it is a
+ *  route change, and My work's host reads the focus). Elsewhere it selects the
+ *  task (the detail modal keys off the store) and routes to /tasks. */
 function useOpenTask() {
   const router = useRouter();
+  const pathname = usePathname();
   return (id: string) => {
-    // WS-64 OP-4 — with My work live the task opens in Projects (`?task=`),
-    // whose panel reads the id, so the focus modal is not raised as well.
-    const to = tasksLink(`/tasks?task=${encodeURIComponent(id)}`);
-    if (to.startsWith("/projects")) {
-      router.push(to);
-      return;
+    // WS-64 OP-2b and OP-4: one rule (`chatTaskTarget`). With My work on, the
+    // task opens in the one Projects panel (`?task=`) from any page, because
+    // /tasks redirects there; the store focus is not raised for a route change.
+    const target = chatTaskTarget(pathname, myWorkEnabled(), id);
+    if (target.kind === "modal") {
+      try {
+        useTaskStore.getState().openFocus(id);
+      } catch {
+        /* store unavailable — still navigate */
+      }
     }
-    try {
-      useTaskStore.getState().openFocus(id);
-    } catch {
-      /* store unavailable — still navigate */
-    }
-    router.push("/tasks");
+    router.push(target.href);
   };
 }
 
