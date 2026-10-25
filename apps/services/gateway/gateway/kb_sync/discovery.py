@@ -36,6 +36,13 @@ cursor of "now" BEFORE it lists the tree, and stores it in the transaction
 that sets ``ready``. So a change made during the listing is read again by
 the loop, and none is lost.
 
+**The lock order (KC-3h).** The module doc of ``kb_sync/engine.py`` holds the
+one lock order of the source rows. Each write transaction here takes the
+source row before the nodes, the cursors and the run row. Most take it with
+:func:`lock_source`. The start of a discovery and ``_mark`` take it with
+their UPDATE of ``kb_sources``. Discovery keeps its rule for a disconnected
+source: a write writes nothing, and the run goes on to its end state.
+
 **The engine reuses two parts.** ``kb_sync/engine.py`` relists an uncapped
 source with :func:`_flat` and its own *read* and *write*, and writes each
 node with :func:`upsert_rows`. It never calls :func:`_walk`, which DELETES
@@ -114,6 +121,27 @@ SOURCE_GUARD_SQL = (
     "EXISTS (SELECT 1 FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
     "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
     "FOR KEY SHARE OF s)"
+)
+
+#: ⚠️ The FIRST statement of each write transaction of the sync (KC-3h, the
+#: lock order of ``engine.py``). ``state <> 'disconnected'`` is the guard: a
+#: lock that waits on a disconnect reads the row again and finds no live row.
+#: ``FOR KEY SHARE`` is for a transaction that writes only the children of
+#: the source. It conflicts with the ``FOR UPDATE`` of a disconnect only.
+LOCK_SOURCE_SHARE_SQL = (
+    "SELECT s.id FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR KEY SHARE OF s"
+)
+
+#: ``FOR NO KEY UPDATE`` is for a transaction that also writes the source
+#: row: a run close, the end of a discovery, and a node upsert, which can
+#: stamp ``last_new_at``. A lock that starts as ``FOR KEY SHARE`` and becomes
+#: an UPDATE later in the transaction is a deadlock of its own.
+LOCK_SOURCE_UPDATE_SQL = (
+    "SELECT s.id FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR NO KEY UPDATE OF s"
 )
 
 #: The INSERT half of every node upsert, from a JSON array of
@@ -237,10 +265,25 @@ async def upsert_rows(
     return inserted
 
 
+async def lock_source(db: Any, org: str, source_id: str, *, update: bool = False) -> bool:
+    """Lock the source row. It is the FIRST statement of a write transaction.
+
+    The one lock helper of the sync (KC-3h, the lock order of ``engine.py``).
+    *update* takes ``FOR NO KEY UPDATE``, for a transaction that writes the
+    source row too. Else it takes ``FOR KEY SHARE``. Returns False when no
+    live row is left: the source is disconnected, or gone.
+    """
+    sql = LOCK_SOURCE_UPDATE_SQL if update else LOCK_SOURCE_SHARE_SQL
+    row = (await db.execute(text(sql), {"org": org, "source": source_id})).first()
+    return row is not None
+
+
 async def _upsert(org: str, source_id: str, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     async with tenant_session(org) as db:
+        # An upsert can stamp last_new_at, so the source lock is the strong one.
+        await lock_source(db, org, source_id, update=True)
         await upsert_rows(db, org, source_id, rows)
 
 
@@ -305,6 +348,7 @@ async def _walk(org: str, source_id: str, owner: str, source: KbSource, *,
 
     writer = write or _write
     async with tenant_session(org) as db:
+        await lock_source(db, org, source_id)
         await db.execute(text(_CLEAR_SQL), {"org": org, "source": source_id})
     total = 0
     queue: list[tuple[str, int]] = []
@@ -340,6 +384,7 @@ async def _walk(org: str, source_id: str, owner: str, source: KbSource, *,
             child = page.next_cursor
     if stopped:
         async with tenant_session(org) as db:
+            await lock_source(db, org, source_id)
             await db.execute(text(_UNEXPLORED_SQL), {
                 "org": org, "source": source_id, "ids": stopped,
             })
@@ -358,6 +403,8 @@ class _Run:
         if not rows:
             return
         async with tenant_session(self.org) as db:
+            # An upsert can stamp last_new_at, so the source lock is the strong one.
+            await lock_source(db, self.org, self.source_id, update=True)
             inserted = await upsert_rows(db, self.org, self.source_id, rows)
             self.counts["nodes"] += len(rows)
             self.counts["inserted"] += inserted
@@ -399,6 +446,7 @@ async def discover_source(org: str, source_id: str, source: KbSource) -> str:
         token = await source.changes_start_token(await _credential(org, owner, source))
         if await _flat(org, source_id, owner, source, write=run.write):
             async with tenant_session(org) as db:
+                await lock_source(db, org, source_id)
                 await db.execute(text(GONE_SQL), {
                     "org": org, "source": source_id,
                     "started": started.started_at,
@@ -407,6 +455,10 @@ async def discover_source(org: str, source_id: str, source: KbSource) -> str:
         else:
             await _walk(org, source_id, owner, source, write=run.write)
         async with tenant_session(org) as db:
+            # KC-3h: the source row before the run row. Before KC-3h this
+            # wrote the run row first, so a stale takeover (the source row
+            # FOR SHARE, then the run row) could deadlock it.
+            await lock_source(db, org, source_id, update=True)
             await runs.progress(db, org, run.id, run.counts)
             await db.execute(text(_FINISH_SQL), {"org": org, "source": source_id})
             # A discovery is a full listing, so it also counts as the relist.
@@ -457,6 +509,8 @@ async def _safe_mark(org: str, source_id: str, state: str, code: str,
 __all__ = [
     "GONE_SQL",
     "LEVELS",
+    "LOCK_SOURCE_SHARE_SQL",
+    "LOCK_SOURCE_UPDATE_SQL",
     "NODE_CAP",
     "NODE_INSERT_SQL",
     "NODE_SET_SQL",
@@ -464,6 +518,7 @@ __all__ = [
     "SOURCE_GUARD_SQL",
     "UPSERT_NODES_SQL",
     "discover_source",
+    "lock_source",
     "node_rows",
     "upsert_rows",
 ]

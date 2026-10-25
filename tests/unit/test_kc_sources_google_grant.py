@@ -156,7 +156,7 @@ class FakeDb:
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
         sql, p, m = str(statement), dict(params or {}), self.m
-        if sql in (sources._LOCK_ONE_SQL, sources._ONE_SQL):
+        if sql in (sources._PEEK_ONE_SQL, sources._LOCK_ONE_SQL, sources._ONE_SQL):
             rows = [s for s in m.sources if s["id"] == p["id"]
                     and (p["manager"] or s["owner"] == p["me"])]
             return _Result([_source_row(s) for s in rows])
@@ -171,7 +171,7 @@ class FakeDb:
             if sql in m.forced:
                 return _Result(scalar=m.forced[sql])
             return _Result(scalar=m.drive_shared(p["email"], p["exclude"]))
-        if sql == store._GET_BY_ID_SQL:
+        if sql in (store._GET_BY_ID_SQL, store._LOCK_BY_ID_SQL):
             return _Result([_conn_row(c) for c in m.conns if c["id"] == p["id"]])
         if sql == store._BLOB_SQL:
             return _Result([_conn_row(c) for c in m.conns

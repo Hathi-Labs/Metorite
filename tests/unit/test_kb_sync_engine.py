@@ -26,7 +26,10 @@ Mutations this file catches (R7):
 * the cursor write leaves the page transaction -> ``TestTheEnginePage``;
 * the forced refresh runs twice, or never -> ``TestTheUnauthorizedRetry``;
 * a state other than ``ready`` becomes due -> ``TestTheDueRule``;
-* the start function stops reading the flag -> ``TestTheSwitch``.
+* the start function stops reading the flag -> ``TestTheSwitch``;
+* a write transaction of the engine or of discovery takes a child row before
+  the source lock, the connection row after the source row, or a weak source
+  lock that becomes an UPDATE (KC-3h) -> ``TestTheLockOrder``.
 """
 from __future__ import annotations
 
@@ -70,6 +73,7 @@ MAIN = ROOT / "apps/services/gateway/gateway/main.py"
 ORG = "66666666-6666-4666-8666-666666666666"
 OTHER = "77777777-7777-4777-8777-777777777777"
 SOURCE = "88888888-8888-4888-8888-888888888888"
+CONNECTION = "99999999-9999-4999-8999-999999999999"
 CLIENT = OAuthClientConfig(client_id="cid", client_secret="secret",
                            redirect_uri="https://app.test/cb")
 PAGE_TOKEN = "PT-SECRET-4711"
@@ -329,6 +333,17 @@ _NAMES = {
     discovery._LAST_NEW_SQL: "last_new",
     discovery.GONE_SQL: "gone",
     conn_store._MARK_SYNCED_SQL: "mark_synced",
+    # KC-3h, the lock order.
+    discovery.LOCK_SOURCE_SHARE_SQL: "guard",
+    discovery.LOCK_SOURCE_UPDATE_SQL: "lock_source",
+    conn_store._LOCK_BY_ID_SQL: "lock_connection",
+    # Discovery, for the lock order fence of its transactions.
+    discovery._SOURCE_SQL: "disc_source",
+    discovery._START_SQL: "disc_start",
+    discovery._FINISH_SQL: "disc_finish",
+    discovery._FAIL_SQL: "disc_fail",
+    discovery._CLEAR_SQL: "clear",
+    discovery._UNEXPLORED_SQL: "unexplored",
 }
 
 
@@ -404,7 +419,23 @@ class _Db:
     def _source(self, p: dict[str, Any]) -> _Result:
         return _Result([SimpleNamespace(id=SOURCE, provider="google_drive",
                                         owner_email="ana@kc3.test", state=self.w.state,
-                                        connection_id="conn-1")])
+                                        connection_id=CONNECTION)])
+
+    _disc_source = _source
+
+    def _guard(self, p: dict[str, Any]) -> _Result:
+        """The source lock. A disconnected source leaves no live row."""
+        assert p["source"] == SOURCE, "the lock took another source"
+        return _Result([] if self.w.disconnected else [SimpleNamespace(id=SOURCE)])
+
+    _lock_source = _guard
+
+    def _lock_connection(self, p: dict[str, Any]) -> _Result:
+        assert p["id"] == CONNECTION, "close_ok locked another connection"
+        return _Result([])
+
+    def _disc_start(self, p: dict[str, Any]) -> _Result:
+        return _Result([SimpleNamespace(started_at=datetime.now(UTC))])
 
     def _insert_run(self, p: dict[str, Any]) -> _Result:
         return _Result([SimpleNamespace(id="run-1", started_at=datetime.now(UTC))])
@@ -440,7 +471,7 @@ class _Db:
         return _Result(rowcount=1)
 
     def _source_ok(self, p: dict[str, Any]) -> _Result:
-        return _Result([SimpleNamespace(connection_id="conn-1")])
+        return _Result([SimpleNamespace(connection_id=CONNECTION)])
 
     def _explored_folders(self, p: dict[str, Any]) -> _Result:
         return _Result([SimpleNamespace(ext_id=f) for f in self.w.explored])
@@ -515,7 +546,11 @@ def _page(*upserts: SourceNode, removed: tuple[str, ...] = (), nxt: str | None =
 
 @pytest.fixture()
 def world(monkeypatch: pytest.MonkeyPatch):
-    w = World()
+    return _bind(monkeypatch, World())
+
+
+def _bind(monkeypatch: pytest.MonkeyPatch, w: World) -> World:
+    """Point the engine and discovery at the fake world *w*."""
     creds: list[bool] = []
 
     async def fake_cred(org: str, owner: str, source: Any, *, force: bool = False) -> Any:
@@ -559,17 +594,21 @@ class TestTheEnginePage:
         assert out.status == runs.STATUS_OK, out
         txns = _txns(world.events)
         pages = [t for t in txns if "upsert_cursor" in t]
+        # KC-3h: each page takes the source lock first. An upsert can stamp
+        # last_new_at, so the lock is FOR NO KEY UPDATE.
         assert pages == [
-            ["upsert_changes", "last_new", "remove", "cascade", "upsert_cursor", "progress",
-             "commit"],
-            ["upsert_changes", "last_new", "upsert_cursor", "progress", "commit"],
+            ["lock_source", "upsert_changes", "last_new", "remove", "cascade", "upsert_cursor",
+             "progress", "commit"],
+            ["lock_source", "upsert_changes", "last_new", "upsert_cursor", "progress", "commit"],
         ], txns
         assert [json.loads(s["state"])["page_token"] for s in world.stored] == ["t1", "t2"]
         assert [s["status"] for s in world.stored] == [runs.CURSOR_PARTIAL, runs.CURSOR_OK]
         assert adapter.cursors == ["t0", "t1"]
         # Step (a) is one session, and step (d) closes the run and marks the connection.
         assert txns[0][:4] == ["source", "takeover", "insert_run", "cursor"]
-        assert txns[-1] == ["finish", "source_ok", "mark_synced", "commit"]
+        # KC-3h (K-22): the connection row, then the source row, then the run.
+        assert txns[-1] == ["lock_connection", "lock_source", "finish", "source_ok",
+                            "mark_synced", "commit"]
 
     def test_the_provider_call_of_a_page_waits_for_the_commit_of_the_last(self, world) -> None:
         adapter = FakeAdapter(world, {
@@ -588,7 +627,7 @@ class TestTheEnginePage:
         out = _run(runs.KIND_CHANGES, adapter)
         assert out.status == runs.STATUS_FAILED and out.error == "RuntimeError"
         page = next(t for t in _txns(world.events) if "upsert_cursor" in t)
-        assert page[0] == "upsert_changes" and page[-1] == "rollback", page
+        assert page[:2] == ["lock_source", "upsert_changes"] and page[-1] == "rollback", page
         assert world.stored == []
 
     def test_a_disconnect_stops_the_run_with_no_cursor(self, world) -> None:
@@ -621,7 +660,7 @@ class TestTheEnginePage:
         adapter = FakeAdapter(world, {"t0": exc})
         out = _run(runs.KIND_CHANGES, adapter)
         assert (out.status, out.error) == (runs.STATUS_STOPPED, "invalid_grant")
-        assert _txns(world.events)[-1] == ["finish", "source_reconnect", "commit"]
+        assert _txns(world.events)[-1] == ["lock_source", "finish", "source_reconnect", "commit"]
 
     def test_another_source_error_fails_and_keeps_the_state(self, world) -> None:
         exc = SourceError("boom")
@@ -629,7 +668,7 @@ class TestTheEnginePage:
         adapter = FakeAdapter(world, {"t0": exc})
         out = _run(runs.KIND_CHANGES, adapter)
         assert (out.status, out.error) == (runs.STATUS_FAILED, "http_500")
-        assert _txns(world.events)[-1] == ["finish", "source_error", "commit"]
+        assert _txns(world.events)[-1] == ["lock_source", "finish", "source_error", "commit"]
 
     def test_a_source_that_is_not_ready_takes_no_lock(self, world) -> None:
         world.state = "needs_reconnect"
@@ -694,7 +733,7 @@ class TestTheEnginePage:
         [c] = world.cascades
         assert c["ids"] == ["old-dir"] and c["kept"] == [] and c["before"] is not None
         sweep = next(t for t in _txns(world.events) if "gone_folder" in t)
-        assert sweep[:3] == ["gone_folder", "cascade", "progress"]
+        assert sweep[:4] == ["guard", "gone_folder", "cascade", "progress"]
 
     def test_an_uncapped_relist_past_the_cap_becomes_capped(self, world, monkeypatch) -> None:
         monkeypatch.setattr(discovery, "NODE_CAP", 1)
@@ -765,6 +804,202 @@ class TestTheUnauthorizedRetry:
         asyncio.run(discovery._credential(ORG, "ana@kc3.test", adapter))
         asyncio.run(discovery._credential(ORG, "ana@kc3.test", adapter, force=True))
         assert seen == [False, True]
+
+
+# ── The lock order (KC-3h) ──────────────────────────────────────────────────
+#
+# The module doc of ``engine.py`` holds the one lock order: the connection
+# row, then the ``kb_sources`` row, then the children. Each lock has, at its
+# FIRST touch, the strongest strength that the transaction needs. The R8 half
+# (two paths at the same time, no deadlock) is ``test_kc_sync_r8.py``.
+
+#: The connection row: the lock of ``store.lock_by_id``, and its UPDATE.
+_CONN = frozenset({"lock_connection", "mark_synced"})
+#: The source row at the strength of a share lock. The step (a) read takes
+#: ``FOR SHARE``, and the guard ``FOR KEY SHARE``.
+_SOURCE_WEAK = frozenset({"source", "guard"})
+#: The source row at the strength of an UPDATE.
+_SOURCE_STRONG = frozenset({
+    "lock_source", "source_ok", "source_error", "source_reconnect", "last_new",
+    "disc_start", "disc_finish", "disc_fail",
+})
+#: A child row (a node, a cursor or a run) that ALSO takes ``FOR KEY SHARE``
+#: on the source row inside the statement: the guard of an upsert, or the
+#: foreign key check of an INSERT.
+_CHILD_AND_SOURCE = frozenset({"upsert_changes", "upsert_nodes", "upsert_cursor",
+                               "insert_run"})
+#: A child row and nothing else.
+_CHILD_ONLY = frozenset({
+    "remove", "cascade", "gone", "gone_folder", "cap", "clear", "unexplored", "progress",
+    "finish", "takeover", "preempt",
+})
+#: The reads that lock nothing.
+_READS = frozenset({"capped", "cursor", "now", "explored_folders", "disc_source"})
+#: The rows of nodes and cursors: a transaction that writes them is a page.
+_PAGE_WRITES = frozenset({"upsert_changes", "upsert_nodes", "remove", "cascade", "gone",
+                          "gone_folder", "cap", "clear", "unexplored", "upsert_cursor"})
+#: The statements that may open a write transaction of the engine.
+_ENGINE_FIRST = frozenset({"source", "guard", "lock_source", "lock_connection"})
+
+
+def lock_order_faults(txn: list[str], *, engine_txn: bool = False) -> list[str]:
+    """Each break of the lock order in ONE transaction (its statement names).
+
+    The rules of ``engine.py``: the connection row comes before the source
+    row and the children, and the source row comes before each child. When
+    the transaction writes the source row, its FIRST touch of the source row
+    has the strength of an UPDATE. *engine_txn* adds one rule: a page, or a
+    transaction that touches more than one kind of row, starts with a lock.
+    An unknown statement is a fault, so a new statement must get a class.
+    """
+    stmts = [s for s in txn if s not in ("commit", "rollback")]
+    known = _CONN | _SOURCE_WEAK | _SOURCE_STRONG | _CHILD_AND_SOURCE | _CHILD_ONLY | _READS
+    unknown = sorted(set(stmts) - known)
+    if unknown:
+        return [f"no lock class for {unknown}"]
+    locking = [s for s in stmts if s not in _READS]
+    if not locking:
+        return []
+    source = _SOURCE_WEAK | _SOURCE_STRONG | _CHILD_AND_SOURCE
+
+    def first(group: frozenset[str]) -> int | None:
+        return next((i for i, s in enumerate(locking) if s in group), None)
+
+    faults: list[str] = []
+    conn, src = first(_CONN), first(source)
+    child = first(_CHILD_ONLY | _CHILD_AND_SOURCE)
+    if conn is not None and src is not None and conn > src:
+        faults.append("the connection row comes after the source row")
+    if conn is not None and child is not None and conn > child:
+        faults.append("the connection row comes after a child row")
+    only = first(_CHILD_ONLY)
+    if src is not None and only is not None and only < src:
+        faults.append("a child row comes before the source lock")
+    if src is not None and locking[src] not in _SOURCE_STRONG and _SOURCE_STRONG & set(locking):
+        faults.append("the source lock starts weak and becomes an UPDATE")
+    kinds = sum(x is not None for x in (conn, src, child))
+    if engine_txn and (kinds > 1 or _PAGE_WRITES & set(locking)) and (
+            stmts[0] not in _ENGINE_FIRST):
+        faults.append(f"the first statement is {stmts[0]!r}, not a lock")
+    return faults
+
+
+def _scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive one path of the engine or of discovery on the fake world *w*."""
+    if name == "pages":
+        adapter = FakeAdapter(w, {
+            "t0": _page(_node("n1"), removed=("old",), nxt="t1"),
+            "t1": _page(removed=("n9",), nxt="t2"),  # removals only (K-21)
+            "t2": _page(start="t3"),
+        })
+        assert _run(runs.KIND_CHANGES, adapter).status == runs.STATUS_OK
+    elif name == "expired_cursor":
+        adapter = FakeAdapter(w, {"t0": CursorExpired("dead")}, tree=(_node("f1"),))
+        assert _run(runs.KIND_CHANGES, adapter).status == runs.STATUS_OK
+    elif name == "over_cap":
+        monkeypatch.setattr(discovery, "NODE_CAP", 1)
+        adapter = FakeAdapter(w, {}, tree=(_node("a"), _node("b")))
+        assert _run(runs.KIND_RECONCILE, adapter).counts["over_cap"] is True
+    elif name == "capped_sweep":
+        w.capped, w.explored, w.swept = True, ["root-1"], {"root-1": ["old-dir"]}
+        adapter = FakeAdapter(w, {}, tree=(_node("f1"),))
+        assert _run(runs.KIND_RECONCILE, adapter).status == runs.STATUS_OK
+    elif name in ("needs_reconnect", "source_error"):
+        exc: SourceError = NeedsReconnect("dead") if name == "needs_reconnect" else SourceError("x")
+        exc.code = "invalid_grant" if name == "needs_reconnect" else "http_500"
+        assert _run(runs.KIND_CHANGES, FakeAdapter(w, {"t0": exc})).error == exc.code
+    elif name == "disconnected":
+        w.disconnected = True
+        out = _run(runs.KIND_CHANGES, FakeAdapter(w, {"t0": _page(removed=("x",), nxt="t1")}))
+        assert out.error == "disconnected"
+    elif name == "discovery":
+        adapter = FakeAdapter(w, {}, tree=(_node("f1"),))
+        assert asyncio.run(discovery.discover_source(ORG, SOURCE, adapter)) == "ready"
+    elif name == "discovery_capped":
+        monkeypatch.setattr(discovery, "NODE_CAP", 1)
+        adapter = FakeAdapter(w, {}, tree=(_node("d1", "root-1", KIND_FOLDER), _node("f1")))
+        assert asyncio.run(discovery.discover_source(ORG, SOURCE, adapter)) == "ready"
+    elif name == "discovery_failed":
+        adapter = FakeAdapter(w, {})
+
+        async def no_token(cred: Any) -> str:
+            raise SourceError("no token")
+
+        adapter.changes_start_token = no_token  # type: ignore[method-assign]
+        assert asyncio.run(discovery.discover_source(ORG, SOURCE, adapter)) == "failed"
+    else:
+        raise AssertionError(name)
+
+
+_SCENARIOS = ("pages", "expired_cursor", "over_cap", "capped_sweep", "needs_reconnect",
+              "source_error", "disconnected", "discovery", "discovery_capped",
+              "discovery_failed")
+
+
+class TestTheLockOrder:
+    """KC-3h, the hermetic fence of the lock order (``engine.py``, the module doc)."""
+
+    @pytest.mark.parametrize("name", _SCENARIOS)
+    def test_each_transaction_keeps_the_lock_order(self, name: str, monkeypatch) -> None:
+        w = _bind(monkeypatch, World())
+        _scenario(name, w, monkeypatch)
+        engine_txn = not name.startswith("discovery")
+        faults = {i: f for i, t in enumerate(_txns(w.events))
+                  if (f := lock_order_faults(t, engine_txn=engine_txn))}
+        assert faults == {}, (faults, _txns(w.events))
+
+    def test_close_ok_locks_the_connection_before_the_source(self, world, monkeypatch) -> None:
+        _scenario("pages", world, monkeypatch)
+        [close] = [t for t in _txns(world.events) if "mark_synced" in t]
+        assert close.index("lock_connection") < close.index("lock_source") < close.index(
+            "finish"), close
+
+    def test_a_removal_only_page_takes_the_guard_first(self, world, monkeypatch) -> None:
+        """K-21: the page locks the source row before any node row."""
+        _scenario("pages", world, monkeypatch)
+        [page] = [t for t in _txns(world.events) if "remove" in t and "upsert_changes" not in t]
+        assert page[:2] == ["guard", "remove"], page
+
+    def test_the_scenarios_reach_every_write_transaction(self, monkeypatch) -> None:
+        """The fence is not vacuous: the paths reach each kind of write."""
+        seen: set[str] = set()
+        firsts: set[str] = set()
+        for name in _SCENARIOS:
+            with pytest.MonkeyPatch.context() as mp:
+                w = _bind(mp, World())
+                _scenario(name, w, mp)
+                for t in _txns(w.events):
+                    seen.update(t)
+                    firsts.add(t[0])
+        writes = _CHILD_ONLY | _CHILD_AND_SOURCE | _SOURCE_STRONG | _CONN
+        assert writes <= seen, sorted(writes - seen)
+        assert {"guard", "lock_source", "lock_connection", "source"} <= firsts, firsts
+
+    @pytest.mark.parametrize(("txn", "fault"), [
+        # The close of KC-3: the run row, the source row, then the connection (K-22).
+        (["finish", "source_ok", "mark_synced", "commit"], "after the source row"),
+        # The page with removals only of KC-3: the nodes before the source (K-21).
+        (["remove", "cascade", "upsert_cursor", "progress", "commit"], "before the source"),
+        # A share lock first, then an UPDATE of the source row.
+        (["guard", "upsert_changes", "last_new", "upsert_cursor", "progress"], "becomes an UPDATE"),
+        # The page of KC-3 with an upsert: the guard of the upsert, then last_new_at.
+        (["upsert_changes", "last_new", "upsert_cursor", "progress"], "becomes an UPDATE"),
+        # A page with no lock before its first write.
+        (["upsert_cursor", "progress"], "not a lock"),
+        # The end of a discovery of KC-3: the run row before the source row.
+        (["progress", "disc_finish", "upsert_cursor", "finish", "commit"], "before the source"),
+        # A statement with no lock class.
+        (["lock_source", "new_statement"], "no lock class"),
+    ])
+    def test_the_check_sees_each_old_order(self, txn: list[str], fault: str) -> None:
+        faults = lock_order_faults(txn, engine_txn=True)
+        assert any(fault in f for f in faults), faults
+
+    def test_the_check_passes_the_new_order(self) -> None:
+        assert lock_order_faults(["lock_connection", "lock_source", "finish", "source_ok",
+                                  "mark_synced", "commit"], engine_txn=True) == []
+        assert lock_order_faults(["guard", "remove", "cascade", "upsert_cursor", "progress",
+                                  "commit"], engine_txn=True) == []
 
 
 # ── The loop ────────────────────────────────────────────────────────────────
