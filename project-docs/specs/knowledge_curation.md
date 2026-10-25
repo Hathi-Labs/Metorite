@@ -4,6 +4,20 @@
 chat. The owner accepted every decision of §20 and the default of every
 question of §21 the same day, as the spec recommends them. `work_plan.md` §3 records them once, as **D112**.
 
+**KC-1a BUILT 2026-10-25, dark** (branch `kc-1a-drive`, migration 300). It
+is the backend half of KC-1. It holds the store lift, the adapter protocol
+and the Google Drive adapter. It also holds `kb_sources`, `kb_source_nodes`,
+discovery at connect, the source routes and the Google grant rule.
+
+Both flags of KC-1a default to empty. Nobody tested it against live Google. The owner must first register
+the redirect URI and the `drive.readonly` scope. KC-1b, the Sources view, is
+open.
+
+The workbench route `/api/knowledge/sources/google_drive/callback` carries
+the consent back to the gateway, with one try and no followed redirect. A
+member purge deletes the member's Drive sources in its own transaction. Then
+it revokes each free Google grant once (§19).
+
 §20 holds the decisions **D-KC-1** to **D-KC-9**, and §21 holds the owner
 questions with their answers. Board row **WS-61** (no new row).
 Verified against the code on 2026-10-25, at `origin/main` `f32244eac`.
@@ -824,8 +838,8 @@ nullable with a default (R6).
 
 | Table | Key columns | Slice |
 |---|---|---|
-| `kb_sources` | `connection_id`, `kind` (`member`, `org`), `owner_email`, `state`, `default_space_id` | KC-1 |
-| `kb_source_nodes` | `source_id`, `ext_id`, `parent_ext_id`, `drive_id`, `kind`, `name`, `mime`, `size`, `modified_at`, `content_hash`, `web_url`, `state` (`live`, `gone`) | KC-1 |
+| `kb_sources` | `connection_id`, `provider`, `kind` (`member`, `org`), `owner_email`, `state` (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), `default_space_id`, `account_email`, `account_id`, `node_count`, `discovered_at`, `last_error` | KC-1 (built at KC-1a, migration 300) |
+| `kb_source_nodes` | `source_id`, `ext_id`, `parent_ext_id`, `drive_id`, `kind`, `name`, `mime`, `size`, `modified_at`, `content_hash`, `web_url`, `state` (`live`, `gone`), `explored` | KC-1 (built at KC-1a, migration 300) |
 | `kb_sync_cursors`, `kb_sync_runs` | as `knowledge_base.md` §7.1 | KC-3 |
 | `kb_watch_channels` | `source_id`, `provider_channel_id`, `resource_id`, `expires_at` | KC-3b |
 | `kb_node_access` | `node_id`, `principal_kind`, `principal`, `role`, `synced_at` | KC-4 |
@@ -845,6 +859,27 @@ written workflow) holds `ref_table = 'kb_entities'` and its own id as
 `ref_id`. So the unique index covers it too. It must hold a `space_id`.
 The page-type list is a code constant in KC-8a, mirrored by a CHECK. A
 per-org rename or a new type is a follow-up with no ticket yet.
+
+**`kb_sources` and `kb_source_nodes`, as KC-1a built them.**
+
+- **One Drive source for each member in each org.** The unique index of
+  `integration_connections` covers the org, the provider, the app, the scope
+  and the member. So one member holds at most one Google Drive connection in
+  one org, and `kb_sources` is unique on `(organization_id, connection_id)`.
+- **`provider`** is on the source row. Only `connections/store.py` may name
+  `integration_connections` (`test_crm_connection.py`), so no route joins it.
+- **`account_email` and `account_id`** name the Google account, for the
+  same-account check. A consent to another account deletes the old nodes.
+  The Drive connection also keeps `account_email` in `provider_meta`, which
+  the shared-grant functions of migration 300 read.
+- **`explored`** is false for a folder whose children a capped discovery did
+  not list. Past 50 000 nodes, discovery keeps the first three levels below
+  each root.
+- **Disconnect** sets `state = 'disconnected'` and DELETES every node of the
+  source, in the transaction that deletes the blob. The source row stays as
+  a record, and a reconnect of the same connection reuses it.
+- **A node that discovery no longer finds** becomes `gone`, and the tree
+  shows it no more.
 
 ---
 
@@ -929,7 +964,12 @@ a fixed fake model. The scored half runs on demand, through the Router.
 - **Offboarding.** When a member leaves, their member sources disconnect,
   their documents leave every space, and the facts that only their episodes
   supported expire. The member purge of `test_admin_member_purge.py` gains
-  the Knowledge tables.
+  the Knowledge tables. KC-1a built the source half. The purge deletes each
+  member-scope Knowledge connection through `store.delete`, and the cascade
+  takes the sources and the nodes. After the email teardown, it revokes each
+  free Google grant once. Fences: `test_kc_sources_purge.py` and, R8,
+  `test_kc_sources_r8.py`. The org purge does not revoke yet
+  (`hardening_backlog.md` K-20).
 - **Deletion at the provider** reaches Metorite within one reconcile (24 h).
   A member who needs it sooner uses "Remove from Knowledge" on the document.
 
