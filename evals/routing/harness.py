@@ -482,6 +482,7 @@ class RoutingHarness:
         shows_cards: bool = True,
         agent: str = ORCHESTRATOR,
         thread_id: str | None = None,
+        solo_room: bool = True,
     ) -> RunRecord:
         """One chat turn of the one assistant, through ``run_agent_stream``.
 
@@ -490,7 +491,10 @@ class RoutingHarness:
         orchestrator, or a specialist when a test needs a specialist that
         calls the orchestrator (``test_show_in_app.py``). *thread_id*
         continues a chat: a turn with the thread id of an earlier turn is the
-        next turn of the same chat (``test_one_assistant_email.py``)."""
+        next turn of the same chat (``test_one_assistant_email.py``).
+        *solo_room* is the bit that the chat route binds with
+        ``room_is_solo(room)``. A member alone in their own chat is solo, so
+        it is True by default (H-406)."""
         from acb_common.db import bind_tenant, release_tenant
         from acb_skills.write_artifact import bind_artifact_context
         from orchestrator import executor
@@ -508,6 +512,7 @@ class RoutingHarness:
                 agent, payload, run_id=str(uuid.uuid4()),
                 thread_id=record.thread_id, model=tier, organization_id=org,
                 session_user=member, shows_cards=shows_cards,
+                solo_room=solo_room,
             ):
                 for event in parse_frames([line]):
                     record.events.append(event)
