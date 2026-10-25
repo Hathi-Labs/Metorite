@@ -168,6 +168,13 @@ describe("the acts", () => {
     expect(draw({ types: ["person"] })).not.toContain("Add to Directories");
   });
 
+  it("hide with the group when the types read is refused, and show when it answers empty", () => {
+    const layout = readFileSync(fileURLToPath(new URL("../layout.tsx", import.meta.url)), "utf8");
+    // A refused read leaves `typesRead.data` undefined, and an empty list is `[]`.
+    expect(layout).toMatch(/typesAnswered = typesRead\.data !== undefined/);
+    expect(layout).toMatch(/canAddEntity\(spaces\) && typesAnswered/);
+  });
+
   it("are wired in the layout only when canAddEntity holds, and in the directory view the same", () => {
     const read1 = (f: string) => readFileSync(fileURLToPath(new URL(f, import.meta.url)), "utf8");
     const layout = read1("../layout.tsx");

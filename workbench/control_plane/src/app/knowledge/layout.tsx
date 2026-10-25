@@ -300,7 +300,11 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const openNewPage = useCallback((next?: NewPageAsk) => setAsk(next ?? {}), []);
   // KC-8d: the Add a product / Add a topic acts. A member with no writable
   // space gets none of them: not in the rail, not in a directory.
-  const canAdd = useMemo(() => canAddEntity(spaces), [spaces]);
+  // A refused types read (404, 403, a network error) means the entity feature
+  // is not there for this member, so a POST would fail: every act hides with
+  // the group (KC-8b). An EMPTY answer is a success, and the acts show.
+  const typesAnswered = typesRead.data !== undefined;
+  const canAdd = useMemo(() => canAddEntity(spaces) && typesAnswered, [spaces, typesAnswered]);
   const openAddEntity = useCallback((type: CreatableType) => setAdding(type), []);
 
   // The one leave guard (fix round 1, P1). A dirty page registers it, and
