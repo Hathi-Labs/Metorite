@@ -349,7 +349,7 @@ def _assistant_profile_enabled(org: str | None = None) -> bool:
 
             org = _current_run_org()
         return enabled_for(org)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

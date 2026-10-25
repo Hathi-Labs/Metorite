@@ -657,7 +657,9 @@ def _build(monkeypatch: pytest.MonkeyPatch, on: bool) -> _FakeAgent:
     monkeypatch.setattr(mod, "Agent", _FakeAgent)
     monkeypatch.setattr(mod, "_make_openai_client", lambda *a, **k: object())
     monkeypatch.setattr(mod, "_load_specialist_agents_as_tools", lambda: [])
-    return mod.build_orchestrator_agent(with_history=False)
+    # PZ-25: the org of the caller's UserContext. The list is empty, so on.
+    return mod.build_orchestrator_agent(
+        with_history=False, organization_id="11111111-1111-4111-8111-111111111111")
 
 
 def test_the_flag_adds_the_tools_and_the_persona_line(monkeypatch) -> None:
