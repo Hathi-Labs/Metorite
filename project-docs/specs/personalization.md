@@ -14,8 +14,11 @@ a list. A change of either name needs a restart. See §14.2 "PZ-25 as built".
 
 **PZ-26 BUILT 2026-10-25, dark** (D113). The `area` key of a fact, the
 `interview` key, the tool `profile_interview`, the four interview routes and
-the due line in the block. See §14.4 "PZ-26 as built". PZ-27 builds the web
-side.
+the due line in the block. See §14.4 "PZ-26 as built".
+
+**PZ-27 BUILT 2026-10-25, dark** (D113). The button, the offer in the empty
+chat, the interview list in Settings → Assistant and the chat receipt. See
+§14.4 "PZ-27 as built". The visual review is UNVERIFIED.
 
 **PZ-8 BUILT 2026-10-25, dark.** The WhatsApp scope rule names the profile
 exception, and asks the model to keep the channel limits. See "PZ-8 as
@@ -1142,11 +1145,13 @@ unknown area.
 
 **The first sitting.** The member starts it in one of two ways:
 
-- The button "Get to know me" on Settings → Assistant opens the chat with a
-  fixed first message.
-- In the first solo chat of a member with no `interview.started_at`, the
-  block offers it once. The member can say no, and the offer does not come
-  back.
+- The button "Get to know me" on Settings → Assistant opens a fresh chat and
+  sends a fixed first message at once.
+- In the empty chat of a member with no `interview.started_at`, the web app
+  shows the offer. The offer is client-side, so the block carries no offer
+  line. "No thanks" posts `/interview` with no body, which sets `started_at`
+  only, and the offer does not come back. "Not now" hides the offer for the
+  browser session only.
 
 In the sitting, the model asks up to five open areas, one question at a
 time. It saves each answer with the tools of §5.5, with the area set. The
@@ -1217,13 +1222,31 @@ member can reset one area or the whole interview. A fact shows its area.
 8. The fences are `tests/unit/test_assistant_profile_interview.py` and
    `tests/unit/test_assistant_profile_interview_r8.py`.
 
+**PZ-27 as built (2026-10-25).**
+
+1. `openAssistant({ fresh: true, text })` sends the fixed message. The text is
+   "Let's do the Get to know me interview." and it names no tool. The orchestrator
+   persona (`_PROFILE_SWAP`) tells the model to call `profile_interview` with
+   `next_sitting` when the member asks for it.
+2. `InterviewOffer` draws in the empty chat of the dock and of `/chat`, above
+   the starter pills. The pure rule `shouldOffer` needs the org switch, the
+   orchestrator, an empty chat, `learning` on and no `started_at`.
+3. The pane lists the ten areas with a state Badge. Reset of one area needs no
+   confirm. Reset of the whole interview asks first, and the facts stay.
+4. The BFF routes are `interview` (POST, DELETE) and `interview/[area]`
+   (DELETE). A bad area id is a 404.
+5. A `profile_interview` write draws the receipt "Interview updated". A read
+   (`next`, `next_sitting`) draws nothing.
+6. The fences are `interviewAreas.test.ts` (the TS table equals `AREAS`),
+   `InterviewOffer.test.ts` and `AssistantPane.test.ts`.
+
 ### 14.5 The slices
 
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
 | **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block). **BUILT 2026-10-25, dark** |
 | **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM. **BUILT 2026-10-25, dark** |
-| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW |
+| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 
 ### 14.6 How this fits phase 2
