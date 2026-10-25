@@ -928,6 +928,10 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   crm_open_questions: "Open questions",
   // WS-61 KB-9a: a question that Knowledge could not answer.
   kb_gap: "Unanswered question",
+  // WS-66 RM-2: the member's own reminders (calendar_events_reminders.md §5.6).
+  reminder_due: "Reminder",
+  reminder_check: "Check-back",
+  reminder_unconfirmed: "Unconfirmed",
 };
 
 /**

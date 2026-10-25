@@ -714,7 +714,8 @@ def test_r8_the_feed_shows_the_card_of_each_state(world, monkeypatch) -> None:
     cards = {c["entity"]["id"]: c for c in feed.build_cards(
         list(signals.values()), now, ZoneInfo("UTC"), now.date())}
     assert cards[due]["why"] == "Reminder for 09:00 today." and cards[due]["group"] == "now"
-    assert cards[check]["why"] == "Is it done? It was set for 08:00 today."
+    assert cards[check]["why"] == (
+        "It was set for 08:00 today. Mark it done, move it, or drop it.")
     assert cards[moved]["why_key"] == "reminder_moved"
     assert cards[gone]["why_key"] == "reminder_stopped"
     assert {cards[r]["group"] for r in (check, moved, gone)} == {"needs_you"}

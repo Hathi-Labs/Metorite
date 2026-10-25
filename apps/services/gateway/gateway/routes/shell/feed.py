@@ -1393,18 +1393,21 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
 def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                    today: date) -> tuple[str, str]:
     """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
-    template over the time: no guilt and no "you missed". A check-back after
-    a move uses other words than the first one."""
+    template over the time: no guilt and no "you missed". A check-back names
+    every exit, and after a move it uses other words than the first one."""
     at = facts.get("fire_at")
     when = f"{_clock(at, tz)} {_when(at, tz, today)}".strip()
+    exits = "Mark it done, move it, or drop it."
     if kind == "reminder_unconfirmed":
         return "reminder_stopped", ("I stopped checking on this. Make it a task, "
-                                    "pick a time, or drop it?")
+                                    "pick a time, or drop it.")
     if kind == "reminder_check":
+        if not when:
+            return "reminder_check", f"It is still open. {exits}"
         if int(facts.get("cycles") or 0) > 0:
-            return "reminder_moved", f"It is still open after the move to {when}. Is it done?"
-        return "reminder_check", f"Is it done? It was set for {when}."
-    return "reminder_set", f"Reminder for {when}."
+            return "reminder_moved", f"It is still open after the move to {when}. {exits}"
+        return "reminder_check", f"It was set for {when}. {exits}"
+    return "reminder_set", f"Reminder for {when}." if when else "A reminder you set."
 
 
 def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
