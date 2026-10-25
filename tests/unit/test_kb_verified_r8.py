@@ -41,6 +41,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 )
 from tests.unit.test_kb_pages_r8 import (  # noqa: F401
     CAPABILITY,
+    _add_member,
     _address,
     _assert_non_priv,
     _call,
@@ -51,7 +52,9 @@ from tests.unit.test_kb_pages_r8 import (  # noqa: F401
     ns,
 )
 from tests.unit.test_kb_search_r8 import (  # noqa: F401
+    Embedder,
     _bound,
+    _embed_on,
     _found,
     _page,
     _search,
@@ -195,6 +198,68 @@ async def test_the_maintenance_list_names_each_page_once(kb, app_engine) -> None
     assert cut["counts"]["unowned"] == 2
 
 
+# ── The vector half ─────────────────────────────────────────────────────────
+
+async def test_verified_only_holds_on_the_vector_half(
+        kb, app_engine, monkeypatch) -> None:  # noqa: F811
+    from gateway.routes.knowledge import search as kb_search
+
+    _assert_non_priv(app_engine)
+    _embed_on(monkeypatch, Embedder())
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Customer", [{"subject": "org", "level": "read"}])
+    text_ = "Customers can return goods within thirty days for a full refund."
+    current = await _page(kb, admin, space, "Current", text_)
+    expired = await _page(kb, admin, space, "Expired", text_)
+    unowned = await _page(kb, admin, space, "Unowned", text_)
+    _sql(kb, "UPDATE kb_pages SET review_at = now() - interval '2 days' "
+             "WHERE id = CAST(:p AS uuid)", p=expired)
+    _sql(kb, "UPDATE kb_pages SET owner_email = NULL WHERE id = CAST(:p AS uuid)", p=unowned)
+    member = _principal(_address("m"), kb.org_a)
+
+    async def ask(**kw: Any) -> dict[str, Any]:
+        # No word of the question is in the pages: only the vector finds them.
+        return await _bound(kb, member, lambda: kb_search.search_pages(
+            q="how do I get my money back", space=None, k=20, hybrid=True,
+            user=member, reviewed=True, **kw))
+
+    plain = await ask()
+    assert plain["degraded"] is False
+    assert {current, expired, unowned} <= set(_found(plain)), "non-vacuous: the vector finds all"
+    only = await ask(verified_only=True)
+    assert only["degraded"] is False
+    assert _found(only) == [current]
+
+
+# ── The owner must be in the org ────────────────────────────────────────────
+
+async def test_an_owner_outside_the_org_is_refused_and_writes_nothing(
+        kb, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    space = await _space(kb, admin, "Policies", [{"subject": "org", "level": "read"}])
+    page = await _page(kb, admin, space, "Warranty", BODY)
+    stranger = _address("stranger")
+    for body in ({"owner_email": stranger},
+                 {"owner_email": stranger, "title": "Renamed"}):
+        res = await _call(kb, admin, "PATCH", f"/knowledge/pages/{page}", body)
+        assert res.status_code == 422, res.text
+    assert _scalar(kb, "SELECT owner_email FROM kb_pages WHERE id = CAST(:p AS uuid)",
+                   p=page) == admin.email
+    assert _scalar(kb, "SELECT title FROM kb_pages WHERE id = CAST(:p AS uuid)",
+                   p=page) == "Warranty"
+    # A member of the org is accepted, and so is the caller.
+    member_email = _address("colleague")
+    _add_member(kb, kb.org_a, member_email)
+    _add_member(kb, kb.org_a, admin.email)
+    out = await _ok(kb, admin, "PATCH", f"/knowledge/pages/{page}",
+                    {"owner_email": member_email})
+    assert out["owner_email"] == member_email
+    out = await _ok(kb, admin, "PATCH", f"/knowledge/pages/{page}",
+                    {"owner_email": admin.email})
+    assert out["owner_email"] == admin.email
+
+
 # ── The verify act ──────────────────────────────────────────────────────────
 
 async def test_verify_moves_the_date_and_claims_the_owner_without_a_version(
@@ -238,6 +303,7 @@ async def test_an_owner_or_interval_patch_writes_no_version(kb, app_engine) -> N
     page = await _page(kb, admin, space, "Warranty", BODY)
     before = _versions_and_stamp(kb, page)
     owner = _address("owner")
+    _add_member(kb, kb.org_a, owner)
     out = await _ok(kb, admin, "PATCH", f"/knowledge/pages/{page}",
                     {"owner_email": owner.upper(), "review_every_days": 90})
     assert (out["owner_email"], out["review_every_days"]) == (owner, 90)

@@ -478,6 +478,23 @@ def _care_sets(body: PagePatch, given: set[str]) -> tuple[list[str], dict[str, A
     return sets, params
 
 
+async def _check_owner(db: Any, body: PagePatch, given: set[str]) -> None:
+    """422 when the new owner is no person or member of the caller's org (KB-AI-4).
+
+    An address outside the org would make a page verified by a stranger.
+    Null clears the owner and needs no check. The one check is
+    ``email_in_org``, the helper of the assistant's alias rule.
+    """
+    if "owner_email" not in given or body.owner_email is None:
+        return
+    from gateway.routes.admin.assistant_profile_people import email_in_org
+
+    if not await email_in_org(db, body.owner_email):
+        raise HTTPException(
+            status_code=422, detail="The owner must be a member of your organization.",
+        )
+
+
 async def _write_care(
     db: Any, user: UserContext, page_id: str, body: PagePatch, given: set[str],
 ) -> Any:
@@ -517,6 +534,7 @@ async def update_page(
         level = await core.space_level(db, user, space)
         if not core.can_write_page(level):
             raise core.forbidden("Editing this page needs a write grant on its space.")
+        await _check_owner(db, body, given)
         if given <= _CARE_FIELDS:
             # KB-AI-4: an owner or an interval is no change in substance. No
             # version, no `updated_at`, no index, as the icon alone.
@@ -571,6 +589,8 @@ async def verify_page(
     does not reindex, because a verify is no edit. A writer of the space
     verifies.
     """
+    if not core.viewer_email(user):
+        raise core.forbidden("Verifying a page needs a signed-in person.")
     async with core._tenant_session() as db:
         page = await core.load_page(db, user, page_id, lock=True)
         if page is None:
@@ -586,7 +606,7 @@ async def verify_page(
                  "WHERE p.organization_id = CAST(:org AS uuid) "
                  f"AND p.id = CAST(:pid AS uuid) RETURNING {core.PAGE_COLUMNS}"),
             {"org": core.org_of(user), "pid": str(page.id),
-             "verifier": core.viewer_email(user) or None},
+             "verifier": core.viewer_email(user)},
         )).first()
         return core.page_dict(row, position=await _rank(db, user, row))
 

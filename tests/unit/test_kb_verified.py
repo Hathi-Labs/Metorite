@@ -130,6 +130,57 @@ class TestTheVerifyRoute:
         assert _verify(monkeypatch, None, "write") == 404
 
 
+class TestTheOwnerMustBeInTheOrg:
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, member: bool) -> list[str]:
+        import gateway.routes.admin.assistant_profile_people as people
+
+        asked: list[str] = []
+
+        async def _in_org(db, email):
+            asked.append(email)
+            return member
+
+        monkeypatch.setattr(people, "email_in_org", _in_org)
+        return asked
+
+    def test_an_outside_address_is_422(self, monkeypatch):
+        asked = self._patch(monkeypatch, False)
+        body = pages.PagePatch(owner_email="x@elsewhere.test")
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(pages._check_owner(None, body, body.model_fields_set))
+        assert err.value.status_code == 422 and asked == ["x@elsewhere.test"]
+
+    def test_a_member_passes_and_null_needs_no_check(self, monkeypatch):
+        asked = self._patch(monkeypatch, True)
+        body = pages.PagePatch(owner_email="a@x.test")
+        asyncio.run(pages._check_owner(None, body, body.model_fields_set))
+        clear = pages.PagePatch(owner_email=None)
+        asyncio.run(pages._check_owner(None, clear, clear.model_fields_set))
+        other = pages.PagePatch(review_every_days=30)
+        asyncio.run(pages._check_owner(None, other, other.model_fields_set))
+        assert asked == ["a@x.test"]
+
+    def test_it_uses_the_helper_of_the_assistant_not_a_copy(self):
+        assert "email_in_org" in inspect.getsource(pages._check_owner)
+        assert "SELECT" not in inspect.getsource(pages._check_owner)
+
+
+class TestAVerifierNeedsAnAddress:
+    def test_no_email_is_403_before_any_write(self, monkeypatch):
+        user = UserContext(
+            email="", role=UserRole.EMPLOYEE,
+            access=build_access(["feature:knowledge"]), organization_id=ORG,
+        )
+
+        def _boom():
+            raise AssertionError("opened a session")
+
+        monkeypatch.setattr(core, "_tenant_session", _boom)
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(pages.verify_page("p1", user))
+        assert err.value.status_code == 403
+
+
 class TestTheMaintenanceRoute:
     def test_a_member_is_403(self):
         with pytest.raises(HTTPException) as err:
