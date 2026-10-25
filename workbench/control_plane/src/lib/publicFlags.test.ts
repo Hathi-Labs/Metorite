@@ -122,8 +122,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_PROJECTS_MY_WORK",
       // WS-63 PZ-7: the Assistant pane in Settings.
       "NEXT_PUBLIC_ASSISTANT_PROFILE",
-      // WS-66 PN-1: the Notifications section on My Profile (web push).
-      "NEXT_PUBLIC_WEB_PUSH",
+      // WS-66 PN-1 has NO build-time flag: the Notifications section asks the
+      // gateway (`WEB_PUSH_ENABLED`, through `/api/push/public-key`).
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

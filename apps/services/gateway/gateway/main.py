@@ -2032,9 +2032,11 @@ class Version(BaseModel):
     #: Null when the box holds no readable marker.
     applied_sha: str | None = None
     applied_at: str | None = None
-    #: WS-66 PN-1. The gateway's `WEB_PUSH_ENABLED`, so a mismatch with the
-    #: browser's `NEXT_PUBLIC_WEB_PUSH` shows with `curl`. It names the
-    #: switch only, never a key (calendar_events_reminders.md §10.2 item 2).
+    #: WS-66 PN-1. The gateway's `WEB_PUSH_ENABLED`, the ONE switch of web
+    #: push, so `curl` shows whether a box serves it. The browser has no
+    #: build-time flag: My Profile asks `/push/public-key`, which answers 404
+    #: with the switch off. It names the switch only, never a key
+    #: (calendar_events_reminders.md §10.2 item 2).
     web_push: bool = False
 
 

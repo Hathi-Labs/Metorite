@@ -29,11 +29,15 @@
  *   (`othersStay`). "Remove from this browser" deletes the removed
  *   account's row on the server, as that account (`api/accounts/[action]`).
  *
- * The flag is `NEXT_PUBLIC_WEB_PUSH`, default off. Off, the section draws
- * nothing and nothing registers. `forgetThisDevice` still runs on sign-out:
- * it only reads, so it costs nothing when no device is subscribed.
+ * ⚠️ **The one switch is the SERVER's, `WEB_PUSH_ENABLED`.** There is no
+ * build-time flag: a `NEXT_PUBLIC_*` value is inlined at build, so each box
+ * would need an owner rebuild for no safety gain. The section asks
+ * `GET /api/push/public-key` once on mount (`loadPushView`). A 404 (the
+ * switch is off) or any failure draws nothing, and nothing registers.
+ * `forgetThisDevice` still runs on sign-out: it only reads, so it costs
+ * nothing when no device is subscribed.
  *
- * Fence: `push.test.ts`.
+ * Fence: `push.test.ts` and `app/people/components/notificationsSection.test.ts`.
  */
 
 /** The service worker script, at the root so its scope can be `/`. */
@@ -44,22 +48,6 @@ const API = "/api/push";
 
 /** How long a sign-out waits for this device to be forgotten, at most. */
 export const FORGET_TIMEOUT_MS = 3000;
-
-/** Whether web push is on in this build. */
-export function webPushOn(): boolean {
-  // The literal member expression, the one form Next inlines (publicFlags.test.ts).
-  if (process.env.NEXT_PUBLIC_WEB_PUSH === "1") return true;
-  // ⚠️ Development and test builds ONLY: `localStorage["cc-web-push"] = "1"`.
-  // Next inlines NODE_ENV, so a production build drops this branch.
-  if (process.env.NODE_ENV !== "production") {
-    try {
-      return typeof localStorage !== "undefined" && localStorage.getItem("cc-web-push") === "1";
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
 
 // ── What this browser can do ────────────────────────────────────────────────
 
@@ -397,7 +385,6 @@ export type PushView =
   | { kind: "loading" }
   | { kind: "ios-tab" }
   | { kind: "unsupported" }
-  | { kind: "not-configured" }
   | { kind: "blocked" }
   | { kind: "ready"; on: boolean };
 
@@ -405,9 +392,12 @@ export type PushView =
  * The pure rule of what `NotificationsSection` draws. ON needs THREE facts:
  * the permission, the browser's subscription, and this member's row of it.
  * A browser that another account subscribed reads OFF for this member.
+ *
+ * The server decides whether the section draws at all: only a public key
+ * (a 200) draws it. A 404 (`WEB_PUSH_ENABLED` off), a 503 (no keys) and any
+ * fault draw nothing.
  */
 export function pushView(input: {
-  flag: boolean;
   support: PushSupport;
   key: KeyAnswer | null;
   permission: NotificationPermission | "unsupported";
@@ -416,15 +406,32 @@ export function pushView(input: {
   /** The gateway holds THIS member's row of that subscription. */
   registered: boolean;
 }): PushView {
-  if (!input.flag) return { kind: "hidden" };
   if (input.key === null) return { kind: "loading" };
-  if (input.key.kind === "off") return { kind: "hidden" };
+  if (input.key.kind !== "key") return { kind: "hidden" };
   if (input.support === "ios-tab") return { kind: "ios-tab" };
   if (input.support === "unsupported") return { kind: "unsupported" };
-  if (input.key.kind === "not-configured" || input.key.kind === "error") return { kind: "not-configured" };
   if (input.permission === "denied") return { kind: "blocked" };
   return {
     kind: "ready",
     on: input.subscribed && input.registered && input.permission === "granted",
   };
+}
+
+/**
+ * The mount decision of `NotificationsSection`. It READS only: no prompt and
+ * no registration. It asks the server first, and a server that does not
+ * serve push ends it there, with no read of the browser.
+ */
+export async function loadPushView(): Promise<PushView> {
+  const key = await fetchPublicKey();
+  if (key.kind !== "key") return { kind: "hidden" };
+  const sub = await currentSubscription().catch(() => null);
+  const registered = sub ? await registeredHere(sub.endpoint) : false;
+  return pushView({
+    support: pushSupport(),
+    key,
+    permission: permissionState(),
+    subscribed: sub !== null,
+    registered,
+  });
 }

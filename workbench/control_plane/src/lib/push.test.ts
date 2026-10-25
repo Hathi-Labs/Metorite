@@ -44,6 +44,7 @@ import {
   isIos,
   permissionState,
   pushSupport,
+  loadPushView,
   pushView,
   registeredHere,
   sendTestPush,
@@ -189,8 +190,9 @@ describe("no permission prompt without a tap", () => {
     await sendTestPush();
     await registeredHere(ENDPOINT);
     await thisDeviceEndpoint();
+    await loadPushView();
     pushView({
-      flag: true, support: "supported", key: { kind: "key", key: KEY },
+      support: "supported", key: { kind: "key", key: KEY },
       permission: "default", subscribed: false, registered: false,
     });
     await disablePush();
@@ -532,21 +534,64 @@ describe("iOS and the other browsers", () => {
     const key = { kind: "key" as const, key: KEY };
     const v = (over: Partial<Parameters<typeof pushView>[0]>) =>
       pushView({
-        flag: true, support: "supported", key, permission: "default",
+        support: "supported", key, permission: "default",
         subscribed: false, registered: false, ...over,
       });
-    expect(v({ flag: false })).toEqual({ kind: "hidden" });
+    // The server decides: only a public key draws the section.
     expect(v({ key: { kind: "off" } })).toEqual({ kind: "hidden" });
+    expect(v({ key: { kind: "not-configured" } })).toEqual({ kind: "hidden" });
+    expect(v({ key: { kind: "error" } })).toEqual({ kind: "hidden" });
+    expect(v({ key: { kind: "off" }, support: "ios-tab" })).toEqual({ kind: "hidden" });
     expect(v({ key: null })).toEqual({ kind: "loading" });
     expect(v({ support: "ios-tab" })).toEqual({ kind: "ios-tab" });
     expect(v({ support: "unsupported" })).toEqual({ kind: "unsupported" });
-    expect(v({ key: { kind: "not-configured" } })).toEqual({ kind: "not-configured" });
     expect(v({ permission: "denied" })).toEqual({ kind: "blocked" });
     expect(v({})).toEqual({ kind: "ready", on: false });
     expect(v({ permission: "granted", subscribed: true, registered: true })).toEqual({ kind: "ready", on: true });
     // One browser, several accounts: another account subscribed this browser,
     // and I hold no row of it. The toggle reads OFF for me.
     expect(v({ permission: "granted", subscribed: true, registered: false })).toEqual({ kind: "ready", on: false });
+  });
+
+  it.each([
+    ["a 404 (WEB_PUSH_ENABLED off)", async () => Response.json({ detail: "Not found" }, { status: 404 })],
+    ["a 503 (no keys)", async () => Response.json({ detail: "not set up" }, { status: 503 })],
+    ["a 500", async () => new Response("boom", { status: 500 })],
+    ["a network fault", async (): Promise<Response> => {
+      throw new TypeError("Failed to fetch");
+    }],
+  ])("the mount draws nothing on %s, and reads nothing more", async (_why, answer) => {
+    const b = fakeBrowser({ subscribed: true, permission: "granted", fetchImpl: answer });
+    expect(await loadPushView()).toEqual({ kind: "hidden" });
+    expect(b.order).toEqual(["fetch GET /api/push/public-key"]);
+    expect(b.requestPermission).not.toHaveBeenCalled();
+    expect(b.register).not.toHaveBeenCalled();
+  });
+
+  it("the mount draws the toggle on a 200, from the member's row, with no prompt", async () => {
+    const b = fakeBrowser({
+      subscribed: true,
+      permission: "granted",
+      fetchImpl: async (url) =>
+        url.endsWith("/public-key") ? Response.json({ public_key: KEY }) : Response.json({ registered: true }),
+    });
+    expect(await loadPushView()).toEqual({ kind: "ready", on: true });
+    expect(b.order).toEqual(["fetch GET /api/push/public-key", "fetch POST /api/push/subscriptions/status"]);
+    expect(b.requestPermission).not.toHaveBeenCalled();
+    expect(b.register).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    fakeBrowser({ fetchImpl: async () => Response.json({ public_key: KEY }) });
+    expect(await loadPushView()).toEqual({ kind: "ready", on: false });
+  });
+
+  it("no source reads a build-time push flag: the server's switch decides", () => {
+    const readers = walk(SRC)
+      .map((f) => ({ rel: rel(f), text: code(fs.readFileSync(f, "utf8")) }))
+      .filter((f) => /NEXT_PUBLIC_WEB_PUSH|cc-web-push/.test(f.text))
+      .map((f) => f.rel);
+    expect(readers).toEqual([]);
+    const section = code(read("app/people/components/NotificationsSection.tsx"));
+    expect(section).toContain("await loadPushView()");
   });
 
   it("the iOS section has no checkbox, only the three steps", () => {

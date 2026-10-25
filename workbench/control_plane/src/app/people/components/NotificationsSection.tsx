@@ -9,14 +9,19 @@
  * One checkbox turns web push on for THIS browser or installed app. Every
  * decision is in `@/lib/push`.
  *
+ * - ⚠️ **The server decides whether the section draws.** The mount asks
+ *   `GET /api/push/public-key` once (`loadPushView`). A 404 (the gateway's
+ *   `WEB_PUSH_ENABLED` is off) or any failure draws NOTHING, so a member for
+ *   whom push is dark never sees it. There is no build-time flag.
  * - ⚠️ **The browser asks for permission only after a tap on the checkbox.**
  *   The mount reads state and never prompts: `enablePush` runs from the
  *   change handler and from nowhere else (fence: `push.test.ts`).
  * - In a Safari tab on iOS, there is no checkbox. The section shows the three
  *   steps to add Metorite to the Home Screen, because iOS sends push only to
  *   a Home Screen app.
- * - It draws NOTHING while `NEXT_PUBLIC_WEB_PUSH` is off or the gateway's
- *   `/push` answers 404, so a member for whom push is dark never sees it.
+ *
+ * `NotificationsPanel` draws a view and holds no state, so a test renders it
+ * with no DOM (`notificationsSection.test.ts`).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -27,57 +32,32 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import {
   BLOCKED_MESSAGE,
   type PushView,
-  currentSubscription,
   disablePush,
   enablePush,
-  fetchPublicKey,
-  permissionState,
-  pushSupport,
-  pushView,
-  registeredHere,
+  loadPushView,
   sendTestPush,
-  webPushOn,
 } from "@/lib/push";
 // The STRICT read: it throws on a failed read, and `push.ts` then keeps the
 // browser subscription, so one failed read never ends another account's pushes.
 import { otherAccountsStay } from "@/lib/accountSwitch";
 
-type Note = { ok: boolean; message: string } | null;
+export type Note = { ok: boolean; message: string } | null;
 
 export function NotificationsSection() {
   const [view, setView] = useState<PushView>({ kind: "hidden" });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note>(null);
 
-  // Reads only: the key answer, the support, the permission, the browser's
-  // subscription and THIS member's row of it. Nothing here can show a prompt.
-  // One browser subscription serves every account of the switcher, so the
-  // browser alone does not say whether this member gets the pushes.
+  // Reads only (`loadPushView`): the server's answer first, then the support,
+  // the permission, the browser's subscription and THIS member's row of it.
+  // Nothing here can show a prompt or register the worker.
   const reload = useCallback(async () => {
-    if (!webPushOn()) {
-      setView({ kind: "hidden" });
-      return;
-    }
-    const key = await fetchPublicKey();
-    const sub = await currentSubscription().catch(() => null);
-    const registered = sub ? await registeredHere(sub.endpoint) : false;
-    setView(
-      pushView({
-        flag: true,
-        support: pushSupport(),
-        key,
-        permission: permissionState(),
-        subscribed: sub !== null,
-        registered,
-      }),
-    );
+    setView(await loadPushView().catch((): PushView => ({ kind: "hidden" })));
   }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
-
-  if (view.kind === "hidden" || view.kind === "loading") return null;
 
   // The ONE path to the permission prompt: the member's tap.
   async function onToggle(next: boolean) {
@@ -107,6 +87,25 @@ export function NotificationsSection() {
     }
   }
 
+  return <NotificationsPanel view={view} busy={busy} note={note} onToggle={onToggle} onTest={onTest} />;
+}
+
+/** What the section draws for one view. No state, no fetch, no effect. */
+export function NotificationsPanel({
+  view,
+  busy,
+  note,
+  onToggle,
+  onTest,
+}: {
+  view: PushView;
+  busy: boolean;
+  note: Note;
+  onToggle: (next: boolean) => Promise<void> | void;
+  onTest: () => Promise<void> | void;
+}) {
+  if (view.kind === "hidden" || view.kind === "loading") return null;
+
   return (
     <section className="rounded-xl border border-border p-3" aria-labelledby="notifications-heading">
       <div id="notifications-heading" className="flex items-center gap-2 text-xs font-medium text-foreground">
@@ -128,12 +127,6 @@ export function NotificationsSection() {
       {view.kind === "unsupported" && (
         <p className="mt-1 text-[11px] text-muted-foreground">
           This browser cannot show notifications from Metorite.
-        </p>
-      )}
-
-      {view.kind === "not-configured" && (
-        <p className="mt-1 text-[11px] text-muted-foreground">
-          Notifications are not set up on this server yet.
         </p>
       )}
 
