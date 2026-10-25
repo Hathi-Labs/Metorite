@@ -22,7 +22,11 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import Icon from "@/components/Icon";
+import { statusAccent } from "@/lib/statusAccent";
+
 import {
+  SelectButton,
   SelectList,
   arrowFor,
   filterOptions,
@@ -215,5 +219,95 @@ describe("(5) the filter box sits above the listbox, and each group is a group",
     expect(html).not.toContain('role="listbox"');
     expect(html).not.toContain('role="group"');
     expect(html).not.toContain("<input");
+  });
+});
+
+describe("(6) an option shows its icon or its colour (task #417)", () => {
+  const render = (options: SelectOption[], value = "") =>
+    renderToStaticMarkup(
+      createElement(SelectList, {
+        label: "Icon",
+        listId: "M",
+        value,
+        options,
+        filtering: false,
+        structured: false,
+        query: "",
+        onQuery: () => {},
+        onPick: () => {},
+      })
+    );
+  const trigger = (options: SelectOption[], value: string) =>
+    renderToStaticMarkup(
+      createElement(SelectButton, { label: "Icon for Bug", value, options, onChange: () => {} })
+    );
+
+  it("draws the icon of an option that names one, before the label", () => {
+    const html = render([{ value: "Bug", label: "Bug", icon: "Bug" }]);
+    const glyph = html.indexOf("lucide-bug");
+    expect(glyph).toBeGreaterThan(0);
+    expect(html.indexOf(">Bug</span>")).toBeGreaterThan(glyph);
+  });
+
+  it("keeps the icon out of the accessible name", () => {
+    const html = render([{ value: "Bug", label: "Bug", icon: "Bug" }]);
+    expect(html).toMatch(/<svg[^>]*lucide-bug[^>]*aria-hidden="true"/);
+    // The row's only text is the label.
+    expect(html.replace(/<[^>]+>/g, "")).toBe("Bug");
+  });
+
+  it("draws a solid dot from the shared vocabulary for an option with a swatch", () => {
+    const html = render([{ value: "green", label: "green", swatch: "green" }]);
+    const dot = statusAccent({ color: "green" }).dot;
+    expect(html).toContain(
+      `<span aria-hidden="true" data-swatch="green" class="h-2.5 w-2.5 shrink-0 rounded-full ${dot}"></span>`
+    );
+    expect(html.indexOf(">green</span>")).toBeGreaterThan(html.indexOf("data-swatch"));
+  });
+
+  it("draws an option with neither field exactly as before", () => {
+    const html = render([{ value: "a", label: "A" }], "a");
+    expect(html).toBe(
+      '<button type="button" role="option" aria-selected="true" ' +
+        'class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted bg-muted font-medium">' +
+        '<span class="min-w-0 flex-1 truncate pr-px">A</span></button>'
+    );
+    expect(html).not.toContain("<svg");
+    expect(html).not.toContain("data-swatch");
+  });
+
+  it("the closed trigger shows the chosen option's icon, then its name", () => {
+    const options: SelectOption[] = [
+      { value: "Circle", label: "Circle", icon: "Circle" },
+      { value: "Bug", label: "Bug", icon: "Bug" },
+    ];
+    const html = trigger(options, "Bug");
+    const chosen = renderToStaticMarkup(
+      createElement(Icon, { name: "Bug", size: 14, "aria-hidden": true, className: "h-3.5 w-3.5 shrink-0" })
+    );
+    expect(html).toContain(chosen);
+    expect(html).not.toContain("lucide-circle ");
+    expect(html.indexOf(">Bug</span>")).toBeGreaterThan(html.indexOf("lucide-bug"));
+    // The accessible name is still the control's label.
+    expect(html).toContain('aria-label="Icon for Bug"');
+  });
+
+  it("the closed trigger shows the chosen colour's dot", () => {
+    const html = trigger(
+      [
+        { value: "gray", label: "gray", swatch: "gray" },
+        { value: "red", label: "red", swatch: "red" },
+      ],
+      "red"
+    );
+    expect(html).toContain('data-swatch="red"');
+    expect(html).not.toContain('data-swatch="gray"');
+  });
+
+  it("the closed trigger of a plain list carries no mark, as before", () => {
+    const html = trigger([{ value: "a", label: "A" }], "a");
+    // Only the arrow glyph.
+    expect(html.match(/<svg/g)?.length).toBe(1);
+    expect(html).not.toContain("data-swatch");
   });
 });
