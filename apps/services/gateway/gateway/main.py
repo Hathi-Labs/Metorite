@@ -2060,6 +2060,11 @@ class Version(BaseModel):
     #: with the switch off. It names the switch only, never a key
     #: (calendar_events_reminders.md §10.2 item 2).
     web_push: bool = False
+    #: WS-66 RM-1 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_REMINDERS` flag, the ONE switch of reminders, so `curl`
+    #: shows whether a box serves them. With it off, every reminder route
+    #: answers 404. Off by default.
+    calendar_reminders: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2156,6 +2161,7 @@ async def version() -> Version:
     its one reader, `gateway.push.flags`.
     """
     from gateway.push import flags as push_flags
+    from gateway.routes.projects.reminders import reminders_enabled
 
     applied_sha, applied_at = applied_marker()
     return Version(
@@ -2165,6 +2171,7 @@ async def version() -> Version:
         applied_sha=applied_sha,
         applied_at=applied_at,
         web_push=push_flags.enabled(),
+        calendar_reminders=reminders_enabled(),
     )
 
 

@@ -608,3 +608,9 @@ UPDATE kb_source_nodes SET organization_id = (SELECT id FROM organization WHERE 
 
 UPDATE push_subscriptions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE reminders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE reminder_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
