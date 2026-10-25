@@ -422,6 +422,18 @@ class Settings(BaseSettings):
     # The largest object one put accepts. A caller may set a lower cap.
     object_store_max_object_mb: int = 512
 
+    # ── Calendar reminders (WS-66 RM-1, D114, 2026-10-25) ───────────────────
+    #
+    # `calendar_reminders` is the switch of the reminder store, default OFF.
+    # With it off, each route under `/projects/my/reminders` answers 404 and
+    # writes nothing. `/version` carries the value as `calendar_reminders`.
+    # The one reader is `reminders_enabled()` in
+    # gateway/routes/projects/reminders.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_REMINDERS` (RM-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
+    calendar_reminders: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.

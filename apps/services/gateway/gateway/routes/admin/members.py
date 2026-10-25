@@ -785,6 +785,15 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
+    # WS-66 RM-1 (D114): the member's private reminders of THIS organization.
+    # Only the owner reads a reminder, so nobody else could ever close one,
+    # and a purged member leaves none behind. The clause names the bound org
+    # beside RLS, as `member_settings` does, so the same address in another
+    # org keeps its reminders. The ledger, `reminder_events`, goes by its
+    # `ON DELETE CASCADE` key to `reminders`. A task that a promote made
+    # stays: it is a `pm_tasks` row, and a purge deletes none (D63).
+    _PersonRows("reminders", "reminders",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
     # of THIS organization, and with it the assistant profile. The row is the
     # member's own preferences, so the whole row goes. A member has one row
