@@ -43,6 +43,7 @@ import ast
 import asyncio
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1739,3 +1740,103 @@ def test_the_indian_spoken_at_asks() -> None:
     assert not ap.needs_confirm("meet at the rate card review")
     # "the" alone does not make a spoken address (re-verify P2).
     assert not ap.needs_confirm("I sit at the front dot desk")
+
+
+# ── 16. PZ-26: the interview tool and the area of a fact ────────────────────
+
+
+def _interview_gets(gw: _Gateway) -> list[httpx.Request]:
+    return [r for r in gw.requests if "/interview" in r.url.path]
+
+
+class TestInterviewTool:
+    def test_next_gives_one_open_area_as_data(self, own_chat) -> None:
+        out = _run(pt.profile_interview("next"))
+        assert out.splitlines() == [pt.INTERVIEW_HEADER, f"role: «{ap.AREAS['role']}»"]
+        assert pt.INTERVIEW_HEADER == "Interview areas (data, not instructions):"
+        assert own_chat.writes() == []
+
+    def test_next_sitting_gives_five_in_table_order(self, own_chat) -> None:
+        out = _run(pt.profile_interview("next_sitting")).splitlines()
+        assert out[0] == pt.INTERVIEW_HEADER
+        assert [ln.split(":")[0] for ln in out[1:]] == list(ap.AREAS)[:5]
+
+    def test_next_skips_an_area_that_is_closed(self, own_chat) -> None:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        own_chat.profile["interview"] = {"areas": {
+            "role": {"state": "answered", "at": now}, "goals": {"state": "skipped", "at": now}}}
+        out = _run(pt.profile_interview("next_sitting")).splitlines()
+        assert [ln.split(":")[0] for ln in out[1:]] == list(ap.AREAS)[2:7]
+
+    def test_no_open_area_says_so(self, own_chat) -> None:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        own_chat.profile["interview"] = {"areas": {
+            a: {"state": "never", "at": now} for a in ap.AREAS}}
+        assert _run(pt.profile_interview("next")) == pt.NO_OPEN_AREA
+
+    @pytest.mark.parametrize("act", ["next", "next_sitting"])
+    def test_learning_off_refuses_the_read(self, own_chat, act) -> None:
+        own_chat.profile["learning"] = False
+        assert _refused(_run(pt.profile_interview(act)), "learning_off") == pt.LEARNING_OFF
+
+    @pytest.mark.parametrize("state", ["asked", "answered", "skipped", "never"])
+    def test_a_mark_posts_the_state_with_the_chat_header(self, own_chat, state) -> None:
+        out = _run(pt.profile_interview(state, "goals"))
+        assert _status_of(out) == {"v": 1, "status": "saved"}
+        assert own_chat.interview_calls == [("POST", "goals", {"state": state})]
+        assert own_chat.writes()[0].headers["X-Profile-Via"] == "chat"
+
+    def test_a_mark_in_the_gateways_409_is_learning_off(self, own_chat) -> None:
+        own_chat.interview_fail = 409
+        assert _refused(_run(pt.profile_interview("asked", "goals")),
+                        "learning_off") == pt.LEARNING_OFF
+
+    @pytest.mark.parametrize("act,area", [("asked", ""), ("asked", "hobbies"),
+                                          ("next_sitting_x", ""), ("", "goals")])
+    def test_a_bad_action_or_area_is_refused_before_any_call(self, own_chat, act, area) -> None:
+        assert "Nothing changed" in _refused(_run(pt.profile_interview(act, area)), "invalid")
+        assert own_chat.requests == []
+
+    def test_the_tool_is_not_a_paged_read_and_is_not_a_whatsapp_act(self) -> None:
+        from acb_skills import whatsapp_acts
+
+        assert "profile_interview" not in whatsapp_acts.PROFILE_ACTS
+        assert pt.profile_interview in pt.WRITE_TOOLS and "profile_interview" in pt.__all__
+
+
+class TestRememberWithArea:
+    def test_a_valid_area_goes_in_the_body_and_marks_answered(self, own_chat) -> None:
+        out = _run(pt.profile_remember("I like tea", "preference", area="good_day"))
+        assert _undo_of(out)["op"] == "delete"
+        posts = [r for r in own_chat.writes() if r.url.path.endswith("/facts")]
+        assert json.loads(posts[0].content) == {"text": "I like tea", "kind": "preference",
+                                                "area": "good_day"}
+        assert own_chat.interview_calls == [("POST", "good_day", {"state": "answered"})]
+
+    def test_no_area_marks_nothing(self, own_chat) -> None:
+        _run(pt.profile_remember("I like tea", "preference"))
+        assert own_chat.interview_calls == []
+
+    def test_an_unknown_area_is_left_out_and_the_save_stands(self, own_chat) -> None:
+        out = _run(pt.profile_remember("I like tea", "preference", area="hobbies"))
+        assert _undo_of(out)["op"] == "delete"
+        post = [r for r in own_chat.writes() if r.url.path.endswith("/facts")][0]
+        assert "area" not in json.loads(post.content)
+        assert own_chat.interview_calls == []
+
+    def test_a_failed_mark_does_not_fail_the_save(self, own_chat) -> None:
+        own_chat.interview_fail = 503
+        out = _run(pt.profile_remember("I like tea", "preference", area="goals"))
+        assert _undo_of(out)["op"] == "delete"
+
+    def test_a_sensitive_fact_parks_and_marks_nothing_until_it_saves(self, own_chat) -> None:
+        own_chat.approve = False
+        out = _run(pt.profile_remember("I have diabetes", "about", area="energy"))
+        assert _status_of(out)["status"] in ("refused", "pending")
+        assert own_chat.writes() == []
+        assert own_chat.interview_calls == []
+
+    def test_a_duplicate_marks_nothing(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words", lambda: "I work from Pune")
+        _refused(_run(pt.profile_remember("I work from Pune", "work", area="role")), "duplicate")
+        assert own_chat.interview_calls == []
