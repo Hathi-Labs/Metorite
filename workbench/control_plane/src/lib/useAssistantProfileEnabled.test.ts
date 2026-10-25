@@ -55,9 +55,12 @@ describe("profileState", () => {
   it("enabled false hides it", () => {
     expect(profileState(true, read(false))).toBe("off");
   });
-  it("a fault hides it, also over an earlier yes", () => {
-    expect(profileState(true, read(undefined, false, "boom"))).toBe("off");
-    expect(profileState(true, read(true, false, "boom"))).toBe("off");
+  it("a fault is error, also over an earlier yes, and error is not on", () => {
+    expect(profileState(true, read(undefined, false, "boom"))).toBe("error");
+    expect(profileState(true, read(true, false, "boom"))).toBe("error");
+  });
+  it("the build switch off wins over a fault", () => {
+    expect(profileState(false, read(undefined, false, "boom"))).toBe("off");
   });
   it("a read still out is pending, which is not on", () => {
     expect(profileState(true, read(undefined, true))).toBe("pending");
@@ -90,7 +93,7 @@ describe("source scan: each place asks the hook, not the build switch alone", ()
     "components/AppShell.tsx",
   ])("%s", (rel) => {
     const src = read(rel);
-    expect(src).toMatch(/useAssistantProfile(Enabled|State)\(\)/);
+    expect(src).toMatch(/useAssistantProfile(Enabled|State|Read)\(\)/);
     expect(src).not.toMatch(/assistantProfileOn\(/);
   });
 
@@ -100,9 +103,16 @@ describe("source scan: each place asks the hook, not the build switch alone", ()
     expect(src).toMatch(/useCachedResource<string>\(\s*profileOn \? ADDRESS_KEY : null,/);
   });
 
-  it("the page draws the pane only for on, and the not-available line only for off", () => {
+  it("the page draws its body from the state, with Retry wired to refresh", () => {
     const src = read("app/settings/assistant/page.tsx");
-    expect(src).toMatch(/state === "on" \? \([\s\S]*<AssistantPane \/>[\s\S]*\) : state === "off" \? \([\s\S]*not available yet[\s\S]*\) : null/);
+    expect(src).toMatch(/const \{ state, refresh \} = useAssistantProfileRead\(\);/);
+    expect(src).toMatch(/<AssistantPageBody state=\{state\} onRetry=\{refresh\}>\s*<AssistantPane \/>/);
+  });
+
+  it("the account row and My Day hide on error: they ask the boolean", () => {
+    for (const rel of ["lib/shell/MyDayPage.tsx", "components/AccountSwitcher.tsx", "components/Sidebar.tsx", "components/AppShell.tsx"]) {
+      expect(read(rel)).toMatch(/useAssistantProfileEnabled\(\)/);
+    }
   });
 
   it("each account row passes the hook's answer", () => {

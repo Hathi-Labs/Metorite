@@ -34,32 +34,40 @@ export async function fetchProfileEnabled(fetcher: typeof fetch = fetch): Promis
   return !!body && typeof body === "object" && (body as { enabled?: unknown }).enabled === true;
 }
 
-/** What the web app knows: on, off, or still asking. */
-export type ProfileState = "on" | "off" | "pending";
+/** What the web app knows: on, off, still asking, or the read failed. */
+export type ProfileState = "on" | "off" | "pending" | "error";
 
 /**
  * The pure rule. "on" needs the build switch AND a `true` from the gateway.
- * A fault is "off", also over an earlier yes. "pending" is a read that is
- * still out with no answer yet. Each caller treats "pending" as hidden.
+ * A fault is "error", also over an earlier yes, so no caller keeps a stale
+ * yes. "pending" is a read that is still out with no answer yet. A caller
+ * that only hides treats each state but "on" as hidden
+ * (`useAssistantProfileEnabled`). The page shows "error" with Retry.
  */
 export function profileState(
   built: boolean,
   read: { data: boolean | undefined; loading: boolean; error: string | null },
 ): ProfileState {
-  if (built !== true || read.error) return "off";
+  if (built !== true) return "off";
+  if (read.error) return "error";
   if (read.data === true) return "on";
   return read.data === undefined && read.loading ? "pending" : "off";
 }
 
 const noSubscribe = () => () => {};
 
-/** The state of the profile for this build and this organization. */
-export function useAssistantProfileState(): ProfileState {
+/** The state of the profile for this build and this organization, and a retry. */
+export function useAssistantProfileRead(): { state: ProfileState; refresh: () => void } {
   // The server render reads the build value only. A dev override takes
   // effect after hydration, with no mismatch (as `MyDayPage` reads it).
   const built = useSyncExternalStore(noSubscribe, assistantProfileOn, () => false);
   const read = useCachedResource<boolean>(built ? PROFILE_ENABLED_KEY : null, () => fetchProfileEnabled());
-  return profileState(built, read);
+  return { state: profileState(built, read), refresh: read.refresh };
+}
+
+/** The state alone, for a caller that does not retry. */
+export function useAssistantProfileState(): ProfileState {
+  return useAssistantProfileRead().state;
 }
 
 /** True only when the profile is on for this build AND this organization. */
