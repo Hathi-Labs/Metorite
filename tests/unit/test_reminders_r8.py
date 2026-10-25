@@ -79,6 +79,8 @@ AT = "2099-10-31T09:00:00+05:30"
 AT_UTC = "2099-10-31T03:30:00+00:00"
 LATER = "2099-11-01T10:00:00+05:30"
 LATEST = "2099-11-02T10:00:00+05:30"
+PR_URL = "https://github.com/acme/site/pull/7"
+NOTES = f"Before Friday. See {PR_URL}"
 
 
 # ── The world ──────────────────────────────────────────────────────────────
@@ -464,9 +466,8 @@ async def test_r8_org_b_reads_no_row_of_org_a(world, app_engine) -> None:  # noq
 
 async def test_r8_a_promote_makes_one_private_task_and_ends_the_reminder(world) -> None:
     async with _client(world, world.org) as c:
-        rid = (await _create(c, ALICE, title="Renew the lease", notes="Before Friday"))["id"]
-        resp = await c.post(f"{BASE}/{rid}/promote",
-                            headers=_as(ALICE))
+        rid = (await _create(c, ALICE, title="Renew the lease", notes=NOTES))["id"]
+        resp = await c.post(f"{BASE}/{rid}/promote", headers=_as(ALICE))
         assert resp.status_code == 200, resp.text
         out = resp.json()
         assert out["state"] == "done" and out["resolution"] == "promoted"
@@ -488,7 +489,7 @@ async def test_r8_a_promote_makes_one_private_task_and_ends_the_reminder(world) 
         assert len(tasks) == 1
         task = tasks[0]
         assert str(task.id) == task_id and task.title == "Renew the lease"
-        assert task.description == "Before Friday"
+        assert task.description == NOTES
         # Private: the member's own personal root, which no team read lists.
         assert task.personal_owner == ALICE and task.parent_project_id is None
         assert str(task.organization_id) == world.org
@@ -497,6 +498,13 @@ async def test_r8_a_promote_makes_one_private_task_and_ends_the_reminder(world) 
             {"t": task_id},
         )]
         assert assignees == [ALICE]
+        # WS-57 TR-5: the URL in the notes is a reference of the new task,
+        # written after the commit, as a capture writes one.
+        refs = c.execute(
+            text("SELECT url, via FROM pm_task_refs WHERE task_id = CAST(:t AS uuid)"),
+            {"t": task_id},
+        ).fetchall()
+        assert [(r.url, r.via) for r in refs] == [(PR_URL, "text")]
     assert [e for e, _ in world.events] == ["pm.task.created"]
     assert _ledger(world, rid) == ["created", "promoted"]
     assert str(_row(world, rid).promoted_task_id) == task_id

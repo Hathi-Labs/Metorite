@@ -84,6 +84,7 @@ from gateway.routes.projects.personal import (
     create_personal_task,
     ensure_personal_project,
 )
+from gateway.routes.projects.text_links import link_from_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -751,4 +752,9 @@ async def promote_reminder(
         await _ledger(db, row.id, "promoted", {
             "from_state": row.state, "task_id": task_id, "by": "member",
         })
-        return _out(updated)
+        result = _out(updated)
+    # WS-57 TR-5 — the new task's title and notes, after the commit, as the
+    # capture route does. It runs in its own transaction and never fails the
+    # promote.
+    await link_from_text(user, [(task_id, [(row.title, False, None), (row.notes, True, None)])])
+    return result
