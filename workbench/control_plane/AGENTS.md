@@ -114,6 +114,10 @@ Ten rules on top of the three above. Each one exists because it was broken:
    `app/projects/lib/reportPanels.ts` maps a section to the panel's props
    and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.
    Fence: `app/projects/components/reportVisuals.test.ts`.
+   **The KPI strip of the Overview has one home** (WS-27bn RA-2).
+   `app/projects/lib/kpiStrip.ts` holds the words and the rule of each of
+   its six tiles, and `Stat` draws each tile with its `detail` lines. The
+   tooltip of a tile is its rule. Fence: `app/projects/lib/kpiStrip.test.ts`.
    **A report row opens its task through `OpenTaskContext`** in
    `AnalyticsPanels.tsx` (WS-27bn RA-3). `ReportsView` provides the opener of
    the page. A row is a `ControlLink` to `/projects?task=<id>`. Do not add a

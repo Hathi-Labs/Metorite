@@ -36,6 +36,8 @@ from collections.abc import Iterator
 
 from acb_common.paging import paged
 
+from acb_skills.handoff import head_task
+
 # ── Delegation guard (review P0-7) ──────────────────────────────────────────
 # Sub-agents receive the call_agent family too, so without a guard an
 # A→B→A chain recurses and call_agents_parallel fans out 5^depth runs.
@@ -191,7 +193,8 @@ async def call_agent(agent_name: str, message: str) -> str:
             result = await asyncio.wait_for(
                 run_agent(
                     agent_name,
-                    {"message": message, "mode": "sub_task"},
+                    # WS-67 OA-1: the batch path heads the task as the stream does.
+                    {"message": head_task(message), "mode": "sub_task"},
                     run_id=run_id,
                     model=_parent_model,
                 ),
@@ -374,7 +377,7 @@ async def call_agents_parallel(tasks: str) -> str:
                 result = await asyncio.wait_for(
                     run_agent(
                         agent_name,
-                        {"message": message, "mode": "sub_task"},
+                        {"message": head_task(message), "mode": "sub_task"},
                         run_id=run_id,
                         model=_parent_model,
                     ),
@@ -470,7 +473,7 @@ async def call_agent_background(agent_name: str, message: str) -> str:
             _task = asyncio.create_task(
                 run_agent(
                     agent_name,
-                    {"message": message, "mode": "background_sub_task"},
+                    {"message": head_task(message), "mode": "background_sub_task"},
                     run_id=run_id,
                     model=_parent_model,
                     # WS-63 PZ-2 (personalization.md §5.1): the task copies

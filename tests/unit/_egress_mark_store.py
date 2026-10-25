@@ -59,6 +59,14 @@ def install_memory_mark_store(patcher: Any) -> MemoryMarkClient | None:
         pass
     else:
         patcher.setattr(email_chat_context, "get_tenant_redis", lambda: store)
+    # WS-67 OA-4: the member's corrections and limits of a chat live in the
+    # same tenant Redis, and each orchestrator turn reads them.
+    try:
+        from acb_skills import chat_constraints
+    except ImportError:
+        pass
+    else:
+        patcher.setattr(chat_constraints, "get_tenant_redis", lambda: store)
     clear_marks()
     return client
 
@@ -76,3 +84,8 @@ def clear_marks() -> None:
     except ImportError:
         return
     email_chat_context.clear_cache()
+    try:
+        from acb_skills import chat_constraints
+    except ImportError:
+        return
+    chat_constraints.clear_cache()
