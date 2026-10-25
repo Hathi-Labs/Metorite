@@ -73,11 +73,14 @@ class _Orchestrator:
         async def profile_set(key: str, value: dict[str, Any]) -> str: ...
         async def profile_alias(alias: str, email: str = "") -> str: ...
         async def profile_undo() -> str: ...
+        # WS-63 PZ-26: the interview tool, an own tool on the same flag.
+        async def profile_interview(action: str, area: str = "") -> str: ...
 
         self.name = "orchestrator"
         self.default_options: dict[str, Any] = {
             "tools": [search_company, remember, resolve_person, profile_remember,
-                      profile_forget, profile_set, profile_alias, profile_undo],
+                      profile_forget, profile_set, profile_alias, profile_undo,
+                      profile_interview],
             "instructions": "Persona."}
 
 
@@ -177,7 +180,8 @@ async def test_a_whatsapp_run_of_a_crm_member_holds_the_crm_reads_and_org_facts(
     assert {"crm_aggregate", "crm_list_modules", "crm_list_module_records",
             "crm_get_module_record", "org_facts", "crm_answer_question",
             "search_company", "resolve_person", "profile_remember", "profile_forget",
-            "profile_set", "profile_alias", "profile_undo"} <= wa
+            "profile_set", "profile_alias", "profile_undo",
+            "profile_interview"} <= wa
     # Every CRM tool that the orchestrator's scope names, none withheld.
     scoped = {n for n in _orchestrator_scope() if n.startswith("crm_") or n == "org_facts"}
     assert scoped <= wa, sorted(scoped - wa)

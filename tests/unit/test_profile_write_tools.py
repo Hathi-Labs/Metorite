@@ -60,8 +60,9 @@ _REAL_CHANNEL = _ask_tools.confirmation_channel_open
 ROOT = Path(__file__).resolve().parents[2]
 MEMBER = "ana@alpha.example"
 TOOLS = ("profile_remember", "profile_forget", "profile_set", "profile_alias")
-#: The five write tools: the four changes and the spoken Undo.
-ALL = (*TOOLS, "profile_undo")
+#: The six write tools: the four changes, the spoken Undo and the interview
+#: (PZ-26).
+ALL = (*TOOLS, "profile_undo", "profile_interview")
 #: The member's own words of the turn in ``own_chat``: each value that the
 #: tests below save is in them.
 WORDS = ("I like tea. I like green tea. I work from Mumbai now. Sam is "
@@ -90,6 +91,9 @@ class _Gateway:
         self.cards: list[dict[str, Any]] = []
         self.approve: Any = True
         self.card_channel = True
+        #: The interview calls ``(method, area, body)``, and a forced status.
+        self.interview_calls: list[tuple[str, str, Any]] = []
+        self.interview_fail: int | None = None
 
     def writes(self) -> list[httpx.Request]:
         return [r for r in self.requests if r.method != "GET"]
@@ -112,6 +116,13 @@ class _Gateway:
         if request.method == "PUT" and not path:
             self.profile[body["key"]] = body["value"]
             return httpx.Response(200, json=self.profile)
+        if path.startswith("interview"):
+            # PZ-26: the interview routes. A mark is recorded and answered.
+            _, _, area = path.partition("/")
+            self.interview_calls.append((request.method, area, body))
+            if self.interview_fail is not None:
+                return httpx.Response(self.interview_fail, json={"detail": "x"})
+            return httpx.Response(200, json={"started_at": "2026-10-25T10:00:00Z"})
         if request.method == "POST" and path == "undo":
             if self.undo_answer[0] >= 400:
                 return httpx.Response(self.undo_answer[0], json={"detail": self.undo_answer[1]})
@@ -185,6 +196,7 @@ def _call(name: str) -> Any:
         "profile_set": lambda: pt.profile_set("style", {"length": "detailed"}),
         "profile_alias": lambda: pt.profile_alias("Sam", "sam@alpha.example"),
         "profile_undo": lambda: pt.profile_undo(),
+        "profile_interview": lambda: pt.profile_interview("asked", "goals"),
     }[name]()
 
 
@@ -631,7 +643,8 @@ def test_risk_annotations_and_no_risk_block_changes() -> None:
         hints = ta.TOOL_ANNOTATIONS[name]
         assert hints["read_only"] is False and hints["destructive"] is False
         assert hints["open_world"] is False
-        assert hints["idempotent"] is (name not in ("profile_remember", "profile_undo"))
+        assert hints["idempotent"] is (
+            name not in ("profile_remember", "profile_undo", "profile_interview"))
         assert getattr(pt, name).__tool_risk__ == hints
         assert name in ta._H236_UNLISTED
         assert name not in ta.risk_summary_block()
@@ -686,7 +699,7 @@ def test_every_profile_write_route_reads_the_header_by_its_name() -> None:
     writes = [r for r in me_router.routes
               if "/me/assistant-profile" in getattr(r, "path", "")
               and set(getattr(r, "methods", ())) & {"PUT", "POST", "PATCH", "DELETE"}]
-    assert len(writes) == 9
+    assert len(writes) == 13
     for route in writes:
         headers = {p.alias.lower() for p in route.dependant.header_params}
         assert "x-profile-via" in headers, route.path
