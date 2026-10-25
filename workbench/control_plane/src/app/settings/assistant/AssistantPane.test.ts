@@ -91,6 +91,22 @@ describe("AssistantPaneView", () => {
     expect(draw({ profile: { ...EMPTY_PROFILE, aliases } })).toContain("You have 50 names.");
   });
 
+  it("offers the download as JSON and as text, with its own error (PZ-9)", () => {
+    const html = draw({ profile: full });
+    expect(html).toContain("Download my profile");
+    expect(html).toContain("Download as JSON");
+    expect(html).toContain("Download as text");
+    expect(html).toContain("nothing about anybody else");
+    const failed = draw({ errors: { "export-text": "The assistant profile is not available now." } });
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain("not available now");
+  });
+
+  it("offers the download for an empty profile too", () => {
+    expect(draw({})).toContain("Download as JSON");
+    expect(draw({ status: "loading" })).not.toContain("Download as JSON");
+  });
+
   it("has no Undo in the markup (the chat Undo card needs PZ-6)", () => {
     expect(draw({ profile: full })).not.toContain("Undo");
   });

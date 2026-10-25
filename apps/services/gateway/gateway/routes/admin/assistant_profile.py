@@ -23,6 +23,8 @@ Route                      Does
 ``.../aliases[/{id}]``     The same three for aliases
 ``DELETE``                 Forget everything. The column becomes NULL
 ``GET .../address``        ``{"name"}``, the form of address of §5.2 (PZ-4)
+``GET .../export``         The whole profile as a download, JSON or text
+                           (PZ-9). Read-only, and only the member's own
 =========================  ===============================================
 
 **The shape follows** ``routes/shell/prefs.py``. The write is strict and the
@@ -119,7 +121,7 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
     profile_size,
     stored_profile,
 )
-from fastapi import Body, Depends, Header, HTTPException, Response
+from fastapi import Body, Depends, Header, HTTPException, Query, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
@@ -655,6 +657,61 @@ async def get_assistant_profile_address(
     stored = stored_profile(row[0] if row is not None else None)
     preferred, _zone, display = names[:3] if names else (None, None, None)
     return {"name": resolve_address_name(stored["address"].get("name"), preferred, display)}
+
+
+#: The file names of the two exports (PZ-9).
+EXPORT_FILES: dict[str, tuple[str, str]] = {
+    "json": ("assistant-profile.json", "application/json"),
+    "text": ("assistant-profile.txt", "text/plain; charset=utf-8"),
+}
+
+
+@me_router.get("/me/assistant-profile/export",
+               summary="Download the caller's assistant profile (PZ-9)")
+async def export_assistant_profile(
+    user: UserContext = Depends(get_current_user),
+    format: Literal["json", "text"] = Query(default="json"),
+) -> Response:
+    """The member's own profile as a file (``personalization.md`` §13.3 item 7).
+
+    JSON is ``{exported_at, member, profile, text}``. ``profile`` is the
+    answer of the GET, with each fact's source and date. ``text`` is
+    ``render_export``. ``?format=text`` gives the text alone. Each answer is
+    an attachment, with ``Cache-Control: no-store``.
+
+    The route reads, and writes nothing. The member comes from the session
+    and the org from the bound session (R5), so the route takes no address
+    and can name no other member. The switch does not stop it: ``learning``
+    stops new writes, and the member may always read their own words. A
+    member with no profile gets the empty profile, never a 404. A failed
+    read answers 503, never the empty profile.
+    """
+    from acb_common.assistant_profile import render_export
+
+    uid = _member(user)
+    try:
+        async with _tenant_session() as db:
+            row = await _read(db, uid)
+    except Exception as exc:
+        logger.warning("auth.assistant_profile.export_failed",
+                       extra={"error": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    raw = row[0] if row is not None else None
+    text = render_export(raw)
+    name, media = EXPORT_FILES[format]
+    if format == "text":
+        content = text + "\n"
+    else:
+        content = json.dumps({
+            "exported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "member": uid,
+            "profile": stored_profile(raw),
+            "text": text,
+        }, ensure_ascii=False, indent=2) + "\n"
+    return Response(content=content, media_type=media, headers={
+        "Cache-Control": "no-store",
+        "Content-Disposition": f'attachment; filename="{name}"',
+    })
 
 
 @me_router.put("/me/assistant-profile", summary="Save one key of the assistant profile (PZ-1)")

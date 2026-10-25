@@ -141,6 +141,8 @@ const PURGE_LABELS: Record<string, string> = {
   crm_member_rules: "own CRM business rule",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
+  // WS-63 PZ-9: the member's settings row, with the assistant profile.
+  member_settings: "personal settings record",
   audit_entries: "app audit entry",
   audit_events: "audit event",
   agent_runs: "agent run trace",
@@ -1026,6 +1028,7 @@ function PurgeDialog({
             task and project that came from the task workspace.
           </li>
           <li>Their private chat sessions, and any sign-in request on record</li>
+          <li>Their personal settings, and what the assistant remembered about them</li>
         </ul>
 
         <p className="mt-3 text-[11px] font-medium text-success">Kept</p>

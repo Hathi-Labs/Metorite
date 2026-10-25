@@ -128,6 +128,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     #    retired task store, so the purge names no task table at all (D63).
     fake.seed_rows("pm_tasks", {"id": "t-1", "created_by": PRIYA})
     fake.seed_rows("meeting", {"owner_email": PRIYA})
+    # ── her settings row, and with it her assistant profile (WS-63 PZ-9) ──
+    fake.seed_rows("user_settings", {"user_id": PRIYA})
     return fake
 
 
@@ -473,6 +475,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "crm_member_rules": 0,
         # WS-61 KB-2f: the fake holds no star of the member.
         "knowledge_favorites": 0,
+        # WS-63 PZ-9: her settings row of this org, with the profile.
+        "member_settings": 1,
         "member_record": 1,
     }
     assert out.kept == {
@@ -604,6 +608,30 @@ def test_the_member_record_is_deleted_last() -> None:
     assert _PURGE_DELETES[-1].table == "app_user"
     assert _PURGE_DELETES[-1].key == "member_record"
     assert [r.table for r in _PURGE_DELETES].count("app_user") == 1
+
+
+def test_the_settings_row_of_this_org_goes_and_no_other() -> None:
+    """WS-63 PZ-9 (``personalization.md`` §7 point 6): the purge deletes the
+    member's ``user_settings`` row, and so the assistant profile.
+
+    A member has one row for each organization (migration 239), so the
+    clause must name the bound org. Without it, the purge of a member in
+    one org deletes the rows of the same address in every org that RLS
+    lets the session see, and an owner role sees all of them.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_assistant_profile_offboarding_r8.py`` P1 fails on the real
+    database. Dropping the entry fails the count dict above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "user_settings"]
+    assert rows.key == "member_settings"
+    assert rows.where == f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"
+    # Before the member record, as every other row of the member.
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("member_settings") < keys.index("member_record")
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
