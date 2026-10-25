@@ -96,7 +96,10 @@ def _ap():
 
 async def _get(org: str, user: UserContext) -> dict:
     with _tenant(org):
-        return await _ap().get_assistant_profile(user=user)
+        out = await _ap().get_assistant_profile(user=user)
+    # PZ-25: ``enabled`` is an answer, not part of the stored profile.
+    assert isinstance(out.pop("enabled"), bool)
+    return out
 
 
 async def _put(org: str, user: UserContext, key: str, value: object) -> dict:

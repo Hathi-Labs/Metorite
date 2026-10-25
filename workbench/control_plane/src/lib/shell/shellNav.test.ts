@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { PANES, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import {
+  ASSISTANT_LINK,
   CHANGE_LAYOUT_ITEM,
   MY_ACCESS,
   TEAM_GROUPS,
@@ -108,6 +109,47 @@ describe("the account menu holds pages about the member", () => {
       MY_ACCESS.href,
       "/settings/appearance",
     ]);
+  });
+});
+
+// WS-63 PZ-25 (`personalization.md` §14.2): "Assistant" is a static account
+// link beside My access, and never a pane. Mutation: add it always, and the
+// "absent when off" test fails. Drop it, and the "shown when on" test fails.
+describe("the Assistant row of the account menu (PZ-25)", () => {
+  const member = visibleSections(ALL, false);
+
+  it("is absent with the profile off, and by default", () => {
+    for (const links of [accountLinks(member), accountLinks(member, { assistant: false })]) {
+      expect(links.map((l) => l.href)).not.toContain("/settings/assistant");
+    }
+  });
+
+  it("shows right after My access with the profile on", () => {
+    expect(accountLinks(member, { assistant: true }).map((l) => l.href)).toEqual([
+      "/people/me",
+      MY_ACCESS.href,
+      "/settings/assistant",
+      "/settings/appearance",
+    ]);
+    expect(ASSISTANT_LINK).toEqual({ href: "/settings/assistant", label: "Assistant", icon: "Sparkles" });
+  });
+
+  it("an unresolved viewer gets no row, also with the profile on", () => {
+    expect(accountLinks(visibleSections(null, true), { assistant: true })).toEqual([]);
+  });
+
+  it("sits in You, not in Settings, in the foot menu", () => {
+    const groups = accountMenu(member, { layout: true, switcher: false, others: 0, assistant: true });
+    const hrefs = (id: string) =>
+      (groups.find((g) => g.id === id)?.items ?? []).flatMap((i) => (i.kind === "link" ? [i.href] : []));
+    expect(hrefs("you")).toEqual(["/people/me", "/people/access", "/settings/assistant"]);
+    expect(hrefs("settings")).toEqual(["/settings/appearance"]);
+    const off = accountMenu(member, { layout: true, switcher: false, others: 0 });
+    expect(off.flatMap((g) => g.items).some((i) => i.kind === "link" && i.href === "/settings/assistant")).toBe(false);
+  });
+
+  it("is not a pane, so the live set does not change", () => {
+    expect(PANES.some((p) => p.href === "/settings/assistant")).toBe(false);
   });
 });
 

@@ -32,6 +32,7 @@ import functools
 import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -753,10 +754,10 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     """``(block, zone, greeting)`` of this turn, or ``("", "", "")``.
 
     ``personalization.md`` §5.1. The block reaches a run only when all hold:
-    ``ASSISTANT_PROFILE_ENABLED`` is on, the agent is ``orchestrator``, the
+    the agent is ``orchestrator``, the run has an org,
+    ``assistant_profile.enabled_for`` is true for that org (PZ-25), the
     run has a verified member (:func:`_verified_run_member`), the run
-    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`), and the run has
-    an org. Each check comes before the read, so a run that fails one reads
+    boundary says the room is solo (:data:`_RUN_SOLO_ROOM`). Each check comes before the read, so a run that fails one reads
     nothing.
 
     The name follows §5.2 (``assistant_profile.resolve_address_name``). The
@@ -771,13 +772,15 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
 
     from acb_common import assistant_profile
 
-    if agent_name != _PROFILE_AGENT or not assistant_profile.enabled():
+    if agent_name != _PROFILE_AGENT:
+        return ("", "", "")
+    # PZ-25 (§14.2): the switch is per organization, so read the run's org
+    # first. The org comes from the run boundary, never from the payload.
+    org = _current_run_org()
+    if not org or not assistant_profile.enabled_for(str(org)):
         return ("", "", "")
     member = _verified_run_member()
     if not member or _RUN_SOLO_ROOM.get() is not True:
-        return ("", "", "")
-    org = _current_run_org()
-    if not org:
         return ("", "", "")
     key = (str(org), member)
     now = time.monotonic()
@@ -4202,6 +4205,7 @@ async def _run_agent_inner(
     """
     _disable_agent_telemetry_once()
     settings = get_settings()
+    _batch_started = time.monotonic()
     run_id = run_id or str(uuid.uuid4())
     # H-227 (the batch decision, PR #616): the executor mints the thread of a
     # run with no chat. Only this code knows that, so a client can never claim
@@ -4665,6 +4669,12 @@ async def _run_agent_inner(
                     ),
                     is_copilot=_is_copilot_agent, emit=False,
                 )
+            # Chat speed: a delegated run's setup, up to its first request.
+            _log.info(
+                "executor.run_setup_ms", agent=agent_name, run_id=run_id,
+                setup_ms=round((time.monotonic() - _batch_started) * 1000),
+                path="batch",
+            )
             if agents:
                 _agent0 = agents[0]
                 _cfg_tier = (loaded.config.get("model_tier") or "")
@@ -5383,6 +5393,9 @@ async def run_agent_stream(
     # WS-8c: the MCP tools and clients this run opened. The finally closes
     # each one, however the run ends.
     _mcp_opened: list[Any] = []
+    # Chat speed: the run's tier question, started early (see below). The
+    # finally cancels it when the run ends before it is awaited.
+    _tier_task: asyncio.Future[Any] | None = None
 
     try:
         if _relay_mark_active is not None:
@@ -5585,6 +5598,29 @@ async def run_agent_stream(
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
             )
+
+            # Chat speed (2026-10-25): the tier question asks System 1, and it
+            # took 1.3 to 3.0 s in production. Its inputs are final once the
+            # run is bound, so it starts here and runs beside the email
+            # context, the rehydrate and the skills step below. The tier site
+            # awaits it, as before. The finally cancels it on an early end.
+            def _ask_run_tier(_ag: Any) -> Any:
+                return _tier_policy_for_run(
+                    agent_name, _ag,
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    think_mode=think_mode, event_payload=event_payload,
+                    config=loaded.config,
+                    agent_md_model=(
+                        (_agent_md_spec.model or "").strip()
+                        if _agent_md_spec is not None else ""
+                    ),
+                    is_copilot=_is_copilot_built(_ag, _agent_runtime),
+                    # The member's own turn: read the effort from their words.
+                    effort_from_text=True,
+                )
+
+            if agents:
+                _tier_task = asyncio.ensure_future(_ask_run_tier(agents[0]))
             # §7.1.1: the mailboxes and the email working set of this chat,
             # read now that the session is bound, for the sync context.
             await _prime_email_context(agent_name)
@@ -5648,11 +5684,7 @@ async def run_agent_stream(
             # agents silently skip session resume (re-injecting history every
             # turn) and the ask_user/working_directory wiring (audit
             # follow-up, 2026-07-22).
-            _is_copilot_sdk = (
-                _agent_runtime == "github-copilot"
-                or (hasattr(agent, "_default_options")
-                    and agent._default_options is not None)
-            )
+            _is_copilot_sdk = _is_copilot_built(agent, _agent_runtime)
             # WS-43t2: the stored session of a native run. Tier 1 loads it,
             # and Tier 2 reuses it when Tier 1 fails before any output.
             _session_turn: Any = None
@@ -5690,18 +5722,17 @@ async def run_agent_stream(
             # WS-45 S2 (D90): an agent that AI_TIER_ROUTING covers takes its
             # tier from the policy instead, and ignores 1 and 2. None for
             # every other agent, so this block runs as before.
-            _tier_run = await _tier_policy_for_run(
-                agent_name, agent,
-                run_id=run_id, thread_id=thread_id, model=model,
-                think_mode=think_mode, event_payload=event_payload,
-                config=loaded.config,
-                agent_md_model=(
-                    (_agent_md_spec.model or "").strip()
-                    if _agent_md_spec is not None else ""
-                ),
-                is_copilot=_is_copilot_sdk,
-                # The member's own turn: read the effort from their words.
-                effort_from_text=True,
+            _tier_wait_started = time.monotonic()
+            _tier_run = await (
+                _tier_task if _tier_task is not None else _ask_run_tier(agent)
+            )
+            # Chat speed: the setup of the run, up to the first model request.
+            # `tier_wait_ms` is what the tier question still cost after the
+            # overlap. Fence: tests/unit/test_chat_speed_slice2.py.
+            _log.info(
+                "executor.run_setup_ms", agent=agent_name, run_id=run_id,
+                setup_ms=round((time.monotonic() - _activity_started) * 1000),
+                tier_wait_ms=round((time.monotonic() - _tier_wait_started) * 1000),
             )
             # Owner, 2026-10-07: a covered chat sends `think_mode` "auto", and
             # the member's words may raise it to `thinking`. The run then
@@ -7414,6 +7445,13 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
+        if _tier_task is not None:
+            if not _tier_task.done():
+                _tier_task.cancel()
+            elif not _tier_task.cancelled():
+                # Read a result nobody awaited, so asyncio logs no "Task
+                # exception was never retrieved" for it.
+                _tier_task.exception()
         # H-363: a turn that was cancelled, or stopped on any other path,
         # pushes nothing. The request goes, and the log says so.
         _drop_agent_push(run_id, "the turn did not finish")
@@ -8533,6 +8571,17 @@ def _agent_for_run(agent: Any, provider: Any, history: Any = None) -> Any:
 # once, and no other line of a run changes.
 
 
+def _is_copilot_built(agent: Any, runtime: str) -> bool:
+    """True when *agent* runs on the Copilot SDK: by capability, or by label.
+
+    An agent built with GitHubCopilotAgent but declared runtime "maf" still
+    needs BYOK provider routing. The label "github-copilot" forces the path
+    even for a genuine MAF agent, which has no ``_default_options``."""
+    return runtime == "github-copilot" or (
+        hasattr(agent, "_default_options") and agent._default_options is not None
+    )
+
+
 def _tier_policy_covers(agent_name: str) -> bool:
     """True when `AI_TIER_ROUTING` covers *agent_name*. Fails closed."""
     try:
@@ -8664,6 +8713,8 @@ async def _tier_policy_for_run(
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
         read_effort=effort_from_text,
+        # A default the kind cannot move asks no question (`pinned`).
+        default=default,
     )
     _log.info(
         "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,
