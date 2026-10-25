@@ -6339,7 +6339,7 @@ line — never reclaim a number by deleting the other entry.
   2. KB-AI-3: "Draft with AI" from a gap, on `tier-balanced`, as a proposal.
   3. KB-AI-4: verified sources (owner, review interval, demote or flag an expired page in AI answers).
   4. CX-3 page digests (`KNOWLEDGE_DISTILL`), then KB-AI-6 rerank and "Ask this space".
-  5. KB-4b citation chips, then KB-10 `kb:read` on MCP.
+  5. KB-10 `kb:read` on MCP (KB-4b is built).
   Each paid pass has its own flag, default off, which the owner turns on.
 - **Authority:** owner request, 2026-10-22. `specs/knowledge_base.md` §22
 - **Added:** 2026-10-23 · Knowledge session

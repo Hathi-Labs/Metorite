@@ -185,16 +185,17 @@ const count = (page: Page, href: string) => row(page, href).locator('[data-nav-n
 test.describe("desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("Email 3 and Tasks 2: each row says its number, quietly, and its name says it in words", async ({ page }) => {
+  // OP-4 (2026-10-25): My Tasks left the nav, and the member's due tasks count
+  // on the Projects row (`NEEDS_APP_HREF`). The stub's Projects source adds 0.
+  test("Email 3 and Tasks 2 (on Projects): each row says its number, quietly, and its name says it in words", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(count(page, "/email")).toHaveText("3");
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
     await expect(sidebar(page).getByRole("link", { name: "My Email, 3 need you", exact: true })).toBeVisible();
-    await expect(sidebar(page).getByRole("link", { name: "My Tasks, 2 need you", exact: true })).toBeVisible();
-    // Projects answered with nothing, so its row shows nothing.
-    await expect(row(page, "/projects").locator("[data-nav-needs]")).toHaveCount(0);
-    await expect(sidebar(page).getByRole("link", { name: "Projects", exact: true })).toBeVisible();
+    await expect(sidebar(page).getByRole("link", { name: "Projects, 2 need you", exact: true })).toBeVisible();
+    // My Tasks is a preview pane, so it has no row of its own.
+    await expect(row(page, "/tasks")).toHaveCount(0);
     // Quiet: the muted text token, no fill, and never the badge vocabulary.
     await expect(count(page, "/email")).toHaveClass(/text-muted-foreground/);
     await expect(count(page, "/email")).not.toHaveClass(/bg-/);
@@ -204,7 +205,7 @@ test.describe("desktop", () => {
   test("a failed email source shows no number on Email, never a 0", async ({ page }) => {
     await stub(page, { email: "failed" });
     await page.goto("/settings/appearance");
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
     await expect(row(page, "/email")).toBeVisible();
     await expect(row(page, "/email").locator("[data-nav-needs]")).toHaveCount(0);
     await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
@@ -222,7 +223,7 @@ test.describe("desktop", () => {
     await expect.poll(() => store.needsGets).toBeGreaterThan(before);
     await expect(row(page, "/email").locator("[data-nav-needs]")).toHaveCount(0);
     await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
   });
 
   test("a feed read that fails as a whole takes every number off", async ({ page }) => {
@@ -230,7 +231,7 @@ test.describe("desktop", () => {
     const store = await stub(page);
     await page.goto("/settings/appearance");
     await expect(count(page, "/email")).toHaveText("3");
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
     // The next poll gets a 502. The cache keeps the last answer, so a row
     // that read the cache would keep its old number.
     store.status = 502;
@@ -250,14 +251,14 @@ test.describe("desktop", () => {
     await page.goto("/settings/appearance");
     await expect(count(page, "/email")).toHaveText("15+");
     await expect(sidebar(page).getByRole("link", { name: "My Email, 15 or more need you", exact: true })).toBeVisible();
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
   });
 
   test("Add apps keeps the run badge's words beside the needs, open and folded", async ({ page }) => {
-    // Tasks and Chat are not starred. A run of the Tasks agent folds to
+    // Projects and Chat are not starred. A run of the Tasks agent folds to
     // Chat, and Chat is hidden too, so the run counts on Add apps.
     const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
-    const pins = ["/calendar", "/email", "/projects", "/people"];
+    const pins = ["/calendar", "/email", "/people"];
     await stub(page, { runs, pins });
     await page.goto("/settings/appearance");
     const addApps = sidebar(page).locator("[data-nav-add-apps] button");
@@ -268,16 +269,16 @@ test.describe("desktop", () => {
     await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
   });
 
-  test("hiding Tasks moves its 2 onto Add apps", async ({ page }) => {
+  test("hiding Projects moves its 2 (the due tasks) onto Add apps", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
     const addApps = sidebar(page).locator("[data-nav-add-apps] button");
     await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
 
-    await row(page, "/tasks").getByRole("link").click({ button: "right" });
+    await row(page, "/projects").getByRole("link").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
-    await expect(row(page, "/tasks")).toHaveCount(0);
+    await expect(row(page, "/projects")).toHaveCount(0);
     await expect(addApps.locator('[data-nav-needs="count"]')).toHaveText("2");
     await expect(addApps).toHaveAccessibleName("Add apps, 2 need you in hidden apps");
     // Email keeps its own row and its own number.
@@ -303,7 +304,7 @@ test.describe("desktop", () => {
 
   test("folded, Add apps keeps the run badge's words beside the needs", async ({ page }) => {
     const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
-    await stub(page, { folded: true, runs, pins: ["/calendar", "/email", "/projects", "/people"] });
+    await stub(page, { folded: true, runs, pins: ["/calendar", "/email", "/people"] });
     await page.goto("/settings/appearance");
     const addApps = sidebar(page).locator("[data-nav-add-apps] button");
     await expect(addApps).toHaveAccessibleName("Add apps, 1 assistant running, 2 need you in hidden apps", {
@@ -319,17 +320,18 @@ test.describe("desktop", () => {
     await expect(email.locator('[data-nav-needs="dot"]')).toHaveCount(1);
     await expect(email).toHaveAccessibleName("My Email, 3 need you");
     await expect(email).toHaveAttribute("title", /\(3 need you\)$/);
-    await expect(row(page, "/projects").locator("[data-nav-needs]")).toHaveCount(0);
+    // Projects carries the due tasks since OP-4 (2026-10-25), so its row has a dot too.
+    await expect(row(page, "/projects").locator('[data-nav-needs="dot"]')).toHaveCount(1);
   });
 
   test("a Done in My Day takes the task out of the Tasks count at once", async ({ page }) => {
     await stub(page, { myDay: true });
     await page.goto("/");
     await expect(page.getByTestId("needs-you").getByText("Send the quote")).toBeVisible();
-    await expect(count(page, "/tasks")).toHaveText("2");
+    await expect(count(page, "/projects")).toHaveText("2");
     await page.getByTestId("needs-you").getByRole("button", { name: "Mark Send the quote done" }).click();
-    await expect(count(page, "/tasks")).toHaveText("1");
-    await expect(sidebar(page).getByRole("link", { name: "My Tasks, 1 needs you", exact: true })).toBeVisible();
+    await expect(count(page, "/projects")).toHaveText("1");
+    await expect(sidebar(page).getByRole("link", { name: "Projects, 1 needs you", exact: true })).toBeVisible();
   });
 
   test("the sidebar adds no fetch of its own: My Day reads the feed as often with it as without it", async ({ browser }) => {
@@ -363,7 +365,6 @@ test.describe("phone", () => {
     const email = page.getByRole("link", { name: "My Email, 3 need you", exact: true });
     await expect(email).toBeVisible();
     await expect(email.locator('[data-nav-needs="count"]')).toHaveText("3");
-    await expect(page.getByRole("link", { name: "My Tasks, 2 need you", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Projects", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Projects, 2 need you", exact: true })).toBeVisible();
   });
 });

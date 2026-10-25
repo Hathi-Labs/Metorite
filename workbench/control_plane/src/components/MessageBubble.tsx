@@ -36,6 +36,7 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
+import { buildLinkChipIndex } from "@/lib/linkChips";
 import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
@@ -264,6 +265,12 @@ function MessageBubble({
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
+  );
+  // The hrefs this turn's tools printed (KB-4b). A link in the answer to one
+  // of them draws as a chip. An assistant turn only, and not tied to pills.
+  const linkChips = useMemo(
+    () => (isUser || isSystem ? undefined : buildLinkChipIndex(dedupedToolEvents)),
+    [isUser, isSystem, dedupedToolEvents],
   );
 
   // A READ's receipt draws in its step, inside the trail, and never after the
@@ -717,6 +724,7 @@ function MessageBubble({
         entityIndex={entityIndex ?? undefined}
         fences
         taskRefs={refs}
+        linkChips={linkChips}
         evidenceFor={evidenceFor}
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
@@ -772,6 +780,7 @@ function MessageBubble({
                   entityIndex={entityIndex ?? undefined}
                   fences
                   taskRefs={refs}
+                  linkChips={linkChips}
                   caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
                 />
               </div>

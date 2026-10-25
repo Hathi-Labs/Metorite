@@ -104,7 +104,6 @@ class Pane:
 #: The order does not matter: :func:`pane_of` takes the longest match.
 PANES: tuple[Pane, ...] = (
     Pane("/", None),
-    Pane("/tasks", "tasks"),
     Pane("/calendar", "tasks"),
     Pane("/people/me", None),
     Pane("/email", "email"),
