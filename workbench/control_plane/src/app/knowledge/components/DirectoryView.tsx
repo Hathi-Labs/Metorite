@@ -38,7 +38,9 @@ import {
   type EntityList,
   type EntityType,
 } from "../lib/entities";
+import { ADD_LABEL } from "../lib/entityForm";
 import { pageHref } from "../lib/links";
+import { useKnowledge } from "./KnowledgeContext";
 import WritePageDialog from "./WritePageDialog";
 
 /** The wait before the words reach the server and the address, in ms. */
@@ -52,6 +54,14 @@ export default function DirectoryView({ type }: { type: EntityType }) {
   const [raw, setRaw] = useState(written);
   const [q, setQ] = useState(written.trim());
   const [writing, setWriting] = useState<Entity | null>(null);
+  // KC-8d: Knowledge makes a product and a topic, and no other type. Hidden for
+  // a member with no space to write in.
+  const { openAddEntity, canAddEntity, requestLeave } = useKnowledge();
+  const addType = type === "product" || type === "topic" ? type : null;
+  const add =
+    addType && canAddEntity
+      ? { label: ADD_LABEL[addType], icon: "Plus", onClick: () => requestLeave(() => openAddEntity(addType)) }
+      : null;
 
   // The words reach the server and the address after one wait, so neither
   // gets a request for each letter. `replace`, so Back leaves in one step.
@@ -80,6 +90,11 @@ export default function DirectoryView({ type }: { type: EntityType }) {
             <h2 className="truncate text-base font-semibold text-foreground">{typeLabel(type)}</h2>
             <p className="mt-0.5 text-sm text-muted-foreground">{typeHelp(type)}</p>
           </div>
+          {add ? (
+            <Button variant="primary" size="sm" icon={add.icon} onClick={add.onClick}>
+              {add.label}
+            </Button>
+          ) : null}
         </header>
 
         <div className="mt-4">
@@ -118,7 +133,7 @@ export default function DirectoryView({ type }: { type: EntityType }) {
             q ? (
               <EmptyState icon="SearchX" message="No match" hint={`Nothing in ${typeLabel(type)} matches these words.`} />
             ) : (
-              <EmptyState icon={typeIcon(type)} message="Nothing here yet" />
+              <EmptyState icon={typeIcon(type)} message="Nothing here yet" action={add ?? undefined} />
             )
           ) : (
             <>

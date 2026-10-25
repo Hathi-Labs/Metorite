@@ -56,7 +56,8 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { KNOWLEDGE_CACHE, KnowledgeError, listPages, movePage, pagesKey } from "../lib/api";
-import { directoryHref, typeIcon, typeLabel, type EntityType } from "../lib/entities";
+import { directoryHref, typeIcon, typeLabel, type CreatableType, type EntityType } from "../lib/entities";
+import { ADD_LABEL } from "../lib/entityForm";
 import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { KNOWLEDGE_MAINTENANCE } from "../lib/maintenance";
 import { KNOWLEDGE_SOURCES } from "../lib/sources";
@@ -122,6 +123,12 @@ export interface KnowledgeRailProps {
   onNewSubPage?: (parent: SubPageParent) => void;
   /** Ask to archive a page. The layout asks first. Absent: no Archive. */
   onArchive?: (page: PageSummary) => void;
+  /**
+   * Add a product or a topic (KC-8d). The Directories heading gets a `+` that
+   * offers both, and the heading shows even while every directory is empty.
+   * Absent: no `+`, for a member with no space to write in.
+   */
+  onAddEntity?: (type: CreatableType) => void;
 }
 
 /** True when the member can move and add pages in this space. */
@@ -144,6 +151,7 @@ export default function KnowledgeRail({
   onNavigate,
   onNewSubPage,
   onArchive,
+  onAddEntity,
 }: KnowledgeRailProps) {
   return (
     <div className="flex flex-col gap-0.5" onKeyDown={moveRailFocus}>
@@ -222,7 +230,7 @@ export default function KnowledgeRail({
           onArchive={onArchive}
         />
       ))}
-      {directories && directories.types.length > 0 ? (
+      {(directories && directories.types.length > 0) || onAddEntity ? (
         <div className="mt-2 flex flex-col gap-0.5" data-knowledge-directories="">
           {/* A heading, not a link: no onSelect, and out of the tab order. */}
           <RailRow
@@ -230,15 +238,17 @@ export default function KnowledgeRail({
             tier="group"
             icon={<Icon name="BookUser" className={ICON} />}
             buttonProps={{ tabIndex: -1, "aria-disabled": true }}
+            actions={onAddEntity ? <AddEntityMenu onAdd={onAddEntity} /> : undefined}
+            phoneActions={onAddEntity ? <AddEntityMenu onAdd={onAddEntity} phone /> : undefined}
           />
-          {directories.types.map((type) => (
+          {(directories?.types ?? []).map((type) => (
             <RailRow
               key={type}
               label={typeLabel(type)}
               depth={1}
-              selected={directories.selected === type}
+              selected={directories?.selected === type}
               icon={<Icon name={typeIcon(type)} className={ICON} />}
-              buttonProps={{ "aria-current": directories.selected === type ? "page" : undefined }}
+              buttonProps={{ "aria-current": directories?.selected === type ? "page" : undefined }}
               rowProps={{ "data-directory-type": type }}
               onSelect={() => onNavigate(directoryHref(type))}
             />
@@ -246,6 +256,54 @@ export default function KnowledgeRail({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The `+` of the Directories heading (KC-8d): a menu of Add a product and
+ * Add a topic. It is the only way in while a directory is empty, because an
+ * empty type has no row in the rail.
+ */
+function AddEntityMenu({ onAdd, phone = false }: { onAdd: (type: CreatableType) => void; phone?: boolean }) {
+  const [menu, setMenu] = useState<{ x: number; y: number; keyboard: boolean } | null>(null);
+  const button = useRef<HTMLButtonElement | null>(null);
+  const items: CtxItem[] = (["product", "topic"] as const).map((type) => ({
+    kind: "item" as const,
+    label: ADD_LABEL[type],
+    icon: themedIcon(typeIcon(type)),
+    onSelect: () => onAdd(type),
+  }));
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size={phone ? "none" : "icon-xs"}
+        radius="keep"
+        className={phone ? "h-10 w-10 rounded" : "rounded"}
+        icon="Plus"
+        aria-label="Add to Directories"
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        title={phone ? undefined : "Add a product or a topic"}
+        onClick={(event) => {
+          button.current = event.currentTarget;
+          const rect = event.currentTarget.getBoundingClientRect();
+          setMenu({ x: rect.left, y: rect.bottom + 2, keyboard: event.detail === 0 });
+        }}
+      />
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={items}
+          autoFocus={menu.keyboard}
+          onClose={() => {
+            setMenu(null);
+            if (menu.keyboard) button.current?.focus();
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 
