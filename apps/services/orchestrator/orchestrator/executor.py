@@ -5400,7 +5400,7 @@ async def run_agent_stream(
     _mcp_opened: list[Any] = []
     # Chat speed: the run's tier question, started early (see below). The
     # finally cancels it when the run ends before it is awaited.
-    _tier_task: "asyncio.Future[Any] | None" = None
+    _tier_task: asyncio.Future[Any] | None = None
 
     try:
         if _relay_mark_active is not None:
@@ -7450,8 +7450,13 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
-        if _tier_task is not None and not _tier_task.done():
-            _tier_task.cancel()
+        if _tier_task is not None:
+            if not _tier_task.done():
+                _tier_task.cancel()
+            elif not _tier_task.cancelled():
+                # Read a result nobody awaited, so asyncio logs no "Task
+                # exception was never retrieved" for it.
+                _tier_task.exception()
         # H-363: a turn that was cancelled, or stopped on any other path,
         # pushes nothing. The request goes, and the log says so.
         _drop_agent_push(run_id, "the turn did not finish")

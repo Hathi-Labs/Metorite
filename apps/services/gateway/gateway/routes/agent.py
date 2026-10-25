@@ -3260,7 +3260,7 @@ async def run_agent_stream_endpoint(
             _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
                       **timing.fields())
 
-    async def _serve_run(timing: "_RunTiming"):
+    async def _serve_run(timing: _RunTiming):
         try:
             async for evt in run_detached(
                 thread_id, agent_gen, tee=False,
@@ -3296,6 +3296,7 @@ async def run_agent_stream_endpoint(
             )
             await _release_cap_slot()
             await _give_back_taken()
+            timing.outcome = "superseded"
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
                 "message": (
@@ -3318,6 +3319,9 @@ async def run_agent_stream_endpoint(
             # Redis was unavailable from the start — degrade to direct
             # streaming with no relay (old behaviour).
             _log.warning("agent.stream_relay_unavailable", agent=agent_name)
+            # These lines are SSE text, so the marks stay empty. The outcome
+            # says why, not "disconnected".
+            timing.outcome = "direct"
             async for line in agent_gen:
                 yield line
 
