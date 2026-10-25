@@ -31,6 +31,7 @@ export const PANEL_HINTS: Readonly<Record<string, string>> = {
   capacity: "Open work, and the spare hours.",
   pulse: "Each person today, and who needs help.",
   stuck: "Stalled work, and work past due.",
+  waiting: "What agents wait for from a person.",
   hygiene: "Tasks with no owner, date or size.",
   conflicts: "Late blockers, and people spread thin.",
   rebalance: "Tasks at risk, and who could help.",

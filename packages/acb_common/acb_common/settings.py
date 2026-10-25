@@ -422,6 +422,18 @@ class Settings(BaseSettings):
     # The largest object one put accepts. A caller may set a lower cap.
     object_store_max_object_mb: int = 512
 
+    # ── Calendar reminders (WS-66 RM-1, D114, 2026-10-25) ───────────────────
+    #
+    # `calendar_reminders` is the switch of the reminder store, default OFF.
+    # With it off, each route under `/projects/my/reminders` answers 404 and
+    # writes nothing. `/version` carries the value as `calendar_reminders`.
+    # The one reader is `reminders_enabled()` in
+    # gateway/routes/projects/reminders.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_REMINDERS` (RM-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
+    calendar_reminders: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.
@@ -499,6 +511,26 @@ class Settings(BaseSettings):
     reach_brief_template: str = ""
     reach_needs_you_template: str = ""
     reach_template_language: str = "en"
+
+    # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
+    #
+    # `web_push_enabled` is the switch of the `/push` routes and the sender,
+    # default OFF. Off, each `/push` route answers 404 and nothing sends.
+    # `vapid_public_key` is the base64url of the uncompressed P-256 public
+    # point (65 bytes), the `applicationServerKey` that a browser subscribes
+    # with. `vapid_private_key` is the base64url of the raw 32-byte private
+    # scalar. `vapid_subject` is the `mailto:` or `https:` contact that the
+    # push services read from the VAPID claim. The private key is a secret:
+    # `scripts/secrets.sh`, never chat, never the tree.
+    # The one reader is `gateway.push.flags`. A flip on a box is gate
+    # `enforcement-flip`, and a flip for a real member in production is the
+    # owner's (calendar_events_reminders.md §9). Spec:
+    # calendar_events_reminders.md §5.9 and §10.2. Fence:
+    # tests/unit/test_push_subscriptions.py.
+    web_push_enabled: bool = False
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
@@ -1585,6 +1617,12 @@ class Settings(BaseSettings):
     # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_mcp_sessions_enabled: bool = False
+    # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
+    # While it is false, the gateway starts no sweep task, so no fingerprint
+    # and no recovery record exist, and no member gets a nudge. Only the
+    # gateway reads it. `gateway.agent_run_sweep.sweep_enabled`
+    # is the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_run_sweep_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

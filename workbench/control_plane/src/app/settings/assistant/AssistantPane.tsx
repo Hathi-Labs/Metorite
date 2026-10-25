@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -28,10 +29,13 @@ import { SelectButton } from "@/components/ui/SelectButton";
 import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { saveBlob } from "@/lib/export";
+import { startGetToKnowMe } from "@/lib/shell/interviewMessage";
 
 import {
   CAPS,
   FACT_KINDS,
+  INTERVIEW_AREAS,
+  STATE_LABELS,
   FORMALITIES,
   GREETINGS,
   KIND_LABELS,
@@ -39,6 +43,7 @@ import {
   ProfileError,
   addAlias,
   addFact,
+  areaLabel,
   deleteAlias,
   deleteFact,
   errorText,
@@ -50,16 +55,22 @@ import {
   nearCap,
   patchAlias,
   patchFact,
+  resetArea,
+  resetInterview,
   saveAddress,
   saveLearning,
   saveStyle,
   shortDate,
   sourceLabel,
+  withoutArea,
+  withoutInterview,
   type Address,
   type Alias,
   type ExportFormat,
   type Fact,
   type FactKind,
+  type InterviewAreaId,
+  type InterviewState,
   type Profile,
   type Style,
 } from "./lib/profile";
@@ -79,6 +90,12 @@ export interface PaneHandlers {
   onRetry: () => void;
   /** Download the member's own profile (PZ-9). */
   onExport: (format: ExportFormat) => Promise<boolean>;
+  /** Open a fresh chat and send the Get to know me request (PZ-27). */
+  onGetToKnow: () => void;
+  /** Reset one interview area. The facts stay. */
+  onResetArea: (id: InterviewAreaId) => Promise<boolean>;
+  /** Ask to reset the whole interview. A confirm dialog follows. */
+  onResetInterview: () => void;
 }
 
 export interface AssistantPaneViewProps extends PaneHandlers {
@@ -92,6 +109,9 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   confirmForget: boolean;
   onCancelForget: () => void;
   onConfirmForget: () => void;
+  confirmResetInterview: boolean;
+  onCancelResetInterview: () => void;
+  onConfirmResetInterview: () => void;
 }
 
 const noop = async () => true;
@@ -108,6 +128,9 @@ export const NO_HANDLERS: PaneHandlers = {
   onForget: () => {},
   onRetry: () => {},
   onExport: noop,
+  onGetToKnow: () => {},
+  onResetArea: noop,
+  onResetInterview: () => {},
 };
 
 function Section({
@@ -405,6 +428,7 @@ function FactRow({ f, v }: { f: Fact; v: AssistantPaneViewProps }) {
             <p className="break-words text-sm text-foreground">{f.text}</p>
           )}
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            {areaLabel(f.area) ? <Badge size="xs">{areaLabel(f.area)}</Badge> : null}
             {src ? <span>{src}</span> : null}
             {when ? <span>{when}</span> : null}
           </div>
@@ -488,6 +512,74 @@ function FactsSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
       </div>
       {full ? <p className="text-xs text-muted-foreground">You have {CAPS.facts} facts. Delete one to add another.</p> : null}
       <RowError text={v.errors["new-fact"]} />
+    </Section>
+  );
+}
+
+// ── The interview (PZ-27) ─────────────────────────────────────────────────
+
+const STATE_TONES: Record<InterviewState | "open", BadgeTone> = {
+  open: "neutral",
+  asked: "primary",
+  answered: "success",
+  skipped: "warning",
+  never: "neutral",
+};
+
+function InterviewSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
+  const areas = p.interview?.areas ?? {};
+  return (
+    <Section
+      title="Get to know me"
+      description="The assistant asks one question a day, and never twice about an area you answered. Each answer becomes a fact above. Resetting keeps the facts."
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="secondary" icon="ClipboardList" onClick={v.onGetToKnow}>
+          Get to know me
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="RotateCcw"
+          loading={v.busy["interview-reset"]}
+          disabled={!p.interview}
+          onClick={v.onResetInterview}
+        >
+          Reset the interview
+        </Button>
+      </div>
+      <ul className="space-y-1" aria-label="Interview areas">
+        {INTERVIEW_AREAS.map((a) => {
+          const state = areas[a.id]?.state;
+          const key = state ?? "open";
+          const busy = v.busy[`area-${a.id}`];
+          return (
+            <li
+              key={a.id}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-1.5"
+            >
+              <span className="min-w-0 truncate text-sm text-foreground">{a.label}</span>
+              <span className="flex shrink-0 items-center gap-2">
+                <Badge tone={STATE_TONES[key]}>{STATE_LABELS[key]}</Badge>
+                {state ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    loading={busy}
+                    disabled={busy}
+                    aria-label={`Reset ${a.label}`}
+                    onClick={() => v.onResetArea(a.id)}
+                  >
+                    Reset
+                  </Button>
+                ) : null}
+              </span>
+              <RowError text={v.errors[`area-${a.id}`]} />
+            </li>
+          );
+        })}
+      </ul>
+      <RowError text={v.errors["interview-reset"]} />
     </Section>
   );
 }
@@ -639,6 +731,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <AddressSection p={p} v={v} />
       <StyleSection p={p} v={v} />
       <FactsSection p={p} v={v} />
+      <InterviewSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
       <Section
         title="Download my profile"
@@ -685,6 +778,17 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
         onConfirm={v.onConfirmForget}
         onCancel={v.onCancelForget}
       />
+      <ConfirmDialog
+        open={v.confirmResetInterview}
+        title="Reset the interview?"
+        body="Every area becomes open again, and the assistant may offer the questions again. The facts you gave stay."
+        confirmLabel="Reset the interview"
+        confirmVariant="primary"
+        icon="RotateCcw"
+        busy={v.busy["interview-reset"]}
+        onConfirm={v.onConfirmResetInterview}
+        onCancel={v.onCancelResetInterview}
+      />
     </div>
   );
 }
@@ -699,6 +803,7 @@ export default function AssistantPane() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmForget, setConfirmForget] = useState(false);
+  const [confirmResetInterview, setConfirmResetInterview] = useState(false);
 
   const load = useCallback(async () => {
     setStatus("loading");
@@ -775,6 +880,13 @@ export default function AssistantPane() {
         setProfile((p) => (p ? { ...p, aliases: p.aliases.filter((x) => x.id !== id) } : p));
       }),
     onForget: () => setConfirmForget(true),
+    onGetToKnow: startGetToKnowMe,
+    onResetArea: (id) =>
+      run(`area-${id}`, async () => {
+        await resetArea(id);
+        setProfile((p) => (p ? withoutArea(p, id) : p));
+      }),
+    onResetInterview: () => setConfirmResetInterview(true),
     onRetry: () => void load(),
     onExport: (format) =>
       run(`export-${format}`, async () => {
@@ -793,6 +905,16 @@ export default function AssistantPane() {
       errors={errors}
       confirmForget={confirmForget}
       onCancelForget={() => setConfirmForget(false)}
+      confirmResetInterview={confirmResetInterview}
+      onCancelResetInterview={() => setConfirmResetInterview(false)}
+      onConfirmResetInterview={async () => {
+        const ok = await run("interview-reset", async () => {
+          await resetInterview();
+          setProfile((p) => (p ? withoutInterview(p) : p));
+        });
+        setConfirmResetInterview(false);
+        if (ok) toast.show({ variant: "success", title: "The interview is reset" });
+      }}
       onConfirmForget={async () => {
         const ok = await run("forget", async () => setProfile(await forgetAll()));
         setConfirmForget(false);

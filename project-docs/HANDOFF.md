@@ -158,6 +158,38 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-413 · Build WS-67 OA-1 to OA-5: the member's words survive the handoff, OCR, chat constraints, then measure · [AGENT]
+- **Check:** `grep -n "OA-5" project-docs/work_plan.md` on the WS-67 row says BUILT. Then delete this entry.
+- **Why:** D116. The Navy-order chat of 2026-10-25 lost the member's note between the orchestrator and the email assistant, and named parts from a sample file's name.
+- **Do this:** follow `specs/one_assistant_context.md` §4 and §5 in order: OA-1 and OA-2 in one PR, then OA-3 (OCR, HIGH tier), then OA-4, then OA-5 (the report). Stop at OA-6, which is the owner's decision. Update the Metorite tasks #446 to #450 as each slice merges (epic #445).
+- **Authority:** `specs/one_assistant_context.md` · D116 · board WS-67.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-414 · Verify the nightly release of 2026-10-25 · [AGENT]
+- **Check:** `curl -s https://api.metorite.com/version` shows an `applied_sha` that has `a03c1c081` as an ancestor. If it does, and the checks below pass, delete this entry.
+- **Why:** #1321 (H-406), #1324 (D115), #1325 (H-411, H-410, H-286) and #1326 (H-382) merged on 2026-10-25 and are on staging at `a03c1c081`. They have no migration.
+- **Do this:** read the `deploy.yml` scheduled run. Confirm that `acb-gateway` restarted after it and that `email_held_card_send` still reads True. Report the SHA and the log lines to the owner.
+- **Authority:** CLAUDE.md §4, the daily release.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-415 · After single mailbox: the shared mailbox SM-3 to SM-9, then multiple mailboxes · [AGENT]
+- **Check:** the WS-65 row of `work_plan.md` says SM-9 is BUILT. Then delete this entry.
+- **Why:** the owner's order on 2026-10-24: single mailbox first (done 2026-10-25), then shared, then multiple. H-337 (shared-room identity, security) can go first if the owner says so.
+- **Do this:** build SM-3 to SM-9 of `specs/shared_mailbox.md`. SM-10 and SM-11 are owner gates. The cleaner across several inboxes needs an owner decision.
+- **Authority:** `specs/shared_mailbox.md` · board WS-65.
+- **Added:** 2026-10-25 · email single-mailbox session
+
+### H-412 · The chat-speed work: build the delegated-path slices for the paths that stay after WS-67 · [AGENT]
+- **Check:** the next chat-speed PR after #1323 names WS-67 and `specs/one_assistant_context.md` §7. When it does, delete this entry.
+- **Why:** WS-67 (D116) may remove delegation for email conversation (OA-7). #1323 lists two next slices on the delegated path: "a delegated agent still loads twice and streams no text", and "skip the orchestrator rewrite of a delegated answer". Built for email conversation, that work can be thrown away after OA-7.
+- **Do this:**
+  1. Build those two slices for the paths that stay: the heavy-job sub-agent (OA-9), scheduled jobs and workflows. Or wait for OA-6.
+  2. "Fewer model rounds per email run" needs evals first. Use the OA-5 harness, and do not build a second one.
+  3. Keep the names and fields of `agent.run_timing` and `executor.run_setup_ms` stable. OA-5 reads them.
+  4. Expect OA-1 to add input tokens to a delegated run, and OA-3 (OCR) to add time to `read_attachment`.
+- **Authority:** `specs/one_assistant_context.md` §7 · D116 · board WS-67.
+- **Added:** 2026-10-25 · email single-mailbox session
+
 ### H-366 · Harden the CRM UX batch of 2026-10-20 (CRM-U6 to U9) · [AGENT] · security
 - **Check:** `git log --oneline origin/main | grep -c "harden.*CRM-U[6-9]"` is 0. Then this is open.
 - **Why:** owner rule of 2026-10-19, build first and harden later. Four PRs
@@ -334,19 +366,17 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
-### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
-- **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
-  No hit means S7 is not built.
-- **Why.** The owner called web push "a good idea" on 2026-10-10. D-2 is
-  decided: push is opt-in, per member. It is not built. The spec holds the
-  acceptance criteria and the fence:
-  - Our VAPID keys, through the secrets path.
-  - A service worker, a settings toggle, and a permission prompt only on a
-    click.
-  - Two events, for the member's own runs only, with no content in the
-    payload.
-  - Subscriptions under RLS, and an unsubscribe at sign-out.
-- **Do this:** build S7 as one slice behind a flag, default OFF.
+### H-289 · Send WS-51 S7's two chat events, "needs your answer" and "finished", over web push · [AGENT]
+- **Check:** run `rg -n "send_to_member" apps/services/gateway/gateway --glob '!gateway/push/**'`.
+  No hit outside `gateway/push/` means no chat event sends a push yet.
+- **Why.** The owner called web push "a good idea" on 2026-10-10 (D-2: opt-in,
+  per member). **The transport is built** (WS-66 PN-1, 2026-10-25): VAPID keys,
+  `public/sw.js`, the toggle on `/people/me`, `push_subscriptions` under RLS,
+  and the sign-out paths. What is left of S7 is item 4: the two events, for the
+  member's own runs only, with no content in the payload.
+- **Do this:** call `gateway.push.sender` with a `PushMessage` from the S2
+  "needs your answer" and the S5 "finished" points, behind `WEB_PUSH_ENABLED`.
+  A tap opens the S3 `open-chat` link.
 - **Authority:** `specs/chat_run_continuity.md` §4 S7, board row WS-51
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
@@ -5901,7 +5931,10 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:**
   1. A task that goes to done, cancelled or archived keeps its open run until
      the lease ends. End the run on that status change, or let a closed task
-     not hold. Metorite task SW-10 (#341) covers the same ground.
+     not hold. **SW-10a (spec §12.6, step 2) covers the run side:** the sweep
+     closes a run of a closed task once its lease ended, while `agent_run_sweep_enabled` is
+     on. The task side stays open here: an end of the run at the moment the
+     task closes, with the flag off too.
   2. The Release button uses `access.is_admin`. The server uses
      `admin:members:read`. Make them the same rule, and ask whether a read
      permission should release another member's run.
@@ -6325,6 +6358,21 @@ line — never reclaim a number by deleting the other entry.
 - **Do this:** before anyone turns Mem0 on (task #250, WS-7), pass `shared=not room_is_solo(room)` to `resolve_clearance` and `memory_preread`, and use it for `_extract_user`. Add a route test for an org-visible room of one, after the shape of `tests/unit/test_profile_block_room_route.py`.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
+
+### H-410 · Check a real web push on an installed iPhone app and on Android Chrome · [OWNER]
+- **Check:** the owner says that a test push reached both phones. Then delete this entry.
+- **Why:** WS-66 PN-1 is built and tested, but no test can prove delivery to a real
+  phone. iOS delivers web push only to a web app on the Home Screen, on iOS 16.4
+  or later.
+- **Do this (owner), on dev.metorite.com after the agent turns `WEB_PUSH_ENABLED`
+  on there:**
+  1. iPhone: open dev.metorite.com in Safari, tap Share, then "Add to Home Screen".
+     Open Metorite from the Home Screen icon and sign in.
+  2. Open My Profile, find Notifications, turn it on, and allow notifications.
+  3. Tap "Send a test". A notification must show on the lock screen.
+  4. Android: open dev.metorite.com in Chrome, sign in, and do steps 2 and 3.
+- **Authority:** `specs/calendar_events_reminders.md` §10.1 PN-1 and §10.2
+- **Added:** 2026-10-25 · branch `ws66-pn1-mt-d09a41c2`
 
 # DONE — deleted, not archived
 

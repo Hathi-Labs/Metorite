@@ -27,6 +27,8 @@ import { personDisplayName } from "@/lib/personName";
 import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT, REBALANCE_HR_HINT } from "@/app/projects/lib/hrHints";
 import { asOfDay, periodFree, sectionName } from "@/app/projects/lib/reportBuilder";
 import { clearNote } from "@/app/projects/lib/sectionEmpty";
+import { answerLine, waitingLists } from "@/app/projects/lib/waiting";
+import type { WaitingReport } from "@/app/projects/lib/api";
 import {
   type EmailOtpEnv,
   type ResendSender,
@@ -154,6 +156,11 @@ export interface RenderedReport {
       blocked?: { title: string; task_number: number | null }[];
       blocked_total?: number;
     };
+    /**
+     * WS-27bn RA-3. Opt-in. `waiting_body`: three lists read now, and the
+     * answer time of the period. The summary is the server's sentence.
+     */
+    waiting?: WaitingReport;
     /**
      * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
      * kind that it breaks, so the counts do not add up to `open_total`.
@@ -674,6 +681,37 @@ export function reportLayout(
     notes.push(...clearNote("pulse", pulse));
     parts.push({
       head: { lead: `${sectionName("pulse")}: ${pulse.people_total} people`, strong: true },
+      items,
+      notes,
+    });
+  }
+
+  const wait = sections.waiting;
+  if (wait) {
+    // WS-27bn RA-3. The server's summary first, then each list with its
+    // rows up to `maxRows`, then what the cut left out. No colour and no
+    // bar: a wait is not a share of anything.
+    const items: string[] = [];
+    const notes: string[] = [];
+    for (const list of waitingLists(wait, (e) => personDisplayName(null, e))) {
+      if (list.total === 0) continue;
+      items.push(`${list.heading}: ${list.total}`);
+      const shown = list.rows.slice(0, maxRows);
+      for (const r of shown) items.push(`  ${r.label} · ${r.detail}`);
+      if (list.total > shown.length && shown.length > 0) {
+        items.push(`  …and ${list.total - shown.length} more`);
+      }
+    }
+    const answer = answerLine(wait);
+    if (answer) notes.push(answer);
+    // A clear section says its line once, in the note, as the others do.
+    const clear = clearNote("waiting", wait);
+    notes.push(...clear);
+    parts.push({
+      head: {
+        lead: clear.length ? sectionName("waiting") : `${sectionName("waiting")}: ${wait.summary}`,
+        strong: true,
+      },
       items,
       notes,
     });

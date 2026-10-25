@@ -256,6 +256,13 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-63 PZ-25: the assistant profile. ASSISTANT_PROFILE_ORGS opens it for
     # an org, so a tenant that set it could open it for every org on the box.
     "ASSISTANT_PROFILE_",
+    # WS-66 PN-1: web push. VAPID_PRIVATE_KEY signs every push of the box, so
+    # a tenant that set it would hold the key of every org's devices.
+    # WEB_PUSH_ENABLED is the switch, and the `_ENABLED` suffix covers it too.
+    "VAPID_", "WEB_PUSH_",
+    # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
+    # routes, so a tenant that set it could turn them on for every org.
+    "CALENDAR_REMINDERS",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

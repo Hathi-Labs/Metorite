@@ -1,14 +1,15 @@
-// The profile shows only for the build switch AND the gateway's yes for the
-// member's organization (WS-63 PZ-25, `personalization.md` §14.2).
+// The profile shows only for the gateway's yes for the member's organization.
+// The build switch is retired (owner, 2026-10-25, `personalization.md` §14.2).
 //
-// Mutation: make `profileState` ignore `built`, and "the build switch off
-// hides it" fails. Make it keep a yes over an error, and "a fault hides it"
-// fails. Point a consumer back at `assistantProfileOn`, and the source scan
-// fails.
-import { readFileSync } from "node:fs";
+// Mutation: make `profileState` keep a yes over an error, and "a fault hides
+// it" fails. Read `NEXT_PUBLIC_ASSISTANT_PROFILE` anywhere in src, and the
+// fence fails.
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PROFILE_URL,
@@ -45,36 +46,41 @@ describe("fetchProfileEnabled", () => {
 describe("profileState", () => {
   const read = (data: boolean | undefined, loading = false, error: string | null = null) => ({ data, loading, error });
 
-  it("is on only with the build switch and a yes", () => {
-    expect(profileState(true, read(true))).toBe("on");
-  });
-  it("the build switch off hides it, also over a yes", () => {
-    expect(profileState(false, read(true))).toBe("off");
-    expect(profileState(false, read(undefined, true))).toBe("off");
+  it("is on with a yes", () => {
+    expect(profileState(read(true))).toBe("on");
   });
   it("enabled false hides it", () => {
-    expect(profileState(true, read(false))).toBe("off");
+    expect(profileState(read(false))).toBe("off");
   });
   it("a fault is error, also over an earlier yes, and error is not on", () => {
-    expect(profileState(true, read(undefined, false, "boom"))).toBe("error");
-    expect(profileState(true, read(true, false, "boom"))).toBe("error");
-  });
-  it("the build switch off wins over a fault", () => {
-    expect(profileState(false, read(undefined, false, "boom"))).toBe("off");
+    expect(profileState(read(undefined, false, "boom"))).toBe("error");
+    expect(profileState(read(true, false, "boom"))).toBe("error");
   });
   it("a read still out is pending, which is not on", () => {
-    expect(profileState(true, read(undefined, true))).toBe("pending");
+    expect(profileState(read(undefined, true))).toBe("pending");
   });
 });
 
 describe("the hook, on the server render", () => {
-  afterEach(() => vi.unstubAllEnvs());
   const Probe = () => createElement("i", null, `${useAssistantProfileState()}:${useAssistantProfileEnabled()}`);
 
-  it("is off on the server, so no frame shows the profile before the answer", () => {
-    vi.stubEnv("NEXT_PUBLIC_ASSISTANT_PROFILE", "1");
-    // The server snapshot of the build switch is false (useSyncExternalStore).
-    expect(renderToStaticMarkup(createElement(Probe))).toBe("<i>off:false</i>");
+  it("is not on on the server, so no frame shows the profile before the answer", () => {
+    expect(renderToStaticMarkup(createElement(Probe))).toMatch(/^<i>(pending|off):false<\/i>$/);
+  });
+});
+
+describe("the build switch is retired", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((n) => {
+      const p = join(dir, n);
+      return statSync(p).isDirectory() ? walk(p) : /\.(tsx?|mjs)$/.test(n) ? [p] : [];
+    });
+  it("no source under src reads NEXT_PUBLIC_ASSISTANT_PROFILE", () => {
+    const needle = ["NEXT_PUBLIC", "ASSISTANT_PROFILE"].join("_");
+    const self = fileURLToPath(import.meta.url);
+    const hits = walk(root).filter((f) => f !== self && readFileSync(f, "utf-8").includes(needle));
+    expect(hits).toEqual([]);
   });
 });
 

@@ -785,6 +785,15 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
+    # WS-66 RM-1 (D114): the member's private reminders of THIS organization.
+    # Only the owner reads a reminder, so nobody else could ever close one,
+    # and a purged member leaves none behind. The clause names the bound org
+    # beside RLS, as `member_settings` does, so the same address in another
+    # org keeps its reminders. The ledger, `reminder_events`, goes by its
+    # `ON DELETE CASCADE` key to `reminders`. A task that a promote made
+    # stays: it is a `pm_tasks` row, and a purge deletes none (D63).
+    _PersonRows("reminders", "reminders",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
     # of THIS organization, and with it the assistant profile. The row is the
     # member's own preferences, so the whole row goes. A member has one row
@@ -792,6 +801,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # of another organization stays.
     _PersonRows("member_settings", "user_settings",
                 f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-66 PN-1: the member's web push devices of THIS organization. A row
+    # left behind would keep a push going to the leaver's browser. The
+    # clause names the bound org, as the settings row does, so the devices of
+    # the same address in another organization stay.
+    _PersonRows("push_devices", "push_subscriptions",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
@@ -830,6 +845,14 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # it after 14 days. Kept whole, so the table is on one side only.
     _PersonRows("knowledge_proposals", "kb_page_proposals",
                 "lower(proposer_email) = :email"),
+    # WS-55 SW-10a (external_agent_access.md §12.6): the strands of the
+    # member's agent runs, the nudges and the recovery records of the sweep.
+    # Kept and counted, not deleted: a strand is part of the record of its
+    # run, the run stays, and a purge deletes no `pm_` row (D63,
+    # `test_the_purge_names_no_task_table_and_deletes_no_pm_row`). Kept
+    # whole, so the table is on one side only.
+    _PersonRows("agent_run_strands", "pm_agent_run_strands",
+                "lower(member_email) = :email"),
 )
 
 

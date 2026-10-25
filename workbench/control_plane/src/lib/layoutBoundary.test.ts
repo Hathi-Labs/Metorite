@@ -271,7 +271,7 @@ describe("every report panel renders inside its own boundary (WS-27bm S12, WS-27
     expect(view, "RenderedBody moved: point this scan at it").not.toBe("");
   });
 
-  it("renders the ten panels", () => {
+  it("renders the eleven panels", () => {
     expect(panels.map((m) => m[1]).sort()).toEqual([
       "CapacityPanel",
       "ConflictsPanel",
@@ -283,6 +283,7 @@ describe("every report panel renders inside its own boundary (WS-27bm S12, WS-27
       "RebalancePanel",
       "StuckPanel",
       "ThroughputPanel",
+      "WaitingPanel",
     ]);
   });
 

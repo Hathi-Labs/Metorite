@@ -195,7 +195,7 @@ describe("completeFromHome", () => {
 
   it("refuses a task the store does not hold even after a fresh load", async () => {
     const f = fakeStore({ backend: "live", items: [] });
-    await expect(completeFromHome("t9", f.store)).rejects.toThrow(/Open it in My Tasks/);
+    await expect(completeFromHome("t9", f.store)).rejects.toThrow(/Open it in My work/);
     expect(f.hydrations()).toBe(1);
     expect(f.disposed).toEqual([]);
   });

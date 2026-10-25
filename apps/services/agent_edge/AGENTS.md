@@ -39,6 +39,8 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 - SW-7 (spec §12.5), dark behind `agent_mcp_sessions_enabled` (default off, read through `agent_oauth.mcp_sessions_enabled`). While it is off, the edge mints, reads and signs no session. While it is on, `initialize` answers an `Mcp-Session-Id` that `agent_signing.mint_mcp_session` makes. It binds the connection and carries an HMAC, so the edge keeps no state. `mcp._session_of` reads it back on each later request (check 7b). An id that does not verify gets 404. The session key goes into `tools.Context.session`, and `gateway_client` signs it in as `X-Agent-Session`. `my_work` keeps the runs of this session and the runs with no key.
 
+- SW-10a (spec §12.6). Each run of the edge gains `stranded`: null, or the reason, the quiet minutes and a fixed note that `tools.STRANDED_NOTES` builds. `my_work` reads the gateway's `needs_agent` reason for group 1 (`tools._waiting_reason`), so an answer older than five minutes still comes back as `run_answered`. A gateway that sends no reason gives the state, as before.
+
 ## Local contract
 
 1. **The flag.** While `agent_access_enabled` is false, every request answers 404 and does nothing else. That covers every path and every method, `OPTIONS` and `HEAD` too. The ASGI middleware `EdgeGate` in `app.py` answers first, before the router. A wrong method then cannot leak a 405 with an `Allow` header.

@@ -14,7 +14,8 @@
  * The app, the email and the download read these lines. A second copy of a
  * line is a defect. Fence: `reportsRedesign.test.ts`.
  */
-import type { RenderedReportBody } from "./api";
+import type { RenderedReportBody, WaitingReport } from "./api";
+import { waitingIsClear } from "./waiting";
 
 type Sections = RenderedReportBody["sections"];
 
@@ -27,6 +28,7 @@ export const SECTION_CLEAR_LINES: Readonly<Record<string, string>> = {
   capacity: "Nobody holds open work here right now.",
   pulse: "No open work for anyone here right now.",
   stuck: "Nothing is stuck.",
+  waiting: "Nobody is waiting on a person.",
   hygiene: "The data looks tidy.",
   conflicts: "No conflicts. The plan lines up.",
   rebalance: "Nothing is at risk, and nobody is idle.",
@@ -78,6 +80,10 @@ export function sectionIsClear(key: string, section: unknown): boolean {
         bands.every((b) => (b?.n ?? 0) === 0)
       );
     }
+    case "waiting":
+      // WS-27bn RA-3. Clear only when no list holds a row and no question
+      // came in the period, so the answer time is never hidden.
+      return waitingIsClear(section as WaitingReport);
     case "hygiene": {
       const kinds = Object.values((s.by_kind ?? {}) as Record<string, number>);
       return kinds.every((n) => n === 0) && count(s.rows) === 0;

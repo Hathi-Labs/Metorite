@@ -242,7 +242,7 @@ export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()
   return age >= 0 && age < FRESH_RECEIPT_MS;
 }
 
-function announceChange(eventId: string): void {
+export function announceChange(eventId: string): void {
   if (announced.has(eventId)) return;
   announced.add(eventId);
   try {

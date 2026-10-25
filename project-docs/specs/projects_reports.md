@@ -48,7 +48,13 @@ behind "Filters", and Overview refreshes itself while the tab is visible.
 **RA-1 BUILT 2026-10-25, not merged** (§6.8 F, §8 RA-1). One rule in
 `analytics.py` labels each done task and each open task's live holder. The
 Throughput and Finished reads carry `actor_split`, and the Load read carries
-`holder_split`. No panel changes. RA-2 to RA-8 are not built.
+`holder_split`. No panel changes.
+
+**RA-3 BUILT 2026-10-25, not merged** (§6.8 C, §8 RA-3). The `waiting`
+section lists agent questions with no answer, agent work that waits for a
+review, and blocked handoffs. It gives the answer time too. Overview shows
+the panel by default, and hides it when the scope has no agent run. RA-2 and
+RA-4 to RA-8 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -334,7 +340,12 @@ next to each status, as `classify` already does.
 | **Today's focus** | Tasks in progress, plus tasks due today or tomorrow, plus tasks that the person scheduled today (`scheduled_start`) | The `pulse` section (R3) |
 | **Agent-finished** | A done task whose finish came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>`. `system:workflow:<id>` is not an agent. The finish is the finish the window counts. | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
 | **Agent-assisted** | A done task that an agent worked before its finish, and that a person, a workflow or GitHub finished. "Worked" is the rule of `agent_worked.AGENT_WORKED_SQL`: a run of any status, a queued run too, or an act through MCP, made before the finish. The finish is the finish the window counts. | `analytics.py` `classify_finish` and `finish_label_sql` (RA-1) |
-| **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since | RA-3, not built |
+| **Waiting on a person** | One of three things on an open task. A run in `awaiting` with an open question, which is an elicitation that no prompt answers. Agent work that waits for a review. A handoff blocker. | `analytics_waiting.py` `waiting_body` (RA-3) |
+| **Waits for a review** | An agent moved the task into a review lane, or the task has an open pull request (not a draft) and an agent worked it. No person act came after that move or that pull request. | `analytics_waiting.py` `review_since` and `reviews_sql` (RA-3) |
+| **Review lane** | A status of the `in_progress` category with a word of its name that starts with "review", with no regard to case. "In review" and "Reviewing" count, and "Preview" does not. The match knows English only, so a lane named in another language does not count. The MCP protocol tells an agent to move its task there when the pull request opens. | `analytics_waiting.py` `is_review_lane` and `review_lane_sql` (RA-3) |
+| **Person act** | A timeline row that a person made: no agent act (`is_agent_act`), and no actor that starts with `system:`, such as a workflow or GitHub. | `analytics_waiting.py` `is_person_act` (RA-3) |
+| **Handoff blocker** | An open `blocks` link where an agent holds one task and a person holds the other. "Holds" is RA-1's holder rule. | `analytics_waiting.py` `handoff_side` and `handoffs_sql` (RA-3) |
+| **Answer time** | The time from an agent's question to the prompt that answers it, for the questions of the report period. A question with no answer stays out of the median and the p90, and the section counts it. | `analytics_waiting.py` `answer_time` and `answer_time_sql` (RA-3) |
 | **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more | RA-4, not built |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
 | **Needs an owner** | An open task with no assignee and no open run | RA-2, not built. The `none` count of RA-1's `holder_split` is near it, but it reads the lease of a run. |
@@ -738,7 +749,7 @@ A figure with no known usage shows "unknown", never $0. The panel shows the shar
 |---|---|
 | **Agent-finished** | A done task whose move to done came from an agent: the activity carries `meta.via` = `mcp:…`, or the actor is `agent:<name>`. The move is the finish the window counts. |
 | **Agent-assisted** | A done task that an agent worked before its finish (a run, or an act through MCP, by the rule of `agent_worked.py`), and that a person, a workflow or GitHub finished. The finish is the finish the window counts. Changed 2026-10-25 in the RA-1 review: the PM replaced "held at least one agent run". |
-| **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since |
+| **Waiting on a person** | An open run in `awaiting` with an open elicitation, or agent work in a review lane with no human action since. Sharpened 2026-10-25 in RA-3: an open pull request on a task that an agent worked also waits for a review, and a handoff blocker waits on a person too. §5 holds the exact rule. |
 | **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task |
 | **Needs an owner** | An open task with no assignee and no open run |
@@ -2072,11 +2083,28 @@ Fences: `tests/unit/test_projects_analytics_actor.py` (hermetic) and `tests/unit
 
 **Done when:** `visual-review` passes at four widths, in light mode and at compact density, and each tile's rule is in its tooltip.
 
-### RA-3 — Waiting on people · AGENT-SAFE
+### RA-3 — Waiting on people · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** the coordination panel of §6.8 C. It lists open agent questions (oldest first), agent work waiting for review and handoff blockers. It shows the answer time at the median and p90.
 
 **Done when:** each row opens its task, a reader sees only tasks they can open, and an R8 test covers the answer time.
+
+**Built.** The report section `waiting` lives in `routes/projects/analytics_waiting.py`. It joins rules that exist, and it holds no second copy of them. §5 holds each rule.
+
+1. **Questions.** A run whose state is `awaiting` by `filters.AGENT_RUN_STATE_SQL`, on an open task of the scope. `agent_runs._OPEN_ELICITATIONS_SQL` finds its open question, as it is. The oldest question comes first.
+2. **Reviews.** The rule "Waits for a review" of §5. "Agent work" is `agent_worked.AGENT_WORKED_SQL`, and "an agent act" is `analytics.agent_act_sql`, the SQL twin of `is_agent_act`.
+3. **Handoffs.** RA-1's `holder_labels_sql` labels both tasks of an open `blocks` link. The blocking task can be in any project that the reader can see.
+4. **Answer time.** `percentile_cont` over the questions of the report period. A question with no answer stays out of both figures, and `unanswered` counts it.
+5. **§7 rule 1.** The lists read Load's open-work predicate, and the answer time reads Throughput's history predicate. Each list holds 20 rows at most, beside a total.
+6. While `agent_runs_enabled` is off, the questions and the answer time read nothing, as `agent_summary.py` does.
+7. The section refuses a subject, as `outlook` and `hygiene` do. It reads the period for the answer time, so the builder keeps the period chip.
+8. **Overview.** The section is on by default. Overview hides the panel when the scope has no agent run and nothing waits. A saved report shows one clear row in its place.
+9. **Each row opens its task.** A row is a `ControlLink` to `/projects?task=<id>`. A plain click goes to the page through `OpenTaskContext`, and the page opens the task as a deep link does.
+10. **One sentence.** The server writes the summary, and the panel, the email and the chat print it (§6.8 E5). The chat reads the section in a saved report, through `report_render` and `render_report`. A direct question to the assistant about who waits on whom is RA-8.
+
+`analytics.py` gains `activity_via_sql` and `agent_act_sql`. So the RA-1 fence still finds one read of `meta.via` in the analytics modules.
+
+Fences: `tests/unit/test_projects_report_waiting.py` (hermetic), `tests/unit/test_projects_report_waiting_r8.py` (R8), and in the client `lib/waiting.test.ts` and `components/waitingPanel.test.ts`.
 
 ### RA-4 — Agent runs · AGENT-SAFE
 
@@ -2212,7 +2240,8 @@ uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_analytics_capacity.py \
   tests/unit/test_projects_analytics_rebalance.py \
   tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py \
-  tests/unit/test_projects_analytics_actor.py tests/unit/test_projects_analytics_actor_r8.py -q -rs
+  tests/unit/test_projects_analytics_actor.py tests/unit/test_projects_analytics_actor_r8.py \
+  tests/unit/test_projects_report_waiting.py tests/unit/test_projects_report_waiting_r8.py -q -rs
 
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
@@ -2242,6 +2271,9 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_chat_rfinal.py` is R-final's file.
 - `test_projects_analytics_actor.py` and `test_projects_analytics_actor_r8.py`
   are RA-1's files.
+- `test_projects_report_waiting.py` and `test_projects_report_waiting_r8.py`
+  are RA-3's files. Its client files are `waiting.test.ts` and
+  `waitingPanel.test.ts`.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 - R5g has no server file. Its files are `overviewLive.test.ts` and

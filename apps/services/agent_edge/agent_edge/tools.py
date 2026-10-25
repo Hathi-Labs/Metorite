@@ -1823,6 +1823,13 @@ _LINE_SCHEMA = _object({
     "type": {"type": "string"}, "body": _UNTRUSTED_OR_NULL,
     "action": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
 })
+#: SW-10a (spec §12.6). Why the run came back: the sweep found it stranded.
+#: The note is the edge's own text, built from the reason and the minutes.
+_STRANDED_SCHEMA = _object({
+    "reason": {"type": "string", "enum": ["agent_quiet", "answer_unread"]},
+    "idle_minutes": _NULLABLE_INTEGER,
+    "note": {"type": "string"},
+})
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -1831,6 +1838,7 @@ _RUN_SCHEMA = _object({
     "last_activity_at": _NULLABLE_STRING, "ended_at": _NULLABLE_STRING,
     "open_question": {"anyOf": [_QUESTION_SCHEMA, {"type": "null"}]},
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
+    "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
 })
 _RUN_ACTIVITY_SCHEMA = _object({
     "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "type": {"type": "string"},
@@ -1914,6 +1922,33 @@ def _line(row: Any) -> dict[str, Any] | None:
     }
 
 
+#: SW-10a (spec §12.6). The note of a stranded run, by its reason. Fixed
+#: edge text with one number, so it holds no member text (§9.4).
+STRANDED_NOTES: Mapping[str, str] = {
+    "agent_quiet": "Stranded: no agent activity for {minutes} minutes.",
+    "answer_unread": "Stranded: a member's answer waits, unread for {minutes} minutes.",
+}
+
+
+def _stranded(raw: Any) -> dict[str, Any] | None:
+    """``stranded`` of a run (SW-10a): the reason, the quiet minutes and the
+    edge's note. ``None`` for a run that the sweep did not find stranded, and
+    for a reason that the edge does not know."""
+    if not isinstance(raw, dict):
+        return None
+    reason = raw.get("reason")
+    if not isinstance(reason, str) or reason not in STRANDED_NOTES:
+        return None
+    idle = _int_or_none(raw.get("idle_s"))
+    minutes = idle // 60 if idle is not None and idle >= 0 else None
+    return {
+        "reason": reason,
+        "idle_minutes": minutes,
+        "note": STRANDED_NOTES[reason].format(
+            minutes=minutes if minutes is not None else "many"),
+    }
+
+
 def _member_of(value: Any) -> str | dict[str, str] | None:
     """A member address by :func:`assignee`, or ``None``."""
     return assignee(value) if isinstance(value, str) else None
@@ -1938,6 +1973,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "ended_at": _str_or_none(row.get("ended_at")),
         "open_question": _question(row.get("open_elicitation")),
         "latest_line": _line(row.get("latest_ephemeral")),
+        "stranded": _stranded(row.get("stranded")),
     }
 
 
@@ -2868,6 +2904,16 @@ def _this_session(run: Mapping[str, Any], session: str | None) -> bool:
     return key is None or (session is not None and key == session)
 
 
+def _waiting_reason(run: Mapping[str, Any]) -> Any:
+    """Why a run of the ``needs_agent`` list waits for this client (SW-10a,
+    spec §12.6): the gateway's ``needs_agent`` reason. An answer older than
+    five minutes reads ``state`` ``stale``, and its reason still says
+    ``answered``, so ``my_work`` keeps offering it as ``run_answered``. A
+    gateway that sends no reason gives the old answer, ``state``."""
+    reason = run.get("needs_agent")
+    return reason if isinstance(reason, str) else run.get("state")
+
+
 def _live_holder(value: Any) -> bool:
     """True when an open run that is not stale holds the task (EA-14a)."""
     return isinstance(value, dict) and value.get("stale") is not True
@@ -2958,7 +3004,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         # that session's, until its lease ended. A run with no session key
         # (a member start, a reopen of a finished run, or a run from before
         # SW-7) waits for any session of the connection.
-        waiting = [r for r in needs if r.get("state") in WAITING_REASONS
+        waiting = [r for r in needs if _waiting_reason(r) in WAITING_REASONS
                    and (_this_session(r, ctx.session)
                         or r.get("lease_expired") is True)]
         # P1: only a run whose session went quiet. A live run of a sibling
@@ -2979,7 +3025,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     listed: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
-    for run, reason in [*((r, WAITING_REASONS[r["state"]]) for r in waiting),
+    for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
                         *((r, REASON_HELD) for r in holding)]:
         task_id = _id(run.get("task_id"))
         if task_id is None or task_id in seen:
@@ -4823,9 +4869,12 @@ LIST_AGENT_RUNS = Tool(
         " needs the full history. To find your next work, call my_work. With"
         " needs_agent true, it lists the runs that wait for an agent: a run that a"
         " member queued for an agent (state queued), a run whose question a"
-        " member answered (state answered), and a run that a member asked to"
-        " stop (state stopping). For a queued or answered run, read it with"
-        " get_agent_run and go on with the work. For a stopping run, stop the"
+        " member answered (state answered, or stale after five minutes), a run"
+        " that a member asked to stop (state stopping), and a run that went"
+        " quiet past its lease after one nudge to its member (stranded is set,"
+        " and its note says why). For a queued, answered or stranded run, read"
+        " it with get_agent_run and go on with the work, or give the task back"
+        " with release_task. For a stopping run, stop the"
         " work and call finish_agent_run with a summary of what you did. Post no"
         " activity before the finish. Filter by status or task."
         " Send nextCursor back as cursor to read the next page." + _UNTRUSTED_NOTE

@@ -96,11 +96,32 @@ export function setSession(res: NextResponse, s: SwitcherState, raw: string, exp
 
 /** A slot index from a JSON body, or null. */
 export async function slotFromBody(req: NextRequest): Promise<number | null> {
+  return slotOf(await jsonBody(req));
+}
+
+/** The JSON body of a request, or `{}` when it has none or it is not JSON. */
+export async function jsonBody(req: NextRequest): Promise<Record<string, unknown>> {
   try {
-    const body = (await req.json()) as { slot?: unknown };
-    const n = body?.slot;
-    return typeof n === "number" && Number.isInteger(n) && n >= 0 && n < SLOT_COUNT ? n : null;
+    const body = (await req.json()) as unknown;
+    return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   } catch {
-    return null;
+    return {};
   }
+}
+
+/** The slot index of a parsed body, or null. */
+export function slotOf(body: Record<string, unknown>): number | null {
+  const n = body.slot;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 && n < SLOT_COUNT ? n : null;
+}
+
+/**
+ * The push endpoint that a `remove` names (WS-66 PN-1), or null. Only an
+ * `https:` URL of at most 2048 characters, the gateway's own limit. The
+ * gateway checks it again, and it deletes the slot account's row only.
+ */
+export function pushEndpointOf(body: Record<string, unknown>): string | null {
+  const e = body.push_endpoint;
+  if (typeof e !== "string" || e.length > 2048 || !e.startsWith("https://")) return null;
+  return e;
 }

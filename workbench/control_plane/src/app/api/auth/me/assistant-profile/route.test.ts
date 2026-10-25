@@ -194,4 +194,34 @@ describe("/api/auth/me/assistant-profile", () => {
     expect((await exp.GET(req("/export", "GET"))).status).toBe(401);
     expect(asked).toHaveLength(2);
   });
+
+  // PZ-27. Mutation: let the area regex pass "..", and the bad-area case fails.
+  it("POST and DELETE /interview forward with no body; DELETE /interview/[area] names the area", async () => {
+    stub(() => new Response(JSON.stringify({ started_at: "2026-10-25T00:00:00Z" }), { status: 200 }));
+    const iv = await import("./interview/route");
+    const post = await iv.POST(req("/interview", "POST"));
+    expect(post.status).toBe(200);
+    expect(asked[0].url).toBe(`${GW}/interview`);
+    expect(asked[0].init?.method).toBe("POST");
+    stub(() => new Response(null, { status: 204 }));
+    expect((await iv.DELETE(req("/interview", "DELETE"))).status).toBe(204);
+    expect(asked[0].url).toBe(`${GW}/interview`);
+    expect(asked[0].init?.method).toBe("DELETE");
+    const ar = await import("./interview/[area]/route");
+    const actx = (area: string) => ({ params: Promise.resolve({ area }) });
+    expect((await ar.DELETE(req("/interview/role", "DELETE"), actx("good_day"))).status).toBe(204);
+    expect(asked[1].url).toBe(`${GW}/interview/good_day`);
+    expect(asked[1].init?.method).toBe("DELETE");
+  });
+
+  it.each(["..", ".", "Role", "a b", "a/b", "role1", "", "x".repeat(33)])(
+    "an interview area of the wrong shape (%j) is a 404 and reaches no gateway",
+    async (bad) => {
+      stub(() => new Response(null, { status: 204 }));
+      const ar = await import("./interview/[area]/route");
+      const res = await ar.DELETE(req("/interview/x", "DELETE"), { params: Promise.resolve({ area: bad }) });
+      expect(res.status).toBe(404);
+      expect(asked).toEqual([]);
+    },
+  );
 });

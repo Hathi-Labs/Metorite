@@ -336,6 +336,9 @@ UPDATE pm_activities SET organization_id = (SELECT id FROM organization WHERE sl
 UPDATE pm_agent_run_activities SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE pm_agent_run_strands SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE pm_agent_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -601,4 +604,13 @@ UPDATE kb_sources SET organization_id = (SELECT id FROM organization WHERE slug 
  WHERE organization_id IS NULL;
 
 UPDATE kb_source_nodes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE push_subscriptions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE reminders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE reminder_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;

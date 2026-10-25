@@ -1287,6 +1287,18 @@ ALTER TABLE pm_agent_run_activities ADD CONSTRAINT pm_agent_run_activities_org_f
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_agent_run_activities_org_idx ON pm_agent_run_activities (organization_id);
 
+-- pm_agent_run_strands
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_run_strands WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_run_strands still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_run_strands ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_run_strands ADD CONSTRAINT pm_agent_run_strands_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_run_strands_org_idx ON pm_agent_run_strands (organization_id);
+
 -- pm_agent_runs
 DO $$
 BEGIN
@@ -2353,3 +2365,39 @@ ALTER TABLE kb_source_nodes ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_source_nodes ADD CONSTRAINT kb_source_nodes_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_source_nodes_org_idx ON kb_source_nodes (organization_id);
+
+-- push_subscriptions
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM push_subscriptions WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: push_subscriptions still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE push_subscriptions ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE push_subscriptions ADD CONSTRAINT push_subscriptions_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS push_subscriptions_org_idx ON push_subscriptions (organization_id);
+
+-- reminders
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reminders WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reminders still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reminders ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reminders ADD CONSTRAINT reminders_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reminders_org_idx ON reminders (organization_id);
+
+-- reminder_events
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reminder_events WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reminder_events still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reminder_events ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reminder_events ADD CONSTRAINT reminder_events_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reminder_events_org_idx ON reminder_events (organization_id);

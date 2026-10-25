@@ -768,6 +768,13 @@ CREATE POLICY pm_agent_run_activities_tenant_isolation ON pm_agent_run_activitie
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_agent_run_strands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_run_strands FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands;
+CREATE POLICY pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_agent_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_agent_runs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_agent_runs_tenant_isolation ON pm_agent_runs;
@@ -1388,5 +1395,26 @@ ALTER TABLE kb_source_nodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_source_nodes FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS kb_source_nodes_tenant_isolation ON kb_source_nodes;
 CREATE POLICY kb_source_nodes_tenant_isolation ON kb_source_nodes
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS push_subscriptions_tenant_isolation ON push_subscriptions;
+CREATE POLICY push_subscriptions_tenant_isolation ON push_subscriptions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reminders FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reminders_tenant_isolation ON reminders;
+CREATE POLICY reminders_tenant_isolation ON reminders
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reminder_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reminder_events FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reminder_events_tenant_isolation ON reminder_events;
+CREATE POLICY reminder_events_tenant_isolation ON reminder_events
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
