@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AssistantPaneView, NO_HANDLERS, type AssistantPaneViewProps } from "./AssistantPane";
 import { CAPS, EMPTY_PROFILE, type Profile } from "./lib/profile";
 
@@ -16,6 +16,9 @@ const base: AssistantPaneViewProps = {
   confirmForget: false,
   onCancelForget: () => {},
   onConfirmForget: () => {},
+  confirmResetInterview: false,
+  onCancelResetInterview: () => {},
+  onConfirmResetInterview: () => {},
 };
 const draw = (over: Partial<AssistantPaneViewProps>) =>
   renderToStaticMarkup(createElement(AssistantPaneView, { ...base, ...over }));
@@ -131,5 +134,74 @@ describe("source scan", () => {
       expect(src).not.toMatch(new RegExp("<sel" + "ect\\b"));
       expect(src).not.toMatch(/role="switch"/);
     }
+  });
+});
+
+// ── PZ-27: the interview list, the button and the resets ──────────────────
+
+const openAssistant = vi.fn();
+vi.mock("@/lib/shell/assistant", () => ({ openAssistant: (o: unknown) => openAssistant(o) }));
+
+describe("the interview section (PZ-27)", () => {
+  const withInterview: Profile = {
+    ...EMPTY_PROFILE,
+    interview: {
+      started_at: "2026-10-25T08:00:00Z",
+      areas: {
+        role: { state: "answered" },
+        goals: { state: "asked" },
+        good_day: { state: "skipped" },
+        decisions: { state: "never" },
+      },
+    },
+    facts: [{ id: "f1", text: "I lead sales", kind: "work", area: "role" }],
+  };
+
+  it("lists every area with its state, and open for an area with no entry", () => {
+    const html = draw({ profile: withInterview });
+    for (const label of ["Your role", "Your goals", "A good day", "How you decide", "People you work with"]) {
+      expect(html).toContain(label);
+    }
+    for (const word of ["Answered", "Asked", "Skipped", "Never ask", "Open"]) expect(html).toContain(word);
+    expect(html).toContain("bg-success/10");
+    expect(html).toContain("bg-warning/10");
+  });
+
+  it("draws Reset only for an area that has a state", () => {
+    expect(draw({ profile: withInterview }).match(/aria-label="Reset /g)).toHaveLength(4);
+    expect(draw({}).match(/aria-label="Reset /g)).toBeNull();
+  });
+
+  it("offers the Get to know me button, and says that a reset keeps the facts", () => {
+    const html = draw({});
+    expect(html).toContain("Get to know me");
+    expect(html).toContain("Reset the interview");
+    expect(html).toContain("Resetting keeps the facts");
+  });
+
+  it("a fact that answers an area shows the area as a Badge", () => {
+    const html = draw({ profile: withInterview });
+    expect(html).toMatch(/text-\[9px\][^>]*>Your role<\/span>/);
+  });
+
+  // Mutation: send `draft` instead of `text`, and this goes red.
+  it("the button sends the request at once, in a fresh chat", async () => {
+    const { GET_TO_KNOW_ME_MESSAGE, startGetToKnowMe } = await import("@/lib/shell/interviewMessage");
+    startGetToKnowMe();
+    expect(openAssistant).toHaveBeenCalledWith({ fresh: true, text: GET_TO_KNOW_ME_MESSAGE });
+    expect(GET_TO_KNOW_ME_MESSAGE).toBe("Let's do the Get to know me interview.");
+    expect(GET_TO_KNOW_ME_MESSAGE).not.toMatch(/profile_|_/);
+  });
+
+  const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+  it("wires the button to startGetToKnowMe, and the dialog to Reset the interview", () => {
+    expect(src).toMatch(/onGetToKnow:\s*startGetToKnowMe/);
+    expect(src).toMatch(/<ConfirmDialog\s+open=\{v\.confirmResetInterview\}/);
+    expect(src).toMatch(/onResetInterview:\s*\(\) => setConfirmResetInterview\(true\)/);
+  });
+  it("resets one area with no confirm", () => {
+    const m = /onResetArea: \(id\) =>[\s\S]*?\}\),\n/.exec(src);
+    expect(m?.[0]).toContain("resetArea(id)");
+    expect(m?.[0]).not.toMatch(/Confirm/);
   });
 });

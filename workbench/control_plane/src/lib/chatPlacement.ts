@@ -315,6 +315,7 @@ const WRITE: readonly string[] = [
   "profile_set",
   "profile_alias",
   "profile_undo",
+  "profile_interview",
 ];
 
 function build(): Readonly<Record<string, Placement>> {
