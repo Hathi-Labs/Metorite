@@ -265,6 +265,20 @@ def test_the_trend_says_which_way_and_names_no_target(rate, before, want) -> Non
     assert ag.merge_trend(rate, before) == want
 
 
+def test_a_close_time_is_a_github_time_or_nothing() -> None:
+    """RA-2 review P1. The row's own `updated_at` moves on each TR-1 read,
+    so it never dates a close. A merge prefers `merged_at`."""
+    merged, updated = _NOW - timedelta(days=80), _NOW - timedelta(days=1)
+    assert ag.pr_closed_at("merged", merged, updated) == merged
+    assert ag.pr_closed_at("merged", None, updated) == updated
+    assert ag.pr_closed_at("closed", None, updated) == updated
+    # The token path of TR-1 writes no GitHub time: no close time at all.
+    assert ag.pr_closed_at("merged", None, None) is None
+    assert ag.pr_closed_at("closed", None, None) is None
+    assert "rf.updated_at" not in ag._PR_CLOSED_AT
+    assert "coalesce(rf.merged_at, rf.pr_updated_at)" in ag._PR_CLOSED_AT
+
+
 def test_the_merge_query_counts_agent_work_before_the_close() -> None:
     sql = ag.merge_sql("PAST")
     assert "rf.state IN ('merged', 'closed')" in sql
@@ -304,7 +318,54 @@ def test_the_run_time_reads_the_window_and_the_runs_before_the_finish() -> None:
     sql = ag.run_time_sql("SCOPE")
     assert ana.cycle_cte_sql("SCOPE") in sql
     assert "r.created_at <= c.finished_at" in sql
-    assert "r.ended_at - r.started_at" in sql
+    # The end is the agent's last act, never the stamp of a takeover.
+    assert ag._RUN_END in sql
+    assert ag._RUN_END == "least(r.ended_at, coalesce(r.last_agent_activity_at, r.started_at))"
+    # The waits reuse the answer time's pairing of a question and its answer.
+    assert wt.answered_at_sql("e") in sql
+    assert wt.answered_at_sql("e") in wt.answer_time_sql("PAST")
+
+
+def _t(minutes: int) -> datetime:
+    """A time, as minutes after the start of a run at `_NOW`."""
+    return _NOW + timedelta(minutes=minutes)
+
+
+def test_a_run_ends_at_the_agent_s_last_act_and_not_at_its_takeover() -> None:
+    """RA-2 review P2: abandoned three days after ten minutes of work."""
+    hours = ag.run_hours(_t(0), _t(3 * 24 * 60), _t(10))
+    assert hours == pytest.approx(10 / 60)
+    # No agent act at all: no time.
+    assert ag.run_hours(_t(0), _t(60), None) == 0.0
+    # A run that never started, or never ended, has no time.
+    assert ag.run_hours(None, _t(60), _t(30)) is None
+    assert ag.run_hours(_t(0), None, _t(30)) is None
+
+
+def test_a_wait_on_a_person_comes_out_of_the_agent_time() -> None:
+    """§6.8 D item 3. From the question to its answer, or to the agent's next
+    act when that comes first. An unanswered question waits until that act
+    or the end."""
+    answered = (_t(20), _t(60), _t(65))
+    assert ag.run_hours(_t(0), _t(120), _t(120), [answered]) == pytest.approx(80 / 60)
+    # The agent went on before the answer: the wait ends at its next act.
+    early = (_t(20), _t(60), _t(30))
+    assert ag.run_hours(_t(0), _t(120), _t(120), [early]) == pytest.approx(110 / 60)
+    # No answer and no next act: it waits until the end.
+    last = (_t(90), None, None)
+    assert ag.run_hours(_t(0), _t(120), _t(120), [last]) == pytest.approx(90 / 60)
+
+
+def test_two_questions_never_take_one_second_out_two_times() -> None:
+    """Q2 is an agent act, so the wait of Q1 ends at Q2 at the latest."""
+    q1 = (_t(10), _t(50), _t(20))
+    q2 = (_t(20), _t(40), _t(45))
+    assert ag.run_hours(_t(0), _t(60), _t(60), [q1, q2]) == pytest.approx((60 - 10 - 20) / 60)
+
+
+def test_a_question_outside_the_run_takes_nothing_out() -> None:
+    late = (_t(200), None, None)
+    assert ag.run_hours(_t(0), _t(60), _t(60), [late]) == pytest.approx(1.0)
 
 
 # ── The render ───────────────────────────────────────────────────────────────

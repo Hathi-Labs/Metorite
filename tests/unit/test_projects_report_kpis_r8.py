@@ -23,10 +23,13 @@ organizations:
 * **K2** ``kpis.merge``: merged over merged and closed, on pull requests of
   tasks that an agent worked before the close, in 14 days and in the 14
   days before. A draft, an open one, one with no agent work and one with
-  agent work after the close do not count.
-* **K3** ``kpis.time`` and ``kpis.cost``: the median agent run time of each
-  finished task, start to end, from runs before the finish. Cost is unknown,
-  and its share is zero.
+  agent work after the close do not count. A pull request with no GitHub
+  time (the token path of TR-1) does not count, and a merge reads
+  ``merged_at`` before its last update (RA-2 review P1).
+* **K3** ``kpis.time`` and ``kpis.cost``: the median agent time of each
+  finished task, from runs before the finish. Cost is unknown, and its share
+  is zero. **K3b**: a run ends at the agent's last act, not at its takeover,
+  and each wait on a person comes out (RA-2 review P2, §6.8 D item 3).
 * **K4** ``waiting.waiting_total`` and ``waiting.oldest_hours``.
 * **V1** §7 rule 1 and §7.1 rule 3: a member who sees one task reads that
   task only, and the member row of another person is hidden and counted.
@@ -356,6 +359,18 @@ class TestMergeRate:
         _run(w, after, "completed", created=0, started=0, ended=0)
         ancient = worked(60 * day)
         b.ref(w.p, w.p.org_a, ancient, 8, "closed", updated="now() - interval '40 days'")
+        # RA-2 review P1. The token path of TR-1 writes `state` and moves the
+        # row's `updated_at` on each read, with no GitHub time. A merge of 80
+        # days ago must not read as a merge of today.
+        tr1_merged = worked(90 * day)
+        b.ref(w.p, w.p.org_a, tr1_merged, 9, "merged", updated="NULL")
+        tr1_closed = worked(90 * day)
+        b.ref(w.p, w.p.org_a, tr1_closed, 10, "closed", updated="NULL")
+        # The App path: a merge of 80 days ago that a comment updated
+        # yesterday. The merge time decides, not the last update.
+        commented = worked(90 * day)
+        b.ref(w.p, w.p.org_a, commented, 11, "merged",
+              merged="now() - interval '80 days'", updated="now() - interval '1 day'")
 
         merge = (await _preview(w, w.a))["kpis"]["merge"]
         assert (merge["merged"], merge["closed"], merge["rate"]) == (1, 1, 0.5)
@@ -392,10 +407,62 @@ class TestRunTimeAndCost:
         assert (time["finished"], time["run_tasks"]) == (5, 2)
         assert time["median_hours"] == pytest.approx(1.75, abs=0.02)
         assert time["total_hours"] == pytest.approx(3.5, abs=0.02)
-        assert time["basis"] == "run_start_to_end"
+        assert time["basis"] == "agent_time_less_waits"
         cost = kpis["cost"]
         assert cost["per_task"] is None and cost["known_tasks"] == 0
         assert cost["finished"] == 5 and cost["share"] == 0.0
+
+
+def _run_act(
+    w: Any, rid: str, tid: str, kind: str, *, minutes_ago: int, reply_to: str | None = None,
+) -> str:
+    """One run activity at a chosen time. A prompt may answer a question."""
+    aid = str(uuid.uuid4())
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_agent_run_activities (id, organization_id, run_id, task_id, "
+            "type, content, actor, actor_via, in_reply_to, created_at) VALUES "
+            "(CAST(:id AS uuid), CAST(:o AS uuid), CAST(:r AS uuid), CAST(:t AS uuid), "
+            ":k, CAST(:c AS jsonb), :e, :via, CAST(:reply AS uuid), "
+            "now() - make_interval(mins => :ago))"),
+            {"id": aid, "o": w.p.org_a, "r": rid, "t": tid, "k": kind,
+             "c": json.dumps({"body": kind}), "e": A_EMAIL,
+             "via": None if kind == "prompt" else b.VIA, "reply": reply_to,
+             "ago": minutes_ago})
+    return aid
+
+
+class TestAgentTime:
+    async def test_k3b_the_agent_time_ends_at_its_last_act_less_the_waits(self, w):
+        """RA-2 review P2 and §6.8 D item 3, on one finished task each."""
+        # Abandoned three days after ten minutes of work: about ten minutes.
+        abandoned = _task(w, "done")
+        three_days = 3 * 24 * 60
+        _run(w, abandoned, "abandoned", created=three_days + 10, started=three_days + 10,
+             ended=0, last_activity=0, last_agent=three_days)
+        # A question at -100 that its member answered at -60, and the agent
+        # went on at -55: the 40 minutes of the wait come out. 120 - 40 = 80.
+        answered = _task(w, "done")
+        rid = _run(w, answered, "completed", created=120, started=120, ended=0,
+                   last_activity=0, last_agent=0)
+        q = _run_act(w, rid, answered, "elicitation", minutes_ago=100)
+        _run_act(w, rid, answered, "prompt", minutes_ago=60, reply_to=q)
+        _run_act(w, rid, answered, "thought", minutes_ago=55)
+        # A question at -30 with no answer, and the agent went on at -20:
+        # the wait ends at that act. 120 - 10 = 110.
+        unanswered = _task(w, "done")
+        rid2 = _run(w, unanswered, "completed", created=120, started=120, ended=0,
+                    last_activity=0, last_agent=0)
+        _run_act(w, rid2, unanswered, "elicitation", minutes_ago=30)
+        _run_act(w, rid2, unanswered, "thought", minutes_ago=20)
+        for tid in (abandoned, answered, unanswered):
+            _move(w, tid, PERSON, minutes_ago=0)
+
+        time = (await _preview(w, w.a))["kpis"]["time"]
+        assert (time["finished"], time["run_tasks"]) == (3, 3)
+        assert time["median_hours"] == pytest.approx(80 / 60, abs=0.02)
+        assert time["total_hours"] == pytest.approx((10 + 80 + 110) / 60, abs=0.02)
+        assert time["basis"] == "agent_time_less_waits"
 
 
 # ── K4 ───────────────────────────────────────────────────────────────────────

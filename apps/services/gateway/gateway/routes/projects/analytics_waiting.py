@@ -463,6 +463,21 @@ def handoffs_sql(blocked_where: str, blocking_where: str) -> str:
     )
 
 
+def answered_at_sql(question: str) -> str:
+    """When the question ``question`` (a `pm_agent_run_activities` alias of
+    an ``elicitation``) got its answer, or NULL for no answer.
+
+    The answer is the first prompt whose ``in_reply_to`` names the question.
+    The server sets that link, and never takes it from input (EA12-7).
+    :func:`answer_time_sql` reads it, and so does WS-27bn RA-2's run time,
+    which takes each wait on a person out of the agent's time.
+    """
+    return (
+        "(SELECT min(p.created_at) FROM pm_agent_run_activities p"
+        f"  WHERE p.in_reply_to = {question}.id AND p.type = 'prompt')"
+    )
+
+
 def answer_time_sql(past_where: str, *, skip_current_week: bool = False) -> str:
     """The SQL twin of :func:`answer_time`, over the questions asked in the
     report window on the tasks of ``past_where``.
@@ -474,10 +489,7 @@ def answer_time_sql(past_where: str, *, skip_current_week: bool = False) -> str:
     ``:weeks``, so the period is the one that Throughput reads.
     """
     start, end = _window(skip_current_week)
-    answered = (
-        "(SELECT min(p.created_at) FROM pm_agent_run_activities p"
-        "  WHERE p.in_reply_to = e.id AND p.type = 'prompt')"
-    )
+    answered = answered_at_sql("e")
     return (
         f"SELECT count(*) AS asked, count(q.answered_at) AS answered,"
         f"       percentile_cont(0.5) WITHIN GROUP (ORDER BY q.hours)"

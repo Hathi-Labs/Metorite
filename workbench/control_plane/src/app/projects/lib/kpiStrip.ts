@@ -55,9 +55,9 @@ export const TILE_RULES = {
     `Agent runs in progress now, on open tasks. A run is silent when its agent sent no activity for ${minutes} minutes or more. Failed today counts the runs that failed since midnight, in UTC.`,
   runsOff: "Agent runs are off for this organization, so no run is counted.",
   merge: (days: number) =>
-    `Of the pull requests on tasks that an agent worked, merged or closed in the last ${days} days: the part that merged. A pull request closed with no merge counts against it. An open or draft one does not count yet. The trend compares the ${days} days before.`,
+    `Of the pull requests on tasks that an agent worked, merged or closed in the last ${days} days: the part that merged. A pull request closed with no merge counts against it, on the date of its last update on GitHub. An open or draft one does not count yet, and neither does one with no date from GitHub. The trend compares the ${days} days before.`,
   cost:
-    "No cost source is on yet, because usage capture (SW-20) is not built. Unknown is not zero. Agent time is the median run time of each finished task, from the start of each run to its end. It includes the time a question waited for an answer. It is time, measured, and it is not money.",
+    "No cost source is on yet, because usage capture (SW-20) is not built. Unknown is not zero. Agent time is the median time that agents worked on each finished task: from the start of each run to the last act of its agent, less each wait for an answer from a person. It is time, measured, and it is not money.",
 } as const;
 
 /** A whole percent of a share from 0 to 1. Words for the tile only. */
@@ -190,7 +190,9 @@ function costTile(kpis: KpisReport): KpiTile {
 
 /**
  * The six tiles of the Overview, in the order of §6.8 B. A tile whose
- * section is not in the body is left out, as `reportTiles` rules. With no
+ * section is not in the body is left out, as `reportTiles` rules. So a
+ * subject hides "Waiting on a person": `waiting` refuses a subject
+ * (`NO_SUBJECT_SECTIONS`), and `sectionsFor` leaves it out of the config. With no
  * `kpis` block the strip is empty, and the caller draws the report tiles.
  */
 export function overviewTiles(body: Body): KpiTile[] {

@@ -22,6 +22,7 @@ import {
   overviewTiles,
   whoDidTheWorkShown,
 } from "./kpiStrip";
+import { overviewState, sectionsFor } from "./reportBuilder";
 import { whoDidTheWorkPanelData } from "./reportPanels";
 
 const WEEK: ActorWeek = {
@@ -189,7 +190,32 @@ describe("the six tiles", () => {
       "0% of finished tasks have cost data",
       "Agent time 2 hours a task (time, measured)",
     ]);
-    expect(t.title).toMatch(/time a question waited/);
+    expect(t.title).toMatch(/less each wait for an answer from a person/);
+  });
+
+  it("hides the waiting tile for a subject, because `waiting` refuses one", () => {
+    // RA-2 review: `waiting_body` takes no subject, so a count for the whole
+    // scope beside the subject's other tiles would mislead. The config drops
+    // the section, and the tile goes with it.
+    const sections = sectionsFor({
+      ...overviewState(),
+      subject: { kind: "person", email: "ana@x.test" },
+    });
+    expect(sections).not.toContain("waiting");
+    const b = body();
+    delete b.sections.waiting;
+    expect(overviewTiles(b).map((t) => t.key)).not.toContain("waiting");
+  });
+
+  it("dates a merge rate by GitHub, and says so", () => {
+    expect(TILE_RULES.merge(14)).toMatch(/last update on GitHub/);
+    expect(TILE_RULES.merge(14)).toMatch(/no date from GitHub/);
+  });
+
+  it("says the agent time leaves out the waits for a person", () => {
+    expect(TILE_RULES.cost).toMatch(/last act of its agent/);
+    expect(TILE_RULES.cost).toMatch(/less each wait for an answer from a person/);
+    expect(TILE_RULES.cost).not.toMatch(/includes the time a question waited/);
   });
 
   it("leaves out a tile whose section the reader turned off", () => {

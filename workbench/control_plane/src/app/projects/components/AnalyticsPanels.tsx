@@ -37,6 +37,7 @@ import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
 import { PersonName } from "@/components/PersonName";
 import Button from "@/components/ui/Button";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { personDisplayName } from "@/lib/personName";
 
 import {
@@ -355,6 +356,7 @@ export function Stat({
   tone,
   title,
   detail,
+  help,
   className = "",
 }: {
   label: string;
@@ -370,6 +372,11 @@ export function Stat({
    * the tile gives its rule.
    */
   detail?: readonly string[];
+  /**
+   * WS-27bn RA-2. The tile's rule behind an `InfoTip` beside the label, so a
+   * keyboard and a touch reach it too. A `title` reaches a mouse only.
+   */
+  help?: string;
   className?: string;
 }) {
   const known =
@@ -377,7 +384,16 @@ export function Stat({
     (typeof value === "number" && Number.isFinite(value));
   return (
     <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      {help ? (
+        <div className="flex items-start justify-between gap-1">
+          <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+          <InfoTip label={`How ${label} is counted`} title={label}>
+            {help}
+          </InfoTip>
+        </div>
+      ) : (
+        <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      )}
       <p
         className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
         title={known ? title : `${label} did not come back from the server`}

@@ -511,6 +511,7 @@ export function RenderedBody({
               detail={t.detail}
               tone={t.tone ? tone[t.tone] : undefined}
               title={t.title}
+              help={t.title}
             />
           ))}
         </div>

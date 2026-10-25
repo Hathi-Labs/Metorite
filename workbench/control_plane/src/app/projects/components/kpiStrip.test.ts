@@ -155,6 +155,22 @@ describe("the KPI strip in the live Overview", () => {
     expect(out).not.toContain(">Overdue<");
   });
 
+  it("puts each tile's rule behind a button that a keyboard and a touch reach", () => {
+    const out = html(createElement(RenderedBody, { body: preview("portfolio"), layout: "grid" }));
+    for (const label of [
+      "Finished this week",
+      "Median cycle time",
+      "Agents working now",
+      "Agent PR merge rate, 14 days",
+      "Cost per finished task",
+    ]) {
+      expect(out).toContain(`aria-label="How ${label} is counted"`);
+    }
+    // A saved report keeps its plain tiles, with no help button.
+    const saved = html(createElement(RenderedBody, { body: preview("portfolio"), layout: "column" }));
+    expect(saved).not.toContain("is counted");
+  });
+
   it("is absent from a saved report, which keeps its four tiles", () => {
     const out = html(createElement(RenderedBody, { body: preview("portfolio"), layout: "column" }));
     expect(out).not.toContain('aria-label="Key figures"');

@@ -829,6 +829,7 @@ export interface KpisReport {
     run_tasks: number;
     median_hours: number | null;
     total_hours: number | null;
+    /** `agent_time_less_waits`: start to the agent's last act, less the waits. */
     basis: string;
   };
   cost: {

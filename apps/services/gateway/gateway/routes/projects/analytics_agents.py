@@ -65,6 +65,7 @@ from gateway.routes.projects.analytics_waiting import (
     _member_name,
     age_words,
     agent_of,
+    answered_at_sql,
     percentile_cont,
 )
 from gateway.routes.projects.filters import AGENT_RUN_STATE_SQL, agent_runs_enabled
@@ -147,10 +148,33 @@ def silent_run_sql(alias: str = "r") -> str:
 #: window before it.
 MERGE_WINDOW_DAYS = 14
 
-#: When a pull request merged or closed. ``merged_at`` comes from GitHub on a
-#: merge. A close with no merge carries GitHub's ``updated_at`` of that close,
-#: and the row's own ``updated_at`` is the last fallback.
-_PR_CLOSED_AT = "coalesce(rf.merged_at, rf.pr_updated_at, rf.updated_at)"
+#: When a pull request merged or closed, or NULL when nobody knows.
+#:
+#: Only the GitHub App path (`github_sync.py`) writes the two times that
+#: GitHub gives. A merge has ``merged_at``. A close with no merge has no
+#: close time in ``pm_task_refs``, so it reads ``pr_updated_at``, the time
+#: of the last update of the pull request. That is the close, unless somebody
+#: commented on the closed pull request later. The tile says so.
+#:
+#: ⚠️ **Never the row's own ``updated_at``** (RA-2 review, P1). The token path
+#: of TR-1 (`refs.py`) writes ``state`` and ``updated_at = now()`` on each read
+#: of the task, and no GitHub time. So a pull request merged 80 days ago read
+#: as merged today once somebody opened its task. A pull request with no
+#: known close time is left out of both windows.
+_PR_CLOSED_AT = (
+    "CASE WHEN rf.state = 'merged' THEN coalesce(rf.merged_at, rf.pr_updated_at)"
+    " ELSE rf.pr_updated_at END"
+)
+
+
+def pr_closed_at(
+    state: str | None, merged_at: datetime | None, pr_updated_at: datetime | None,
+) -> datetime | None:
+    """The Python twin of :data:`_PR_CLOSED_AT`. None when no GitHub time
+    says when the pull request closed."""
+    if state == "merged":
+        return merged_at or pr_updated_at
+    return pr_updated_at
 
 
 def merge_rate(merged: int, closed: int) -> float | None:
@@ -547,15 +571,76 @@ def merge_sql(past_where: str) -> str:
     )
 
 
-def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
-    """The agent run time of each task done in the window, start to end.
+#: What the run time measures. Said in the payload, so no client calls it
+#: start to end, and none calls it money.
+RUN_TIME_BASIS = "agent_time_less_waits"
 
-    A run counts when it started, ended, and was created at or before the
-    finish that the window counts. ⚠️ **Start to end, with the waits in it.**
-    The time a question waited for its member is not taken out. The tile
-    says so. ``finished`` counts every done task of the window, and
-    ``run_tasks`` the ones with a measured run.
+#: The end of a run for its agent time: the agent's last act, never later
+#: than the end that the server stamped (RA-2 review, P2).
+#:
+#: ⚠️ ``ended_at`` alone over-counts. A takeover (``abandoned``), a release
+#: and an SW-10a server close stamp ``ended_at`` at the time of that move,
+#: which can be days after the agent went quiet. A run with no agent act
+#: ends at its start, so it adds nothing. ``least`` skips a NULL.
+_RUN_END = "least(r.ended_at, coalesce(r.last_agent_activity_at, r.started_at))"
+
+#: The next act of the agent after the question ``e`` in its run: a row that
+#: is not a member's prompt and not a line that the server wrote.
+_NEXT_AGENT_ACT = (
+    "(SELECT min(n.created_at) FROM pm_agent_run_activities n"
+    " WHERE n.run_id = e.run_id AND n.seq > e.seq AND n.type <> 'prompt'"
+    " AND coalesce(n.content->>'system', '') <> 'true')"
+)
+
+
+def run_hours(
+    started: datetime | None,
+    ended: datetime | None,
+    last_agent: datetime | None,
+    questions: Iterable[tuple[datetime, datetime | None, datetime | None]] = (),
+) -> float | None:
+    """The agent time of one run, in hours, or None when it has none.
+
+    The run lasts from its start to the agent's last act, and never past
+    ``ended``. Each question takes out its wait on a person: from the
+    question to its answer, or to the agent's next act when that comes
+    first, and never past the end. A question with no answer waits until
+    that next act or the end. ``questions`` holds ``(asked, answered,
+    next_agent_act)`` for each question of the run. The SQL twin is
+    :func:`run_time_sql`.
+
+    ⚠️ **The waits never overlap.** A wait ends at or before the agent's next
+    act, and the next question is an agent act. So no second for one wait
+    is taken out two times.
     """
+    if started is None or ended is None:
+        return None
+    end = min(ended, last_agent or started)
+    if end < started:
+        return None
+    total = (end - started).total_seconds()
+    for asked, answered, next_act in questions:
+        if not (started <= asked < end):
+            continue
+        stop = min(t for t in (answered, next_act, end) if t is not None)
+        total -= max(0.0, (stop - asked).total_seconds())
+    return max(0.0, total) / 3600.0
+
+
+def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
+    """The agent time of each task done in the window (§6.8 D item 3).
+
+    The SQL twin of :func:`run_hours`, summed over the runs of each task. A
+    run counts when it started, ended, and was made at or before the finish
+    that the window counts. Each wait on a person comes out:
+    `analytics_waiting.answered_at_sql` pairs a question with its answer, as
+    the answer time does. ``finished`` counts every done task of the
+    window, and ``run_tasks`` the ones with a measured run.
+    """
+    wait_end = (
+        f"least(coalesce({answered_at_sql('e')}, re.run_end),"
+        f" coalesce({_NEXT_AGENT_ACT}, re.run_end), re.run_end)"
+    )
     return (
         f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
         f" SELECT count(*) AS finished, count(x.hours) AS run_tasks,"
@@ -563,12 +648,20 @@ def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
         f"        sum(x.hours) AS total_hours"
         f"   FROM cyc c"
         f"   LEFT JOIN LATERAL ("
-        f"     SELECT sum(extract(epoch FROM (r.ended_at - r.started_at))) / 3600.0"
-        f"              AS hours"
+        f"     SELECT sum(greatest(0, extract(epoch FROM (re.run_end - r.started_at))"
+        f"              - coalesce(w.wait_s, 0))) / 3600.0 AS hours"
         f"       FROM pm_agent_runs r"
+        f"      CROSS JOIN LATERAL (SELECT {_RUN_END} AS run_end) re"
+        f"       LEFT JOIN LATERAL ("
+        f"         SELECT sum(greatest(0, extract(epoch FROM ({wait_end} - e.created_at))))"
+        f"                  AS wait_s"
+        f"           FROM pm_agent_run_activities e"
+        f"          WHERE e.run_id = r.id AND e.type = 'elicitation'"
+        f"            AND e.created_at >= r.started_at AND e.created_at < re.run_end"
+        f"       ) w ON TRUE"
         f"      WHERE r.task_id = c.task_id"
         f"        AND r.started_at IS NOT NULL AND r.ended_at IS NOT NULL"
-        f"        AND r.ended_at >= r.started_at"
+        f"        AND re.run_end >= r.started_at"
         f"        AND r.created_at <= c.finished_at"
         f"   ) x ON TRUE"
         f"  WHERE c.to_category = :done_cat"
@@ -664,7 +757,6 @@ async def kpis_body(
         "run_tasks": int(tm.run_tasks or 0),
         "median_hours": _hours(tm.median_hours),
         "total_hours": _hours(tm.total_hours),
-        # Said in the payload, so no client calls it net of the waits.
-        "basis": "run_start_to_end",
+        "basis": RUN_TIME_BASIS,
     }
     return {"runs": runs, "merge": merge, "time": time, "cost": cost_figure(finished)}
