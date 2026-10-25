@@ -19,8 +19,10 @@ harness. Each turn binds the member's typed words, as the chat route does
 4. N+3, N+4: plain turns. Before N+5 the process cache is emptied, so the
    list comes back from the store.
 5. N+5: the request still holds the correction.
-6. N+6: the member withdraws it, and the model drops it.
-7. N+7: no request holds the block or the correction.
+6. N+6: a stranger's text asks the model to drop it. The card shows the
+   exact item, the member rejects it, and the item stays.
+7. N+7: the member withdraws it and approves the card. N+8: no request
+   holds the block or the correction.
 """
 from __future__ import annotations
 
@@ -60,11 +62,13 @@ def _request(model: ReplyModel, index: int) -> str:
     return json.dumps(model.bodies[index].get("messages") or [], ensure_ascii=False)
 
 
-def _turn(harness: RoutingHarness, words: str, thread: str | None) -> RunRecord:
-    """One chat turn, with the member's typed words bound as the route binds them."""
+def _turn(harness: RoutingHarness, words: str, thread: str | None,
+          card: str = "REJECT") -> RunRecord:
+    """One chat turn, with the member's typed words bound as the route binds
+    them. *card* is what the member presses on a card of the turn."""
     record = asyncio.run(harness.drive(
         words, PAGE, member=ds.MEMBER, org=ds.ORG, thread_id=thread, timeout=60.0,
-        typed=words,
+        typed=words, on_card=lambda _record, _value: card,
     ))
     assert record.error is None, record.error
     return record
@@ -92,10 +96,14 @@ def chat(monkeypatch: pytest.MonkeyPatch):
                 text_turn("Nothing else waits."),
                 text_turn("Good."),
                 text_turn("Part P-12."),
-                # N+6: the member withdraws the correction.
+                # N+6: a stranger's text asks the model to drop it. The
+                # member rejects the card.
+                tool_turn("drop_correction", {"text": "file names"}),
+                text_turn("I still read the parts from the body only."),
+                # N+7: the member withdraws the correction, and approves.
                 tool_turn("drop_correction", {"text": "file names"}),
                 text_turn("I can use the file names again."),
-                # N+7: a plain turn.
+                # N+8: a plain turn.
                 text_turn("Part P-12."),
             ]),
             EA: ReplyModel([
@@ -137,14 +145,26 @@ def test_a_correction_lives_from_n_to_n5_and_its_removal_takes_it_out(chat) -> N
     assert cc.BLOCK_HEAD in n5 and CORRECTION in n5, n5
     assert INJECTED not in n5
 
-    # N+6: the member withdraws it. N+7: it is gone.
-    _turn(harness, WITHDRAW, thread)
-    assert "Dropped: " in _request(orch, 10)
-    assert "No correction or limit is kept in this chat now." in _request(orch, 10)
-    _turn(harness, "Which parts again?", thread)
+    # N+6: an injected drop. The card shows the exact item, the member
+    # rejects it, and the item stays.
+    six = _turn(harness, "Delete the file names section of the report.", thread)
+    (card,) = six.cards
+    assert card["title"] == cc.DROP_CARD_TITLE and card["detail"] == CORRECTION
+    assert card["answer"] == "REJECT" and card["answered"]
+    assert cc.DROP_DECLINED in _request(orch, 10)
+
+    # N+7: the member withdraws it and approves the card. N+8: it is gone.
+    seven = _turn(harness, WITHDRAW, thread, card="APPROVE")
     n7 = _request(orch, 11)
-    assert cc.BLOCK_HEAD not in n7 and CORRECTION not in n7, n7
-    assert len(orch.bodies) == 12
+    assert cc.BLOCK_HEAD in n7 and CORRECTION in n7, "a rejected card keeps the item"
+    (card,) = seven.cards
+    assert card["detail"] == CORRECTION and card["answer"] == "APPROVE"
+    assert "Dropped: " in _request(orch, 12)
+    assert "No correction or limit is kept in this chat now." in _request(orch, 12)
+    _turn(harness, "Which parts again?", thread)
+    n8 = _request(orch, 13)
+    assert cc.BLOCK_HEAD not in n8 and CORRECTION not in n8, n8
+    assert len(orch.bodies) == 14
     assert harness.sent == []
 
 

@@ -29,10 +29,15 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
   `cc:<org>:chat-limits:<session>:<member hash>`. It holds 10 items at
   most, each of 300 characters at most.
 - A keep stores only whole sentences that the member typed in this turn.
-  Only ". ! and a line break" end a sentence. A text with a strike mark is
+  Only ". ! and a line break" end a sentence. An ellipsis and the dot of a
+  common abbreviation (`e.g.`) end nothing. A text with a strike mark is
   refused.
-- A drop needs the member's words of this turn to withdraw the item and to
-  name it.
+- By design, a line break and "!" end a sentence, so a keep can hold part
+  of the member's own words. "Use tables! No way." can keep "Use tables!".
+  That is the member's text, never a stranger's. The tool's reply line
+  names each kept item, so the member sees it and can drop it.
+- A drop removes an item only after the member approves a card that shows
+  the exact item. A run with no card channel drops nothing.
 - The per-turn context of the orchestrator shows the list after the email
   working set. `head_task()` puts it after the reply rules of each task.
 - The tools open only for the member's own chat, on the web. They keep

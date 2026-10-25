@@ -23,11 +23,20 @@ The words come from ``acb_common.assistant_profile.typed_words``, which the
 chat route binds before any server note changes the message. A pasted mail
 grounds nothing there. So a tool result, an email, a file or a guess of the
 model cannot plant an item, and a cut cannot drop the "not" of a sentence.
-Only ". ! and a line break" end a sentence, so a cut at "?", ":" or an
-ellipsis is refused too. An item with a combining strike mark is refused.
-A drop needs the member's typed words of this turn to WITHDRAW the item: a
-withdrawal ("forget", "no longer", "you can use") and a reference to it
-(:func:`withdraws`). A message that only names the topic withdraws nothing.
+Only ". ! and a line break" end a sentence, so a cut at "?", ":", an
+ellipsis or an abbreviation ("e.g.") is refused too. An item with a
+combining strike mark is refused.
+
+BY DESIGN, a line break and "!" end a sentence, so a keep can hold PART of
+the member's own words: "Use tables! No way." can keep "Use tables!". That
+is the member's text, never a stranger's. Each keep names the item in the
+tool's reply line, so the member sees it, and can drop it.
+
+A DROP removes an item only after the member approves a card that shows the
+exact item (``ask_tools.request_confirmation``, fix round 2). No word of a
+message proves that the member withdrew THIS item, and a stranger's text
+can ask the model to call the tool. A run with no card channel drops
+nothing.
 
 R5. The key is ``cc:<org>:chat-limits:<session>:<member hash>`` through the
 tenant Redis wrapper. The org is the run's bound tenant, and the session and
@@ -161,14 +170,38 @@ def clean(items: Any) -> list[str]:
     return out[-MAX_ITEMS:]
 
 
+#: Common abbreviations, folded. A dot after one of them ends no sentence, so
+#: "Avoid clutter, e.g. use tables." is one sentence (fix round 2).
+_ABBREVIATIONS = frozenset({
+    "e.g", "i.e", "etc", "vs", "cf", "approx", "incl", "mr", "mrs", "ms", "dr",
+})
+#: The word, or the dotted abbreviation, before a dot.
+_WORD_BEFORE = re.compile(r"([^\W\d_]+(?:\.[^\W\d_]+)*)$")
+
+
+def _abbreviation_dot(line: str, at: int) -> bool:
+    """True when the dot at *at* of the folded *line* ends an abbreviation:
+    one of :data:`_ABBREVIATIONS`, one letter ("plan A."), or "No" before a
+    number ("No. 5")."""
+    hit = _WORD_BEFORE.search(line[:at])
+    if not hit:
+        return False
+    word = hit.group(1)
+    if word in _ABBREVIATIONS or len(word) == 1:
+        return True
+    return word == "no" and line[at + 1:].lstrip()[:1].isdigit()
+
+
 def _sentence_edges(line: str) -> tuple[set[int], set[int]]:
     """The starts and the ends of the sentences of one folded *line*.
 
     A sentence ends after "." or "!" when a space or the line end follows. A
     dot with another dot next to it, spaces between them or not, is part of
-    an ellipsis (". . ." too), and it ends nothing. The line start, after a
-    list bullet, is a start. An end may leave out its last marks, so "No
-    tables" ends where "No tables." ends.
+    an ellipsis (". . ." too), and it ends nothing. A dot after a common
+    abbreviation ("e.g.", "i.e.", "etc.", "Dr."), after one letter, or after
+    "No" before a number ends nothing either (:func:`_abbreviation_dot`).
+    The line start, after a list bullet, is a start. An end may leave out
+    its last marks, so "No tables" ends where "No tables." ends.
     """
     starts = {len(line) - len(line.lstrip(_BULLETS))}
     ends = {len(line)}
@@ -176,6 +209,8 @@ def _sentence_edges(line: str) -> tuple[set[int], set[int]]:
         if ch not in _ENDS or (i + 1 < len(line) and line[i + 1] != " "):
             continue
         if ch == "." and (line[:i].rstrip()[-1:] == "." or line[i + 1:].lstrip()[:1] == "."):
+            continue
+        if ch == "." and _abbreviation_dot(line, i):
             continue
         ends.add(i + 1)
         nxt = i + 1
@@ -226,59 +261,6 @@ def _typed_words() -> str:
         return typed_words()
     except Exception:
         return ""
-
-
-#: A key word: four letters or more.
-_KEY_WORD = re.compile(r"[^\W\d_]{4,}")
-#: Common words of four letters or more that name no item. Almost every
-#: message holds one, so they never point at an item.
-_COMMON = frozenset({
-    "about", "again", "also", "been", "best", "could", "does", "done", "drop",
-    "each", "even", "ever", "every", "fine", "forget", "from", "have", "here",
-    "into", "just", "keep", "kept", "like", "longer", "more", "much", "must",
-    "need", "never", "okay", "only", "please", "remove", "rule", "said",
-    "should", "some", "that", "thanks", "their", "them", "then", "there",
-    "these", "they", "this", "those", "very", "want", "were", "what", "when",
-    "where", "which", "will", "with", "would", "your",
-})
-#: The words by which a member withdraws a correction or a limit, matched as
-#: whole words of the folded typed words of the turn.
-_WITHDRAW = re.compile(
-    r"(?<!\w)(?:forget|drop|remove|delete|cancel|undo|scrap"
-    r"|ignore (?:that|it|this|the)|no longer|never ?mind|not needed|no need"
-    r"|you can (?:now |again )?(?:use|show|add|include|send|read|write|go back)"
-    r"|(?:it is|it's|that is|that's) (?:fine|ok|okay|alright) to"
-    r"|go back to|back to normal)(?!\w)"
-)
-#: The words that point at the one kept item in a short reply ("forget that").
-_POINTER = re.compile(r"(?<!\w)(?:that|it|this)(?!\w)")
-#: A short reply holds this many words at most.
-SHORT_REPLY_WORDS = 10
-
-
-def _key_words(value: Any) -> set[str]:
-    return {w for w in _KEY_WORD.findall(_folded(value)) if w not in _COMMON}
-
-
-def withdraws(item: str, words: Any, kept: int) -> bool:
-    """True when the member's typed *words* of this turn withdraw *item*.
-
-    Both parts are needed (fix round 1). A withdrawal: "forget", "drop",
-    "no longer", "never mind", "you can use", "it is fine to", "go back to"
-    and the like (:data:`_WITHDRAW`). And a reference to the item: one key
-    word of the item, or "that", "it" or "this" in a reply of
-    :data:`SHORT_REPLY_WORDS` words at most when the chat keeps one item
-    only (*kept*). So a member who only names the topic ("Summarise the
-    email about the tables order") withdraws nothing, whatever a stranger's
-    text asks the model to call.
-    """
-    said = _folded(words)
-    if not said or not _WITHDRAW.search(said):
-        return False
-    if _key_words(item) & _key_words(said):
-        return True
-    return (kept == 1 and len(said.split()) <= SHORT_REPLY_WORDS
-            and _POINTER.search(said) is not None)
 
 
 # ── The store ───────────────────────────────────────────────────────────────
@@ -490,9 +472,13 @@ STRUCK = ("Not kept. The text holds a strike mark over its letters. Keep the "
 #: The answers of a drop.
 DROP_CLOSED = "Nothing dropped. This chat keeps no corrections."
 DROP_EMPTY = "Nothing dropped. No correction or limit is kept in this chat."
-DROP_NOT_WITHDRAWN = ("Nothing dropped. In this message the member did not withdraw "
-                      "that item. Drop an item only when the member says that it no "
-                      "longer holds, and names it.")
+DROP_DECLINED = ("Nothing dropped. The member did not approve the card, so the item "
+                 "still holds.")
+DROP_NO_CARD = ("Nothing dropped. This chat cannot show a card for the member to "
+                "approve, and only the member's approval drops an item.")
+#: The card of a drop. The member approves the EXACT text of the item.
+DROP_CARD_TITLE = "Stop following this in this chat?"
+DROP_CARD_LEAD = "You set this correction or limit in this chat. Approve to drop it:"
 DROP_NO_MATCH = "Nothing dropped. No kept item matches those words. The kept items:"
 DROP_MANY = ("Nothing dropped. More than one kept item matches those words. Ask the "
              "member which one to drop:")
@@ -552,11 +538,10 @@ async def keep_correction(text: str) -> str:
 async def drop_correction(text: str) -> str:
     """Drop a correction or a limit that the member withdrew in this chat.
 
-    Call it only when the member says, in this message, that a kept item no
-    longer holds ("you can use the file names now", "forget the rule about
-    tables"). A message that only names the topic withdraws nothing, and the
-    call refuses it. Pass words that match one kept item. Tell the member
-    in one short line what you dropped.
+    Call it when the member says that a kept item no longer holds ("you can
+    use the file names now"). Pass words that match one kept item. The
+    member sees a card with the exact text of the item, and only their
+    approval drops it. Tell the member in one short line what you dropped.
 
     Args:
         text: Words that match the kept item, for example its key word.
@@ -576,10 +561,26 @@ async def drop_correction(text: str) -> str:
     if len(hits) > 1:
         return f"{DROP_MANY}\n{_listed(hits)}"
     gone = hits[0]
-    if not withdraws(gone, _typed_words(), len(items)):
-        _log.info("chat_constraints.drop_refused", reason="not_withdrawn")
-        return DROP_NOT_WITHDRAWN
-    after = [i for i in items if i != gone]
+    # Fix round 2: no word of a message proves that the member withdrew
+    # THIS item, and a stranger's text can ask the model to call this tool.
+    # So the member approves the exact item on the one card gate. It fails
+    # closed: a run with no card channel drops nothing.
+    from acb_skills.ask_tools import confirmation_channel_open, request_confirmation
+
+    approved = await request_confirmation(
+        DROP_CARD_TITLE, detail=gone, context=f"{DROP_CARD_LEAD}\n\n{gone}",
+        non_interactive_default="deny",
+    )
+    if approved is not True:
+        if not confirmation_channel_open():
+            _log.info("chat_constraints.drop_refused", reason="no_card")
+            return DROP_NO_CARD
+        _log.info("chat_constraints.drop_refused", reason="declined")
+        return DROP_DECLINED
+    # The card can wait a while. Read the list again, and drop the item
+    # that the member approved, by its exact text.
+    current = await load_constraints(ctx)
+    after = [i for i in current if _folded(i) != _folded(gone)]
     await save_constraints(after, ctx)
     _log.info("chat_constraints.dropped", count=len(after))
     return "\n".join([f'Dropped: "{gone}".', _now_kept(after),
@@ -613,5 +614,4 @@ __all__ = [
     "said_by_member",
     "save_constraints",
     "struck",
-    "withdraws",
 ]

@@ -194,6 +194,13 @@ class TestTheKeepGuard:
         ("use the file names", "Do not use the file names."),
         ("No tables", "No tables; use lists."),
         ("Use 1", "Use 1.5 spacing."),
+        # Fix round 2: the dot of an abbreviation ends no sentence.
+        ("use tables or long lists.", "Avoid clutter, e.g. use tables or long lists."),
+        ("use the file names.", "Never rely on the attachments, i.e. use the file names."),
+        ("use tables.", "Never cut corners etc. use tables."),
+        ("use tables.", "Ask Dr. use tables."),
+        ("use tables.", "Skip plan A. use tables."),
+        ("5 is fine.", "Never use part No. 5 is fine."),
     ])
     def test_only_a_full_stop_a_bang_or_a_line_break_ends_a_sentence(
         self, text: str, typed: str,
@@ -205,6 +212,12 @@ class TestTheKeepGuard:
         ("Don't... use tables.", "Don't... use tables."),
         ("No tables", "Thanks! No tables. Be brief."),
         ("Be brief!", "No tables. Be brief!"),
+        ("Avoid clutter, e.g. use tables or long lists.",
+         "Avoid clutter, e.g. use tables or long lists."),
+        ("Read the body.", "Say no. Read the body."),
+        # By design: "!" ends a sentence, so the member's own words can be
+        # kept in part. The reply line names the item, and a card drops it.
+        ("Use tables!", "Use tables! No way."),
     ])
     def test_the_whole_sentence_still_passes(self, text: str, typed: str) -> None:
         assert cc.said_by_member(text, typed)
@@ -348,78 +361,102 @@ class TestTheKeep:
         assert "Rule 1 holds." not in cc.cached_constraints()
 
 
+@pytest.fixture
+def card(monkeypatch):
+    """The one card gate (``ask_tools.request_confirmation``), faked.
+
+    ``card.answer`` is what the member presses, and ``card.open`` says if
+    the run has a card channel. ``card.shown`` keeps each card's title,
+    detail and context, so a test reads the exact text the member saw."""
+    from acb_skills import ask_tools
+
+    state = SimpleNamespace(answer=True, open=True, shown=[])
+
+    async def confirm(title: str, detail: str = "", context: str = "", **kw: Any) -> bool:
+        state.shown.append({"title": title, "detail": detail, "context": context, **kw})
+        return state.answer
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", confirm)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: state.open)
+    return state
+
+
 class TestTheDrop:
-    def test_the_members_words_drop_the_one_item(self, chat) -> None:
+    def test_an_approved_card_drops_the_exact_item(self, chat, card) -> None:
         _keep(ITEM)
         _keep("Read the parts from the body of the email, not from the file names.")
         out = _drop("attachments", typed="You can use the attachments now.")
         assert out.startswith(f'Dropped: "{ITEM}".'), out
+        (shown,) = card.shown
+        assert shown["title"] == cc.DROP_CARD_TITLE and shown["detail"] == ITEM
+        assert shown["context"].endswith(ITEM)
+        assert shown["non_interactive_default"] == "deny"
         assert cc.cached_constraints() == [
             "Read the parts from the body of the email, not from the file names."]
         cc.clear_cache()  # Redis holds the drop too
         assert asyncio.run(cc.load_constraints()) == [
             "Read the parts from the body of the email, not from the file names."]
 
-    def test_words_the_member_did_not_use_drop_nothing(self, chat) -> None:
-        _keep(ITEM)
-        assert _drop("attachments", typed="What does the mail say?") == cc.DROP_NOT_WITHDRAWN
-        assert cc.cached_constraints() == [ITEM]
-
-    @pytest.mark.parametrize(("named", "typed"), [
-        # Fix round 1, the verifier's probes: the member names the topic
-        # and withdraws nothing.
-        ("tables", "Summarise the email about the tables order."),
-        ("No tables", "Can you show me the tables in that PDF? There are no tables, right?"),
-        ("tables", "Use the tables of the attachment to answer."),
-        # A withdrawal with no reference to the item.
-        ("tables", "Never mind the order, forget the PDF."),
-    ])
-    def test_naming_the_topic_is_not_a_withdrawal(self, chat, named, typed) -> None:
+    def test_a_rejected_card_keeps_the_item(self, chat, card) -> None:
         _keep("No tables.", typed="No tables.")
-        assert _drop(named, typed=typed) == cc.DROP_NOT_WITHDRAWN
+        card.answer = False
+        assert _drop("tables", typed="You can use tables again.") == cc.DROP_DECLINED
+        assert cc.cached_constraints() == ["No tables."]
+
+    def test_no_card_channel_keeps_the_item(self, chat, card) -> None:
+        _keep("No tables.", typed="No tables.")
+        card.answer, card.open = False, False
+        assert _drop("tables", typed="You can use tables again.") == cc.DROP_NO_CARD
+        assert cc.cached_constraints() == ["No tables."]
+
+    def test_the_real_gate_with_no_card_channel_drops_nothing(self, chat) -> None:
+        """No fake: inside ``refuse_cards`` the real gate denies at once, and
+        the channel reads closed. It fails closed."""
+        from acb_skills.ask_tools import refuse_cards
+
+        _keep("No tables.", typed="No tables.")
+        with refuse_cards():
+            assert _drop("tables", typed="You can use tables again.") == cc.DROP_NO_CARD
         assert cc.cached_constraints() == ["No tables."]
 
     @pytest.mark.parametrize("typed", [
-        "You can use tables again.",
-        "Forget the rule about tables.",
-        "Tables are fine now, it is fine to use them. Thanks.",
-        "No longer any need to avoid tables.",
-        "Go back to tables, please.",
+        # The verifier's probes (fix round 2): no word of these proves a
+        # withdrawal of THIS item. Only the member's card decides.
+        "summarise the tables and remove the duplicates",
+        "Delete the tables section from the draft report.",
+        "Cancel the meeting about the tables.",
+        "Delete this email.",
+        "Summarise the email about the tables order.",
     ])
-    def test_a_withdrawal_that_names_the_item_drops_it(self, chat, typed) -> None:
+    def test_an_injected_drop_keeps_the_item_unless_the_member_approves(
+        self, chat, card, typed,
+    ) -> None:
         _keep("No tables.", typed="No tables.")
-        out = _drop("tables", typed=typed)
-        assert out.startswith('Dropped: "No tables."'), (typed, out)
-        assert cc.cached_constraints() == []
+        card.answer = False
+        assert _drop("tables", typed=typed) == cc.DROP_DECLINED
+        assert cc.cached_constraints() == ["No tables."]
+        card.answer = True
+        assert _drop("tables", typed=typed).startswith('Dropped: "No tables."')
+        assert [c["detail"] for c in card.shown] == ["No tables.", "No tables."]
 
-    def test_that_in_a_short_reply_points_at_the_one_item(self, chat) -> None:
-        _keep("No tables.", typed="No tables.")
-        assert _drop("No tables.", typed="Forget that.").startswith('Dropped: "No tables."')
-
-    def test_that_points_at_nothing_with_two_items_or_a_long_reply(self, chat) -> None:
-        _keep("No tables.", typed="No tables.")
-        long = "Forget that, and then also tell me what the order from the depot asks for."
-        assert _drop("No tables.", typed=long) == cc.DROP_NOT_WITHDRAWN
-        _keep("Be brief.", typed="Be brief.")
-        assert _drop("No tables.", typed="Forget that.") == cc.DROP_NOT_WITHDRAWN
-        assert cc.cached_constraints() == ["No tables.", "Be brief."]
-
-    def test_two_matches_drop_nothing(self, chat) -> None:
+    def test_two_matches_drop_nothing_and_ask_no_card(self, chat, card) -> None:
         _keep(ITEM)
         _keep("Read the parts from the body of the email, not from the file names.")
         out = _drop("the", typed="Forget the rule.")
         assert out.startswith(cc.DROP_MANY), out
-        assert len(cc.cached_constraints()) == 2
+        assert len(cc.cached_constraints()) == 2 and card.shown == []
 
-    def test_no_match_lists_the_items(self, chat) -> None:
+    def test_no_match_lists_the_items(self, chat, card) -> None:
         _keep(ITEM)
         out = _drop("tables", typed="You can use tables again.")
         assert out.startswith(cc.DROP_NO_MATCH) and ITEM in out, out
+        assert card.shown == []
 
-    def test_an_empty_list_and_a_closed_run(self, chat) -> None:
+    def test_an_empty_list_and_a_closed_run(self, chat, card) -> None:
         assert _drop("attachments", typed="use the attachments") == cc.DROP_EMPTY
         bind_artifact_context(session_id=SESSION, member=MEMBER)
         assert _drop("attachments", typed="use the attachments") == cc.DROP_CLOSED
+        assert card.shown == []
 
 
 # ── the blocks ──────────────────────────────────────────────────────────────
