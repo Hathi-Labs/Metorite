@@ -29,7 +29,8 @@ Mutations, each red here (``personalization.md`` §9 PZ-9):
 drop the ``user_settings`` entry of ``_PURGE_DELETES`` (P1, P5);
 drop its org predicate (P1b); drop the clear of ``remove_member_rows``
 (P3, P4); make the clear a DELETE (P3); drop the clear's org predicate
-(P1b).
+(P1b); drop the PATCH call (P8); clear on a suspension (P9); drop
+``mark_changed`` (P8, P10).
 """
 from __future__ import annotations
 
@@ -339,6 +340,73 @@ async def test_p4_a_member_who_returns_finds_the_profile_empty(db) -> None:
         with _tenant(db.org_a):
             back = await ap.get_assistant_profile(user=_user(a))
     assert back == empty_profile()
+
+
+async def _patch(db, email: str, status: str) -> None:
+    """``PATCH /admin/members/{email}`` as the owner of org A."""
+    from gateway.routes.admin import members
+
+    owner = UserContext(email=db.owner_email, role=UserRole.EXECUTIVE,
+                        access=build_access(["admin:members:manage"], roles=["owner"]))
+    with _tenant(db.org_a):
+        await members.update_member(email, patch=members.MemberPatch(status=status),
+                                    admin=owner)
+
+
+@pytest.fixture
+def quiet_patch(monkeypatch):
+    """The PATCH's hops after the commit, which leave Postgres."""
+    from gateway.routes.admin import members
+
+    async def _none(**_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(members, "mirror_membership_status", _none)
+    monkeypatch.setattr(members, "invalidate_for", lambda *_e: None)
+
+
+async def test_p8_a_patch_to_removed_clears_the_profile(db, quiet_patch) -> None:
+    """The lifecycle PATCH is a second door to ``removed`` (verify of PZ-9).
+    It forgets the profile as the DELETE door does, and keeps the row, and
+    it moves the change count so the cached block goes."""
+    from acb_common.assistant_profile import generation
+
+    a = _address("a")
+    _seed_member(db, a, db.org_a)
+    _seed_settings(db, a, db.org_a)
+    _seed_settings(db, a, db.org_b)
+    before = generation(a)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _patch(db, a, "removed")
+    mine = _rows(db, a)
+    assert mine[db.org_a]["assistant_profile"] is None
+    assert mine[db.org_a]["shell_prefs"] == _SHELL
+    assert mine[db.org_b]["assistant_profile"] == _PROFILE
+    assert generation(a) == before + 1
+
+
+async def test_p9_a_suspension_keeps_the_profile(db, quiet_patch) -> None:
+    """A suspension can be reversed and does not end the membership, so the
+    profile stays (§7 point 6)."""
+    a = _address("a")
+    _seed_member(db, a, db.org_a)
+    _seed_settings(db, a, db.org_a)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _patch(db, a, "suspended")
+    assert _rows(db, a)[db.org_a]["assistant_profile"] == _PROFILE
+
+
+async def test_p10_the_removal_and_the_purge_move_the_change_count(db) -> None:
+    from acb_common.assistant_profile import generation
+
+    a, b = _address("a"), _address("b")
+    _seed_member(db, a, db.org_a)
+    _seed_member(db, b, db.org_a)
+    ga, gb = generation(a), generation(b)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _remove(db.org_a, a)
+        await _purge(db.org_a, b)
+    assert (generation(a), generation(b)) == (ga + 1, gb + 1)
 
 
 # ── The export ─────────────────────────────────────────────────────────────

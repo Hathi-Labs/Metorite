@@ -623,10 +623,13 @@ conversation (WS-47). That org's profile applies.
 6. **Leaving the org.** When a member's access ends, the assistant forgets
    them. A purge deletes their `user_settings` row of that org, and so the
    profile. A removal can be reversed, so it keeps the row and sets the
-   profile to NULL. An org purge removes every row of the org by cascade.
+   profile to NULL. The DELETE door and a PATCH to `removed` both do this.
+   A suspension keeps the profile, because it can be reversed and it does
+   not end the membership. An org purge removes every row of the org by
+   cascade.
    **Retention.** The live column clears at once. A database backup keeps
    its copy until its own rotation deletes it. The staging copy blanks the
-   column (HANDOFF H-412).
+   column (`infra/staging/minimise.sql`).
 7. **The profile is never sent outside.** It goes to the model through the
    Router, as every turn does. No tool sends it to a third party.
 
@@ -678,9 +681,11 @@ Each slice is one PR. Each lands dark. The risk tier follows
    the org beside RLS, so a role that bypasses RLS keeps the rows of the
    other orgs. The operator door runs the same body. The Members page names
    the row in its count and in the confirm.
-2. **The removal.** `remove_member_rows` runs
-   `CLEAR_FOR_MEMBER_SQL_TEMPLATE` from `acb_common.assistant_profile`. The
-   column becomes NULL, and the row and its other columns stay.
+2. **The removal.** `members.forget_member_profile` runs
+   `CLEAR_FOR_MEMBER_SQL_TEMPLATE` from `acb_common.assistant_profile`, and
+   then `mark_changed`. `remove_member_rows` and a PATCH to `removed` call
+   it. The column becomes NULL, and the row and its other columns stay. A
+   fence fails on a status write of `removed` that does not call it.
 3. **The privacy fence.** `tests/unit/test_assistant_profile_private.py`
    reads the admin, operator, console, CRM and People sources. No string
    there names the column, and only `members.py` imports from the parser,
@@ -693,6 +698,8 @@ Each slice is one PR. Each lands dark. The risk tier follows
    and date, and each alias. The switch does not stop the export. A member
    with no profile gets the empty profile. Settings → Assistant has the
    control "Download my profile".
+5. **The staging copy.** `infra/staging/minimise.sql` sets the column to
+   NULL in each kept organization.
 
 **Tasks that this spec does not use.** #248 (short-term session memory) is
 built: the chat history window and the Redis memory block. #250 (semantic
