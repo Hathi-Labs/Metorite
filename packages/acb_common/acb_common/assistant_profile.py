@@ -741,6 +741,18 @@ ADDRESS_SQL_TEMPLATE = (
 #: :data:`ADDRESS_SQL_TEMPLATE` with the run's org as a bind, ``:org``.
 ADDRESS_SQL = ADDRESS_SQL_TEMPLATE.replace("{org}", "CAST(:org AS uuid)")
 
+#: The removal of a member forgets their profile (PZ-9, §7 point 6). The
+#: column becomes NULL, and the row and its other columns stay, because a
+#: removal can be reversed. ``{org}`` is the one placeholder, and the
+#: gateway fills it with the bound tenant of its session. ``:email`` is the
+#: member's address, matched in any case, as :data:`READ_SQL` matches it.
+#: This is the ONE statement outside the member's own routes that names the
+#: column, so ``tests/unit/test_assistant_profile_private.py`` can stay strict.
+CLEAR_FOR_MEMBER_SQL_TEMPLATE = (
+    "UPDATE user_settings SET assistant_profile = NULL, updated_at = now() "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:email)"
+)
+
 
 def _name_text(value: Any, cap: bool = True) -> str:
     """*value* as one line of a name, or ``""``. A control character becomes

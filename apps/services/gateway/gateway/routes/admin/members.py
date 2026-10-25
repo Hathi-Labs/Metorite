@@ -39,6 +39,7 @@ from acb_auth.console_resolve import (
     remove_member_on_console,
 )
 from acb_auth.permissions import matched_by
+from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE
 from fastapi import Depends, HTTPException
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
@@ -82,6 +83,11 @@ from gateway.routes.projects.seal import (
     seal_personal_tree,
     unseal_personal_tree,
 )
+
+# WS-63 PZ-9. The bound tenant of the session, as `/tasks/settings` names it.
+# A member has one `user_settings` row for each organization (migration 239),
+# so each statement on that table names the org beside RLS, not instead of it.
+from gateway.routes.tasks.settings import _BOUND_ORG
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -527,6 +533,14 @@ async def remove_member_rows(
         ),
         {"email": member["email"]},
     )
+    # WS-63 PZ-9 (personalization.md §7 point 6): access ended, so the
+    # assistant forgets the member at once. The settings row stays, because
+    # a removal is reversible and the other columns are not the profile. The
+    # statement names the bound org, so another organization keeps its row.
+    await db.execute(
+        text(CLEAR_FOR_MEMBER_SQL_TEMPLATE.replace("{org}", _BOUND_ORG)),
+        {"email": member["email"]},
+    )
     # D63 (H-49) — the SECOND door, and it reaches the same seal.
     #
     # ⚠️ The remove route's own docstring records why: it "used to hold its
@@ -750,6 +764,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
+    # WS-63 PZ-9 (personalization.md §7 point 6): the member's settings row
+    # of THIS organization, and with it the assistant profile. The row is the
+    # member's own preferences, so the whole row goes. A member has one row
+    # for each organization, so the clause names the bound org, and the row
+    # of another organization stays.
+    _PersonRows("member_settings", "user_settings",
+                f"lower(user_id) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )

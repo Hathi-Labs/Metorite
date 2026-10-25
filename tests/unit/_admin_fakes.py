@@ -252,6 +252,9 @@ class _FakeDB:
         self.kb_purge: list[str] = []
         #: The statements on email_scheduled_sends (H-375), in order.
         self.send_later: list[str] = []
+        #: WS-63 PZ-9: the statements that forget a removed member's
+        #: assistant profile, in order, with the address each one names.
+        self.profile_clears: list[tuple[str, str]] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -842,6 +845,14 @@ class _FakeDB:
         # real Postgres in `test_email_send_later.py` (R8).
         if "email_scheduled_sends" in s:
             self.send_later.append(s)
+            return _Rows([], rowcount=0)
+
+        # WS-63 PZ-9: a removal forgets the member's assistant profile. The
+        # fake records the statement and the address. What it does to real
+        # rows is proven on a real Postgres in
+        # `test_assistant_profile_offboarding_r8.py` (R8).
+        if s.startswith("UPDATE user_settings SET assistant_profile = NULL"):
+            self.profile_clears.append((s, str(p.get("email") or "")))
             return _Rows([], rowcount=0)
 
         raise AssertionError(f"unhandled SQL in fake: {s}")
