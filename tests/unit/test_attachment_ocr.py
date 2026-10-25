@@ -520,7 +520,8 @@ class TestTheScrubbedEnv:
 
     def test_the_worker_starts_isolated_from_its_path(self) -> None:
         argv = ocr._worker_argv(ocr._spec("pdf", 1))
-        assert argv[:3] == [sys.executable, "-I", str(WORKER)]
+        own = Path(ocr.__file__).resolve().with_name("attachment_ocr_worker.py")
+        assert argv[:3] == [sys.executable, "-I", str(own)]
         assert "-m" not in argv
 
 
