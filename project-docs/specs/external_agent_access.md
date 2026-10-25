@@ -2,6 +2,8 @@
 
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-16 (EA-6e and EA-6g are MERGED and live). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
+**MCP-G7 is BUILT and not merged (2026-10-25, branch `g7-link-version-mt-baa82d19`, task #367).** A comment, a link or an attachment on a task no longer stales the `version` that an agent holds. A field change still gives 412. `project_management_app.md` §9.10.3 holds the decision, and migration 303 adds `pm_tasks.fields_at`.
+
 **EA-6h is BUILT and not merged (2026-10-23, branch `ea6h-delete-mt-709eaf47`).** An agent may delete a task after the member says yes in the agent (EA3-51). The member's switch is off by default, and migration 295 adds it. The member picks each subtask to delete or keep (D-OP-10, the owner, 2026-10-23). H1 to H14 pass on R8, and each is red under a named mutation in `test_mcp_edge_delete.py`.
 
 **EA-13 is BUILT (2026-10-18).** It puts agent work on the board. §12.2 holds the design, §6.1 holds EA3-41 to EA3-50, and §15 holds the rows EA-13a to EA-13f. The PR and CI data come from `github_integration.md` (WS-54). The EA-13 anchors were read at `1625cca13`.
@@ -533,7 +535,7 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 
 - **No `type`, no `updated_since`, no `project_id` on search.** No route accepts them, so EA-3 drops them.
 - **`task_number`, not `key`.** A task returns its `task_number` until EA-6 decides the key format (§11).
-- **`version` is `updated_at`.** It is the token that `If-Match` compares (`core.py:1862-1909`). EA-6 sends it back.
+- **`version` is `updated_at`.** It is the token that `If-Match` compares (`core.precondition_holds`). EA-6 sends it back. Since MCP-G7, a version from before a comment, a link or an attachment stays good. Only a field change stales it (`project_management_app.md` §9.10.3).
 - **`status` is an object with `id` and `name`.** For `list_tasks` and `get_task`, the edge reads `/statuses` once for each distinct project on the page, inside one tool call, and keeps no cache. A task that reaches the member only as its assignee has a project the member cannot open. Its status `name` is then null.
 - **References.** `task_references.md` §5 owns the table `pm_task_refs` (WS-57, migration 255). EA-6a adds the references to `get_task`, and the edge sends `refresh=false`, so no tool call reads GitHub. The rule for a task key stays in §11.
 - **The edge drops the `task_count` of each tag in `get_project`.** That count covers every task of the root (`tags.py:339-344`), and the visibility seam does not narrow it.
@@ -622,7 +624,7 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - A move to done never closes a subtask, because the gateway refuses `include_subtasks` on a signed agent PATCH.
 - A target status that is not in the status set of the task's project gets the bad-request text of §9.6, before the PATCH.
 - When the member cannot open the task's project, the edge cannot read the category. It then refuses with "This member cannot change that.", before the PATCH.
-- `expected_version` is the `version` that `get_task` returned. The gateway compares it with `If-Match` (`core.py:1885`). A stale version gets 412, and the edge maps it to "The task changed. Read it again."
+- `expected_version` is the `version` that `get_task` returned. The gateway compares it with `If-Match` (`core.precondition_holds`). A version that a field change staled gets 412, and the edge maps it to "The task changed. Read it again."
 - The transition path of the PATCH stamps `completed_at` and the timeline row, and `record_activity` stamps `meta.via` with `mcp:<slug>`.
 
 **Rules of `add_task_reference`.**

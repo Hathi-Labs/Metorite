@@ -79,6 +79,7 @@ from gateway.routes.projects.core import (
     now,
     parent_lane_status,
     parse_precondition,
+    precondition_holds,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -1476,7 +1477,8 @@ async def agent_delete_task(
         # WS-64 OP-8 (D-OP-12). The member's own authority, the rule of the
         # app route. The edge maps this 403 to the same sentence.
         await assert_may_delete_task(db, user, doomed)
-        if doomed.updated_at != expected:
+        # MCP-G7: the one version rule, so a comment does not stale the yes.
+        if not precondition_holds(doomed, expected):
             raise HTTPException(status_code=409, detail=AGENT_DELETE_STALE)
         if doomed.title != payload.confirm_title:
             raise HTTPException(status_code=409, detail=AGENT_DELETE_TITLE)

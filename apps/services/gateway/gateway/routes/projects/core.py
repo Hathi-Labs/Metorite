@@ -2037,9 +2037,22 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 
 # ── The write precondition — D-PM-20 / WS-27bi ───────────────────────────────
 #
-# ``If-Match: <updated_at>``. No ``version`` column: ``update_row`` already moves
-# ``updated_at`` on every write that matters, and a second monotonic fact about
-# one row is the CLAUDE.md §5 defect.
+# ``If-Match: <updated_at>``. ``updated_at`` stays the ONE token and the ONE
+# feed stamp: a client reads it, sends it back, and the delta cursor pages on
+# it. There is no ``version`` column.
+#
+# WS-55 MCP-G7 (spec §9.10.3, migration ``*_pm_tasks_fields_at.sql``).
+# ``touch_task`` moves ``updated_at`` for every comment, link, attachment and
+# assignee, because the feed must see them. So equality alone gave 412 to an
+# agent whose task somebody had only commented on or mentioned. The trigger of
+# that migration keeps ``pm_tasks.fields_at``: the ``updated_at`` of the last
+# write that changed a FIELD of the row. It is not a second version. Nobody
+# sends it, no reply carries it, and it never refuses a token that equality
+# passes. It only narrows what a mismatch means: a token from ``fields_at`` up
+# to ``updated_at`` names a snapshot whose fields are still current, so the
+# write goes ahead. The trigger makes the ``now()`` stamp monotonic, so a
+# writer that waited on the row lock cannot stamp a field change OLDER than a
+# token a client already holds. A NULL ``fields_at`` narrows nothing.
 #
 # ⚠️ The two rules below are not stylistic — both were MEASURED against a real
 # database (spec §9.10.1), and both are cases where the obvious implementation
@@ -2079,8 +2092,24 @@ def parse_precondition(token: str) -> datetime:
     return parsed
 
 
+def precondition_holds(row: Any, expected: datetime) -> bool:
+    """True when a write with the token *expected* may go ahead on *row*.
+
+    Two arms (see the block above). The token equals ``updated_at``: the rule
+    of WS-27bi, unchanged. Or the token lies from ``fields_at`` up to
+    ``updated_at``: only a satellite bump moved the stamp since the client read
+    the row. The upper bound refuses a made-up future token, which no read ever
+    gave. Rule 2 holds in both arms: parsed instants, never strings.
+    """
+    stamp = row.updated_at
+    if stamp == expected:
+        return True
+    fields_at = getattr(row, "fields_at", None)
+    return fields_at is not None and fields_at <= expected <= stamp
+
+
 def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
-    """Enforce ``If-Match`` against ``row.updated_at``.
+    """Enforce ``If-Match`` through :func:`precondition_holds`.
 
     An ABSENT header still succeeds (D-PM-20): advisory now, mandatory in a later
     release. Made compulsory on day one it would break every existing caller at
@@ -2095,7 +2124,7 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     if not isinstance(if_match, str):
         return
     expected = parse_precondition(if_match)
-    if row.updated_at != expected:          # rule 2: instants, never strings
+    if not precondition_holds(row, expected):   # rule 2: instants, never strings
         raise HTTPException(
             status_code=412,
             detail={

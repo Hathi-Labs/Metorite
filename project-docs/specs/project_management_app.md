@@ -12,7 +12,10 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-08-25**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-10-25**
+> 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 303). A comment or a link
+> on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
+> · **Previously updated 2026-08-25**
 > 🟢 **WS-27bg SLICE 2 REMAINDER — RENAME — BUILT 2026-08-21 on `ws-27bg-project-rename`
 > (PR #47), NOT merged and NOT deployed** (§11.36's narrowed list, corrected) — a project can
 > be renamed for the first time: inline on the tree row, frontend only, **no migration and no
@@ -3944,6 +3947,50 @@ make it rare, not impossible.
 Per CLAUDE.md §5 this is recorded as a **finding for the board, not a refactor**: it predates
 this work, and fixing it (`clock_timestamp()`, or a sequence) is a change to the delta feed's
 contract that deserves its own row and its own decision.
+
+#### 9.10.3 A comment does not stale the token — WS-55 MCP-G7 (BUILT 2026-10-25, not merged)
+
+**Status: BUILT 2026-10-25 on branch `g7-link-version-mt-baa82d19`, not merged.** Task #367.
+Migration `303_pm_tasks_fields_at.sql`. The builder took the number at build time (R1). Check it
+again at merge.
+
+**The defect.** `core.touch_task` moves `updated_at` for each comment, link, attachment and
+assignee, because the delta feed must see them. `If-Match` compared `updated_at` for equality. So
+a comment on task A, or a `#mention` of A in another task, gave 412 to each pending write to that
+task.
+The owner's agents met this many times on 2026-10-25.
+
+**The decision.**
+
+* Migration 303 adds `pm_tasks.fields_at`. It holds the `updated_at` of the last write that
+  changed a field of the row. The trigger `trg_pm_tasks_stamp_fields` keeps it, so no writer can
+  forget it.
+* The trigger fires on INSERT and on each UPDATE that sets `updated_at`. On UPDATE it lifts a
+  `now()` stamp that is older than the old stamp to the old stamp plus one microsecond. Then it
+  copies `updated_at` to `fields_at` if any other column changed.
+* `core.precondition_holds` passes a token that equals `updated_at`, as before. It also passes a
+  token from `fields_at` up to `updated_at`. The PATCH, the claim and the agent delete use it.
+
+**Why this is not a second version.** §9.10 refused a `version` column, because two monotonic
+facts about one row disagree in time. `updated_at` stays the one token and the one feed stamp.
+No client sends `fields_at`, and no reply carries it. It never refuses a token that equality
+passes. It only narrows what a mismatch means.
+
+**Why the stamp is monotonic.** `now()` is the start of the transaction. A writer that waits on
+the row lock can stamp a time older than a token a client holds. Without the lift, that client
+would pass the `fields_at` arm across a real change. A stamp equal to the old stamp stays, so one
+request keeps one instant. An explicit time, such as a test fixture, stays as written.
+
+**Why `UPDATE OF updated_at`.** The claim adds the assignee and then moves the status, both at one
+`now()`. The second statement does not move `updated_at`. A trigger that tested the value skipped
+it, and the claim race of `test_mcp_edge_claim.py` gave two 200s for one version.
+
+**Fences.** `tests/unit/test_task_precondition_fields_at.py` runs on R8. A link and a comment keep
+the old token good for a field PATCH and a status move. A field change still gives 412. A bump
+leaves `fields_at`. `tests/unit/test_projects_precondition.py` holds the pure rule.
+
+**Not in scope.** The PATCH still loads the row with no lock before it writes. That gap is the
+open follow-up of `external_agent_access.md` §17, and this change does not close it.
 
 ---
 
