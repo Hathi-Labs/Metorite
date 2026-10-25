@@ -332,10 +332,14 @@ REFERENCE_FILE = Scenario(
                      "to Pune. The X-100 spec sheet is only a reference for the finish.")),),
 )
 
+#: The facts that only the scanned file's NAME gives: the model and the
+#: revision. "Gearbox" is not one: the body says "The gearbox drawings".
+SCANNED_FACTS = (r"\bGB-?40\b", r"\brev(?:ision)?[\s-]*3\b")
+
 SCANNED_FILE = Scenario(
     "scanned_file", "A scanned file: the name is all there is",
     turns=(Turn("What does the drawing that Ravi sent show?",
-                (Check("admits_unreadable"), Check("no_content_claim", ("GB-40", "gearbox")),
+                (Check("admits_unreadable"), Check("no_content_claim", SCANNED_FACTS),
                  Check("called", ("read_email_attachment",), "tried_the_file")),
                 Plan((("query_inbox", {"from_email": "ravi"}),
                       ("read_email_attachment", {"email_id": RAVI.id,

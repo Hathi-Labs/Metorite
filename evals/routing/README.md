@@ -67,7 +67,8 @@ WS-67 OA-5 adds three things to the harness, for the measure of tool packs
   real factory built, and never the factory.
 - `RoutingHarness(live=True, real_specialists=True)`: each specialist runs
   and asks the real model. Each host send that does not start with a
-  prefix of `allow` fails, and `sent` records it.
+  prefix of `allow` fails, and `sent` records it. The guard covers async
+  and sync httpx. It does not cover a database, Redis or graph driver.
 
 `drive` also gives the time to the first answer text and the total time of
 each turn.

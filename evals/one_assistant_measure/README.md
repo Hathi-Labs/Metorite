@@ -98,7 +98,26 @@ first, and close it after the run.
 
 The runner checks the Router port before each chat. When the Router does
 not answer, the runner stops. When a chat loses the Router, the runner
-drops that chat and stops.
+drops that chat and stops. The Router address must be on this machine,
+which is the tunnel, or the run does not start. The merge keeps the SHA of
+each chunk, and of each row.
+
+The live guard refuses each httpx send, async and sync, that does not go
+to the Router. It does not cover a database, Redis or graph driver. The
+runner pins Mem0 and Graphiti off, because their calls to the Router would
+pass the tap unseen.
+
+To score the stored answers again after a change to a check, with no new
+live run:
+
+```bash
+uv run python -m evals.one_assistant_measure.run --rescore \
+  --out evals/one_assistant_measure/results_<date>.json
+```
+
+A re-score runs only the checks that read the stored answer and tasks. Each
+other check keeps its stored value, because a results file keeps no tool
+arguments, cards or gateway calls. Each change goes in `rescored`.
 
 The cost of a streamed call is the vendor's `usage.cost`. A buffered call
 has no such field, so `rate_card.json` prices it. The card reproduces each

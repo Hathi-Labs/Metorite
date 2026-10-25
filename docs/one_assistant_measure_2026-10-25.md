@@ -2,9 +2,18 @@
 
 **Bottom line.** On 18 email turns, run 3 times on each shape, the tool
 pack was as accurate as delegation and about twice as fast. It also made
-half the model calls and cost half as much. Delegation passed 51 of 54
-turns, and the pack passed 52 of 54. The median turn took 22.6 s with
-delegation and 10.0 s with the pack.
+half the model calls and cost half as much. Each shape passed 51 of 54
+turns. The median turn took 22.6 s with delegation and 10.0 s with the
+pack.
+
+**Fix round 1.** An independent check found two faults in this report. The
+first edition said that only delegation stated a file name as content. In
+fact each shape did it once. It also counted a failure that a limit of the
+harness caused as a defect of delegation.
+
+A fixed check then scored the stored answers again, with no new live run.
+The pack's pass count fell from 52 to 51. Section 4 and section 5 give the
+details.
 
 This report is input for the owner's decision at OA-6. It does not make
 that decision.
@@ -73,8 +82,8 @@ went in `messages`, as the web chat sends it.
 
 | Measure | Delegation | Tool pack |
 |---|---|---|
-| Turns that pass every check | 51 of 54 (94%) | 52 of 54 (96%) |
-| Checks that pass | 153 of 156 | 205 of 207 |
+| Turns that pass every check | 51 of 54 (94%) | 51 of 54 (94%) |
+| Checks that pass | 153 of 156 | 204 of 207 |
 | Turns that ended in an error | 0 | 0 |
 | First text, median | 21.6 s | 9.1 s |
 | First text, mean | 25.1 s | 10.2 s |
@@ -93,9 +102,14 @@ went in `messages`, as the web chat sends it.
 | Cost per turn, measured | USD 0.0099 | USD 0.0048 |
 | Cost per turn, with no cache (estimate) | USD 0.107 | USD 0.079 |
 
-The other 0.22 calls per turn of delegation came from one turn. In it, the
-email assistant called the CRM and the Projects assistants. Section 4
-gives that turn.
+The pass counts are after the re-score of fix round 1. That re-score
+changed one result: the pack's `scanned_file`, repeat 2, now fails. Before
+it, the pack passed 52 of 54 turns and 205 of 207 checks.
+
+The other 0.22 calls per turn of delegation came from two turns:
+`five_turns` turn 2, repeats 1 and 3. In each, the email assistant called
+the CRM assistant, and in repeat 3 the Projects assistant too. That makes
+12 calls. Section 4 gives these turns.
 
 **The size of each call.**
 
@@ -121,7 +135,7 @@ gives that turn.
 | `thread_summary` | 24.5 s, USD 0.0092, 5.7 | 11.6 s, USD 0.0060, 4.0 | 3/3, 3/3 |
 | `reply_correction` | 34.9 s, USD 0.0108, 5.3 | 18.6 s, USD 0.0067, 3.3 | 5/6, 4/6 |
 | `reference_file` | 18.7 s, USD 0.0071, 5.3 | 7.2 s, USD 0.0037, 3.0 | 3/3, 3/3 |
-| `scanned_file` | 23.5 s, USD 0.0086, 6.0 | 10.9 s, USD 0.0054, 4.0 | 2/3, 3/3 |
+| `scanned_file` | 23.5 s, USD 0.0086, 6.0 | 10.9 s, USD 0.0054, 4.0 | 2/3, 2/3 |
 | `exact_reply` | 27.2 s, USD 0.0093, 6.0 | 8.6 s, USD 0.0041, 3.0 | 3/3, 3/3 |
 
 Each time and cost is the mean of one turn. The time of a turn is almost
@@ -133,7 +147,11 @@ orchestrator writes its answer.
 **The scripted run.** Every plan of the 18 turns passes every check on both
 arms (36 turns, no model, no network). This is the "email trajectory
 suite" of §5. The unit test `tests/unit/test_one_assistant_measure.py`
-runs it, and it passes 25 of 25.
+runs it, and it passes 39 of 39.
+
+The scripted run plays a known-good plan, so it passes 100 percent on each
+arm by construction. It proves that each path works end to end. It does not
+show which shape is more accurate. Only the live run shows that.
 
 ## 4. The failures
 
@@ -149,6 +167,12 @@ the live half of OA-1 and OA-2. In the delegation arm, no task held "CB6",
   email (...) The two attached PDFs (CB6_sample, CB7_sample) are sample
   drawings, for reference only, so they are not the parts ordered."
 
+A person read each of the 6 live sentences that name CB6 or CB7. Each one
+calls the files samples or references, and none names them as parts. So 6
+of 6 holds by hand too. The first check let any "not" in a sentence clear
+the name. Fix round 1 counts a "not" only when it denies the name. The
+re-score did not change a Navy result.
+
 **A draft that the member did not ask for. Both arms: delegation 1 of 3,
 the pack 2 of 3.** In `reply_correction` turn 1, the member only corrects
 a date: "That date is wrong: they arrive on 14 November." The assistant
@@ -161,24 +185,48 @@ Both shapes kept the corrected date in the reply of turn 2, 3 of 3 each.
 So the member's correction came through. The failure is an act that the
 member did not ask for, and both shapes made it.
 
-**A file name stated as content. Delegation only, 1 of 3.** In
-`scanned_file`, repeat 2, the file is a scan with no text. The answer
-began: "The drawing Ravi sent is a gearbox, model GB-40, revision 3."
-Only the file name says that. This is cause C2 of the spec.
+**A file name stated as content. Both arms, 1 of 3 each.** In
+`scanned_file` the file is a scan with no text. Only its name,
+`Gearbox_GB-40_rev3.pdf`, gives the model and the revision. This is cause
+C2 of the spec. In repeat 2, each shape stated the name as a fact:
 
-The tool pack made this mistake 0 times of 3.
+- Delegation: "The drawing Ravi sent is a gearbox, model GB-40, revision 3."
+- Tool pack: "It's a revision-3 drawing of a gearbox, model GB-40, and he
+  wants your comments by Monday (tomorrow)."
 
-**A placeholder in a draft. Delegation only, 1 of 3.**
+The first edition of this report said that the pack made this mistake 0
+times. That was false. The first check found no content verb in either
+sentence, so it missed both claims. It failed the delegation answer on a
+harmless pointer instead. That sentence only told the member to open the
+file to see the drawing.
 
-In `five_turns`, repeat 3, turn 2 took 106 seconds and 16 model calls.
-The email assistant called the CRM and the Projects assistants to find
-the figure of the quote. It then wrote a draft that held "₹[amount]".
+Fix round 1 fixed the check in both directions. It takes the file name and
+an indirect question ("what the drawing shows") out of each sentence first.
+It then fails a fact that only the name gives, with or without a verb. In
+delegation, repeat 3, the answer also gives the model and the revision. But
+it says: "The subject and filename tell us it's a gearbox drawing". The
+check counts that as a guess said as one, and so did the person who read
+it.
 
+**A placeholder in a draft. Delegation, 1 of 3, and the harness caused
+it.**
+
+In `five_turns` turn 2 of repeats 1 and 3, the email assistant called the
+CRM and the Projects assistants. It wanted the figure of the quote. Only
+the email gateway has a fake. So the harness refused their 20 reads of the
+gateway, 6 in repeat 1 and 14 in repeat 3 (`sent` in the results file).
+These agents got errors where production gives them answers.
+
+In repeat 3 the email assistant then wrote a draft that held "₹[amount]".
 In turn 3 ("send it"), the orchestrator did not send: "The draft still
 holds the placeholder, so I can't send it yet." That refusal was correct.
-The defect is the placeholder of turn 2, and `instructions.md` forbids a
-placeholder. The check of turn 3 failed. The hop to two more agents also
-shows the cost of a chain of delegations.
+The placeholder follows from the refused reads, so this report does not
+count it as a clean defect of delegation. With this turn set aside,
+delegation passed 51 of 53 turns.
+
+The two turns still show one cost of a chain of delegations. The hop from
+the email assistant to two more agents took 12 more model calls, and turn
+2 of repeat 3 took 106 seconds.
 
 ## 5. The limits of this measure
 
@@ -197,28 +245,56 @@ shows the cost of a chain of delegations.
 4. **One model.** The Router served `deepseek-v4-pro` on both tiers. The
    pack ran the email work on the orchestrator's tier. If the two tiers
    point at different models later, the pack needs a tier rule.
-5. **A fake gateway.** The server's own reply writer did not run. A reply
-   card showed the model's draft, or a fixed text. The real writer costs the
-   same on both shapes, so it does not change the comparison.
-6. **The timing lines.** The measure did not read `agent.run_timing` and
-   `executor.run_setup_ms`, which only the gateway writes (§7). The harness
-   timed each turn and each call instead. It did not read the Console's
-   `usage_event` either. The cost came from the vendor's figure on each
+5. **A fake gateway, and a fake reply writer.** The server's own reply
+   writer did not run. When a reply card gets `instruction`, the fake
+   writes a fixed text around the member's words. That text can never hold
+   a placeholder. A draft that the model writes and passes in `draft`
+   can hold one. This favours the arm that uses `instruction` more. The
+   results file keeps no tool arguments, so this measure cannot count the
+   mode of each arm. The real writer costs a model call in either mode.
+6. **The timing lines.** The measure did not read `agent.run_timing`,
+   because the gateway writes it and the harness has no gateway. The
+   executor writes `executor.run_setup_ms`, and the harness log shows it
+   (for example `setup_ms=31`). The measure did not read that line either.
+   The harness timed each turn and each call instead. It did not read the
+   Console's `usage_event`. The cost came from the vendor's figure on each
    stream, and from the card for each buffered call.
 7. **Four checks read prose.** `no_name_claim`, `no_reference_subject`,
    `admits_unreadable` and `no_content_claim` are heuristics. Section 4
-   quotes each answer that failed one of them.
-8. **A small sample.** Three runs of 18 turns on each arm is small. The gap
-   in pass rate (one turn) is noise. The gap in time and cost is not noise:
-   it showed in each of the 13 chats.
+   quotes each answer that failed one of them. Fix round 1 fixed two of
+   them, and a re-score of the stored answers changed one result.
+8. **A small sample.** Three runs of 18 turns on each arm is small. The
+   pass rates are equal. The gap in time and cost is not noise: it showed in
+   each of the 13 chats.
 9. **I replaced one run.** The first run of `reply_correction` found a
    fault in the fake. Its held card answered each send with the people of
    the five-turn chat. Commit `3bac947df` fixed the fake, and that chat ran
-   again on both arms. The results file keeps the 4 old turns
-   under `replaced`. Their turn 1 failed in the same way as section 4 says.
+   again on both arms. The results file keeps the 4 old turns under
+   `replaced`. Of them, only the delegation turn 1 failed (`no_write`), in
+   the same way as section 4 says. The pack turn 1 passed.
 10. **The tunnel dropped once.** The first sweep lost its tunnel, and one
     turn hung for 57 minutes. That sweep is not in the data. The runner now
     checks the Router before each chat, and it drops a chat that loses it.
+11. **The harness refused the other agents' reads.** In two delegation
+    turns, the harness refused 20 reads of the CRM and the Projects
+    assistants (section 4). Their errors led to one failure. The pack arm
+    called no other agent, so this did not touch it.
+12. **The guard covers HTTP only.** The live guard refuses each httpx send,
+    async and sync, that does not go to the Router. It does not cover a
+    database, Redis or graph driver. The few reads of those went to the
+    local development services on this machine. Mem0 and Graphiti were
+    off, which is their default. The runner now pins them off too, because
+    their calls to the Router would pass the tap and the card unseen. The
+    Router address was the local tunnel, 127.0.0.1. The sync guard, the pin
+    and the check of the Router address came in fix round 1, after the
+    live run.
+13. **Two commits ran the data.** Repeat 1, except `reply_correction`, ran
+    on commit `382641bd6`. Repeats 2 and 3 and the rerun of
+    `reply_correction` ran on `3bac947df`. The two commits differ only in
+    the fake's saved drafts and the `replied` check. The results file now
+    records the SHA of each chunk and of each row.
+14. **The scripted suite passes by construction.** Section 3 says why. Its
+    100 percent on both arms is no evidence of accuracy.
 
 ## 6. Spend
 
@@ -234,9 +310,11 @@ decision.
 
 - **For a yes.** On email conversation the tool pack is as accurate, and it
   is about 2.3 times faster to the first text. It makes half the model
-  calls, and it costs half as much with a warm cache. It removes the hop
-  where a file name became a fact in this run. It also removes the chain of
-  agents in section 4.
+  calls, and it costs half as much with a warm cache. It also removes the
+  hop from the email assistant to other agents (section 4).
+- **What the shape does not fix.** Each shape stated a file name as content
+  once in 3 runs. The fix for that is OCR (OA-3) and the marks of OA-2,
+  not the shape.
 - **What a yes costs.** OA-7 must move the held-chat guard with the tools.
   It must load the pack per turn, or each other turn pays about 20,000 more
   input tokens. It needs a tier rule for email work.

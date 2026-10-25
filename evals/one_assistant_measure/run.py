@@ -187,6 +187,11 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     mp.setattr(settings, "litellm_master_key", key, raising=False)
     mp.setenv("LITELLM_BASE_URL", base)
     mp.setenv("LITELLM_MASTER_KEY", key)
+    # Fix round 1: Mem0 and Graphiti call the Router through their own
+    # clients, which the tap does not see and the card does not price. They
+    # are off by default, and the live run pins them off.
+    mp.setattr(settings, "mem0_enabled", False, raising=False)
+    mp.setattr(settings, "graphiti_enabled", False, raising=False)
     harness.allow = (base + "/",)
 
 
@@ -509,9 +514,24 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
 
 
 def merge(paths: list[Path], out: Path) -> dict[str, Any]:
-    """One results file from the files of several chunks of one live run."""
+    """One results file from the files of several chunks of one live run.
+
+    Each chunk keeps its own SHA, in ``chunks_run`` and on each of its rows,
+    because the chunks of one run can run on different code (fix round 1).
+    ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
     parts = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
-    data = {k: v for k, v in parts[0].items() if k not in ("rows", "summary", "stopped")}
+    data = {k: v for k, v in parts[0].items()
+            if k not in ("rows", "summary", "stopped", "sha")}
+    for p in parts:
+        for r in p["rows"]:
+            r.setdefault("sha", p.get("sha") or "")
+    data["chunks_run"] = [{"chunk": path.stem, "sha": p.get("sha") or "",
+                           "rows": len(p["rows"]),
+                           "repeats": sorted({r["repeat"] for r in p["rows"]}),
+                           "scenarios": sorted({r["scenario"] for r in p["rows"]})}
+                          for path, p in zip(paths, parts, strict=True)]
+    shas = sorted({c["sha"] for c in data["chunks_run"]})
+    data["sha"] = shas[0] if len(shas) == 1 else "mixed"
     data["rows"] = [r for p in parts for r in p["rows"]]
     data["dropped"] = [d for p in parts for d in p.get("dropped") or []]
     # Rows that a person took out of a chunk, with the reason. The report
@@ -523,6 +543,41 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     data["repeat"] = max((r["repeat"] for r in data["rows"]), default=0)
     _write(out, data)
     return data
+
+
+#: The checks that read only the stored answer and tasks of a turn. A
+#: re-score runs these again. Each other check keeps its stored value,
+#: because a results file keeps no tool arguments, cards or gateway calls.
+RESCORED = frozenset({
+    "answer_all", "answer_some", "no_name_claim", "no_reference_subject",
+    "admits_unreadable", "no_content_claim", "task_no_guess",
+})
+
+
+def rescore(data: dict[str, Any], when: str = "") -> list[str]:
+    """Run the checks of :data:`RESCORED` again on each stored row, with the
+    checks of today's scenarios. Each change goes in ``rescored``, and the
+    summary is computed again. Returns the changes."""
+    from evals.one_assistant_measure.scenarios import scenario
+
+    changes: list[str] = []
+    for r in data["rows"]:
+        turn = scenario(r["scenario"]).turns[r["turn"] - 1]
+        obs = ck.Observation(arm=r["arm"], answer=r["answer"], tasks=list(r.get("tasks") or []))
+        for c in turn.checks:
+            if c.kind not in RESCORED:
+                continue
+            new = ck.KINDS[c.kind](obs, c.arg)
+            old = r["checks"].get(c.name)
+            if new != old:
+                changes.append(f"{r['arm']} {r['scenario']}#{r['turn']} r{r['repeat']}: "
+                               f"{c.name} {old} -> {new}")
+                r["checks"][c.name] = new
+        r["passed"] = ck.passed(r["checks"])
+    data["rescored"] = {"when": when or datetime.now(UTC).date().isoformat(),
+                        "sha": _sha(), "checks": sorted(RESCORED), "changes": changes}
+    data["summary"] = summarise(data["rows"])
+    return changes
 
 
 def _preflight(router: tuple[str, str], tier: str) -> tuple[bool, str]:
@@ -551,6 +606,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--live", action="store_true", help="the real model, through the Router")
     mode.add_argument("--report", action="store_true", help="print the tables of --out")
     mode.add_argument("--merge", default="", help="a comma list of chunk files, into --out")
+    mode.add_argument("--rescore", action="store_true",
+                      help="run the answer checks again on the stored rows of --out")
     parser.add_argument("--arms", default=",".join(ARMS))
     parser.add_argument("--scenarios", default="", help="a comma list of scenario ids")
     parser.add_argument("--repeat", type=int, default=2)
@@ -580,6 +637,15 @@ def main(argv: list[str] | None = None) -> int:
         data = merge([Path(p) for p in args.merge.split(",") if p.strip()], out)
         print(report(data))
         return EXIT_PASS
+    if args.rescore:
+        data = json.loads(out.read_text(encoding="utf-8"))
+        changes = rescore(data)
+        out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"{len(changes)} checks changed")
+        for line in changes:
+            print(f"  {line}")
+        print(report(data))
+        return EXIT_PASS
     if args.scripted:
         rows, problems = run_scripted(scenarios, arms)
         for r in rows:
@@ -593,6 +659,12 @@ def main(argv: list[str] | None = None) -> int:
     router = router_env()
     if router is None:
         print("NO-GO: set LITELLM_BASE_URL and LITELLM_API_KEY, or write them in eval.env")
+        return EXIT_NO_GO
+    from evals.coding_engine.preflight import is_local
+
+    if not is_local(router[0]):
+        # Fix round 1: the Router is reached through a tunnel on this machine.
+        print(f"NO-GO: {router[0]} is not on this machine. Open the tunnel to the Console.")
         return EXIT_NO_GO
     ok, why = _preflight(router, args.tier)
     print(why)

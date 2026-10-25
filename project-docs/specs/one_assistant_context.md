@@ -4,6 +4,7 @@
 OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
+
 OA-3 is dispatchable. OA-6 is an owner gate, and its input is now ready.
 OA-7 to OA-10 wait for OA-6. Metorite: epic #445 in *AI Chat Interface*,
 with slices #446 (OA-1) to #455 (OA-10).
@@ -13,14 +14,17 @@ turns) through the one harness of the routing eval, two ways. One way
 delegates to the email assistant, as today. The other way is an eval-only
 tool pack. Fence: `tests/unit/test_one_assistant_measure.py`.
 
-The live run of 2026-10-25 ran 3 times on each arm. The arms passed 51 of
-54 turns (delegation) and 52 of 54 (pack). The median turn took 22.6 s and
-10.0 s, and the pack cost half as much. The Navy shape passed 6 of 6 on
-both arms, so no answer named CB6 or CB7 as a part.
+The live run of 2026-10-25 ran 3 times on each arm. Each arm passed 51 of
+54 turns, after a re-score with the fixed checks of fix round 1. The median
+turn took 22.6 s and 10.0 s, and the pack cost half as much. The Navy
+shape passed 6 of 6 on both arms, so no answer named CB6 or CB7 as a part.
+Each arm stated a scanned file's name as its content once in 3 runs, so
+the shape does not fix cause C2.
 
-The measure did not read `agent.run_timing` or `usage_event`, because only
-the gateway and the Console write them. The harness timed each turn and
-priced each call instead.
+The measure did not read `agent.run_timing` or `usage_event`, because the
+gateway and the Console write them. It did not read the executor's
+`executor.run_setup_ms` either. The harness timed each turn and priced
+each call instead.
 
 **As built, OA-1 and OA-2.** `acb_skills/handoff.py` owns what crosses a
 handoff. The top-level run binds `member_turns`: the member's typed words of

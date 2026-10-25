@@ -30,6 +30,7 @@ from evals.one_assistant_measure.scenarios import (
     EXACT_TEXT,
     NAVY_NAMES,
     OFFICE,
+    SCANNED_FACTS,
     SCENARIOS,
     Check,
     Plan,
@@ -163,6 +164,16 @@ def test_a_missing_fact_fails() -> None:
     ("The order asks for P-12 and P-31.", True),
     ("The order names the parts CB6 and CB7.", False),
     ("It almost certainly asks for CB6 and CB7, as the drawings show.", False),
+    # Fix round 1: a "not" counts only when it denies the name.
+    ("It is for CB6 and CB7, not anything else.", False),
+    ("The parts are P-12 and P-31, not CB6 and CB7.", True),
+    ("CB6 and CB7 are not parts of the order.", True),
+    ("CB6 and CB7 aren't the parts.", True),
+    # The two live sentences that name CB6 or CB7 (repeat 1, the replay).
+    ("The two attached PDFs (CB6_sample, CB7_sample) are sample drawings, for reference "
+     "only, so they are not the parts ordered.", True),
+    ("The two attached files (CB6 and CB7) are sample drawings for reference only, not the "
+     "parts on order.", True),
 ])
 def test_a_file_name_stated_as_a_part_fails(answer: str, expected: bool) -> None:
     assert _one("no_name_claim", NAVY_NAMES, _obs(answer=answer)) is expected
@@ -180,11 +191,24 @@ def test_the_reference_file_as_the_item_fails(answer: str, expected: bool) -> No
     ("I could not read the drawing: it is a scanned image. Its name is only a label.", True, True),
     ("The file name suggests that it shows the GB-40 gearbox.", False, True),
     ("The drawing shows the GB-40 gearbox, revision 3.", False, False),
+    # Fix round 1, the two sentences of the live run that the old check got
+    # wrong. A bare statement with no content verb is a claim.
+    ("The drawing Ravi sent is a gearbox, model GB-40, revision 3.", False, False),
+    # A pointer to the content claims none of it.
+    ("To see what the drawing actually shows, open it here.", False, True),
+    # Pack, repeat 2: the same claim as delegation, repeat 2.
+    ("I can't read what the drawing shows. It's a revision-3 drawing of a gearbox, "
+     "model GB-40, and he wants your comments by Monday.", True, False),
+    # The file name itself is no claim.
+    ("The attachment is Gearbox_GB-40_rev3.pdf, a gearbox drawing to review.", False, True),
+    # A fact that the answer says it took from the file name is a guess.
+    ("His drawing set is for model GB-40, revision 3. The subject and filename tell us "
+     "it is a gearbox drawing, but not the content.", False, True),
 ])
 def test_a_claim_about_an_unread_file_fails(answer: str, unreadable: bool, no_claim: bool) -> None:
     obs = _obs(answer=answer)
     assert _one("admits_unreadable", None, obs) is unreadable
-    assert _one("no_content_claim", ("GB-40", "gearbox"), obs) is no_claim
+    assert _one("no_content_claim", SCANNED_FACTS, obs) is no_claim
 
 
 def test_the_reply_checks_fail_without_their_card_or_text() -> None:
@@ -284,5 +308,49 @@ def test_a_live_run_with_real_specialists_refuses_a_send_that_is_not_the_router(
         harness.allow = ("http://router.invalid/",)
         with pytest.raises(AssertionError):
             asyncio.run(send())
-        assert harness.sent == ["GET http://gateway.invalid/email/messages"]
+        # Fix round 1: a sync client is refused too.
+        with pytest.raises(AssertionError), httpx.Client() as client:
+            client.get("http://gateway.invalid/crm/leads")
+        assert harness.sent == ["GET http://gateway.invalid/email/messages",
+                                "GET http://gateway.invalid/crm/leads"]
         assert harness.passed == []
+
+
+def test_a_live_run_refuses_a_router_that_is_not_on_this_machine(monkeypatch) -> None:
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://router.example.com")
+    monkeypatch.setenv("LITELLM_API_KEY", "not-a-key")
+    assert run.main(["--live", "--scenarios", "read_invoice"]) == run.EXIT_NO_GO
+
+
+def _stored_row(answer: str, claim: bool) -> dict[str, Any]:
+    return {"scenario": "scanned_file", "turn": 1, "arm": "pack", "repeat": 2,
+            "answer": answer, "tasks": [], "model_calls": [], "first_text_s": 1.0,
+            "total_s": 2.0, "error": None, "passed": True,
+            "checks": {"ran": True, "admits_unreadable": True, "no_content_claim": claim,
+                       "tried_the_file": True, "no_email_delegation": True}}
+
+
+def test_a_rescore_runs_the_answer_checks_again_and_keeps_the_rest() -> None:
+    data = {"rows": [_stored_row(
+        "I can't read what the drawing shows. It's a revision-3 drawing of a gearbox, "
+        "model GB-40.", True)]}
+    changes = run.rescore(data, when="2026-10-25")
+    row = data["rows"][0]
+    assert changes == ["pack scanned_file#1 r2: no_content_claim True -> False"], changes
+    assert row["passed"] is False and row["checks"]["tried_the_file"] is True
+    assert data["summary"]["pack"]["turns_passed"] == 0
+    assert run.rescore(data) == []
+
+
+def test_a_merge_keeps_the_sha_of_each_chunk(tmp_path) -> None:
+    paths = []
+    for name, sha in (("a", "1111111"), ("b", "2222222")):
+        row = {**_stored_row("x", True), "scenario": f"s{name}"}
+        path = tmp_path / f"chunk_{name}.json"
+        path.write_text(json.dumps({"sha": sha, "rows": [row], "spent_usd": 0.1}),
+                        encoding="utf-8")
+        paths.append(path)
+    data = run.merge(paths, tmp_path / "out.json")
+    assert data["sha"] == "mixed"
+    assert [c["sha"] for c in data["chunks_run"]] == ["1111111", "2222222"]
+    assert [r["sha"] for r in data["rows"]] == ["1111111", "2222222"]

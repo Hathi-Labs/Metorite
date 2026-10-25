@@ -32,7 +32,8 @@ What the harness replaces, and nothing more:
 * Live with ``real_specialists=True`` (WS-67 OA-5): no stand-in. Each
   specialist runs and asks the real model too. Each host HTTP send that does
   not start with a prefix of :attr:`RoutingHarness.allow` fails, and
-  :attr:`RoutingHarness.sent` records it. So a test fake must replace each
+  :attr:`RoutingHarness.sent` records it. The guard covers async and sync
+  httpx. It does not cover a database, Redis or graph driver. So a test fake must replace each
   route that a specialist's tools reach, as ``evals/one_assistant_measure``
   replaces the email gateway.
 
@@ -584,6 +585,20 @@ class RoutingHarness:
                 raise AssertionError(f"the live run may not send {request.method} {url}")
 
             mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", only_allowed)
+            # Fix round 1 of OA-5: a sync client too (a tool can use one).
+            # The guard covers httpx only: a database, Redis or graph driver
+            # does not go through it.
+            send_sync = httpx.HTTPTransport.handle_request
+
+            def only_allowed_sync(transport: Any, request: Any) -> Any:
+                url = str(request.url)
+                if any(url.startswith(prefix) for prefix in self.allow):
+                    self.passed.append(f"{request.method} {url}")
+                    return send_sync(transport, request)
+                self.sent.append(f"{request.method} {url}")
+                raise AssertionError(f"the live run may not send {request.method} {url}")
+
+            mp.setattr(httpx.HTTPTransport, "handle_request", only_allowed_sync)
         elif self.live:
             mp.setattr(executor, "_run_sub_agent_streaming", self._stand_in)
         else:
