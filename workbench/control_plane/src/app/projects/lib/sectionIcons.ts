@@ -16,6 +16,7 @@ export const SECTION_ICONS: Readonly<Record<string, string>> = {
   capacity: "Gauge",
   pulse: "HeartPulse",
   stuck: "Hourglass",
+  waiting: "Handshake",
   hygiene: "Sparkles",
   conflicts: "GitMerge",
   rebalance: "HandHelping",

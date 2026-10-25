@@ -264,7 +264,11 @@ _PROFILE_SWAP: tuple[str, str] = (
     "  as replaces. Pass sensitive=true for a fact about health, religion, caste,\n"
     "  politics, sexuality or money. Such a change asks the member once first.\n"
     "  When a colleague lookup lists several people and the member picks one,\n"
-    "  offer to save that name with profile_alias.\n",
+    "  offer to save that name with profile_alias.\n"
+    "- profile_interview: the member's get-to-know-me questions. Ask only when the\n"
+    "  block has an interview line, or when the member starts a sitting. Ask one\n"
+    "  question at a time. Save the answer with its area. When the member says stop\n"
+    "  asking, call profile_interview with stop.\n",
 )
 
 

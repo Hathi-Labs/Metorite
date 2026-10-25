@@ -20,7 +20,17 @@ import {
   withSubject,
 } from "./reportBuilder";
 
-const SEVEN = ["finished", "throughput", "outlook", "load", "capacity", "stuck", "conflicts"];
+// WS-27bn RA-3 adds `waiting`, the coordination panel of §6.8 C.
+const EIGHT = [
+  "finished",
+  "throughput",
+  "outlook",
+  "load",
+  "capacity",
+  "stuck",
+  "waiting",
+  "conflicts",
+];
 
 describe("(c) overviewState", () => {
   const state = overviewState();
@@ -38,9 +48,9 @@ describe("(c) overviewState", () => {
     expect(periodKey(state)).toBe("last_12_weeks");
   });
 
-  it("holds the seven sections, in SECTIONS order", () => {
-    expect(state.sections).toEqual(SEVEN);
-    expect([...OVERVIEW_SECTIONS]).toEqual(SEVEN);
+  it("holds the eight sections, in SECTIONS order", () => {
+    expect(state.sections).toEqual(EIGHT);
+    expect([...OVERVIEW_SECTIONS]).toEqual(EIGHT);
     const order = REPORT_SECTIONS.map((s) => s.key);
     const at = state.sections.map((k) => order.indexOf(k));
     expect(at).toEqual([...at].sort((a, b) => a - b));
@@ -53,7 +63,7 @@ describe("(c) overviewState", () => {
       weeks: 12,
       skip_current_week: false,
       include_subtree: true,
-      sections: SEVEN,
+      sections: EIGHT,
     });
   });
 

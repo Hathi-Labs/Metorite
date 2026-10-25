@@ -392,7 +392,7 @@ describe("(4) the sections sit under three labels, in SECTIONS order", () => {
     ]);
     expect(groups.map((g) => g.sections.map((s) => s.key))).toEqual([
       ["finished", "throughput"],
-      ["outlook", "load", "capacity", "stuck", "hygiene"],
+      ["outlook", "load", "capacity", "stuck", "waiting", "hygiene"],
       ["pulse", "conflicts", "rebalance"],
     ]);
     const order = REPORT_SECTIONS.map((s) => s.key);

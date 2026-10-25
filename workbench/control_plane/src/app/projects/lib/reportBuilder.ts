@@ -62,6 +62,7 @@ export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "capacity", label: "Who has the hours" },
   { key: "pulse", label: "Team pulse" },
   { key: "stuck", label: "Stuck work" },
+  { key: "waiting", label: "Waiting on people" },
   { key: "hygiene", label: "Data hygiene" },
   { key: "conflicts", label: "Where the plan conflicts" },
   { key: "rebalance", label: "Who could help" },
@@ -75,7 +76,7 @@ export function sectionName(key: string): string {
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.
  * The same lockstep test pins it. `outlook`, `capacity`, `pulse`,
- * `hygiene`, `conflicts` and `rebalance` are opt-in.
+ * `waiting`, `hygiene`, `conflicts` and `rebalance` are opt-in.
  */
 export const DEFAULT_REPORT_SECTIONS: readonly string[] = [
   "finished",
@@ -199,9 +200,11 @@ export function newBuilderState(): BuilderState {
 // ── WS-27bn R5f: Overview, the start of the one Reports app ────────────────
 
 /**
- * The seven sections of Overview, in `SECTIONS` order. The Analytics app
- * drew these seven, with the route defaults that `overviewState` copies, so
- * Overview shows the same numbers (§8 R5f rule 4). `pulse`, `hygiene` and
+ * The eight sections of Overview, in `SECTIONS` order. The Analytics app
+ * drew the first seven, with the route defaults that `overviewState` copies,
+ * so Overview shows the same numbers (§8 R5f rule 4). WS-27bn RA-3 adds
+ * `waiting`, the coordination panel of §6.8 C. Overview hides it when the
+ * scope has no agent run (`overviewShown`). `pulse`, `hygiene` and
  * `rebalance` start off. A reader turns them on in the section list.
  */
 export const OVERVIEW_SECTIONS: readonly string[] = [
@@ -211,6 +214,7 @@ export const OVERVIEW_SECTIONS: readonly string[] = [
   "load",
   "capacity",
   "stuck",
+  "waiting",
   "conflicts",
 ];
 
@@ -432,11 +436,11 @@ export function configFor(state: BuilderState): ReportConfig {
  * `NO_SUBJECT_SECTIONS`. `test_projects_report_sections_lockstep.py` reads
  * this list as text and fails when the two differ.
  */
-export const NO_SUBJECT_SECTIONS: readonly string[] = ["outlook", "hygiene"];
+export const NO_SUBJECT_SECTIONS: readonly string[] = ["outlook", "waiting", "hygiene"];
 
 /** The line under the sections when a subject turns sections off. */
 export const NO_SUBJECT_NOTE =
-  "Forecast and Data hygiene cover a whole project, so they are off for a person or team.";
+  "Forecast, Waiting on people and Data hygiene cover a whole project, so they are off for a person or team.";
 
 /** The subject chip's value for "Everyone": no subject. */
 export const EVERYONE = "";
@@ -1074,6 +1078,7 @@ const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
   load: "Where things stand",
   capacity: "Where things stand",
   stuck: "Where things stand",
+  waiting: "Where things stand",
   hygiene: "Where things stand",
   pulse: "Who needs help",
   conflicts: "Who needs help",
