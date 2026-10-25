@@ -96,6 +96,17 @@ describe("a pill that links", () => {
     expect(push).toHaveBeenCalledWith(TASK);
   });
 
+  it("says Projects by default, and the app when one is given", () => {
+    expect(pillLinkName("unknown", "Guide")).toBe("Open Guide in Projects");
+    expect(pillLinkName("unknown", "Guide", undefined, undefined, "Knowledge")).toBe("Open Guide in Knowledge");
+  });
+
+  it("draws the icon it is given in place of the kind's", () => {
+    const html = render({ kind: "unknown", label: "Guide", href: TASK, icon: "BookOpen", app: "Knowledge" });
+    expect(html).toContain('aria-label="Open Guide in Knowledge"');
+    expect(html).toContain("lucide-book-open");
+  });
+
   it("names the status for a screen reader", () => {
     expect(pillLinkName("task", "Fix it", "#2", "In progress")).toBe(
       "Open task #2 Fix it in Projects, status In progress",
