@@ -5,6 +5,12 @@ OA-1 to OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait
 for OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446
 (OA-1) to #455 (OA-10).
 
+**OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
+on, and it is off by default. The code is `acb_skills/attachment_ocr.py` and
+its child `attachment_ocr_worker.py`. The fence is
+`tests/unit/test_attachment_ocr.py`. With the flag off, both read paths are
+byte-identical.
+
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
 "specialists behind it" changes to "tool packs in it" for conversational
 work. **Composes with:** `navigation_shell.md` §7.1 (D99, one assistant),
