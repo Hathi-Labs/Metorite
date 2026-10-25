@@ -1968,7 +1968,6 @@ async def _run_sub_agent_streaming(
     # them, so no prompt and no model can leave them out. Read from the
     # PARENT's binding, on the parent's frame.
     from acb_skills.handoff import head_task
-    from acb_skills.write_artifact import artifact_context
     message_str = head_task(message_str)
     _repo_name: str | None = None
     _local_path: str | None = None

@@ -1,9 +1,24 @@
 # One assistant: context that survives, and tool packs
 
 **Status:** ✅ ACTIVE (2026-10-25). Board: **WS-67**. Decision: **D116**.
-OA-1 to OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait
-for OA-6. Metorite: epic #445 in *AI Chat Interface*, with slices #446
-(OA-1) to #455 (OA-10).
+OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-3 to
+OA-5 are dispatchable. OA-6 is an owner gate. OA-7 to OA-10 wait for OA-6.
+Metorite: epic #445 in *AI Chat Interface*, with slices #446 (OA-1) to #455
+(OA-10).
+
+**As built, OA-1 and OA-2.** `acb_skills/handoff.py` owns what crosses a
+handoff. The top-level run binds `member_turns`: the member's typed words of
+the chat, newest last, at most 8 and 6000 characters. The current turn comes
+from `assistant_profile.MEMBER_TYPED`, never from `payload["message"]`, so a
+Continue note cannot pose as the member. A paste is not the member's words.
+`head_task()` heads every delegated task with the words, the rule that they
+outrank the task, and the reply rules of OA-2. The streaming seam and the
+four batch sites call it. The tier question reads the task only
+(`task_of`). Fences: `tests/unit/test_handoff_words.py` and
+`evals/trajectories/test_handoff_words_trajectory.py`. Open: a steer that
+the gateway replays after a run died is in neither the history nor the
+typed words, so it does not reach the head. The live halves of the
+acceptance ("no CB6" in the answer, the reply marks) belong to OA-5.
 
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
 "specialists behind it" changes to "tool packs in it" for conversational
