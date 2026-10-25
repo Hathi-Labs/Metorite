@@ -2250,7 +2250,11 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 EA-13e: the strip of the board reads a count route. The chat reads
     # the same counts through a tool after EA-12e.
     ea_13e = {"agent_summary"}
-    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e, m.PLANNED
+    # WS-66 RM-1 (D114): the reminder routes. RM-3 builds the tools of
+    # calendar_events_reminders.md §5.8.
+    rm_3 = {"list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
+            "reschedule_reminder"}
+    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e | rm_3, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
