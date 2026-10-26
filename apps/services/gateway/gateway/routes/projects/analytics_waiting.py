@@ -226,8 +226,15 @@ def age_words(hours: float | None) -> str:
     return f"{round(hours / 24)} days"
 
 
+#: RA-4b. What the summary says while agent runs are off and nothing else
+#: waits. The questions and the answer time read nothing then, so "nobody is
+#: waiting" would claim more than the section knows.
+RUNS_OFF_LINE = "Agent runs are off for this organization, so no agent question is counted."
+
+
 def summary_line(
     *, questions: int, oldest_hours: float | None, reviews: int, handoffs: int,
+    on: bool = True,
 ) -> str:
     """The one plain summary of the panel (§6.8 E5). The panel, the email and
     the chat print this text, so they cannot say two things."""
@@ -249,7 +256,9 @@ def summary_line(
         parts.append("1 handoff between a person and an agent is blocked.")
     elif handoffs > 1:
         parts.append(f"{handoffs} handoffs between people and agents are blocked.")
-    return " ".join(parts) or "Nobody is waiting on a person."
+    if parts:
+        return " ".join(parts)
+    return "Nobody is waiting on a person." if on else RUNS_OFF_LINE
 
 
 def agent_of(
@@ -695,8 +704,9 @@ async def waiting_body(
     return {
         "summary": summary_line(
             questions=questions_total, oldest_hours=oldest,
-            reviews=reviews_total, handoffs=handoffs_total,
+            reviews=reviews_total, handoffs=handoffs_total, on=runs_on,
         ),
+        "on": runs_on,
         "agent_runs_seen": seen,
         "questions": questions[:MAX_NAMED],
         "questions_total": questions_total,
