@@ -22,15 +22,20 @@ and it fails closed. Any value other than empty on a box is OWNER-ONLY
 (``work_plan.md`` §6 D4).
 
 OA-7a ships data and the reader, dark. Nothing calls :func:`packs_on` yet,
-and no run loads a pack. OA-7b builds the guarded builder, OA-7c the choice
-of layer (a) and the sticky state, OA-7e ``load_skill_tools`` and OA-7f the
-pack items of the turn-kind question. This module is pure data and text: it
-never imports the orchestrator or the gateway, and it opens no connection.
-Fence: ``tests/unit/test_tool_packs_registry.py``.
+and no run loads a pack. OA-7b builds the guarded builder
+(``orchestrator._tool_injection._pack_tools``) and :func:`owner_scope`, the
+scope of the owner for each pack call. OA-7c adds the choice of layer (a)
+and the sticky state, OA-7e ``load_skill_tools`` and OA-7f the pack items of
+the turn-kind question. This module never imports the orchestrator or the
+gateway, and it opens no connection. Fences:
+``tests/unit/test_tool_packs_registry.py`` and
+``tests/unit/test_pack_guards.py``.
 """
 from __future__ import annotations
 
+import contextlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +50,7 @@ __all__ = [
     "MAX_PACK_TOOLS",
     "PACKS",
     "Pack",
+    "owner_scope",
     "owner_tools",
     "pack",
     "packs_on",
@@ -216,6 +222,33 @@ def owner_tools(slug: str, module: Any) -> list[Any]:
             built.append(tool)
     by_name = {getattr(fn, "__name__", ""): fn for fn in built}
     return [by_name[name] for name in SKILL_FAMILIES[slug]["tools"] if name in by_name]
+
+
+@contextlib.contextmanager
+def owner_scope(owner: str, held: bool) -> Iterator[None]:
+    """The scope of the owner for ONE pack call (WS-67 OA-7b, §4.2.3 part 2).
+
+    Inside the block, the artifact context names *owner* as ``agent_name``
+    and binds ``no_egress`` to *held*. Every other key stays the key of the
+    run that called the tool. This is the idiom of
+    ``agent_tools._delegate_held``: ``artifact_context_scope`` gives the
+    frame its own context back when the block ends, also after a raise.
+
+    A pack tool so runs as its owner would run it in a sub-run of this chat:
+    each guard that reads ``agent_name`` or ``no_egress`` reads the owner's
+    answer. *held* comes from the server, once per run, and never from a
+    tool argument. Any value but an explicit ``False`` binds ``no_egress``,
+    so the scope fails closed.
+
+    The builder puts this scope OUTSIDE the permission gate, so the gate
+    reads the owner too. Fence: ``tests/unit/test_pack_guards.py``.
+    """
+    from acb_skills.egress import NO_EGRESS_KEY
+    from acb_skills.write_artifact import artifact_context_scope, derive_artifact_context
+
+    with artifact_context_scope():
+        derive_artifact_context(agent_name=str(owner), **{NO_EGRESS_KEY: held is not False})
+        yield
 
 
 # ── The flag (§4.2.7) ───────────────────────────────────────────────────────
