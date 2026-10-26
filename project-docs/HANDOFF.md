@@ -159,7 +159,7 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 ### H-413 · Build WS-67 OA-1 to OA-5: the member's words survive the handoff, OCR, chat constraints, then measure · [AGENT]
-- **Check:** `grep -n "OA-5" project-docs/work_plan.md` on the WS-67 row says BUILT. Then delete this entry.
+- **Check:** the WS-67 row of `project-docs/work_plan.md` says that OA-3, OA-4 and OA-5 are each BUILT. Then delete this entry. OA-1, OA-2 and OA-5 are BUILT (2026-10-25).
 - **Why:** D116. The Navy-order chat of 2026-10-25 lost the member's note between the orchestrator and the email assistant, and named parts from a sample file's name.
 - **Do this:** follow `specs/one_assistant_context.md` §4 and §5 in order: OA-1 and OA-2 in one PR, then OA-3 (OCR, HIGH tier), then OA-4, then OA-5 (the report). Stop at OA-6, which is the owner's decision. Update the Metorite tasks #446 to #450 as each slice merges (epic #445).
 - **Authority:** `specs/one_assistant_context.md` · D116 · board WS-67.
