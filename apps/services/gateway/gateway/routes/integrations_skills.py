@@ -21,9 +21,7 @@ agent, because no run is injected with one.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -69,42 +67,21 @@ def _platform_tools_by_name() -> dict[str, Any]:
     return out
 
 
-#: The module of each pack owner, imported once for this process (OA-7a).
-_OWNER_MODULES: dict[str, Any] = {}
-
-
 def _owner_module(owner: str) -> Any | None:
     """The ``agents.py`` module of in-repo agent *owner*, or None.
 
-    The path comes from the STATIC ``_AGENT_REGISTRY`` only, never from a
-    dynamic registration, because a pack owner is an in-repo agent. The
-    module is imported once for this process. The catalog reads the
-    signature and the docstring of each tool for the price, and it calls no
-    tool. A run never uses this module: OA-7b's builder loads the owner
-    for a run (``one_assistant_context.md`` §4.2.8).
+    WS-67 OA-7b: the ONE loader of a pack owner is
+    ``orchestrator._tool_injection._pack_owner_module``, which the run
+    builder uses too. It imports the module once for this process, from the
+    STATIC ``_AGENT_REGISTRY`` only. It keeps a failed import as None, so a
+    catalog GET does not import a broken owner again (OA-7a verifier F2).
+    An owner that raises ``SystemExit`` at import gives None and cannot stop
+    the process (F3). The catalog reads the signature and the docstring of
+    each tool for the price, and it calls no tool.
     """
-    if owner in _OWNER_MODULES:
-        return _OWNER_MODULES[owner]
-    from gateway.routes.agent import _AGENT_REGISTRY
+    from orchestrator._tool_injection import _pack_owner_module
 
-    entry = next((a for a in _AGENT_REGISTRY if a.get("name") == owner), None)
-    local = str((entry or {}).get("local_path") or "")
-    path = Path(local) / "agents.py"
-    if not local or not path.is_file():
-        return None
-    name = "_skills_catalog_owner_" + owner.replace("-", "_")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(name, None)
-        raise
-    _OWNER_MODULES[owner] = module
-    return module
+    return _pack_owner_module(owner)
 
 
 def _pack_tools_by_name() -> dict[str, Any]:

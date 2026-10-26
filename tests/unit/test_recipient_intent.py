@@ -33,6 +33,7 @@ from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.automation import reply_card as rc
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 
 ORG = F.ORG
 MEMBER = "owner@fracktal.in"

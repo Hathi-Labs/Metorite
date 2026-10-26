@@ -36,6 +36,13 @@ import pytest
 from acb_skills import egress as eg
 from acb_skills import reply_card as rcard
 
+# WS-67 OA-7b: each test runs with the module's own tools and with the tools
+# of the pack builder. ``EmailAgentView`` gives the pack form in the pack mode.
+from tests.unit._held_card_fakes import (  # noqa: F401 - the two modes
+    EmailAgentView,
+    email_tool_mode,
+)
+
 REPO = Path(__file__).resolve().parents[2]
 _AGENT = REPO / "apps" / "agents" / "agent-email-assistant" / "agents.py"
 
@@ -50,7 +57,7 @@ def _load_email():
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    return EmailAgentView(mod)
 
 
 agents = _load_email()

@@ -19,8 +19,10 @@ as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import os
+from collections.abc import Iterable
 from typing import Any
 
 from acb_common import get_logger
@@ -2794,6 +2796,370 @@ def _apply_no_egress(
     )
 
 
+# ── Tool packs: the guarded builder (WS-67 OA-7b, D117) ─────────────────────
+# ``one_assistant_context.md`` §4.2.3. A pack tool runs as its owner would run
+# it in a sub-run of this chat. Three parts make that hold:
+#
+# 1. The held answer, at run start (:func:`_pack_held`): the answer that a
+#    delegation to the owner binds now, from the server-side run context. A
+#    call after the chat read mail in this turn runs held too (owner choice,
+#    STRICT, OA-7b fix round 1).
+# 2. The scope of the owner, per call (``tool_packs.owner_scope``), as the
+#    OUTERMOST wrapper, with the permission gate inside it.
+# 3. The held set, at load: a held pack drops each tool that :func:`_is_egress`
+#    names. ⚠️ This drop is the ONLY held-set control of a pack run. A pack
+#    run gets no ``EgressGuardProvider``, so no ``WithholdEgressTools`` and no
+#    ``RefuseEgressTools`` stand behind it (audit of 2026-10-26, §4.5).
+#
+# ONE seam: the builder calls ``_is_egress``, ``_run_no_egress``,
+# ``_gate_injected_tool`` and ``artifact_context_scope`` (through
+# ``owner_scope``). It copies none of their bodies. No live caller: OA-7c
+# wires it into runs. Fence: ``tests/unit/test_pack_guards.py``.
+
+#: The attribute that names the owner of a pack tool. ``_inject_mcp_servers``
+#: reads it, so a run that holds a pack of an agent of
+#: :data:`UNTRUSTED_INPUT_AGENTS` gets no registry MCP server.
+PACK_OWNER_ATTR = "__cc_pack_owner__"
+
+#: The answer of a pack tool that is called outside the run that built it,
+#: or on a frame with no run. The held answer belongs to one run, so the tool
+#: never acts in another.
+PACK_CALL_REFUSED = (
+    "{tool} did not run. It acts only in the run that loaded it. "
+    "Answer with what you have."
+)
+
+#: The module of each pack owner, imported once for this process.
+_PACK_OWNER_MODULES: dict[str, Any] = {}
+
+#: How long the loader keeps a failed import of an owner, in seconds. A build
+#: in that time gets no module and imports nothing. After it, the next build
+#: tries again, so a fixed owner loads with no restart.
+PACK_OWNER_RETRY_S = 60.0
+
+#: The clock time of the last failed import of each owner.
+_PACK_OWNER_FAILED: dict[str, float] = {}
+
+
+def _pack_clock() -> float:
+    """The clock of the failure window. A seam, so a test sets the time."""
+    import time
+
+    return time.monotonic()
+
+
+@dataclasses.dataclass(frozen=True)
+class PackBuild:
+    """What :func:`_pack_tools` built for one pack and one run."""
+
+    slug: str
+    owner: str
+    #: The held answer of this run. OA-7c adds the hold note to the rules.
+    held: bool
+    #: The guarded tools, in the order of the family.
+    tools: tuple[Any, ...]
+    #: The names that the held drop took out (the held set).
+    dropped: tuple[str, ...] = ()
+    #: The names that the run already holds, so the pack left them out.
+    skipped: tuple[str, ...] = ()
+
+
+def _pack_owner_module(owner: str) -> Any | None:
+    """The ``agents.py`` module of the in-repo agent *owner*, or None.
+
+    THE one loader of a pack owner, for the run builder and for the skills
+    catalog (``gateway/routes/integrations_skills.py``). It imports the
+    module once for this process and keeps it. It keeps a failure for
+    :data:`PACK_OWNER_RETRY_S`, so a broken owner costs one import in that
+    window, never one for each build or each catalog read. The path comes
+    from the STATIC ``_AGENT_REGISTRY`` only, never from a dynamic
+    registration, because a pack owner is an in-repo agent.
+    """
+    if owner in _PACK_OWNER_MODULES:
+        return _PACK_OWNER_MODULES[owner]
+    failed_at = _PACK_OWNER_FAILED.get(owner)
+    if failed_at is not None and _pack_clock() - failed_at < PACK_OWNER_RETRY_S:
+        return None
+    module = _import_pack_owner(owner)
+    if module is None:
+        _PACK_OWNER_FAILED[owner] = _pack_clock()
+    else:
+        _PACK_OWNER_MODULES[owner] = module
+        _PACK_OWNER_FAILED.pop(owner, None)
+    return module
+
+
+def _import_pack_owner(owner: str) -> Any | None:
+    """Import the module of *owner* from its registry path, or None.
+
+    A module that raises at import gives None and a warning. ``SystemExit``
+    counts as such a failure, so an owner that calls ``sys.exit`` cannot stop
+    the process. ``KeyboardInterrupt`` and the other ``BaseException`` kinds
+    still propagate.
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    try:
+        from gateway.routes.agent import _AGENT_REGISTRY
+    except Exception as exc:  # no gateway in this process: no owner
+        _log.warning("executor.pack_owner_unavailable", owner=owner,
+                     error_type=type(exc).__name__)
+        return None
+    entry = next((a for a in _AGENT_REGISTRY if a.get("name") == owner), None)
+    local = str((entry or {}).get("local_path") or "")
+    path = Path(local) / "agents.py"
+    if not local or not path.is_file():
+        _log.warning("executor.pack_owner_unavailable", owner=owner, error_type="no_path")
+        return None
+    name = "_tool_pack_owner_" + owner.replace("-", "_")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except (Exception, SystemExit) as exc:
+        sys.modules.pop(name, None)
+        _log.warning("executor.pack_owner_import_failed", owner=owner,
+                     error_type=type(exc).__name__)
+        return None
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
+async def _pack_held(owner: str, run_ctx: Any) -> bool:
+    """The held answer of a pack of *owner* in the run of *run_ctx*.
+
+    It is the answer that a delegation to the owner binds now, and the run
+    reads it when it builds the pack:
+
+    * :func:`_run_no_egress` for the owner, with the run as the parent. That
+      is the streaming seam of a specialist tool (``executor.py``,
+      ``_run_sub_agent_streaming``).
+    * The mark of the chat session in Redis (``session_mark_state``), as
+      ``agent_tools.call_agent`` reads it. A pack FAILS CLOSED where a
+      delegation does not: a Redis fault reads as held (fix round 1).
+
+    It fails closed. An empty run context is held, because a pack acts only
+    in a bound run. A run with no tenant or no session is held too, because
+    no mark can be read or written for it. The org and the session come from
+    the server-bound run, never from a request field or a tool argument (R5).
+    """
+    if not run_ctx:
+        return True
+    try:
+        from acb_skills.egress import _session_of
+    except ImportError:  # fail closed: no reader means held
+        return True
+    if _session_of(run_ctx) is None:
+        return True
+    if _run_no_egress(owner, run_ctx):
+        return True
+    return await session_mark_state(run_ctx, fail_closed=True) != MARK_CLEAR
+
+
+async def _pack_tools(
+    slug: str, run_ctx: Any, *, holds: Iterable[str] = (), module: Any = None,
+) -> PackBuild | None:
+    """The guarded tools of pack *slug* for the run of *run_ctx* (WS-67 OA-7b).
+
+    *run_ctx* is the artifact context of the run that loads the pack, read
+    on its own frame at run start. *holds* names the tools that the run
+    already holds: the pack leaves each of them out, so a pack tool never
+    shadows a tool of the run. ``run_tools`` of *run_ctx* counts too.
+    *module* is for a test that patched the owner module. A run passes
+    none, and the builder loads the owner once for the process
+    (:func:`_pack_owner_module`).
+
+    The tools are the owner's own function objects (``tool_packs.owner_tools``),
+    each in :func:`_pack_call`. A held pack drops each tool that
+    :func:`_is_egress` names, and that drop is the only held-set control of a
+    pack run. None for a slug that is no pack. An owner that does not load,
+    and a run context with no ``run_id``, give a held build with no tool.
+    ``run_id`` keys the run check of :func:`_pack_call`. A client can set it
+    (``gateway/routes/agent.py``, ``req.run_id``), so OA-7c must key the
+    check on a value that the server mints (``one_assistant_context.md``,
+    the OA-7c conditions).
+    """
+    import inspect
+
+    from acb_skills import tool_packs
+
+    found = tool_packs.pack(slug)
+    if found is None:
+        return None
+    owner = found.owner
+    run_id = str((run_ctx or {}).get("run_id") or "")
+    if not run_id:  # the run check needs a key, so no key builds nothing
+        _log.warning("executor.pack_refused", pack=slug, reason="no_run_id")
+        return PackBuild(slug=slug, owner=owner, held=True, tools=())
+    source = module if module is not None else _pack_owner_module(owner)
+    if source is None:
+        return PackBuild(slug=slug, owner=owner, held=True, tools=())
+    held = await _pack_held(owner, run_ctx)
+    taken = {str(n) for n in holds} | {str(n) for n in (run_ctx or {}).get("run_tools") or ()}
+    tools: list[Any] = []
+    dropped: list[str] = []
+    skipped: list[str] = []
+    for fn in tool_packs.owner_tools(slug, source):
+        name = _tool_name(fn)
+        if name in taken or not inspect.iscoroutinefunction(fn):
+            skipped.append(name)
+        elif held and _is_egress(fn):
+            dropped.append(name)
+        else:
+            tools.append(_pack_call(fn, owner, held, run_id))
+    _log.info("executor.pack_built", pack=slug, owner=owner, held=held,
+              tools=len(tools), dropped=sorted(dropped), skipped=sorted(skipped))
+    return PackBuild(slug=slug, owner=owner, held=held, tools=tuple(tools),
+                     dropped=tuple(dropped), skipped=tuple(skipped))
+
+
+def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
+    """ONE pack tool: the scope of the owner outside, the gate inside.
+
+    Each call, in this order:
+
+    1. It refuses a frame of another run, or of no run (the held answer
+       belongs to one run).
+    2. STRICT (owner, fix round 1): when the chat read mail since the build
+       (``read_untrusted_answer``), this call is held although the build was
+       open. An egress tool then answers the held answer and does not run.
+    3. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
+       BEFORE the tool body runs (EM-G11f3, as before an email sub-run).
+    4. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
+       the owner, so an owner's write asks its own card and never the
+       untrusted card too.
+    5. It closes the run's profile writes, also after a raise (PZ-6a).
+    6. It writes the email working set from the call (§7.1.1).
+
+    ``functools.wraps`` keeps the name, the docstring, ``__tool_risk__`` and
+    ``__wrapped__``, so the signature and the card-bound pin read the owner's
+    own function. The wrapper carries ``__cc_gated__``, so a later assembly
+    (``_gate_own_maf_tools``) never gates it a second time and never shows a
+    second card. :data:`PACK_OWNER_ATTR` names the owner.
+    """
+    from acb_skills.egress import _register_platform_wrapper
+    from acb_skills.tool_packs import owner_scope
+
+    gate_on = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() != (
+        "approve_all"
+    )
+    gated = _gate_injected_tool(fn) if gate_on else fn
+    name = _tool_name(fn)
+
+    @functools.wraps(gated)
+    async def _pack_tool(*args: Any, **kwargs: Any) -> Any:
+        from acb_skills.write_artifact import artifact_context
+
+        ctx = artifact_context()
+        if not ctx or str(ctx.get("run_id") or "") != run_id:
+            _log.warning("executor.pack_call_refused", tool=name, owner=owner)
+            return PACK_CALL_REFUSED.format(tool=name)
+        held_now = held or read_untrusted_answer(ctx)
+        if held_now and not held and _is_egress(fn):
+            return _held_in_turn(owner, name)
+        await _mark_pack_session(owner, ctx)
+        try:
+            with owner_scope(owner, held_now):
+                result = await gated(*args, **kwargs)
+        finally:
+            _close_pack_profile_writes()
+        await _record_pack_call(owner, ctx, name, _call_args(fn, args, kwargs), result)
+        return result
+
+    _pack_tool.__cc_gated__ = True  # type: ignore[attr-defined]
+    setattr(_pack_tool, PACK_OWNER_ATTR, owner)
+    return _register_platform_wrapper(gated, _pack_tool)
+
+
+def _held_in_turn(owner: str, name: str) -> str:
+    """The answer of an egress pack tool after the chat read mail in this
+    turn (STRICT, fix round 1). The build was open, so the tool is on the
+    list, and it does not run. The text is the held answer of a pack call
+    (``egress.EGRESS_HELD_PACK_ANSWER``), read in the scope of the owner."""
+    from acb_skills.egress import egress_held_answer
+    from acb_skills.tool_packs import owner_scope
+
+    _log.info("executor.pack_call_held", tool=name, owner=owner)
+    with owner_scope(owner, True):
+        return egress_held_answer(name)
+
+
+async def _mark_pack_session(owner: str, ctx: Any) -> None:
+    """Mark the chat session before a call of a pack of *owner* (EM-G11f3).
+
+    The executor's own helper, which marks before an email sub-run starts.
+    It marks only for an owner of :data:`UNTRUSTED_INPUT_AGENTS`, keys on the
+    bound tenant and the session of *ctx*, and never raises."""
+    from orchestrator.executor import _mark_untrusted_session
+
+    await _mark_untrusted_session(owner, ctx)
+
+
+def _close_pack_profile_writes() -> None:
+    """Close the run's profile writes after a pack call. Never raises."""
+    from orchestrator.executor import _close_profile_writes
+
+    _close_profile_writes()
+
+
+def _call_args(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The arguments of one call by name. A model passes keywords, and a
+    positional call gets the names of the owner's signature."""
+    import inspect
+
+    try:
+        return dict(inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+
+
+async def _record_pack_call(
+    owner: str, ctx: Any, name: str, args: dict[str, Any], result: Any,
+) -> None:
+    """Write the email working set of the chat after one pack call (§7.1.1).
+
+    The executor's two functions, which the delegated path calls after an
+    email sub-run. An owner other than the email assistant writes nothing.
+    The card event goes to the run's own queue, or nowhere. Never raises."""
+    try:
+        from orchestrator import executor as ex
+
+        before, _preamble = await ex._email_working_set_for(owner, ctx)
+        if before is None:
+            return
+        put = ex._emit_to_run(str(ctx.get("session_id") or "") or None)
+
+        async def _emit(event: dict[str, Any]) -> None:
+            put(event)
+
+        call = {"id": "", "name": name, "args": args, "result": str(result), "success": True}
+        await ex._record_email_working_set(owner, ctx, before, [call], _emit)
+    except Exception as exc:  # the working set never costs the call
+        _log.warning("executor.pack_ws_unwritten", tool=name, error_type=type(exc).__name__)
+
+
+def _holds_untrusted_pack(agent: Any) -> bool:
+    """True when *agent* holds a tool of a pack whose owner reads stranger
+    text (:data:`UNTRUSTED_INPUT_AGENTS`). Such a run gets no registry MCP
+    server, as the owner's own run gets none. It reads the owner, not the
+    pack, so ``email-setup`` counts as well as ``email``, and so does a pack
+    that stays on for a later turn (OA-7c sticky packs)."""
+    for _label, pool in _own_tool_pools(agent):
+        for tool in pool:
+            owner = getattr(tool, PACK_OWNER_ATTR, None) or getattr(
+                getattr(tool, "func", None), PACK_OWNER_ATTR, None)
+            if owner in UNTRUSTED_INPUT_AGENTS:
+                return True
+    return False
+
+
 def merge_mcp_servers(
     agent: Any, servers: dict[str, dict[str, Any]], *, override: bool,
 ) -> None:
@@ -2910,6 +3276,12 @@ async def _inject_mcp_servers(
         # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
         # a server, and no check here can prove that a server cannot fetch.
         _log.info("mcp.untrusted_input_agent_skipped", agent=agent_name)
+        return
+    if _holds_untrusted_pack(agent):
+        # WS-67 OA-7b (§4.2.3): a run that holds the email pack reads mail
+        # in its own run, so it gets no server either. Packs load before
+        # this step (OA-7c).
+        _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
         return
 
     org = organization_id or _run_org_or_none()

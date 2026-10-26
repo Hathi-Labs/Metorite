@@ -27,6 +27,7 @@ from acb_skills import egress as eg
 from acb_skills import held_card as H
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 
 agents = F.load_email_agent("ea_held_settings")
 
@@ -155,6 +156,12 @@ async def test_with_the_switch_off_the_tool_is_as_before(gw, monkeypatch) -> Non
     did before §21 (the held run does not even hold the tool then)."""
     F.flag_off(monkeypatch)
     assert eg.is_egress_tool(agents.update_assistant_settings) is True
+    if F.pack_mode():
+        # OA-7b: a held pack drops the tool with the switch off (H-374).
+        with pytest.raises(F.NotInPack):
+            await agents.update_assistant_settings(account_id=F.BOX, auto_run=False)
+        assert gw.cards == [] and gw.puts == []
+        return
     out = await agents.update_assistant_settings(account_id=F.BOX, auto_run=False)
     assert out.startswith("Assistant settings updated")
     assert gw.cards == []

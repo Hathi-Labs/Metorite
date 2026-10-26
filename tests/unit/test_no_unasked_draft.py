@@ -27,7 +27,10 @@ import re
 import pytest
 from acb_skills import handoff as h
 
-from tests.unit._held_card_fakes import load_email_agent
+from tests.unit._held_card_fakes import (  # noqa: F401 - OA-7b: owner and pack
+    email_tool_mode,
+    load_email_agent,
+)
 
 #: The four sentences of the rule. Each must reach each path whole.
 SENTENCES = (
