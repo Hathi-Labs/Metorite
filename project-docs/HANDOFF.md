@@ -49,6 +49,41 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-416 · Install the new staging flag tool as root, so the assistant profile can turn on in staging · [OWNER]
+- **Check:** on the dev box (srv1747539), run
+  `cmp /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag`.
+  If it exits 0, and
+  `sudo -n /usr/local/sbin/acb-staging-flag --list` shows
+  `ASSISTANT_PROFILE_ENABLED=true`, delete this entry.
+- **Why:** PZ-25 (#1330) put `ASSISTANT_PROFILE_ENABLED` and
+  `ASSISTANT_PROFILE_ORGS` on the allowlist of the tool. The copy in
+  `/usr/local/sbin` is the copy of 2026-10-18, so it refuses both names. On
+  2026-10-25 an agent got "refused: ASSISTANT_PROFILE_ENABLED is not on the
+  feature-flag allowlist". Production is on since 2026-10-25 by the owner's
+  word, and staging stays off until this step.
+- **Do this (owner):** open a root shell on srv1747539, in the hPanel browser
+  terminal or with `sudo -i`. Run this one line:
+
+      install -o root -g root -m 755 /opt/acb/app/deploy/hostinger/staging/acb-staging-flag /usr/local/sbin/acb-staging-flag
+
+  The sudoers line `/etc/sudoers.d/acb-staging-flag` is already there, so the
+  one line is enough. Then tell the agent.
+- **Then (agent):** run
+  `sudo -n /usr/local/sbin/acb-staging-flag set ASSISTANT_PROFILE_ENABLED true`.
+  Leave `ASSISTANT_PROFILE_ORGS` empty, so each organization gets it, as in
+  production. Check that `/version` and `/health` answer on
+  `api.dev.metorite.com`. Report the act and the evidence.
+- **Decide (owner), once:** each change to the allowlist needs this root step
+  again. One way to remove it: the root staging apply of `vps_apply.sh`
+  installs the tool when the file in the checkout differs (`cmp`, then
+  `install`). The cost: root then copies a file that `acb` can write. `acb` is
+  already root-equivalent through the `docker` group (see the README of
+  `deploy/hostinger/staging/`), so the cost is small today. It grows when
+  `acb` leaves `docker`. Say yes or no, and an agent builds it.
+- **Authority:** owner, 2026-10-25, in chat: turn the profile on in staging
+  for all organizations, then in production.
+- **Added:** 2026-10-26
+
 ### H-335 · Finish the staging box: DNS, two OAuth clients, one sudo run · [OWNER]
 - **Check:** `curl -s https://api.dev.metorite.com/version` answers a `sha` equal
   to `git rev-parse origin/staging`. If it does, delete this entry.
@@ -159,17 +194,10 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 ### H-413 · Build WS-67 OA-1 to OA-5: the member's words survive the handoff, OCR, chat constraints, then measure · [AGENT]
-- **Check:** `grep -n "OA-5" project-docs/work_plan.md` on the WS-67 row says BUILT. Then delete this entry.
+- **Check:** the WS-67 row of `project-docs/work_plan.md` says that OA-3, OA-4 and OA-5 are each BUILT. Then delete this entry. OA-1, OA-2 and OA-5 are BUILT (2026-10-25).
 - **Why:** D116. The Navy-order chat of 2026-10-25 lost the member's note between the orchestrator and the email assistant, and named parts from a sample file's name.
 - **Do this:** follow `specs/one_assistant_context.md` §4 and §5 in order: OA-1 and OA-2 in one PR, then OA-3 (OCR, HIGH tier), then OA-4, then OA-5 (the report). Stop at OA-6, which is the owner's decision. Update the Metorite tasks #446 to #450 as each slice merges (epic #445).
 - **Authority:** `specs/one_assistant_context.md` · D116 · board WS-67.
-- **Added:** 2026-10-25 · email single-mailbox session
-
-### H-414 · Verify the nightly release of 2026-10-25 · [AGENT]
-- **Check:** `curl -s https://api.metorite.com/version` shows an `applied_sha` that has `a03c1c081` as an ancestor. If it does, and the checks below pass, delete this entry.
-- **Why:** #1321 (H-406), #1324 (D115), #1325 (H-411, H-410, H-286) and #1326 (H-382) merged on 2026-10-25 and are on staging at `a03c1c081`. They have no migration.
-- **Do this:** read the `deploy.yml` scheduled run. Confirm that `acb-gateway` restarted after it and that `email_held_card_send` still reads True. Report the SHA and the log lines to the owner.
-- **Authority:** CLAUDE.md §4, the daily release.
 - **Added:** 2026-10-25 · email single-mailbox session
 
 ### H-415 · After single mailbox: the shared mailbox SM-3 to SM-9, then multiple mailboxes · [AGENT]
@@ -183,7 +211,7 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** the next chat-speed PR after #1323 names WS-67 and `specs/one_assistant_context.md` §7. When it does, delete this entry.
 - **Why:** WS-67 (D116) may remove delegation for email conversation (OA-7). #1323 lists two next slices on the delegated path: "a delegated agent still loads twice and streams no text", and "skip the orchestrator rewrite of a delegated answer". Built for email conversation, that work can be thrown away after OA-7.
 - **Do this:**
-  1. Build those two slices for the paths that stay: the heavy-job sub-agent (OA-9), scheduled jobs and workflows. Or wait for OA-6.
+  1. Build those two slices for the paths that stay: the dynamic sub-agents of OA-9, scheduled jobs and workflows. OA-6 is decided (D117, 2026-10-26), so do not build them for conversational turns. A dynamic sub-agent that streams its text and loads once makes a parallel fan-out faster.
   2. "Fewer model rounds per email run" needs evals first. Use the OA-5 harness, and do not build a second one.
   3. Keep the names and fields of `agent.run_timing` and `executor.run_setup_ms` stable. OA-5 reads them.
   4. Expect OA-1 to add input tokens to a delegated run, and OA-3 (OCR) to add time to `read_attachment`.

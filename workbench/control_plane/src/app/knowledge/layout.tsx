@@ -441,6 +441,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   return (
     <KnowledgeContext.Provider value={context}>
       <ShellJob id="write-page" onOpen={() => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }))} />
+      {/* KC-8e: the two entity jobs. No writable space, or a refused types read: nothing opens. */}
+      <ShellJob id="add-product" onOpen={() => canAdd && requestLeave(() => openAddEntity("product"))} />
+      <ShellJob id="add-topic" onOpen={() => canAdd && requestLeave(() => openAddEntity("topic"))} />
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <AppTopBar
           rail={{ open: rail.open, onToggle: rail.toggle, noun: "the spaces" }}

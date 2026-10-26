@@ -12,7 +12,14 @@
  * direction 2026-09-17: derive the temporal shape from the activity spine,
  * `estimate_mins` and `due_at`. Every string below says "estimated" where it
  * means estimated, and none says "logged", "actual" or "tracked".
+ *
+ * ⚠️ **WS-27bn RA-6: the forecast is by COUNT** (`projects_reports.md` §6.8
+ * B). The server runs the past weeks again 2,000 times and sends the 50% and
+ * 85% dates, the converge line and one sentence. This file computes no date.
+ * It chooses words, and it places the two dates on a track.
  */
+import { accentForSlot, type CategoricalAccent } from "@/lib/categorical";
+
 import type { CapacityForecast, OutlookReport, VelocityForecast } from "./api";
 
 const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
@@ -120,20 +127,28 @@ export function headlineVerdict(o: OutlookReport): OutlookLine {
       tone: "good",
     };
   }
+  // WS-27bn RA-6. The server's sentence comes first (§6.8 E5). An older
+  // server sends none, and the old words stand in.
+  const said = typeof v.summary === "string" && v.summary ? v.summary : null;
   if (v.verdict === "not_converging") {
     // ⚠️ The loudest state the product has, and it earns it: no completion
     // date exists, and the reason is one subtraction the reader should not
     // have to do.
     return {
       headline: "Not converging",
-      detail: `Work is arriving faster than it is finished — adding ${v.created_per_week} a week against ${v.finished_per_week} finished. No completion date exists at this rate.`,
+      detail:
+        said ??
+        `Work is arriving faster than it is finished — adding ${v.created_per_week} a week against ${v.finished_per_week} finished. No completion date exists at this rate.`,
       tone: "bad",
     };
   }
   if (v.verdict === "no_history") {
+    // WS-27bn RA-6: the §5 word is "Not enough history".
     return {
-      headline: "Too early to forecast",
-      detail: `${v.remaining_tasks} open, and fewer than three finished in ${v.weeks_sampled} weeks. Not enough to read a rate from.`,
+      headline: "Not enough history",
+      detail:
+        said ??
+        `${v.remaining_tasks} open, and too few finished in ${v.weeks_sampled} weeks. Not enough to read a rate from.`,
       tone: "quiet",
     };
   }
@@ -143,7 +158,9 @@ export function headlineVerdict(o: OutlookReport): OutlookLine {
     return {
       headline: `${slip} days late`,
       detail:
-        `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan.planned_finish)}, clearing ${v.net_per_week} a week net.` +
+        (said
+          ? `${said} The plan is ${shortDate(o.plan.planned_finish)}.`
+          : `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan.planned_finish)}, clearing ${v.net_per_week} a week net.`) +
         planCaveat(o),
       tone: slip > 14 ? "bad" : "warn",
     };
@@ -151,15 +168,62 @@ export function headlineVerdict(o: OutlookReport): OutlookLine {
   if (typeof slip === "number" && slip < 0) {
     return {
       headline: `${Math.abs(slip)} days early`,
-      detail: `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan?.planned_finish)}.`,
+      detail: said
+        ? `${said} The plan is ${shortDate(o.plan?.planned_finish)}.`
+        : `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan?.planned_finish)}.`,
       tone: "good",
     };
   }
   return {
     headline: `On track for ${shortDate(v.finish_date)}`,
-    detail: `${v.remaining_tasks} open, clearing ${v.net_per_week} a week net after new work arriving.`,
+    detail:
+      said ??
+      `${v.remaining_tasks} open, clearing ${v.net_per_week} a week net after new work arriving.`,
     tone: "good",
   };
+}
+
+/**
+ * WS-27bn RA-6 — the rule of the forecast that is on screen, for its
+ * `InfoTip`, so a keyboard and a touch reach it (§6.8 E6). `null` when there
+ * is nothing to explain. Each figure in it is the server's.
+ */
+export function forecastRule(v: VelocityForecast | null | undefined): string | null {
+  if (!v?.verdict || v.verdict === "nothing_left") return null;
+  const weeks = v.weeks_sampled ?? 6;
+  const runs = (v.trials ?? 2000).toLocaleString("en-US");
+  const cap = v.cap_weeks ?? 52;
+  if (v.verdict === "no_history") {
+    const need = v.min_finished ?? 3;
+    const needWeeks = v.min_finish_weeks ?? 2;
+    return (
+      `A forecast needs ${need} finished tasks in the last ${weeks} weeks,` +
+      ` in ${needWeeks} weeks or more.` +
+      " With fewer, the runs would say more than the history knows."
+    );
+  }
+  if (v.verdict === "not_converging" && v.reason === "cap") {
+    // RA-6 fix round 1: an 85% test, so no mean rate is named.
+    return (
+      `Not converging: fewer than 85% of ${runs} runs finish within ${cap}` +
+      " weeks. A steadier flow of finished tasks, or smaller tasks, brings" +
+      " the 85% date closer."
+    );
+  }
+  if (v.verdict === "not_converging") {
+    return (
+      "Not converging: new work arrives at least as fast as work finishes." +
+      " The rate that converges it is the new tasks of a week, plus the" +
+      ` open tasks spread over ${cap} weeks.`
+    );
+  }
+  return (
+    `The forecast plays the last ${weeks} weeks again, ${runs} times.` +
+    " Each run picks past weeks at random: a week's finished tasks come off" +
+    " the open count, and its new tasks go back on. The 50% date is the week" +
+    " by which half the runs finish, and the 85% date the week by which 85%" +
+    " finish. No estimate is used."
+  );
 }
 
 /**
@@ -229,21 +293,35 @@ export function velocityLine(v: VelocityForecast): OutlookLine {
     case "converging":
       return {
         headline: shortDate(v.finish_date),
-        detail: `${v.remaining_tasks} tasks left, clearing at ${v.net_per_week}/wk net. ${rates}`,
+        // WS-27bn RA-6. The headline is the 50% date, so the 85% date
+        // comes first in the detail.
+        detail: v.p85_date
+          ? `${v.remaining_tasks} open: 50% by then, 85% by ${shortDate(v.p85_date)}. ${rates}`
+          : `${v.remaining_tasks} tasks left, clearing at ${v.net_per_week}/wk net. ${rates}`,
         tone: "good",
       };
     case "not_converging":
       // ⚠️ The two rates ARE the finding. A refusal with no numbers reads as
-      // a broken feature; with them it reads as the problem it is.
+      // a broken feature; with them it reads as the problem it is. WS-27bn
+      // RA-6 adds the rate that would converge it.
       return {
         headline: "Not converging",
-        detail: `Work is arriving at least as fast as it is finished, so no completion date exists at this rate. ${rates}`,
+        detail:
+          (typeof v.converge_per_week === "number"
+            ? `To converge, it needs ${v.converge_per_week} finished a week. `
+            : v.reason === "cap"
+              ? `The 85% date is more than ${v.cap_weeks ?? 52} weeks away at this rate. `
+              : "Work is arriving at least as fast as it is finished, so no completion date exists at this rate. ") +
+          rates,
         tone: "bad",
       };
     case "no_history":
       return {
-        headline: "Too early to say",
-        detail: `Fewer than three tasks finished in the last ${v.weeks_sampled} weeks. A rate needs more than that.`,
+        headline: "Not enough history",
+        detail:
+          typeof v.finished_in_window === "number" && typeof v.weeks_with_finishes === "number"
+            ? `${v.finished_in_window} finished in ${v.weeks_with_finishes} of the last ${v.weeks_sampled} weeks. A forecast needs ${v.min_finished ?? 3}, in ${v.min_finish_weeks ?? 2} weeks or more.`
+            : `Too few tasks finished in the last ${v.weeks_sampled} weeks. A rate needs more than that.`,
         tone: "quiet",
       };
     case "nothing_left":
@@ -329,6 +407,18 @@ export function capacityLine(
 }
 
 /**
+ * WS-27bn RA-6 — does the estimate line draw at all?
+ *
+ * §6.8 B: "Nothing sized" answered nothing (the screenshot of 2026-10-25
+ * had 26 open tasks and none sized). So the estimates add a second line
+ * ONLY when they exist. "No capacity on file" still draws, because it says
+ * that estimates exist and hours do not. The server still sends the block.
+ */
+export function capacityShown(c: CapacityForecast | null | undefined): boolean {
+  return Boolean(c?.verdict) && c?.verdict !== "no_estimates" && c?.verdict !== "nothing_left";
+}
+
+/**
  * The people line: how many are carrying work, and what we know about them.
  *
  * ⚠️ `leaving_within_90d` is a risk no velocity can see. Somebody whose
@@ -372,89 +462,115 @@ export function peopleLine(o: OutlookReport): OutlookLine {
 }
 
 /**
- * WS-27bn R3a — the slip as a range, for the bar that draws it.
+ * WS-27bn RA-6 — the forecast as a band on a track from today, for the bar
+ * that draws it (`projects_reports.md` §6.8 B).
  *
- * The track starts at the server's today and ends at the later of the two
- * dates. `plan` and `forecast` are positions on it, 0 to 100. `start` and
- * `width` are the filled segment between them, so the slip is the bar.
+ * The track starts at the server's today and ends at the later of the 85%
+ * date and the plan. `p50` and `p85` are positions on it, 0 to 100. The bar
+ * fills today to the 50% date in one slot, and the 50% to the 85% date in
+ * another. A plan, when there is one, is a tick.
  *
- * ⚠️ **It computes positions and no figure.** Each input is the server's:
- * the forecast is today plus `weeks_remaining` whole weeks
- * (`analytics.py` `project_forecast`), and `slip_days` is the forecast
- * minus the plan (`slip_days`). So the plan sits `weeks_remaining` × 7 −
- * `slip_days` days from today, and no date is parsed in the browser.
+ * ⚠️ **It computes positions and no date.** Each input is the server's: the
+ * 50% and 85% dates are today plus `p50_weeks` and `p85_weeks` whole weeks
+ * (`analytics_forecast.count_forecast`), and `slip_days` is the 50% date
+ * minus the plan. So the plan sits `p50_weeks` × 7 − `slip_days` days from
+ * today, and no date is parsed in the browser.
  * `test_h185_3_the_forecast_is_today_plus_whole_weeks` in
- * `tests/unit/test_projects_report_sections_r3b.py` pins that link, so a
- * forecast that stops being whole weeks fails there first.
+ * `tests/unit/test_projects_report_sections_r3b.py` pins that link.
  *
- * Returns `null` when either date is absent. The verdicts `not_converging`,
- * `no_history` and `nothing_left` carry no forecast date, and a bar with one
- * end would draw a slip that nobody measured. The verdict line says why.
+ * Returns `null` unless the forecast converges with both dates. The other
+ * verdicts carry no date, and the verdict line says why.
  */
-export type SlipRange = {
-  /** The plan's position on the track, 0 to 100. */
-  plan: number;
-  /** The forecast's position on the track, 0 to 100. */
-  forecast: number;
-  /** Where the filled segment starts, 0 to 100. */
-  start: number;
-  /** How wide the filled segment is, never under 1 so it stays visible. */
-  width: number;
-  /** "79 days late", "3 days early" or "on the plan date". */
-  slip: string;
-  /** The plan and the forecast as dates a person reads. */
-  planLabel: string;
-  forecastLabel: string;
+export type ForecastBand = {
+  /** The 50% date's position on the track, 0 to 100. */
+  p50: number;
+  /** The 85% date's position on the track, 0 to 100. */
+  p85: number;
+  /** The plan's position, or `null` with no plan. */
+  plan: number | null;
   /** True when the plan date is already before today. */
   planPassed: boolean;
+  p50Label: string;
+  p85Label: string;
+  planLabel: string | null;
+  /** "23 days late", "3 days early" or "on the plan date", or `null`. */
+  slip: string | null;
   tone: Tone;
-  /** The whole range in one sentence, for a screen reader. */
+  /** The whole band in one sentence, for a screen reader. */
   title: string;
 };
 
-export function slipRange(o: OutlookReport | null | undefined): SlipRange | null {
+export function forecastBand(o: OutlookReport | null | undefined): ForecastBand | null {
   const v = o?.velocity;
-  const p = o?.plan;
-  const slip = p?.slip_days;
-  const weeks = v?.weeks_remaining;
+  const a = v?.p50_weeks;
+  const b = v?.p85_weeks;
   if (
-    !v?.finish_date ||
-    !p?.planned_finish ||
-    typeof slip !== "number" ||
-    !Number.isFinite(slip) ||
-    typeof weeks !== "number" ||
-    !Number.isFinite(weeks) ||
-    weeks < 0
+    v?.verdict !== "converging" ||
+    !v.p50_date ||
+    !v.p85_date ||
+    typeof a !== "number" ||
+    typeof b !== "number" ||
+    !Number.isFinite(a) ||
+    !Number.isFinite(b) ||
+    a < 0 ||
+    b < a
   ) {
     return null;
   }
-  const forecastDays = weeks * 7;
-  const planDaysRaw = forecastDays - slip;
-  const planPassed = planDaysRaw < 0;
-  const planDays = Math.max(0, planDaysRaw);
-  const span = Math.max(forecastDays, planDays, 1);
-  const plan = (planDays / span) * 100;
-  const forecast = (forecastDays / span) * 100;
-  const lo = Math.min(plan, forecast);
+  const d50 = a * 7;
+  const d85 = b * 7;
+  const p = o?.plan;
+  const slipDays = p?.slip_days;
+  const planDays =
+    p?.planned_finish && typeof slipDays === "number" && Number.isFinite(slipDays)
+      ? d50 - slipDays
+      : null;
+  const span = Math.max(d85, planDays ?? 0, 1);
+  const at = (days: number) => (Math.max(0, days) / span) * 100;
   const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
-  const words =
-    slip > 0
-      ? `${days(slip)} late`
-      : slip < 0
-        ? `${days(Math.abs(slip))} early`
-        : "on the plan date";
-  const planLabel = shortDate(p.planned_finish);
-  const forecastLabel = shortDate(v.finish_date);
+  const slip =
+    planDays === null || typeof slipDays !== "number"
+      ? null
+      : slipDays > 0
+        ? `${days(slipDays)} late`
+        : slipDays < 0
+          ? `${days(Math.abs(slipDays))} early`
+          : "on the plan date";
+  const p50Label = shortDate(v.p50_date);
+  const p85Label = shortDate(v.p85_date);
+  const planLabel = planDays === null ? null : shortDate(p?.planned_finish);
   return {
-    plan,
-    forecast,
-    start: lo,
-    width: Math.max(1, Math.abs(forecast - plan)),
-    slip: words,
+    p50: at(d50),
+    p85: at(d85),
+    plan: planDays === null ? null : at(planDays),
+    planPassed: planDays !== null && planDays < 0,
+    p50Label,
+    p85Label,
     planLabel,
-    forecastLabel,
-    planPassed,
-    tone: slip > 14 ? "bad" : slip > 0 ? "warn" : "good",
-    title: `Plan ${planLabel}, forecast ${forecastLabel}: ${words}.`,
+    slip,
+    tone:
+      typeof slipDays === "number" && planDays !== null
+        ? slipDays > 14
+          ? "bad"
+          : slipDays > 0
+            ? "warn"
+            : "good"
+        : "good",
+    title:
+      `50% by ${p50Label}, 85% by ${p85Label}.` +
+      (planLabel && slip ? ` Plan ${planLabel}: ${slip}.` : ""),
   };
+}
+
+/**
+ * WS-27bn RA-6 — the hue of the band. ⚠️ An explicit pick of one slot of the
+ * ramp, as RA-2 and RA-4 pick theirs, never an index of a changing list.
+ * Slot 9 is reachable only by an explicit pick, so no hashed name shares it.
+ * The 50% part is solid and the 85% part is the same hue, lighter, and the
+ * label beside each dot carries the meaning, never the hue alone.
+ */
+export const FORECAST_SLOT = 9;
+
+export function forecastAccent(): CategoricalAccent {
+  return accentForSlot(FORECAST_SLOT);
 }

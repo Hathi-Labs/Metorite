@@ -267,7 +267,8 @@ clone cache.
    kernel signal another process, and `prlimit64` for any pid but 0.
 
    `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_AS` and `RLIMIT_CPU` cap the rest.
-   A kernel below ABI 4, another machine than x86-64, or a filter that does
+   `RLIMIT_CORE` is 0 (fix round 4), so a crash writes no core file that
+   holds the bytes of the file. A kernel below ABI 4, another machine than x86-64, or a filter that does
    not install answers `unavailable`, so it fails closed. A new library in
    the parse must load from a Python or library dir, and a new lazy thread
    must start in `_preload`. The fence `TestTheConfinement` runs on Linux

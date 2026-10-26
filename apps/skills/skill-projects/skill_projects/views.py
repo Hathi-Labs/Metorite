@@ -345,6 +345,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("velocity.verdict", "Forecast"),
             ("plan.planned_finish", "Planned finish"),
             ("velocity.finish_date", "Forecast finish"),
+            # WS-27bn RA-6. The forecast by count: the finish above is the
+            # 50% date, and this is the 85% date.
+            ("velocity.p85_date", "85% finish"),
         ],
     },
     "stuck": {
@@ -426,7 +429,8 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
     "load": {
         "title": "Open work",
-        "stats": [("total_tasks", "Open tasks")],
+        # WS-27bn RA-6. The open tasks with no assignee and no open run.
+        "stats": [("total_tasks", "Open tasks"), ("needs_owner.total", "Need an owner")],
         "rows": "people",
         "columns": [("assignee", "Assignee"), ("open_tasks", "Open"), ("overdue", "Overdue")],
     },
@@ -464,6 +468,9 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: WS-27bn RA-6. A verdict whose §5 word is not its key in plain case.
+VERDICT_WORDS: dict[str, str] = {"no_history": "Not enough history"}
+
 #: A value that is an ISO timestamp. The card prints its date only, as the
 #: Reports app's `shortDate` does (H-185 item 1).
 #:
@@ -497,7 +504,8 @@ def _card_cell(key: str, row: dict[str, Any], numbers: bool = False) -> Any:
         return value
     if key.endswith("verdict") and isinstance(value, str):
         # A server word such as ``not_converging`` reads as "Not converging".
-        return _human(value)
+        # WS-27bn RA-6: ``no_history`` reads as the §5 word.
+        return VERDICT_WORDS.get(value) or _human(value)
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")

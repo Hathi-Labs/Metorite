@@ -16,7 +16,8 @@ meeting:
 
 * **a growing backlog has no completion date.** `remaining / finished` always
   yields one. That date slips every week and nobody is told why.
-* **three completions are not a velocity.**
+* **two completions are not a velocity**, and neither is one busy week
+  (WS-27bn RA-6 fix round 1: 3 finished tasks, in 2 weeks or more).
 * **hours summed over a third of the backlog are a third of the answer**, and
   look identical to the whole one.
 * **nobody's capacity known is not "assume forty hours"**.
@@ -35,10 +36,13 @@ from typing import Any
 import pytest
 from gateway.routes.projects import analytics as _ana
 from gateway.routes.projects.analytics import (
-    MIN_FINISHED_FOR_FORECAST,
     capacity_forecast,
     project_forecast,
     slip_days,
+)
+from gateway.routes.projects.analytics_forecast import (
+    MIN_FINISH_WEEKS,
+    MIN_FINISHED_FOR_FORECAST,
 )
 from gateway.work_schedule import DEFAULT_POLICY
 
@@ -74,9 +78,10 @@ class TestScopeGrowthIsPartOfTheAnswer:
         # Finishing exactly as fast as work arrives never empties the
         # backlog. `net == 0` divides into infinity, not into a date.
         got = project_forecast(
-            remaining_tasks=20, finished=[4, 4, 4], created=[4, 4, 4],
+            remaining_tasks=20, finished=[4] * 6, created=[4] * 6,
         )
         assert got["verdict"] == "not_converging"
+        assert got["reason"] == "arrivals"
 
     def test_a_healthy_project_gets_a_date_from_the_NET_rate(self):
         got = project_forecast(
@@ -87,10 +92,12 @@ class TestScopeGrowthIsPartOfTheAnswer:
         assert got["verdict"] == "converging"
         assert got["net_per_week"] == 5.5
         # 55 / 5.5 = 10 weeks. Not 55 / 7.83, which would say 7 and be wrong
-        # by three weeks because it ignores the work still arriving.
-        assert got["weeks_remaining"] == 10
+        # by three weeks because it ignores the work still arriving. WS-27bn
+        # RA-6: the 50% figure of the runs lands beside the mean net rate,
+        # because each run samples the arrivals of a week with its finishes.
+        assert 9 <= got["weeks_remaining"] <= 11
         assert got["finish_date"] == (
-            date.today() + timedelta(weeks=10)
+            date.today() + timedelta(weeks=got["weeks_remaining"])
         ).isoformat()
 
     def test_the_naive_forecast_would_have_been_optimistic(self):
@@ -117,6 +124,13 @@ class TestItRefusesRatherThanGuesses:
             created=[0] * 6,
         )
         assert got["verdict"] == "no_history"
+        # WS-27bn RA-6 fix round 1: one busy week is one sample.
+        busy = project_forecast(
+            remaining_tasks=40,
+            finished=[9] * (MIN_FINISH_WEEKS - 1) + [0] * (7 - MIN_FINISH_WEEKS),
+            created=[0] * 6,
+        )
+        assert busy["verdict"] == "no_history"
         assert got["finish_date"] is None
 
     def test_a_brand_new_project_refuses(self):
@@ -126,8 +140,8 @@ class TestItRefusesRatherThanGuesses:
     def test_exactly_enough_history_is_enough(self):
         got = project_forecast(
             remaining_tasks=4,
-            finished=[MIN_FINISHED_FOR_FORECAST, 0, 0],
-            created=[0, 0, 0],
+            finished=[MIN_FINISHED_FOR_FORECAST - 1, 1, 0, 0, 0, 0],
+            created=[0] * 6,
         )
         assert got["verdict"] == "converging"
 

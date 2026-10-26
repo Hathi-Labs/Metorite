@@ -128,6 +128,8 @@ export function loadPanelData(
     ...(typeof section.hidden_people === "number"
       ? { hidden_people: section.hidden_people }
       : {}),
+    // WS-27bn RA-6. Copied. Absent from an older server.
+    ...(section.needs_owner ? { needs_owner: { ...section.needs_owner } } : {}),
   };
 }
 

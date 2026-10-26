@@ -60,6 +60,7 @@ import { accentForHue, statusAccent } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
+  type NeedsOwner,
   type NodeSummary,
   type PreviewReportBody,
   type ReportRow,
@@ -367,6 +368,44 @@ export function HeaderMeta({ line }: { line: string }) {
 }
 
 /** One project line: a name, a count, and the cancellations beside it. */
+/**
+ * WS-27bn RA-6 — "Needs an owner" in the table of Open work: every task the
+ * server named, the soonest due first, as the panel lists them. `first`
+ * places it above the people when it leads the open work (§6.8 B).
+ */
+function NeedsOwnerTable({
+  owner,
+  first,
+}: {
+  owner: NeedsOwner | undefined;
+  first: boolean;
+}) {
+  if (!owner || !(owner.total > 0)) return null;
+  return (
+    <div className={`text-xs ${first ? "mb-2" : "mt-2"}`}>
+      <span className="font-medium text-foreground">Needs an owner</span>
+      <span
+        className="text-muted-foreground"
+        title="Open tasks with no assignee and no open run, the soonest due first"
+      >
+        {" "}
+        · {owner.total}
+      </span>
+      <ul className="mt-0.5 space-y-0.5">
+        {(owner.tasks ?? []).map((t) => (
+          <li key={t.id} className="truncate pr-px text-muted-foreground" title={t.title}>
+            <span className="text-foreground">
+              {typeof t.task_number === "number" ? `#${t.task_number} ` : ""}
+              {t.title}
+            </span>
+            {t.due_at ? ` · Due ${shortDate(t.due_at)}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Row({
   name,
   value,
@@ -710,6 +749,11 @@ export function RenderedBody({
                   <dd className="tabular-nums">
                     {shortDate(sections.outlook.velocity?.finish_date)}
                   </dd>
+                  {/* WS-27bn RA-6. The finish above is the 50% date. */}
+                  <dt className="text-muted-foreground">85% finish</dt>
+                  <dd className="tabular-nums">
+                    {shortDate(sections.outlook.velocity?.p85_date)}
+                  </dd>
                   <dt className="text-muted-foreground">Open tasks</dt>
                   <dd
                     className="tabular-nums"
@@ -904,6 +948,11 @@ export function RenderedBody({
                 >
                   {sections.load.total_tasks} open
                 </p>
+                {/* WS-27bn RA-6, fix round 1: first when it leads, as the
+                    panel, the chat and the email put it (§6.8 B). */}
+                {sections.load.needs_owner?.leads && (
+                  <NeedsOwnerTable owner={sections.load.needs_owner} first />
+                )}
                 <ul className="space-y-0.5">
                   {sections.load.people.slice(0, 8).map((p) => (
                     <Row
@@ -922,6 +971,10 @@ export function RenderedBody({
                     />
                   ))}
                 </ul>
+                {/* WS-27bn RA-6, fix round 1: last when it does not lead. */}
+                {!sections.load.needs_owner?.leads && (
+                  <NeedsOwnerTable owner={sections.load.needs_owner} first={false} />
+                )}
               </Table>
             }
           >

@@ -143,6 +143,32 @@ async def _ok(p: Any, user: Any, method: str, path: str, body: dict | None = Non
     return response.json()
 
 
+async def _calls_at_once(p: Any, user: Any, requests: list[tuple[str, str, dict | None]]) -> list[Any]:
+    """Requests at the same moment, each on its own connection (KC-8e)."""
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.routes import knowledge as kb_package
+
+    async def _caller() -> Any:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(kb_package.router)
+    app.dependency_overrides[get_current_user] = _caller
+    scope = clear_tenant()
+    try:
+        async with tenant_engine_scope(_app_dsn(p)):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://kc.test") as client:
+                return list(await asyncio.gather(
+                    *[client.request(m, path, json=body) for m, path, body in requests]))
+    finally:
+        release_tenant(scope)
+
+
 async def _in_tenant(p: Any, org: str, fn: Callable[[Any], Awaitable[Any]]) -> Any:
     """Run *fn(db)* in one tenant session of *org*, as the app role."""
     from acb_common.db import bind_tenant, clear_tenant, release_tenant, tenant_session
@@ -820,3 +846,46 @@ async def test_the_entity_types_of_org_b_are_its_own(ns, app_engine) -> None:  #
     a = _principal(_address("a-types"), ns.org_a, PEOPLE, PROJECTS, CRM, WORKFLOWS)
     _add_member(ns, ns.org_a, a.email)
     assert await _types(ns, a) == ["company", "person", "customer", "workstream"]
+
+
+# ── KC-8e: one name for each type in a space ────────────────────────────────
+
+async def test_a_name_is_unique_for_a_type_in_a_space(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    space = (await _ok(ns, admin, "POST", "/knowledge/spaces",
+                       {"name": "Products", "grants": []}, status=201))["id"]
+    other = (await _ok(ns, admin, "POST", "/knowledge/spaces",
+                       {"name": "Other", "grants": []}, status=201))["id"]
+
+    def body(name: str, sp: str = space, kind: str = "product", **extra: Any) -> dict:
+        return {"type": kind, "name": name, "space_id": sp, **extra}
+
+    first = await _ok(ns, admin, "POST", "/knowledge/entities",
+                      body("Café Extruder", aliases=["CX One"]), status=201)
+    for again in ("Café Extruder", "café  EXTRUDER", "Cafe Extruder", "CAFÉ EXTRUDER", "cx one", "CX  ONE"):
+        r = await _call(ns, admin, "POST", "/knowledge/entities", body(again))
+        assert r.status_code == 409, (again, r.status_code, r.text)
+        payload = r.json()
+        assert payload["entity"]["id"] == first["id"], again
+        assert "already exists" in payload["detail"]
+    # The same name in another space, or as another type, is accepted.
+    await _ok(ns, admin, "POST", "/knowledge/entities", body("Café Extruder", other), status=201)
+    await _ok(ns, admin, "POST", "/knowledge/entities", body("Café Extruder", kind="topic"), status=201)
+    # Nothing but the three was made.
+    assert _entity_count(ns) == 3
+
+
+async def test_two_posts_of_one_name_at_once_make_one_entity(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    space = (await _ok(ns, admin, "POST", "/knowledge/spaces",
+                       {"name": "Race", "grants": []}, status=201))["id"]
+    for round_no in range(6):
+        name = f"Racer {round_no}"
+        one = {"type": "product", "name": name, "space_id": space}
+        two = {"type": "product", "name": name.upper(), "space_id": space}
+        got = await _calls_at_once(ns, admin, [
+            ("POST", "/knowledge/entities", one), ("POST", "/knowledge/entities", two)])
+        assert sorted(r.status_code for r in got) == [201, 409], (name, [r.text for r in got])
+    assert _entity_count(ns) == 6

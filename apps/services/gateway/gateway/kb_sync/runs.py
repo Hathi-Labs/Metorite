@@ -51,6 +51,8 @@ STALE_AFTER_SECONDS = 15 * 60
 KIND_DISCOVER = "discover"
 KIND_CHANGES = "changes"
 KIND_RECONCILE = "reconcile"
+#: The access pass (KC-4a, migration 309): the readers of each node.
+KIND_ACCESS = "access"
 
 STATUS_RUNNING = "running"
 STATUS_OK = "ok"
@@ -61,6 +63,9 @@ STATUS_STOPPED = "stopped"
 #: ``reconcile`` the time of the last relist.
 CURSOR_CHANGES = "changes"
 CURSOR_RECONCILE = "reconcile"
+#: Where an access pass stands (KC-4a): the listing page, the last node it
+#: finished, and the start of the pass. NULL state: no pass is open.
+CURSOR_ACCESS = "access"
 
 #: The ``last_status`` of a cursor row: at a page boundary, or caught up.
 CURSOR_PARTIAL = "partial"
@@ -145,13 +150,26 @@ _DELETE_CURSORS_SQL = (
 #: history (review P2). A newest run that has not ended answers NULL, and the
 #: lock decides. ``running`` is a live lock: a heartbeat newer than
 #: :data:`STALE_AFTER_SECONDS`.
+#:
+#: KC-4a: ``access_finished`` and ``access_status`` are the end and the
+#: status of the NEWEST ``access`` run, read the same way. An access run
+#: never moves ``last_finished``, so the change feed keeps its 15 minutes.
 _DUE_SQL = (
     "SELECT s.id, s.provider, s.state, now() AS db_now, "
+    "s.discovered_at, s.access_read_at, "
     "(SELECT r.finished_at FROM kb_sync_runs r "
     " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
     " AND r.kind IN ('changes', 'reconcile') "
     " ORDER BY r.started_at DESC LIMIT 1) "
     "AS last_finished, "
+    "(SELECT r.finished_at FROM kb_sync_runs r "
+    " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
+    " AND r.kind = 'access' ORDER BY r.started_at DESC LIMIT 1) "
+    "AS access_finished, "
+    "(SELECT r.status FROM kb_sync_runs r "
+    " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
+    " AND r.kind = 'access' ORDER BY r.started_at DESC LIMIT 1) "
+    "AS access_status, "
     "EXISTS (SELECT 1 FROM kb_sync_runs r "
     " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
     " AND r.status = 'running' "
@@ -213,6 +231,12 @@ class DueRow:
     last_finished: datetime | None
     running: bool
     reconciled_at: datetime | None
+    #: KC-4a: the last discovery, the end of the last FULL access pass, and
+    #: the end and the status of the newest access run.
+    discovered_at: datetime | None
+    access_read_at: datetime | None
+    access_finished: datetime | None
+    access_status: str | None
 
 
 def _json(value: Any) -> dict[str, Any] | None:
@@ -316,17 +340,21 @@ async def due_rows(db: Any, org: str) -> list[DueRow]:
         DueRow(
             source_id=str(r.id), provider=str(r.provider), state=str(r.state),
             db_now=r.db_now, last_finished=r.last_finished, running=bool(r.running),
-            reconciled_at=r.reconciled_at,
+            reconciled_at=r.reconciled_at, discovered_at=r.discovered_at,
+            access_read_at=r.access_read_at, access_finished=r.access_finished,
+            access_status=r.access_status,
         )
         for r in rows
     ]
 
 
 __all__ = [
+    "CURSOR_ACCESS",
     "CURSOR_CHANGES",
     "CURSOR_OK",
     "CURSOR_PARTIAL",
     "CURSOR_RECONCILE",
+    "KIND_ACCESS",
     "KIND_CHANGES",
     "KIND_DISCOVER",
     "KIND_RECONCILE",

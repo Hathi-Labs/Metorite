@@ -20,7 +20,20 @@ DUE when all of these hold:
   :data:`INTERVAL_SECONDS` ago or more, or never ran.
 
 A due source runs a ``reconcile`` when its reconcile cursor is absent or older
-than :data:`RECONCILE_SECONDS`, and a ``changes`` run otherwise. Each
+than :data:`RECONCILE_SECONDS`, and a ``changes`` run otherwise.
+
+**The access pass (KC-4a).** A ready source with no live lock whose change
+feed is NOT due gets an ``access`` run (``access.py``) when all of these
+hold:
+
+* ``kb_sources.access_read_at`` is NULL, older than :data:`ACCESS_SECONDS`,
+  or older than ``discovered_at`` (a discovery wrote a new tree);
+* the newest ``access`` run ended ``ok`` (a pass that stopped at its call
+  cap goes on at the next tick), or ended :data:`ACCESS_RETRY_SECONDS` ago or
+  more, or never ran.
+
+The change feed comes first, and an access run never moves its 15 minutes.
+It rides ``KNOWLEDGE_SYNC`` and the provider flag, as the feed does. Each
 gateway worker runs its own loop. In one worker, up to :data:`CONCURRENCY`
 sources run at the same time. Across the workers each source is
 single-flight by its run lock. One failure for one source or one org is
@@ -60,7 +73,7 @@ from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.kb_sources.base import KbSource
-from gateway.kb_sync import engine, runs
+from gateway.kb_sync import access, engine, runs
 from gateway.kb_sync.runs import DueRow, SyncRunning
 from gateway.routes.knowledge import flags
 
@@ -74,6 +87,12 @@ INTERVAL_SECONDS = 15 * 60
 
 #: How often a source gets the slim relist.
 RECONCILE_SECONDS = 24 * 60 * 60
+
+#: How often a source gets the access pass (KC-4a, §7.2 step 6).
+ACCESS_SECONDS = 6 * 60 * 60
+
+#: The wait before the next access run after one that failed or stopped.
+ACCESS_RETRY_SECONDS = 15 * 60
 
 #: Sources that run at the same time in ONE gateway worker. Each worker runs
 #: its own loop, and the run lock keeps each source single-flight across them.
@@ -100,13 +119,26 @@ async def _organization_ids() -> list[str]:
     return [str(r.id) for r in rows]
 
 
+def access_due(row: DueRow) -> bool:
+    """True when *row* is due for an access pass (the module doc). No I/O."""
+    read = row.access_read_at
+    stale = (read is None
+             or (row.db_now - read).total_seconds() >= ACCESS_SECONDS
+             or (row.discovered_at is not None and read < row.discovered_at))
+    if not stale:
+        return False
+    if row.access_finished is None or row.access_status == runs.STATUS_OK:
+        return True
+    return (row.db_now - row.access_finished).total_seconds() >= ACCESS_RETRY_SECONDS
+
+
 def due_kind(row: DueRow) -> str | None:
     """The kind of run that *row* is due for, or ``None``. No I/O."""
     if row.state != engine.STATE_READY or row.running:
         return None
     if (row.last_finished is not None
             and (row.db_now - row.last_finished).total_seconds() < INTERVAL_SECONDS):
-        return None
+        return runs.KIND_ACCESS if access_due(row) else None
     if (row.reconciled_at is None
             or (row.db_now - row.reconciled_at).total_seconds() >= RECONCILE_SECONDS):
         return runs.KIND_RECONCILE
@@ -171,8 +203,12 @@ async def _run_one(org: str, source_id: str, kind: str, adapter: KbSource,
         if _stopping.is_set():
             return 0
         try:
-            await engine.run_source(org, source_id, kind, source=adapter,
-                                    should_stop=_stopping.is_set)
+            if kind == runs.KIND_ACCESS:
+                await access.run_access(org, source_id, source=adapter,
+                                        should_stop=_stopping.is_set)
+            else:
+                await engine.run_source(org, source_id, kind, source=adapter,
+                                        should_stop=_stopping.is_set)
         except SyncRunning:
             return 0  # a discovery or another worker holds the lock
         except asyncio.CancelledError:
@@ -262,11 +298,14 @@ def loop_running() -> bool:
 
 
 __all__ = [
+    "ACCESS_RETRY_SECONDS",
+    "ACCESS_SECONDS",
     "CONCURRENCY",
     "INTERVAL_SECONDS",
     "RECONCILE_SECONDS",
     "STOP_GRACE_SECONDS",
     "TICK_SECONDS",
+    "access_due",
     "due_kind",
     "due_sources",
     "due_work",

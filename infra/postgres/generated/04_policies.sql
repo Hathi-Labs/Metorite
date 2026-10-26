@@ -1432,3 +1432,10 @@ DROP POLICY IF EXISTS kb_sync_runs_tenant_isolation ON kb_sync_runs;
 CREATE POLICY kb_sync_runs_tenant_isolation ON kb_sync_runs
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_node_access ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_node_access FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_node_access_tenant_isolation ON kb_node_access;
+CREATE POLICY kb_node_access_tenant_isolation ON kb_node_access
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
