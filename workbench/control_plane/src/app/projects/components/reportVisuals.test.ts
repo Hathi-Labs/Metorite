@@ -390,12 +390,12 @@ const AGENT_RUNS: NonNullable<Sections["agent_runs"]> = {
   agent_runs_seen: true,
   days: 14,
   window_start: "2026-09-11",
-  outcomes: { completed: 6, failed: 1, stopped: 1, abandoned: 1, released: 0 },
+  outcomes: { completed: 6, failed: 1, stopped: 1, abandoned: 1, released: 0, server_closed: 0 },
   ended_total: 9,
-  outcomes_before: { completed: 4, failed: 1, stopped: 0, abandoned: 0, released: 0 },
+  outcomes_before: { completed: 4, failed: 1, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
   series: [
-    { day: "2026-09-23", completed: 2, failed: 1, stopped: 0, abandoned: 0, released: 0, total: 3 },
-    { day: "2026-09-24", completed: 4, failed: 0, stopped: 1, abandoned: 1, released: 0, total: 6 },
+    { day: "2026-09-23", completed: 2, failed: 1, stopped: 0, abandoned: 0, released: 0, server_closed: 0, total: 3 },
+    { day: "2026-09-24", completed: 4, failed: 0, stopped: 1, abandoned: 1, released: 0, server_closed: 0, total: 6 },
   ],
   success: { rate: 0.75, completed: 6, rated: 8, rate_before: 0.8, rated_before: 5, trend: "down" },
   silent: [

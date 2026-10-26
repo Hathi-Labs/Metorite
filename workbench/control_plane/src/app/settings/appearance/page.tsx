@@ -122,7 +122,7 @@ function AppearanceHeader() {
   );
 }
 
-/** The way into Settings → Assistant, while it has no nav pane (WS-63 PZ-7). */
+/** The way into Settings → Assistant settings, while it has no nav pane (WS-63 PZ-7). */
 function AssistantLinkRow() {
   return (
     <Link
@@ -130,7 +130,7 @@ function AssistantLinkRow() {
       className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 tech-transition hover:bg-secondary"
     >
       <span className="min-w-0">
-        <span className="block text-sm font-semibold text-foreground">Assistant</span>
+        <span className="block text-sm font-semibold text-foreground">Assistant settings</span>
         <span className="block text-xs text-muted-foreground">
           What the assistant remembers about you and how it talks to you
         </span>

@@ -773,6 +773,8 @@ export interface WaitingHandoff extends WaitingRow {
 export interface WaitingReport {
   /** The one plain sentence of the panel (§6.8 E5), from the server. */
   summary: string;
+  /** RA-4b. False while agent runs are off. Absent before RA-4b. */
+  on?: boolean;
   /** False when no task of the scope has an agent run. */
   agent_runs_seen: boolean;
   questions: WaitingRow[];
@@ -798,8 +800,17 @@ export interface WaitingReport {
   oldest_hours?: number | null;
 }
 
-/** WS-27bn RA-4. The five outcomes of an agent run, in the panel's order. */
-export type RunOutcome = "completed" | "failed" | "stopped" | "abandoned" | "released";
+/**
+ * WS-27bn RA-4. The outcomes of an agent run, in the panel's order.
+ * `server_closed` (RA-4b) is a run that Metorite closed. It is no success.
+ */
+export type RunOutcome =
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "abandoned"
+  | "released"
+  | "server_closed";
 
 /** WS-27bn RA-4. Each outcome with its count of runs. */
 export type RunOutcomeCounts = Record<RunOutcome, number>;
