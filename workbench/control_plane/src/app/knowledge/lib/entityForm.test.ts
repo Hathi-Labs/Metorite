@@ -112,6 +112,14 @@ describe("createEntity", () => {
       );
     }
     expect(CANNOT_ADD_LINE).toBe("You cannot add to that space.");
+    // KC-8e: a 409 reads as the "already exists" line, whatever the detail says.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "x", entity: { id: "e-9" } }), { status: 409 })),
+    );
+    await expect(createEntity({ type: "product", name: "Sapphire", aliases: [], space_id: "x" })).rejects.toThrow(
+      "A product named Sapphire already exists in that space.",
+    );
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "Bad name." }), { status: 422 })));
     await expect(createEntity({ type: "topic", name: "T", aliases: [], space_id: "x" })).rejects.toThrow("Bad name.");
   });

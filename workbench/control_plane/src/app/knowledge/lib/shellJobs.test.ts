@@ -14,18 +14,22 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PANES } from "@/lib/nav";
+import { canAddEntity } from "./entityForm";
 import { JOBS, buildItems, rank } from "@/lib/shell/registry";
 
 const LAYOUT = readFileSync(path.join(__dirname, "..", "layout.tsx"), "utf-8");
 const KNOWLEDGE = PANES.find((p) => p.href === "/knowledge")!;
 
 describe("the Knowledge jobs (KB-12)", () => {
-  it("are two, of a live pane, each opening a Knowledge route", () => {
+  // KC-8e changed this on purpose: the list holds four jobs, not two.
+  it("are four, of a live pane, each opening a Knowledge route", () => {
     expect(KNOWLEDGE.launch).toBe("live");
     const mine = JOBS.filter((j) => j.app === "/knowledge").map((j) => [j.id, j.href]);
     expect(mine).toEqual([
       ["find-knowledge", "/knowledge/search"],
       ["write-page", "/knowledge?do=write-page"],
+      ["add-product", "/knowledge?do=add-product"],
+      ["add-topic", "/knowledge?do=add-topic"],
     ]);
   });
 
@@ -33,6 +37,18 @@ describe("the Knowledge jobs (KB-12)", () => {
     expect(LAYOUT).toMatch(
       /<ShellJob\s+id="write-page"\s+onOpen=\{\(\) => requestLeave\(\(\) => openNewPage\(/,
     );
+  });
+
+  it("the layout opens the KC-8d form with the right type, and only for a member who can add", () => {
+    expect(LAYOUT).toMatch(
+      /<ShellJob\s+id="add-product"\s+onOpen=\{\(\) => canAdd && requestLeave\(\(\) => openAddEntity\("product"\)\)\}/,
+    );
+    expect(LAYOUT).toMatch(
+      /<ShellJob\s+id="add-topic"\s+onOpen=\{\(\) => canAdd && requestLeave\(\(\) => openAddEntity\("topic"\)\)\}/,
+    );
+    // `canAdd` is false with no writable space or a refused types read.
+    expect(LAYOUT).toMatch(/const canAdd = useMemo\(\(\) => canAddEntity\(spaces\) && typesAnswered/);
+    expect(canAddEntity([])).toBe(false);
   });
 
   it("the bar finds each job by the words a member types", () => {
@@ -43,5 +59,7 @@ describe("the Knowledge jobs (KB-12)", () => {
     expect(top("find in knowledge")).toBe("do:find-knowledge");
     expect(top("handbook")).toBe("do:find-knowledge");
     expect(top("refund policy")).toBe("do:find-knowledge");
+    expect(top("add a product")).toBe("do:add-product");
+    expect(top("add a topic")).toBe("do:add-topic");
   });
 });

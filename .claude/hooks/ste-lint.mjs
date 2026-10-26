@@ -46,6 +46,28 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(HERE, '..', '..')
 
+// The checkout the caller stands in, for `--staged` and `--baseline`. They read
+// a git index, so they must read the index of the checkout the commit is made
+// in. CLAUDE_PROJECT_DIR names the SESSION's checkout, which is the main one
+// even when the session works in a worktree. Measured 2026-10-25 (Metorite
+// #460): in a worktree, `--staged` read the main checkout's index and reported
+// nothing. Falls back to ROOT when the caller stands in no repo.
+let gitRootMemo
+function gitRoot() {
+  if (gitRootMemo !== undefined) return gitRootMemo
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf-8',
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    gitRootMemo = top || ROOT
+  } catch {
+    gitRootMemo = ROOT
+  }
+  return gitRootMemo
+}
+
 // ---------------------------------------------------------------- limits ----
 // ASD-STE100 Part 1. Procedural sentences are held shorter than descriptive
 // ones because a step is read while the reader's hands are busy.
@@ -528,7 +550,7 @@ function report(file, tier, findings, { showWarnings, json }) {
 function stagedAddedLines() {
   const diff = execFileSync('git', ['diff', '--cached', '-U0', '--', '*.md'], {
     encoding: 'utf-8',
-    cwd: ROOT,
+    cwd: gitRoot(),
     maxBuffer: 32 * 1024 * 1024,
   })
   const files = new Map()
@@ -634,15 +656,17 @@ async function main() {
   if (flags.has('--staged')) {
     let errors = 0
     for (const [file, added] of stagedAddedLines()) {
-      if (added.length === 0 || !ours(file)) continue
+      // Judge the file in the checkout whose index it came from, not ROOT.
+      const abs = path.join(gitRoot(), file)
+      if (added.length === 0 || !ours(abs)) continue
       const full = (() => {
         try {
-          return readFileSync(path.join(ROOT, file), 'utf-8')
+          return readFileSync(abs, 'utf-8')
         } catch {
           return ''
         }
       })()
-      const tier = tierFor(file, full)
+      const tier = tierFor(abs, full)
       // Rebuild a sparse document so line numbers stay the file's own.
       const maxLine = added[added.length - 1].n
       const sparse = new Array(maxLine).fill('')
@@ -661,16 +685,17 @@ async function main() {
 
   // ---- baseline: the whole repo, never fails ----
   if (flags.has('--baseline')) {
-    const list = execFileSync('git', ['ls-files', '*.md'], { encoding: 'utf-8', cwd: ROOT })
+    const list = execFileSync('git', ['ls-files', '*.md'], { encoding: 'utf-8', cwd: gitRoot() })
       .split(/\r?\n/)
       .filter(Boolean)
     const rows = []
     let totals = { error: 0, warning: 0 }
     for (const rel of list) {
-      if (!ours(rel)) continue
+      const abs = path.join(gitRoot(), rel)
+      if (!ours(abs)) continue
       let res
       try {
-        res = lintFile(path.join(ROOT, rel))
+        res = lintFile(abs)
       } catch {
         continue
       }

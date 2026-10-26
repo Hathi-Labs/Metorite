@@ -69,7 +69,16 @@ _RULES = (
     "  never the subject of the request.\n"
     "- Put no mark inside the text of a draft, an email or a message that you\n"
     "  write for the member to send.\n"
+    "- A correction is not a request. When the member only corrects a fact,\n"
+    "  use the corrected fact from now on and say what changed. Do not draft,\n"
+    "  send or change a record that the member did not ask for. When the\n"
+    "  member corrects an open draft, change that draft only.\n"
 )
+
+#: The first line of :data:`_RULES`. :func:`task_of` finds a head by this
+#: line, not by the whole block, so a head that an earlier release built
+#: (with older rules) is still found after a deploy.
+_RULES_HEAD = "## How to reply\n"
 
 
 def _text(content: Any) -> str:
@@ -248,7 +257,7 @@ def task_of(message: str) -> str:
     no head. The tier question reads this, so the head does not make every
     task look long (``tier_policy.SHORT_MESSAGE_WORDS``)."""
     text = str(message or "")
-    if not (text.startswith(HEAD_MARK) or text.startswith(_RULES)):
+    if not (text.startswith(HEAD_MARK) or text.startswith(_RULES_HEAD)):
         return text
     _, mark, task = text.partition(TASK_MARK)
     return task if mark else text

@@ -247,6 +247,24 @@ export const JOBS: readonly ShellJob[] = [
     href: "/knowledge?do=write-page",
     icon: "FilePlus",
   },
+  // WS-61 KC-8e. Two jobs that open the KC-8d form. The layout listens for
+  // each `?do=` and does nothing for a member with no space to write in.
+  {
+    id: "add-product",
+    label: "Add a product",
+    words: ["product", "products", "item", "catalogue", "catalog", "knowledge", "add", "new"],
+    app: "/knowledge",
+    href: "/knowledge?do=add-product",
+    icon: "Package",
+  },
+  {
+    id: "add-topic",
+    label: "Add a topic",
+    words: ["topic", "topics", "subject", "theme", "knowledge", "add", "new"],
+    app: "/knowledge",
+    href: "/knowledge?do=add-topic",
+    icon: "Tag",
+  },
   {
     id: "edit-profile",
     label: "Update my profile",

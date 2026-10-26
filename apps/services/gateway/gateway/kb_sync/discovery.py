@@ -144,6 +144,17 @@ LOCK_SOURCE_UPDATE_SQL = (
     "FOR NO KEY UPDATE OF s"
 )
 
+#: ``FOR UPDATE`` is for the one transaction that DELETES every node of the
+#: source: the clear of a capped discovery (``_walk``). The delete cascades to
+#: ``kb_node_access``. Only ``FOR UPDATE`` conflicts with the ``FOR KEY SHARE``
+#: of an access page, so the clear waits for the page and the page waits for
+#: the clear. ``FOR NO KEY UPDATE`` does not conflict with it (KC-4a, R4).
+LOCK_SOURCE_EXCLUSIVE_SQL = (
+    "SELECT s.id FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR UPDATE OF s"
+)
+
 #: The INSERT half of every node upsert, from a JSON array of
 #: :func:`node_rows`. ``content_hash`` is the provider's version (KC-3).
 NODE_INSERT_SQL = (
@@ -265,15 +276,19 @@ async def upsert_rows(
     return inserted
 
 
-async def lock_source(db: Any, org: str, source_id: str, *, update: bool = False) -> bool:
+async def lock_source(db: Any, org: str, source_id: str, *, update: bool = False,
+                      exclusive: bool = False) -> bool:
     """Lock the source row. It is the FIRST statement of a write transaction.
 
     The one lock helper of the sync (KC-3h, the lock order of ``engine.py``).
     *update* takes ``FOR NO KEY UPDATE``, for a transaction that writes the
-    source row too. Else it takes ``FOR KEY SHARE``. Returns False when no
-    live row is left: the source is disconnected, or gone.
+    source row too. *exclusive* takes ``FOR UPDATE``, for the transaction that
+    deletes every node (the clear of ``_walk``). Else it takes
+    ``FOR KEY SHARE``. Returns False when no live row is left: the source is
+    disconnected, or gone.
     """
-    sql = LOCK_SOURCE_UPDATE_SQL if update else LOCK_SOURCE_SHARE_SQL
+    sql = (LOCK_SOURCE_EXCLUSIVE_SQL if exclusive
+           else LOCK_SOURCE_UPDATE_SQL if update else LOCK_SOURCE_SHARE_SQL)
     row = (await db.execute(text(sql), {"org": org, "source": source_id})).first()
     return row is not None
 
@@ -348,7 +363,9 @@ async def _walk(org: str, source_id: str, owner: str, source: KbSource, *,
 
     writer = write or _write
     async with tenant_session(org) as db:
-        await lock_source(db, org, source_id)
+        # FOR UPDATE, as a disconnect (KC-4a, R4): the clear cascades to the
+        # access rows, and an access page holds the row FOR KEY SHARE.
+        await lock_source(db, org, source_id, exclusive=True)
         await db.execute(text(_CLEAR_SQL), {"org": org, "source": source_id})
     total = 0
     queue: list[tuple[str, int]] = []

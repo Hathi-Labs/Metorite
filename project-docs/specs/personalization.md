@@ -17,8 +17,13 @@ a list. A change of either name needs a restart. See §14.2 "PZ-25 as built".
 the due line in the block. See §14.4 "PZ-26 as built".
 
 **PZ-27 BUILT 2026-10-25, dark** (D113). The button, the offer in the empty
-chat, the interview list in Settings → Assistant and the chat receipt. See
+chat, the interview list in Settings → Assistant settings and the chat receipt. See
 §14.4 "PZ-27 as built". The visual review is UNVERIFIED.
+
+**PZ-28 BUILT 2026-10-26.** The row and the page are named "Assistant
+settings", and the row moved from the You group to the Settings group of the
+account menu. The offer card links to the page. The visual review is
+UNVERIFIED. See §14.2 item 5.
 
 **PZ-8 BUILT 2026-10-25, dark.** The WhatsApp scope rule names the profile
 exception, and asks the model to keep the channel limits. See "PZ-8 as
@@ -114,7 +119,7 @@ talks to, and how it uses that. That is five things:
    "keep it short". The assistant saves at once and offers Undo (D109.5).
    It never learns in silence.
 4. **The member sees all of it, and can delete any of it.** Settings has an
-   Assistant pane. The chat answers "what do you know about me" from the
+   Assistant settings page. The chat answers "what do you know about me" from the
    block, with no guess.
 5. **It is private.** No admin and no other member reads it. A shared room
    gets no profile block.
@@ -630,7 +635,7 @@ conversation (WS-47). That org's profile applies.
 
 1. **Explicit by default.** The assistant writes the profile only when the
    member asks, or says yes. It never extracts a fact from a chat in silence.
-2. **The member sees everything.** Settings → Assistant shows every key and
+2. **The member sees everything.** Settings → Assistant settings shows every key and
    every fact, with its source and date. Each fact has Edit and Delete.
    An alias carries only `{id, alias, email}`, so it shows no source or date.
 3. **One switch.** "Let the assistant remember what I tell it." Off stops
@@ -688,7 +693,7 @@ Each slice is one PR. Each lands dark. The risk tier follows
 | **PZ-4** | #252 | The form of address of §5.2, the greeting rule, and My Day | A unit test covers each step of the order and the rule of no placeholder. An R8 test shows that no person of another org answers. A test shows the part-of-day line only with a greeting. My Day shows the fetched name. **BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-5** | #253 | `resolve_person` and the alias write | A real-database test: one match acts, two ask, and another org's person is never returned | AGENT-SAFE · **HIGH** (a read across people) |
 | **PZ-6** | #249 | The four tools of §5.5, the Undo card, and the orchestrator prompt line | A test per tool. With `learning` off each tool refuses. Undo restores the prior value **PZ-6a BUILT 2026-10-24, dark** **PZ-6b BUILT 2026-10-24, dark** | AGENT-SAFE · MEDIUM |
-| **PZ-7** | #257 | Settings → Assistant pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
+| **PZ-7** | #257 | Settings → Assistant settings pane on the web | The member sees, edits and deletes each key and fact. The visual review passes in light mode and at compact density. **BUILT 2026-10-23, dark** | AGENT-SAFE · LOW |
 | **PZ-8** | #258 | WhatsApp: the tools on the WhatsApp run, and the channel limits over `style` | A WhatsApp run test shows the block and a `profile_remember` call. **BUILT 2026-10-25, dark** | AGENT-SAFE · MEDIUM |
 | **PZ-9** | #259 | Forget one, forget all and the switch were built in PZ-1 and PZ-6a. PZ-9 adds the three gaps: the profile when access ends, the privacy fence, and the export of §13.3 item 7 | A real-database test for each. A removed member leaves no profile. **BUILT 2026-10-25** | AGENT-SAFE · **HIGH** (a member write) |
 | **PZ-10** | #260 | The eval set and the log lines | 20 fixed prompts score address, length, alias and no-leak. A log line per turn says the block's size, never its text | AGENT-SAFE · LOW |
@@ -736,7 +741,7 @@ Each slice is one PR. Each lands dark. The risk tier follows
    text. Each answer is an attachment with `Cache-Control: no-store`.
    `render_export` writes the address, the style, each fact with its source
    and date, and each alias. The switch does not stop the export. A member
-   with no profile gets the empty profile. Settings → Assistant has the
+   with no profile gets the empty profile. Settings → Assistant settings has the
    control "Download my profile".
 5. **The staging copy.** `infra/staging/minimise.sql` sets the column to
    NULL in each kept organization.
@@ -883,7 +888,7 @@ setup item and its state: done, missing or stale. The first items:
 
 **Limits.** At most one setup question a day. A dismissed item waits 14 days.
 "Don't ask again" stops that item for good. The member sees every item in
-Settings → Assistant.
+Settings → Assistant settings.
 
 ### 12.6 The preference contract for every app
 
@@ -985,8 +990,8 @@ proposals and never silent writes, one profile for each organization.
 
 1. **PZ-20: "What do you know about me" and "used your profile".** The chat
    answers from the block only. A small mark under an answer shows that the
-   profile was in the turn, and it links to Settings → Assistant. The pane
-   gains a "Read as text" view: the block exactly as the model sees it.
+   profile was in the turn. The mark links to Settings → Assistant settings.
+   The pane gains a "Read as text" view: the block exactly as the model sees it.
 2. **PZ-21: a chat without the profile.** A switch on a chat sends no profile
    block and allows no profile write in that chat. On WhatsApp, the word
    "private" at the start of a message does the same for that message.
@@ -1004,7 +1009,7 @@ proposals and never silent writes, one profile for each organization.
    fact needs a second yes before the assistant saves it: health, religion,
    caste, politics, sexuality or finance. Opinions are never saved as
    facts, because a stored opinion can make the assistant agree too easily.
-7. **PZ-9 grows by export.** Settings → Assistant gives a download of the
+7. **PZ-9 grows by export.** Settings → Assistant settings gives a download of the
    whole profile, as JSON and as readable text.
 8. **PZ-12 shows the voice as readable rules.** The member reads, edits and
    deletes each rule of their writing voice, as Claude shows a style. The
@@ -1087,9 +1092,10 @@ The first release needs one organization.
    and a restart, with no rebuild. The page, the nav entry and My Day read
    that answer. For an organization outside the list, the answer is
    `enabled: false` and the web app shows nothing.
-5. **The nav entry.** The account menu gains the row "Assistant", which
-   opens `/settings/assistant`. It is a static account link beside
-   My Access (`shellNav.accountLinks`), not an entry in `PANES`. So the
+5. **The nav entry.** The account menu gains the row "Assistant settings",
+   which opens `/settings/assistant`. The name says "settings" so a member does
+   not take it for the chat (PZ-28). It is a static account link in the
+   Settings group, after Appearance (`shellNav.accountLinks`), not an entry in `PANES`. So the
    live set of `launch_surface.md` §2 and `nav.test.ts` does not change.
 
 **PZ-25 as built (2026-10-25).**
@@ -1148,7 +1154,7 @@ unknown area.
 
 **The first sitting.** The member starts it in one of two ways:
 
-- The button "Get to know me" on Settings → Assistant opens a fresh chat and
+- The button "Get to know me" on Settings → Assistant settings opens a fresh chat and
   sends a fixed first message at once.
 - In the empty chat of a member with no `interview.started_at`, the web app
   shows the offer. The offer is client-side, so the block carries no offer
@@ -1186,7 +1192,7 @@ is an explicit write (D-PZ-2), with Undo. The sensitive rule of D-PZ-16
 stays. A health, religion, caste, politics, sexuality or finance answer
 needs a second yes. An opinion is never saved.
 
-**Settings → Assistant.** The pane shows each area and its state, and the
+**Settings → Assistant settings.** The pane shows each area and its state, and the
 member can reset one area or the whole interview. A fact shows its area.
 
 **PZ-26 as built (2026-10-25).**
@@ -1249,7 +1255,7 @@ member can reset one area or the whole interview. A fact shows its area.
 |---|---|---|---|
 | **PZ-25** | Rollout by org (§14.2), and the Settings nav entry | A test shows the profile off for an organization outside the list, in the block, the tools, the routes and the web app. A test shows the master switch off wins | AGENT-SAFE · **HIGH** (who gets the block). **BUILT 2026-10-25, dark** |
 | **PZ-26** | The `area` key, the `interview` key, the interview tools and the due line in the block (§14.3, §14.4) | A test for each limit of §14.4. A test shows no question in a shared room | AGENT-SAFE · MEDIUM. **BUILT 2026-10-25, dark** |
-| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
+| **PZ-27** | "Get to know me", the first-chat offer, and the interview list on Settings → Assistant settings | A test shows the button opens the chat with the fixed message. The visual review passes | AGENT-SAFE · LOW. **BUILT 2026-10-25, dark.** The visual review is UNVERIFIED |
 | **PZ-11** | After PZ-27: the staging test, then the production switch with `ASSISTANT_PROFILE_ORGS` set to Hathi Labs | Verified on staging | **OWNER-GATE** for production |
 
 ### 14.6 How this fits phase 2
