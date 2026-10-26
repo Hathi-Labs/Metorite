@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_common.paging import bounds, page_line
 
@@ -2596,3 +2597,384 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         out.append(f"  (and {len(rows) - 25} more rows)")
     out.extend(after)
     return out
+
+
+# ── The member's reminders (WS-66 RM-3, D114) ────────────────────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §5.8. A reminder is a private nudge
+# at a time, not a task. The writes are in ``writes.py`` (class B) and in
+# ``guarded.py`` (the promote, class C). The time rules and the two gates live
+# here, because the read and the writes share them, and ``writes.py`` imports
+# this module.
+
+#: The route of the member's own reminders (``routes/projects/reminders.py``).
+REMINDERS = "/projects/my/reminders"
+#: Migration 307's state CHECK, in the order of §5.3. A copy: the skill
+#: cannot import gateway code. The route refuses any other value.
+REMINDER_STATES = ("scheduled", "due", "unconfirmed", "done", "dropped", "cancelled")
+#: The most rows one read of the route returns (``reminders.list_reminders``).
+REMINDER_PAGE_MAX = 500
+#: How far ahead a snooze may move a reminder (``reminders.SNOOZE_MAX``). A
+#: copy, checked before the card, so the member never approves a card that
+#: the route then refuses.
+SNOOZE_MAX = timedelta(days=366)
+#: A wall time with no offset: ``2026-10-31 09:00`` or ``2026-10-31T09:00``.
+#: The tool reads it in the member's own zone.
+LOCAL_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
+#: A day and the word morning: the start of the member's day on that date.
+MORNING = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+morning$", re.IGNORECASE)
+#: The refusal when a time needs the member's zone and none is saved. The
+#: tool never guesses a zone (D114, the RM-3 audit).
+NO_ZONE = (
+    "No time zone is saved for you, so I cannot place a time that has no "
+    "offset. Open the Calendar or the Tasks app once, which saves the zone "
+    "of your browser. Or give the time with its offset, for example "
+    "2026-10-31T09:00:00+05:30."
+)
+#: The fallback that both gates name: a private task with a block on the
+#: member's calendar is the nearest act that works today.
+FALLBACK = "Make a private task with a block instead (create_personal_task)."
+#: The flag ``CALENDAR_REMINDERS`` is off: every reminder route answers 404.
+REMINDERS_OFF = "Reminders are not on for this organization yet."
+#: A run with no card channel (WhatsApp) cannot ask the member, and a
+#: reminder act is not in ``whatsapp_acts.ALLOWED_ACTS`` until RM-9.
+REMINDERS_NO_CARD = "Reminders cannot be set or changed from this chat yet."
+#: The card line for a member whose saved zone is exactly UTC, the column
+#: default of ``user_settings.timezone``. It may be a choice or a default.
+UTC_NOTE = "Your saved time zone is UTC. If that is wrong, change it in Calendar settings."
+#: Product words for the link kinds of §5.1.
+SUBJECT_WORDS = {
+    "task": "task",
+    "email_thread": "email thread",
+    "crm_contact": "CRM contact",
+    "wa_chat": "WhatsApp chat",
+    "project": "project",
+}
+
+
+def for_the_model(text: str) -> str:
+    """A result line that the model reads and the member's card does not show.
+
+    The line starts with :data:`DATA_LEGEND`, and the Projects cards strip
+    every line that starts with the legend (``ProjectToolCards.withoutLegend``).
+    So guidance for the model never reaches the member's receipt.
+    """
+    return f"{DATA_LEGEND} For you, not the member: {' '.join(text.split())}"
+
+
+def gate_text(said: str) -> str:
+    """A gate's refusal: the member's sentence, then the fallback for the model.
+
+    The fallback names a tool, so it goes on the model's line
+    (:func:`for_the_model`) and never on the member's receipt.
+    """
+    return f"{said}\n{for_the_model(FALLBACK)}"
+
+
+def _valid_zone(name: Any) -> str | None:
+    """*name* when ``zoneinfo`` knows it as a zone, else ``None``."""
+    clean = str(name or "").strip()
+    if not clean:
+        return None
+    try:
+        ZoneInfo(clean)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: "America" is a directory of the zone database, not a zone.
+        return None
+    return clean
+
+
+class ReminderClock:
+    """The member's saved zone and the hour their day starts.
+
+    ``zone`` is ``None`` when no valid zone is saved. ``day_start`` is
+    ``None`` when the gateway does not send the hour (R6, during a deploy).
+    """
+
+    def __init__(self, zone: str | None, day_start: int | None) -> None:
+        self.zone = zone
+        self.day_start = day_start
+
+
+async def reminder_clock() -> ReminderClock:
+    """The member's zone and day start, from ``GET /projects/my/today``.
+
+    The zone is ``None`` when the read fails, when no zone is saved, or when
+    the saved zone is not valid. ``writes._member_clock`` falls back to UTC
+    there. A reminder must not, because a guessed zone fires at the wrong
+    minute and the member does not see the guess (D114). So each caller
+    refuses a wall time, or names UTC as UTC, when the zone is ``None``.
+
+    A refusal of the CLIENT itself (no acting member, ``status`` ``None``)
+    goes on up: no read happened, and the tool must stop, not guess.
+    """
+    try:
+        row = await get("/projects/my/today")
+    except GatewayRefusal as exc:
+        if exc.status is None:
+            raise
+        return ReminderClock(None, None)
+    if not isinstance(row, dict):
+        return ReminderClock(None, None)
+    hour = row.get("day_start_hour")
+    day_start = hour if isinstance(hour, int) and 0 <= hour <= 23 else None
+    if row.get("stored") is False or row.get("valid") is False:
+        return ReminderClock(None, day_start)
+    return ReminderClock(_valid_zone(row.get("timezone")), day_start)
+
+
+async def member_zone() -> str | None:
+    """The member's saved zone, or ``None`` (:func:`reminder_clock`)."""
+    return (await reminder_clock()).zone
+
+
+async def reminders_off() -> str:
+    """The refusal of :data:`REMINDERS_OFF` when the routes answer 404, else ``""``.
+
+    With ``CALENDAR_REMINDERS`` off, every route of the store answers 404
+    (``reminders._require_on``). The list route has no id in its path, so a
+    404 there means the flag, and nothing else. Each tool asks this before
+    its card, so no member approves a card that the route then refuses.
+    """
+    try:
+        await get(REMINDERS, {"limit": 1})
+    except GatewayRefusal as exc:
+        if exc.status == 404:
+            return gate_text(REMINDERS_OFF)
+        raise
+    return ""
+
+
+def no_card_channel(tool: str) -> str:
+    """The refusal of :data:`REMINDERS_NO_CARD` when this run cannot show *tool*'s card.
+
+    A WhatsApp run, or any run inside ``ask_tools.refuse_cards``, has nobody
+    who can see a card. There a card is denied, or parked when the tool is in
+    ``whatsapp_acts.ALLOWED_ACTS``. No reminder act is there until RM-9, so
+    the tool refuses before its card and names the fallback. When RM-9 adds
+    the act, this check lets it through with no change here.
+    """
+    try:
+        from acb_skills.ask_tools import cards_refused
+        from acb_skills.whatsapp_acts import act_module
+        from acb_skills.whatsapp_ui import current_run
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return ""
+    if current_run() is None and not cards_refused():
+        return ""
+    if act_module(tool):
+        return ""
+    return gate_text(REMINDERS_NO_CARD)
+
+
+def _wall_time(text: str, zone: str) -> datetime | str:
+    """A wall time in *zone* as a real instant, or the refusal.
+
+    The instant goes through UTC and back, so a time in a gap of the clock
+    (02:30 on the morning the clock jumps to 03:00) becomes the real time
+    that the zone shows. The card and the receipt then name one time.
+    """
+    try:
+        local = datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return f"{data(text)} is not a real date and time. Check the day and the hour (00:00 to 23:59)."
+    aware = local.replace(tzinfo=ZoneInfo(zone))
+    return aware.astimezone(UTC).astimezone(ZoneInfo(zone))
+
+
+def resolve_at(raw: str, zone: str | None, day_start: int | None = None) -> datetime | str:
+    """The instant of *raw*, or the refusal the model reads.
+
+    *raw* is ISO 8601 with an offset (kept as given), a wall time with no
+    offset, ``YYYY-MM-DD HH:MM``, read in *zone*, or ``YYYY-MM-DD morning``,
+    the hour the member's day starts on that date. With no *zone*, a wall
+    time is refused with :data:`NO_ZONE`. A date alone is refused: a reminder
+    has a time of day. A date or an hour that does not exist is refused,
+    never raised.
+    """
+    text = str(raw or "").strip()
+    morning = MORNING.match(text)
+    if morning:
+        if day_start is None:
+            return "I cannot read the hour your day starts. Name an hour, YYYY-MM-DD HH:MM."
+        text = f"{morning.group(1)} {day_start:02d}:00"
+    if LOCAL_TIME.match(text):
+        if zone is None:
+            return NO_ZONE
+        return _wall_time(text, zone)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is None or len(text) <= 10:
+        return (
+            f"at is a date and a time: YYYY-MM-DD HH:MM in your own zone, YYYY-MM-DD "
+            f"morning, or ISO 8601 with an offset. Not {data(text)}."
+        )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return (
+            f"{data(text)} has seconds or parts that the wall-time form does not "
+            "take. Give YYYY-MM-DD HH:MM, or a time with its offset."
+        )
+    return parsed
+
+
+def _instant_of(value: Any) -> datetime | None:
+    """An ISO instant from the route, as an aware datetime, or ``None``."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
+def when_text(value: Any, zone: str | None) -> str:
+    """``Fri 31 Oct, 09:00 IST``: an instant in *zone*, as a member reads it.
+
+    *value* is an aware datetime, or an ISO instant as the route sends it.
+    The instant goes through UTC first, so a datetime that carries the zone
+    already shows its real wall time. With no valid *zone* the text is in
+    UTC and says UTC. A zone whose short name is only an offset (``+04``)
+    shows its IANA name. The year shows when it is not this year. An empty
+    string for a value that is not a time.
+    """
+    instant = value if isinstance(value, datetime) else _instant_of(value)
+    if instant is None:
+        return ""
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    name = _valid_zone(zone) or "UTC"
+    tz = ZoneInfo(name)
+    local = instant.astimezone(UTC).astimezone(tz)
+    short = local.tzname() or name
+    if short.startswith(("+", "-")) or short[0].isdigit():
+        short = name
+    year = f" {local.year}" if local.year != datetime.now(tz).year else ""
+    return f"{local:%a} {local.day} {local:%b}{year}, {local:%H:%M} {short}"
+
+
+def saved_when(row: dict[str, Any]) -> str:
+    """The time of a SAVED reminder, from the route's own answer.
+
+    The instant is the row's ``fire_at`` and the zone is the row's ``tz``. No
+    argument of the tool reaches this text, so the reply can only state what
+    the server stored (§5.8, "the reply quotes the saved row"). A row with no
+    ``tz`` reads in UTC, and says so.
+    """
+    shown = when_text(row.get("fire_at"), row.get("tz"))
+    if not shown:
+        return "no time in the server's answer"
+    if not _valid_zone(row.get("tz")):
+        return f"{shown} (no zone is saved with this reminder)"
+    return shown
+
+
+def reminder_rows(rows: list[dict[str, Any]]) -> list[str]:
+    """Each reminder as one line, then its ``reminder_id`` line.
+
+    A reminder is not a task, so the id line is ``reminder_id:``. A
+    ``full_id:`` line opens a task in the app's cards, and a reminder id
+    would open nothing.
+    """
+    out: list[str] = []
+    for row in rows:
+        facts = [saved_when(row), str(row.get("state") or "?"), str(row.get("kind") or "action")]
+        if row.get("important"):
+            facts.append("important")
+        if int(row.get("snoozes") or 0):
+            facts.append(f"moved by you {int(row['snoozes'])} times")
+        if row.get("subject_kind"):
+            word = SUBJECT_WORDS.get(str(row["subject_kind"]), str(row["subject_kind"]))
+            facts.append(f"linked to a {word} {data(row.get('subject_id'))}")
+        if row.get("resolution"):
+            facts.append(f"closed as {row['resolution']}")
+        if row.get("notes"):
+            facts.append(f"notes {data(str(row['notes'])[:200])}")
+        out.append(f"- {data(row.get('title'))} · " + " · ".join(facts))
+        out.append(f"  reminder_id: {row.get('id')}")
+    return out
+
+
+def _bound(value: str, what: str, zone: str | None, *, end: bool = False) -> str:
+    """A ``start`` or an ``end`` for the list route, ISO with an offset.
+
+    A date alone names a whole day in the member's zone: as a start, its
+    midnight, and as an end, the midnight that starts the NEXT day, so the
+    day itself is in the window (the ``calendar`` tool's rule). So start and
+    end of one date read that one day. A wall time is read in the zone. Both
+    need a saved zone. A time with an offset is kept.
+    """
+    raw = str(value or "").strip()
+    if len(raw) == 10:
+        try:
+            day = date.fromisoformat(raw)
+        except ValueError:
+            raise GatewayRefusal(f"{what} is a date, YYYY-MM-DD, or a time. Not {data(raw)}.") from None
+        if zone is None:
+            raise GatewayRefusal(NO_ZONE)
+        if end:
+            day += timedelta(days=1)
+        midnight = datetime(day.year, day.month, day.day, tzinfo=ZoneInfo(zone))
+        return midnight.astimezone(UTC).astimezone(ZoneInfo(zone)).isoformat()
+    resolved = resolve_at(raw, zone)
+    if isinstance(resolved, str):
+        raise GatewayRefusal(resolved.replace("at is", f"{what} is", 1))
+    return resolved.isoformat()
+
+
+def _clock_words(clock: ReminderClock) -> str:
+    """The first line of the list: the member's time now, zone and day start."""
+    now = datetime.now(UTC)
+    if clock.zone:
+        line = f"Your time now: {when_text(now, clock.zone)} ({clock.zone})."
+    else:
+        line = f"No time zone is saved for you. Times show in UTC. Now: {when_text(now, None)}."
+    if clock.day_start is not None:
+        line += f" Your day starts at {clock.day_start:02d}:00."
+    return line
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def list_reminders(state: str = "", start: str = "", end: str = "", limit: int = 50) -> str:
+    """The member's OWN reminders, by time. A reminder is a private nudge at
+    a time, not a task: nobody else sees it, and it is not on a task list.
+    With no state, the open ones (scheduled, due and unconfirmed). state may
+    be one of scheduled, due, unconfirmed, done, dropped or cancelled.
+    "unconfirmed" lists the ones Metorite stopped checking on. start and end
+    bound the time: a date YYYY-MM-DD (an end date includes that whole day),
+    a time YYYY-MM-DD HH:MM in the member's own zone, or ISO with an offset.
+    The first line states the member's own time now, the zone and the hour
+    their day starts: use it for "today", "tomorrow" and "at 5". Each row
+    ends with its reminder_id, which the other reminder tools take."""
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), REMINDER_PAGE_MAX))}
+    wanted = str(state or "").strip().lower()
+    if wanted and wanted != "open":
+        if wanted not in REMINDER_STATES:
+            return f"state is one of {', '.join(REMINDER_STATES)}, or empty for the open ones."
+        params["state"] = wanted
+    clock = await reminder_clock()
+    if str(start or "").strip():
+        params["start"] = _bound(start, "start", clock.zone)
+    if str(end or "").strip():
+        params["end"] = _bound(end, "end", clock.zone, end=True)
+    try:
+        payload = await get(REMINDERS, params) or {}
+    except GatewayRefusal as exc:
+        if exc.status == 404:
+            return gate_text(REMINDERS_OFF)
+        raise
+    rows = [r for r in (payload.get("rows") or []) if isinstance(r, dict)]
+    total = int(payload.get("total") or 0)
+    which = wanted if wanted and wanted != "open" else "open"
+    title = f"My reminders ({which})"
+    if not rows:
+        return "\n".join([legend(), _clock_words(clock), f"{title}: none."])
+    return "\n".join([
+        legend(),
+        _clock_words(clock),
+        f"{title} ({total} total, showing {len(rows)}):",
+        *reminder_rows(rows),
+    ])

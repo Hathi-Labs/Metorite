@@ -8,7 +8,9 @@
   `gateway/push/`, `public/sw.js`). **RM-1 (the reminder store and API) is
   BUILT, 2026-10-25, dark behind `CALENDAR_REMINDERS`** (migration 307,
   `routes/projects/reminders.py`). **RM-2 (the loop and the smart slot) is
-  BUILT, 2026-10-26, dark** (`gateway/reminders/`). RM-3 to RM-10 are not built. Verified
+  BUILT, 2026-10-26, dark** (`gateway/reminders/`). **RM-3 (the chat tools) is BUILT,
+  2026-10-26, dark**: the tools refuse before a card while
+  `CALENDAR_REMINDERS` is off. RM-4 to RM-10 are not built. Verified
   against code on 2026-10-25 (`origin/main` `894ddad27`): no `reminders`
   table and no `remind_at` existed then.
 - **Board row:** **WS-66** for reminders and web push. Events still wait on
@@ -592,33 +594,101 @@ Calendar read. No second gate applies.
 The tools go into `skill_projects` beside `create_personal_task`.
 `test_projects_chat_coverage.py` walks the `/projects` router, so each new
 route needs a manifest row in `skill_projects/manifest.py` in the PR that
-adds the route. RM-1 adds each row as a planned tool. RM-3 makes it real.
+adds the route. RM-1 added each row as a planned tool. RM-3 made it real.
 
 | Tool | Does | Confirm |
 |---|---|---|
-| `set_reminder` | Makes a reminder: `title`, `at` (ISO with an offset), `kind`, `subject`, `estimate_minutes`, `important` | None. It acts at once with Undo (D-CF-5) |
+| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | One card, until CF-6 |
 | `list_reminders` | Lists my reminders by state and window | A read |
-| `update_reminder` | Changes the text, the kind, the link, the estimate or `important` (PATCH) | None, with Undo |
-| `resolve_reminder` | Done or drop | None. Its Undo is `reopen_reminder` |
-| `reopen_reminder` | The Undo of a done or a drop (§5.3) | None |
-| `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One confirm. It cannot reopen |
-| `reschedule_reminder` | A snooze or a named time. `smart` (§5.5) comes with RM-2 | None, with Undo |
+| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | One card, until CF-6 |
+| `resolve_reminder` | Done or drop | One card, until CF-6. Its Undo is `reopen_reminder` |
+| `reopen_reminder` | The Undo of a done or a drop (§5.3) | One card, until CF-6 |
+| `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One card. It cannot reopen |
+| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | One card, until CF-6 |
 
-As built in RM-1, these are seven routes, each a planned tool in the
-manifest. Their request fields are planned under gap G24 of
-`projects_agent_parity.md` §3.3 (slice RM-3).
+**As built (RM-3, 2026-10-25).** RM-1 built eight routes, and RM-3 built
+the seven tools over them. `reschedule_reminder` reaches two routes:
+`/snooze` with `snooze=yes`, and `/reschedule` for a named time. The read is
+in `reads.py`, the five class B writes are in `writes.py`, and
+`promote_reminder` is class C in `guarded.py`. Each request field is now in
+`SENDS`, so RM-3 closes gap G24 of `projects_agent_parity.md` §3.3. The fence
+is `tests/unit/test_reminder_tools.py`.
 
-- **Time.** The model gets the member's zone and the current time in its
-  context. The tool refuses a time with no offset. "Tomorrow morning" reads
-  `day_start_hour`. "Later today" reads 3 hours on, inside working hours.
-- **Answer first.** On an unclear time, the tool saves the best guess, and
+- **Confirm.** One card for each write, until CF-6 exists. Then set,
+  update, resolve, reopen and reschedule act at once with Undo. RM-3 shows
+  each card through `writes._confirm`, the one door. It adds no second card
+  door and no act-at-once path (`chat_first_surface.md`, CF-6).
+- **Two gates before the card** (review round 1). Each write asks
+  `writes._reminder_gate` first. With `CALENDAR_REMINDERS` off, the routes
+  answer 404, so the tool refuses and says that reminders are not on. A
+  WhatsApp run, or any run with no card channel, cannot confirm a reminder
+  until RM-9 adds the acts to `whatsapp_acts.ALLOWED_ACTS`. So the tool
+  refuses there too. Both refusals send the model to a private task with a
+  block (`create_personal_task`). `list_reminders` says the same when the
+  flag is off.
+- **Time.** The tool resolves the time itself. `at` is ISO 8601 with an
+  offset, or a wall time with no offset, such as `2026-10-31 17:00`. The tool
+  reads a wall time in the member's saved zone, `user_settings.timezone`,
+  through `GET /projects/my/today`. `in_minutes` sets a time from now.
+- **A time that does not exist.** A date or an hour that does not exist,
+  such as `2099-02-30 09:00` or `24:00`, gets a refusal and no card. A wall
+  time in a gap of the clock, such as 02:30 on the morning the clock jumps to
+  03:00, becomes the real time. The card and the receipt then show the same
+  time.
+- **A saved zone of UTC.** `user_settings.timezone` defaults to UTC, so a
+  member who never chose a zone looks like a UTC member. When the saved zone
+  is UTC, the card shows one more line: "Your saved time zone is UTC. If that is
+  wrong, change it in Calendar settings." The tool still saves.
+- **No zone, no guess.** When the member has no saved zone, or the saved
+  zone is not valid, the tool refuses a wall time and says why. It never
+  reads a wall time as UTC. A time with an offset still saves, and the
+  reply then shows UTC and says that the member has no saved zone.
+- **The route still refuses a time with no offset.** The tool attaches the
+  zone before it calls the route. So "remind me at 5" saves one row at
+  17:00 in the member's zone.
+- **A time in the past.** The tool refuses it, and the refusal states the
+  member's time now. The model then takes the next day and says so.
+- **The context of the model.** The executor gives the model the date only
+  (`today_line`). RM-3 did not change the executor. `list_reminders` and
+  each time refusal state the member's time now and the zone.
+- **"Tomorrow morning"** reads `day_start_hour`. Since review round 1,
+  `GET /projects/my/today` sends `day_start_hour` by the rule of
+  `personal.member_day`, with 7 when the member saved no hour. The model passes
+  `at="YYYY-MM-DD morning"`, and the tool takes that hour. "Later today"
+  reads 3 hours on, inside working hours.
+- **`smart`.** `reschedule_reminder` sends `smart` to `/reschedule` only.
+  The create, the PATCH and the snooze refuse it, so the tool refuses it
+  for each of them before the card. RM-2 adds the slot to the route. Until
+  then the route answers 422, and the reply says that nothing moved.
+- **A snooze is at most 366 days.** The tool checks the bound of the route
+  (`SNOOZE_MAX`) before the card.
+- **An end date includes its whole day.** For `list_reminders`, a date
+  alone as `end` is the midnight that starts the next day, as the `calendar`
+  tool reads it. So a start and an end of one date read that one day.
+- **Answer first.** On an unclear time, the model saves the best guess, and
   the reply states it with one correction: "09:00 tomorrow, or did you mean
-  tonight?" (the CRM rule of answering first).
+  tonight?" (the CRM rule of answering first). Each tool description says
+  this.
 - **The reply quotes the saved row.** It states the absolute time and the
-  zone, for example "Fri 31 Oct, 09:00 IST". It never says "done" for a row
-  that it did not save.
+  zone, for example "Fri 31 Oct, 09:00 IST". `reads.saved_when` reads the
+  route's `fire_at` and `tz`, and never the argument of the tool. A reply
+  with no reminder id tells the model not to say that the reminder is
+  saved.
+- **A line for the model only.** Guidance for the model, such as "quote this
+  time exactly" or "reopen_reminder undoes this answer", goes on a line that
+  starts with the data legend (`reads.for_the_model`). The receipt card of
+  the member drops that line, as it drops the legend of a read.
+- **A reminder is not a task.** Each tool description says so, and
+  `create_personal_task` sends "remind me to" to `set_reminder`. A reminder
+  row prints `reminder_id:`, never `full_id:`, because a `full_id:` line opens
+  a task in the chat cards. Only the promote prints a `full_id:`, the one of
+  the task that it made.
 - **"Remind me to…" in the command bar.** The `capture` job stops taking it.
-  A new `set-reminder` job opens the composer of §6.1 filled.
+  A new `set-reminder` job opens the composer of §6.1 filled. This waits for
+  the composer (CE-3 and RM-5). RM-3 did not build the job or the `capture`
+  change.
+- **Not in RM-3.** Act at once and Undo (CF-6), the command-bar job and the
+  `capture` change (CE-3, RM-5), and the WhatsApp acts (RM-9).
 
 ### 5.9 Web push on iOS and Android
 
@@ -886,7 +956,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | **PN-1** The push platform (S7's transport) — ✅ **BUILT 2026-10-25, dark** (migration 306) | Now, beside RM-1 | §10.2 | The agent proves: no prompt shows without a tap, org B reads no subscription of org A, a 410 deletes the row, and a sign-out deletes the row of that device. 🔴 The owner checks, through a HANDOFF entry on dev.metorite.com: a test push reaches an installed iPhone app and Android Chrome | `tests/unit/test_push_subscriptions.py` (R8, two orgs), `src/lib/push.test.ts`, `src/proxy.test.ts` |
 | **RM-1** The store and the API — ✅ **BUILT 2026-10-25, dark** (migration 307) | Now, beside PN-1 | §10.3 | Member B never reads, changes or counts a reminder of member A. Org B reads no row of org A. A promote makes one private task and ends the reminder | `tests/unit/test_reminders_r8.py` (R8, two orgs, two members), `test_projects_chat_coverage.py` |
 | **RM-2** The loop and the smart slot — ✅ **BUILT 2026-10-26, dark** | After RM-1 | §5.4 and §5.5. The three card kinds in `feed.py` and in `REACH_CLASS`. The D114.3 exception in the Reach budget | A reminder for 15:00 fires at 15:00, and its check-back comes at 16:00. No answer moves it to the brief, then to one new slot. After 2 cycles it is `unconfirmed`. No step 2 to 5 lands in quiet hours. Two workers never fire one row twice | `tests/unit/test_reminder_loop.py` (R8, frozen clock), `tests/unit/test_reminder_slot.py`, `test_reach_plan.py` |
-| **RM-3** The chat tools | After RM-1 | §5.8 in `skill_projects`. The `set-reminder` job in `routes/shell/intent.py` and `src/lib/shell/registry.ts`. `capture` stops taking "remind me" | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `test_shell_intent.py`, `tests/unit/test_reminder_tools.py` |
+| **RM-3** The chat tools — ✅ **BUILT 2026-10-26, dark** | After RM-1 | §5.8 in `skill_projects`: seven tools on the one confirm card, until CF-6. The `set-reminder` command-bar job and the `capture` change wait for CE-3 and RM-5 (§5.8) | "Remind me at 5 to get a haircut" saves one row at 17:00 in my zone, and the reply quotes that time and zone. A time with no offset is refused | `test_projects_chat_coverage.py`, `tests/unit/test_reminder_tools.py`, `test_projects_agent_writes.py`, `test_wac_writes.py` |
 | **RE-9** Push as a Reach channel | After PN-1, RM-2 | `proactive_reach.md` RE-9 on the PN-1 sender. The reminder payload of D114.4 and "Hide details on the lock screen". Settle the case of one browser with several accounts (§5.9) first | A `reminder_due` card reaches the device within 90 s of `fire_at`. A hidden-details member gets no title in the payload | `test_reach_plan.py` and `tests/unit/test_reach_push.py` |
 | **RM-4** A tap opens the chat | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.tsx` (new) and `tests/unit/test_reminder_context.py` |
 | **RM-5** The Calendar UI | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. The bell glyph of §6.5 | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at` | Vitest for the pin and the panel, the conformance suite, and a visual review |

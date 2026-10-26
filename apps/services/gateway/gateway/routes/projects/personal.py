@@ -1562,16 +1562,27 @@ async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, A
     name, and the date is then the UTC date. It writes nothing, and it reads
     only the caller's own row: the address is the authenticated one, never a
     parameter (R11).
+
+    ``day_start_hour`` (WS-66 RM-3) is the hour the member's day starts, by
+    the one rule of :func:`member_day`, clamped as the shell's feed clamps it
+    (``shell.state._hour``, 7 when none is saved). The reminder tools read it
+    for "tomorrow morning". The zone keeps its own read above, so this field
+    changes no zone answer.
     """
+    # Imported here: `shell.state` reaches the projects routes through the feed.
+    from gateway.routes.shell.state import DEFAULT_DAY_START, _hour
+
     email = actor(user).lower()
     async with _tenant_session() as db:
         stored = await stored_zone(db, email)
+        _day_zone, hour = await member_day(db, user)
     zone = zone_name(stored)
     return {
         "today": local_date(zone, datetime.now(UTC)).isoformat(),
         "timezone": zone,
         "stored": stored is not None,
         "valid": stored is None or zone == str(stored),
+        "day_start_hour": _hour(hour, DEFAULT_DAY_START, 23),
     }
 
 

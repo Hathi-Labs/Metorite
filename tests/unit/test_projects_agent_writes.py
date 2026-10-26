@@ -446,6 +446,67 @@ def _op6d_answers(call: dict) -> Any:
     return None
 
 
+#: WS-66 RM-3. One open reminder of the member's, as the RM-1 route answers it
+#: (`reminders._out`). Its title is the task's, so the card-naming fence
+#: below reads «Fix the extruder» on each reminder card too.
+REMINDER = "e1f8fad5-d9cb-469f-a165-70867728950e"
+REMINDER_ROW: dict[str, Any] = {
+    "id": REMINDER,
+    "title": "Fix the extruder",
+    "notes": None,
+    "kind": "action",
+    "subject_kind": None,
+    "subject_id": None,
+    "fire_at": "2099-10-31T09:00:00+00:00",
+    "tz": "UTC",
+    "state": "scheduled",
+    "next_check_at": None,
+    "first_fired_at": None,
+    "cycles": 0,
+    "snoozes": 0,
+    "estimate_minutes": None,
+    "important": False,
+    "resolution": None,
+    "resolved_at": None,
+    "promoted_task_id": None,
+    "source": "chat",
+}
+
+
+def _reminder_answers(call: dict) -> Any:
+    """WS-66 RM-3: the member's zone, the list of reminders, and each write.
+
+    The zone is UTC and the date is ``writes._today()``, the value that
+    ``_member_clock`` fell back to before this fake answered. So a tool that
+    guesses a day reads the same day, and a test that pins ``_today`` holds.
+    """
+    path, method = call["path"], call["method"]
+    if path == "/projects/my/today":
+        today = W._today().isoformat()
+        return {"today": today, "timezone": "UTC", "stored": True, "valid": True}
+    if not path.startswith("/projects/my/reminders"):
+        return None
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if method == "GET":
+        state = (call["params"] or {}).get("state") or "scheduled"
+        closed = state if state in ("done", "dropped") else None
+        return {"rows": [{**REMINDER_ROW, "state": state, "resolution": closed}], "total": 1}
+    if path == "/projects/my/reminders":
+        return {**REMINDER_ROW, **body, "state": "scheduled"}
+    if method == "PATCH":
+        return {**REMINDER_ROW, **body}
+    tail = path.rsplit("/", 1)[-1]
+    if tail == "resolve":
+        state = "done" if body.get("action") == "done" else "dropped"
+        return {**REMINDER_ROW, "state": state, "resolution": state}
+    if tail == "promote":
+        return {**REMINDER_ROW, "state": "done", "resolution": "promoted",
+                "promoted_task_id": OTHER}
+    if tail in ("snooze", "reschedule"):
+        return {**REMINDER_ROW, **body, "snoozes": 1}
+    return {**REMINDER_ROW, "state": "scheduled"}
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
@@ -456,8 +517,10 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    # `_op6c_answers` first: its task answers a `/my/tasks/` read that `_s2b_answers` also claims.
-    answered = _answered(call, _op6d_answers, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
+    # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
+    # member's zone and `/projects/my/reminders`, so it may lead.
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -629,6 +692,22 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     ],
     "create_personal_task": [{"title": "Renew the domain", "due": "2026-10-01"}],
     "set_my_overlay": [{"task_id": UUID, "disposition": "someday", "clear": "energy"}],
+    # WS-66 RM-3 — the member's reminders, one card each
+    "set_reminder": [
+        {"title": "Call the bank", "at": "2099-10-31 09:00"},
+        {"title": "The office closes early", "in_minutes": 20, "kind": "notice"},
+    ],
+    "update_reminder": [
+        {"reminder_id": REMINDER, "title": "Fix the extruder today", "at": "2099-11-01 10:00"},
+        {"reminder_id": REMINDER, "clear": "notes"},
+    ],
+    "resolve_reminder": [{"reminder_id": REMINDER}, {"reminder_id": REMINDER, "answer": "drop"}],
+    "reopen_reminder": [{"reminder_id": REMINDER}],
+    "reschedule_reminder": [
+        {"reminder_id": REMINDER, "at": "2099-11-02 08:00"},
+        {"reminder_id": REMINDER, "in_minutes": 60, "snooze": "yes"},
+    ],
+    "promote_reminder": [{"reminder_id": REMINDER}],
     # S3 — class C, one act one card
     "archive_project": [{"project_id": UUID}],
     "unarchive_project": [{"project_id": ARCHIVED}],
@@ -761,6 +840,7 @@ _ONE_ID: dict[str, str] = {
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
+    "promote_reminder": "reminder_id",
 }
 
 
@@ -896,6 +976,8 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "add_report_recipient",
             "remove_report_recipient",
             "set_report_schedule",
+            # WS-66 RM-3: a NEW reminder, as create_personal_task is a new task.
+            "set_reminder",
         )
     ),
 )
@@ -2252,11 +2334,10 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 EA-13e: the strip of the board reads a count route. The chat reads
     # the same counts through a tool after EA-12e.
     ea_13e = {"agent_summary"}
-    # WS-66 RM-1 (D114): the reminder routes. RM-3 builds the tools of
-    # calendar_events_reminders.md §5.8.
-    rm_3 = {"list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
-            "reschedule_reminder", "reopen_reminder", "promote_reminder"}
-    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e | rm_3, m.PLANNED
+    # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
+    # reminder tool is planned now.
+    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e, m.PLANNED
+    assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
