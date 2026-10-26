@@ -11,6 +11,32 @@ the design of 2026-10-26, with the owner's answers. Each slice waits for an
 audit. OA-7g shipped live (PR #1356, `344cad4fc`). The auditor's gates and narrowings are in §4.5. Verified against code on 2026-10-26 at `1e43fc5c0`. Metorite: epic #445 in *AI Chat Interface*,
 with slices #446 (OA-1) to #455 (OA-10).
 
+OA-7a is BUILT, dark (2026-10-26, "As built, OA-7a" below). No caller reads
+its flag, and no run loads a pack.
+
+**As built, OA-7a.** A WS-23 skill family with an `owner` key is a tool pack
+(`acb_skills/skill_families.py`). Two packs hold the 59 own tools of the email
+assistant: `email` (31 tools) and `email-setup` (28 tools). The split follows
+the groups of `_TOOLS` in `agent-email-assistant/agents.py`. So
+`update_account` and `unsubscribe_sender` are in `email-setup`, and
+`sync_account`, `reclassify_reply_zero` and `narrow_and_read` are in `email`.
+- `acb_skills/tool_packs.py` holds the rules block, the references, the
+  words, `tier_floor` and `keeps_reasoning` of each pack. The `email` rules
+  are the `RULES` text of the OA-5 fixture.
+- `packs_on(org)` is the one reader of `TOOL_PACKS` and `TOOL_PACKS_ORGS`.
+  It fails closed, and nothing calls it yet.
+- A pack is not an injected family. The injected scope, the skill index, the
+  agent matrix and the catalog total read `injected_families()`, and they
+  skip a pack. So a pack toggle changes no run until OA-7c, and its text in
+  the Skills catalog says so.
+- `build_catalog` gives the cost of a pack as its rules block plus the
+  schemas of its owner's tools. The catalog route loads the owner module
+  once for each process, from the static registry, and it runs no tool.
+- Fences: `tests/unit/test_tool_packs_registry.py` and the owner universe
+  in `tests/unit/test_skills_registry.py`.
+- Open: the cost meter on the Agents page adds the cost of each pack to
+  each agent. A later UI slice must take packs out of that sum.
+
 **As built, OA-5.** `evals/one_assistant_measure` runs 13 email chats (18
 turns) through the one harness of the routing eval, two ways. One way
 delegates to the email assistant, as today. The other way is an eval-only
@@ -361,7 +387,7 @@ Each slice merges alone, in this order.
 | Slice | What | Risk |
 |---|---|---|
 | OA-7g | The rule against an unasked draft. Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`) | LOW |
-| OA-7a | The pack key in WS-23, the email split, the rules, the flag reader | LOW |
+| OA-7a | The pack key in WS-23, the email split, the rules, the flag reader. BUILT, dark, 2026-10-26 | LOW |
 | OA-7b | The guarded pack builder, with no live caller | HIGH |
 | OA-7c | Layer (a) and sticky state: packs in live runs | HIGH |
 | OA-7d | The structured `surface` field from the dock | LOW |
