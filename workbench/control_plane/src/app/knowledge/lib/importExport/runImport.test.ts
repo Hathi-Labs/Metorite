@@ -83,4 +83,31 @@ describe("runImport", () => {
     const report = await runImport(plan, { spaceId: "sp", parentId: null }, bad);
     expect(report).toMatchObject({ created: 2, linkFailures: 2, linksRewritten: 0 });
   });
+  it("keeps a relative link to a file outside the import as written (K-5)", async () => {
+    const plan = buildPlan([
+      draft("A.md", "A", "[out](Outside/Other.md) and [up](../Elsewhere.md) and [in](B.md)."),
+      draft("B.md", "B", "Plain."),
+    ]);
+    const { writes, patches } = fakeWrites();
+    const report = await runImport(plan, { spaceId: "sp", parentId: null }, writes);
+    expect(patches).toEqual([
+      { id: "id-1", body: { body_md: "[out](Outside/Other.md) and [up](../Elsewhere.md) and [in](/knowledge/pages/id-2)." } },
+    ]);
+    expect(report.linksRewritten).toBe(1);
+  });
+  it("patches only the pages made in this run (K-5)", async () => {
+    const plan = buildPlan([
+      draft("A.md", "A", "[b](B.md) [c](C.md)"),
+      draft("B.md", "B", "[a](A.md)"),
+      draft("C.md", "C", "[a](A.md)"),
+    ]);
+    const { writes, patches } = fakeWrites((t) => t === "B");
+    const report = await runImport(plan, { spaceId: "sp", parentId: null }, writes);
+    // B was not made, so it has no id and no PATCH. A links to B and keeps that link as written.
+    expect(patches.map((p) => p.id)).toEqual(["id-1", "id-2"]);
+    expect(patches[0].body.body_md).toBe("[b](B.md) [c](/knowledge/pages/id-2)");
+    expect(patches[1].body.body_md).toBe("[a](/knowledge/pages/id-1)");
+    expect(report.created).toBe(2);
+    expect(report.linksRewritten).toBe(2);
+  });
 });

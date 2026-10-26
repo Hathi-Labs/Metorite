@@ -1896,7 +1896,7 @@ that make it feel good, in our words.
 | `/` menu, bubble menu, Markdown shortcuts, block handle | **Take** (KB-2b) | They are what makes the editor fast without a toolbar |
 | Callouts, toggles, task lists, code with language, tables | **Take** (KB-2b) | Manuals and policies need them |
 | Page link picker and `[[` | **Take** (KB-2b) | A link to a page is a Markdown link to `/knowledge/pages/<id>` |
-| Backlinks into `kb_links` | **Take** (KB-2h, built 2026-10-21) | Each page write reads the links of the saved body into `kb_links` (`routes/knowledge/backlinks.py`), so the editor needs no change. Old pages gain links on their next write |
+| Backlinks into `kb_links` | **Take** (KB-2h, built 2026-10-21) | Each page write reads the links of the saved body into `kb_links` (`routes/knowledge/backlinks.py`), so the editor needs no change. Old pages gain links on their next write, or when an operator runs `scripts/backfill_kb_links.py` (K-2, 2026-10-26) |
 | Tree hover actions, drag to reorder and nest, arrow keys | **Take** (KB-2e) | The tree is the app for most members |
 | Breadcrumbs, outline, heading anchors, byline, page menu | **Take** (KB-2d) | Low cost, high polish |
 | A page icon (an emoji) | **Take** (KB-2f) | It makes the tree and the search results readable at a glance |

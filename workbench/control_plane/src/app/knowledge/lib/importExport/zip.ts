@@ -5,8 +5,10 @@
 //
 // ⚠️ A zip header can lie about the size of an entry (a zip bomb). The reader
 // therefore works in two passes. The first pass lists the entries and inflates
-// none. `checkDeclared` refuses over a limit. The second pass inflates only
-// the page files, and the real size is checked again after it.
+// none. `checkDeclared` refuses over a limit. The second pass streams only the
+// page files through `Unzip`, which ignores the declared size and stops at the
+// file limit, so memory stays bounded. An entry whose real size is not the
+// declared size is refused by name, and never cut to the declared size (K-6).
 
 import {
   ImportRefusal,
@@ -18,6 +20,7 @@ import {
   safeEntryPath,
 } from "./limits";
 import { baseName, isDocumentKind, pageKind } from "./names";
+import type { Unreadable } from "./plan";
 
 /** One page file read from a zip or from the disk. */
 export interface RawEntry {
@@ -35,6 +38,8 @@ export interface ZipRead {
   skipped: string[];
   /** The bytes of the page files, once read. */
   bytes: number;
+  /** Entries refused because the header declares a size that is not the real size (K-6). */
+  refused: Unreadable[];
 }
 
 /** Entries that carry no content of the member's. */
@@ -44,7 +49,7 @@ function isNoise(path: string): boolean {
 
 /** Read the page files of a zip. Refuses over a limit and reads nothing then. */
 export async function readZip(data: Uint8Array, alreadyBytes = 0): Promise<ZipRead> {
-  const { unzipSync, strFromU8 } = await import("fflate");
+  const { Unzip, UnzipInflate, UnzipPassThrough, unzipSync, strFromU8 } = await import("fflate");
   const declared: Array<{ name: string; size: number }> = [];
   try {
     // Pass 1: the central directory only. The filter says no to each entry.
@@ -72,31 +77,70 @@ export async function readZip(data: Uint8Array, alreadyBytes = 0): Promise<ZipRe
     else skipped.push(path);
   }
 
-  let files: Record<string, Uint8Array>;
+  const sizeOf = new Map(declared.map((d) => [d.name, d.size]));
+  const entries: RawEntry[] = [];
+  const refused: Unreadable[] = [];
+  let bytes = 0;
+  let overFile: string | null = null;
   try {
-    // Pass 2: inflate the page files only.
-    files = unzipSync(data, { filter: (file) => wanted.has(file.name) });
-  } catch {
+    // Pass 2: stream the page files only. A streamed entry is not cut to its declared size.
+    const unzipper = new Unzip();
+    unzipper.register(UnzipInflate);
+    unzipper.register(UnzipPassThrough);
+    unzipper.onfile = (file) => {
+      if (!wanted.has(file.name)) return;
+      const chunks: Uint8Array[] = [];
+      let real = 0;
+      file.ondata = (err, chunk, final) => {
+        if (err) throw err;
+        if (overFile !== null) return;
+        real += chunk.length;
+        if (real > MAX_FILE_BYTES) {
+          overFile = file.name;
+          file.terminate();
+          return;
+        }
+        chunks.push(chunk);
+        if (!final) return;
+        const path = safeEntryPath(file.name);
+        if (real !== sizeOf.get(file.name)) {
+          refused.push({
+            file: path,
+            reason: `"${baseName(path)}" declares ${sizeOf.get(file.name)} bytes and holds ${real}. It was refused and not cut.`,
+          });
+          return;
+        }
+        const content = new Uint8Array(real);
+        let at = 0;
+        for (const c of chunks) {
+          content.set(c, at);
+          at += c.length;
+        }
+        bytes += real;
+        if (alreadyBytes + bytes > MAX_TOTAL_BYTES) {
+          overFile = file.name;
+          return;
+        }
+        entries.push(isDocumentKind(pageKind(path)) ? { path, text: "", bytes: content } : { path, text: strFromU8(content) });
+      };
+      file.start();
+    };
+    unzipper.push(data, true);
+  } catch (err) {
+    if (err instanceof ImportRefusal) throw err;
     throw new ImportRefusal("This zip is damaged and cannot be read. Nothing was imported.");
   }
-  const entries: RawEntry[] = [];
-  let bytes = 0;
-  for (const [name, content] of Object.entries(files)) {
-    if (content.length > MAX_FILE_BYTES) {
-      throw new ImportRefusal(
-        `"${baseName(name)}" is ${mb(content.length)} when it is read. The limit for one file is ${mb(MAX_FILE_BYTES)}. Nothing was imported.`,
-      );
-    }
-    bytes += content.length;
+  if (overFile !== null) {
     if (alreadyBytes + bytes > MAX_TOTAL_BYTES) {
       throw new ImportRefusal(
         `The files are over ${mb(MAX_TOTAL_BYTES)} when they are read. The limit for one import is ${mb(MAX_TOTAL_BYTES)}. Nothing was imported.`,
       );
     }
-    const path = safeEntryPath(name);
-    entries.push(isDocumentKind(pageKind(path)) ? { path, text: "", bytes: content } : { path, text: strFromU8(content) });
+    throw new ImportRefusal(
+      `"${baseName(overFile)}" is over ${mb(MAX_FILE_BYTES)} when it is read. The limit for one file is ${mb(MAX_FILE_BYTES)}. Nothing was imported.`,
+    );
   }
-  return { entries, skipped, bytes };
+  return { entries, skipped, bytes, refused };
 }
 
 /** One file to write into a zip. */
