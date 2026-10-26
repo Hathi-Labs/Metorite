@@ -467,6 +467,19 @@ class TestReopened:
         assert people["rate"] == 0.5
         _assert_rates_at_most_one(sec)
 
+    async def test_r1_a_reopen_after_a_second_finish_does_not_undo_the_first(self, w):
+        """Finished at 10 days and at 8 days, reopened at 7 days. Another
+        finish lies between the first finish and the reopen, so only the
+        second finish is undone."""
+        t = _task(w)
+        _move(w, t, PERSON, "todo", "done", 10 * DAY)
+        _move(w, t, PERSON, "todo", "done", 8 * DAY)
+        _move(w, t, PERSON, "done", "todo", 7 * DAY)
+        sec = await _section(w, w.a)
+        people = sec["rework"]["reopened"]["people"]
+        assert (people["finished"], people["undone"], people["reopened"]) == (2, 1, 1)
+        _assert_rates_at_most_one(sec)
+
     async def test_r1_a_task_reopened_twice_counts_once_in_the_group_of_the_latest(self, w):
         t = _task(w)
         _move(w, t, PERSON, "todo", "done", 10 * DAY)
