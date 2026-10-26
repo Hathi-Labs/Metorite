@@ -53,6 +53,8 @@ class TestTheTable:
             "kb_gap": 20,
             # WS-61 KB-9b: the review above the gap, the new page below it.
             "doc_needs_review": 21, "doc_shared_with_me": 19,
+            # WS-61 KB-9b slice 2: a source stopped syncing.
+            "source_sync_failed": 31,
         }
 
     def test_the_needs_kinds_start_above_every_other_kind(self):

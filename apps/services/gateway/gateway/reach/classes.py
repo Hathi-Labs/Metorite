@@ -62,6 +62,9 @@ REACH_CLASS: dict[str, str] = {
     # goes in the brief and interrupts nobody.
     "doc_needs_review": "brief",
     "doc_shared_with_me": "brief",
+    # KB-9b slice 2: a source stopped syncing, for the member who connected it
+    # (only that member gets the card). It may interrupt, inside the budget.
+    "source_sync_failed": "interrupt",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).

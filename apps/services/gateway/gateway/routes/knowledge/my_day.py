@@ -3,8 +3,10 @@
 Spec: ``project-docs/specs/knowledge_base.md`` §9 and §17 (the KB-9b row),
 ``my_day_feed.md`` §5.8 and MD-3.
 
-    read(user, gaps_on=...)  the rows of ``kb_gap``, ``doc_needs_review`` and
-                            ``doc_shared_with_me`` for the viewer
+    read(user, gaps_on=..., sources_on=...)
+                            the rows of ``kb_gap``, ``doc_needs_review``,
+                            ``doc_shared_with_me`` and ``source_sync_failed``
+                            for the viewer
 
 **One session.** ``read`` opens ONE tenant session, and it reads the gaps,
 the expired pages and the new pages in it. The provider in
@@ -25,8 +27,21 @@ email gets no page row.
   hours, in a space that the viewer reads. At most :data:`SHARED_MAX`, the
   newest first.
 
-Both key on ``knowledge:page:<id>``, so one page makes one card. Fences:
-``tests/unit/test_kb_my_day.py`` and ``tests/unit/test_kb_my_day_r8.py``.
+Both key on ``knowledge:page:<id>``, so one page makes one card.
+
+**The fourth kind (KB-9b slice 2).** ``source_sync_failed`` is for the member
+who connected a Drive, and for nobody else: the read names
+``lower(owner_email) = :kb_viewer``, the organization and
+``state <> 'disconnected'``. A source fails when its state is
+``needs_reconnect``, or when its three newest FINISHED runs of kind
+``changes`` or ``reconcile`` all have status ``failed`` with an error other
+than ``stale`` or ``superseded``. A stopped run is finished and is not
+failed, so it breaks the three. A running run is not finished. The read runs
+only with ``sources_on`` (``KNOWLEDGE_SOURCES`` names the org), in the SAME
+session, and gives no error text and no account address. It reads at most
+:data:`SOURCES_MAX` sources, and uses ``kb_sync_runs_source_started_idx``.
+
+Fences: ``tests/unit/test_kb_my_day.py`` and ``tests/unit/test_kb_my_day_r8.py``.
 """
 
 from __future__ import annotations
@@ -47,6 +62,10 @@ REVIEW_MAX = 10
 #: How long a published page stays new, in hours (OQ5). The card expires
 #: after the same time, and ``feed.py`` imports this value.
 NEW_HOURS = 24
+#: The most sources one member has in the read of ``source_sync_failed``.
+SOURCES_MAX = 10
+#: How many finished runs in a row must fail before a card shows.
+FAILED_RUNS = 3
 
 
 @dataclass(frozen=True)
@@ -56,6 +75,7 @@ class Rows:
     review: list[dict[str, Any]] = field(default_factory=list)
     gaps: list[dict[str, Any]] = field(default_factory=list)
     shared: list[dict[str, Any]] = field(default_factory=list)
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _page_row(r: Any) -> dict[str, Any]:
@@ -101,12 +121,44 @@ async def _shared_rows(db: Any, user: UserContext, limit: int) -> list[dict[str,
     return [_page_row(r) for r in rows]
 
 
-async def read(user: UserContext, *, gaps_on: bool, limit: int) -> Rows:
+#: The sources of the viewer that fail. The run test reads the newest
+#: ``FAILED_RUNS`` finished runs through ``kb_sync_runs_source_started_idx``.
+#: A running row is not finished. A stopped row is, and it is not failed.
+_SOURCES_SQL = (
+    "SELECT s.id, s.provider, s.state FROM kb_sources s "
+    "WHERE s.organization_id = CAST(:kb_org AS uuid) "
+    "AND lower(s.owner_email) = :kb_viewer AND s.state <> 'disconnected' "
+    "AND (s.state = 'needs_reconnect' OR COALESCE(( "
+    "SELECT count(*) = :kb_runs AND bool_and(x.status = 'failed' "
+    "AND COALESCE(x.error, '') NOT IN ('stale', 'superseded')) FROM ( "
+    "SELECT r.status, r.error FROM kb_sync_runs r "
+    "WHERE r.source_id = s.id AND r.organization_id = s.organization_id "
+    "AND r.kind IN ('changes', 'reconcile') AND r.status <> 'running' "
+    "ORDER BY r.started_at DESC LIMIT :kb_runs) x), false)) "
+    "ORDER BY s.created_at ASC, s.id ASC LIMIT :kb_limit"
+)
+
+
+async def _source_rows(db: Any, user: UserContext) -> list[dict[str, Any]]:
+    """The sources that the viewer connected and that fail. No error text and
+    no account address leaves this read."""
+    rows = (await db.execute(text(_SOURCES_SQL), {
+        "kb_org": core.org_of(user), "kb_viewer": core.viewer_email(user),
+        "kb_runs": FAILED_RUNS, "kb_limit": SOURCES_MAX,
+    })).fetchall()
+    return [{"id": str(r.id), "provider": str(r.provider), "state": str(r.state)}
+            for r in rows]
+
+
+async def read(user: UserContext, *, gaps_on: bool, limit: int,
+               sources_on: bool = False) -> Rows:
     """The three lists, in ONE tenant session.
 
     *gaps_on* is true when ``KNOWLEDGE_GAPS`` names the org. ``gaps`` still
     gives rows to a manager only. *limit* is the cut of the review list and
-    of the gap list. A viewer with no email gets no page row.
+    of the gap list. *sources_on* is true when ``KNOWLEDGE_SOURCES`` names the
+    org: only then does the read of the viewer's own failing sources run, in
+    the same session. A viewer with no email gets no page row and no source.
     """
     viewer = core.viewer_email(user)
     manager = gaps_on and core.is_manager(user)
@@ -116,4 +168,5 @@ async def read(user: UserContext, *, gaps_on: bool, limit: int) -> Rows:
         review = await _review_rows(db, user, min(limit, REVIEW_MAX)) if viewer else []
         found = await gaps.my_day_rows_in(db, user, limit) if manager else []
         shared = await _shared_rows(db, user, SHARED_MAX) if viewer else []
-    return Rows(review=review, gaps=found, shared=shared)
+        failing = await _source_rows(db, user) if viewer and sources_on else []
+    return Rows(review=review, gaps=found, shared=shared, sources=failing)
