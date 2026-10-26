@@ -63,8 +63,33 @@ clone cache.
    (tests/unit/test_skills_registry.py is the drift gate — a newly injected tool
    must be registered here or CI fails). `build_catalog()` measures per-family
    token cost (marginal addendum + tool JSON schemas) through dependency-injected
-   renderer/tokenizer params — this module never imports orchestrator/gateway;
-   the gateway route (`routes/integrations_skills.py`) composes the real ones.
+   renderer/tokenizer params — this module never imports orchestrator/gateway.
+   The gateway route (`routes/integrations_skills.py`) composes the real ones.
+
+   WS-67 OA-7a (D117, `project-docs/specs/one_assistant_context.md` §4.2.1):
+   a family with an `owner` key is a TOOL PACK. Its tools are the owner
+   agent's own tools, in its `own_tool_scope`. Each one is in one pack only,
+   and a pack holds 35 at most. Injection never offers a pack. So each reader
+   of the injected surface reads `injected_families()` or
+   `injected_tool_names()`: the injected scope, the skill index, the agent
+   matrix and the catalog total.
+
+   `all_registered_tool_names()` still names every family, packs too.
+   `build_catalog` gives the cost of a pack as its rules block plus the
+   schemas of its owner's tools. Fences: `tests/unit/test_skills_registry.py`
+   (the owner universe) and `tests/unit/test_tool_packs_registry.py`.
+
+5a-1. tool_packs.py -- what a tool pack adds to its family (WS-67 OA-7a).
+   It holds the rules block, the references, the words, `tier_floor` and
+   `keeps_reasoning` of each pack. `owner_tools(slug, module)` is the ONE
+   rule for the tools of a pack in a loaded module of its owner. It returns
+   the owner's own function objects and runs none.
+
+   `packs_on(org)` is the ONE reader of `TOOL_PACKS` and `TOOL_PACKS_ORGS`,
+   and it fails closed. The caller passes the bound tenant, never request
+   input. Any value on a box is OWNER-ONLY (`work_plan.md` §6 D4). OA-7a
+   ships no caller. `test_no_caller_reads_the_flag_yet` names the files
+   that may read it. Fence: `tests/unit/test_tool_packs_registry.py`.
 5b. decide_tools.py -- the `decide` core-floor tool (WS-31 CP-13d, spec:
    project-docs/specs/customer_console.md §6A.14). It asks one typed question
    through `acb_llm.decide` and never through the Console client. It sends no
