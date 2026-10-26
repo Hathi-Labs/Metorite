@@ -564,9 +564,13 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 - **`task_counts`.** The counts cover the whole subtree of the project (`tree.py:375-381`), as the route gives them.
 - **`total`.** The count of rows after the archived drop and the two filters.
 
-**Subtasks in `list_tasks` (MCP-G5).** `parent_task_id` lists the direct subtasks of one task. `include_descendants` is true only with `parent_task_id`. It lists the whole subtree to 10 levels, and a deeper task is not shown. Each row has `depth`, where 1 is a direct subtask. `depth` is null without `include_descendants`. The order is `depth` first, then the sort of the route, which ends on `(created_at, id)`. So the order holds across pages.
+**Subtasks in `list_tasks` (MCP-G5).** `parent_task_id` lists the direct subtasks of one task. `include_descendants` is true only with `parent_task_id`. It lists the whole subtree to 10 levels, and a deeper task is not shown. Each row has `depth`, where 1 is a direct subtask. `depth` is null without `include_descendants`.
 
-**What the subtree hides (MCP-G5).** The walk applies `task_visibility_clause` to each task, and it does not pass through a task that the member cannot see. So the hidden task and every task under it are absent, even a task that the member can see. The answer never shows that a hidden task exists. A parent that the member cannot see gives the 404 of a missing task, and the tool answers "Task not found." The gateway route refuses `include_descendants` without `parent_task_id` (422), and the edge refuses it first. The walk is `DESCENDANTS_CTE` in `routes/projects/tasks.py`. `cascade._SUBTREE_SQL` walks through hidden tasks for a move, and this walk does not.
+**Order of the subtree (MCP-G5).** The order is `depth` first, then the sort of the route, which ends on `(created_at, id)`. So the order holds across pages.
+
+**What the subtree hides (MCP-G5).** The walk applies `task_visibility_clause` to each task, and it does not pass through a task that the member cannot see. So the hidden task and every task under it are absent, even a task that the member can see. The answer never shows that a hidden task exists. A parent that the member cannot see gives the 404 of a missing task, and the tool answers "Task not found."
+
+**Refusals of the subtree (MCP-G5).** The gateway route refuses `include_descendants` without `parent_task_id` (422), and the edge refuses it first. The walk is `DESCENDANTS_CTE` in `routes/projects/tasks.py`. `cascade._SUBTREE_SQL` walks through hidden tasks for a move, and this walk does not.
 
 **Pages.** Each list tool caps `limit` at 100 and returns `nextCursor` while more rows exist. Three tools have pages: `list_tasks`, `list_projects` and `get_task_timeline`. `search_tasks` caps at 50 and returns `truncated` in its place.
 
