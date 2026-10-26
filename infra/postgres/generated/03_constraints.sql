@@ -2425,3 +2425,15 @@ ALTER TABLE kb_sync_runs ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_sync_runs ADD CONSTRAINT kb_sync_runs_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_sync_runs_org_idx ON kb_sync_runs (organization_id);
+
+-- kb_node_access
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_node_access WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_node_access still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_node_access ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_node_access ADD CONSTRAINT kb_node_access_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_node_access_org_idx ON kb_node_access (organization_id);
