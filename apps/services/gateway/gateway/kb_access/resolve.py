@@ -1,7 +1,7 @@
 """The resolver: which members a provider reader proves (WS-61 KC-4a).
 
 Spec: ``project-docs/specs/knowledge_curation.md`` §8.2, with the defaults
-that §8 records for the open questions OQ1 to OQ4.
+that §8 records for the open questions OQ1 to OQ4 and OQ7.
 
 A row of ``kb_node_access`` is a reader at the provider, in the provider's
 words. It is never a grant. This module decides which MEMBERS of the bound
@@ -24,6 +24,11 @@ The rules. Each one fails closed:
 * **the owner** (OQ3) — the ``owner_email`` of a member source proves itself
   on each live node of that source, also when the node has no row.
 * **knowledge:manage** (OQ4) — proves nothing.
+* **the source and the age** (OQ7) — each proof needs the node's source to
+  be ``ready``, the owner's proof too. So ``needs_reconnect``, ``failed``,
+  ``discovering`` and ``disconnected`` prove nobody. A row proves its reader
+  only while its ``synced_at`` is newer than :data:`ACCESS_MAX_AGE_SECONDS`,
+  so a source that stops syncing stops proving its old readers.
 
 A node that is not ``live`` has no proven reader.
 
@@ -57,6 +62,14 @@ from gateway.kb_sources.base import (
 #: The kind of source whose owner is a proven reader of its nodes (OQ3).
 MEMBER_SOURCE = "member"
 
+#: The one source state in which a node proves a reader (OQ7).
+READY = "ready"
+
+#: OQ7: a row proves its reader only while it is younger than this: four
+#: access passes of 6 hours. The ONE source of truth for both twins:
+#: ``routes/knowledge/core.document_reader_clause`` reads it too.
+ACCESS_MAX_AGE_SECONDS = 24 * 60 * 60
+
 #: The active members of the bound organization, folded.
 _MEMBERS_SQL = (
     "SELECT lower(au.email) AS email FROM app_user au "
@@ -70,11 +83,13 @@ _DOMAIN_SQL = "SELECT o.domain FROM organization o WHERE o.id = CAST(:org AS uui
 
 @dataclass(frozen=True)
 class NodeReaders:
-    """One node as the resolver sees it: live or not, its owner, its rows."""
+    """One node as the resolver sees it: live or not, its owner, its rows
+    younger than the age bound, and whether its source is ``ready``."""
 
     live: bool
     owner: str | None
     readers: tuple[AccessReader, ...]
+    source_ready: bool
 
 
 def fold_domain(value: Any) -> str | None:
@@ -147,20 +162,25 @@ async def load_org_domain(db: Any, org: str) -> str | None:
 async def load_node(db: Any, org: str, node_id: str) -> NodeReaders | None:
     """The node, the owner of its member source and its readers, or ``None``.
 
-    An integrity read of the filing rule (listed in
-    ``tests/unit/test_kb_visibility_one_seam.py``): it applies no member's
-    clause, and it returns the readers to the rule, never a document.
+    Only a row younger than :data:`ACCESS_MAX_AGE_SECONDS` comes back, by the
+    database clock, as the SQL twin reads it (OQ7). An integrity read of the
+    filing rule (listed in ``tests/unit/test_kb_visibility_one_seam.py``): it
+    applies no member's clause, and it returns the readers to the rule, never
+    a document.
     """
     sql = (
-        "SELECT n.state, s.kind AS source_kind, s.owner_email, "
+        "SELECT n.state, s.kind AS source_kind, s.owner_email, s.state AS source_state, "
         "a.principal_kind, a.principal, a.role FROM kb_source_nodes n "
         "JOIN kb_sources s ON s.id = n.source_id "
         "AND s.organization_id = CAST(:org AS uuid) "
         "LEFT JOIN kb_node_access a ON a.node_id = n.id "
         "AND a.organization_id = CAST(:org AS uuid) "
+        "AND a.synced_at > now() - make_interval(secs => :max_age) "
         "WHERE n.organization_id = CAST(:org AS uuid) AND n.id = CAST(:node AS uuid)"
     )
-    rows = (await db.execute(text(sql), {"org": org, "node": node_id})).fetchall()
+    rows = (await db.execute(text(sql), {
+        "org": org, "node": node_id, "max_age": float(ACCESS_MAX_AGE_SECONDS),
+    })).fetchall()
     if not rows:
         return None
     first = rows[0]
@@ -169,21 +189,24 @@ async def load_node(db: Any, org: str, node_id: str) -> NodeReaders | None:
     readers = tuple(
         AccessReader(kind=str(r.principal_kind), principal=str(r.principal), role=str(r.role))
         for r in rows if r.principal_kind is not None)
-    return NodeReaders(live=first.state == "live", owner=owner, readers=readers)
+    return NodeReaders(live=first.state == "live", owner=owner, readers=readers,
+                       source_ready=first.source_state == READY)
 
 
 def proven_for(node: NodeReaders | None, *, members: AbstractSet[str],
                org_domain: str | None) -> frozenset[str]:
-    """The proven readers of *node*. A node that is not live, or not found,
-    proves nobody."""
-    if node is None or not node.live:
+    """The proven readers of *node*. A node that is not live, not found, or
+    of a source that is not ``ready`` proves nobody (OQ7)."""
+    if node is None or not node.live or not node.source_ready:
         return frozenset()
     return proven_readers(node.readers, members=members, org_domain=org_domain,
                           owner=node.owner)
 
 
 __all__ = [
+    "ACCESS_MAX_AGE_SECONDS",
     "MEMBER_SOURCE",
+    "READY",
     "NodeReaders",
     "email_domain",
     "fold_domain",

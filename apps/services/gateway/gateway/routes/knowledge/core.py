@@ -50,6 +50,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 # The shared seam, aliased so a test can patch `_tenant_session` by name.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
+
+# OQ7: the one age bound of a provider reader, shared with the Python twin.
+from gateway.kb_access.resolve import ACCESS_MAX_AGE_SECONDS
 from gateway.routes.knowledge.flags import require_knowledge_enabled
 from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
@@ -292,40 +295,47 @@ def document_reader_clause(
     §8.2 and §8.4), and its parameters.
 
     Put the text in a statement that reads ``kb_source_nodes AS <alias>``.
-    The node is ``live`` and of the viewer's org, and the viewer is an
-    active member of that org. Then one of these holds:
+    The node is ``live`` and of the viewer's org, the viewer is an active
+    member of that org, and the node's source is ``ready`` (OQ7). Then one
+    of these holds:
 
     * the viewer is the ``owner_email`` of the node's member source (OQ3);
     * a ``user`` row of the node names the viewer's email;
     * a ``domain`` row of the node names the org's own domain, and the
       viewer's email is in that domain (OQ1).
 
-    A ``group`` row and an ``anyone`` row prove nobody (OQ2), and
-    ``knowledge:manage`` proves nothing (OQ4). The Python twin is
-    ``kb_access/resolve.py``. ⚠️ This clause alone does not show a document.
-    A read of a document uses :func:`visible_documents_clause`, which adds
-    the read of the space. *node_alias* is code, never input.
+    A row proves its reader only while its ``synced_at`` is newer than
+    ``resolve.ACCESS_MAX_AGE_SECONDS`` (OQ7). So a source that stops
+    syncing stops proving its old readers. A ``group`` row and an ``anyone``
+    row prove nobody (OQ2), and ``knowledge:manage`` proves nothing (OQ4).
+    The Python twin is ``kb_access/resolve.py``, and the two read the same
+    constant. ⚠️ This clause alone does not show a document. A read of a
+    document uses :func:`visible_documents_clause`, which adds the read of
+    the space. *node_alias* is code, never input.
     """
     a = node_alias
+    age = int(ACCESS_MAX_AGE_SECONDS)
     sql = (
         f"({a}.organization_id = CAST(:kb_org AS uuid) AND {a}.state = 'live'"
         f" AND EXISTS (SELECT 1 FROM app_user kb_au"
         f" WHERE kb_au.organization_id = CAST(:kb_org AS uuid)"
         f" AND kb_au.status = 'active' AND lower(kb_au.email) = :kb_viewer)"
-        f" AND (EXISTS (SELECT 1 FROM kb_sources kb_src"
+        f" AND EXISTS (SELECT 1 FROM kb_sources kb_src"
         f" WHERE kb_src.id = {a}.source_id"
         f" AND kb_src.organization_id = CAST(:kb_org AS uuid)"
-        f" AND kb_src.kind = 'member' AND kb_src.owner_email = :kb_viewer)"
+        f" AND kb_src.state = 'ready'"
+        f" AND ((kb_src.kind = 'member' AND kb_src.owner_email = :kb_viewer)"
         f" OR EXISTS (SELECT 1 FROM kb_node_access kb_na"
         f" WHERE kb_na.node_id = {a}.id"
         f" AND kb_na.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_na.synced_at > now() - make_interval(secs => {age})"
         f" AND ((kb_na.principal_kind = 'user' AND kb_na.principal = :kb_viewer)"
         f" OR (kb_na.principal_kind = 'domain'"
         f" AND split_part(:kb_viewer, '@', 2) = kb_na.principal"
         f" AND split_part(:kb_viewer, '@', 3) = ''"
         f" AND EXISTS (SELECT 1 FROM organization kb_o"
         f" WHERE kb_o.id = CAST(:kb_org AS uuid)"
-        f" AND lower(btrim(kb_o.domain)) = kb_na.principal))))))"
+        f" AND lower(btrim(kb_o.domain)) = kb_na.principal)))))))"
     )
     return sql, _viewer_params(user)
 

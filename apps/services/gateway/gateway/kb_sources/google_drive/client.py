@@ -64,6 +64,11 @@ of the source. Each call is a GET, and no scope is new.
   pages keeps the readers of those pages only, which proves fewer members.
 * A ``403`` or a ``404`` of ``permissions.list`` that is not a throttle
   means no list for that item. Any other error raises.
+* Each Drive call sends ``prettyPrint=false`` (fix round 1). A page whose
+  readers pass the guard's cap at :data:`MIN_PAGE` is read again slim
+  (:data:`SLIM_ACCESS_FIELDS`). Then each item calls ``permissions.list``
+  inside the budget, and an item that the budget does not reach has no
+  list. So one dense page never stops the pass.
 """
 
 from __future__ import annotations
@@ -147,6 +152,9 @@ _PERMISSION = (
 ACCESS_FIELDS = f"nextPageToken,files(id,driveId,permissions({_PERMISSION}))"
 #: ``permissions.list`` of one item of a shared drive.
 PERMISSION_FIELDS = f"nextPageToken,permissions({_PERMISSION})"
+#: The slim listing of fix round 1 (R2): the ids and the shared drive of a
+#: page whose readers do not fit the guard's cap at the smallest page size.
+SLIM_ACCESS_FIELDS = "nextPageToken,files(id,driveId)"
 
 #: The most ``permissions.list`` pages of one item. Past it, the item keeps
 #: the readers of these pages, which proves fewer members, never more.
@@ -413,8 +421,15 @@ class GoogleDriveSource:
         *cursor_read* marks a read of the change feed on a stored page token.
         An answer that means "this cursor is dead" then raises
         :class:`CursorExpired` (the module doc).
+
+        KC-4a fix round 1: each call sends ``prettyPrint=false``. Google
+        indents its JSON without it, and an indented page of readers reaches
+        the guard's 64 KiB cap at about 28 readers a file. Every Drive read
+        of this adapter goes through here, so discovery and the change feed
+        get the smaller answer too.
         """
         headers = {"Authorization": f"Bearer {cred.access_token}"}
+        params = {**params, "prettyPrint": "false"}
         for attempt in range(len(_BACKOFF) + 1):
             answer = await self._http.get(f"{API}/{path}", params=params, headers=headers)
             if answer.status_code == 200:
@@ -610,6 +625,47 @@ class GoogleDriveSource:
 
     # ── The readers (KC-4a) ───────────────────────────────────────────────
 
+    async def _access_listing(
+        self, cred: SourceCredential, cursor: AccessCursor, budget: int,
+    ) -> tuple[HttpAnswer | None, int, int, bool]:
+        """The listing page of *cursor*: ``(answer, calls, size, slim)``.
+
+        A page that reaches the guard's cap is read again with half the
+        size. At :data:`MIN_PAGE` it is read again slim, with no readers
+        (fix round 1, R2). ``answer`` is ``None`` when the budget ends first.
+        """
+        token = cursor.page_token
+        size = cursor.page_size or PAGE_SIZE
+        calls = 0
+        slim = False
+        while calls < budget:
+            params = {
+                "corpora": "allDrives",
+                "includeItemsFromAllDrives": "true",
+                "supportsAllDrives": "true",
+                "pageSize": str(size),
+                "q": "trashed = false",
+                "fields": SLIM_ACCESS_FIELDS if slim else ACCESS_FIELDS,
+            }
+            if token:
+                params["pageToken"] = token
+            calls += 1
+            answer = await self._get(cred, "files", params, cursor_read=bool(token))
+            if not answer.truncated:
+                return answer, calls, size, slim
+            if slim:  # ids and drive ids only: a page of ten cannot reach the cap
+                exc = SourceError("a Drive access page is larger than the guard's cap")
+                exc.code = "page_too_large"
+                raise exc
+            if size <= MIN_PAGE:
+                # The readers of the smallest page still pass the cap. Read
+                # the same page with no readers, then ask permissions.list for
+                # each item, inside the budget.
+                slim = True
+            else:
+                size = max(MIN_PAGE, size // 2)
+        return None, calls, size, slim
+
     async def list_access(
         self, cred: SourceCredential, cursor: AccessCursor | None, *, budget: int,
     ) -> AccessPage:
@@ -625,45 +681,39 @@ class GoogleDriveSource:
         token = cursor.page_token
         if token is not None and (not token or len(token) > MAX_TOKEN):
             raise CursorExpired("the access listing has no cursor that Google can read")
-        size = cursor.page_size or PAGE_SIZE
-        calls = 0
-        while True:
-            params = {
-                "corpora": "allDrives",
-                "includeItemsFromAllDrives": "true",
-                "supportsAllDrives": "true",
-                "pageSize": str(size),
-                "q": "trashed = false",
-                "fields": ACCESS_FIELDS,
-            }
-            if token:
-                params["pageToken"] = token
-            calls += 1
-            answer = await self._get(cred, "files", params, cursor_read=bool(token))
-            if not answer.truncated:
-                break
-            if size <= MIN_PAGE:
-                exc = SourceError("a Drive access page is larger than the guard's cap")
-                exc.code = "page_too_large"
-                raise exc
-            size = max(MIN_PAGE, size // 2)
-            if calls >= budget:
-                # No call is left for the smaller page. The next read goes on.
-                return AccessPage(nodes=(), next_cursor=replace(cursor, page_size=size),
-                                  calls=calls)
+        answer, calls, size, slim = await self._access_listing(cred, cursor, budget)
+        if answer is None:
+            # No call is left for the next read. The next read goes on.
+            return AccessPage(nodes=(), next_cursor=replace(cursor, page_size=size),
+                              calls=calls)
         body = answer.json()
         items = [i for i in (body.get("files") or []) if isinstance(i, Mapping)] if (
             isinstance(body, Mapping)) else []
         ids = [_safe_id(i.get("id")) for i in items]
-        start = ids.index(cursor.after) + 1 if cursor.after in ids else 0
+        # A first read has no cursor.after, and ids holds None for a refused
+        # id. So a None must never match: it skipped each item before it.
+        start = ids.index(cursor.after) + 1 if (
+            cursor.after is not None and cursor.after in ids) else 0
         nodes: list[NodeAccess] = []
         last = cursor.after
         for item, ext_id in zip(items[start:], ids[start:], strict=True):
             if ext_id is None:
                 continue
-            perms = item.get("permissions")
+            perms = None if slim else item.get("permissions")
             if isinstance(perms, list):
                 nodes.append(NodeAccess(ext_id=ext_id, readers=readers(perms), listed=True))
+            elif slim:
+                # The slim page lists no reader, so each item asks for its own
+                # list. An item that the budget does not reach has no list: it
+                # proves only the owner, and the pass goes on (fails closed).
+                left = budget - calls
+                if left < 1:
+                    nodes.append(NodeAccess(ext_id=ext_id, readers=(), listed=False))
+                else:
+                    listed, got, used = await self._permissions(
+                        cred, ext_id, max_pages=min(MAX_PERMISSION_PAGES, left))
+                    calls += used
+                    nodes.append(NodeAccess(ext_id=ext_id, readers=got, listed=listed))
             elif _safe_id(item.get("driveId")) is not None:
                 if budget - calls < MAX_PERMISSION_PAGES:
                     # This item may need more calls than are left. Stop before
@@ -683,10 +733,10 @@ class GoogleDriveSource:
             next_cursor=AccessCursor(page_token=str(nxt), page_size=size) if nxt else None)
 
     async def _permissions(
-        self, cred: SourceCredential, ext_id: str,
+        self, cred: SourceCredential, ext_id: str, *, max_pages: int = MAX_PERMISSION_PAGES,
     ) -> tuple[bool, tuple[AccessReader, ...], int]:
-        """``permissions.list`` of one item of a shared drive: ``(listed,
-        readers, calls)``, at most :data:`MAX_PERMISSION_PAGES` calls.
+        """``permissions.list`` of one item: ``(listed, readers, calls)``, at
+        most *max_pages* calls (:data:`MAX_PERMISSION_PAGES` by default).
 
         A 403 or a 404 that is not a throttle means no list, so the item
         proves only the owner of the source. A page that reaches the guard's
@@ -695,7 +745,7 @@ class GoogleDriveSource:
         perms: list[Any] = []
         token: str | None = None
         calls = 0
-        while calls < MAX_PERMISSION_PAGES:
+        while calls < max_pages:
             params = {"supportsAllDrives": "true", "pageSize": str(PAGE_SIZE),
                       "fields": PERMISSION_FIELDS}
             if token:
@@ -737,6 +787,7 @@ __all__ = [
     "MAX_PERMISSION_PAGES",
     "PERMISSION_FIELDS",
     "PROVIDER",
+    "SLIM_ACCESS_FIELDS",
     "GoogleDriveSource",
     "change_page",
     "reader",
