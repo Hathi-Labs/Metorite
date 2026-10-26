@@ -57,6 +57,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     apply_status_transition,
+    assert_holds_tasks,
     emit,
     insert_row,
     load_default_status,
@@ -278,7 +279,10 @@ async def capture_intake(
         vis = await resolve_visibility(db, user)
         # R5 — capturing INTO a project requires seeing it; an unreadable id
         # answers 404, never 403.
-        await load_visible_project(db, vis, str(payload.project_id))
+        target = await load_visible_project(db, vis, str(payload.project_id))
+        # A capture is a task, so it lands where a task may: in a project,
+        # never on a space or a folder (`core.assert_holds_tasks`).
+        assert_holds_tasks(target, then="Capture into")
         root = await root_project_id(db, str(payload.project_id))
         # The triage lane belongs to the set this project USES, which is
         # the nearest owner and not necessarily the root (migration 196).

@@ -57,6 +57,7 @@ import type {
   LoadReport,
   OutlookReport,
   PulseReport,
+  QualityReport,
   RebalanceReport,
   StuckReport,
   ThroughputReport,
@@ -153,6 +154,21 @@ import {
   successFigure,
   successTrend,
 } from "../lib/agentRunsReport";
+import {
+  PANEL_QUALITY_ROWS,
+  PR_SEGMENTS,
+  QUALITY_RULES,
+  REWORK_GROUPS,
+  failingLines,
+  mergeFigure,
+  mergeTrend,
+  qualityAccent,
+  reopenedBefore,
+  reopenedFigure,
+  reopenedRate,
+  reopenedTasks,
+  retriedLine,
+} from "../lib/qualityReport";
 import {
   type WaitingKind,
   type WaitingLine,
@@ -1691,6 +1707,218 @@ export function AgentRunsPanel({ data }: { data: AgentRunsReport }) {
               ))}
             </ul>
           )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn RA-5 — "Quality" (`projects_reports.md` §6.8 B): "is the speed
+ * real?"
+ *
+ * ⚠️ **Draws the server's figures and decides nothing.** The counts, the
+ * rates, the trends and the summary sentence are `quality_body`'s.
+ * `lib/qualityReport.ts` holds the words and the rule of each figure. The
+ * summary comes first (§6.8 E5).
+ *
+ * ⚠️ **No rank of people (E1), and each failing row names the agent and its
+ * member (E2).** Rework is two groups, agents and people, and never one
+ * person. No text calls 100% the goal (E4): the merge rate shows its trend.
+ *
+ * Each failing row opens its task. The Overview hides the panel when the
+ * scope has no agent pull request, no reopen and no failed run
+ * (`overviewShown`).
+ */
+export function QualityPanel({ data }: { data: QualityReport }) {
+  const open = useContext(OpenTaskContext);
+  const name = (email: string) => personDisplayName(null, email);
+  const trend = mergeTrend(data);
+  const failing = listRows(
+    failingLines(data, name),
+    data.checks?.failing_total ?? 0,
+    PANEL_QUALITY_ROWS
+  );
+  const flag = accentForHue("amber");
+  const prs = data.prs;
+  const outcomes = (prs?.merged ?? 0) + (prs?.closed ?? 0);
+  const retried = data.rework?.retried;
+
+  return (
+    <Panel title={sectionName("quality")} hint={PANEL_HINTS.quality}>
+      <p className="text-xs text-foreground">{data.summary}</p>
+
+      <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <dt className="flex items-center gap-1 text-muted-foreground">
+            <span>Merge rate</span>
+            <InfoTip label="How the merge rate is counted" title="Merge rate">
+              {QUALITY_RULES.merge(data.days)}
+            </InfoTip>
+          </dt>
+          <dd
+            className="font-semibold tabular-nums text-foreground"
+            title={`${prs?.merged ?? 0} merged of ${outcomes} agent pull requests that merged or closed in the last ${data.days} days`}
+          >
+            {mergeFigure(data)}
+          </dd>
+          {trend && <dd className="text-[10px] text-muted-foreground">{trend}</dd>}
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Open now</dt>
+          <dd
+            className="font-semibold tabular-nums text-foreground"
+            title="Agent pull requests that are open or draft, on tasks that are not done"
+          >
+            {prs?.open ?? 0}
+          </dd>
+        </div>
+        <div>
+          <dt className="flex items-center gap-1 text-muted-foreground">
+            <span>Failing checks</span>
+            <InfoTip label="How failing checks are counted" title="Failing checks">
+              {QUALITY_RULES.failing()}
+            </InfoTip>
+          </dt>
+          <dd
+            className="font-semibold tabular-nums text-foreground"
+            title="Open agent pull requests whose checks fail now"
+          >
+            {data.checks?.failing_total ?? 0}
+          </dd>
+        </div>
+      </dl>
+
+      {/* The outcomes of the window as one bar, and the window before in
+          words. ⚠️ The legend carries the meaning, never the hue alone. */}
+      <div className="mt-3 border-t border-border pt-2">
+        <RunsHeading label="Pull request outcomes" />
+        <div className="flex h-2 w-full overflow-hidden rounded-sm bg-muted" aria-hidden>
+          {PR_SEGMENTS.filter((seg) => seg.key !== "open").map((seg) =>
+            (prs?.[seg.key] ?? 0) > 0 ? (
+              <div
+                key={seg.key}
+                className={qualityAccent(seg.key).dot}
+                style={{ flexGrow: prs[seg.key] }}
+              />
+            ) : null
+          )}
+        </div>
+        <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          {PR_SEGMENTS.map((seg) => (
+            <li key={seg.key} className="inline-flex items-center gap-1.5" title={seg.title}>
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${qualityAccent(seg.key).dot}`}
+                aria-hidden
+              />
+              {seg.label}
+              <span className="font-medium tabular-nums text-foreground">{prs?.[seg.key] ?? 0}</span>
+            </li>
+          ))}
+        </ul>
+        <p
+          className="mt-1 text-[10px] text-muted-foreground"
+          title={`In the ${data.days} days before: merged and closed with no merge`}
+        >
+          Before: {prs?.merged_before ?? 0} merged · {prs?.closed_before ?? 0} closed, not merged
+        </p>
+      </div>
+
+      <div className="mt-3 border-t border-border pt-2">
+        <RunsHeading
+          label="Reopened after done"
+          help={{
+            label: "How reopened tasks are counted",
+            text: QUALITY_RULES.reopened(data.days),
+          }}
+        />
+        <ul className="space-y-1">
+          {REWORK_GROUPS.map((g) => {
+            const r = data.rework?.reopened?.[g.key];
+            if (!r) return null;
+            return (
+              <li key={g.key} className="flex items-center gap-2 text-[11px]">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${qualityAccent(g.key).dot}`}
+                  aria-hidden
+                />
+                <span className="w-14 shrink-0 text-muted-foreground">{g.label}</span>
+                <span
+                  className="font-medium tabular-nums text-foreground"
+                  title={`${r.undone} of the ${r.finished} tasks that ${g.noun} finished in the last ${data.days} days were reopened later`}
+                >
+                  {reopenedFigure(r)}
+                </span>
+                <span className="tabular-nums text-muted-foreground">{reopenedRate(r)}</span>
+                <span
+                  className="text-[10px] tabular-nums text-muted-foreground"
+                  title={`${r.reopened} different tasks went back from done in the last ${data.days} days, by the finish that the latest reopen undid`}
+                >
+                  {reopenedTasks(r)}
+                </span>
+                <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+                  {reopenedBefore(r)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      <div className="mt-3 border-t border-border pt-2">
+        <RunsHeading
+          label="Failed runs retried"
+          help={{ label: "How retried runs are counted", text: QUALITY_RULES.retried(data.days) }}
+        />
+        <p
+          className="text-[11px] text-foreground"
+          title="A failed run, then a later run on the same task"
+        >
+          {retriedLine(data)}
+        </p>
+        {data.on && retried && retried.failed_before > 0 && (
+          <p className="text-[10px] text-muted-foreground">
+            Before: {retried.retried_before} of {retried.failed_before}
+          </p>
+        )}
+      </div>
+
+      {(data.checks?.failing_total ?? 0) > 0 && (
+        <div className="mt-3 border-t border-border pt-2">
+          <RunsHeading
+            label="Checks fail now"
+            dot={flag.dot}
+            count={data.checks.failing_total}
+            countTitle={`${data.checks.failing_total} in total, the oldest first`}
+          />
+          <ul className="space-y-0.5">
+            {failing.shown.map((r) => (
+              <WaitingTaskRow key={r.key} line={r} open={open} />
+            ))}
+          </ul>
+          {failing.more > 0 && (
+            <p
+              className="mt-0.5 text-[10px] text-muted-foreground"
+              title="The table under this panel names the pull requests."
+            >
+              …and {failing.more} more
+            </p>
+          )}
+        </div>
+      )}
+
+      {(data.checks?.merged_red ?? 0) > 0 && (
+        <div className="mt-3 border-t border-border pt-2">
+          <RunsHeading
+            label="Merged while red"
+            help={{
+              label: "How merged while red is counted",
+              text: QUALITY_RULES.mergedRed(data.days),
+            }}
+            dot={flag.dot}
+            count={data.checks.merged_red}
+            countTitle={`${data.checks.merged_red} agent pull requests merged in the last ${data.days} days after a failing checks read`}
+          />
         </div>
       )}
     </Panel>

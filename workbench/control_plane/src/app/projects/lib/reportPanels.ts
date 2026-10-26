@@ -28,6 +28,7 @@ import type {
   OutlookReport,
   PreviewReportBody,
   PulseReport,
+  QualityReport,
   RebalanceReport,
   RenderedReportBody,
   StuckReport,
@@ -308,6 +309,23 @@ export function agentRunsPanelData(section: NonNullable<Sections["agent_runs"]>)
     series: asList<AgentRunsReport["series"][number]>(section.series),
     silent: asList<AgentRunsReport["silent"][number]>(section.silent),
     long_runs: asList<AgentRunsReport["long_runs"][number]>(section.long_runs),
+  };
+}
+
+/**
+ * `quality` as `QualityPanel` takes it (WS-27bn RA-5).
+ *
+ * The section IS `quality_body`, so this copies it. A list the body lacks
+ * reads as no rows, never as a figure. It takes no period: the section
+ * reads its own 14 days, and the panel names them.
+ */
+export function qualityPanelData(section: NonNullable<Sections["quality"]>): QualityReport {
+  return {
+    ...section,
+    checks: {
+      ...section.checks,
+      failing: asList<QualityReport["checks"]["failing"][number]>(section.checks?.failing),
+    },
   };
 }
 

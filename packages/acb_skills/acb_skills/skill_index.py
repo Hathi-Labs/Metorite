@@ -19,7 +19,12 @@ reference implementation. This module is our own build of the same four ideas:
 3. **Gating by relevance.** A family whose tools are not in this agent's
    effective scope is absent from the index entirely rather than listed and
    then unusable — the same instinct as the S2 intersection, applied to
-   relevance. (Our equivalent of qm's connector gating.)
+   relevance. (Our equivalent of qm's connector gating.) A tool PACK
+   (WS-67 OA-7a, a family with an ``owner``) is never in the index: no agent
+   is injected with its tools, and it has no addendum body. The pack loader
+   of OA-7e lists the ``summary`` of each pack that a turn did not load, in
+   the description of ``load_skill_tools`` (``one_assistant_context.md``
+   §4.2.2, layer (b)).
 4. **Cache placement.** The index is rendered by the same
    ``render_injected_tools_addendum`` seam the classic addendum used, so it
    lands in exactly the same place: appended to the system message by
@@ -49,7 +54,7 @@ import os
 from pathlib import Path
 
 from acb_skills.addendum import rendered_parts
-from acb_skills.skill_families import SKILL_FAMILIES
+from acb_skills.skill_families import SKILL_FAMILIES, injected_families
 
 # ---------------------------------------------------------------------------
 # The switch (mirrors orchestrator._tool_injection._skills_fail_closed)
@@ -174,9 +179,14 @@ def _indexed_families(
     tool the agent does not carry is the misinformed-model bug
     (multi_agent_orchestration Phase 0.2) that the classic addendum's per-tool
     gates already avoid.
+
+    The index lists injected families only (``injected_families``). A tool
+    pack (WS-67 OA-7a) is absent for every scope, the unscoped ``None``
+    too: an unscoped agent receives every INJECTED family, and a pack is not
+    one.
     """
     return [
-        slug for slug, fam in SKILL_FAMILIES.items()
+        slug for slug, fam in injected_families().items()
         if not fam.get("scope_governed")
         or effective_scope is None
         or (effective_scope & frozenset(fam["tools"]))

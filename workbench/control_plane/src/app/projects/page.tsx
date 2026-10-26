@@ -80,6 +80,7 @@ import {
   PERSONAL_ARCHIVED_FOLD_ID,
   PERSONAL_SECTION_HINT,
   PERSONAL_SECTION_LABEL,
+  isPersonalNode,
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
@@ -92,7 +93,7 @@ import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useAssistantFacts } from "@/lib/shell/assistant";
 import { projectsAssistantFacts } from "./lib/assistantFacts";
-import { describeFilters } from "./lib/assistantPersona";
+import { assistantLevel, describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
@@ -3929,7 +3930,13 @@ function ProjectsWorkspace() {
       ONE_ASSISTANT
         ? projectsAssistantFacts({
             node: selected
-              ? { id: selected.id, name: selected.name, level: selectedLevel, archived: Boolean(selected.archived_at) }
+              ? {
+                  id: selected.id,
+                  name: selected.name,
+                  level: assistantLevel(selectedLevel, selected),
+                  archived: Boolean(selected.archived_at),
+                  personal: isPersonalNode(selected),
+                }
               : null,
             view: mode,
             app,
@@ -4181,8 +4188,9 @@ function ProjectsWorkspace() {
       ? {
           id: selected.id,
           name: selected.name,
-          level: selectedLevel,
+          level: assistantLevel(selectedLevel, selected),
           archived: Boolean(selected.archived_at),
+          personal: isPersonalNode(selected),
         }
       : null,
     filters,

@@ -66,6 +66,13 @@ Metorite task #456). The rows of a Knowledge source take one lock order, as
 of the same shape between a disconnect and a re-consent. `KNOWLEDGE_SYNC`
 stays empty.
 
+**KC-3i BUILT 2026-10-26, dark** (branch `kc-3i-capped`, no migration,
+Metorite task #457). Three fixes of the sync loop. A gone folder no longer
+keeps a re-consented source capped (K-23). A capped relist ends with one
+cascade, so no live node sits under a gone folder (K-25). The fence
+`kb-sync-org-predicate` now sees a tenant table after a comma and refuses
+`organization_id = organization_id` (K-24).
+
 **KC-4a BUILT 2026-10-26, dark** (branch `kc-4a-access`, migration 309,
 Metorite task #377). Each Drive document keeps its readers from the
 provider in `kb_node_access`. A 6-hour access pass reads them again, and

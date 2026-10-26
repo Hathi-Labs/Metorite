@@ -192,9 +192,13 @@ _TENANT = (r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs|kb_node_ac
            r"|kb_documents|kb_source_includes)")
 #: A read or a write of a tenant table, and its alias. SQL words are upper
 #: case here, and an alias is lower case, so a keyword is never an alias.
-_REF = re.compile(rf"\b(FROM|JOIN|UPDATE|DELETE FROM)\s+{_TENANT}\b(?:\s+(?:AS\s+)?([a-z]\w*))?")
+#: K-24 (a): a comma also starts a table reference (``FROM dead d, kb_source_nodes c``).
+_REF = re.compile(rf"(?:\b(FROM|JOIN|UPDATE|DELETE FROM)\s+|(,)\s*){_TENANT}\b"
+                  rf"(?:\s+(?:AS\s+)?([a-z]\w*))?")
 _INSERT = re.compile(rf"\bINSERT INTO\s+{_TENANT}\b")
-_BARE_PRED = re.compile(r"(?<![\w.])organization_id\s*=")
+#: K-24 (b): ``organization_id = organization_id`` binds nothing, so the right
+#: side may not be the same bare column.
+_BARE_PRED = re.compile(r"(?<![\w.])organization_id\s*=(?!\s*organization_id\b)")
 _ORG = "CAST(:org AS uuid)"
 
 
@@ -205,12 +209,14 @@ def org_predicate_findings(name: str, sql: str) -> list[str]:
     for m in _REF.finditer(sql):
         if m.group(1) == "UPDATE" and sql[max(0, m.start() - 3):m.start()] == "DO ":
             continue  # ON CONFLICT ... DO UPDATE SET names no table
-        refs[m.group(3)] = refs.get(m.group(3), 0) + 1
+        refs[m.group(4)] = refs.get(m.group(4), 0) + 1
     for alias, n in refs.items():
         if alias is None:
             preds = len(_BARE_PRED.findall(sql))
         else:
-            preds = len(re.findall(rf"\b{re.escape(alias)}\.organization_id\s*=", sql))
+            a = re.escape(alias)
+            preds = len(re.findall(
+                rf"\b{a}\.organization_id\s*=(?!\s*{a}\.organization_id\b)", sql))
         if preds < n:
             out.append(f"{name}: {n} reference(s) as {alias or 'no alias'} and "
                        f"{preds} organization_id predicate(s)")
@@ -271,6 +277,18 @@ def test_each_tenant_table_reference_names_the_org() -> None:
     ("INSERT INTO kb_documents (node_id) VALUES (:n)", True),
     ("SELECT 1 FROM kb_documents d WHERE d.organization_id = CAST(:org AS uuid)", False),
     ("SELECT 1 FROM kb_source_includes i WHERE i.organization_id = CAST(:org AS uuid)", False),
+    # K-24 (a): a tenant table after a comma needs its own predicate.
+    ("UPDATE kb_source_nodes g SET x = 1 FROM dead d, kb_source_nodes c "
+     "WHERE g.organization_id = CAST(:org AS uuid)", True),
+    ("SELECT 1 FROM dead d, kb_source_nodes c WHERE c.organization_id = CAST(:org AS uuid)",
+     False),
+    # K-24 (b): a predicate that compares a column with itself binds nothing.
+    ("SELECT 1 FROM kb_source_nodes r WHERE r.organization_id = r.organization_id "
+     "AND CAST(:org AS uuid) IS NOT NULL", True),
+    ("SELECT 1 FROM kb_source_nodes WHERE organization_id = organization_id "
+     "AND CAST(:org AS uuid) IS NOT NULL", True),
+    ("SELECT 1 FROM kb_source_nodes r JOIN kb_sources s ON s.organization_id = r.organization_id "
+     "WHERE r.organization_id = CAST(:org AS uuid)", False),
 ])
 def test_the_org_fence_is_not_vacuous(sql: str, found: bool) -> None:
     assert bool(org_predicate_findings("planted", sql)) is found

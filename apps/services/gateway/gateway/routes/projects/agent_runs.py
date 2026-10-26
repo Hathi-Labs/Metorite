@@ -945,7 +945,12 @@ async def _write_activity(
         raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
 
     new_status = transition(run.status, event or _event_of(kind, signal))
+    reopened_end: str | None = None
     if run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES:
+        # RA-4b. Read the end BEFORE the move clears it: the report takes the
+        # idle gap of a reopened run from this end to the prompt.
+        ended = getattr(run, "ended_at", None)
+        reopened_end = ended.isoformat() if isinstance(ended, datetime) else None
         await _clear_for_reopen(db, run, user)
 
     content: dict[str, Any] = {"body": body}
@@ -973,6 +978,11 @@ async def _write_activity(
             )
     if extra:
         content.update(extra)
+    if kind == "prompt" and reopened_end is not None:
+        # RA-4b. The marker of a REAL reopen. The report reads it for the idle
+        # gap (`analytics_agents._REOPEN_GAPS_JOIN`), never the row trail,
+        # because the cap of ephemeral rows deletes the rows between two acts.
+        content["reopens"] = {"ended_at": reopened_end}
 
     ts = await _clock(db)
     ephemeral = kind in EPHEMERAL_TYPES

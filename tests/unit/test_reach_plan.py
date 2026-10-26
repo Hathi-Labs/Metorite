@@ -67,6 +67,12 @@ class TestTheClasses:
         for kind in ("doc_needs_review", "doc_shared_with_me", "kb_gap"):
             assert classes.REACH_CLASS[kind] == "brief"
 
+    def test_a_source_that_stopped_syncing_interrupts(self):
+        # WS-61 KB-9b slice 2 (A4): only the connector gets the card, and the
+        # class is interrupt (knowledge_base.md section 9).
+        assert classes.REACH_CLASS["source_sync_failed"] == "interrupt"
+        assert classes.reach_class({"kind": "source_sync_failed"}) == "interrupt"
+
     def test_an_unknown_kind_reaches_nobody(self):
         assert classes.reach_class({"kind": "something_new"}) == "none"
 

@@ -505,7 +505,7 @@ class TestTheMyDayCard:
         assert p.permission is None
         assert p.hash_permission == "knowledge:manage"
         assert p.kinds == feed.KNOWLEDGE_KINDS == frozenset(
-            {"kb_gap", "doc_needs_review", "doc_shared_with_me"})
+            {"kb_gap", "doc_needs_review", "doc_shared_with_me", "source_sync_failed"})
         assert p.held_by(_user())
         assert p.held_by(_user("a@x.test", "knowledge:manage"))
 

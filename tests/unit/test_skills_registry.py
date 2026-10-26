@@ -80,12 +80,64 @@ def test_every_injected_tool_registered_in_exactly_one_family():
 
 def test_no_stale_registry_entries():
     injected = _injectable_names()
-    stale = sf.all_registered_tool_names() - injected
+    stale = sf.injected_tool_names() - injected
     assert not stale, (
         f"registered but no longer injectable: {sorted(stale)} — remove "
         f"them from SKILL_FAMILIES (the registry mirrors the code, not "
         f"history)"
     )
+
+
+# ── WS-67 OA-7a: a pack's universe is its OWNER, not injection ─────────────
+#
+# A family with an ``owner`` is a tool pack (one_assistant_context.md §4.2.1).
+# Its tools are the owner's own tools, so injection never offers them and the
+# check above skips them. The owner universe is the second universe: the
+# names in the owner's ``own_tool_scope`` that its module builds
+# (``_agent_tools()``, plus ``narrow_and_read`` from ``_narrow_tool``).
+
+
+def _owner_universe(owner: str) -> set[str]:
+    """The tools that agent *owner* holds: declared AND built by its code."""
+    import json
+    from pathlib import Path
+
+    from acb_skills.narrowing import TOOL_NAME as NARROW
+
+    from tests.unit._native_maf_harness import REPO_ROOT, load_agent_module
+
+    rel = f"apps/agents/agent-{owner}"
+    cfg = json.loads((Path(REPO_ROOT) / rel / "config.json").read_text(encoding="utf-8"))
+    module = load_agent_module(rel)
+    built = {fn.__name__ for fn in module._agent_tools()}
+    if callable(getattr(module, "_narrow_tool", None)):
+        built.add(NARROW)
+    return set(cfg.get("own_tool_scope") or ()) & built
+
+
+def test_each_pack_tool_is_a_tool_its_owner_holds():
+    """A pack names only tools its owner declares and builds. Mutation: a
+    stray or misspelt name in a pack, or a tool the owner dropped."""
+    packs = sf.pack_slugs()
+    assert packs, "non-vacuity: the registry holds a pack"
+    for slug in packs:
+        owner = sf.SKILL_FAMILIES[slug]["owner"]
+        missing = set(sf.SKILL_FAMILIES[slug]["tools"]) - _owner_universe(owner)
+        assert not missing, (
+            f"pack {slug!r} names tools its owner {owner!r} does not hold: "
+            f"{sorted(missing)}"
+        )
+
+
+def test_an_owner_tool_is_in_one_pack_only():
+    """Mutation: one owner tool in two packs, so a turn that loads both
+    offers the model one name twice."""
+    seen: dict[str, str] = {}
+    for slug in sf.pack_slugs():
+        for name in sf.SKILL_FAMILIES[slug]["tools"]:
+            assert name not in seen, f"{name!r} is in both {seen[name]!r} and {slug!r}"
+            seen[name] = slug
+    assert seen, "non-vacuity: the packs hold tools"
 
 
 def test_core_family_is_exactly_the_floor():
@@ -112,8 +164,9 @@ def test_registry_hash_is_deterministic():
 # ── families_for_scope (the read-only matrix rule) ─────────────────────────
 
 def test_families_for_scope_unscoped_agent_gets_everything():
+    # Every INJECTED family. A tool pack is injected into no agent (OA-7a).
     fams = sf.families_for_scope(None, resolved_scope=None)
-    assert set(fams) == set(sf.SKILL_FAMILIES)
+    assert set(fams) == set(sf.injected_families())
 
 
 def test_families_for_scope_intersects_scope_governed_families():
@@ -151,7 +204,7 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
         core = frozenset(sf.SKILL_FAMILIES["core"]["tools"])
         extra = 0 if scope is None else len(scope - core)
         if scope is None:
-            extra = len(sf.all_registered_tool_names() - core)
+            extra = len(sf.injected_tool_names() - core)
         return "x" * (100 + 40 * extra)
 
     import json as _json
@@ -183,9 +236,10 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
     # dynamic apps: unmeasurable statically.
     assert by_slug["apps"]["token_cost"] == 0
     # total: unscoped addendum + every static schema (the WS-12 baseline).
-    n_non_core = len(sf.all_registered_tool_names()) - 22  # 22: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11)
+    # A tool pack is not injected, so it is not in the total (OA-7a).
+    n_non_core = len(sf.injected_tool_names()) - 22  # 22: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11)
     assert cat["total_injected_tokens"] == (
-        100 + 40 * n_non_core + schemas(sf.all_registered_tool_names())
+        100 + 40 * n_non_core + schemas(sf.injected_tool_names())
     )
 
 

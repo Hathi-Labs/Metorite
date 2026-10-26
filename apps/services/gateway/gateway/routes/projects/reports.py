@@ -70,6 +70,7 @@ from gateway.routes.projects.analytics_agents import (
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
 from gateway.routes.projects.analytics_pulse import pulse_body
+from gateway.routes.projects.analytics_quality import quality_body
 from gateway.routes.projects.analytics_rebalance import rebalance_body
 from gateway.routes.projects.analytics_waiting import waiting_body
 from gateway.routes.projects.core import (
@@ -134,9 +135,11 @@ from sqlalchemy import text
 #: (`projects_reports.md` §6.8 A, question 3): stuck says what stalls, and
 #: waiting says on whom it waits. RA-4 adds `agent_runs` after `waiting`:
 #: both read the agent runs of the scope, and agent_runs says how they end.
+#: RA-5 adds `quality` after `agent_runs`: runs say how the work ran, and
+#: quality says whether the speed is real (pull requests, rework, CI red).
 SECTIONS: tuple[str, ...] = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse",
-    "stuck", "waiting", "agent_runs", "hygiene", "conflicts", "rebalance",
+    "stuck", "waiting", "agent_runs", "quality", "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -1229,6 +1232,17 @@ async def render_body(  # noqa: C901 - one branch for each section, which the lo
             # week would else show a success rate of one week, and the KPI
             # strip beside it would read 14 days.
             sections[name] = await agent_runs_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+        elif name == "quality":
+            # WS-27bn RA-5. `quality_body`, imported, as `agent_runs` does.
+            #
+            # ⚠️ **No period here, on purpose.** The pull requests and the
+            # rework read their own 14 days back from now, as the merge rate
+            # of RA-2 does, so this panel and the KPI strip agree.
+            sections[name] = await quality_body(
                 db, vis,
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),

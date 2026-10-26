@@ -80,7 +80,9 @@ def _roots(db: FakeProjectsDB, *, dest_closing: bool):
     s_done = db.seed_status(
         source.id, name="Done", category="done", is_default=False, position=40,
     )
-    dest = db.seed_project(name="Launch", personal_owner=None)
+    # A project in a space: a space holds no tasks (`core.assert_holds_tasks`).
+    # Fields are ROOT-scoped, so the destination's field sits on its space.
+    dest = db.seed_in_space(name="Launch", space="Launch space", personal_owner=None)
     d_backlog = db.seed_status(
         dest.id, name="Backlog", category="todo", is_default=True,
     )
@@ -90,7 +92,7 @@ def _roots(db: FakeProjectsDB, *, dest_closing: bool):
         if dest_closing else None
     )
     _field(db, source.id, "po", "PO")
-    _field(db, dest.id, "customer_po", "PO", required=True)
+    _field(db, dest.parent_project_id, "customer_po", "PO", required=True)
     return source, s_todo, s_done, dest, d_backlog, d_done
 
 
@@ -153,7 +155,7 @@ async def test_a_required_field_renamed_between_roots_is_satisfied_by_the_map(
         "`po` must land as `customer_po` — by NAME — and satisfy the requirement"
     )
     assert str(row["project_id"]) == str(dest.id)
-    assert str(row["root_project_id"]) == str(dest.id)
+    assert str(row["root_project_id"]) == str(dest.parent_project_id)
 
 
 @ROUTES
