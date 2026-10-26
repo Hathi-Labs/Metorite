@@ -83,4 +83,11 @@ describe("the three answers", () => {
     expect(src).toMatch(/onClick=\{\(\) => startGetToKnowMe\(\)\}/);
     expect(src).not.toMatch(/localStorage/);
   });
+
+  it("the card links to Settings → Assistant settings (PZ-28)", () => {
+    const src = readFileSync(new URL("./InterviewOffer.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(
+      /<Link href="\/settings\/assistant"[^>]*>\s*Settings → Assistant settings\s*<\/Link>/,
+    );
+  });
 });
