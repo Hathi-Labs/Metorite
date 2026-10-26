@@ -83,6 +83,7 @@ from skill_projects.writes import (
     _yes_no,
     agent_assignee_refusal_as_text,
     mailbox_line,
+    space_refusal,
     update_project,
     update_task,
 )
@@ -1669,6 +1670,9 @@ async def create_tasks(project_id: str, tasks: str) -> str:
             f"{data(node.get('name'))} is a folder. A folder holds projects, not tasks. "
             "Pick a project inside it. Nothing was created."
         )
+    stop = await space_refusal(pid, node)
+    if stop:
+        return stop
     statuses = await _statuses_of(pid)
     rows = [await _batch_row(pid, i, item, statuses) for i, item in enumerate(items, start=1)]
     names, strangers = await _names_of([w for p in rows for w in p.new.who])

@@ -105,7 +105,9 @@ def roots_asked(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _project(db: FakeProjectsDB) -> Any:
-    project = db.seed_project(name="Ops")
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`). The
+    # ROOT, which scopes the definitions, is the space.
+    project = db.seed_in_space(name="Ops")
     db.seed_status(project.id, name="To do", category="todo", is_default=True)
     return project
 
@@ -168,7 +170,7 @@ async def test_a_good_value_is_stored_shaped_against_the_tasks_root(
 
     # Validated against the ROOT's definitions, as the PATCH validates
     # against `before.root_project_id`, never the subproject's own id.
-    assert roots_asked == [str(root.id)]
+    assert roots_asked == [str(root.parent_project_id)]
     # The fake keeps the JSONB bind as the string the cast receives.
     stored = pm_core.from_jsonb(db.rows("pm_tasks")[0]["custom_fields"])
     assert stored == {
@@ -188,7 +190,7 @@ async def test_a_stated_null_leaves_the_column_default(
     await _create(str(project.id), custom_fields=None)
     await _create(str(project.id), custom_fields={"hours": None})
 
-    assert roots_asked == [str(project.id)]
+    assert roots_asked == [str(project.parent_project_id)]
     assert all(
         "custom_fields" not in sql.split("VALUES")[0]
         for sql in db.statements_touching("INSERT INTO pm_tasks")

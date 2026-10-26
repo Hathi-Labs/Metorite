@@ -472,7 +472,8 @@ def mover(monkeypatch, subtree):
     written: list[tuple] = []
 
     async def load_visible_project(db, vis, pid):
-        return SimpleNamespace(id=pid, kind="project")
+        # A project in a space: a space holds no tasks (2026-10-26).
+        return SimpleNamespace(id=pid, kind="project", parent_project_id="space")
 
     async def noop(*args, **kwargs):
         return None

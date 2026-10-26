@@ -735,6 +735,25 @@ class FakeProjectsDB:
             )
         return project
 
+    def seed_in_space(
+        self, *, name: str = "Root", subject: str | None = "org",
+        space: str = "Company", **columns: Any,
+    ) -> SimpleNamespace:
+        """A project that sits in a fresh SPACE and keeps its own lanes.
+
+        A space holds projects, not tasks (``core.assert_holds_tasks``,
+        2026-10-26), so a test that creates, moves or captures a task needs a
+        project under a root, not the root itself. The project owns its status
+        set (migration 196), so lanes seeded on it are the lanes it uses. The
+        ROOT is the space, so root-scoped rows (types, fields, the task
+        counter) belong on ``project.parent_project_id``.
+        """
+        root = self.seed_project(name=space, subject=subject)
+        columns.setdefault("owns_statuses", True)
+        return self.seed_project(
+            name=name, parent=root.id, subject=subject, **columns,
+        )
+
     def seed_status(
         self, project_id: str, *, name: str = "To do", category: str = "todo",
         is_default: bool = True, position: int = 10,
