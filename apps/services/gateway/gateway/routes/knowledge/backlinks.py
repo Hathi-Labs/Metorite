@@ -15,7 +15,10 @@ The read joins ``kb_links`` to ``kb_pages`` under the one visibility clause
 absent. It lists PUBLISHED sources only. A draft is not yet part of the
 company's knowledge, and an archived page is out of the live tree.
 
-Old pages gain links on their next write. There is no backfill job.
+A page written before KB-2h has no rows until its next write, or until an
+operator runs ``scripts/backfill_kb_links.py``. That script calls
+:func:`backfill_org_links`, which runs :func:`sync_page_links` for each page
+that names a page and has no page-kind row. A second run changes nothing.
 
 ⚠️ Fences: ``tests/unit/test_kb_backlinks_r8.py`` (a real database) and
 ``tests/unit/test_kb_visibility_one_seam.py`` (the one clause).
@@ -95,26 +98,39 @@ def page_ids_in(body_md: str | None, own_id: str | None = None) -> list[str]:
     return out
 
 
-async def sync_page_links(db: Any, user: UserContext, page: Any, body_md: str) -> int:
-    """Make the page-kind links of *page* match *body_md*. Return how many.
+async def sync_page_links(
+    db: Any, user: UserContext, page: Any, body_md: str, *, any_target: bool = False,
+) -> int:
+    """Make the page-kind links of *page* match *body_md*. Return how many were added.
 
-    It replaces the ``target_kind = 'page'`` rows of the page in the caller's
-    transaction. A target the WRITER cannot see (the one clause) or that is
-    not a page of the same organization is skipped, so a stale link never
-    fails a save and a link never tells a writer that a hidden page exists.
-    The organization is the session's, and the writer is the session's member.
+    It deletes the ``target_kind = 'page'`` rows whose target the body no
+    longer names. It keeps a row whose target the body still names, whoever
+    saves, so a member who cannot read a restricted target never erases the
+    row of a writer who could (K-1 P1). It then adds the named targets that
+    the WRITER can see (the one clause) and that are pages of the same
+    organization, and a stale link never fails a save. A link never tells a
+    writer that a hidden page exists. The organization is the session's, and
+    the writer is the session's member.
+
+    ``any_target`` drops the writer's visibility from the add. Only the
+    backfill sets it (K-2): nobody reads a link row except through the
+    visibility-filtered read, so the row is safe. The org check stays.
     """
     org = core.org_of(user)
     pid = str(page.id)
+    ids = page_ids_in(body_md, pid)
     await db.execute(
         text("DELETE FROM kb_links WHERE organization_id = CAST(:org AS uuid) "
-             "AND page_id = CAST(:pid AS uuid) AND target_kind = 'page'"),
-        {"org": org, "pid": pid},
+             "AND page_id = CAST(:pid AS uuid) AND target_kind = 'page' "
+             "AND NOT (target_id = ANY(CAST(:ids AS text[])))"),
+        {"org": org, "pid": pid, "ids": ids},
     )
-    ids = page_ids_in(body_md, pid)
     if not ids:
         return 0
-    vis, vparams = core.visible_pages_clause(user, "t")
+    if any_target:
+        vis, vparams = "t.organization_id = CAST(:org AS uuid)", {}
+    else:
+        vis, vparams = core.visible_pages_clause(user, "t")
     result = await db.execute(
         text("INSERT INTO kb_links (organization_id, page_id, target_kind, "
              "target_id, created_by) "
@@ -125,6 +141,59 @@ async def sync_page_links(db: Any, user: UserContext, page: Any, body_md: str) -
         {**vparams, "org": org, "pid": pid, "by": core.viewer_email(user), "ids": ids},
     )
     return int(result.rowcount or 0)
+
+
+#: The pages one backfill batch reads. A body can be large, so the batch is small.
+BACKFILL_BATCH = 200
+
+
+async def backfill_org_links(org: str, *, dry_run: bool = False) -> dict[str, int]:
+    """Give each page of *org* that has none the page-kind rows its body names.
+
+    K-2. It is the write path's own :func:`sync_page_links`, run as the page's
+    author with ``any_target``: every named page of the same org gets a row,
+    with no member visibility. The read of the backlinks still filters by the
+    reader, so an extra row never shows a hidden page. A page that already has a page-kind row is
+    skipped, because a write after KB-2h made it. A page whose links all fail
+    the clause gets no row, and a second run finds the same and writes none.
+    Returns the counts: ``seen``, ``linked`` (pages that gained rows),
+    ``rows`` and ``unchanged``. A dry run rolls back.
+    """
+    from acb_auth import UserContext, UserRole, build_access
+
+    counts = {"seen": 0, "linked": 0, "rows": 0, "unchanged": 0}
+    last = "00000000-0000-0000-0000-000000000000"
+    while True:
+        async with core._tenant_session(org) as db:
+            rows = (await db.execute(
+                text("SELECT p.id, p.author_email, p.body_md FROM kb_pages p "
+                     "WHERE p.organization_id = CAST(:org AS uuid) "
+                     "AND p.id > CAST(:last AS uuid) "
+                     "AND p.body_md LIKE '%/knowledge/pages/%' "
+                     "AND NOT EXISTS (SELECT 1 FROM kb_links l "
+                     "WHERE l.organization_id = p.organization_id "
+                     "AND l.page_id = p.id AND l.target_kind = 'page') "
+                     "ORDER BY p.id LIMIT :n"),
+                {"org": org, "last": last, "n": BACKFILL_BATCH},
+            )).fetchall()
+            for r in rows:
+                counts["seen"] += 1
+                author = UserContext(
+                    email=r.author_email or "", role=UserRole.EMPLOYEE,
+                    access=build_access(["feature:knowledge"]),
+                    organization_id=org,
+                )
+                made = await sync_page_links(db, author, r, r.body_md or "", any_target=True)
+                if made:
+                    counts["linked"] += 1
+                    counts["rows"] += made
+                else:
+                    counts["unchanged"] += 1
+            if dry_run:
+                await db.rollback()
+        if len(rows) < BACKFILL_BATCH:
+            return counts
+        last = str(rows[-1].id)
 
 
 @router.get("/pages/{page_id}/backlinks")
