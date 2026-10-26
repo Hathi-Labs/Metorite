@@ -73,7 +73,7 @@ it rides `KNOWLEDGE_SYNC`. The resolver and the filing rule of §8 are built,
 with the two clauses `document_reader_clause` and
 `visible_documents_clause`.
 
-§8 records the defaults of the open questions OQ1 to OQ5. KC-5 adds the
+§8 records the defaults of the open questions OQ1 to OQ5 and OQ7. KC-5 adds the
 search arm, and KC-6 adds the conflict status and the `filing_conflict`
 card. The live Google checks are owner checks after the Google setup (§21).
 
@@ -606,6 +606,13 @@ owner's delegation:
   list proves its owner only.
 - **OQ4, the manager.** `knowledge:manage` proves no reader and gives no
   document read.
+- **OQ7, the source and the age (KC-4a fix round 1).** Each proof needs
+  the source of the node to be `ready`, and that includes the owner's proof.
+  So `needs_reconnect`, `failed`, `discovering` and `disconnected` prove
+  nobody. A `user` row or a `domain` row proves only while its `synced_at`
+  is newer than 24 hours, which is four access passes. One constant,
+  `resolve.ACCESS_MAX_AGE_SECONDS`, holds the number for both twins. A
+  source that stops syncing then stops proving its old readers.
 
 A node that is not live has no proven reader. The resolver is
 `kb_access/resolve.py`. Its SQL twin is `core.document_reader_clause`, and
@@ -615,8 +622,11 @@ A node that is not live has no proven reader. The resolver is
 
 **A document may be filed into a space only when every reader of the space
 is a proven reader of the document.** "Proven" means §8.2 resolved the reader.
-The rule is checked when a filing is accepted, and again on each access
-re-read.
+KC-6 checks the rule when a filing is accepted. It checks again on each
+grant write of a space, each change of the members of a group, and each
+member who becomes active. A filing is only a hint. Each read of a document
+uses `visible_documents_clause`, so a stale filing shows nothing that the
+provider hides.
 
 **The readers of a space** are its grant subjects, expanded, and its
 `owner_email`. `org` is every active member, `group:<slug>` is the active
@@ -669,12 +679,19 @@ feed is not due and one of these holds:
   the last discovery.
 - The last access pass stopped at its call cap.
 
-A pass that failed or stopped waits 15 minutes before the next try.
+A pass that failed or stopped waits 15 minutes before the next try. A pass
+that began more than 12 hours ago starts again from the first page, so a
+cursor that no run can finish does not last for ever.
 
 **OQ5, the cost.** One `files.list` call reads a page of files with the
 `permissions` field mask. Google leaves the field out for an item of a
 shared drive, and only such an item gets a `permissions.list` call. An item
-with no field that is not in a shared drive writes no row.
+with no field that is not in a shared drive writes no row. Each Drive call
+sends `prettyPrint=false`. If the readers of a page still pass the 64 KiB
+cap of the guard at the smallest page size, the page is read again with no
+readers. Each item then calls `permissions.list`, inside the call budget.
+An item past the budget is written as not listed, and it proves the owner
+only.
 
 One pass makes at most `ACCESS_CALLS_PER_TICK` (50) calls in a tick. A pass
 that does not end goes on at the next tick from its cursor, kind `access`
@@ -1222,7 +1239,7 @@ keeps the brain current.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KC-6** | The classifier: pass one by name, pass two by text, `kb_filings`, the correction examples. From KC-4: the `conflict` status of a filing, the removal of its chunks on a conflict, and the `filing_conflict` card. Each acceptance and each access pass calls `document_fits_space` (KC-4a) | The eval of §18.3 scores 80% or more on folder type and space. A restricted folder is never proposed for `company`. With `KNOWLEDGE_FILING` off, nothing calls a model. From KC-4: a narrowed share at the provider removes the document from the space, and its chunks from the index, within one access pass | AGENT-SAFE to build. The flip: owner |
+| **KC-6** | The classifier: pass one by name, pass two by text, `kb_filings`, the correction examples. From KC-4: the `conflict` status of a filing, the removal of its chunks on a conflict, and the `filing_conflict` card. Each acceptance, each grant write of a space, each change of the members of a group, and each member who becomes active calls `document_fits_space` (KC-4a) | The eval of §18.3 scores 80% or more on folder type and space. A restricted folder is never proposed for `company`. With `KNOWLEDGE_FILING` off, nothing calls a model. From KC-4: a narrowed share at the provider removes the document from the space, and its chunks from the index, within one access pass | AGENT-SAFE to build. The flip: owner |
 | **KC-7** | The filing plan view: exceptions first, accept a folder, change, the credit estimate, the three shell jobs | A manager accepts a 400-file folder in one act. A change to a folder applies to its children. Nobody accepts a folder they cannot read at the provider. The visual review passes | AGENT-SAFE |
 
 ### Phase 3 — facts and entity pages

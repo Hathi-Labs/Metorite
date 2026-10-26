@@ -27,7 +27,10 @@ so it fits only a space with no reader.
 
 This module reads the space, its grants, the members and the node's readers.
 It returns no document and no page. KC-6 and KC-7 call it when a person
-accepts a filing, and again after each access pass. They decide who may ask.
+accepts a filing. KC-6 calls it again on each grant write of a space, each
+change of the members of a group, and each member who becomes active. They
+decide who may ask. A filing is only a hint: each read of a document uses
+``core.visible_documents_clause``.
 
 **The tenant comes from the session (R5, R11).** The org is
 ``user.organization_id``, and each read names it.

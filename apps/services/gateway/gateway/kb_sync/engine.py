@@ -61,6 +61,12 @@ UPDATE later is a deadlock of its own. The transactions:
   ``kb_node_access`` is a child of ``kb_source_nodes``. Its last page writes
   ``kb_sources.access_read_at``, so it takes ``FOR NO KEY UPDATE``. It never
   locks the connection row.
+* **The clear of a capped discovery** (``discovery._walk``) deletes every
+  node of the source, and the delete cascades to ``kb_node_access``. So it
+  takes the source row ``FOR UPDATE`` (``lock_source(exclusive=True)``), as
+  a disconnect does. Only ``FOR UPDATE`` conflicts with the ``FOR KEY SHARE``
+  of an access page. ``FOR NO KEY UPDATE`` would not, and the clear and a
+  page could then deadlock on the node and access rows (KC-4a, R4).
 * **The disconnect** (``routes/knowledge/sources.py``) reads the source row
   with no lock, locks the connection row, then locks the source row
   ``FOR UPDATE`` and reads its state again. ``FOR UPDATE`` stays, because

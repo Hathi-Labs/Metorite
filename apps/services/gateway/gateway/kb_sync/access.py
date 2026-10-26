@@ -64,7 +64,9 @@ R8, ``tests/unit/test_kc_access_r8.py``.
 
 **A stale pass.** A pass that began before the last discovery starts again,
 because the discovery wrote a new tree. The scheduler also finds a source
-due when ``access_read_at`` is older than ``discovered_at``.
+due when ``access_read_at`` is older than ``discovered_at``. A pass that
+began more than :data:`MAX_PASS_AGE_SECONDS` ago starts again too (KC-4a fix
+round 1, R2), so a cursor that no run can finish does not last for ever.
 
 **Dark.** The pass rides ``KNOWLEDGE_SYNC`` (§17), and no flag is new. With
 the flag empty, the scheduler starts no task, so no pass runs and nothing
@@ -102,6 +104,11 @@ _log = get_logger("kb_sync.access")
 
 #: The most provider calls of one pass of one source in one tick (OQ5).
 ACCESS_CALLS_PER_TICK = 50
+
+#: The longest age of an open pass: twice ``scheduler.ACCESS_SECONDS`` (6 h).
+#: The scheduler imports this module, so the number sits here, and
+#: ``tests/unit/test_kb_sync_engine.py`` checks that it stays that product.
+MAX_PASS_AGE_SECONDS = 2 * 6 * 60 * 60
 
 #: The least budget of one adapter read: one listing call, and the
 #: ``permissions.list`` pages of one item. Below it, the pass stops for the
@@ -178,15 +185,20 @@ def cursor_state(cursor: AccessCursor, pass_started: datetime) -> dict[str, Any]
 
 
 def open_pass(state: dict[str, Any] | None, discovered_at: datetime | None,
-              ) -> tuple[AccessCursor, datetime] | None:
+              now: datetime | None = None) -> tuple[AccessCursor, datetime] | None:
     """The cursor and the start of the open pass, or ``None`` to start anew.
 
-    A pass that began before the last discovery is stale (the module doc).
+    A pass that began before the last discovery is stale (the module doc). So
+    is a pass that began more than :data:`MAX_PASS_AGE_SECONDS` before *now*,
+    the database time of the run that asks.
     """
     if not state:
         return None
     started = _when(state.get("pass_started"))
     if started is None or (discovered_at is not None and started < discovered_at):
+        return None
+    if now is not None and (
+            started.tzinfo is None or (now - started).total_seconds() > MAX_PASS_AGE_SECONDS):
         return None
     token = state.get("page_token")
     after = state.get("after")
@@ -314,7 +326,8 @@ async def _lock(org: str, source_id: str) -> tuple[Any, runs.Started, AccessCurs
             return None
         lock = await runs.start(db, org, source_id, runs.KIND_ACCESS)
         stored = await runs.read_cursor(db, org, source_id, runs.CURSOR_ACCESS)
-    found = open_pass(stored.state if stored is not None else None, row.discovered_at)
+    found = open_pass(stored.state if stored is not None else None, row.discovered_at,
+                      lock.started_at)
     if found is None:
         return row, lock, None, lock.started_at
     cursor, started = found
@@ -379,6 +392,7 @@ async def run_access(
 
 __all__ = [
     "ACCESS_CALLS_PER_TICK",
+    "MAX_PASS_AGE_SECONDS",
     "MIN_BUDGET",
     "cursor_state",
     "open_pass",

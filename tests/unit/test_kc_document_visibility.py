@@ -117,9 +117,27 @@ class TestTheResolver:
 
     def test_a_node_that_is_not_live_proves_nobody(self) -> None:
         node = resolve.NodeReaders(live=False, owner="ana@acme.test",
-                                   readers=(_r("user", "bo@acme.test"),))
+                                   readers=(_r("user", "bo@acme.test"),), source_ready=True)
         assert resolve.proven_for(node, members=MEMBERS, org_domain="acme.test") == frozenset()
         assert resolve.proven_for(None, members=MEMBERS, org_domain="acme.test") == frozenset()
+
+    def test_a_source_that_is_not_ready_proves_nobody_the_owner_too(self) -> None:
+        """OQ7: each proof needs a ``ready`` source. The SQL twin is R8
+        (``test_kc_access_r8.py``)."""
+        for ready in (True, False):
+            node = resolve.NodeReaders(
+                live=True, owner="ana@acme.test",
+                readers=(_r("user", "bo@acme.test"), _r("domain", "acme.test")),
+                source_ready=ready)
+            got = resolve.proven_for(node, members=MEMBERS, org_domain="acme.test")
+            assert (got == frozenset()) is (not ready), (ready, got)
+            assert ("ana@acme.test" in got) is ready
+
+    def test_the_age_bound_is_24_hours_and_the_clause_reads_the_same_constant(self) -> None:
+        assert resolve.ACCESS_MAX_AGE_SECONDS == 4 * 6 * 60 * 60
+        sql, _ = core.document_reader_clause(_user_ctx(), "n")
+        assert f"make_interval(secs => {resolve.ACCESS_MAX_AGE_SECONDS})" in sql
+        assert "kb_src.state = 'ready'" in sql
 
     def test_the_answer_is_emails_in_the_one_grammar(self) -> None:
         from acb_auth.permissions import normalize_grant_subject
@@ -352,6 +370,74 @@ class TestTheAccessRead:
         page = _read(src, budget=1)
         assert page.nodes == () and page.next_cursor == AccessCursor(
             page_size=gclient.PAGE_SIZE // 2)
+
+
+    # ── KC-4a fix round 1 ──────────────────────────────────────────────────
+
+    def test_each_drive_call_sends_pretty_print_false(self) -> None:
+        """R2a: every Drive GET goes through ``_get``, so discovery and the
+        change feed get the compact answer too."""
+        src, http = _src({
+            "files": [_listing({"id": "sd1", "driveId": "drv1"}, {"id": "f1", "permissions": []})],
+            "files/sd1/permissions": [_ok({"permissions": []})]})
+        _read(src)
+        assert [p for p, _ in http.calls] == ["files", "files/sd1/permissions"]
+        assert all(params["prettyPrint"] == "false" for _p, params in http.calls), http.calls
+
+    def test_a_page_too_large_at_the_smallest_size_completes_with_permissions_list(self) -> None:
+        """R2b: the readers of ten files pass the cap at MIN_PAGE. The read goes
+        on slim, and each item asks for its own list."""
+        big = HttpAnswer(status_code=200, body=b"{}", truncated=True)
+        src, http = _src({
+            "files": [big, _listing({"id": "a"}, {"id": "b", "driveId": "drv1"}, nxt="p2")],
+            "files/a/permissions": [_ok({"permissions": [_user("bo@acme.test")]})],
+            "files/b/permissions": [_ok({"permissions": [_user("cy@gmail.test")]})],
+        })
+        page = _read(src, AccessCursor(page_size=gclient.MIN_PAGE))
+        assert [q["fields"] for _p, q in http.calls[:2]] == [
+            gclient.ACCESS_FIELDS, gclient.SLIM_ACCESS_FIELDS]
+        assert [p for p, _ in http.calls] == [
+            "files", "files", "files/a/permissions", "files/b/permissions"]
+        assert all(q["pageSize"] == str(gclient.MIN_PAGE) for p, q in http.calls if p == "files")
+        got = {n.ext_id: (n.listed, {r.principal for r in n.readers}) for n in page.nodes}
+        assert got == {"a": (True, {"bo@acme.test"}), "b": (True, {"cy@gmail.test"})}
+        assert page.calls == 4
+        assert page.next_cursor == AccessCursor(page_token="p2", page_size=gclient.MIN_PAGE)
+
+    def test_the_slim_read_writes_an_item_past_the_budget_as_not_listed(self) -> None:
+        big = HttpAnswer(status_code=200, body=b"{}", truncated=True)
+        src, http = _src({
+            "files": [big, _listing({"id": "a"}, {"id": "b"}, {"id": "c"})],
+            "files/a/permissions": [_ok({"permissions": [_user("bo@acme.test")]})],
+        })
+        # 2 listing calls, 1 call for item a, and none left for b and c.
+        page = _read(src, AccessCursor(page_size=gclient.MIN_PAGE), budget=3)
+        got = {n.ext_id: (n.listed, n.readers) for n in page.nodes}
+        assert got["a"][0] is True and got["b"] == (False, ()) and got["c"] == (False, ())
+        assert page.calls == 3 and len(http.calls) == 3
+        assert page.next_cursor is None, "the page is done, and the pass goes on"
+
+    def test_a_slim_page_that_is_still_too_large_fails_with_a_code(self) -> None:
+        big = HttpAnswer(status_code=200, body=b"{}", truncated=True)
+        src, _ = _src({"files": [big, big]})
+        with pytest.raises(SourceError) as err:
+            _read(src, AccessCursor(page_size=gclient.MIN_PAGE))
+        assert getattr(err.value, "code", None) == "page_too_large"
+
+    def test_a_refused_id_does_not_skip_the_items_before_it(self) -> None:
+        """R3: ``ids`` holds None for a refused id, and a first read has no
+        ``after``. The None must not match."""
+        src, _ = _src({"files": [_listing(
+            {"id": "f1", "permissions": []}, {"id": "bad id/..", "permissions": []},
+            {"id": "f3", "permissions": []})]})
+        page = _read(src)
+        assert [n.ext_id for n in page.nodes] == ["f1", "f3"]
+
+    def test_a_resume_after_a_refused_id_still_goes_on_after_the_last_item(self) -> None:
+        src, _ = _src({"files": [_listing(
+            {"id": "f1", "permissions": []}, {"id": "bad id/..", "permissions": []},
+            {"id": "f3", "permissions": []})]})
+        assert [n.ext_id for n in _read(src, AccessCursor(after="f1")).nodes] == ["f3"]
 
 
 class TestNoPageTokenInALog:

@@ -27,6 +27,9 @@ The acceptance items of the KC-4a contract:
   table FORCEs row level security;
 * A7 — a listing with no permission list writes zero rows, and only the
   source owner is a proven reader (OQ3);
+* OQ7 (fix round 1, R1) — a row proves its reader only while it is younger
+  than ``ACCESS_MAX_AGE_SECONDS``, and each proof, the owner's too, needs a
+  ``ready`` source. The clause and the resolver agree on both bounds;
 * A9 — an access page and a disconnect at the same time, in both orders, and
   neither fails with DeadlockDetected.
 
@@ -549,6 +552,94 @@ async def test_the_clause_and_the_resolver_agree_for_each_member(
         assert "org" not in by_py and "eve@outside.test" not in by_sql
     assert a.email.lower() in await _proven_by_clause(kc, _node_id(kc, sid, "file-C1"),
                                                       [a.email])
+
+
+# ── OQ7: the age of a row and the state of the source ──────────────────────
+
+def _age_rows(p: Any, sid: str, hours: float, ext: str | None = None) -> None:
+    """Move ``synced_at`` of the rows of a source (or of one node) into the past."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE kb_node_access a SET synced_at = now() - make_interval(secs => :h * 3600) "
+            "FROM kb_source_nodes n WHERE n.id = a.node_id "
+            "AND n.source_id = CAST(:s AS uuid) AND (CAST(:e AS text) IS NULL OR n.ext_id = :e)"),
+            {"h": hours, "s": sid, "e": ext})
+
+
+def _set_source_state(p: Any, sid: str, state: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_sources SET state = :st WHERE id = CAST(:s AS uuid)"),
+                  {"st": state, "s": sid})
+
+
+async def _both(p: Any, node: str, emails: list[str]) -> tuple[set[str], set[str]]:
+    """The proven readers of *node* by the SQL clause and by the resolver."""
+    from gateway.db import tenant_session
+    from gateway.kb_access import resolve
+
+    by_sql = await _proven_by_clause(p, node, emails)
+    async with tenant_engine_scope(_app_dsn(p)), tenant_session(p.org_a) as db:
+        members = await resolve.load_members(db, p.org_a)
+        org_domain = await resolve.load_org_domain(db, p.org_a)
+        loaded = await resolve.load_node(db, p.org_a, node)
+    by_py = set(resolve.proven_for(loaded, members=members, org_domain=org_domain))
+    return by_sql, by_py & {e.lower() for e in emails}
+
+
+async def test_an_aged_row_loses_the_reader_and_the_clause_and_the_resolver_agree(
+    kc, domain, app_engine,  # noqa: F811
+) -> None:
+    from gateway.kb_access import resolve
+
+    owner, sid, drive = await _source(kc, "G1")
+    a, b = _member(kc, "a"), _member(kc, "b")
+    drive.perms["file-G1"] = [_user(a.email), _found("domain", DOMAIN)]
+    drive.perms["orph-G1"] = [_user(b.email)]
+    assert (await _pass(kc, sid, drive)).counts["complete"] is True
+    _set_domain(kc, DOMAIN)
+    everyone = sorted(_active_members(kc, kc.org_a))
+    file_node, orph_node = _node_id(kc, sid, "file-G1"), _node_id(kc, sid, "orph-G1")
+    space = _space(kc, grants=["org"])
+    sql, py = await _both(kc, file_node, everyone)
+    assert sql == py and {a.email.lower(), b.email.lower()} <= sql, (sql, py)  # the domain row
+    # Just inside the bound: still proven. Just past it: the row proves nobody.
+    bound = resolve.ACCESS_MAX_AGE_SECONDS / 3600
+    _age_rows(kc, sid, bound - 1)
+    assert await _sees(kc, a, file_node, space), "a row inside the bound lost its reader"
+    _age_rows(kc, sid, bound + 1, ext="file-G1")
+    sql, py = await _both(kc, file_node, everyone)
+    assert sql == py == {owner.email.lower()}, (sql, py)
+    assert not await _sees(kc, a, file_node, space), "an aged user row kept its reader"
+    assert not await _sees(kc, b, file_node, space), "an aged domain row kept its readers"
+    assert await _sees(kc, owner, file_node, space), "the age bound removed the owner"
+    # The other node is still inside the bound, and agrees too.
+    sql, py = await _both(kc, orph_node, everyone)
+    assert sql == py and b.email.lower() in sql, (sql, py)
+    # A new pass writes fresh rows, and the reader is back.
+    assert (await _pass(kc, sid, drive)).counts["complete"] is True
+    assert await _sees(kc, a, file_node, space), "a fresh pass did not bring the reader back"
+
+
+@pytest.mark.parametrize("state", ["needs_reconnect", "failed", "discovering", "disconnected"])
+async def test_a_source_that_is_not_ready_proves_nobody_the_owner_too(
+    kc, domain, app_engine, state: str,  # noqa: F811
+) -> None:
+    owner, sid, drive = await _source(kc, f"S{state[:2].upper()}")
+    reader = _member(kc, "r")
+    ext = f"file-S{state[:2].upper()}"
+    drive.perms[ext] = [_user(reader.email)]
+    assert (await _pass(kc, sid, drive)).counts["complete"] is True
+    node = _node_id(kc, sid, ext)
+    space = _space(kc, grants=["org"])
+    everyone = sorted(_active_members(kc, kc.org_a))
+    assert await _sees(kc, reader, node, space) and await _sees(kc, owner, node, space)
+    _set_source_state(kc, sid, state)
+    sql, py = await _both(kc, node, everyone)
+    assert sql == py == set(), (state, sql, py)
+    assert not await _sees(kc, reader, node, space), f"a {state} source proved its reader"
+    assert not await _sees(kc, owner, node, space), f"a {state} source proved its owner"
+    _set_source_state(kc, sid, "ready")
+    assert await _sees(kc, owner, node, space), "a ready source did not prove its owner again"
 
 
 # ── The call cap, the cursor and the due read ───────────────────────────────

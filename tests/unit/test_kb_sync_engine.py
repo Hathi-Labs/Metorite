@@ -139,7 +139,9 @@ class TestTheChangeFeed:
         assert asyncio.run(src.changes_start_token(_cred())) == "4711"
         [(url, params)] = http.calls
         assert url.endswith("/drive/v3/changes/startPageToken")
-        assert params == {"supportsAllDrives": "true", "fields": "startPageToken"}
+        # KC-4a R2a: the shared helper sends prettyPrint=false on this call too.
+        assert params == {"supportsAllDrives": "true", "fields": "startPageToken",
+                          "prettyPrint": "false"}
 
     def test_no_start_token_is_a_source_error(self) -> None:
         src, _ = _drive([_ok({})])
@@ -345,6 +347,7 @@ _NAMES = {
     # KC-3h, the lock order.
     discovery.LOCK_SOURCE_SHARE_SQL: "guard",
     discovery.LOCK_SOURCE_UPDATE_SQL: "lock_source",
+    discovery.LOCK_SOURCE_EXCLUSIVE_SQL: "lock_exclusive",
     conn_store._LOCK_BY_ID_SQL: "lock_connection",
     # Discovery, for the lock order fence of its transactions.
     discovery._SOURCE_SQL: "disc_source",
@@ -450,6 +453,7 @@ class _Db:
         return _Result([] if self.w.disconnected else [SimpleNamespace(id=SOURCE)])
 
     _lock_source = _guard
+    _lock_exclusive = _guard
 
     def _lock_connection(self, p: dict[str, Any]) -> _Result:
         assert p["id"] == CONNECTION, "close_ok locked another connection"
@@ -876,8 +880,8 @@ _SOURCE_WEAK = frozenset({"source", "guard", "access_source"})
 #: The source row at the strength of an UPDATE. KC-4a: the last page of an
 #: access pass sets ``access_read_at``.
 _SOURCE_STRONG = frozenset({
-    "lock_source", "source_ok", "source_error", "source_reconnect", "last_new",
-    "disc_start", "disc_finish", "disc_fail", "access_read",
+    "lock_source", "lock_exclusive", "source_ok", "source_error", "source_reconnect",
+    "last_new", "disc_start", "disc_finish", "disc_fail", "access_read",
 })
 #: A child row (a node, a cursor or a run) that ALSO takes ``FOR KEY SHARE``
 #: on the source row inside the statement: the guard of an upsert, or the
@@ -1074,6 +1078,17 @@ class TestTheLockOrder:
         [page] = [t for t in _txns(world.events) if "remove" in t and "upsert_changes" not in t]
         assert page[:2] == ["guard", "remove"], page
 
+    def test_the_clear_of_a_capped_discovery_locks_the_source_for_update(
+            self, world, monkeypatch) -> None:
+        """KC-4a fix round 1, R4: the clear cascades to ``kb_node_access``, so
+        it takes ``FOR UPDATE``, the one strength that an access page's
+        ``FOR KEY SHARE`` waits on."""
+        _scenario("discovery_capped", world, monkeypatch)
+        [clear] = [t for t in _txns(world.events) if "clear" in t]
+        assert clear[:2] == ["lock_exclusive", "clear"], clear
+        assert "FOR UPDATE OF s" in discovery.LOCK_SOURCE_EXCLUSIVE_SQL
+        assert "NO KEY" not in discovery.LOCK_SOURCE_EXCLUSIVE_SQL
+
     def test_the_scenarios_reach_every_write_transaction(self, monkeypatch) -> None:
         """The fence is not vacuous: the paths reach each kind of write."""
         seen: set[str] = set()
@@ -1177,7 +1192,7 @@ class TestTheAccessPass:
         assert json.loads(state)["page_token"] == "a2"
 
     def test_a_pass_resumes_from_its_cursor_and_its_start(self, world) -> None:
-        started = datetime(2026, 10, 25, 6, 0, tzinfo=UTC)
+        started = datetime.now(UTC) - timedelta(hours=1)
         world.access_state = {"page_token": "a2", "after": "x9", "page_size": 50,
                               "pass_started": started.isoformat()}
         adapter = FakeAdapter(world, {}, access=_two_pages())
@@ -1192,6 +1207,26 @@ class TestTheAccessPass:
         adapter = FakeAdapter(world, {}, access=_two_pages())
         assert _run_access(adapter).status == runs.STATUS_OK
         assert adapter.reads[0][0] is None, "a stale pass went on from its old cursor"
+
+    def test_a_pass_older_than_the_bound_starts_again(self, world) -> None:
+        """KC-4a fix round 1, R2c: a cursor that no run can finish does not last."""
+        old = datetime.now(UTC) - timedelta(seconds=access.MAX_PASS_AGE_SECONDS + 60)
+        world.access_state = {"page_token": "a2", "after": None, "page_size": 0,
+                              "pass_started": old.isoformat()}
+        adapter = FakeAdapter(world, {}, access=_two_pages())
+        assert _run_access(adapter).status == runs.STATUS_OK
+        assert adapter.reads[0][0] is None, "a stuck pass went on from its old cursor"
+
+    def test_a_pass_inside_the_bound_goes_on_from_its_cursor(self, world) -> None:
+        recent = datetime.now(UTC) - timedelta(seconds=access.MAX_PASS_AGE_SECONDS - 600)
+        world.access_state = {"page_token": "a2", "after": None, "page_size": 0,
+                              "pass_started": recent.isoformat()}
+        adapter = FakeAdapter(world, {}, access=_two_pages())
+        assert _run_access(adapter).status == runs.STATUS_OK
+        assert adapter.reads[0][0] == AccessCursor(page_token="a2")
+
+    def test_the_pass_age_bound_is_twice_the_access_interval(self) -> None:
+        assert access.MAX_PASS_AGE_SECONDS == 2 * scheduler.ACCESS_SECONDS
 
     def test_a_dead_page_token_starts_the_pass_again(self, world, monkeypatch) -> None:
         _scenario("access_expired", world, monkeypatch)
