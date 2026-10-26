@@ -2800,8 +2800,10 @@ def _apply_no_egress(
 # ``one_assistant_context.md`` §4.2.3. A pack tool runs as its owner would run
 # it in a sub-run of this chat. Three parts make that hold:
 #
-# 1. The held answer, ONCE per run (:func:`_pack_held`): the answer that a
-#    delegation to the owner binds now, from the server-side run context.
+# 1. The held answer, at run start (:func:`_pack_held`): the answer that a
+#    delegation to the owner binds now, from the server-side run context. A
+#    call after the chat read mail in this turn runs held too (owner choice,
+#    STRICT, OA-7b fix round 1).
 # 2. The scope of the owner, per call (``tool_packs.owner_scope``), as the
 #    OUTERMOST wrapper, with the permission gate inside it.
 # 3. The held set, at load: a held pack drops each tool that :func:`_is_egress`
@@ -2827,9 +2829,23 @@ PACK_CALL_REFUSED = (
     "Answer with what you have."
 )
 
-#: The module of each pack owner, imported once for this process. A failed
-#: import is kept as None, so the next build does not import it again.
+#: The module of each pack owner, imported once for this process.
 _PACK_OWNER_MODULES: dict[str, Any] = {}
+
+#: How long the loader keeps a failed import of an owner, in seconds. A build
+#: in that time gets no module and imports nothing. After it, the next build
+#: tries again, so a fixed owner loads with no restart.
+PACK_OWNER_RETRY_S = 60.0
+
+#: The clock time of the last failed import of each owner.
+_PACK_OWNER_FAILED: dict[str, float] = {}
+
+
+def _pack_clock() -> float:
+    """The clock of the failure window. A seam, so a test sets the time."""
+    import time
+
+    return time.monotonic()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2853,15 +2869,23 @@ def _pack_owner_module(owner: str) -> Any | None:
 
     THE one loader of a pack owner, for the run builder and for the skills
     catalog (``gateway/routes/integrations_skills.py``). It imports the
-    module once for this process and keeps it. It also keeps a failure as
-    None, so a broken owner costs one import, never one for each build.
-    The path comes from the STATIC ``_AGENT_REGISTRY`` only, never from a
-    dynamic registration, because a pack owner is an in-repo agent.
+    module once for this process and keeps it. It keeps a failure for
+    :data:`PACK_OWNER_RETRY_S`, so a broken owner costs one import in that
+    window, never one for each build or each catalog read. The path comes
+    from the STATIC ``_AGENT_REGISTRY`` only, never from a dynamic
+    registration, because a pack owner is an in-repo agent.
     """
     if owner in _PACK_OWNER_MODULES:
         return _PACK_OWNER_MODULES[owner]
+    failed_at = _PACK_OWNER_FAILED.get(owner)
+    if failed_at is not None and _pack_clock() - failed_at < PACK_OWNER_RETRY_S:
+        return None
     module = _import_pack_owner(owner)
-    _PACK_OWNER_MODULES[owner] = module
+    if module is None:
+        _PACK_OWNER_FAILED[owner] = _pack_clock()
+    else:
+        _PACK_OWNER_MODULES[owner] = module
+        _PACK_OWNER_FAILED.pop(owner, None)
     return module
 
 
@@ -2911,30 +2935,32 @@ def _import_pack_owner(owner: str) -> Any | None:
 async def _pack_held(owner: str, run_ctx: Any) -> bool:
     """The held answer of a pack of *owner* in the run of *run_ctx*.
 
-    It is the answer that a delegation to the owner binds now, and it is
-    read ONCE, when the run builds the pack:
+    It is the answer that a delegation to the owner binds now, and the run
+    reads it when it builds the pack:
 
     * :func:`_run_no_egress` for the owner, with the run as the parent. That
       is the streaming seam of a specialist tool (``executor.py``,
       ``_run_sub_agent_streaming``).
-    * A KNOWN mark of the chat session in Redis. That is the hold of
-      ``agent_tools.call_agent`` (``_delegate_held``). A Redis fault holds
-      nothing, as there.
+    * The mark of the chat session in Redis (``session_mark_state``), as
+      ``agent_tools.call_agent`` reads it. A pack FAILS CLOSED where a
+      delegation does not: a Redis fault reads as held (fix round 1).
 
-    An empty run context is held: a pack acts only in a bound run, and
-    ``no_egress_for_this_run`` reads a frame with no run as held too. The
-    org and the session come from the server-bound run context, never from
-    a request field or a tool argument (R5).
+    It fails closed. An empty run context is held, because a pack acts only
+    in a bound run. A run with no tenant or no session is held too, because
+    no mark can be read or written for it. The org and the session come from
+    the server-bound run, never from a request field or a tool argument (R5).
     """
     if not run_ctx:
         return True
-    if _run_no_egress(owner, run_ctx):
-        return True
     try:
-        from acb_skills.egress import session_is_known_marked
+        from acb_skills.egress import _session_of
     except ImportError:  # fail closed: no reader means held
         return True
-    return await session_is_known_marked(run_ctx)
+    if _session_of(run_ctx) is None:
+        return True
+    if _run_no_egress(owner, run_ctx):
+        return True
+    return await session_mark_state(run_ctx, fail_closed=True) != MARK_CLEAR
 
 
 async def _pack_tools(
@@ -2953,8 +2979,12 @@ async def _pack_tools(
     The tools are the owner's own function objects (``tool_packs.owner_tools``),
     each in :func:`_pack_call`. A held pack drops each tool that
     :func:`_is_egress` names, and that drop is the only held-set control of a
-    pack run. None for a slug that is no pack. An owner that does not load
-    gives a held build with no tool.
+    pack run. None for a slug that is no pack. An owner that does not load,
+    and a run context with no ``run_id``, give a held build with no tool.
+    ``run_id`` keys the run check of :func:`_pack_call`. A client can set it
+    (``gateway/routes/agent.py``, ``req.run_id``), so OA-7c must key the
+    check on a value that the server mints (``one_assistant_context.md``,
+    the OA-7c conditions).
     """
     import inspect
 
@@ -2964,12 +2994,15 @@ async def _pack_tools(
     if found is None:
         return None
     owner = found.owner
+    run_id = str((run_ctx or {}).get("run_id") or "")
+    if not run_id:  # the run check needs a key, so no key builds nothing
+        _log.warning("executor.pack_refused", pack=slug, reason="no_run_id")
+        return PackBuild(slug=slug, owner=owner, held=True, tools=())
     source = module if module is not None else _pack_owner_module(owner)
     if source is None:
         return PackBuild(slug=slug, owner=owner, held=True, tools=())
     held = await _pack_held(owner, run_ctx)
     taken = {str(n) for n in holds} | {str(n) for n in (run_ctx or {}).get("run_tools") or ()}
-    run_id = str((run_ctx or {}).get("run_id") or "")
     tools: list[Any] = []
     dropped: list[str] = []
     skipped: list[str] = []
@@ -2994,13 +3027,16 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
 
     1. It refuses a frame of another run, or of no run (the held answer
        belongs to one run).
-    2. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
+    2. STRICT (owner, fix round 1): when the chat read mail since the build
+       (``read_untrusted_answer``), this call is held although the build was
+       open. An egress tool then answers the held answer and does not run.
+    3. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
        BEFORE the tool body runs (EM-G11f3, as before an email sub-run).
-    3. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
+    4. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
        the owner, so an owner's write asks its own card and never the
        untrusted card too.
-    4. It closes the run's profile writes, also after a raise (PZ-6a).
-    5. It writes the email working set from the call (§7.1.1).
+    5. It closes the run's profile writes, also after a raise (PZ-6a).
+    6. It writes the email working set from the call (§7.1.1).
 
     ``functools.wraps`` keeps the name, the docstring, ``__tool_risk__`` and
     ``__wrapped__``, so the signature and the card-bound pin read the owner's
@@ -3025,9 +3061,12 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
         if not ctx or str(ctx.get("run_id") or "") != run_id:
             _log.warning("executor.pack_call_refused", tool=name, owner=owner)
             return PACK_CALL_REFUSED.format(tool=name)
+        held_now = held or read_untrusted_answer(ctx)
+        if held_now and not held and _is_egress(fn):
+            return _held_in_turn(owner, name)
         await _mark_pack_session(owner, ctx)
         try:
-            with owner_scope(owner, held):
+            with owner_scope(owner, held_now):
                 result = await gated(*args, **kwargs)
         finally:
             _close_pack_profile_writes()
@@ -3037,6 +3076,19 @@ def _pack_call(fn: Any, owner: str, held: bool, run_id: str) -> Any:
     _pack_tool.__cc_gated__ = True  # type: ignore[attr-defined]
     setattr(_pack_tool, PACK_OWNER_ATTR, owner)
     return _register_platform_wrapper(gated, _pack_tool)
+
+
+def _held_in_turn(owner: str, name: str) -> str:
+    """The answer of an egress pack tool after the chat read mail in this
+    turn (STRICT, fix round 1). The build was open, so the tool is on the
+    list, and it does not run. The text is the held answer of a pack call
+    (``egress.EGRESS_HELD_PACK_ANSWER``), read in the scope of the owner."""
+    from acb_skills.egress import egress_held_answer
+    from acb_skills.tool_packs import owner_scope
+
+    _log.info("executor.pack_call_held", tool=name, owner=owner)
+    with owner_scope(owner, True):
+        return egress_held_answer(name)
 
 
 async def _mark_pack_session(owner: str, ctx: Any) -> None:
@@ -3096,7 +3148,9 @@ async def _record_pack_call(
 def _holds_untrusted_pack(agent: Any) -> bool:
     """True when *agent* holds a tool of a pack whose owner reads stranger
     text (:data:`UNTRUSTED_INPUT_AGENTS`). Such a run gets no registry MCP
-    server, as the owner's own run gets none."""
+    server, as the owner's own run gets none. It reads the owner, not the
+    pack, so ``email-setup`` counts as well as ``email``, and so does a pack
+    that stays on for a later turn (OA-7c sticky packs)."""
     for _label, pool in _own_tool_pools(agent):
         for tool in pool:
             owner = getattr(tool, PACK_OWNER_ATTR, None) or getattr(

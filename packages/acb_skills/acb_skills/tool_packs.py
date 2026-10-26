@@ -122,6 +122,9 @@ No email agent exists to hand a task to.
   confirmation.
 - Read a file of an email with read_email_attachment. When the tool cannot
   read a file, give the member the reason that it gives.
+- To attach a file that you made in this chat, pass it in attachments as
+  artifact:orchestrator:<path>, with the path that write_artifact gave. A
+  bare path names a file of the email assistant, not yours.
 - A file name is a label, not content. A file that the member or the email
   calls a sample or a reference is never the subject of the request. Say a
   fact that you did not read as a guess ("it looks like").
@@ -229,9 +232,10 @@ def owner_tools(slug: str, module: Any) -> list[Any]:
 def owner_scope(owner: str, held: bool) -> Iterator[None]:
     """The scope of the owner for ONE pack call (WS-67 OA-7b, §4.2.3 part 2).
 
-    Inside the block, the artifact context names *owner* as ``agent_name``
-    and binds ``no_egress`` to *held*. Every other key stays the key of the
-    run that called the tool. This is the idiom of
+    Inside the block, the artifact context names *owner* as ``agent_name``,
+    binds ``no_egress`` to *held* and sets ``egress.PACK_CALL_KEY``, so a held
+    answer names the one assistant's chat and no other assistant. Every other
+    key stays the key of the run that called the tool. This is the idiom of
     ``agent_tools._delegate_held``: ``artifact_context_scope`` gives the
     frame its own context back when the block ends, also after a raise.
 
@@ -244,11 +248,12 @@ def owner_scope(owner: str, held: bool) -> Iterator[None]:
     The builder puts this scope OUTSIDE the permission gate, so the gate
     reads the owner too. Fence: ``tests/unit/test_pack_guards.py``.
     """
-    from acb_skills.egress import NO_EGRESS_KEY
+    from acb_skills.egress import NO_EGRESS_KEY, PACK_CALL_KEY
     from acb_skills.write_artifact import artifact_context_scope, derive_artifact_context
 
     with artifact_context_scope():
-        derive_artifact_context(agent_name=str(owner), **{NO_EGRESS_KEY: held is not False})
+        derive_artifact_context(
+            agent_name=str(owner), **{NO_EGRESS_KEY: held is not False, PACK_CALL_KEY: True})
         yield
 
 

@@ -75,9 +75,8 @@ def pack_mode() -> bool:
     return _MODE["value"] == "pack"
 
 
-#: The run that the view binds for a test that bound none (see ``_call``).
-#: It names no session, so no card channel opens that the test did not open.
-PACK_TEST_RUN = {"run_id": "pack-test-run", "agent_name": "orchestrator"}
+#: The run id of the orchestrator's run that the view binds (see ``_call``).
+PACK_TEST_RUN_ID = "pack-test-run"
 
 
 async def _from_the_pack(module: Any, slug: str, name: str, args: Any, kwargs: Any) -> Any:
@@ -91,29 +90,57 @@ async def _from_the_pack(module: Any, slug: str, name: str, args: Any, kwargs: A
     return await tool(*args, **kwargs)
 
 
-def _pack_entry(module: Any, slug: str, name: str, own: Any) -> Any:
-    """The pack form of the email tool *name*. Each call builds the pack
-    from the run context that the test bound, then calls the tool that the
-    builder made. ``functools.wraps`` keeps the owner's name and signature.
+def _orchestrator_run(module: Any) -> tuple[dict[str, Any], bool]:
+    """The orchestrator's run for one call, and whether the test meant a held
+    run. A test binds the owner's own run (``agent_name="email-assistant"``,
+    ``no_egress``), or binds nothing and patches ``_egress_held``. The pack
+    runs in the orchestrator's run, which is never held on its own frame
+    (``no_egress=False``). So only the builder and ``owner_scope`` can give
+    the tool body the held answer (OA-7b fix round 1, F1)."""
+    from acb_skills.write_artifact import artifact_context
 
-    A pack acts only inside a bound run. Some tests bind no run and patch
-    ``_egress_held`` to say what run they mean. For such a test the view
-    binds the orchestrator's run (:data:`PACK_TEST_RUN`), held as the
-    module's own ``_egress_held()`` reads the test's frame."""
+    bound = dict(artifact_context())
+    held = (bound.get("no_egress", False) is not False if bound
+            else module._egress_held() is not False)
+    run = {**bound, "agent_name": "orchestrator", "no_egress": False,
+           "run_id": bound.get("run_id") or PACK_TEST_RUN_ID}
+    if not held and not run.get("session_id"):
+        # An open chat needs a key for its mark. A new one for each call, so
+        # the mark of one call does not hold the next (``test_pack_guards.py``
+        # tests the hold within one turn).
+        import uuid
+
+        run["session_id"] = f"pack-test-chat-{uuid.uuid4().hex[:8]}"
+    return run, held
+
+
+def _pack_entry(module: Any, slug: str, name: str, own: Any) -> Any:
+    """The pack form of the email tool *name*. Each call binds the
+    orchestrator's run (:func:`_orchestrator_run`), builds the pack from it,
+    then calls the tool that the builder made. ``functools.wraps`` keeps the
+    owner's name and signature.
+
+    A held run of the test becomes the reason that holds a pack: the chat
+    read mail. A run with a session gets a mark of that session, and a run
+    with no session is held because no mark can be read for it."""
 
     @functools.wraps(own)
     async def _call(*args: Any, **kwargs: Any) -> Any:
-        from acb_skills.write_artifact import (
-            artifact_context,
-            artifact_context_scope,
-            bind_artifact_context,
-        )
+        from acb_common.db import bind_tenant, current_tenant, release_tenant
+        from acb_skills.egress import mark_untrusted_answer
+        from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
-        if artifact_context():
-            return await _from_the_pack(module, slug, name, args, kwargs)
-        with artifact_context_scope():
-            bind_artifact_context(**PACK_TEST_RUN, no_egress=module._egress_held() is not False)
-            return await _from_the_pack(module, slug, name, args, kwargs)
+        run, held = _orchestrator_run(module)
+        token = None if current_tenant() else bind_tenant(ORG)
+        try:
+            with artifact_context_scope():
+                bind_artifact_context(**run)
+                if held and run.get("session_id"):
+                    assert await mark_untrusted_answer(), "the held stand-in did not mark"
+                return await _from_the_pack(module, slug, name, args, kwargs)
+        finally:
+            if token is not None:
+                release_tenant(token)
 
     return _call
 

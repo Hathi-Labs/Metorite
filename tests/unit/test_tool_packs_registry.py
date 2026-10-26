@@ -168,6 +168,15 @@ def test_the_setup_rules_read_the_mailboxes_from_the_per_turn_context() -> None:
     assert "list_accounts" in sf.SKILL_FAMILIES["email"]["tools"]
 
 
+def test_the_email_rules_name_the_orchestrators_files_for_a_send() -> None:
+    """OA-7b fix round 1, item 8: in a pack turn the file comes from the
+    orchestrator's workspace, and a bare path names a file of the email
+    assistant. Mutation: drop the line → red."""
+    rules = tp.rules_for("email")
+    assert "artifact:orchestrator:<path>" in rules
+    assert "write_artifact" in rules and len(rules) < 3000
+
+
 def test_references_words_and_tier() -> None:
     """Mutation: an email link that the pattern misses, a word in upper case,
     or a tier floor on an email pack (§4.2.4 sets none in OA-7)."""
