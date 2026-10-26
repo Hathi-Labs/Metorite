@@ -1439,3 +1439,17 @@ DROP POLICY IF EXISTS kb_node_access_tenant_isolation ON kb_node_access;
 CREATE POLICY kb_node_access_tenant_isolation ON kb_node_access
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_documents FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_documents_tenant_isolation ON kb_documents;
+CREATE POLICY kb_documents_tenant_isolation ON kb_documents
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_source_includes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_source_includes FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_source_includes_tenant_isolation ON kb_source_includes;
+CREATE POLICY kb_source_includes_tenant_isolation ON kb_source_includes
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

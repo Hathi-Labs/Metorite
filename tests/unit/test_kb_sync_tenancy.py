@@ -185,7 +185,8 @@ def test_the_get_db_count_is_not_vacuous() -> None:
 
 import re  # noqa: E402
 
-_TENANT = r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs|kb_node_access)"
+_TENANT = (r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs|kb_node_access"
+           r"|kb_documents|kb_source_includes)")
 #: A read or a write of a tenant table, and its alias. SQL words are upper
 #: case here, and an alias is lower case, so a keyword is never an alias.
 _REF = re.compile(rf"\b(FROM|JOIN|UPDATE|DELETE FROM)\s+{_TENANT}\b(?:\s+(?:AS\s+)?([a-z]\w*))?")
