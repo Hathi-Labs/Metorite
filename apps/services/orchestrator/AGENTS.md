@@ -142,6 +142,16 @@ and streams chat responses as AG-UI events.
    - The batch path (WhatsApp, D115) opens nothing, so there the tools refuse and no block shows.
    - Fences: `tests/unit/test_chat_constraints.py` and `evals/trajectories/test_chat_constraints_trajectory.py`.
 
+26. **A pack tool acts as its owner acts in a sub-run of this chat** (WS-67 OA-7b, `project-docs/specs/one_assistant_context.md` §4.2.3). `_tool_injection._pack_tools(slug, run_ctx)` is the one builder. It has no live caller until OA-7c.
+   - `_pack_held` reads the held answer once per run: `_run_no_egress(owner, run_ctx)`, or a known mark of the chat in Redis. An empty run context is held.
+   - `_pack_call` puts `acb_skills.tool_packs.owner_scope` outside the permission gate. So each guard that reads `agent_name` or `no_egress` reads the owner.
+   - Each call marks the chat before the tool body, closes the profile writes after it, and writes the email working set. The tool refuses a call from another run, or from a frame with no run.
+   - A held pack drops each tool that `_is_egress` names. ⚠️ That drop is the only held-set control of a pack run, because a pack run gets no `EgressGuardProvider`.
+   - Each pack tool carries `__cc_gated__`, so `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the owner, and `_inject_mcp_servers` gives a run with the email pack no registry MCP server.
+   - The builder calls `_is_egress`, `_run_no_egress`, `_gate_injected_tool` and `artifact_context_scope`. Do not copy their bodies into it.
+   - `_pack_owner_module` is the one loader of a pack owner, and the skills catalog calls it. It imports each owner once for each process, and it keeps a failed import.
+   - Fence: `tests/unit/test_pack_guards.py`. The email tests of `_held_card_fakes.email_tool_mode` run with the owner's tools and with the pack's tools.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

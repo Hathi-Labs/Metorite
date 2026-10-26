@@ -15,6 +15,62 @@ with slices #446 (OA-1) to #455 (OA-10).
 OA-7a is BUILT, dark (2026-10-26, "As built, OA-7a" below). No caller reads
 its flag, and no run loads a pack.
 
+OA-7b is BUILT, dark (2026-10-26, "As built, OA-7b" below). The guarded
+builder has no live caller. OA-7c wires it into runs.
+
+**As built, OA-7b.** `_pack_tools(slug, run_ctx)` in
+`orchestrator/_tool_injection.py` builds the tools of one pack for one run.
+It is async, and it returns a `PackBuild`: the held answer, the tools, the
+dropped names and the skipped names. A slug that is no pack gives None.
+- **The held answer.** `_pack_held` reads it once, when the run builds the
+  pack. It is true when `_run_no_egress(owner, run_ctx)` is true, or when
+  Redis holds a known mark of the chat. That is the union of the two
+  delegation paths: the specialist tool and `call_agent`. An empty run
+  context is held.
+- **Each call.** `_pack_call` puts `tool_packs.owner_scope` outside the
+  permission gate. It marks the chat before the tool body, through the
+  executor's `_mark_untrusted_session`. It closes the profile writes after
+  the call, also after a raise. It writes the email working set through
+  `_email_working_set_for` and `_record_email_working_set`.
+- **The held set.** A held pack drops each tool that `_is_egress` names.
+  This drop is the only held-set control of a pack run, because a pack run
+  gets no `EgressGuardProvider`.
+- **The marks.** Each pack tool carries `__cc_gated__`, so
+  `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the
+  owner, and `_inject_mcp_servers` gives a run that holds the email pack no
+  registry MCP server.
+- **Two guards that the design did not name.** A pack tool refuses a call
+  from another run, or from a frame with no run (`PACK_CALL_REFUSED`). So a
+  held answer never moves to a later turn. The builder skips a name that the
+  run holds (`holds`, and `run_tools` of the run context).
+- **One loader.** `_pack_owner_module` loads an owner once for each process,
+  and the skills catalog calls it too. It keeps a failed import as None. A
+  `SystemExit` at import is a failed import, and `KeyboardInterrupt` still
+  propagates (OA-7a verifier F2 and F3).
+- **Fences.** `tests/unit/test_pack_guards.py` holds the ten cases of
+  §4.2.8 and nine more. The 13 files that call `load_email_agent` run each
+  test twice. `test_email_chat_reply.py` does the same through its own
+  loader. One run uses the owner's own tools, and one uses the tools of the
+  builder. `test_egress_card_bound_pin.py` passes with no change.
+
+Three facts differ from the design text of §4.2.3:
+- `pending_ask.py` does not read `agent_name` from the artifact context. It
+  reads the agent of a card row from the run record of the thread. So a card
+  of a pack call names the run's agent, as a card of a delegated sub-run
+  does today. The fence pins that.
+- The held answer stays the same for the whole turn. Today a second
+  delegation in one turn, after the first email sub-run, is held by the process cache. In a
+  pack turn, the email tools of turn 1 stay open for the whole turn. That
+  is the exposure of one open email sub-run, and the next turn is held.
+- The scope binds `agent_name` and `no_egress` only, so it binds no
+  `deliver_to`. A pack tool that writes a file would key its blob by the
+  owner, in the workspace of the run. No email tool writes a file. OA-8
+  must check each pack whose tools write a file.
+
+Open (OA-7a verifier F1): the Agents page adds the cost of each pack to each
+agent. No test of that page exists. A later UI slice takes packs out of that
+sum, and adds its own Vitest case.
+
 **As built, OA-7a.** A WS-23 skill family with an `owner` key is a tool pack
 (`acb_skills/skill_families.py`). Two packs hold the 59 own tools of the email
 assistant: `email` (31 tools) and `email-setup` (28 tools). The split follows
@@ -514,7 +570,7 @@ Each slice merges alone, in this order.
 |---|---|---|
 | OA-7g | The rule against an unasked draft. Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`) | LOW |
 | OA-7a | The pack key in WS-23, the email split, the rules, the flag reader. BUILT, dark, 2026-10-26 | LOW |
-| OA-7b | The guarded pack builder, with no live caller | HIGH |
+| OA-7b | The guarded pack builder, with no live caller. BUILT, dark, 2026-10-26 | HIGH |
 | OA-7c | Layer (a) and sticky state: packs in live runs | HIGH |
 | OA-7d | The structured `surface` field from the dock | LOW |
 | OA-7e | Layer (b): `load_skill_tools` | MEDIUM |

@@ -90,6 +90,14 @@ clone cache.
    input. Any value on a box is OWNER-ONLY (`work_plan.md` §6 D4). OA-7a
    ships no caller. `test_no_caller_reads_the_flag_yet` names the files
    that may read it. Fence: `tests/unit/test_tool_packs_registry.py`.
+
+   OA-7b: `owner_scope(owner, held)` is the scope of the owner for ONE
+   pack call. It binds `agent_name` and `no_egress` through
+   `artifact_context_scope`, and any value of `held` but `False` binds
+   `no_egress`. The builder `orchestrator._tool_injection._pack_tools`
+   puts it outside the permission gate. Fence:
+   `tests/unit/test_pack_guards.py`.
+
 5b. decide_tools.py -- the `decide` core-floor tool (WS-31 CP-13d, spec:
    project-docs/specs/customer_console.md §6A.14). It asks one typed question
    through `acb_llm.decide` and never through the Console client. It sends no
