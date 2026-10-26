@@ -24,7 +24,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
     promoted,
 )
-from tests.unit.test_kb_backlinks_r8 import _page, _rows, _target_rows
+from tests.unit.test_kb_backlinks_r8 import _member, _page, _rows, _target_rows
 from tests.unit.test_kb_pages_r8 import (  # noqa: F401
     CAPABILITY,
     _address,
@@ -116,3 +116,23 @@ async def test_a_dry_run_and_another_org_write_nothing(kb, app_engine) -> None: 
     await _backfill(kb, kb.org_a)
     assert _rows(kb, old) == 1
     assert _rows(kb, old_b) == 0, "the backfill of org A wrote a row for org B"
+
+
+@_DB_GATE
+async def test_the_backfill_writes_a_link_to_a_page_the_author_cannot_see(kb, app_engine) -> None:  # noqa: F811
+    """Links are shown only through the visibility-filtered read, so the row is safe."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    m_email, member = await _member(kb, kb.org_a, "m")
+    mine = await _space(kb, admin, "Mine", [{"subject": m_email, "level": "write"}])
+    board = await _space(kb, admin, "Board", [])
+    secret = await _page(kb, admin, board, "Secret")
+    source = await _page(kb, member, mine, "Source", f"[s](/knowledge/pages/{secret})")
+    assert _target_rows(kb, source) == []  # the write path skips it: the member cannot see it
+    await _backfill(kb, kb.org_a)
+    assert _target_rows(kb, source) == [secret]
+    # The member cannot see the target, so its backlinks read is a 404 and shows no source.
+    from tests.unit.test_kb_backlinks_r8 import _from
+    from tests.unit.test_kb_pages_r8 import _call
+    assert (await _call(kb, member, "GET", f"/knowledge/pages/{secret}/backlinks")).status_code == 404
+    assert await _from(kb, admin, secret) == [source]
