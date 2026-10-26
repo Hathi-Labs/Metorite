@@ -332,6 +332,12 @@ async def test_the_loop_reads_a_ready_source_once_in_15_minutes(
     scheduler._stopping.clear()
     _ana, sid, feed = await _source(kc, "S5b")
     feed.pages["spt-S5b"] = {"newStartPageToken": "spt-S5c", "changes": []}
+    # KC-4a: between two feed reads the loop runs the access pass of a source
+    # whose readers it has not read. This source has a fresh pass, so the
+    # second tick has no work (test_kc_access_r8.py holds the pass).
+    with kc.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_sources SET access_read_at = now() "
+                       "WHERE id = CAST(:s AS uuid)"), {"s": sid})
     async with tenant_engine_scope(_app_dsn(kc)):
         assert await scheduler.run_tick(lambda: feed) == 1
         assert await scheduler.run_tick(lambda: feed) == 0

@@ -50,6 +50,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 # The shared seam, aliased so a test can patch `_tenant_session` by name.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
+
+# OQ7: the one age bound of a provider reader, shared with the Python twin.
+from gateway.kb_access.resolve import ACCESS_MAX_AGE_SECONDS
 from gateway.routes.knowledge.flags import require_knowledge_enabled
 from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
@@ -281,6 +284,85 @@ def readable_spaces_clause(
         f"))"
     )
     return sql, _viewer_params(user)
+
+
+# ── The documents of a connected source (KC-4a) ─────────────────────────────
+
+def document_reader_clause(
+    user: UserContext, node_alias: str = "n",
+) -> tuple[str, dict[str, Any]]:
+    """The viewer is a proven reader of the node (``knowledge_curation.md``
+    §8.2 and §8.4), and its parameters.
+
+    Put the text in a statement that reads ``kb_source_nodes AS <alias>``.
+    The node is ``live`` and of the viewer's org, the viewer is an active
+    member of that org, and the node's source is ``ready`` (OQ7). Then one
+    of these holds:
+
+    * the viewer is the ``owner_email`` of the node's member source (OQ3);
+    * a ``user`` row of the node names the viewer's email;
+    * a ``domain`` row of the node names the org's own domain, and the
+      viewer's email is in that domain (OQ1).
+
+    A row proves its reader only while its ``synced_at`` is newer than
+    ``resolve.ACCESS_MAX_AGE_SECONDS`` (OQ7). So a source that stops
+    syncing stops proving its old readers. A ``group`` row and an ``anyone``
+    row prove nobody (OQ2), and ``knowledge:manage`` proves nothing (OQ4).
+    The Python twin is ``kb_access/resolve.py``, and the two read the same
+    constant. ⚠️ This clause alone does not show a document. A read of a
+    document uses :func:`visible_documents_clause`, which adds the read of
+    the space. *node_alias* is code, never input.
+    """
+    a = node_alias
+    age = int(ACCESS_MAX_AGE_SECONDS)
+    sql = (
+        f"({a}.organization_id = CAST(:kb_org AS uuid) AND {a}.state = 'live'"
+        f" AND EXISTS (SELECT 1 FROM app_user kb_au"
+        f" WHERE kb_au.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_au.status = 'active' AND lower(kb_au.email) = :kb_viewer)"
+        f" AND EXISTS (SELECT 1 FROM kb_sources kb_src"
+        f" WHERE kb_src.id = {a}.source_id"
+        f" AND kb_src.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_src.state = 'ready'"
+        f" AND ((kb_src.kind = 'member' AND kb_src.owner_email = :kb_viewer)"
+        f" OR EXISTS (SELECT 1 FROM kb_node_access kb_na"
+        f" WHERE kb_na.node_id = {a}.id"
+        f" AND kb_na.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_na.synced_at > now() - make_interval(secs => {age})"
+        f" AND ((kb_na.principal_kind = 'user' AND kb_na.principal = :kb_viewer)"
+        f" OR (kb_na.principal_kind = 'domain'"
+        f" AND split_part(:kb_viewer, '@', 2) = kb_na.principal"
+        f" AND split_part(:kb_viewer, '@', 3) = ''"
+        f" AND EXISTS (SELECT 1 FROM organization kb_o"
+        f" WHERE kb_o.id = CAST(:kb_org AS uuid)"
+        f" AND lower(btrim(kb_o.domain)) = kb_na.principal)))))))"
+    )
+    return sql, _viewer_params(user)
+
+
+def visible_documents_clause(
+    user: UserContext, node_alias: str = "n", space_expr: str = "d.space_id",
+) -> tuple[str, dict[str, Any]]:
+    """The ONE predicate of who sees a connected document (§8.4).
+
+    Two tests, both: the viewer reads the space of the document
+    (:func:`readable_spaces_clause` on the space that *space_expr* names),
+    AND the viewer is a proven reader of the node
+    (:func:`document_reader_clause`). The second test is the fence that a
+    stale filing cannot pass. A holder of ``knowledge:manage`` opens every
+    space that is not a ``me`` space, and still sees a document only when
+    the provider proves them (OQ4).
+
+    *node_alias* names ``kb_source_nodes`` in the caller's statement, and
+    *space_expr* is the SQL of the space id. Both are code, never input.
+    """
+    readable, params = readable_spaces_clause(user, "kb_ds")
+    reader, _same = document_reader_clause(user, node_alias)
+    sql = (
+        f"(EXISTS (SELECT 1 FROM kb_spaces kb_ds WHERE kb_ds.id = {space_expr}"
+        f" AND {readable}) AND {reader})"
+    )
+    return sql, params
 
 
 # ── Audit ───────────────────────────────────────────────────────────────────
