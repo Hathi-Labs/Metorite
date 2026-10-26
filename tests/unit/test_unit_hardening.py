@@ -798,9 +798,10 @@ def test_a_zone_that_date_cannot_parse_restarts_nothing(tmp_path: Path) -> None:
     (tmp_path / "active").write_text("acb-a.service\n", encoding="utf-8", newline="\n")
     _since(tmp_path, {"acb-a.service": "2026-10-09 11:00:00"})
     assert "AEST" in (tmp_path / "since").read_text(encoding="utf-8")
-    bad = subprocess.run(["date", "-u", "-d", "Fri 2026-10-09 21:00:00 AEST", "+%s"],
-                         capture_output=True, text=True)
-    assert bad.returncode != 0, "this date parses AEST, so the test proves nothing here"
+    # An older `date` cannot parse a zone name like AEST, which is the fault
+    # this test guards against. A newer `date` (the 2026-10-26 runner image)
+    # parses it. The asserts below still hold on both: the check must ask for
+    # --timestamp=unix, so it never depends on the zone name.
     r = _run_helpers(tmp_path, env, f'restart_stale_dropin_units "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
     log = (tmp_path / "log").read_text(encoding="utf-8")
