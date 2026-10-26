@@ -66,6 +66,17 @@ Metorite task #456). The rows of a Knowledge source take one lock order, as
 of the same shape between a disconnect and a re-consent. `KNOWLEDGE_SYNC`
 stays empty.
 
+**KC-4a BUILT 2026-10-26, dark** (branch `kc-4a-access`, migration 309,
+Metorite task #377). Each Drive document keeps its readers from the
+provider in `kb_node_access`. A 6-hour access pass reads them again, and
+it rides `KNOWLEDGE_SYNC`. The resolver and the filing rule of §8 are built,
+with the two clauses `document_reader_clause` and
+`visible_documents_clause`.
+
+§8 records the defaults of the open questions OQ1 to OQ5 and OQ7. KC-5 adds the
+search arm, and KC-6 adds the conflict status and the `filing_conflict`
+card. The live Google checks are owner checks after the Google setup (§21).
+
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
 and person resolvers, and the directory routes under the rule of §6.4.
@@ -497,14 +508,16 @@ the Marketplace, which reaches every user's drive, is a later slice (§21 Q2).
 
 1. **Discover** at connect: the folder tree as `kb_source_nodes`, metadata
    only, capped at 50 000 nodes (`knowledge_base.md` §7.2).
-2. **Capture access** for each node (§8.1), in the same pass.
+2. **Capture access** for each node (§8.1). Since KC-4a the first access
+   pass runs after discovery, between two reads of the change feed (§8.5).
 3. **Classify by name** (§9.1), with no text read.
 4. **Include** a folder when a person accepts its filing plan (§9.3).
 5. **Read changes** every 15 minutes from the cursor. Google uses
    `changes.list` with the page token. Microsoft uses `delta` with the delta
    link. Track by provider id, never by path.
 6. **Re-read access** every 6 hours as a slim pass: ids and permissions only.
-   A change of sharing can come with no change of content.
+   A change of sharing can come with no change of content. KC-4a builds it
+   (§8.5).
 7. **Reconcile** once a day: a slim listing of each included folder. A node
    the listing no longer holds is marked `gone`, and its document, chunks and
    facts follow (§10.3).
@@ -567,34 +580,79 @@ the provider's words:
 A link-only share grants nothing. Onyx reads it the same way, because a
 person who never got the link cannot find the file.
 
+**As KC-4a built it.** A row holds `principal_kind`, `principal` (a
+lower-case email or domain, and `*` for anyone), the provider `role` and
+`synced_at`. The adapter skips a deleted row, and `pendingOwner` changes
+nothing. A row is never a grant: §8.2 decides who it proves.
+
 ### 8.2 From provider readers to members
 
-A resolver turns the provider readers into Metorite subjects in the one
-grammar (`org`, `group:<slug>`, an email):
+A resolver turns the provider readers into members, in the one subject
+grammar (`acb_auth.permissions.normalize_grant_subject`). A proof is always
+one member's email. It is never `org` and never `group:<slug>`. Each rule
+fails closed. The defaults of OQ1 to OQ4 were set on 2026-10-25, with the
+owner's delegation:
 
-- A `user` email that is a member of the org becomes that email.
-- A `domain` share of the org's own verified domain becomes `org`.
-- A `group` is expanded only when the org connected a directory that lists
-  its members. Until then, a group share proves no reader.
+- A `user` email proves that member only when it is an active `app_user`
+  of the org.
 - An address outside the org is kept as a reader at the provider, and it
   never becomes a Metorite subject.
+- The resolver expands a `group` only when the org connected a directory
+  that lists its members. Until then, a group share proves no reader.
+- **OQ1, a domain.** A `domain` share proves each active member whose own
+  email is in that domain. This holds only when `organization.domain` is
+  set and equals the share's domain, case-folded. It never becomes the
+  literal `org`. With `organization.domain` empty, a domain share proves
+  nobody.
+- **OQ2, anyone.** An `anyone` share proves nobody, also when anyone can
+  find the file.
+- **OQ3, the owner.** The `owner_email` of a member source is a proven
+  reader of each live node of that source. So a node with no permission
+  list proves its owner only.
+- **OQ4, the manager.** `knowledge:manage` proves no reader and gives no
+  document read.
+- **OQ7, the source and the age (KC-4a fix round 1).** Each proof needs
+  the source of the node to be `ready`, and that includes the owner's proof.
+  So `needs_reconnect`, `failed`, `discovering` and `disconnected` prove
+  nobody. A `user` row or a `domain` row proves only while its `synced_at`
+  is newer than 24 hours, which is four access passes. One constant,
+  `resolve.ACCESS_MAX_AGE_SECONDS`, holds the number for both twins. A
+  source that stops syncing then stops proving its old readers.
+
+A node that is not live has no proven reader. The resolver is
+`kb_access/resolve.py`. Its SQL twin is `core.document_reader_clause`, and
+`test_kc_access_r8.py` proves that the two agree for each member.
 
 ### 8.3 The filing rule
 
 **A document may be filed into a space only when every reader of the space
 is a proven reader of the document.** "Proven" means §8.2 resolved the reader.
-The rule is checked when a filing is accepted, and again on each access
-re-read.
+KC-6 checks the rule when a filing is accepted. It checks again on each
+grant write of a space, each change of the members of a group, and each
+member who becomes active. A filing is only a hint. Each read of a document
+uses `visible_documents_clause`, so a stale filing shows nothing that the
+provider hides.
 
-- A file shared with the whole domain fits the `company` space.
+**The readers of a space** are its grant subjects, expanded, and its
+`owner_email`. `org` is every active member, `group:<slug>` is the active
+members of that group, and an email is that member. A grant of any level
+counts. A holder of `knowledge:manage` is not a reader (OQ4).
+
+`kb_access/filing.document_fits_space(db, user, node_id, space_id)` answers
+`Fit(fits, unproven)`. `unproven` names each reader of the space that the
+document does not prove.
+
+- A file shared with the whole domain fits the `company` space, when each
+  active member has an email in the org's domain.
 - A file shared with four people fits a space whose readers are those four,
   or fewer. It does not fit `company`.
 - A file that fits no space stays in its **source view**. That is a
   read-only view of the connected tree. Each member sees it through their
   own provider access.
 - When the provider narrows a document's readers, the next access pass finds
-  the conflict. The document leaves the wider space, its chunks leave the
-  index, and the space manager gets a `filing_conflict` card.
+  the conflict. KC-6 builds the rest: the document leaves the wider space,
+  its chunks leave the index, and the space manager gets a
+  `filing_conflict` card.
 
 This amends D-KB-3 and the answer to `knowledge_base.md` §16 Q4 for
 connected documents only. A page keeps its space's grants and nothing else
@@ -605,8 +663,52 @@ connected documents only. A page keeps its space's grants and nothing else
 The visibility clause gains one branch. A member sees a `document` chunk
 only when two things are true. The member can read the document's space,
 **and** the member is a proven reader of the document. The second test is the fence that a stale
-filing cannot pass. `test_kc_document_visibility.py` proves it: a member of a
-space who is not a reader at the provider gets no hit.
+filing cannot pass.
+
+`core.visible_documents_clause(user, node_alias, space_expr)` holds both
+tests (KC-4a). `tests/unit/test_kb_visibility_one_seam.py` fails a read of
+`kb_node_access` or `kb_documents` that does not put it in. A chunk read
+passes with this clause or with the page clause. `test_kc_access_r8.py`
+proves that a member of a space who is not a reader at the provider gets no
+row. KC-5 adds the search arm, and its test proves that such a member gets
+no hit.
+
+### 8.5 The access pass (KC-4a)
+
+`kb_sync/access.py` reads the readers of each node of a ready source, as
+the run kind `access`. It holds the run lock of the source, and it takes
+the lock order of `kb_sync/engine.py`. The scheduler runs it when the change
+feed is not due and one of these holds:
+
+- `kb_sources.access_read_at` is empty, older than 6 hours, or older than
+  the last discovery.
+- The last access pass stopped at its call cap.
+
+A pass that failed or stopped waits 15 minutes before the next try. A pass
+that began more than 12 hours ago starts again from the first page. So a
+cursor that no run can finish does not stay for ever.
+
+**OQ5, the cost.** One `files.list` call reads a page of files with the
+`permissions` field mask. Google leaves the field out for an item of a
+shared drive, and only such an item gets a `permissions.list` call. An item
+with no field that is not in a shared drive writes no row.
+
+Each Drive call sends `prettyPrint=false`. The readers of a page can still
+pass the 64 KiB cap of the guard at the smallest page size. Then the page is
+read again with no readers. Each item then calls `permissions.list`, inside
+the call budget.
+An item past the budget is written as not listed, and it proves the owner
+only.
+
+One pass makes at most `ACCESS_CALLS_PER_TICK` (50) calls in a tick. A pass
+that does not end goes on at the next tick from its cursor, kind `access`
+in `kb_sync_cursors`. `access_read_at` moves only when a full pass ends.
+
+The pages of a pass replace the rows of each node in the transaction of the
+page. The last page also deletes the rows of each node that the pass did
+not read again. `RateLimited` ends the run `stopped`, and a revoked token
+takes the KC-3 `needs_reconnect` path. The pass rides `KNOWLEDGE_SYNC`, and
+no flag is new (§17).
 
 ---
 
@@ -916,11 +1018,12 @@ nullable with a default (R6).
 |---|---|---|
 | `kb_sources` | `connection_id`, `provider`, `kind` (`member`, `org`), `owner_email`, `state` (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), `default_space_id`, `account_email`, `account_id`, `node_count`, `discovered_at`, `last_error` | KC-1 (built at KC-1a, migration 300) |
 | `kb_source_nodes` | `source_id`, `ext_id`, `parent_ext_id`, `drive_id`, `kind`, `name`, `mime`, `size`, `modified_at`, `content_hash`, `web_url`, `state` (`live`, `gone`), `explored` | KC-1 (built at KC-1a, migration 300) |
-| `kb_sync_cursors` | `source_id`, `kind` (`changes`, `reconcile`), `cursor_state`, `last_run_at`, `last_status`. UNIQUE (`organization_id`, `source_id`, `kind`) | KC-3 (built at KC-3, migration 308) |
-| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 308) |
+| `kb_sync_cursors` | `source_id`, `kind` (`changes`, `reconcile`, and `access` since KC-4a), `cursor_state`, `last_run_at`, `last_status`. UNIQUE (`organization_id`, `source_id`, `kind`) | KC-3 (built at KC-3, migration 308). KC-4a widened the kind, migration 309 |
+| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`, and `access` since KC-4a), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 308). KC-4a widened the kind, migration 309 |
 | `kb_sources.last_new_at` | When a run last inserted a node. CX-5 reads it for Knowledge | KC-3 (built at KC-3, migration 308) |
 | `kb_watch_channels` | `source_id`, `provider_channel_id`, `resource_id`, `expires_at` | KC-3b |
-| `kb_node_access` | `node_id`, `principal_kind`, `principal`, `role`, `synced_at` | KC-4 |
+| `kb_node_access` | `node_id` (cascades from `kb_source_nodes`), `principal_kind` (`user`, `group`, `domain`, `anyone`), `principal`, `role` (32 characters at most), `synced_at`. UNIQUE (`organization_id`, `node_id`, `principal_kind`, `principal`), and an index on (`organization_id`, `principal_kind`, `principal`) | KC-4a (built at KC-4a, migration 309) |
+| `kb_sources.access_read_at` | When the last full access pass ended. Empty until one ends | KC-4a (built at KC-4a, migration 309) |
 | `kb_documents` | `node_id`, `text`, `sha`, `extracted_at`, `parser`, `truncated`, `summary` | KC-5 |
 | `kb_filings` | `node_id`, `page_type`, `space_id`, `entity_ids`, `sensitivity`, `confidence`, `status` (`proposed`, `accepted`, `corrected`, `rejected`, `conflict`), `decided_by` | KC-6 |
 | `kb_entities` | `type`, `ref_table`, `ref_id`, `name`, `aliases`, `page_id`, `space_id` | KC-8 |
@@ -970,7 +1073,7 @@ inside its module, never in `main.py`.
 |---|---|---|
 | `KNOWLEDGE_SOURCES` | Connect, discovery and the Sources view | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_SOURCE_GOOGLE`, `KNOWLEDGE_SOURCE_MICROSOFT` | One provider each | Owner. Google waits for §21 Q1 outside the test users |
-| `KNOWLEDGE_SYNC` | The sync loop of KC-3: the change feed every 15 minutes and the daily reconcile, for each ready source of a named org. It needs `KNOWLEDGE_SOURCES` too. Empty, `start_kb_sync()` starts no task | Agent, on staging. Owner, on production |
+| `KNOWLEDGE_SYNC` | The sync loop of KC-3: the change feed every 15 minutes and the daily reconcile, for each ready source of a named org. Since KC-4a it also runs the 6-hour access pass (§8.5). It needs `KNOWLEDGE_SOURCES` too. Empty, `start_kb_sync()` starts no task | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_FILING` | Pass one and pass two of the classifier | Owner (spends credits) |
 | `KC_FACTS` | The update step and the fact tables | Owner (spends credits) |
 | `KC_CAPTURE_CHAT`, `KC_CAPTURE_MEETINGS`, `KC_CAPTURE_TASKS`, `KC_CAPTURE_EMAIL` | One feed each (§13) | Owner |
@@ -1095,6 +1198,27 @@ D104, and each says which part.
 | Q6 | **The default gardener cap** for a new org | No cap, so no model call, until the admin sets one |
 | Q7 | **Person pages:** may the fact layer hold work facts about a member (role, skills, what they own) learned from documents and tasks? | Yes, work facts only, and the member sees and can hide each one (§13 rule 3) |
 
+**OQ6, the live Google checks (KC-4a, 2026-10-25).** They stay open. The
+owner runs them after the Google setup, which is the redirect URI and the
+`drive.readonly` scope on the one client. No build has a Drive test
+account, so each check below is an owner check. Each one names what the
+code assumes today:
+
+1. The HTTP code of a dead page token of `changes.list` (KC-3). The code
+   reads 404, 410, and a 400 on `pageToken`, as a dead cursor.
+2. The order of the change feed on a real drive (KC-3).
+3. `files.list` with the `permissions` field mask on a My Drive file that
+   the member cannot share. The code reads no field as no list, which
+   proves the owner only.
+4. The same listing on an item of a shared drive. The code expects no
+   field, and then calls `permissions.list`.
+5. `permissions.list` on a shared-drive item, as a member who only reads
+   that drive. The code reads a 403 or a 404 as no list.
+6. A domain share and an `anyone` share. The code expects `domain` and
+   `allowFileDiscovery`, as Google documents them.
+7. A second read of one `files.list` page token, which the resume of a
+   pass at its call cap uses.
+
 ---
 
 ## 22. Tickets
@@ -1115,14 +1239,14 @@ keeps the brain current.
 | **KC-2** (was KB-7c) | The OneDrive and SharePoint adapter on the Email app's Microsoft app. Member sources with delegated `Files.Read.All`. Org sources with `Sites.Read.All` | The KC-1 checks pass on a Microsoft 365 account. A SharePoint site shows as an org source after one admin consent | AGENT-SAFE. The admin consent on a customer tenant: owner |
 | **KC-3** (was KB-7b) | The sync loop of the METADATA tree: `kb_sync_cursors`, `kb_sync_runs`, the run lock of each source, the Drive `changes.list`, track by id, the expired-cursor path, the daily reconcile, and the health columns (`kb_sources.last_error`, `kb_sources.last_new_at`, `integration_connections.last_sync_at`). KC-3 reads no text and builds no hook for KC-5. KC-5 pulls: it compares `kb_source_nodes.content_hash` with `kb_documents.sha`. OneDrive `delta` is KC-2. The `source_sync_failed` card is KB-9b | The loop reads the Drive change feed every 15 minutes for each ready source and keeps `kb_source_nodes` current. (1) A rename or a move keeps the node id and updates the name and `parent_ext_id`. A renamed folder keeps every child node. (2) A deletion or a trash sets `state = 'gone'` within one change read. A file that the daily reconcile finds missing also becomes `gone`. (3) A revoked token sets `kb_sources.state` and `integration_connections.status` to `needs_reconnect`. The next ticks make no provider call. (4) Two runs of one source cannot run at the same time. A new run takes over a running row older than 15 minutes with the error `stale`, and the old run cannot write. (5) `RateLimited` ends the run `stopped`, with the cursor at the last committed page. The next run starts at that cursor. (6) A page and its cursor commit together, or neither commits. (7) An expired cursor gets a new start token, then a slim relist and a hash compare. Nothing reads text. (8) Org B can read, write and run nothing of org A in `kb_sync_cursors`, `kb_sync_runs` and `kb_source_nodes`. Both new tables have FORCE RLS. (9) With `KNOWLEDGE_SYNC` empty, `start_kb_sync()` returns False and no task exists. The text re-index and the rule of one embed for each changed chunk move to KC-5 | AGENT-SAFE to build. The loop on production (`KNOWLEDGE_SYNC`): owner |
 | **KC-3b** | Push hints: Drive `changes.watch` and Graph subscriptions, `kb_watch_channels`, renewal, the validation answer | A push moves the next cursor read forward. A missed push changes nothing, because the 15-minute read still runs | AGENT-SAFE |
-| **KC-4** | Permission capture: `kb_node_access`, the 6-hour slim access pass, the resolver of §8.2, the filing rule of §8.3, the visibility branch of §8.4, the `filing_conflict` card | `test_kc_document_visibility.py`: a member of the space who is not a reader at the provider gets no hit. A file shared with four people cannot be filed into `company`. Narrowing a share at the provider removes the document from the space within one access pass | AGENT-SAFE. HIGH tier (tenancy and visibility) |
-| **KC-5** | Inclusion and extraction: `kb_documents`, the three chunk templates, the hash skip, document chunks in `kb_chunks`. The re-index of a changed file: KC-5 compares `kb_source_nodes.content_hash`, which KC-3 keeps current, with `kb_documents.sha` | An included folder of 50 files is searchable within one tick. An unchanged file is never read twice. A deck hit names its slide. A file edited at the provider re-indexes within 15 minutes, with one embed call for each changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile | AGENT-SAFE |
+| **KC-4a** (was KC-4, Metorite task #377). **BUILT 2026-10-26, dark** | Permission capture: `kb_node_access` (migration 309), `kb_sources.access_read_at`, the `access` kind of a run and a cursor, and `KbSource.list_access` for Google Drive. Also the resolver of §8.2, the 6-hour access pass of §8.5, the filing rule of §8.3, and the two clauses of §8.4. No route, no flag and no frontend | (A1) A member who reads space S and is no proven reader of node N gets no row from `visible_documents_clause`. A proven reader with a read of S gets N, and without one gets nothing. (A2) A node shared with four members does not fit `company`, and `unproven` names the others. A space whose readers are those four, or fewer, fits. (A3) A pass in which the provider drops reader R deletes the row of R, and R then does not see N. (A4) Resolver tests: an outside email, a group, a link-only share, a deleted row, each domain rule (OQ1) and anyone (OQ2). (A5) Org B reads and writes no row of org A, with FORCE RLS. (A6) With `KNOWLEDGE_SYNC` empty, no access run starts and nothing calls the provider. (A7) A listing with no permission list writes no row and proves only the source owner. (A8) `test_kc_sources_read_only_scopes.py` holds, unchanged. (A9) An access page and a disconnect run at the same time, in both orders, and neither fails. Tests: `test_kc_document_visibility.py` and, R8, `test_kc_access_r8.py` | AGENT-SAFE. HIGH tier (tenancy and visibility). The flag on production (`KNOWLEDGE_SYNC`): owner |
+| **KC-5** | Inclusion and extraction: `kb_documents`, the three chunk templates, the hash skip, document chunks in `kb_chunks`. The re-index of a changed file: KC-5 compares `kb_source_nodes.content_hash`, which KC-3 keeps current, with `kb_documents.sha`. From KC-4: the search arm of §8.4 in `kb_index/query.py`, which joins a chunk to its node under `visible_documents_clause` | An included folder of 50 files is searchable within one tick. An unchanged file is never read twice. A deck hit names its slide. A file edited at the provider re-indexes within 15 minutes, with one embed call for each changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile. From KC-4: a member of the space who is not a reader at the provider gets no hit, also through `search_company` | AGENT-SAFE. HIGH tier (visibility) |
 
 ### Phase 2 — the AI files
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KC-6** | The classifier: pass one by name, pass two by text, `kb_filings`, the correction examples | The eval of §18.3 scores 80% or more on folder type and space. A restricted folder is never proposed for `company`. With `KNOWLEDGE_FILING` off, nothing calls a model | AGENT-SAFE to build. The flip: owner |
+| **KC-6** | The classifier: pass one by name, pass two by text, `kb_filings`, the correction examples. From KC-4: the `conflict` status of a filing, the removal of its chunks on a conflict, and the `filing_conflict` card. Each acceptance, each grant write of a space, each change of the members of a group, and each member who becomes active calls `document_fits_space` (KC-4a) | The eval of §18.3 scores 80% or more on folder type and space. A restricted folder is never proposed for `company`. With `KNOWLEDGE_FILING` off, nothing calls a model. From KC-4: a narrowed share at the provider removes the document from the space, and its chunks from the index, within one access pass | AGENT-SAFE to build. The flip: owner |
 | **KC-7** | The filing plan view: exceptions first, accept a folder, change, the credit estimate, the three shell jobs | A manager accepts a 400-file folder in one act. A change to a folder applies to its children. Nobody accepts a folder they cannot read at the provider. The visual review passes | AGENT-SAFE |
 
 ### Phase 3 — facts and entity pages
@@ -1195,7 +1319,7 @@ node .claude/hooks/ste-lint.test.mjs
 # The fences each slice adds. Each exists from the slice named after it.
 uv run pytest tests/unit/test_kc_sources_read_only_scopes.py tests/unit/test_kb_sources_no_global_creds.py -q  # KC-1
 uv run pytest tests/unit/test_kb_sync_engine.py tests/unit/test_kb_sync_tenancy.py -q   # KC-3
-uv run pytest tests/unit/test_kc_document_visibility.py -q   # KC-4
+uv run pytest tests/unit/test_kc_document_visibility.py -q   # KC-4a
 uv run pytest tests/unit/test_kc_entities.py -q              # KC-8a
 uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
 
@@ -1203,7 +1327,7 @@ uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_kc_sources_r8.py -p no:xdist -rs -q    # KC-1, KC-3
 uv run pytest tests/unit/test_kc_sync_r8.py -p no:xdist -rs -q       # KC-3
-uv run pytest tests/unit/test_kc_access_r8.py -p no:xdist -rs -q     # KC-4
+uv run pytest tests/unit/test_kc_access_r8.py -p no:xdist -rs -q     # KC-4a
 uv run pytest tests/unit/test_kc_entities_r8.py -p no:xdist -rs -q   # KC-8a
 uv run pytest tests/unit/test_kc_facts_r8.py -p no:xdist -rs -q      # KC-9, KC-10, KC-13
 uv run pytest tests/unit/test_kc_eval_r8.py -p no:xdist -rs -q       # KC-15
