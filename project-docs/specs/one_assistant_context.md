@@ -28,7 +28,7 @@ dropped names and the skipped names. A slug that is no pack gives None.
   with `fail_closed=True`). So a Redis fault holds the pack. A run context
   that is empty, or that has no tenant or no session, is held too, because
   no mark can be read for it.
-- **The hold within a turn (STRICT, owner, 2026-10-27).** The first email
+- **The hold within a turn (STRICT by default, awaiting owner confirmation).** The first email
   call of a clean turn marks the chat. Each later call of that turn runs
   held. An egress tool then answers the held answer and does not run. Each
   other tool runs with `no_egress` set. With `EMAIL_HELD_CARD_SEND` on, a
@@ -497,7 +497,7 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 
 **The rule.** A pack tool runs as its owner would run it in a sub-run of this chat. Three parts make the rule hold.
 
-1. **The held answer, once per run.** At run start, the loader computes the held answer for each pack. It is `_run_no_egress(owner, run_ctx)` (`orchestrator/_tool_injection.py:417-429`), or a known mark in Redis (`acb_skills/agent_tools.py:220-227`). It uses the server-side org and thread of the run. A delegation to the owner would bind the same answer now (`orchestrator/executor.py:2085-2087`). For email it is true when the chat read mail before this run (`orchestrator/_tool_injection.py:411-413`). A Redis fault, and a run with no tenant or no session, are held too. The first email call of a clean turn marks the chat. Each later call of that turn runs held (STRICT, owner, 2026-10-27). So the first call of a clean chat is open, and each later call and turn is held.
+1. **The held answer, once per run.** At run start, the loader computes the held answer for each pack. It is `_run_no_egress(owner, run_ctx)` (`orchestrator/_tool_injection.py:417-429`), or a known mark in Redis (`acb_skills/agent_tools.py:220-227`). It uses the server-side org and thread of the run. A delegation to the owner would bind the same answer now (`orchestrator/executor.py:2085-2087`). For email it is true when the chat read mail before this run (`orchestrator/_tool_injection.py:411-413`). A Redis fault, and a run with no tenant or no session, are held too. The first email call of a clean turn marks the chat. Each later call of that turn runs held (STRICT by default, awaiting owner confirmation). So the first call of a clean chat is open, and each later call and turn is held.
 2. **The scope of the owner, per call.** Each pack call runs in `artifact_context_scope()` with `agent_name=<owner>` and `no_egress=<held>`. This is the idiom of `_delegate_held` (`acb_skills/agent_tools.py:230-243`). The scope is the outermost wrapper, and the permission gate sits inside it.
 3. **The held set, at load.** A held pack drops each tool that `_is_egress` names (`orchestrator/_tool_injection.py:432-447`). That is the held set of the owner itself (`tests/unit/test_no_egress_tool_audit.py:61-89`).
 

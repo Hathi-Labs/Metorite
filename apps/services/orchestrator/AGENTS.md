@@ -144,7 +144,7 @@ and streams chat responses as AG-UI events.
 
 26. **A pack tool acts as its owner acts in a sub-run of this chat** (WS-67 OA-7b, `project-docs/specs/one_assistant_context.md` §4.2.3). `_tool_injection._pack_tools(slug, run_ctx)` is the one builder. It has no live caller until OA-7c.
    - `_pack_held` reads the held answer at the build: `_run_no_egress(owner, run_ctx)`, or a mark of the chat that Redis does not read as clear. It fails closed: a Redis fault, an empty run context, and a run with no tenant or no session are held.
-   - STRICT within a turn (owner, 2026-10-27): the first email call marks the chat. Each later call of the turn runs held. An egress tool then does not run, and it answers the held answer of a pack call (`egress.EGRESS_HELD_PACK_ANSWER`).
+   - STRICT within a turn (default, awaiting owner confirmation): the first email call marks the chat. Each later call of the turn runs held. An egress tool then does not run, and it answers the held answer of a pack call (`egress.EGRESS_HELD_PACK_ANSWER`).
    - `_pack_call` puts `acb_skills.tool_packs.owner_scope` outside the permission gate. So each guard that reads `agent_name` or `no_egress` reads the owner.
    - Each call marks the chat before the tool body, closes the profile writes after it, and writes the email working set. The tool refuses a call from another run, or from a frame with no run. A run context with no `run_id` builds no tool.
    - A held pack drops each tool that `_is_egress` names. ⚠️ That drop is the only held-set control of a pack run, because a pack run gets no `EgressGuardProvider`.
