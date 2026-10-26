@@ -197,17 +197,8 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** the WS-67 row of `project-docs/work_plan.md` says OA-10 is BUILT. Then delete this entry. OA-1 to OA-5, OA-6 (D117), OA-7a, OA-7g and the design are done.
 - **Why:** D117. The owner chose one chat for the whole app, tools loaded per turn, and dynamic sub-agents for parallel work (2026-10-26). OA-5 measured the pack at 2.3 times faster and half the cost, with the same accuracy.
 - **Do this:**
-  1. OA-7b: branch `ws67-oa7b-pack-builder` (pushed, HEAD 8e79ee060, no PR) holds the guarded pack builder. A verifier and a reviewer both returned FAIL / SHIP WITH FIXES on 2026-10-26. The code acts correctly. Fix these in one round, then re-verify and merge dark:
-     - F1 (blocking). No test fails when `owner_scope` (`tool_packs.py` about :251) stops binding `no_egress`. Add a case to `tests/unit/test_pack_guards.py`: an open orchestrator run, the chat marked, a held pack built. Inside the tool body, `no_egress_for_this_run()` and the module's `_egress_held()` read True, `create_rule` with a FORWARD action refuses, and the real `send_email` reaches `_held_new_mail`. In `_held_card_fakes.py`, bind an orchestrator-shaped outer run (`agent_name=orchestrator`, `no_egress=False`, a `run_id`) in pack mode.
-     - F2 (owner decision taken: be strict). A pack reads the held answer once per turn. Mail read mid-turn leaves later sends in that turn on the open path. In `_pack_tool`, before `_mark_pack_session`, compute `held_now = held or read_untrusted_answer(ctx)`. When `held_now and not held and _is_egress(fn)`, return the held answer. Bind `owner_scope(owner, held_now)`. Correct spec line 483 ("later turns are held, as today").
-     - `_pack_held` (about :2931) fails open when Redis is down or the context has no session. Use `session_mark_state(run_ctx) != MARK_CLEAR`, and answer held when the session is None.
-     - Keep a failed owner import for about 60 s, not for the whole process. Refuse to build when `run_id` is empty.
-     - The MCP skip also covers `email-setup` and sticky later turns. Say so in the docs.
-     - `egress_held_answer` says "Another assistant called this run". Fix the wording for a pack turn.
-     - The pack rules should name `artifact:orchestrator:<path>` for attachments.
-     - Merge `origin/main` first. `work_plan.md` conflicts in the WS-66 and WS-67 rows.
-     - For OA-7c: never cache a `PackBuild` across runs. Build packs after the tenant bind. Parallel pack calls can lose a working-set update.
-  2. OA-7c (sticky packs and layer (a)), OA-7d to OA-7f, OA-7h: follow spec §4.2.8 and the narrowings of §4.5.
+  1. OA-7b is MERGED (PR #1378, `3a06ed097`, dark, no live caller). A verifier and a reviewer passed round 1. The strict hold within a turn is a default, awaiting the owner's confirmation. Ask the owner if it stays strict.
+  2. OA-7c (sticky packs and layer (a)) is next. Follow spec §4.2.8 and §4.5, and the six OA-7c conditions at the head of §4.2.8: never cache a `PackBuild` across runs, build packs after the tenant bind, key the run check on a value the server mints, two parallel pack calls can lose a working-set update, the mailbox event is lost on a relay-only run, and the hold note names no other assistant. The OA-7h measure must install the in-memory mark store. Then OA-7d to OA-7f and OA-7h.
   3. OA-9a parser: build beside OA-7. The OA-9a worker and OA-9b stay NO-GO until the §4.5 edits land in the spec.
   4. OA-8a to OA-8e, then OA-8e passes before OA-10. OA-10 also moves the Email and Projects rails to the one assistant, with their pack pinned.
   5. `TOOL_PACKS`, `TOOL_PACKS_ORGS` and `SPAWN_SUBAGENTS_ORGS` are owner-only (`work_plan.md` §6 D4). Do not flip them.
