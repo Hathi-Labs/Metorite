@@ -91,12 +91,17 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 # The chat tool's tenant dir and the email route's harness. One harness each,
 # reused, never copied. `ws` is a fixture and is used by name.
-from tests.unit.test_email_attachment_text import (  # noqa: E402
+from tests.unit.test_email_attachment_text import (  # noqa: E402, F401
     ATT_ID,
     ORG_A,
+    OWNER,
+    SECOND,
+    _get,
     _Harness,
+    _refused,
     _text,
     _user,
+    handlers_client,
 )
 from tests.unit.test_email_attachment_text import m as route  # noqa: E402
 from tests.unit.test_read_attachment import (  # noqa: E402, F401
@@ -196,10 +201,15 @@ def ocr_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_reader_held():
-    """The email route's set of members with a read in flight starts empty."""
+    """The email route's set of members with a read in flight starts empty,
+    and so do its fetch registers (fix round 4)."""
     route._READING.clear()
+    route._RUNNING_FETCHES.clear()
+    route._BACKGROUND_FETCHES.clear()
     yield
     route._READING.clear()
+    route._RUNNING_FETCHES.clear()
+    route._BACKGROUND_FETCHES.clear()
 
 
 @pytest.fixture
@@ -1595,10 +1605,13 @@ class TestFixRoundThree:
         assert got.kind == "pdf" and "ocr words" in got.text, got
         assert len(calls) == 1, "the second read fetched again"
 
-    async def test_a_fetch_that_runs_on_takes_no_hold(self, ocr_on, monkeypatch) -> None:
-        """P2-2. When the ownership query itself outlasts the bound, the
-        fetch reaches its stop step after the route answered. It must not
-        take the member's hold then, or the member could never read again."""
+    async def test_a_late_stop_step_frees_its_hold_when_the_fetch_ends(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        """P2-2, rounds 3 and 4. When the ownership query itself outlasts the
+        bound, the fetch reaches its stop step after the route answered. It
+        takes the member's hold then, and the done callback of the fetch
+        frees it, so the member can read again."""
         from fastapi import HTTPException
 
         _Harness(monkeypatch, filename="big.pdf", payload=b"%PDF-1.7")
@@ -1608,14 +1621,13 @@ class TestFixRoundThree:
         async def _slow_query(_db: Any, _aid: str, _user: Any, *, max_bytes: int, stop: Any) -> Any:
             await asyncio.sleep(0.6)
             stopped = await stop(row)
-            assert stopped, "the late stop step took the hold"
-            return SimpleNamespace(stopped=stopped, row=row, content=b"")
+            return SimpleNamespace(stopped=stopped, row=row, content=b"%PDF-1.7")
 
         monkeypatch.setattr(route, "_fetch_owned_attachment", _slow_query)
         monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
         with pytest.raises(HTTPException):
             await _text()
-        assert await _wait_until(lambda: not route._BACKGROUND_FETCHES, 5.0)
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 5.0)
         assert not route._READING, "the member's hold leaked"
 
     def test_a_bad_line_stops_the_stream_at_once(self) -> None:
@@ -1668,3 +1680,221 @@ class TestFixRoundThree:
             "I could not read blank.pdf. I read the first 15 of 200 pages of this file by OCR, "
             "and OCR found no words in them."
         )
+
+
+
+# ── 15. Fix round 4 ─────────────────────────────────────────────────────────
+
+
+class TestTheSessionFaultsWithOcr:
+    """Fix round 4, P1. With ``ATTACHMENT_OCR`` on, the text route opens its
+    session inside ``_fetch_alone``, a task of its own. Each fault of that
+    session must still reach the handlers of ``main.py``, as
+    ``TestTheSessionFaultsReachTheHandlers`` holds for the flag off."""
+
+    @pytest.fixture(autouse=True)
+    def _ocr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(get_settings(), "attachment_ocr", True, raising=False)
+
+    def test_no_organization_is_the_403_of_main(self, monkeypatch, handlers_client) -> None:  # noqa: F811
+        from acb_common.db import TenantUnbound
+
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        h.on_enter = TenantUnbound("no tenant bound")
+        res = _get(handlers_client, "text")
+        assert res.status_code == 403, res.text
+        assert res.json()["code"] == "no_organization"
+        assert h.provider_calls == 0
+
+    def test_an_unreachable_directory_is_the_503_of_main(
+        self, monkeypatch, handlers_client,  # noqa: F811
+    ) -> None:
+        import gateway.main as gw_main
+        from acb_common.db import TenantUnbound
+
+        monkeypatch.setattr(gw_main, "identity_read_failed", lambda: True)
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        h.on_enter = TenantUnbound("no tenant bound")
+        res = _get(handlers_client, "text")
+        assert res.status_code == 503, res.text
+        assert res.json()["code"] == "identity_unavailable"
+
+    def test_a_refused_connect_is_the_busy_503(self, monkeypatch, handlers_client) -> None:  # noqa: F811
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        h.on_enter = _refused()
+        res = _get(handlers_client, "text")
+        assert res.status_code == 503, res.text
+        body = res.json()
+        assert body["code"] == "db_busy" and "Metorite is busy" in body["detail"]
+        assert "provider" not in res.text.lower()
+
+    def test_a_provider_fault_keeps_its_answer(self, monkeypatch, handlers_client) -> None:  # noqa: F811
+        import httpx
+
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        h.on_provider = httpx.ConnectError("the provider is down")
+        res = _get(handlers_client, "text")
+        assert res.status_code == 502, res.text
+        assert res.json()["detail"] == "The mail provider did not give the file."
+
+
+def _slow_provider(monkeypatch: pytest.MonkeyPatch, payload: bytes, seconds: float) -> list[int]:
+    """A provider that takes *seconds* for each file. Each call is counted."""
+    from contextlib import asynccontextmanager
+
+    calls: list[int] = []
+
+    class _SlowProvider:
+        async def get_attachment(self, _msg: str, _att: str) -> bytes:
+            calls.append(1)
+            await asyncio.sleep(seconds)
+            return payload
+
+    @asynccontextmanager
+    async def _session(*_args: Any, **_kwargs: Any):
+        yield SimpleNamespace(provider=_SlowProvider())
+
+    monkeypatch.setattr(route, "provider_session", _session)
+    return calls
+
+
+class TestTheBackgroundFetch:
+    """Fix round 4, P2. A fetch that runs on after its route holds a
+    database connection, so it is bounded: one for each read, at most
+    ``MAX_BACKGROUND_FETCHES`` in all, the background lane, and a total time
+    limit. The member's hold stays taken until it ends."""
+
+    async def test_a_retry_joins_the_running_fetch_and_starts_none(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        from fastapi import HTTPException
+
+        _fake_child(monkeypatch, _ok_child(text="ocr words"))
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        calls = _slow_provider(monkeypatch, h.payload, 1.0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        for _ in range(3):  # the first read, then two retries during the fetch
+            with pytest.raises(HTTPException) as refused:
+                await _text()
+            assert refused.value.status_code == 504
+        assert len(calls) == 1, "a retry started a second fetch"
+        assert len(route._RUNNING_FETCHES) == 1
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 5.0)
+        got = await _text()
+        assert got.kind == "pdf" and "ocr words" in got.text, got
+        assert len(calls) == 1, "the read after the fetch fetched again"
+
+    async def test_the_hold_stays_taken_until_the_fetch_ends(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        """The route answered 504, and the fetch runs on. The member's hold
+        is freed by the done callback of the fetch, not by the route, so a
+        read of another file answers busy meanwhile."""
+        from fastapi import HTTPException
+
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        _slow_provider(monkeypatch, h.payload, 1.0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        with pytest.raises(HTTPException):
+            await _text()
+        assert route._READING and (ORG_A, OWNER) in route._READING, "the route freed the hold"
+        other = "44444444-4444-4444-8444-444444444444"
+        busy = await _text(att=other)
+        assert (busy.kind, busy.reason) == ("unreadable", route._BUSY_REASON)
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 5.0)
+        assert not route._READING, "the done callback did not free the hold"
+
+    async def test_no_more_than_the_cap_run_on(self, ocr_on, monkeypatch) -> None:
+        """Above ``MAX_BACKGROUND_FETCHES``, the route cancels its fetch at its
+        timeout, as round 2 did. Two members, so two holds and two keys."""
+        from fastapi import HTTPException
+
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]),
+                     owners=frozenset({OWNER, SECOND}))
+        _slow_provider(monkeypatch, h.payload, 1.0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(route, "MAX_BACKGROUND_FETCHES", 1)
+        for email in (OWNER, SECOND):
+            with pytest.raises(HTTPException):
+                await _text(email=email)
+        assert len(route._BACKGROUND_FETCHES) == 1
+        assert await _wait_until(lambda: len(route._RUNNING_FETCHES) == 1, 2.0), (
+            "the fetch above the cap was not cancelled")
+        assert (ORG_A, OWNER.lower(), ATT_ID) in route._RUNNING_FETCHES
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 5.0)
+        assert not route._READING and not route._BACKGROUND_FETCHES
+
+    async def test_the_fetch_takes_the_background_lane(self, monkeypatch) -> None:
+        """H-390. The fetch of a read with OCR marks itself background before
+        its session opens, so it holds a connection of the lane. A read with
+        no OCR stays in the member lane."""
+        from contextlib import asynccontextmanager
+
+        from acb_common import db as acb_db
+
+        _fake_child(monkeypatch, _ok_child(text="ocr words"))
+        _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        inner = route._tenant_session
+        lanes: list[bool] = []
+
+        @asynccontextmanager
+        async def _recorded():
+            lanes.append(acb_db._BACKGROUND.get())
+            async with inner() as session:
+                yield session
+
+        monkeypatch.setattr(route, "_tenant_session", _recorded)
+        monkeypatch.setattr(get_settings(), "attachment_ocr", True, raising=False)
+        await _text()
+        monkeypatch.setattr(get_settings(), "attachment_ocr", False, raising=False)
+        route._READING.clear()
+        await _text(att="44444444-4444-4444-8444-444444444444")
+        assert lanes == [True, False], lanes
+        assert acb_db._BACKGROUND.get() is False, "the mark leaked into the route"
+
+    async def test_a_fetch_ends_at_its_total_limit(self, ocr_on, monkeypatch) -> None:
+        from fastapi import HTTPException
+
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        _slow_provider(monkeypatch, h.payload, 30.0)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 5.0)
+        monkeypatch.setattr(route, "BACKGROUND_FETCH_LIMIT_S", 0.3)
+        start = time.monotonic()
+        with pytest.raises(HTTPException) as refused:
+            await _text()
+        assert refused.value.status_code == 504
+        assert time.monotonic() - start < 3
+        assert await _wait_until(lambda: not route._RUNNING_FETCHES, 2.0)
+        assert not route._BACKGROUND_FETCHES and not route._READING
+
+
+class TestNoCoreFile:
+    """Fix round 4, LOW. The child sets ``RLIMIT_CORE`` to 0 for soft and
+    hard, so a crash writes no core file with the member's file in it, and
+    ``prlimit64`` on the child itself cannot raise it again."""
+
+    def test_limit_self_sets_no_core(self) -> None:
+        source = ast.unparse(next(
+            n for n in ast.parse(WORKER.read_text(encoding="utf-8")).body
+            if isinstance(n, ast.FunctionDef) and n.name == "_limit_self"))
+        assert "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))" in source
+
+    @linux_only
+    def test_the_child_cannot_raise_its_core_limit(self) -> None:
+        code = (
+            "import importlib.util, json, resource, sys\n"
+            "spec = importlib.util.spec_from_file_location('w', sys.argv[1])\n"
+            "w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)\n"
+            "w._limit_self(json.loads(sys.argv[2]))\n"
+            "try:\n"
+            "    resource.setrlimit(resource.RLIMIT_CORE, (1 << 20, 1 << 20))\n"
+            "    raised = 'raised'\n"
+            "except (ValueError, OSError):\n"
+            "    raised = 'refused'\n"
+            "print(json.dumps([list(resource.getrlimit(resource.RLIMIT_CORE)), raised]))\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", code, str(WORKER), json.dumps(ocr._spec("pdf", 1))],
+            capture_output=True, timeout=60, check=False,
+        )
+        assert json.loads(done.stdout) == [[0, 0], "refused"], done.stderr[-500:]

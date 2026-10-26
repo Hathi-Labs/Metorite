@@ -343,11 +343,14 @@ def landlock_abi() -> int:
 
 
 def _limit_self(spec: dict[str, Any]) -> None:
-    """The memory cap, the CPU cap and a low priority, on Linux.
+    """The memory cap, the CPU cap, no core file and a low priority, on Linux.
 
     It runs before any native library loads. Measured on Linux with one
     thread for each library: a dense A4 page peaks at 874 MB of address
     space and 506 MB resident (2026-10-25). Windows is the dev box only.
+    ``RLIMIT_CORE`` is 0 for soft and hard (fix round 4): a crash writes no
+    core file with the member's file in it. The filter lets ``prlimit64`` act
+    on the child, so only the hard limit of 0 stops a later raise.
     """
     sys.dont_write_bytecode = True
     if os.name != "posix":
@@ -358,6 +361,7 @@ def _limit_self(spec: dict[str, Any]) -> None:
     cpu = spec["cpu_seconds"]
     resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     with contextlib.suppress(OSError):
         os.nice(10)
 
