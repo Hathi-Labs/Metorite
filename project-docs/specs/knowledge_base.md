@@ -752,8 +752,7 @@ answer a company question, and cite what you used.
 | `account_identity(cred)` | The remote account id and display name, for the same-account check |
 | `discover(cred, cursor)` | One page of the folder tree, as `SourceNode(ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url)` |
 | `list_changed(cred, cursor, folder_ext_ids)` | The changes since the cursor, with the provider's own delta API |
-| `fetch_text(cred, node)` | The text of one document, capped, through `attachment_text.extract_text` or the provider's export |
-| `fetch_bytes(cred, node)` | The bytes, only for "Keep a copy" |
+| `fetch_document(cred, node)` | The bytes of one file and their suffix (`FetchedFile`). KC-5a replaced `fetch_text` and `fetch_bytes`. The index pass reads the text with `attachment_text.extract_text`. A Google-native file exports as OOXML. The Google adapter raises `NotImplementedError("KC-5b")` until the real fetch ships |
 | `deep_link(node)` | The URL that opens the document at the provider |
 
 **The providers:**
