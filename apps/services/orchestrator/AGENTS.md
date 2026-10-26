@@ -143,14 +143,15 @@ and streams chat responses as AG-UI events.
    - Fences: `tests/unit/test_chat_constraints.py` and `evals/trajectories/test_chat_constraints_trajectory.py`.
 
 26. **A pack tool acts as its owner acts in a sub-run of this chat** (WS-67 OA-7b, `project-docs/specs/one_assistant_context.md` §4.2.3). `_tool_injection._pack_tools(slug, run_ctx)` is the one builder. It has no live caller until OA-7c.
-   - `_pack_held` reads the held answer once per run: `_run_no_egress(owner, run_ctx)`, or a known mark of the chat in Redis. An empty run context is held.
+   - `_pack_held` reads the held answer at the build: `_run_no_egress(owner, run_ctx)`, or a mark of the chat that Redis does not read as clear. It fails closed: a Redis fault, an empty run context, and a run with no tenant or no session are held.
+   - STRICT within a turn (owner, 2026-10-27): the first email call marks the chat. Each later call of the turn runs held. An egress tool then does not run, and it answers the held answer of a pack call (`egress.EGRESS_HELD_PACK_ANSWER`).
    - `_pack_call` puts `acb_skills.tool_packs.owner_scope` outside the permission gate. So each guard that reads `agent_name` or `no_egress` reads the owner.
-   - Each call marks the chat before the tool body, closes the profile writes after it, and writes the email working set. The tool refuses a call from another run, or from a frame with no run.
+   - Each call marks the chat before the tool body, closes the profile writes after it, and writes the email working set. The tool refuses a call from another run, or from a frame with no run. A run context with no `run_id` builds no tool.
    - A held pack drops each tool that `_is_egress` names. ⚠️ That drop is the only held-set control of a pack run, because a pack run gets no `EgressGuardProvider`.
-   - Each pack tool carries `__cc_gated__`, so `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the owner, and `_inject_mcp_servers` gives a run with the email pack no registry MCP server.
+   - Each pack tool carries `__cc_gated__`, so `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the owner. A run that holds a tool of a pack whose owner reads mail gets no registry MCP server (`_inject_mcp_servers`). That is `email`, `email-setup`, and a pack that stays on for a later turn.
    - The builder calls `_is_egress`, `_run_no_egress`, `_gate_injected_tool` and `artifact_context_scope`. Do not copy their bodies into it.
-   - `_pack_owner_module` is the one loader of a pack owner, and the skills catalog calls it. It imports each owner once for each process, and it keeps a failed import.
-   - Fence: `tests/unit/test_pack_guards.py`. The email tests of `_held_card_fakes.email_tool_mode` run with the owner's tools and with the pack's tools.
+   - `_pack_owner_module` is the one loader of a pack owner, and the skills catalog calls it. It imports each owner once for each process. It keeps a failed import for 60 s (`PACK_OWNER_RETRY_S`).
+   - Fence: `tests/unit/test_pack_guards.py`. The email tests of `_held_card_fakes.email_tool_mode` run with the owner's tools and with the pack's tools. In the pack mode the orchestrator's run is open on its own frame. So only the scope gives the tool body the held answer.
 
 ## Work Guidance
 
