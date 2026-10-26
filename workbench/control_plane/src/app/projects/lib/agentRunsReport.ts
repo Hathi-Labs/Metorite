@@ -190,5 +190,8 @@ export function agentRunsIsClear(section: AgentRunsReport | null | undefined): b
  * row in its place.
  */
 export function agentRunsHidden(section: AgentRunsReport | null | undefined): boolean {
-  return !!section && section.agent_runs_seen === false && agentRunsIsClear(section);
+  // RA-4b. Empty by the old rule, whatever the flag: the Overview shows no
+  // empty card for an org with runs off. Only the clear ROW needs the flag.
+  if (!section || section.agent_runs_seen !== false) return false;
+  return (section.ended_total ?? 0) === 0 && (section.silent_total ?? 0) === 0;
 }

@@ -238,7 +238,11 @@ describe("clear, and hidden in the Overview", () => {
     expect(waitingIsClear(section({ on: true }))).toBe(true);
     // An older body has no `on`, and reads as before.
     expect(waitingIsClear(section())).toBe(true);
-    expect(waitingHidden(section({ on: false, agent_runs_seen: false }))).toBe(false);
+    // The Overview still hides an empty panel with runs off (no permanent card).
+    expect(waitingHidden(section({ on: false, agent_runs_seen: false }))).toBe(true);
+    // A review wait or a handoff blocker still shows it.
+    expect(waitingHidden(section({ on: false, agent_runs_seen: false, reviews_total: 1 }))).toBe(false);
+    expect(waitingHidden(section({ on: false, agent_runs_seen: false, handoffs_total: 2 }))).toBe(false);
   });
 
   it("hides only a clear section of a scope with no agent run", () => {

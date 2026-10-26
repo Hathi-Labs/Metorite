@@ -425,6 +425,19 @@ class TestVisibility:
 # ── RA-4b: a reopened run's idle gap, and a server close ─────────────────────
 
 
+def _iso_ago(w: Any, minutes_ago: int) -> str:
+    with w.p.admin_engine.begin() as c:
+        return c.execute(text(
+            "SELECT (now() - make_interval(mins => :m))::text"), {"m": minutes_ago}).scalar()
+
+
+def _reopen_prompt(w: Any, rid: str, tid: str, *, minutes_ago: int, ended_ago: int,
+                   reply_to: str | None = None) -> str:
+    """The prompt that REOPENS a run: it carries the end it reopened."""
+    return _run_act(w, rid, tid, "prompt", minutes_ago=minutes_ago, reply_to=reply_to,
+                    extra={"reopens": {"ended_at": _iso_ago(w, ended_ago)}})
+
+
 def _reopened(w: Any) -> tuple[str, str]:
     """The run of the brief: start 09:00, complete 09:20, a member prompt
     reopens it at 10:00, complete 10:15. Times are minutes before now, with
@@ -433,12 +446,61 @@ def _reopened(w: Any) -> tuple[str, str]:
     rid = _run(w, tid, "completed", started=85, ended=10, last_agent=10)
     _run_act(w, rid, tid, "thought", minutes_ago=80)
     _run_act(w, rid, tid, "response", minutes_ago=65)  # complete at 09:20
-    _run_act(w, rid, tid, "prompt", minutes_ago=25)  # reopened at 10:00
+    _reopen_prompt(w, rid, tid, minutes_ago=25, ended_ago=65)  # reopened at 10:00
     _run_act(w, rid, tid, "response", minutes_ago=10)  # complete again at 10:15
     return tid, rid
 
 
 class TestReopenedRunGap:
+    async def test_g4_a_steering_prompt_mid_run_makes_no_gap(self, w):
+        """The ephemeral cap deleted the rows between a response and a steering
+        prompt. The prompt has no marker, so 60 minutes of work stay in."""
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=130, ended=10, last_agent=10)
+        _run_act(w, rid, tid, "response", minutes_ago=100)
+        _run_act(w, rid, tid, "prompt", minutes_ago=40)  # steering: no marker
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        sec = await _section(w, w.a)
+        assert sec["sizes"]["under_4h"] == 1 and sec["sizes"]["under_1h"] == 0
+
+    async def test_g5_a_gap_never_overlaps_the_wait_that_the_prompt_answers(self, w):
+        """Asked at -100, the run ended at -90, and the prompt at -30 answers
+        the question: the wait covers the gap. 110 - 70 = 40 minutes."""
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=120, ended=10, last_agent=10)
+        q = _run_act(w, rid, tid, "elicitation", minutes_ago=100)
+        _run_act(w, rid, tid, "response", minutes_ago=90,
+                 extra={"system": True, "server_close": "done"})
+        _reopen_prompt(w, rid, tid, minutes_ago=30, ended_ago=90, reply_to=q)
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        with w.p.admin_engine.begin() as c:
+            from gateway.routes.projects import analytics_agents as ag
+
+            secs = c.execute(text(
+                f"SELECT {ag.RUN_AGENT_SECONDS_SQL} FROM pm_agent_runs r"
+                f" {ag.run_time_joins_sql()} WHERE r.id = CAST(:r AS uuid)"),
+                {"r": rid}).scalar()
+        assert float(secs) / 60.0 == pytest.approx(40, abs=1)
+
+    async def test_g6_an_agent_act_that_ended_the_wait_leaves_the_gap_whole(self, w):
+        """Asked at -100, the agent went on at -95, the run ended at -90, and
+        the prompt at -30 answers the old question: wait 5, gap 60."""
+        from gateway.routes.projects import analytics_agents as ag
+
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=120, ended=10, last_agent=10)
+        q = _run_act(w, rid, tid, "elicitation", minutes_ago=100)
+        _run_act(w, rid, tid, "thought", minutes_ago=95)
+        _run_act(w, rid, tid, "response", minutes_ago=90)
+        _reopen_prompt(w, rid, tid, minutes_ago=30, ended_ago=90, reply_to=q)
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        with w.p.admin_engine.begin() as c:
+            secs = c.execute(text(
+                f"SELECT {ag.RUN_AGENT_SECONDS_SQL} FROM pm_agent_runs r"
+                f" {ag.run_time_joins_sql()} WHERE r.id = CAST(:r AS uuid)"),
+                {"r": rid}).scalar()
+        assert float(secs) / 60.0 == pytest.approx(110 - 5 - 60, abs=1)
+
     async def test_g1_the_idle_gap_of_a_reopened_run_is_not_agent_time(self, w):
         """35 minutes, not 75: the 40 minutes between the first finish and the
         prompt are the member's. It is not long, and the twin agrees."""
@@ -449,13 +511,14 @@ class TestReopenedRunGap:
         assert sec["sizes"]["under_1h"] == 1 and sec["sizes"]["over_4h"] == 0
         assert sec["long_total"] == 0 and sec["long_runs"] == []
         with w.p.admin_engine.begin() as c:
-            acts = [(r[0], r[1], r[2]) for r in c.execute(text(
-                "SELECT seq, type, created_at FROM pm_agent_run_activities"
-                " WHERE run_id = CAST(:r AS uuid) ORDER BY seq"), {"r": rid})]
+            prompts = [(r[0], r[1], None) for r in c.execute(text(
+                "SELECT created_at, CAST(content->'reopens'->>'ended_at' AS timestamptz)"
+                " FROM pm_agent_run_activities WHERE run_id = CAST(:r AS uuid)"
+                " AND type = 'prompt'"), {"r": rid})]
             started, ended = c.execute(text(
                 "SELECT started_at, ended_at FROM pm_agent_runs"
                 " WHERE id = CAST(:r AS uuid)"), {"r": rid}).one()
-        hours = ag.run_hours(started, ended, ended, gaps=ag.reopen_gaps(acts))
+        hours = ag.run_hours(started, ended, ended, gaps=ag.reopen_gaps(prompts))
         assert hours == pytest.approx(35 / 60, abs=0.01)
         # The SQL text gives the same figure.
         with w.p.admin_engine.begin() as c:
@@ -470,7 +533,7 @@ class TestReopenedRunGap:
         tid = _task(w, "done")
         rid = _run(w, tid, "completed", started=DAY + 50, ended=10, last_agent=10)
         _run_act(w, rid, tid, "response", minutes_ago=DAY + 30)
-        _run_act(w, rid, tid, "prompt", minutes_ago=25)
+        _reopen_prompt(w, rid, tid, minutes_ago=25, ended_ago=DAY + 30)
         _run_act(w, rid, tid, "response", minutes_ago=10)
         sec = await _section(w, w.a)
         assert sec["sizes"]["over_4h"] == 0 and sec["long_runs"] == []

@@ -415,6 +415,7 @@ class TestRunTimeAndCost:
 
 def _run_act(
     w: Any, rid: str, tid: str, kind: str, *, minutes_ago: int, reply_to: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """One run activity at a chosen time. A prompt may answer a question."""
     aid = str(uuid.uuid4())
@@ -426,10 +427,16 @@ def _run_act(
             ":k, CAST(:c AS jsonb), :e, :via, CAST(:reply AS uuid), "
             "now() - make_interval(mins => :ago))"),
             {"id": aid, "o": w.p.org_a, "r": rid, "t": tid, "k": kind,
-             "c": json.dumps({"body": kind}), "e": A_EMAIL,
+             "c": json.dumps({"body": kind, **(extra or {})}), "e": A_EMAIL,
              "via": None if kind == "prompt" else b.VIA, "reply": reply_to,
              "ago": minutes_ago})
     return aid
+
+
+def _iso_ago(w: Any, minutes_ago: int) -> str:
+    with w.p.admin_engine.begin() as c:
+        return c.execute(text(
+            "SELECT (now() - make_interval(mins => :m))::text"), {"m": minutes_ago}).scalar()
 
 
 class TestAgentTime:
@@ -472,7 +479,8 @@ class TestAgentTime:
                    last_activity=10, last_agent=10)
         _run_act(w, rid, tid, "thought", minutes_ago=80)
         _run_act(w, rid, tid, "response", minutes_ago=65)
-        _run_act(w, rid, tid, "prompt", minutes_ago=25)
+        _run_act(w, rid, tid, "prompt", minutes_ago=25,
+                 extra={"reopens": {"ended_at": _iso_ago(w, 65)}})
         _run_act(w, rid, tid, "response", minutes_ago=10)
         _move(w, tid, PERSON, minutes_ago=0)
 

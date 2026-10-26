@@ -188,7 +188,9 @@ describe("the clear rule and the hide rule (the done-when of RA-4)", () => {
     // RA-4b. With runs off the section counts nothing, so it is never clear.
     expect(agentRunsIsClear(section({ on: false }))).toBe(false);
     expect(sectionIsClear("agent_runs", section({ on: false }))).toBe(false);
-    expect(agentRunsHidden(section({ on: false, agent_runs_seen: false }))).toBe(false);
+    // The Overview still hides an empty panel with runs off (no permanent card).
+    expect(agentRunsHidden(section({ on: false, agent_runs_seen: false }))).toBe(true);
+    expect(agentRunsHidden(section({ on: false, agent_runs_seen: false, silent_total: 1 }))).toBe(false);
     expect(sectionIsClear("agent_runs", section())).toBe(true);
     expect(SECTION_CLEAR_LINES.agent_runs).toBe("No run ended in 14 days, and none is silent.");
   });

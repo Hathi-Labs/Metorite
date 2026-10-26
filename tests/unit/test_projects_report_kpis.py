@@ -392,36 +392,23 @@ def test_no_new_read_of_via() -> None:
 
 
 def test_a_reopened_run_takes_out_the_idle_gap() -> None:
-    """Start 09:00, complete 09:20, a member reopens it at 10:00, complete
+    """Start 09:00, complete 09:20, a member reopens at 10:00, complete
     10:15: 35 minutes of agent time, never 75."""
-    acts = [(1, "thought", _t(5)), (2, "response", _t(20)), (3, "prompt", _t(60)),
-            (4, "response", _t(75))]
-    gaps = ag.reopen_gaps(acts)
+    gaps = ag.reopen_gaps([(_t(60), _t(20), None)])
     assert gaps == [(_t(20), _t(60))]
     assert ag.run_hours(_t(0), _t(75), _t(75), gaps=gaps) == pytest.approx(35 / 60)
     # With no gap the run still reads 75 minutes. The gap is what fixes it.
     assert ag.run_hours(_t(0), _t(75), _t(75)) == pytest.approx(75 / 60)
 
 
-def test_a_gap_starts_at_the_first_row_of_the_reply_trail() -> None:
-    """The finish, a late summary and a system line are one trail."""
-    acts = [(1, "response", _t(10)), (2, "response", _t(15)), (3, "prompt", _t(100)),
-            (4, "response", _t(110))]
-    assert ag.reopen_gaps(acts) == [(_t(10), _t(100))]
-
-
-def test_a_prompt_after_work_or_after_a_prompt_starts_no_gap() -> None:
-    acts = [(1, "thought", _t(1)), (2, "prompt", _t(2)), (3, "elicitation", _t(3)),
-            (4, "prompt", _t(30)), (5, "prompt", _t(31))]
-    assert ag.reopen_gaps(acts) == []
-    # Unordered rows are read by seq.
-    assert ag.reopen_gaps([(2, "prompt", _t(9)), (1, "response", _t(1))]) == [(_t(1), _t(9))]
+def test_only_a_prompt_with_the_reopen_marker_makes_a_gap() -> None:
+    """A steering prompt to a run that is still open has no marker, and an
+    old row has none either. Neither makes a gap, whatever rows lie before."""
+    assert ag.reopen_gaps([(_t(60), None, None), (_t(90), None, _t(30))]) == []
 
 
 def test_two_reopens_take_out_two_gaps_and_a_gap_is_cut_to_the_run() -> None:
-    acts = [(1, "response", _t(10)), (2, "prompt", _t(40)), (3, "response", _t(50)),
-            (4, "prompt", _t(90)), (5, "thought", _t(95))]
-    gaps = ag.reopen_gaps(acts)
+    gaps = ag.reopen_gaps([(_t(40), _t(10), None), (_t(90), _t(50), None)])
     assert gaps == [(_t(10), _t(40)), (_t(50), _t(90))]
     # The run ends at 100: 100 - 30 - 40 = 30 minutes.
     assert ag.run_hours(_t(0), _t(100), _t(100), gaps=gaps) == pytest.approx(30 / 60)
@@ -429,10 +416,44 @@ def test_two_reopens_take_out_two_gaps_and_a_gap_is_cut_to_the_run() -> None:
     assert ag.run_hours(_t(0), _t(30), _t(30), gaps=[(_t(40), _t(90))]) == pytest.approx(0.5)
 
 
+def test_a_gap_never_overlaps_the_wait_that_the_prompt_answers() -> None:
+    """The agent asked at 10, the run ended at 20, and the prompt at 60
+    answers the question. The wait (10 to 60) covers the gap: no second."""
+    gaps = ag.reopen_gaps([(_t(60), _t(20), _t(60))])
+    assert gaps == []  # the wait ends at the answer, so nothing is left
+    q = (_t(10), _t(60), None)
+    both = ag.run_hours(_t(0), _t(75), _t(75), [q], gaps)
+    assert both == pytest.approx((75 - 50) / 60)
+    # An agent act at 15 ended the wait before the run ended at 20: the gap
+    # is whole, from 20 to 60.
+    gaps = ag.reopen_gaps([(_t(60), _t(20), _t(15))])
+    assert gaps == [(_t(20), _t(60))]
+    early = (_t(10), _t(60), _t(15))
+    assert ag.run_hours(_t(0), _t(75), _t(75), [early], gaps) == pytest.approx(
+        (75 - 5 - 40) / 60
+    )
+
+
 def test_the_sql_joins_the_gaps_into_the_one_agent_time_text() -> None:
     joins = ag.run_time_joins_sql()
     assert ag._REOPEN_GAPS_JOIN in joins
     assert "rg.gap_s" in ag.RUN_AGENT_SECONDS_SQL
-    assert "type = 'prompt'" in ag._REOPEN_GAPS_JOIN
-    assert "type = 'response'" in ag._REOPEN_GAPS_JOIN
+    # The marker, never the row trail (the cap of ephemeral rows).
+    assert "content->'reopens'->>'ended_at'" in ag._REOPEN_GAPS_JOIN
+    assert "type = 'response'" not in ag._REOPEN_GAPS_JOIN
+    # The wait of the answered question is the same text as the waits.
+    assert wt.answered_at_sql("e") in ag._REOPEN_GAPS_JOIN
     assert ag._REOPEN_GAPS_JOIN in ag.run_time_sql("SCOPE")
+
+
+def test_the_writer_stamps_the_reopening_prompt() -> None:
+    from pathlib import Path
+
+    from gateway.routes.projects import agent_runs as runs_mod
+
+    src = Path(runs_mod.__file__).read_text(encoding="utf-8")
+    assert 'content["reopens"] = {"ended_at": reopened_end}' in src
+    # The end is read before the move that clears it.
+    assert src.index("reopened_end = ended.isoformat()") < src.index(
+        "await _clear_for_reopen(db, run, user)"
+    )

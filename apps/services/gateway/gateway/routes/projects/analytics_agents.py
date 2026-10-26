@@ -624,9 +624,9 @@ def run_hours(
     is taken out two times.
 
     RA-4b: each gap takes out the idle time of a reopened run, from the
-    agent's reply at the terminal move to the member prompt that reopened it
-    (:func:`reopen_gaps`). A gap starts at an agent act and ends at a prompt,
-    so it never overlaps a wait. The part of a gap outside the run is ignored.
+    end that a member prompt reopened to that prompt (:func:`reopen_gaps`).
+    The gap leaves out the part that a wait already covers. The part of a
+    gap outside the run is ignored.
     """
     if started is None or ended is None:
         return None
@@ -646,35 +646,37 @@ def run_hours(
 
 
 def reopen_gaps(
-    acts: Iterable[tuple[int, str, datetime]],
+    prompts: Iterable[tuple[datetime, datetime | None, datetime | None]],
 ) -> list[tuple[datetime, datetime]]:
-    """The idle gaps of a reopened run, from its activity log (RA-4b).
+    """The idle gaps of a reopened run (RA-4b), as ``(from, to)`` pairs.
 
-    ``acts`` holds ``(seq, type, created_at)`` for each activity of the run.
-    A gap ends at a member ``prompt`` that comes right after a trail of
-    ``response`` rows (the agent's reply at the terminal move, a late summary,
-    or the system line of a server close). It starts at the FIRST row of that
-    trail. A prompt after a thought, an action or a question starts no gap.
-    The SQL twin is the ``rg`` join of :func:`run_time_joins_sql`.
+    ``prompts`` holds ``(prompt_at, reopened_end, wait_end)`` for each member
+    prompt of the run. ``reopened_end`` is the ``content.reopens.ended_at``
+    that `agent_runs._write_activity` stamps on a prompt that REOPENS a
+    terminal run. A prompt without it makes no gap: it went to a run that was
+    still open, and the old rows have no marker. ``wait_end`` is the end of
+    the wait on the question that the prompt answers, or None.
 
-    ⚠️ **A finish with no summary writes no activity**, so such a run has no
-    gap to find. Its idle time stays in the agent time. The spec says so.
+    ⚠️ **A gap never overlaps a wait.** The question ``e`` was asked before the
+    run ended, and the prompt answers it. Then the wait from ``e`` to the
+    answer already covers the time from the end to the prompt. So the gap
+    starts at the later of the end and the end of that wait. When an agent act
+    ended the wait before the run ended, the gap is whole. The SQL twin is
+    :data:`_REOPEN_GAPS_JOIN`.
     """
-    ordered = sorted(acts, key=lambda a: a[0])
     gaps: list[tuple[datetime, datetime]] = []
-    trail_from: datetime | None = None
-    for _seq, kind, at in ordered:
-        if kind == "response":
-            trail_from = trail_from or at
+    for at, ended, wait_end in prompts:
+        if ended is None:
             continue
-        if kind == "prompt" and trail_from is not None:
-            gaps.append((trail_from, at))
-        trail_from = None
+        start = max(ended, wait_end) if wait_end is not None else ended
+        if at > start:
+            gaps.append((start, at))
     return gaps
 
 
-#: RA-4b. The idle gaps of a reopened run: each member prompt that follows a
-#: trail of ``response`` rows (``start_at`` is the first row of the trail),
+#: RA-4b. The idle gaps of a reopened run: each member prompt that carries
+#: ``content.reopens`` (`agent_runs._write_activity`), from the end it reopened
+#: to the prompt, less the part that a wait on a person already covers, and
 #: cut to the run. The Python twin is :func:`reopen_gaps`.
 #:
 #: ⚠️ **A reopen keeps its run.** A member prompt moves ``completed`` to
@@ -682,22 +684,37 @@ def reopen_gaps(
 #: clears (`agent_runs._move_run`). So the time between the terminal move and
 #: that prompt is the member's, not the agent's. Without this join a run that
 #: a member reopens a day later reads one day long.
-_REOPEN_GAPS_JOIN = (
-    " LEFT JOIN LATERAL ("
-    "   SELECT sum(greatest(0, extract(epoch FROM"
-    "            (least(p.created_at, re.run_end) - greatest(s.start_at, r.started_at)))))"
-    "            AS gap_s"
-    "     FROM pm_agent_run_activities p"
-    "    CROSS JOIN LATERAL ("
-    "      SELECT min(x.created_at) AS start_at FROM pm_agent_run_activities x"
-    "       WHERE x.run_id = p.run_id AND x.type = 'response' AND x.seq < p.seq"
-    "         AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities m"
-    "                          WHERE m.run_id = p.run_id AND m.seq > x.seq"
-    "                            AND m.seq < p.seq AND m.type <> 'response')"
-    "    ) s"
-    "    WHERE p.run_id = r.id AND p.type = 'prompt' AND s.start_at IS NOT NULL"
-    " ) rg ON TRUE"
-)
+#:
+#: ⚠️ **The marker, never the row trail.** The cap of ephemeral rows deletes
+#: the thoughts and actions between two acts, so a trail of rows can look
+#: unbroken when the agent worked all that time. A prompt with no marker went
+#: to an open run and makes no gap.
+def _reopen_gaps_join() -> str:
+    wait_end = (
+        f"least(coalesce({answered_at_sql('e')}, re.run_end),"
+        f" coalesce({_NEXT_AGENT_ACT}, re.run_end), re.run_end)"
+    )
+    covered = (
+        f"coalesce((SELECT {wait_end} FROM pm_agent_run_activities e"
+        f" WHERE e.id = p.in_reply_to AND e.type = 'elicitation'),"
+        f" '-infinity'::timestamptz)"
+    )
+    return (
+        " LEFT JOIN LATERAL ("
+        "   SELECT sum(greatest(0, extract(epoch FROM"
+        "            (least(p.created_at, re.run_end) - greatest(g.from_at, r.started_at)))))"
+        "            AS gap_s"
+        "     FROM pm_agent_run_activities p"
+        "    CROSS JOIN LATERAL (SELECT greatest("
+        "      CAST(p.content->'reopens'->>'ended_at' AS timestamptz),"
+        f"      {covered}) AS from_at) g"
+        "    WHERE p.run_id = r.id AND p.type = 'prompt'"
+        "      AND p.content->'reopens'->>'ended_at' IS NOT NULL"
+        " ) rg ON TRUE"
+    )
+
+
+_REOPEN_GAPS_JOIN = _reopen_gaps_join()
 
 
 def run_time_joins_sql() -> str:
