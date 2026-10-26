@@ -189,8 +189,78 @@ def test_a_reopen_belongs_to_the_group_of_the_finish_it_undoes() -> None:
     assert ag.actor_group_sql(aq.finish_label_sql()) in sql
     assert aq.finish_actor_join("a.task_id", "a.created_at") in sql
     assert "UNION ALL" in sql
-    assert sql.count("'finished' AS kind") == 1 and sql.count("'reopened' AS kind") == 1
+    assert sql.count("'finished' AS kind") == 1
+    assert "SELECT 'undone'" in sql and "SELECT 'reopened'" in sql
     assert aq.GROUPS == (ag.GROUP_PEOPLE, ag.GROUP_AGENTS)
+
+
+def test_reopened_counts_distinct_tasks_by_the_latest_reopen_of_the_window() -> None:
+    """RA-5 fix round 1: `reopened` is a count of TASKS, not of moves."""
+    sql = aq.reopened_sql("PAST")
+    assert "SELECT DISTINCT ON (a.task_id," in sql
+    assert "a.created_at DESC, a.id DESC" in sql
+    # The twin: a task reopened twice counts once, in the group of its latest.
+    t1, t2 = "t1", "t2"
+    got = aq.reopened_tasks([
+        (t1, 1, "people"), (t1, 5, "agents"), (t2, 3, "people"),
+    ])
+    assert got == {"people": 1, "agents": 1}
+    assert sum(got.values()) == 2
+
+
+def test_the_rate_is_a_cohort_of_the_finishes_and_never_passes_100_percent() -> None:
+    sql = aq.reopened_sql("PAST")
+    # A finish is undone by a reopen after it, with no finish between the two.
+    assert "r.created_at > a.created_at" in sql
+    assert "n.created_at > a.created_at" in sql and "n.created_at < r.created_at" in sql
+    assert aq.finish_move_sql("n") in sql and aq.reopen_move_sql("r") in sql
+    # The reopen is not bounded by the window: a recent finish may be undone any time up to now.
+    undone = sql[sql.index("EXISTS (SELECT 1 FROM pm_activities r"):sql.index(" AS undone")]
+    assert ":merge_days" not in undone
+
+
+def test_a_finish_is_undone_by_a_reopen_before_the_next_finish() -> None:
+    # Finished at 1 and 4, reopened at 2: the first finish is undone, the second is not.
+    finishes, reopens = [1, 4], [2]
+    assert aq.finish_undone(1, finishes, reopens) is True
+    assert aq.finish_undone(4, finishes, reopens) is False
+    # A reopen after the second finish does not undo the first (a finish is between).
+    assert aq.finish_undone(1, [1, 4], [5]) is False
+    assert aq.finish_undone(4, [1, 4], [5]) is True
+    # No reopen, or a reopen before the finish: nothing is undone.
+    assert aq.finish_undone(3, [3], []) is False
+    assert aq.finish_undone(3, [3], [2]) is False
+
+
+def test_a_reopen_in_the_window_of_an_old_finish_is_a_task_and_not_part_of_the_rate() -> None:
+    """Three tasks finished 20 days ago and reopened today, one finish in the
+    window and not reopened. The old reopens count as tasks. The rate has no
+    reopen, so it is 0 of 1, and never 3 of 1."""
+    got = aq._group({
+        "finished": 1, "undone": 0, "reopened": 3,
+        "finished_before": 3, "undone_before": 0, "reopened_before": 0,
+    })
+    assert got["reopened"] == 3 and got["rate"] == 0.0
+
+
+def test_the_rate_is_at_most_one_for_every_count() -> None:
+    for finished in range(0, 6):
+        for undone in range(0, finished + 1):
+            for reopened in range(0, 9):
+                got = aq._group({
+                    "finished": finished, "undone": undone, "reopened": reopened,
+                    "finished_before": finished, "undone_before": undone,
+                    "reopened_before": reopened,
+                })
+                assert got["rate"] is None or 0 <= got["rate"] <= 1
+                assert got["rate_before"] is None or 0 <= got["rate_before"] <= 1
+
+
+def test_a_task_finished_twice_and_reopened_once_after_the_first_gives_one_of_two() -> None:
+    finishes, reopens = [10, 20], [15]
+    undone = sum(aq.finish_undone(f, finishes, reopens) for f in finishes)
+    assert (undone, len(finishes)) == (1, 2)
+    assert aq.rate(undone, len(finishes)) == 0.5
 
 
 def test_rework_is_two_groups_and_never_a_person() -> None:
@@ -202,9 +272,15 @@ def test_rework_is_two_groups_and_never_a_person() -> None:
 
 
 def test_a_group_has_a_rate_and_no_finish_has_none() -> None:
-    got = aq._group({"finished": 10, "reopened": 2, "finished_before": 8, "reopened_before": 4})
+    got = aq._group({
+        "finished": 10, "undone": 2, "reopened": 3,
+        "finished_before": 8, "undone_before": 4, "reopened_before": 4,
+    })
     assert got["rate"] == 0.2 and got["rate_before"] == 0.5 and got["trend"] == "down"
-    none = aq._group({"finished": 0, "reopened": 0, "finished_before": 0, "reopened_before": 0})
+    none = aq._group({
+        "finished": 0, "undone": 0, "reopened": 0,
+        "finished_before": 0, "undone_before": 0, "reopened_before": 0,
+    })
     assert none["rate"] is None and none["trend"] is None
 
 
@@ -213,6 +289,7 @@ def test_the_group_counts_ignore_a_row_that_is_not_a_group_or_a_kind() -> None:
 
     rows = [
         NS(kind="finished", grp="agents", n=4, n_before=1),
+        NS(kind="undone", grp="agents", n=1, n_before=0),
         NS(kind="reopened", grp="agents", n=1, n_before=0),
         NS(kind="reopened", grp="people", n=2, n_before=3),
         NS(kind="other", grp="people", n=9, n_before=9),
@@ -220,7 +297,8 @@ def test_the_group_counts_ignore_a_row_that_is_not_a_group_or_a_kind() -> None:
     ]
     got = aq._group_counts(rows)
     assert got["agents"] == {
-        "finished": 4, "reopened": 1, "finished_before": 1, "reopened_before": 0,
+        "finished": 4, "undone": 1, "reopened": 1,
+        "finished_before": 1, "undone_before": 0, "reopened_before": 0,
     }
     assert got["people"]["reopened"] == 2 and got["people"]["reopened_before"] == 3
     assert got["people"]["finished"] == 0
@@ -245,6 +323,20 @@ def test_the_sql_twin_of_retried_reads_a_run_created_after_the_end() -> None:
     assert "r2.created_at > r.ended_at" in sql
     assert "r2.task_id = r.task_id" in sql and "r2.id <> r.id" in sql
     assert "r.ended_at IS NOT NULL" in sql
+
+
+def test_the_failing_list_reads_no_run_while_the_runs_flag_is_off() -> None:
+    """RA-5 fix round 1 (P2-b): the `nr` join of the newest run is gated."""
+    on = aq.failing_prs_sql("OPEN", runs_on=True)
+    off = aq.failing_prs_sql("OPEN", runs_on=False)
+    assert "FROM pm_agent_runs x" in on and "nr.client_via" in on
+    assert "pm_agent_runs x" not in off and "nr." not in off
+    assert "NULL AS run_via" in off and "NULL AS run_member_name" in off
+    # The agent still comes from the newest agent act, by RA-1's one read.
+    assert "agent_act_sql" in _SOURCE and "ma.act_via" in off
+    # The default is the old behaviour, and the body passes the flag.
+    assert aq.failing_prs_sql("OPEN") == on
+    assert "failing_prs_sql(open_where, runs_on=runs_on)" in inspect.getsource(aq.quality_body)
 
 
 def test_the_runs_flag_off_reads_no_run() -> None:
@@ -277,8 +369,11 @@ def _red(**kw: int) -> dict:
     return {"failing_total": 0, "merged_red": 0, **kw}
 
 
-def _group(finished: int = 0, reopened: int = 0) -> dict:
-    return {"finished": finished, "reopened": reopened}
+def _group(finished: int = 0, reopened: int = 0, undone: int | None = None) -> dict:
+    return {
+        "finished": finished, "reopened": reopened,
+        "undone": reopened if undone is None else undone,
+    }
 
 
 def _rework(agents: dict | None = None, people: dict | None = None,
@@ -293,15 +388,17 @@ def test_the_summary_says_each_part_in_one_plain_sentence() -> None:
     prs = _prs(merged=8, closed=2, rate=0.8, rate_before=0.7, trend="up", open=3)
     line = aq.summary_line(
         prs=prs, red=_red(failing_total=1, merged_red=2),
-        rework=_rework(_group(10, 2), _group(20, 1), failed=5, retried=3), runs_on=True,
+        rework=_rework(_group(10, 3, 2), _group(20, 1), failed=5, retried=3), runs_on=True,
     )
     assert line == (
         "8 agent pull requests merged and 2 closed with no merge in the last 14 days."
         " The merge rate is 80%, up from 70% in the 14 days before."
         " 3 agent pull requests are open now, and 1 fails their checks."
         " 2 agent pull requests merged while their checks failed."
-        " Of the tasks that agents finished, 2 of 10 were reopened."
-        " Of the tasks that people finished, 1 of 20 was reopened."
+        " 4 tasks were reopened after done in the last 14 days:"
+        " 3 after an agent finish and 1 after a person finish."
+        " Of the tasks that agents finished, 2 of 10 were reopened later."
+        " Of the tasks that people finished, 1 of 20 was reopened later."
         " 3 of 5 failed runs got a new run on the same task."
     )
 
@@ -450,7 +547,7 @@ def test_the_body_reads_the_shared_predicates() -> None:
     assert "load_open_where(scope_sql, vis)" in body
     assert "history_where(scope_sql, vis)" in body
     assert "open_prs_sql(open_where)" in body
-    assert "failing_prs_sql(open_where)" in body
+    assert "failing_prs_sql(open_where, runs_on=runs_on)" in body
     for name in ("merged_red_sql", "reopened_sql", "retried_sql", "quality_seen_sql"):
         assert f"{name}(past_where)" in body
 
@@ -535,7 +632,7 @@ def test_the_chat_card_names_the_member_and_collapses_the_agent_name() -> None:
     stats, table = _card_section("quality", section)
     assert {"label": "Agent PRs merged", "value": 3} in stats
     assert {"label": "Failing checks", "value": 1} in stats
-    assert {"label": "Reopened after agents", "value": 2} in stats
+    assert {"label": "Tasks reopened after agents", "value": 2} in stats
     assert table is not None and table["title"] == "Quality"
     cells = table["rows"][0]["cells"]
     assert "Ana Rao" in cells

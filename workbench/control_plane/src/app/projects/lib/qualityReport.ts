@@ -77,7 +77,7 @@ export const QUALITY_RULES = {
   merge: (days: number) =>
     `The pull requests on tasks that an agent worked before the close, merged or closed in the last ${days} days. The rate is the merged ones over the merged and the closed ones. An open or draft pull request does not count. The trend compares the ${days} days before. The KPI strip shows the same rate.`,
   reopened: (days: number) =>
-    `Tasks that went back from done to an open status in the last ${days} days. A move to cancelled is not a reopen. A reopen belongs to the group of the finish that it undoes: agents (agent-finished or agent-assisted) or people. The rate is the reopened tasks over the tasks that the same group finished in the same days.`,
+    `Tasks reopened counts each task once. It counts the tasks that went back from done to an open status in the last ${days} days. A move to cancelled is not a reopen. A task belongs to the group of the finish that its latest reopen undid: agents (agent-finished or agent-assisted) or people. The rate is a cohort. It takes the finishes of the last ${days} days by the same group, and counts the share that a later reopen undid, up to now. So it never passes 100%. A recent finish has had less time to be reopened, so the newest days read low.`,
   retried: (days: number) =>
     `Runs that failed in the last ${days} days, and how many of them have a later run on the same task. A later run is one created after the failed run ended.`,
   failing: () =>
@@ -112,9 +112,9 @@ export function mergeTrend(section: Pick<QualityReport, "prs" | "days">): string
   return `${p.trend === "up" ? "up" : "down"} from ${percentWords(p.rate_before)}`;
 }
 
-/** "2 of 10", the reopened tasks over the finished ones. */
-export function reopenedFigure(g: Pick<QualityReopened, "reopened" | "finished">): string {
-  return `${g.reopened} of ${g.finished}`;
+/** "2 of 10", the finishes that a reopen undid over the finishes of the window. */
+export function reopenedFigure(g: Pick<QualityReopened, "undone" | "finished">): string {
+  return `${g.undone} of ${g.finished}`;
 }
 
 /** "20%", or "No finish yet" when the group finished nothing. */
@@ -123,8 +123,13 @@ export function reopenedRate(g: Pick<QualityReopened, "rate">): string {
 }
 
 /** The group in the window before, as words: "before: 1 of 8". */
-export function reopenedBefore(g: Pick<QualityReopened, "reopened_before" | "finished_before">): string {
-  return `before: ${g.reopened_before} of ${g.finished_before}`;
+export function reopenedBefore(g: Pick<QualityReopened, "undone_before" | "finished_before">): string {
+  return `before: ${g.undone_before} of ${g.finished_before}`;
+}
+
+/** "3 tasks reopened": the distinct tasks with a reopen in the window. */
+export function reopenedTasks(g: Pick<QualityReopened, "reopened">): string {
+  return `${g.reopened} ${g.reopened === 1 ? "task" : "tasks"} reopened`;
 }
 
 /** The retried runs as words: "3 of 5 failed runs got a new run". */
@@ -171,6 +176,8 @@ function reopenCount(section: QualityReport): number {
  */
 export function qualityIsClear(section: QualityReport | null | undefined): boolean {
   if (!section) return false;
+  // Runs off: a failed run cannot show, so the section cannot claim "none".
+  if (section.on === false) return false;
   return (
     prCount(section) === 0 &&
     (section.checks?.failing_total ?? 0) === 0 &&

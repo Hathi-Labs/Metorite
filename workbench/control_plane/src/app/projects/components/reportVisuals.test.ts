@@ -477,8 +477,10 @@ const QUALITY: NonNullable<Sections["quality"]> = {
     reopened: {
       agents: {
         finished: 10,
-        reopened: 2,
+        undone: 2,
+        reopened: 3,
         finished_before: 8,
+        undone_before: 1,
         reopened_before: 1,
         rate: 0.2,
         rate_before: 0.125,
@@ -486,8 +488,10 @@ const QUALITY: NonNullable<Sections["quality"]> = {
       },
       people: {
         finished: 20,
+        undone: 1,
         reopened: 1,
         finished_before: 18,
+        undone_before: 2,
         reopened_before: 2,
         rate: 0.05,
         rate_before: 0.1111,

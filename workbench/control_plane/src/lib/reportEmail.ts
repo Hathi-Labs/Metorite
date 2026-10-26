@@ -42,6 +42,7 @@ import {
   reopenedBefore,
   reopenedFigure,
   reopenedRate,
+  reopenedTasks,
   retriedLine,
   REWORK_GROUPS,
 } from "@/app/projects/lib/qualityReport";
@@ -831,7 +832,7 @@ export function reportLayout(
       for (const g of REWORK_GROUPS) {
         const r = quality.rework.reopened[g.key];
         items.push(
-          `Reopened after ${g.noun}: ${reopenedFigure(r)} (${reopenedRate(r)}) · ${reopenedBefore(r)}`
+          `Reopened after ${g.noun}: ${reopenedFigure(r)} finishes (${reopenedRate(r)}) · ${reopenedTasks(r)} · ${reopenedBefore(r)}`
         );
       }
       items.push(retriedLine(quality));

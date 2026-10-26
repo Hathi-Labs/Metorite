@@ -166,6 +166,7 @@ import {
   reopenedBefore,
   reopenedFigure,
   reopenedRate,
+  reopenedTasks,
   retriedLine,
 } from "../lib/qualityReport";
 import {
@@ -1844,11 +1845,17 @@ export function QualityPanel({ data }: { data: QualityReport }) {
                 <span className="w-14 shrink-0 text-muted-foreground">{g.label}</span>
                 <span
                   className="font-medium tabular-nums text-foreground"
-                  title={`${r.reopened} tasks reopened of ${r.finished} that ${g.noun} finished in the last ${data.days} days`}
+                  title={`${r.undone} of the ${r.finished} tasks that ${g.noun} finished in the last ${data.days} days were reopened later`}
                 >
                   {reopenedFigure(r)}
                 </span>
                 <span className="tabular-nums text-muted-foreground">{reopenedRate(r)}</span>
+                <span
+                  className="text-[10px] tabular-nums text-muted-foreground"
+                  title={`${r.reopened} different tasks went back from done in the last ${data.days} days, by the finish that the latest reopen undid`}
+                >
+                  {reopenedTasks(r)}
+                </span>
                 <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
                   {reopenedBefore(r)}
                 </span>

@@ -422,8 +422,10 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("prs.open", "Open now"),
             ("checks.failing_total", "Failing checks"),
             ("checks.merged_red", "Merged while red"),
-            ("rework.reopened.agents.reopened", "Reopened after agents"),
-            ("rework.reopened.people.reopened", "Reopened after people"),
+            ("rework.reopened.agents.reopened", "Tasks reopened after agents"),
+            ("rework.reopened.people.reopened", "Tasks reopened after people"),
+            ("rework.reopened.agents.undone", "Agent finishes reopened later"),
+            ("rework.reopened.people.undone", "Person finishes reopened later"),
         ],
         "rows": "checks.failing",
         "columns": [

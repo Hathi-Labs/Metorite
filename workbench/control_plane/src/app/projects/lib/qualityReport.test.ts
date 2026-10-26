@@ -29,6 +29,7 @@ import {
   reopenedBefore,
   reopenedFigure,
   reopenedRate,
+  reopenedTasks,
   retriedLine,
 } from "./qualityReport";
 import { NO_SUBJECT_SECTIONS, OVERVIEW_SECTIONS, PERIOD_FREE_SECTIONS } from "./reportBuilder";
@@ -36,8 +37,10 @@ import { SECTION_CLEAR_LINES, sectionIsClear } from "./sectionEmpty";
 
 const GROUP = {
   finished: 10,
-  reopened: 2,
+  undone: 2,
+  reopened: 3,
   finished_before: 8,
+  undone_before: 1,
   reopened_before: 1,
   rate: 0.2,
   rate_before: 0.125,
@@ -62,7 +65,7 @@ function section(over: Partial<QualityReport> = {}): QualityReport {
     },
     checks: { failing_total: 0, failing: [], merged_red: 0, merged_red_before: 0 },
     rework: {
-      reopened: { agents: GROUP, people: { ...GROUP, finished: 20, reopened: 1, rate: 0.05 } },
+      reopened: { agents: GROUP, people: { ...GROUP, finished: 20, undone: 1, reopened: 1, undone_before: 2, rate: 0.05 } },
       retried: {
         failed: 5,
         retried: 3,
@@ -94,8 +97,8 @@ function quiet(over: Partial<QualityReport> = {}): QualityReport {
     },
     rework: {
       reopened: {
-        agents: { ...GROUP, finished: 0, reopened: 0, rate: null, rate_before: null, trend: null },
-        people: { ...GROUP, finished: 0, reopened: 0, rate: null, rate_before: null, trend: null },
+        agents: { ...GROUP, finished: 0, undone: 0, reopened: 0, undone_before: 0, rate: null, rate_before: null, trend: null },
+        people: { ...GROUP, finished: 0, undone: 0, reopened: 0, undone_before: 0, rate: null, rate_before: null, trend: null },
       },
       retried: {
         failed: 0,
@@ -170,6 +173,8 @@ describe("rework: two groups, never a person (§6.8 E1)", () => {
 
   it("says the reopened tasks over the finished ones, with the rate and the window before", () => {
     expect(reopenedFigure(GROUP)).toBe("2 of 10");
+    expect(reopenedTasks(GROUP)).toBe("3 tasks reopened");
+    expect(reopenedTasks({ reopened: 1 })).toBe("1 task reopened");
     expect(reopenedRate(GROUP)).toBe("20%");
     expect(reopenedRate({ rate: null })).toBe("No finish yet");
     expect(reopenedBefore(GROUP)).toBe("before: 1 of 8");
@@ -178,6 +183,15 @@ describe("rework: two groups, never a person (§6.8 E1)", () => {
   it("names the rule: a move to cancelled is not a reopen, and the group is the finish's", () => {
     expect(QUALITY_RULES.reopened(14)).toContain("A move to cancelled is not a reopen");
     expect(QUALITY_RULES.reopened(14)).toContain("agents (agent-finished or agent-assisted) or people");
+  });
+
+  it("says what is counted: each task once, and a cohort of the finishes that never passes 100%", () => {
+    const rule = QUALITY_RULES.reopened(14);
+    expect(rule).toContain("counts each task once");
+    expect(rule).toContain("cohort");
+    expect(rule).toContain("never passes 100%");
+    // A recent finish has had less time to be reopened, so the newest days read low.
+    expect(rule).toContain("less time to be reopened");
   });
 
   it("says the retried runs, and says so when runs are off", () => {
@@ -242,6 +256,11 @@ describe("the clear rule and the hide rule (the done-when of RA-5)", () => {
     const failed = quiet();
     failed.rework.retried.failed = 1;
     expect(qualityIsClear(failed)).toBe(false);
+  });
+
+  it("is never clear while the runs are off, because a failed run cannot show", () => {
+    expect(qualityIsClear(quiet({ on: false }))).toBe(false);
+    expect(qualityHidden(quiet({ on: false }))).toBe(false);
   });
 
   it("hides only a clear section of a scope with nothing seen", () => {

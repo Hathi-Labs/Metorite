@@ -397,6 +397,15 @@ def _seed_rework(w: Any) -> dict[str, str]:
     return t
 
 
+def _assert_rates_at_most_one(sec: dict[str, Any]) -> None:
+    """The cohort rate never passes 100%, in the window or the one before."""
+    for group in sec["rework"]["reopened"].values():
+        assert group["undone"] <= group["finished"]
+        assert group["undone_before"] <= group["finished_before"]
+        for key in ("rate", "rate_before"):
+            assert group[key] is None or 0 <= group[key] <= 1
+
+
 class TestReopened:
     async def test_r1_a_reopen_belongs_to_the_group_of_the_finish_it_undoes(self, w):
         _seed_rework(w)
@@ -405,29 +414,79 @@ class TestReopened:
         people = sec["rework"]["reopened"]["people"]
         # Agents finished A (through MCP), B (assisted) and E (in the app).
         # A and B came back.
-        assert (agents["finished"], agents["reopened"]) == (3, 2)
+        assert (agents["finished"], agents["undone"], agents["reopened"]) == (3, 2, 2)
         assert agents["rate"] == pytest.approx(0.6667, abs=1e-4)
         assert (agents["finished_before"], agents["reopened_before"]) == (0, 0)
         assert agents["rate_before"] is None and agents["trend"] is None
         # People finished C, D, F, H (twice) and the reopen of C and H
         # counts. F went to cancelled, so it is no reopen.
-        assert (people["finished"], people["reopened"]) == (5, 2)
+        assert (people["finished"], people["undone"], people["reopened"]) == (5, 2, 2)
         assert people["rate"] == 0.4
         # The window before: G finished and came back.
-        assert (people["finished_before"], people["reopened_before"]) == (1, 1)
+        assert (people["finished_before"], people["undone_before"]) == (1, 1)
+        assert people["reopened_before"] == 1
         assert people["rate_before"] == 1.0 and people["trend"] == "down"
+        _assert_rates_at_most_one(sec)
 
     async def test_r1_the_summary_compares_the_two_groups_in_one_sentence_each(self, w):
         _seed_rework(w)
         summary = (await _section(w, w.a))["summary"]
-        assert "Of the tasks that agents finished, 2 of 3 were reopened." in summary
-        assert "Of the tasks that people finished, 2 of 5 were reopened." in summary
+        assert "Of the tasks that agents finished, 2 of 3 were reopened later." in summary
+        assert "Of the tasks that people finished, 2 of 5 were reopened later." in summary
+        assert (
+            "4 tasks were reopened after done in the last 14 days:"
+            " 2 after an agent finish and 2 after a person finish." in summary
+        )
+
+    async def test_r1_a_reopen_of_an_old_finish_is_a_task_and_not_part_of_the_rate(self, w):
+        """Three tasks finished 20 days ago and reopened a day ago, and one
+        finish in the window that nobody reopened. The old way read 3 of 1."""
+        for _ in range(3):
+            t = _task(w)
+            _move(w, t, PERSON, "todo", "done", 20 * DAY)
+            _move(w, t, PERSON, "done", "todo", 1 * DAY)
+        _move(w, _task(w), PERSON, "todo", "done", 2 * DAY)
+        sec = await _section(w, w.a)
+        people = sec["rework"]["reopened"]["people"]
+        assert people["reopened"] == 3
+        assert (people["finished"], people["undone"]) == (1, 0)
+        assert people["rate"] == 0.0
+        # The window before holds the three old finishes, and a reopen undid each.
+        assert (people["finished_before"], people["undone_before"]) == (3, 3)
+        assert people["rate_before"] == 1.0 and people["trend"] == "down"
+        _assert_rates_at_most_one(sec)
+
+    async def test_r1_a_task_finished_twice_and_reopened_once_gives_one_of_two(self, w):
+        t = _task(w)
+        _move(w, t, PERSON, "todo", "done", 10 * DAY)
+        _move(w, t, PERSON, "done", "todo", 9 * DAY)
+        _move(w, t, PERSON, "todo", "done", 8 * DAY)
+        sec = await _section(w, w.a)
+        people = sec["rework"]["reopened"]["people"]
+        assert (people["finished"], people["undone"], people["reopened"]) == (2, 1, 1)
+        assert people["rate"] == 0.5
+        _assert_rates_at_most_one(sec)
+
+    async def test_r1_a_task_reopened_twice_counts_once_in_the_group_of_the_latest(self, w):
+        t = _task(w)
+        _move(w, t, PERSON, "todo", "done", 10 * DAY)
+        _move(w, t, PERSON, "done", "todo", 9 * DAY)
+        _move(w, t, AGENT, "todo", "done", 8 * DAY, via=b.VIA)
+        _move(w, t, PERSON, "done", "todo", 7 * DAY)
+        sec = await _section(w, w.a)
+        reopened = sec["rework"]["reopened"]
+        # Two reopen moves, one task. The latest undid the agent finish.
+        assert (reopened["agents"]["reopened"], reopened["people"]["reopened"]) == (1, 0)
+        assert (reopened["agents"]["finished"], reopened["agents"]["undone"]) == (1, 1)
+        assert (reopened["people"]["finished"], reopened["people"]["undone"]) == (1, 1)
+        _assert_rates_at_most_one(sec)
 
     async def test_r1_no_reopen_says_so(self, w):
         t = _task(w)
         _move(w, t, PERSON, "todo", "done", 2 * DAY)
         sec = await _section(w, w.a)
         assert sec["rework"]["reopened"]["people"]["reopened"] == 0
+        assert sec["rework"]["reopened"]["people"]["undone"] == 0
         assert "No finished task was reopened in the last 14 days." in sec["summary"]
 
     async def test_t1_the_reopen_rule_is_one_rule_in_python_and_in_sql(self, w):
@@ -508,6 +567,34 @@ class TestRetried:
         assert sec["summary"].endswith(
             "Agent runs are off for this organization, so no retry is counted."
         )
+
+
+class TestRunsGate:
+    async def test_r3_the_failing_list_reads_no_run_while_the_flag_is_off(self, w, monkeypatch):
+        """RA-5 fix round 1 (P2-b). An old run exists. With the flag on it
+        names the member. With the flag off the agent comes from the agent
+        acts only, and the run is not read."""
+        from acb_auth import agent_oauth
+        from acb_common import get_settings
+
+        tid = _task(w)
+        _run(w, tid, "completed", created=40 * DAY, started=40 * DAY, ended=40 * DAY - 10)
+        _pr(w, tid, 1, "open", checks="failing", linked=2 * DAY)
+
+        on = (await _section(w, w.a))["checks"]["failing"][0]
+        assert on["member"] == A_EMAIL and on["agent"] == agent_oauth.client_label(b.VIA)
+
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        off = (await _section(w, w.a))["checks"]["failing"][0]
+        # No run, and no agent act yet: the row names a plain agent.
+        assert off["id"] == tid
+        assert off["agent"] == "Agent" and off["member"] is None
+        assert off["member_name"] is None and off["client_via"] is None
+        # An agent act through MCP names the agent and its member, with no run.
+        b.mcp_comment(w.p, w.p.org_a, tid, PERSON)
+        named = (await _section(w, w.a))["checks"]["failing"][0]
+        assert named["agent"] == agent_oauth.client_label(b.VIA)
+        assert named["member"] == PERSON
 
 
 # ── V1 and H1 ────────────────────────────────────────────────────────────────

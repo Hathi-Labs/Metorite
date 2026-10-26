@@ -83,8 +83,8 @@ const CLEAR = {
     checks: { failing_total: 0, failing: [], merged_red: 0, merged_red_before: 0 },
     rework: {
       reopened: {
-        agents: { finished: 0, reopened: 0, finished_before: 0, reopened_before: 0, rate: null, rate_before: null, trend: null },
-        people: { finished: 0, reopened: 0, finished_before: 0, reopened_before: 0, rate: null, rate_before: null, trend: null },
+        agents: { finished: 0, undone: 0, reopened: 0, finished_before: 0, undone_before: 0, reopened_before: 0, rate: null, rate_before: null, trend: null },
+        people: { finished: 0, undone: 0, reopened: 0, finished_before: 0, undone_before: 0, reopened_before: 0, rate: null, rate_before: null, trend: null },
       },
       retried: { failed: 0, retried: 0, failed_before: 0, retried_before: 0, rate: null, rate_before: null, trend: null },
     },
@@ -143,8 +143,8 @@ describe("WS-27bn RA-5: the quality section prints the summary first, then the f
     },
     rework: {
       reopened: {
-        agents: { finished: 10, reopened: 2, finished_before: 8, reopened_before: 1, rate: 0.2, rate_before: 0.125, trend: "up" },
-        people: { finished: 20, reopened: 1, finished_before: 18, reopened_before: 2, rate: 0.05, rate_before: 0.1111, trend: "down" },
+        agents: { finished: 10, undone: 2, reopened: 3, finished_before: 8, undone_before: 1, reopened_before: 1, rate: 0.2, rate_before: 0.125, trend: "up" },
+        people: { finished: 20, undone: 1, reopened: 1, finished_before: 18, undone_before: 2, reopened_before: 2, rate: 0.05, rate_before: 0.1111, trend: "down" },
       },
       retried: { failed: 5, retried: 3, failed_before: 4, retried_before: 1, rate: 0.6, rate_before: 0.25, trend: "up" },
     },
@@ -156,8 +156,8 @@ describe("WS-27bn RA-5: the quality section prints the summary first, then the f
     expect(parts[0].head.lead).toBe(`Quality: ${busy.summary}`);
     const text = parts[0].items.join("\n");
     expect(text).toContain("Merge rate 80%, up from 70% · 8 merged · 2 closed, not merged · 3 open now");
-    expect(text).toContain("Reopened after agents: 2 of 10 (20%) · before: 1 of 8");
-    expect(text).toContain("Reopened after people: 1 of 20 (5%) · before: 2 of 18");
+    expect(text).toContain("Reopened after agents: 2 of 10 finishes (20%) · 3 tasks reopened · before: 1 of 8");
+    expect(text).toContain("Reopened after people: 1 of 20 finishes (5%) · 1 task reopened · before: 2 of 18");
     expect(text).toContain("3 of 5 failed runs got a new run");
     expect(text).toContain("Merged while red: 1");
     expect(text).toContain("#31 Fix the checks · Claude Code for Ana Rao · acme/rig#12");

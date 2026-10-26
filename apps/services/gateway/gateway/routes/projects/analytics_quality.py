@@ -12,8 +12,11 @@ and the 14 days before them:
    itself, so this panel and the KPI tile cannot disagree.
 2. **Rework** (§6.8 F). Two kinds. A task that went back from done to an open
    status (``reopened``), split by the group of the finish that was undone, so
-   a reader compares agents with people. And a failed run followed by a later
-   run on the same task (``retried``).
+   a reader compares agents with people. ``reopened`` counts DISTINCT tasks.
+   The reopen RATE is a cohort: the finishes of the window, and the share that
+   a later reopen undid. It never passes 100%, and the newest window reads low,
+   because a recent finish has had less time to be reopened. And a failed run
+   followed by a later run on the same task (``retried``).
 3. **CI red on agent PRs.** The open agent pull requests whose checks fail
    now, up to five named, oldest first. And the agent pull requests that
    merged while their checks failed. See :func:`merged_red_sql`.
@@ -45,9 +48,12 @@ Throughput's history predicate. The open pull requests read Load's open-work
 predicate. The caller's tenant session runs every query. Nothing here reads a
 tenant or a person from the request (R5).
 
-⚠️ **The runs flag.** While ``agent_runs_enabled`` is off, no run moves, and
-the section reads no run, as `analytics_agent_runs.py` does. The pull requests
-and the reopened tasks do not depend on the flag.
+⚠️ **The runs flag.** While ``agent_runs_enabled`` is off, no run moves. The
+retried count reads no run, and the failing list names its agent from the
+agent acts only (``failing_prs_sql(runs_on=False)``). The test of an agent
+pull request is RA-2's `agent_worked_sql`, which still sees a run that
+exists, as the KPI tile does. The pull requests and the reopened tasks do not
+depend on the flag.
 """
 
 from __future__ import annotations
@@ -140,6 +146,33 @@ def is_retried(failed_ended_at: Any, later_run_created_at: Iterable[Any]) -> boo
     return any(at is not None and at > failed_ended_at for at in later_run_created_at)
 
 
+def finish_undone(finish_at: Any, finishes: Iterable[Any], reopens: Iterable[Any]) -> bool:
+    """A finish of a task is UNDONE when a reopen of the same task comes after
+    it, and no other finish of the task comes between the two (the cohort rule
+    of RA-5 fix round 1). The Python twin of ``fin.undone`` in
+    :func:`reopened_sql`. Any time up to now counts, so a recent finish has
+    had less time to be reopened."""
+    others = list(finishes)
+    return any(
+        r > finish_at and not any(finish_at < n < r for n in others) for r in reopens
+    )
+
+
+def reopened_tasks(moves: Iterable[tuple[Any, Any, str]]) -> dict[str, int]:
+    """The DISTINCT tasks with a reopen in the window, by group. ``moves`` is
+    ``(task, reopened_at, group)`` for each reopen move of the window. A task
+    takes the group of its LATEST reopen. The Python twin of ``reo`` in
+    :func:`reopened_sql`."""
+    latest: dict[Any, tuple[Any, str]] = {}
+    for task, at, group in moves:
+        if task not in latest or at > latest[task][0]:
+            latest[task] = (at, group)
+    counts = dict.fromkeys(GROUPS, 0)
+    for _, group in latest.values():
+        counts[group] += 1
+    return counts
+
+
 def rate(part: int, whole: int) -> float | None:
     """``part`` over ``whole``, or None with no whole. Never a zero."""
     return None if not whole else round(int(part) / int(whole), 4)
@@ -197,16 +230,15 @@ def merge_line(prs: Mapping[str, Any], days: int = QUALITY_WINDOW_DAYS) -> str |
 
 
 def rework_line(group: str, counts: Mapping[str, Any]) -> str:
-    """One sentence of the reopened tasks of one group, with its rate."""
+    """One sentence of the finishes of one group that a reopen undid. The
+    rate is over the finishes of the window, so it never passes 100%."""
     who = "agents" if group == GROUP_AGENTS else "people"
-    reopened, finished = int(counts.get("reopened", 0)), int(counts.get("finished", 0))
-    if finished == 0 and reopened == 0:
-        return f"{who.capitalize()} finished no task."
+    undone, finished = int(counts.get("undone", 0)), int(counts.get("finished", 0))
     if finished == 0:
-        return f"{_count(reopened, 'task')} came back after a finish by {who}."
+        return f"{who.capitalize()} finished no task in that time."
     return (
-        f"Of the tasks that {who} finished, {reopened} of {finished}"
-        f" {'was' if reopened == 1 else 'were'} reopened."
+        f"Of the tasks that {who} finished, {undone} of {finished}"
+        f" {'was' if undone == 1 else 'were'} reopened later."
     )
 
 
@@ -242,9 +274,16 @@ def summary_line(
             f" {'its' if n == 1 else 'their'} checks failed."
         )
     reopened = rework["reopened"]
-    if sum(int(reopened[g]["reopened"]) for g in GROUPS) == 0:
+    tasks = sum(int(reopened[g]["reopened"]) for g in GROUPS)
+    if tasks == 0 and sum(int(reopened[g]["undone"]) for g in GROUPS) == 0:
         parts.append(f"No finished task was reopened in the last {days} days.")
     else:
+        if tasks:
+            a, p = int(reopened[GROUP_AGENTS]["reopened"]), int(reopened[GROUP_PEOPLE]["reopened"])
+            parts.append(
+                f"{_count(tasks, 'task')} {'was' if tasks == 1 else 'were'} reopened after done"
+                f" in the last {days} days: {a} after an agent finish and {p} after a person finish."
+            )
         parts.extend(rework_line(g, reopened[g]) for g in (GROUP_AGENTS, GROUP_PEOPLE))
     if not runs_on:
         parts.append("Agent runs are off for this organization, so no retry is counted.")
@@ -294,30 +333,45 @@ def open_prs_sql(open_where: str) -> str:
     )
 
 
-def failing_prs_sql(open_where: str) -> str:
+def failing_prs_sql(open_where: str, *, runs_on: bool = True) -> str:
     """The open agent pull requests whose checks fail now, the oldest first
     (by the time that the task linked the pull request). ``total`` counts
-    every one before the cap. It binds ``:failing_named``."""
+    every one before the cap. It binds ``:failing_named``.
+
+    ⚠️ **While ``agent_runs_enabled`` is off, no run is read here.** The newest
+    run names the agent and its member only with ``runs_on``. Else the agent
+    comes from the newest agent act (``ma``), and the member name is empty.
+    """
+    run_cols = (
+        f"       nr.client_via AS run_via, nr.member_email AS run_member,"
+        f"       {_member_name('nr.member_email')} AS run_member_name,"
+        if runs_on
+        else "       NULL AS run_via, NULL AS run_member, NULL AS run_member_name,"
+    )
+    run_join = (
+        # The newest run names the agent and its member, as `waiting` reads it.
+        "  LEFT JOIN LATERAL ("
+        "    SELECT x.client_via, x.member_email FROM pm_agent_runs x"
+        "     WHERE x.task_id = t.id"
+        "     ORDER BY x.created_at DESC, x.id DESC LIMIT 1"
+        "  ) nr ON TRUE"
+        if runs_on
+        else ""
+    )
     return (
         f"SELECT rf.id AS ref_id, rf.ref AS pr_ref, rf.url AS pr_url,"
         f"       rf.title AS pr_title, rf.state AS pr_state,"
         f"       rf.created_at AS linked_at,"
         f"       t.id, t.title, t.task_number, t.project_id, t.parent_task_id,"
         f"       p.name AS project_name,"
-        f"       nr.client_via AS run_via, nr.member_email AS run_member,"
-        f"       {_member_name('nr.member_email')} AS run_member_name,"
+        f"{run_cols}"
         f"       ma.act_by, ma.act_via,"
         f"       count(*) OVER () AS total"
         f"  FROM pm_task_refs rf"
         f"  JOIN pm_tasks t ON t.id = rf.task_id"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  JOIN pm_projects p ON p.id = t.project_id"
-        # The newest run names the agent and its member, as `waiting` reads it.
-        f"  LEFT JOIN LATERAL ("
-        f"    SELECT x.client_via, x.member_email FROM pm_agent_runs x"
-        f"     WHERE x.task_id = t.id"
-        f"     ORDER BY x.created_at DESC, x.id DESC LIMIT 1"
-        f"  ) nr ON TRUE"
+        f"{run_join}"
         # Else the newest agent act does. RA-1's `agent_act_sql` and its one
         # read of the stamp (`activity_via_sql`) decide what an agent act is.
         f"  LEFT JOIN LATERAL ("
@@ -374,18 +428,52 @@ def merged_red_sql(past_where: str) -> str:
     )
 
 
-def _moves_sql(past_where: str, kind: str, move: str) -> str:
-    """The status moves of one kind in the two windows, each with the group
-    of the finish it is (``finished``) or that it undoes (``reopened``).
-
-    The group is RA-1's label through RA-2's grouping. The finish join reads
-    the LATEST move into done at or before the move, so for a reopen it is
-    the finish that the reopen undoes.
-    """
+def finish_move_sql(a: str = "a") -> str:
+    """A finish: a status move INTO done from a status that is not done, over
+    the `pm_activities` alias ``a``. The twin is :func:`is_finish_move`. It
+    binds ``:done_cat``."""
     return (
-        f"SELECT '{kind}' AS kind,"
-        f"       {actor_group_sql(finish_label_sql())} AS grp,"
-        f"       a.created_at AS moved_at"
+        f"{a}.meta->>'to_category' = :done_cat"
+        f" AND {a}.meta->>'from_category' IS DISTINCT FROM :done_cat"
+    )
+
+
+def reopen_move_sql(a: str = "a") -> str:
+    """A reopen: a move from done to an OPEN status, over the alias ``a``. The
+    twin is :func:`is_reopen_move`. It binds ``:done_cat`` and ``:closing``."""
+    return (
+        f"{a}.meta->>'from_category' = :done_cat"
+        f" AND {a}.meta->>'to_category' IS NOT NULL"
+        f" AND {a}.meta->>'to_category' <> ALL(CAST(:closing AS text[]))"
+    )
+
+
+FINISH_MOVE_SQL = finish_move_sql("a")
+REOPEN_MOVE_SQL = reopen_move_sql("a")
+
+
+def reopened_sql(past_where: str) -> str:
+    """For each group: the finishes of the window (``finished``), the ones of
+    them that a later reopen undid (``undone``), and the DISTINCT tasks with a
+    reopen in the window (``reopened``). Each count also covers the window
+    before it (``n_before``). It binds ``:done_cat``, ``:closing``,
+    ``:merge_days`` and ``:merge_days_before``.
+
+    ⚠️ **Two different counts, on purpose** (RA-5 fix round 1). The reopen
+    rate is a COHORT: the finishes of the window, and the share that a later
+    reopen undid, at any time up to now. So it never passes 100%. A count of
+    reopen moves over finish moves of one window can: three tasks finished 20
+    days ago and reopened today are three reopens over no finish. ``reopened``
+    is a count of tasks, and it takes the group of the finish that the
+    LATEST reopen of the task in the window undid.
+
+    A finish is undone by a reopen of the same task after it, with no other
+    finish of the task between the two. The group is RA-1's label through
+    RA-2's grouping. The finish join reads the LATEST finish at or before the
+    move, so for a reopen it is the finish that the reopen undoes.
+    """
+    label = actor_group_sql(finish_label_sql())
+    base = (
         f"  FROM pm_activities a"
         f"  JOIN pm_tasks t ON t.id = a.task_id"
         f"{finish_actor_join('a.task_id', 'a.created_at')}"
@@ -393,37 +481,42 @@ def _moves_sql(past_where: str, kind: str, move: str) -> str:
         f"   AND a.type = 'status_change'"
         f"   AND a.deleted_at IS NULL"
         f"   AND a.created_at >= {_BEFORE_FROM}"
-        f"   AND {move}"
     )
-
-
-#: The move predicates, in SQL. The twins are :func:`is_finish_move` and
-#: :func:`is_reopen_move`. They bind ``:done_cat`` and ``:closing``.
-FINISH_MOVE_SQL = (
-    "a.meta->>'to_category' = :done_cat"
-    " AND a.meta->>'from_category' IS DISTINCT FROM :done_cat"
-)
-REOPEN_MOVE_SQL = (
-    "a.meta->>'from_category' = :done_cat"
-    " AND a.meta->>'to_category' IS NOT NULL"
-    " AND a.meta->>'to_category' <> ALL(CAST(:closing AS text[]))"
-)
-
-
-def reopened_sql(past_where: str) -> str:
-    """For each group, the finishes and the reopens of the window and of the
-    window before it. It binds ``:done_cat``, ``:closing``, ``:merge_days``
-    and ``:merge_days_before``."""
+    undone = (
+        f"EXISTS (SELECT 1 FROM pm_activities r"
+        f"        WHERE r.task_id = a.task_id AND r.type = 'status_change'"
+        f"          AND r.deleted_at IS NULL AND {reopen_move_sql('r')}"
+        f"          AND r.created_at > a.created_at"
+        f"          AND NOT EXISTS (SELECT 1 FROM pm_activities n"
+        f"                           WHERE n.task_id = a.task_id AND n.type = 'status_change'"
+        f"                             AND n.deleted_at IS NULL AND {finish_move_sql('n')}"
+        f"                             AND n.created_at > a.created_at"
+        f"                             AND n.created_at < r.created_at))"
+    )
+    in_win = f"(a.created_at >= {_NOW_FROM})"
     return (
-        f"SELECT m.kind AS kind, m.grp AS grp,"
-        f"       count(*) FILTER (WHERE m.moved_at >= {_NOW_FROM}) AS n,"
-        f"       count(*) FILTER (WHERE m.moved_at < {_NOW_FROM}) AS n_before"
-        f"  FROM ("
-        f"{_moves_sql(past_where, 'finished', FINISH_MOVE_SQL)}"
-        f" UNION ALL "
-        f"{_moves_sql(past_where, 'reopened', REOPEN_MOVE_SQL)}"
-        f") m"
-        f" GROUP BY 1, 2"
+        f"WITH fin AS ("
+        f"SELECT {label} AS grp, a.created_at AS moved_at, {undone} AS undone"
+        f"{base} AND {finish_move_sql('a')}"
+        f"), reo AS ("
+        f"SELECT DISTINCT ON (a.task_id, {in_win}) {label} AS grp, {in_win} AS in_win"
+        f"{base} AND {reopen_move_sql('a')}"
+        f" ORDER BY a.task_id, {in_win}, a.created_at DESC, a.id DESC"
+        f")"
+        f" SELECT 'finished' AS kind, f.grp AS grp,"
+        f"        count(*) FILTER (WHERE f.moved_at >= {_NOW_FROM}) AS n,"
+        f"        count(*) FILTER (WHERE f.moved_at < {_NOW_FROM}) AS n_before"
+        f"   FROM fin f GROUP BY f.grp"
+        f" UNION ALL"
+        f" SELECT 'undone', f.grp,"
+        f"        count(*) FILTER (WHERE f.undone AND f.moved_at >= {_NOW_FROM}),"
+        f"        count(*) FILTER (WHERE f.undone AND f.moved_at < {_NOW_FROM})"
+        f"   FROM fin f GROUP BY f.grp"
+        f" UNION ALL"
+        f" SELECT 'reopened', o.grp,"
+        f"        count(*) FILTER (WHERE o.in_win),"
+        f"        count(*) FILTER (WHERE NOT o.in_win)"
+        f"   FROM reo o GROUP BY o.grp"
     )
 
 
@@ -473,23 +566,29 @@ def quality_seen_sql(past_where: str) -> str:
 # ── The body ─────────────────────────────────────────────────────────────────
 
 
+_KINDS = ("finished", "undone", "reopened")
+
+
 def _group_counts(rows: Iterable[Any]) -> dict[str, dict[str, int]]:
     """The rows of :func:`reopened_sql` as the counts of each group."""
-    out = {
-        g: {"finished": 0, "reopened": 0, "finished_before": 0, "reopened_before": 0}
-        for g in GROUPS
-    }
+    out = {g: {} for g in GROUPS}
+    for g in GROUPS:
+        for kind in _KINDS:
+            out[g][kind] = 0
+            out[g][f"{kind}_before"] = 0
     for r in rows:
-        if r.grp in out and r.kind in ("finished", "reopened"):
+        if r.grp in out and r.kind in _KINDS:
             out[r.grp][r.kind] = int(r.n or 0)
             out[r.grp][f"{r.kind}_before"] = int(r.n_before or 0)
     return out
 
 
 def _group(counts: Mapping[str, int]) -> dict[str, Any]:
-    """One group with its rates, in the window and in the window before."""
-    now = rate(counts["reopened"], counts["finished"])
-    before = rate(counts["reopened_before"], counts["finished_before"])
+    """One group with its cohort rate, in the window and in the window before.
+    The rate is the finishes that a reopen undid over the finishes, so it is
+    never above 1."""
+    now = rate(counts["undone"], counts["finished"])
+    before = rate(counts["undone_before"], counts["finished_before"])
     return {**counts, "rate": now, "rate_before": before, "trend": merge_trend(now, before)}
 
 
@@ -545,7 +644,7 @@ async def quality_body(
     value, before = merge_rate(merged, closed), merge_rate(merged_before, closed_before)
 
     opened = (await db.execute(text(open_prs_sql(open_where)), params)).one()
-    failing_rows = (await db.execute(text(failing_prs_sql(open_where)), params)).fetchall()
+    failing_rows = (await db.execute(text(failing_prs_sql(open_where, runs_on=runs_on)), params)).fetchall()
     failing = _failing_rows(failing_rows, clock)
     failing_total = int(opened.failing_total or 0)
 

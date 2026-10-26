@@ -958,11 +958,16 @@ export interface QualityChecks {
 
 /** WS-27bn RA-5. The tasks one group finished, and the ones reopened after. */
 export interface QualityReopened {
+  /** The finishes of the window, by this group. */
   finished: number;
+  /** Of those finishes, the ones that a later reopen undid (the cohort). */
+  undone: number;
+  /** The DISTINCT tasks with a reopen in the window, by the finish it undid. */
   reopened: number;
   finished_before: number;
+  undone_before: number;
   reopened_before: number;
-  /** Reopened over finished. Null with no finish. */
+  /** Undone over finished, so never above 1. Null with no finish. */
   rate: number | null;
   rate_before: number | null;
   trend: "up" | "down" | "flat" | null;

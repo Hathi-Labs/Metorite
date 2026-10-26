@@ -37,8 +37,10 @@ const ROW = {
 
 const GROUP = {
   finished: 10,
-  reopened: 2,
+  undone: 2,
+  reopened: 3,
   finished_before: 8,
+  undone_before: 1,
   reopened_before: 1,
   rate: 0.2,
   rate_before: 0.125,
@@ -73,7 +75,7 @@ const BUSY: QualityReport = {
     merged_red_before: 0,
   },
   rework: {
-    reopened: { agents: GROUP, people: { ...GROUP, finished: 20, reopened: 1, rate: 0.05 } },
+    reopened: { agents: GROUP, people: { ...GROUP, finished: 20, undone: 1, reopened: 1, undone_before: 2, rate: 0.05 } },
     retried: { failed: 5, retried: 3, failed_before: 4, retried_before: 1, rate: 0.6, rate_before: 0.25, trend: "up" },
   },
   max_rows: 5,
@@ -87,8 +89,8 @@ const QUIET: QualityReport = {
   checks: { failing_total: 0, failing: [], merged_red: 0, merged_red_before: 0 },
   rework: {
     reopened: {
-      agents: { ...GROUP, finished: 0, reopened: 0, rate: null, rate_before: null, trend: null },
-      people: { ...GROUP, finished: 0, reopened: 0, rate: null, rate_before: null, trend: null },
+      agents: { ...GROUP, finished: 0, undone: 0, reopened: 0, undone_before: 0, rate: null, rate_before: null, trend: null },
+      people: { ...GROUP, finished: 0, undone: 0, reopened: 0, undone_before: 0, rate: null, rate_before: null, trend: null },
     },
     retried: { failed: 0, retried: 0, failed_before: 0, retried_before: 0, rate: null, rate_before: null, trend: null },
   },
@@ -147,6 +149,10 @@ describe("the panel opens with one plain sentence (§6.8 E5)", () => {
     expect(panel).toContain("Reopened after done");
     expect(panel).toContain(">2 of 10<");
     expect(panel).toContain(">1 of 20<");
+    // The distinct tasks are said as tasks, and the rule says what is counted.
+    expect(panel).toContain(">3 tasks reopened<");
+    expect(panel).toContain(">1 task reopened<");
+    expect(panel).toContain("were reopened later");
     expect(panel).toContain("before: 1 of 8");
     expect(panel).toContain("Agents");
     expect(panel).toContain("People");
