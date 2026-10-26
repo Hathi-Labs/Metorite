@@ -13,7 +13,10 @@ What this file holds with no database:
   the author test and the cap of 5 (the R8 twin proves the rows);
 * the two cards: key, act, why line, rank, group, class and label;
 * the cache bump after the commit of a publish and of an accept (A6);
-* the feed with ``knowledge`` unlisted (A7) and the cache key (A8).
+* the feed with ``knowledge`` unlisted (A7) and the cache key (A8);
+* KB-9b slice 2, ``source_sync_failed``: the SQL of the source read, its gate
+  on ``KNOWLEDGE_SOURCES``, the card text, the class, and the bump of a failed
+  run and of a failed discovery AFTER the session closes.
 
 ``tests/unit/test_kb_my_day_r8.py`` proves the reads on a real database.
 
@@ -27,7 +30,11 @@ Mutations this file catches (R7):
 * the bump moves before the commit -> ``TestTheBump``;
 * the hash loses the manage grant -> ``TestTheCacheKey``;
 * ``review_at`` leaves ``state.STATE_FACTS`` -> ``TestTheStateOfAPageCard``;
-* the review cap goes -> ``TestOneSession::test_twelve_expired_pages_leave_room``.
+* the review cap goes -> ``TestOneSession::test_twelve_expired_pages_leave_room``;
+* the source read loses the org filter -> ``TestTheSourceCard::test_the_source_read_names_the_org_the_owner_and_the_state``;
+* the source read loses the owner filter -> the same test, and the R8 twin;
+* a stopped run counts as failed -> ``TestTheSourceCard::test_a_stopped_run_never_counts`` and the R8 twin;
+* the bump moves inside the session -> ``TestTheSyncBump``.
 """
 
 from __future__ import annotations
@@ -87,8 +94,10 @@ class _Result:
 class _Db:
     """Records each statement. It answers by the table the statement reads."""
 
-    def __init__(self, review: list[Any], shared: list[Any], gap_rows: list[Any]) -> None:
+    def __init__(self, review: list[Any], shared: list[Any], gap_rows: list[Any],
+                 sources: list[Any] | None = None) -> None:
         self.review, self.shared, self.gap_rows = review, shared, gap_rows
+        self.sources = sources or []
         self.ran: list[tuple[str, dict[str, Any]]] = []
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
@@ -96,6 +105,8 @@ class _Db:
         self.ran.append((sql, dict(params or {})))
         if "FROM kb_gaps" in sql:
             return _Result(self.gap_rows)
+        if "FROM kb_sources" in sql:
+            return _Result(self.sources)
         return _Result(self.review if "p.review_at <= now()" in sql else self.shared)
 
 
@@ -309,7 +320,9 @@ class TestTheCards:
     def test_the_limits_hold_every_kind(self) -> None:
         from gateway.routes.shell import prefs
 
-        assert prefs.MAX_KINDS == 25 == len(prefs.feed_kinds())
+        # 26 after KB-9b slice 2, and 29 since WS-66 RM-2 added the three
+        # reminder kinds (§5.9 item 10.6: a ticket that adds a kind raises the cap).
+        assert prefs.MAX_KINDS == 29 == len(prefs.feed_kinds())
 
 
 # ── The bump after the commit (A6) ──────────────────────────────────────────
@@ -382,6 +395,270 @@ class TestTheBump:
         assert order == ["open", "update", "close", f"bump:{ORG}"]
 
 
+# ── KB-9b slice 2: the card of a source that stopped syncing ────────────────
+
+def _src(n: int = 1, state: str = "ready") -> SimpleNamespace:
+    return SimpleNamespace(id=f"00000000-0000-4000-8000-{n:012d}", provider="google_drive",
+                           state=state, failed_since=NOW - timedelta(days=n))
+
+
+@pytest.fixture
+def sources_on(gates: Any) -> Any:
+    """KNOWLEDGE_SOURCES naming ORG."""
+    gates.knowledge_sources = ORG
+    return gates
+
+
+class TestTheSourceCard:
+    def test_sources_off_runs_no_source_statement_and_the_page_cards_come(
+        self, gates, world,
+    ) -> None:
+        gates.knowledge_sources = ""
+        world.db = _Db([_page(1)], [_page(2)], [], sources=[_src()])
+        found = asyncio.run(feed._knowledge(_user("a@x.test")))
+        assert [s.kind for s in found.signals()] == ["doc_needs_review", "doc_shared_with_me"]
+        assert not any("kb_sources" in sql for sql, _ in world.db.ran)
+
+    def test_sources_on_reads_in_the_same_one_session(self, sources_on, world) -> None:
+        world.db = _Db([_page(1)], [_page(2)], [], sources=[_src()])
+        found = asyncio.run(feed._knowledge(_user("a@x.test")))
+        assert world.opened == 1
+        assert len(world.db.ran) == 3
+        assert [s.kind for s in found.signals()] == [
+            "source_sync_failed", "doc_needs_review", "doc_shared_with_me"]
+
+    def test_the_failures_come_first_then_review_gaps_shared(self, sources_on, world) -> None:
+        world.db = _Db([_page(1)], [_page(2)], [_gap_row()], sources=[_src(1), _src(2)])
+        found = asyncio.run(feed._knowledge(_user("a@x.test", "knowledge:manage")))
+        assert [s.kind for s in found.signals()] == [
+            "source_sync_failed", "source_sync_failed", "doc_needs_review", "kb_gap",
+            "doc_shared_with_me"]
+
+    def test_the_failures_survive_the_cut_of_fifteen(self, sources_on, world) -> None:
+        world.db = _Db([_page(n) for n in range(1, 11)], [_page(n) for n in range(20, 25)],
+                       [_gap_row(n) for n in range(3)], sources=[_src(1)])
+        found = asyncio.run(feed._knowledge(_user("a@x.test", "knowledge:manage")))
+        signals = found.signals()
+        assert len(signals) == 15 and signals[0].kind == "source_sync_failed"
+
+    def test_a_viewer_with_no_email_reads_no_source(self, sources_on, world) -> None:
+        world.db = _Db([], [], [_gap_row()], sources=[_src()])
+        found = asyncio.run(feed._knowledge(_user("", "knowledge:manage")))
+        assert [s.kind for s in found.signals()] == ["kb_gap"]
+        assert not any("kb_sources" in sql for sql, _ in world.db.ran)
+
+    def test_the_source_read_names_the_org_the_owner_and_the_state(
+        self, sources_on, world,
+    ) -> None:
+        asyncio.run(my_day.read(_user("A@x.test"), gaps_on=False, limit=16, sources_on=True))
+        [(sql, params)] = [(q, p) for q, p in world.db.ran if "FROM kb_sources" in q]
+        assert "s.organization_id = CAST(:kb_org AS uuid)" in sql
+        assert "lower(s.owner_email) = :kb_viewer" in sql
+        assert "s.state <> 'disconnected'" in sql
+        assert params["kb_org"] == ORG and params["kb_viewer"] == "a@x.test"
+        assert params["kb_limit"] == my_day.SOURCES_MAX == 10
+        assert params["kb_runs"] == my_day.FAILED_RUNS == 3
+        # The run read is for the same org and the same source, and it is the
+        # newest three through the index (source_id, started_at DESC).
+        assert "r.organization_id = s.organization_id" in sql
+        assert "ORDER BY r.started_at DESC LIMIT :kb_runs" in sql
+
+    def test_a_stopped_run_never_counts(self) -> None:
+        sql = my_day._SOURCES_SQL
+        assert "r.status <> 'running'" in sql  # a stopped run is finished
+        assert "bool_and(x.status = 'failed'" in sql  # and it is not failed
+        assert "r.kind IN ('changes', 'reconcile')" in sql
+        assert "NOT IN ('stale', 'superseded')" in sql
+        assert "= :kb_runs AND" in sql  # fewer than three finished runs never fail
+
+    def test_the_page_reads_stay_two(self, sources_on, world) -> None:
+        asyncio.run(my_day.read(_user("a@x.test"), gaps_on=False, limit=16, sources_on=True))
+        assert len([1 for q, _ in world.db.ran if "FROM kb_pages" in q]) == 2
+
+
+class TestTheSourceSignal:
+    def _signal(self, state: str) -> Any:
+        return feed._source_signal(
+            {"id": "src-1", "provider": "google_drive", "state": state})
+
+    def _line(self, state: str) -> str:
+        sig = self._signal(state)
+        key, line = feed._md3_why("source_sync_failed", sig.facts, UTC, NOW.date())
+        assert key == "source_failed"
+        return line
+
+    def test_the_key_and_the_one_act(self) -> None:
+        from gateway.routes.shell.state import SIGNAL_ID_PATTERN
+
+        for st in ("needs_reconnect", "ready"):
+            sig = self._signal(st)
+            assert sig.signal_id == "knowledge:source:src-1"
+            assert re.fullmatch(SIGNAL_ID_PATTERN, sig.signal_id)
+            assert sig.app == "knowledge" and sig.kind == "source_sync_failed"
+            [act] = sig.acts
+            assert act["href"] == "/knowledge/sources" and act["way"] == "open"
+
+    def test_the_why_lines(self) -> None:
+        assert self._line("needs_reconnect") == (
+            "Your Google Drive stopped syncing. Reconnect it in Knowledge.")
+        assert self._line("ready") == "The last three syncs failed."
+
+    def test_the_card_holds_no_code_no_address_and_no_token(self) -> None:
+        # A6: the signal copies the state and the provider name from the row,
+        # and nothing else, so an extra column cannot reach the card.
+        row = {"id": "src-1", "provider": "google_drive", "state": "needs_reconnect",
+               "last_error": "invalid_grant", "account_email": "ana@gmail.example",
+               "token": "ya29.secret"}
+        sig = feed._source_signal(row)
+        [card] = feed.build_cards([sig], NOW, UTC, NOW.date())
+        text = repr(card) + repr(sig)
+        for leak in ("invalid_grant", "ana@gmail.example", "ya29.secret", "@"):
+            assert leak not in text, leak
+        assert set(sig.facts) == {"reason", "provider", "failed_since"}
+
+    def test_the_select_names_no_error_and_no_address(self) -> None:
+        sql = my_day._SOURCES_SQL
+        assert "last_error" not in sql and "account_email" not in sql
+        assert "account_id" not in sql and "error_text" not in sql
+        assert sql.startswith("SELECT s.id, s.provider, s.state, (CASE")
+        assert ") AS failed_since FROM kb_sources s " in sql
+
+    def test_rank_group_class_and_label(self) -> None:
+        from gateway.reach import classes
+
+        assert feed_rank.BASE["source_sync_failed"] == 31
+        assert feed_rank.BASE["source_sync_failed"] > feed_rank.BASE["doc_needs_review"]
+        assert feed_rank.group("source_sync_failed", {}, NOW, NOW.date()) == "needs_you"
+        assert classes.REACH_CLASS["source_sync_failed"] == "interrupt"
+        text = (ROOT / "workbench/control_plane/src/lib/shell/feed.ts").read_text(
+            encoding="utf-8")
+        assert 'source_sync_failed: "Source stopped syncing"' in text
+
+    def test_the_provider_holds_the_new_kind(self) -> None:
+        assert "source_sync_failed" in needs.REGISTRY["knowledge"].kinds
+
+
+# ── KB-9b slice 2, A5: the bump runs AFTER the session closes ───────────────
+
+class TestTheSyncBump:
+    """The order of a failed run: the session closes, and then the bump."""
+
+    @pytest.fixture
+    def seen(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from tests.unit import test_kb_sync_engine as eng
+
+        w = eng._bind(monkeypatch, eng.World())
+        bumps: list[tuple[str, str, int]] = []
+
+        async def bump(org: Any, email: Any) -> None:
+            bumps.append((str(org), str(email), w.open))
+            w.events.append(("bump", email))
+
+        monkeypatch.setattr(cache, "bump_member_safe", bump)
+        return SimpleNamespace(w=w, bumps=bumps, eng=eng)
+
+    def _fail(self, seen: Any, exc: BaseException) -> Any:
+        adapter = seen.eng.FakeAdapter(seen.w, {"t0": exc})
+        return seen.eng._run("changes", adapter)
+
+    def _after_close(self, seen: Any) -> None:
+        [(org, email, open_sessions)] = seen.bumps
+        assert (org, email) == (seen.eng.ORG, "ana@kc3.test")
+        assert open_sessions == 0, "the bump ran inside a session"
+        events = seen.w.events
+        at = events.index(("bump", "ana@kc3.test"))
+        assert events[at - 1] == ("commit", None), "a session was open at the bump"
+
+    def _discovery(self, seen: Any, monkeypatch: pytest.MonkeyPatch, exc: BaseException,
+                   *, row: bool = True) -> str:
+        eng = seen.eng
+        if row:
+            monkeypatch.setattr(eng._Db, "_disc_fail", lambda self, p: eng._Result(
+                [SimpleNamespace(owner_email="ana@kc3.test")]), raising=False)
+        adapter = eng.FakeAdapter(seen.w, {})
+
+        async def fail(cred: Any) -> str:
+            raise exc
+
+        adapter.changes_start_token = fail  # type: ignore[method-assign]
+        return asyncio.run(eng.discovery.discover_source(eng.ORG, eng.SOURCE, adapter))
+
+    def test_a_failed_run_bumps_the_connector_after_the_commit(self, seen) -> None:
+        from gateway.kb_sources.base import SourceError
+
+        exc = SourceError("boom")
+        exc.code = "http_500"
+        assert self._fail(seen, exc).status == "failed"
+        self._after_close(seen)
+
+    def test_an_unexpected_error_bumps_after_the_commit(self, seen) -> None:
+        assert self._fail(seen, RuntimeError("x")).status == "failed"
+        self._after_close(seen)
+
+    def test_needs_reconnect_bumps_after_the_commit(self, seen) -> None:
+        from gateway.kb_sources.base import NeedsReconnect
+
+        exc = NeedsReconnect("dead")
+        exc.code = "invalid_grant"
+        assert self._fail(seen, exc).status == "stopped"
+        self._after_close(seen)
+
+    def test_a_good_run_and_a_rate_limit_bump_nothing(self, seen) -> None:
+        from gateway.kb_sources.base import RateLimited
+
+        eng = seen.eng
+        adapter = eng.FakeAdapter(seen.w, {"t0": eng._page(nxt="t1"),
+                                           "t1": RateLimited("slow", tries=4)})
+        eng._run("changes", adapter)
+        adapter = eng.FakeAdapter(seen.w, {"t0": eng._page(start="t9")})
+        assert eng._run("changes", adapter).status == "ok"
+        assert seen.bumps == []
+
+    def test_a_bump_that_raises_never_fails_the_run(self, seen, monkeypatch) -> None:
+        async def boom(org: Any, email: Any) -> None:
+            raise RuntimeError("redis down")
+
+        monkeypatch.setattr(cache, "bump_member_safe", boom)
+        out = self._fail(seen, RuntimeError("x"))
+        assert (out.status, out.error) == ("failed", "RuntimeError")
+
+    def test_a_discovery_that_failed_bumps_after_its_session(self, seen, monkeypatch) -> None:
+        from gateway.kb_sources.base import SourceError
+
+        assert self._discovery(seen, monkeypatch, SourceError("no token")) == "failed"
+        self._after_close(seen)
+
+    def test_a_discovery_that_needs_a_reconnect_bumps_too(self, seen, monkeypatch) -> None:
+        from gateway.kb_sources.base import NeedsReconnect
+
+        assert self._discovery(
+            seen, monkeypatch, NeedsReconnect("dead")) == "needs_reconnect"
+        self._after_close(seen)
+
+    def test_a_disconnected_source_in_discovery_bumps_nothing(self, seen, monkeypatch) -> None:
+        from gateway.kb_sources.base import SourceError
+
+        # The stock fake answers the mark with no row: the source is gone.
+        self._discovery(seen, monkeypatch, SourceError("x"), row=False)
+        assert seen.bumps == []
+
+    def test_a_bump_that_raises_never_fails_a_discovery(self, seen, monkeypatch) -> None:
+        from gateway.kb_sources.base import SourceError
+
+        async def boom(org: Any, email: Any) -> None:
+            raise RuntimeError("redis down")
+
+        monkeypatch.setattr(cache, "bump_member_safe", boom)
+        assert self._discovery(seen, monkeypatch, SourceError("x")) == "failed"
+
+    def test_the_engine_and_the_discovery_bump_through_one_helper(self) -> None:
+        for name in ("engine.py", "discovery.py"):
+            text = (ROOT / "apps/services/gateway/gateway/kb_sync" / name).read_text(
+                encoding="utf-8")
+            assert "owner_bump.bump_owner(" in text
+            assert "bump_member_safe" not in text
+
+
 # ── The cache key (A8) and the dark list (A7) ───────────────────────────────
 
 class TestTheCacheKey:
@@ -450,7 +727,8 @@ class TestTheStateOfAPageCard:
     def test_only_the_page_kinds_carry_review_at(self) -> None:
         assert "review_at" in state.STATE_FACTS
         assert set(state.STATE_FACTS) == {
-            "due_at", "note_ids", "waiting_since", "message_id", "review_at"}
+            "due_at", "note_ids", "waiting_since", "message_id", "review_at",
+            "failed_since"}
 
 
 # ── The review cap (F2), the cache key (F3) and the reads (F4) ──────────────
@@ -494,3 +772,54 @@ class TestTheCapAndTheKey:
             assert "p.state = 'published'" in sql
             assert "s.kind <> 'me'" in sql
             assert "s.archived_at IS NULL" in sql
+
+
+# ── KB-9b slice 2, F1: a dismissed source card returns in a NEW episode ─────
+
+class TestTheEpisodeOfASourceCard:
+    DAY = state.Day(UTC)
+    CTX = state.Context(now=NOW, day=DAY)
+
+    def _card(self, since: datetime, source_state: str = "ready") -> dict[str, Any]:
+        sig = feed._source_signal({"id": "src-1", "provider": "google_drive",
+                                   "state": source_state, "failed_since": since})
+        [card] = feed.build_cards([sig], NOW, UTC, NOW.date())
+        return {**card, "state_fp": state.state_fp(card["signal_id"], card["facts"])}
+
+    def _dismissed(self, card: dict[str, Any]) -> dict[str, Any]:
+        return {"state": "dismissed", "kind": "source_sync_failed",
+                "fingerprint": card["state_fp"]}
+
+    def test_failed_since_is_a_state_fact_and_the_signal_time(self) -> None:
+        assert "failed_since" in state.STATE_FACTS
+        since = NOW - timedelta(days=2)
+        sig = feed._source_signal({"id": "src-1", "provider": "google_drive",
+                                   "state": "ready", "failed_since": since})
+        assert sig.facts["failed_since"] == since.isoformat() == sig.at
+
+    def test_the_same_episode_stays_hidden_a_new_one_returns(self) -> None:
+        first = self._card(NOW - timedelta(days=30))
+        dismissed = self._dismissed(first)
+        # A 4th and a 5th failed run leave the anchor where it was.
+        again = self._card(NOW - timedelta(days=30))
+        assert again["state_fp"] == first["state_fp"]
+        assert state.decide(again, dismissed, self.CTX).visible is False
+        # Weeks later the source fails again: a new anchor, a new card.
+        later = self._card(NOW - timedelta(hours=1))
+        assert later["state_fp"] != first["state_fp"]
+        assert state.decide(later, dismissed, self.CTX).visible is True
+
+    def test_a_reconnect_episode_returns_too(self) -> None:
+        first = self._card(NOW - timedelta(days=9), "needs_reconnect")
+        later = self._card(NOW - timedelta(hours=2), "needs_reconnect")
+        assert later["state_fp"] != first["state_fp"]
+        assert state.decide(
+            later, self._dismissed(first), self.CTX).visible is True
+
+    def test_the_push_print_follows_the_episode(self) -> None:
+        from gateway.reach import plan
+
+        first = self._card(NOW - timedelta(days=30))
+        later = self._card(NOW - timedelta(hours=1))
+        assert plan.reach_print(first) != plan.reach_print(later)
+        assert plan.reach_print(first) == plan.reach_print(self._card(NOW - timedelta(days=30)))

@@ -1952,7 +1952,8 @@ def test_every_report_card_section_labels_every_key(name: str) -> None:
     for key, _ in spec["stats"]:
         put(section, key, 7)
     if spec.get("rows"):
-        section[spec["rows"]] = [{key: "x" for key, _ in spec["columns"]}]
+        # WS-27bn RA-5. A dotted rows key is a path too (`checks.failing`).
+        put(section, spec["rows"], [{key: "x" for key, _ in spec["columns"]}])
     stats, table = _card_section(name, section)
 
     assert spec["title"] != name and "_" not in spec["title"]

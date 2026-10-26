@@ -39,6 +39,7 @@ export const PANEL_HINTS: Readonly<Record<string, string>> = {
   stuck: "Stalled work, and work past due.",
   waiting: "What agents wait for from a person.",
   agent_runs: "How agent runs end, and which are silent.",
+  quality: "Agent pull requests, rework and failing checks.",
   hygiene: "Tasks with no owner, date or size.",
   conflicts: "Late blockers, and people spread thin.",
   rebalance: "Tasks at risk, and who could help.",

@@ -48,9 +48,9 @@ const CLEAR = {
     agent_runs_seen: true,
     days: 14,
     window_start: "2026-09-17",
-    outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+    outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
     ended_total: 0,
-    outcomes_before: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+    outcomes_before: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
     series: [],
     success: { rate: null, completed: 0, rated: 0, rate_before: null, rated_before: 0, trend: null },
     silent: [],
@@ -63,6 +63,32 @@ const CLEAR = {
     long_after_hours: 4,
     long_line: null,
     max_rows: 20,
+  },
+  // WS-27bn RA-5. No agent pull request, no reopen and no failed run.
+  quality: {
+    summary: "No agent pull request merged or closed in the last 14 days.",
+    on: true,
+    quality_seen: false,
+    days: 14,
+    prs: {
+      merged: 0,
+      closed: 0,
+      rate: null,
+      merged_before: 0,
+      closed_before: 0,
+      rate_before: null,
+      trend: null,
+      open: 0,
+    },
+    checks: { failing_total: 0, failing: [], merged_red: 0, merged_red_before: 0 },
+    rework: {
+      reopened: {
+        agents: { finished: 0, undone: 0, reopened: 0, finished_before: 0, undone_before: 0, reopened_before: 0, rate: null, rate_before: null, trend: null },
+        people: { finished: 0, undone: 0, reopened: 0, finished_before: 0, undone_before: 0, reopened_before: 0, rate: null, rate_before: null, trend: null },
+      },
+      retried: { failed: 0, retried: 0, failed_before: 0, retried_before: 0, rate: null, rate_before: null, trend: null },
+    },
+    max_rows: 5,
   },
   hygiene: { open_total: 0, stale_days: 14, by_kind: {}, rows: [] },
   conflicts: { rows: [], total: 0, by_kind: {}, hr_visible: true, horizon_days: 14, window: WINDOW },
@@ -93,6 +119,49 @@ describe("item 5: a clear section prints the app's clear line", () => {
   it.each(REPORT_SECTIONS.map((s) => s.key))("%s", (key) => {
     const { parts } = layout({ [key]: (CLEAR as Record<string, unknown>)[key] });
     expect(parts[0].notes).toContain(SECTION_CLEAR_LINES[key]);
+  });
+});
+
+describe("WS-27bn RA-5: the quality section prints the summary first, then the figures", () => {
+  const busy = {
+    ...(CLEAR as Record<string, any>).quality,
+    summary:
+      "8 agent pull requests merged and 2 closed with no merge in the last 14 days." +
+      " The merge rate is 80%, up from 70% in the 14 days before.",
+    prs: { merged: 8, closed: 2, rate: 0.8, merged_before: 7, closed_before: 3, rate_before: 0.7, trend: "up", open: 3 },
+    checks: {
+      failing_total: 1,
+      failing: [
+        {
+          id: "t1", task_number: 31, title: "Fix the checks", project_id: "p1", project_name: "Rig",
+          since: null, age_hours: 50, ref: "acme/rig#12", url: null, pr_title: null, pr_state: "open",
+          agent: "Claude Code", client_via: null, member: null, member_name: "Ana Rao",
+        },
+      ],
+      merged_red: 1,
+      merged_red_before: 0,
+    },
+    rework: {
+      reopened: {
+        agents: { finished: 10, undone: 2, reopened: 3, finished_before: 8, undone_before: 1, reopened_before: 1, rate: 0.2, rate_before: 0.125, trend: "up" },
+        people: { finished: 20, undone: 1, reopened: 1, finished_before: 18, undone_before: 2, reopened_before: 2, rate: 0.05, rate_before: 0.1111, trend: "down" },
+      },
+      retried: { failed: 5, retried: 3, failed_before: 4, retried_before: 1, rate: 0.6, rate_before: 0.25, trend: "up" },
+    },
+  };
+
+  it("leads with the server's sentence, and states no goal", () => {
+    const { parts } = layout({ quality: busy });
+    expect(parts).toHaveLength(1);
+    expect(parts[0].head.lead).toBe(`Quality: ${busy.summary}`);
+    const text = parts[0].items.join("\n");
+    expect(text).toContain("Merge rate 80%, up from 70% · 8 merged · 2 closed, not merged · 3 open now");
+    expect(text).toContain("Reopened after agents: 2 of 10 finishes (20%) · 3 tasks reopened · before: 1 of 8");
+    expect(text).toContain("Reopened after people: 1 of 20 finishes (5%) · 1 task reopened · before: 2 of 18");
+    expect(text).toContain("3 of 5 failed runs got a new run");
+    expect(text).toContain("Merged while red: 1");
+    expect(text).toContain("#31 Fix the checks · Claude Code for Ana Rao · acme/rig#12");
+    expect(text).not.toMatch(/\b(goal|target)\b/i);
   });
 });
 
@@ -190,5 +259,22 @@ describe("items 2 and 9: the HR lines", () => {
     const { parts } = layout({ conflicts: { ...CLEAR.conflicts, hr_visible: false } });
     expect(parts[0].notes).toContain(CONFLICTS_HR_HINT);
     expect(parts[0].notes).not.toContain(SECTION_CLEAR_LINES.conflicts);
+  });
+});
+
+describe("RA-4b: with agent runs off, no section says clear", () => {
+  it("the email prints the server's summary and no clear line", () => {
+    const off = "Agent runs are off for this organization, so no run is counted.";
+    const { parts } = layout({
+      agent_runs: { ...(CLEAR.agent_runs as object), on: false, summary: off },
+    });
+    expect(parts).toHaveLength(1);
+    expect(parts[0].head.lead).toContain(off);
+    expect(parts[0].notes).not.toContain(SECTION_CLEAR_LINES.agent_runs);
+    const waiting = layout({
+      waiting: { ...(CLEAR.waiting as object), on: false, summary: off },
+    });
+    expect(waiting.parts[0].head.lead).toContain(off);
+    expect(waiting.parts[0].notes).not.toContain(SECTION_CLEAR_LINES.waiting);
   });
 });

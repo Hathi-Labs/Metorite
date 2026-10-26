@@ -1027,11 +1027,19 @@ register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True)
 # with `KNOWLEDGE_GAPS` open and `knowledge:manage` held. `hash_permission`
 # keeps `knowledge:manage` in the read cache key (`cache.features_hash`).
 # `my_day.read` opens ONE tenant session, and this file opens none.
-# `source_sync_failed` is KB-9b slice 2. Fences: `tests/unit/test_kb_my_day.py`,
+# `source_sync_failed` (KB-9b slice 2) keys on `knowledge:source:<id>` and is
+# for the member who connected the Drive. It reads only with `KNOWLEDGE_SOURCES`
+# open, in the same session. Fences: `tests/unit/test_kb_my_day.py`,
 # `tests/unit/test_kb_gaps.py` and the `_r8` twins (R8).
 
 #: The kinds of the source.
-KNOWLEDGE_KINDS = frozenset({"kb_gap", "doc_needs_review", "doc_shared_with_me"})
+KNOWLEDGE_KINDS = frozenset({"kb_gap", "doc_needs_review", "doc_shared_with_me",
+                             "source_sync_failed"})
+
+#: The one act of ``source_sync_failed`` opens the Sources view.
+SOURCES_HREF = "/knowledge/sources"
+#: What the card calls a provider. No account address, no error text.
+_PROVIDER_NAMES = {"google_drive": "Google Drive"}
 
 
 def _gap_signal(row: dict[str, Any]) -> Signal:
@@ -1083,6 +1091,26 @@ def _page_signal(row: dict[str, Any], kind: str) -> Signal:
     )
 
 
+def _source_signal(row: dict[str, Any]) -> Signal:
+    """``source_sync_failed``: a source that the member connected stopped
+    syncing (KB-9b slice 2). The facts are the reason and nothing else: no
+    provider error, no token and no account address."""
+    source_id = str(row["id"])
+    name = _PROVIDER_NAMES.get(str(row.get("provider") or ""), "A source")
+    reconnect = row.get("state") == "needs_reconnect"
+    since = _iso(row.get("failed_since"))
+    return Signal(
+        signal_id=f"knowledge:source:{source_id}", app="knowledge",
+        kind="source_sync_failed",
+        entity={"type": "source", "id": source_id, "label": name}, title=name,
+        facts={"reason": "reconnect" if reconnect else "runs", "provider": name,
+               "failed_since": since},
+        href=SOURCES_HREF, at=since,
+        acts=(link("open-sources", "Reconnect" if reconnect else "Open Sources",
+                   SOURCES_HREF),),
+    )
+
+
 async def _knowledge(user: UserContext) -> Found:
     from gateway.routes.knowledge import flags as kb_flags
     from gateway.routes.knowledge import my_day
@@ -1092,9 +1120,12 @@ async def _knowledge(user: UserContext) -> Found:
     found = await my_day.read(
         user, gaps_on=kb_flags.knowledge_gaps_allowed(user.organization_id),
         limit=PER_APP + 1,
+        sources_on=kb_flags.knowledge_sources_allowed(user.organization_id),
     )
-    # The order before the cut of PER_APP: review, then gaps, then shared.
-    signals = ([_page_signal(r, "doc_needs_review") for r in found.review]
+    # The order before the cut of PER_APP: source failures (the connector's
+    # own, and urgent), then review, gaps and shared.
+    signals = ([_source_signal(r) for r in found.sources]
+               + [_page_signal(r, "doc_needs_review") for r in found.review]
                + [_gap_signal(r) for r in found.gaps]
                + [_page_signal(r, "doc_shared_with_me") for r in found.shared])
     return Found([], 0, capped=len(signals) > PER_APP,
@@ -1107,6 +1138,86 @@ async def _knowledge(user: UserContext) -> Found:
 # Handled read.
 register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, needs=False,
                   gated=True, hash_permission="knowledge:manage"))
+
+
+# ── Reminders (WS-66 RM-2, calendar_events_reminders.md §5.6, feed only, gated) ─
+#
+# One card for each of my reminders that fired and is still open, computed on
+# read from the row. No card is stored. It keys on `reminders:<id>`, so the
+# card changes its kind in place: `reminder_due` after the fire,
+# `reminder_check` after the check-back, `reminder_unconfirmed` after the
+# loop gave up. A `scheduled` row has no card: it has not fired, or the loop
+# moved it to a new slot. The app is the Calendar. `reminders.my_open_cards`
+# opens ONE tenant session, and this file opens none. With CALENDAR_REMINDERS
+# off the source is absent before any read. The act is a link that opens a new
+# chat now and carries the `reminder` id of §5.7 for RM-4 (`reminder_href`).
+# The acts in place of §5.6 wait for the client (D101). Fence:
+# `tests/unit/test_reminder_loop.py`.
+
+#: The kinds of the source (§5.6).
+REMINDER_KINDS = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
+
+
+def reminder_href(reminder_id: str) -> str:
+    """The link of a reminder card (§5.7 item 1).
+
+    ``do=new-chat`` is the chat's own door to a fresh chat
+    (``app/chat/page.tsx`` ``ChatFullView``), so the link works before RM-4:
+    it opens a new chat, and never the chat that was open last. Today the
+    page drops the rest of the address. RM-4 makes it read ``reminder`` and
+    write the first message."""
+    return f"/chat?do=new-chat&reminder={quote(reminder_id, safe='')}"
+
+
+def _reminder_kind(row: dict[str, Any]) -> str:
+    """The card kind of one row: its state, then its last ladder step."""
+    if row.get("state") == "unconfirmed":
+        return "reminder_unconfirmed"
+    if row.get("step") == "check_back":
+        return "reminder_check"
+    return "reminder_due"
+
+
+def _reminder_signal(row: dict[str, Any]) -> Signal:
+    """One reminder card. The facts are times and counts only. The title is
+    the member's own line of text."""
+    rid = str(row["id"])
+    kind = _reminder_kind(row)
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    fire_at = _iso(row.get("fire_at"))
+    href = reminder_href(rid)
+    return Signal(
+        signal_id=f"reminders:{rid}", app="calendar", kind=kind,
+        entity={"type": "reminder", "id": rid, "label": title}, title=title,
+        # `waiting_since` is the instant of the last step, so a dismissed
+        # card comes back at the check-back and after a new fire (§6.8 item 1).
+        facts={"fire_at": fire_at,
+               "waiting_since": _iso(row.get("step_at")) or fire_at,
+               "cycles": int(row.get("cycles") or 0),
+               "notice": row.get("kind") == "notice"},
+        href=href, acts=(link("open-reminder", "Open", href),),
+        at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
+    )
+
+
+async def _reminders(user: UserContext) -> Found:
+    from gateway.routes.projects.reminders import my_open_cards, reminders_enabled
+
+    if not reminders_enabled():
+        raise needs.SourceAbsent("CALENDAR_REMINDERS is off")
+    rows, edge = await my_open_cards(user, now=needs._now(), limit=PER_APP + 1)
+    signals = [_reminder_signal(r) for r in rows]
+    # The next fire or step of the loop is when the card set changes next,
+    # so the read cache keeps the answer until then (§8.4 item 2).
+    return Found([], 0, capped=len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
+
+
+# The gate: `feature:projects`, the gate of the reminder routes. Gated, so it
+# runs only while MY_DAY_PROVIDERS lists `reminders` (§5.8 item 1), and with
+# no Handled read. The cards are the Calendar's.
+register(Provider("reminders", ("projects",), _reminders, REMINDER_KINDS, needs=False,
+                  gated=True, app="calendar"))
 
 
 # ── The templates (§4.2): code writes every why line ────────────────────────
@@ -1217,6 +1328,8 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
     if kind == "no_plan_yet":
         return "no_plan", (f"Your day started at {_clock(facts.get('day_start'), tz)}, "
                            "and nothing is on the calendar.")
+    if kind in REMINDER_KINDS:
+        return _reminder_line(kind, facts, tz, today)
     return _md3_why(kind, facts, tz, today)
 
 
@@ -1294,6 +1407,15 @@ def _gap_line(facts: dict[str, Any]) -> str:
     return f"{who} in the last 30 days. Nobody has written it down in Knowledge."
 
 
+def _source_line(facts: dict[str, Any]) -> str:
+    """The why line of ``source_sync_failed`` (KB-9b slice 2). A code
+    template over the reason: never an error text, a token or an address."""
+    if facts.get("reason") == "reconnect":
+        name = facts.get("provider") or "source"
+        return f"Your {name} stopped syncing. Reconnect it in Knowledge."
+    return "The last three syncs failed."
+
+
 def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
     """The why line of ``doc_needs_review`` (KB-9b). It names the review date
     and nothing else: no person."""
@@ -1318,6 +1440,8 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     # KB-9b: the two page cards.
     "doc_needs_review": ("review_due", _review_line),
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
+    # KB-9b slice 2: a source that the member connected stopped syncing.
+    "source_sync_failed": ("source_failed", lambda f, _tz, _today: _source_line(f)),
 }
 
 
@@ -1372,6 +1496,26 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
                         "The run waits for your answer.")
     raise KeyError(kind)
+
+
+def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
+                   today: date) -> tuple[str, str]:
+    """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
+    template over the time: no guilt and no "you missed". A check-back names
+    every exit, and after a move it uses other words than the first one."""
+    at = facts.get("fire_at")
+    when = f"{_clock(at, tz)} {_when(at, tz, today)}".strip()
+    exits = "Mark it done, move it, or drop it."
+    if kind == "reminder_unconfirmed":
+        return "reminder_stopped", ("I stopped checking on this. Make it a task, "
+                                    "pick a time, or drop it.")
+    if kind == "reminder_check":
+        if not when:
+            return "reminder_check", f"It is still open. {exits}"
+        if int(facts.get("cycles") or 0) > 0:
+            return "reminder_moved", f"It is still open after the move to {when}. {exits}"
+        return "reminder_check", f"It was set for {when}. {exits}"
+    return "reminder_set", f"Reminder for {when}." if when else "A reminder you set."
 
 
 def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:

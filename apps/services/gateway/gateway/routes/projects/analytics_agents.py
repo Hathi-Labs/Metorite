@@ -176,6 +176,12 @@ _PR_CLOSED_AT = (
 )
 
 
+#: :data:`_PR_CLOSED_AT` under a public name. WS-27bn RA-5
+#: (`analytics_quality.py`) reads the close time of a pull request from here.
+#: The merge rate and the "merged while red" count then read one time.
+PR_CLOSED_AT_SQL = _PR_CLOSED_AT
+
+
 def pr_closed_at(
     state: str | None, merged_at: datetime | None, pr_updated_at: datetime | None,
 ) -> datetime | None:
@@ -607,6 +613,7 @@ def run_hours(
     ended: datetime | None,
     last_agent: datetime | None,
     questions: Iterable[tuple[datetime, datetime | None, datetime | None]] = (),
+    gaps: Iterable[tuple[datetime, datetime]] = (),
 ) -> float | None:
     """The agent time of one run, in hours, or None when it has none.
 
@@ -621,6 +628,11 @@ def run_hours(
     ⚠️ **The waits never overlap.** A wait ends at or before the agent's next
     act, and the next question is an agent act. So no second for one wait
     is taken out two times.
+
+    RA-4b: each gap takes out the idle time of a reopened run, from the
+    end that a member prompt reopened to that prompt (:func:`reopen_gaps`).
+    The gap leaves out the part that a wait already covers. The part of a
+    gap outside the run is ignored.
     """
     if started is None or ended is None:
         return None
@@ -633,15 +645,92 @@ def run_hours(
             continue
         stop = min(t for t in (answered, next_act, end) if t is not None)
         total -= max(0.0, (stop - asked).total_seconds())
+    for idle_from, idle_to in gaps:
+        lo, hi = max(idle_from, started), min(idle_to, end)
+        total -= max(0.0, (hi - lo).total_seconds())
     return max(0.0, total) / 3600.0
 
 
-def run_time_joins_sql() -> str:
-    """The two joins that give the run ``r`` its agent time (§6.8 D item 3).
+def reopen_gaps(
+    prompts: Iterable[tuple[datetime, datetime | None, datetime | None]],
+) -> list[tuple[datetime, datetime]]:
+    """The idle gaps of a reopened run (RA-4b), as ``(from, to)`` pairs.
 
-    ``re.run_end`` is :data:`_RUN_END`, and ``w.wait_s`` is the seconds of
-    each wait on a person: `analytics_waiting.answered_at_sql` pairs a
-    question with its answer, as the answer time does. Read the agent time
+    ``prompts`` holds ``(prompt_at, reopened_end, wait_end)`` for each member
+    prompt of the run. ``reopened_end`` is the ``content.reopens.ended_at``
+    that `agent_runs._write_activity` stamps on a prompt that REOPENS a
+    terminal run. A prompt without it makes no gap: it went to a run that was
+    still open, and the old rows have no marker. ``wait_end`` is the end of
+    the wait on the question that the prompt answers, or None.
+
+    ⚠️ **A gap never overlaps a wait.** The question ``e`` was asked before the
+    run ended, and the prompt answers it. Then the wait from ``e`` to the
+    answer already covers the time from the end to the prompt. So the gap
+    starts at the later of the end and the end of that wait. When an agent act
+    ended the wait before the run ended, the gap is whole. The SQL twin is
+    :data:`_REOPEN_GAPS_JOIN`.
+    """
+    gaps: list[tuple[datetime, datetime]] = []
+    for at, ended, wait_end in prompts:
+        if ended is None:
+            continue
+        start = max(ended, wait_end) if wait_end is not None else ended
+        if at > start:
+            gaps.append((start, at))
+    return gaps
+
+
+#: RA-4b. The idle gaps of a reopened run: each member prompt that carries
+#: ``content.reopens`` (`agent_runs._write_activity`), from the end it reopened
+#: to the prompt, less the part that a wait on a person already covers, and
+#: cut to the run. The Python twin is :func:`reopen_gaps`.
+#:
+#: ⚠️ **A reopen keeps its run.** A member prompt moves ``completed`` to
+#: ``in_progress`` in the SAME run, ``started_at`` stays and ``ended_at``
+#: clears (`agent_runs._move_run`). So the time between the terminal move and
+#: that prompt is the member's, not the agent's. Without this join a run that
+#: a member reopens a day later reads one day long.
+#:
+#: ⚠️ **The marker, never the row trail.** The cap of ephemeral rows deletes
+#: the thoughts and actions between two acts, so a trail of rows can look
+#: unbroken when the agent worked all that time. A prompt with no marker went
+#: to an open run and makes no gap.
+def _reopen_gaps_join() -> str:
+    wait_end = (
+        f"least(coalesce({answered_at_sql('e')}, re.run_end),"
+        f" coalesce({_NEXT_AGENT_ACT}, re.run_end), re.run_end)"
+    )
+    covered = (
+        f"coalesce((SELECT {wait_end} FROM pm_agent_run_activities e"
+        f" WHERE e.id = p.in_reply_to AND e.type = 'elicitation'),"
+        f" '-infinity'::timestamptz)"
+    )
+    return (
+        " LEFT JOIN LATERAL ("
+        "   SELECT sum(greatest(0, extract(epoch FROM"
+        "            (least(p.created_at, re.run_end) - greatest(g.from_at, r.started_at)))))"
+        "            AS gap_s"
+        "     FROM pm_agent_run_activities p"
+        "    CROSS JOIN LATERAL (SELECT greatest("
+        "      CAST(p.content->'reopens'->>'ended_at' AS timestamptz),"
+        f"      {covered}) AS from_at) g"
+        "    WHERE p.run_id = r.id AND p.type = 'prompt'"
+        "      AND p.content->'reopens'->>'ended_at' IS NOT NULL"
+        " ) rg ON TRUE"
+    )
+
+
+_REOPEN_GAPS_JOIN = _reopen_gaps_join()
+
+
+def run_time_joins_sql() -> str:
+    """The joins that give the run ``r`` its agent time (§6.8 D item 3).
+
+    ``re.run_end`` is :data:`_RUN_END`, ``w.wait_s`` is the seconds of
+    each wait on a person (`analytics_waiting.answered_at_sql` pairs a
+    question with its answer, as the answer time does), and ``rg.gap_s`` is
+    the seconds of each idle gap of a reopened run (:data:`_REOPEN_GAPS_JOIN`,
+    RA-4b). Read the agent time
     of the run as :data:`RUN_AGENT_SECONDS_SQL`, and only where
     :data:`RUN_MEASURED_SQL` holds.
 
@@ -663,6 +752,7 @@ def run_time_joins_sql() -> str:
         f"    WHERE e.run_id = r.id AND e.type = 'elicitation'"
         f"      AND e.created_at >= r.started_at AND e.created_at < re.run_end"
         f" ) w ON TRUE"
+        f"{_REOPEN_GAPS_JOIN}"
     )
 
 
@@ -670,7 +760,7 @@ def run_time_joins_sql() -> str:
 #: its start to its end, less the waits. The SQL twin of :func:`run_hours`.
 RUN_AGENT_SECONDS_SQL = (
     "greatest(0, extract(epoch FROM (re.run_end - r.started_at))"
-    " - coalesce(w.wait_s, 0))"
+    " - coalesce(w.wait_s, 0) - coalesce(rg.gap_s, 0))"
 )
 
 #: The run ``r`` has an agent time: it started, it ended, and its end is not

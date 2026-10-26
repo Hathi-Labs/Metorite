@@ -63,10 +63,12 @@ def _board_with_required_field(
     db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
 ) -> Any:
     """A company project whose required field a capture cannot carry."""
-    project = db.seed_project(name="Printer v3", subject="org")
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`). Fields
+    # are ROOT-scoped, so the required field sits on the space.
+    project = db.seed_in_space(name="Printer v3", subject="org")
     lane = db.seed_status(project.id, name="To do", category="todo", is_default=True)
     db.seed(
-        "pm_custom_fields", project_id=project.id, field_key="customer_po",
+        "pm_custom_fields", project_id=project.parent_project_id, field_key="customer_po",
         name="PO", field_type="text", required=True,
     )
 

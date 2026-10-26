@@ -32,9 +32,9 @@ from tests.unit._decide_flag import (
 )
 
 MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
-ALL_STATIC_FAMILY_TOOLS = {
-    n for fam in sf.SKILL_FAMILIES.values() for n in fam["tools"]
-}
+# Every static tool that injection offers. A tool pack (WS-67 OA-7a) holds
+# its owner's own tools, which injection never offers, so it is not here.
+ALL_STATIC_FAMILY_TOOLS = set(sf.injected_tool_names())
 
 #: D85: an agent with no config reads as SHARED and loses the shell tools.
 #: These tests pin the S2 rules over the WHOLE floor, so the fake agent is

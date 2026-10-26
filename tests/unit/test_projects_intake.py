@@ -68,7 +68,8 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
 
 
 def _workspace(db: FakeProjectsDB, *, subject: str | None = "org") -> tuple:
-    project = db.seed_project(name="Ops", subject=subject)
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`).
+    project = db.seed_in_space(name="Ops", subject=subject)
     todo = db.seed_status(project.id, name="To do", category="todo",
                           is_default=True, position=20)
     return project, todo

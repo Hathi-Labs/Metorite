@@ -46,7 +46,14 @@ def _hermetic(monkeypatch):
 
     monkeypatch.setattr(
         sk, "_platform_tools_by_name",
-        lambda: {n: _mk(n) for n in sf.all_registered_tool_names()},
+        lambda: {n: _mk(n) for n in sf.injected_tool_names()},
+    )
+    # WS-67 OA-7a: the tools of each pack come from its owner. Fakes here;
+    # test_tool_packs_registry.py loads the real owner.
+    monkeypatch.setattr(
+        sk, "_pack_tools_by_name",
+        lambda: {n: _mk(n) for slug in sf.pack_slugs()
+                 for n in sf.SKILL_FAMILIES[slug]["tools"]},
     )
     monkeypatch.setattr(sk, "_addendum_for_scope", lambda scope: "a" * 400)
     monkeypatch.setattr(sk, "_count_tokens", len)
@@ -111,7 +118,8 @@ async def test_matrix_unscoped_agent_shows_all_families(monkeypatch):
     row = out["agents"][0]
     assert row["all_families"] is True
     assert row["disabled_families"] == []
-    assert set(row["families"]) == set(sf.SKILL_FAMILIES)
+    # Every INJECTED family. No agent is injected with a tool pack (OA-7a).
+    assert set(row["families"]) == set(sf.injected_families())
 
 
 @pytest.mark.asyncio

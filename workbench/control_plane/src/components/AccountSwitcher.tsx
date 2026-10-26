@@ -495,7 +495,7 @@ export function AccountFoot({
   const { accounts: switcher, reload } = useAccounts();
   const { data: session } = useSession();
   const { access } = useAccess();
-  // WS-63 PZ-25: the "Assistant" row, only with the profile on for this org.
+  // WS-63 PZ-25: the "Assistant settings" row, only with the profile on for this org.
   // Read here, where the foot always mounts, so the row is known at open.
   const assistant = useAssistantProfileEnabled();
   // With the switcher off, the session names the account. Access answers
@@ -663,7 +663,7 @@ export function AccountFootMenu({
   layout: boolean;
   /** False drops You and Settings, for a member with no organization. */
   pages?: boolean;
-  /** True adds the "Assistant" row to You (PZ-25). `AccountFoot` reads it. */
+  /** True adds the "Assistant settings" row to Settings (PZ-25, PZ-28). `AccountFoot` reads it. */
   assistant?: boolean;
   onChanged: () => void;
   /**

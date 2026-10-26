@@ -116,6 +116,10 @@ the relist is read again by the next run.
   becomes ``gone`` only when its folder was read in full and the relist did
   not write it again. It never calls ``discovery._walk``, which deletes every
   node of the source.
+  When every folder is done, one last cascade (K-25) takes each live node
+  below a folder that is still ``gone``. A folder that moved out of a read
+  folder can go ``gone`` after, or before, the relist read its children, and
+  the per-folder cascade spares a node that the relist saw again.
 
 The upsert writes the provider's ``content_hash``. A node with the same hash
 keeps its row and its id, and a changed hash gets the new value. Nothing
@@ -163,7 +167,7 @@ from gateway.kb_sources.base import (
     SourceError,
 )
 from gateway.kb_sources.google_drive import client as google_client
-from gateway.kb_sync import discovery, runs
+from gateway.kb_sync import discovery, owner_bump, runs
 
 _log = get_logger("kb_sync.engine")
 
@@ -188,13 +192,15 @@ _SOURCE_SQL = (
     "FOR SHARE"
 )
 
-#: A source is capped when a folder has ``explored = false`` (a capped
+#: A source is capped when a LIVE folder has ``explored = false`` (a capped
 #: discovery), or when its reconcile cursor says so (an uncapped source that
-#: grew past the cap, :data:`_CAP_SQL`).
+#: grew past the cap, :data:`_CAP_SQL`). K-23: a gone folder never counts. A
+#: re-consent lists the whole tree again, and a folder that is not in it stays
+#: gone with its old ``explored = false``. It must not keep the source capped.
 _CAPPED_SQL = (
     "SELECT (EXISTS (SELECT 1 FROM kb_source_nodes "
     "WHERE organization_id = CAST(:org AS uuid) AND source_id = CAST(:source AS uuid) "
-    "AND kind = 'folder' AND NOT explored) "
+    "AND kind = 'folder' AND state = 'live' AND NOT explored) "
     "OR EXISTS (SELECT 1 FROM kb_sync_cursors "
     "WHERE organization_id = CAST(:org AS uuid) AND source_id = CAST(:source AS uuid) "
     "AND kind = 'reconcile' AND cursor_state ->> 'capped' = 'true')) AS capped"
@@ -203,6 +209,7 @@ _CAPPED_SQL = (
 #: An uncapped source that grew past the cap becomes capped, with NO delete
 #: (review P2). Each folder deeper than the levels of a capped walk becomes
 #: ``explored = false``, as ``discovery._walk`` would leave it. The nodes stay.
+#: K-23: only a live folder is marked. A gone folder keeps its ``explored``.
 _CAP_SQL = (
     "WITH RECURSIVE shallow(ext_id, depth) AS ("
     "SELECT n.ext_id, 0 FROM kb_source_nodes n "
@@ -218,7 +225,8 @@ _CAP_SQL = (
     "AND c.state = 'live' AND s.depth + 1 < :levels) "
     "UPDATE kb_source_nodes f SET explored = false, updated_at = now() "
     "WHERE f.organization_id = CAST(:org AS uuid) AND f.source_id = CAST(:source AS uuid) "
-    "AND f.kind = 'folder' AND f.explored AND f.ext_id NOT IN (SELECT ext_id FROM shallow)"
+    "AND f.kind = 'folder' AND f.state = 'live' AND f.explored "
+    "AND f.ext_id NOT IN (SELECT ext_id FROM shallow)"
 )
 
 #: When nodes go ``gone``, each live node below them goes too, to a fixed
@@ -534,6 +542,7 @@ class _SourceRun:
             folders = [str(r.ext_id) for r in (await db.execute(text(_EXPLORED_FOLDERS_SQL), {
                 "org": self.org, "source": self.source_id,
             })).fetchall()]
+        went: list[str] = []
         for folder in folders:
             if self.should_stop():
                 raise _Shutdown()
@@ -553,7 +562,20 @@ class _SourceRun:
                     "started": started,
                 })).fetchall()]
                 self.counts["gone"] += len(gone)
+                went.extend(gone)
                 await self._cascade(db, gone, kept=[], before=started)
+                await runs.progress(db, self.org, self.run_id, self.counts)
+        if went:
+            # K-25: the per-folder cascades spare a node that the relist saw
+            # again, and the relist saw it under a folder that went gone later
+            # (or was read after its old parent swept it). Now that every
+            # sweep is done, no live node may sit under a gone folder. The seed
+            # keeps only ids that are STILL gone, so a folder that moved into
+            # a read folder (a later page wrote it live) keeps its children.
+            # A node-only write: the source guard (FOR KEY SHARE) comes first.
+            async with tenant_session(self.org) as db:
+                await self._guard(db)
+                await self._cascade(db, went, kept=[], before=None)
                 await runs.progress(db, self.org, self.run_id, self.counts)
 
     # ── The end ──────────────────────────────────────────────────────────
@@ -658,6 +680,8 @@ async def run_source(
                               reconnect=True)
         _log.warning("knowledge.sync_needs_reconnect", organization_id=org,
                      source_id=source_id, code=out.error)
+        # KB-9b slice 2: after close() returned, so after its session closed.
+        await owner_bump.bump_owner(org, run.owner)
         return out
     except RateLimited:
         out = await run.close(runs.STATUS_STOPPED, "rate_limited")
@@ -668,11 +692,13 @@ async def run_source(
         out = await run.close(runs.STATUS_FAILED, exc.code or type(exc).__name__)
         _log.warning("knowledge.sync_failed", organization_id=org, source_id=source_id,
                      kind=kind, code=out.error)
+        await owner_bump.bump_owner(org, run.owner)  # KB-9b slice 2, outside the session
         return out
     except Exception as exc:  # a background run must not raise
         out = await run.close(runs.STATUS_FAILED, type(exc).__name__)
         _log.warning("knowledge.sync_failed", organization_id=org, source_id=source_id,
                      kind=kind, code=out.error)
+        await owner_bump.bump_owner(org, run.owner)  # KB-9b slice 2, outside the session
         return out
     out = await run.close_ok()
     _log.info("knowledge.sync_ok", organization_id=org, source_id=source_id, kind=kind,

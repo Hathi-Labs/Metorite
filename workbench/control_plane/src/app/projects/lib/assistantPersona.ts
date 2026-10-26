@@ -17,6 +17,56 @@
  * way the Tasks persona does it. Titles are other people's words.
  */
 
+import { isTeamSpace } from "./destinations";
+
+/**
+ * The level the assistant is told, from the node's own row. `levelOf` counts
+ * from the member's VISIBLE tree, so it calls every top row a space.
+ */
+export function assistantLevel(
+  level: string,
+  node: { parent_project_id?: string | null; kind?: string | null; personal?: boolean },
+): string {
+  // The same rule as `destinations.isTeamSpace` and the gateway's
+  // `core.is_team_space`: a ROOT (no parent_project_id) of kind project that
+  // is not personal. `levelOf` says "space" for any top row, so a project
+  // whose parent the member cannot see, and the member's own root, would
+  // read as a space. Neither is one.
+  if (level !== "space") return level;
+  if (isTeamSpace({ ...node, kind: node.kind ?? "project" } as never, 0)) return "space";
+  return node.personal ? "personal root" : "project";
+}
+
+/**
+ * Said when the selected node is the member's own root «My tasks» (2026-10-26).
+ * It is NOT a space: it holds tasks, and it is their inbox.
+ */
+export function holdsTasksNote(node: PersonaInput["node"]): string | null {
+  if (!node?.personal || node.level === "folder") return null;
+  return (
+    `${data(node.name)} is the member's own root. It holds tasks: it is their ` +
+    'inbox, so "here" is a fine place for a new task.'
+  );
+}
+
+/**
+ * Said when the selected node holds no tasks (2026-10-26). A team space and a
+ * folder hold projects, not tasks (`core.assert_holds_tasks`). The facts once
+ * said only "this project means it" of a space, and the chat filed six tasks
+ * on the space, where the member found none. The server refuses the write.
+ * This tells the model before it tries.
+ */
+export function holdsNoTasksNote(node: PersonaInput["node"]): string | null {
+  if (!node || node.personal) return null;
+  if (node.level !== "space" && node.level !== "folder") return null;
+  return (
+    `A ${node.level} holds projects, not tasks. To create or move a task "here", ` +
+    "use a project inside it, and only one that the member's words name. " +
+    "Otherwise ask the member which project. Never put a task on the " +
+    `${node.level} itself.`
+  );
+}
+
 export interface PersonaInput {
   /** The selected node, or null on the portfolio. */
   node?: {
@@ -25,6 +75,8 @@ export interface PersonaInput {
     /** 'space' | 'folder' | 'project' | 'subproject', when the page knows it. */
     level?: string | null;
     archived?: boolean;
+    /** True on a node of the member's own personal tree. Its root holds tasks. */
+    personal?: boolean;
   } | null;
   /** The canvas the member is looking at: board, list, timeline, calendar… */
   view?: string | null;
@@ -114,6 +166,8 @@ export function buildProjectsAssistantPersona(input: PersonaInput): string {
         `"this space", "this project" or "here", they mean this node — pass ` +
         `its project_id to the tools. ${reach}`,
     );
+    const note = holdsNoTasksNote(input.node) ?? holdsTasksNote(input.node);
+    if (note) parts.push(note);
   } else {
     parts.push(`The chat is focused on everything the member can see. ${reach}`);
   }

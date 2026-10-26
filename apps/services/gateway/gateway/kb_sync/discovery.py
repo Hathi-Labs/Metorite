@@ -75,7 +75,7 @@ from gateway.kb_sources.base import (
 )
 from gateway.kb_sources.google_drive import auth as google_auth
 from gateway.kb_sources.google_drive import client as google_client
-from gateway.kb_sync import runs
+from gateway.kb_sync import owner_bump, runs
 
 _log = get_logger("kb_sync.discovery")
 
@@ -225,7 +225,7 @@ _FINISH_SQL = (
 _FAIL_SQL = (
     "UPDATE kb_sources SET state = :state, last_error = :code, updated_at = now() "
     "WHERE id = CAST(:source AS uuid) AND organization_id = CAST(:org AS uuid) "
-    "AND state <> 'disconnected'"
+    "AND state <> 'disconnected' RETURNING owner_email"
 )
 
 
@@ -432,12 +432,16 @@ async def _mark(org: str, source_id: str, state: str, code: str,
                 run: _Run | None) -> None:
     safe = store.safe_error_code(code)[:64]
     async with tenant_session(org) as db:
-        await db.execute(text(_FAIL_SQL), {
+        marked = (await db.execute(text(_FAIL_SQL), {
             "org": org, "source": source_id, "state": state, "code": safe,
-        })
+        })).first()
         if run is not None:
             status = runs.STATUS_STOPPED if state == STATE_NEEDS_RECONNECT else runs.STATUS_FAILED
             await runs.finish(db, org, run.id, status, safe, run.counts)
+    # KB-9b slice 2: the connector's My Day card. OUTSIDE the session, so the
+    # bump never waits while the source row is locked. It never raises.
+    if marked is not None:
+        await owner_bump.bump_owner(org, marked.owner_email)
 
 
 async def discover_source(org: str, source_id: str, source: KbSource) -> str:

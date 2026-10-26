@@ -590,6 +590,10 @@ async def get_node(
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
         result = row_to_dict(row, ProjectModel)
+        # The chat tells a team space from a personal root with this flag. A
+        # team space holds no tasks (`core.assert_holds_tasks`), and the
+        # member's own root holds the Inbox. Additive (R6).
+        result["personal"] = bool(getattr(row, "personal_owner", None))
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="project")
         # WS-64 OP-6b — the chat refuses before its grant card where this is false.
@@ -1161,6 +1165,32 @@ async def patch_node(
     return result
 
 
+#: The live tasks that sit on one node itself, not on its subtree. An archived
+#: task is out of every view, so it does not hold a move back.
+_OWN_LIVE_TASKS_SQL = (
+    "SELECT count(*) AS own_live_tasks FROM pm_tasks"
+    " WHERE project_id = CAST(:pid AS uuid) AND archived_at IS NULL"
+)
+
+
+async def _refuse_space_with_tasks(db: Any, project_id: str, moved: Any) -> None:
+    """422 when a move to the top would make a space that holds tasks."""
+    row = (await db.execute(
+        text(_OWN_LIVE_TASKS_SQL), {"pid": project_id},
+    )).first()
+    held = int(getattr(row, "own_live_tasks", 0) or 0) if row is not None else 0
+    if held:
+        name = str(getattr(moved, "name", "") or "").strip() or "This project"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{name} holds {held} task{'s' if held != 1 else ''} of its "
+                f"own. At the top it would be a space, and a space holds "
+                f"projects, not tasks. Move its tasks into a project first."
+            ),
+        )
+
+
 @router.post("/nodes/{project_id}/move")
 @_tree_race_as_409
 async def move_node(
@@ -1228,6 +1258,16 @@ async def move_node(
             ),
             subtree_depth=await _subtree_project_depth(db, project_id),
         )
+        # A team project moved to the top becomes a SPACE, and a space holds
+        # no tasks (`core.assert_holds_tasks`). So a project that still holds
+        # live tasks of its own stays where it is. Its subprojects' tasks are
+        # fine: they stay on projects. A personal node is not a team space.
+        if (
+            new_parent is None
+            and getattr(moved, "parent_project_id", None) is not None
+            and not getattr(moved, "personal_owner", None)
+        ):
+            await _refuse_space_with_tasks(db, project_id, moved)
 
         # ⚠️ Read BEFORE the re-parent — afterwards the walk gives the new
         # answer, and the promotion below needs the lanes this node had.

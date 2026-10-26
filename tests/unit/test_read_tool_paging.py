@@ -499,6 +499,36 @@ def test_my_tasks_list_projects_reaches_every_project(gw: Recorder) -> None:
     assert "This is the last page." in rest
 
 
+def test_my_tasks_list_projects_does_not_offer_a_team_space_as_a_home(gw: Recorder) -> None:
+    """A team space holds projects, not tasks (2026-10-26). It is listed, but
+    marked, and its id is not offered as a place a task can live."""
+    base = gw.answer
+    rows = [
+        {"id": "sp", "name": "Company Operations", "kind": "project",
+         "parent_project_id": None},
+        {"id": "pr", "name": "HR", "kind": "project", "parent_project_id": "sp"},
+        # A project whose parent the member cannot see still carries a parent id.
+        {"id": "or", "name": "Shared launch", "kind": "project",
+         "parent_project_id": "hidden"},
+        {"id": "fo", "name": "Print", "kind": "folder", "parent_project_id": "sp"},
+    ]
+
+    def answer(method: str, path: str, kw: dict[str, Any]) -> Any:
+        if path == "/projects/my/areas":
+            return {"rows": [], "total": 0}
+        if path == "/projects/nodes":
+            return {"rows": rows, "total": len(rows)}
+        return base(method, path, kw)
+
+    gw.answer = answer  # type: ignore[method-assign]
+    out = run(core.my_tasks_list_projects())
+    assert "[SPACE – holds projects, not tasks] " in out
+    assert "[PROJECT] " not in out.split("id=sp")[0].splitlines()[-1]
+    assert out.count("[PROJECT]") == 2
+    assert out.count("[FOLDER]") == 1
+    assert out.count("[SPACE") == 1
+
+
 def test_my_tasks_list_projects_offset_past_the_end(gw: Recorder) -> None:
     _areas_and_nodes(gw, 2, 3)
     assert "There are 5 items" in run(core.my_tasks_list_projects(offset=9))
