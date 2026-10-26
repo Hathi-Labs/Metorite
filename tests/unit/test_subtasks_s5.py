@@ -471,7 +471,7 @@ def mover(monkeypatch, subtree):
     every task that changes project is remapped into the destination's."""
     written: list[tuple] = []
 
-    async def load_visible_project(db, vis, pid):
+    async def load_visible_project(db, vis, pid, **_kw):
         # A project in a space: a space holds no tasks (2026-10-26).
         return SimpleNamespace(id=pid, kind="project", parent_project_id="space")
 
