@@ -752,3 +752,64 @@ def test_r8_a_new_fire_is_never_cut_by_old_unconfirmed_cards(world, monkeypatch)
     assert found.capped is True
     assert {s.kind for s in found.signals()} == {"reminder_due", "reminder_unconfirmed"}
     assert set(shown[1:]) <= set(old)
+
+
+def test_r8_each_member_write_moves_my_day_after_its_commit(world, monkeypatch) -> None:
+    """Review of RM-2, P2: a member's own answer or move changes the card, so
+    it bumps the member's My Day version, with the session's org. A read and
+    a PATCH that changes nothing bump nothing.
+
+    The fake bump reads the newest ledger row on ANOTHER connection. That row
+    is there only after the commit, so the bump came after it."""
+    later = (datetime.now(UTC) + timedelta(days=2)).replace(microsecond=0).isoformat()
+    org = world.p.org_b
+    seen: list[tuple[str, str, str, str]] = []
+
+    async def bump(bump_org: Any, email: Any) -> None:
+        with world.p.admin_engine.connect() as conn:
+            newest = conn.execute(text(
+                "SELECT e.event FROM reminder_events e JOIN reminders r "
+                "ON r.id = e.reminder_id WHERE r.member_email = :m "
+                "ORDER BY e.at DESC, e.id DESC LIMIT 1"), {"m": ALICE}).scalar()
+        world.bumps.append((str(bump_org), str(email), str(newest)))
+
+    monkeypatch.setattr(cache, "bump_member_safe", bump)
+
+    async def go() -> None:
+        async with _client(world, org) as c:
+            async def make(title: str) -> str:
+                resp = await c.post(BASE, json={"title": title,
+                                                "fire_at": "2099-03-10T15:00:00+00:00"},
+                                    headers=_as(ALICE))
+                return resp.json()["id"]
+
+            async def act(name: str, method: str, path: str, body: Any = None) -> None:
+                before = len(world.bumps)
+                resp = await c.request(method, path, json=body, headers=_as(ALICE))
+                assert resp.status_code == 200, (name, resp.text)
+                seen.extend((name, *b) for b in world.bumps[before:])
+
+            one = await make("One")
+            await act("snooze", "POST", f"{BASE}/{one}/snooze", {"fire_at": later})
+            await act("reschedule", "POST", f"{BASE}/{one}/reschedule",
+                      {"fire_at": "2099-04-01T09:00:00+00:00"})
+            await act("smart", "POST", f"{BASE}/{one}/reschedule", {"fire_at": "smart"})
+            await act("patch", "PATCH", f"{BASE}/{one}",
+                      {"fire_at": "2099-04-03T09:00:00+00:00"})
+            await act("resolve", "POST", f"{BASE}/{one}/resolve", {"action": "done"})
+            await act("reopen", "POST", f"{BASE}/{one}/reopen")
+            await act("promote", "POST", f"{BASE}/{one}/promote")
+            # Nothing that changes no card bumps.
+            two = await make("Two")
+            before = len(world.bumps)
+            await c.patch(f"{BASE}/{two}", json={"title": "Two"}, headers=_as(ALICE))
+            await c.get(BASE, headers=_as(ALICE))
+            assert world.bumps[before:] == []
+
+    asyncio.run(go())
+    assert [s[0] for s in seen] == ["snooze", "reschedule", "smart", "patch", "resolve",
+                                    "reopen", "promote"]
+    assert {(s[1], s[2]) for s in seen} == {(org, ALICE)}
+    # At each bump, the write's own ledger row was already committed.
+    assert [s[3] for s in seen] == ["snoozed", "rescheduled", "rescheduled",
+                                    "rescheduled", "done", "reopened", "promoted"]

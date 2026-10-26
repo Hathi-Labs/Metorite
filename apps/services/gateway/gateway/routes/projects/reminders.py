@@ -415,6 +415,19 @@ async def _ledger(
     )
 
 
+async def _bump(user: Any, me: str) -> None:
+    """After the commit of a member write that changes the card: move the
+    member's My Day version, so the feed reads the new state (RM-2). The org
+    is the bound tenant that the write went to, which the session set
+    (R11). It waits 0.5 s at most and never raises
+    (``cache.bump_member_safe``), so the write stands."""
+    from acb_common.db import current_tenant
+    from gateway.routes.shell import cache as feed_cache
+
+    org = current_tenant() or getattr(user, "organization_id", None)
+    await feed_cache.bump_member_safe(org, me)
+
+
 def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else value
 
@@ -589,7 +602,9 @@ async def update_reminder(
             })
         if edited:
             await _ledger(db, row.id, "edited", {"fields": edited, "by": "member"})
-        return _out(updated)
+        result = _out(updated)
+    await _bump(user, me)
+    return result
 
 
 def _fresh_start(row: Any) -> list[str]:
@@ -667,7 +682,9 @@ async def _move(
             "from_state": row.state, "by": "member",
             **({"slot": SMART} if smart else {}), **_fresh_detail(row),
         })
-        return _out(updated)
+        result = _out(updated)
+    await _bump(user, me)
+    return result
 
 
 @router.post("/my/reminders/{reminder_id}/snooze", dependencies=_ON)
@@ -712,7 +729,9 @@ async def resolve_reminder(
             "from_next_check_at": _iso(row.next_check_at),
             "by": "member",
         })
-        return _out(updated)
+        result = _out(updated)
+    await _bump(user, me)
+    return result
 
 
 async def _close(
@@ -801,7 +820,9 @@ async def reopen_reminder(
         await _ledger(db, row.id, "reopened", {
             "from_state": row.state, "to_state": to_state, "by": "member",
         })
-        return _out(updated)
+        result = _out(updated)
+    await _bump(user, me)
+    return result
 
 
 @router.post("/my/reminders/{reminder_id}/promote", dependencies=_ON)
@@ -840,6 +861,7 @@ async def promote_reminder(
     # capture route does. It runs in its own transaction and never fails the
     # promote.
     await link_from_text(user, [(task_id, [(row.title, False, None), (row.notes, True, None)])])
+    await _bump(user, me)
     return result
 
 
