@@ -46,10 +46,11 @@ decision of 2026-10-25, taken before 307 shipped.
 **Who counts what** (§5.4). A move that the member asks for adds 1 to
 ``snoozes``: a snooze, a reschedule to a named time or to the smart slot,
 and a PATCH of ``fire_at``. Only the loop (``gateway/reminders/loop.py``,
-RM-2) moves a reminder with no answer, and only that adds to ``cycles``. A
-member move out of ``unconfirmed`` is a fresh start (RM-2): ``cycles`` goes
-back to 0 and ``first_fired_at`` clears, so the give-up limit does not trip
-again at once.
+RM-2) moves a reminder with no answer, and only that adds to ``cycles``.
+Every member move restarts the 72-hour window: ``first_fired_at`` clears
+(RM-2, decision of 2026-10-26). A member move out of ``unconfirmed`` is a
+fresh start: ``cycles`` goes back to 0 too, so the give-up limit does not
+trip again at once. A move that the loop makes keeps both.
 
 **Time.** A time with no UTC offset is a 422, because a naive instant reads
 in the zone of the database session and fires at the wrong minute. ``tz``
@@ -608,19 +609,26 @@ async def update_reminder(
 
 
 def _fresh_start(row: Any) -> list[str]:
-    """The assignments of a member move out of ``unconfirmed`` (§5.4, RM-1
-    review): ``cycles`` back to 0 and no ``first_fired_at``. The member is
-    engaged again, so the give-up limit counts from the next fire."""
+    """The assignments of a member move (§5.4, "Who counts what").
+
+    Every member move restarts the 72-hour window: ``first_fired_at`` clears,
+    so the limit counts from the next fire (decision of 2026-10-26). A move
+    out of ``unconfirmed`` also sets ``cycles`` back to 0 (RM-1 review). The
+    member is engaged again in both cases. A move that Metorite makes keeps
+    both."""
     if row.state != "unconfirmed":
-        return []
+        return ["first_fired_at = NULL"]
     return ["cycles = 0", "first_fired_at = NULL"]
 
 
 def _fresh_detail(row: Any) -> dict[str, Any]:
-    """The ledger fact of :func:`_fresh_start`: the counts it cleared."""
-    if row.state != "unconfirmed":
-        return {}
-    return {"fresh_start": True, "from_cycles": int(row.cycles or 0)}
+    """The ledger fact of :func:`_fresh_start`: what it cleared."""
+    out: dict[str, Any] = {}
+    if row.first_fired_at is not None:
+        out["from_first_fired_at"] = _iso(row.first_fired_at)
+    if row.state == "unconfirmed":
+        out |= {"fresh_start": True, "from_cycles": int(row.cycles or 0)}
+    return out
 
 
 async def _smart_slot(db: Any, row: Any, me: str) -> datetime:

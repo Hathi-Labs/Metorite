@@ -596,7 +596,8 @@ def test_r8_a_member_move_out_of_unconfirmed_is_a_fresh_start(world) -> None:
                 out = resp.json()
                 assert out["state"] == "scheduled" and out["cycles"] == 0
                 assert out["first_fired_at"] is None and out["snoozes"] == 1
-            # The control: a move out of `due` keeps the counts.
+            # The control: a move out of `due` keeps `cycles`. Each member
+            # move restarts the 72-hour window (decision of 2026-10-26).
             resp = await c.post(BASE, json={"title": "Due",
                                             "fire_at": "2099-03-10T15:00:00+00:00"},
                                 headers=_as(ALICE))
@@ -604,7 +605,7 @@ def test_r8_a_member_move_out_of_unconfirmed_is_a_fresh_start(world) -> None:
             _give_up(world, due, state="due")
             resp = await c.post(f"{BASE}/{due}/snooze", json={"fire_at": later},
                                 headers=_as(ALICE))
-            assert resp.json()["cycles"] == 2 and resp.json()["first_fired_at"] is not None
+            assert resp.json()["cycles"] == 2 and resp.json()["first_fired_at"] is None
             made.append(due)
         return made
 
@@ -614,7 +615,9 @@ def test_r8_a_member_move_out_of_unconfirmed_is_a_fresh_start(world) -> None:
         assert [r.event for r in rows] == ["created", event]
         assert rows[1].detail["fresh_start"] is True and rows[1].detail["from_cycles"] == 2
         assert rows[1].detail["from_state"] == "unconfirmed"
-    assert "fresh_start" not in _ledger(world, due)[1].detail
+    moved_due = _ledger(world, due)[1].detail
+    assert "fresh_start" not in moved_due
+    assert moved_due["from_first_fired_at"].startswith("2099-03-10T15:00")
     # The fresh start counts again from the next fire.
     rid = fresh[1]
     _ticks(world, _utc(31, 9))  # 1 April 09:00 is after 31 March
@@ -813,3 +816,30 @@ def test_r8_each_member_write_moves_my_day_after_its_commit(world, monkeypatch) 
     # At each bump, the write's own ledger row was already committed.
     assert [s[3] for s in seen] == ["snoozed", "rescheduled", "rescheduled",
                                     "rescheduled", "done", "reopened", "promoted"]
+
+
+def test_r8_every_member_move_restarts_the_72_hour_window(world) -> None:
+    """Decision of 2026-10-26: a member move restarts the 72-hour window. A
+    snooze from `due` to 80 hours after the first fire does not give up at
+    its check-back. A move that Metorite makes keeps the window."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    first = now - timedelta(hours=1)
+    rid = _seed(world, ALICE, first, state="due", first_fired_at=first,
+                next_check_at=now + timedelta(hours=1))
+    to = first + timedelta(hours=80)
+
+    async def snooze() -> dict:
+        async with _client(world, world.p.org_b) as c:
+            resp = await c.post(f"{BASE}/{rid}/snooze", json={"fire_at": to.isoformat()},
+                                headers=_as(ALICE))
+            assert resp.status_code == 200, resp.text
+            return resp.json()
+
+    out = asyncio.run(snooze())
+    assert out["first_fired_at"] is None and out["state"] == "scheduled"
+    _ticks(world, to)
+    row = _row(world, rid)
+    assert row.state == "due" and row.first_fired_at == to
+    _ticks(world, row.next_check_at)
+    assert _row(world, rid).state == "due"
+    assert _events(world, rid) == ["snoozed", "fired", "check_back"]
