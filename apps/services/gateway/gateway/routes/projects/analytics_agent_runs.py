@@ -7,11 +7,11 @@ and "Long run", and §8 RA-4.
 The panel answers "can I trust agents with this work?" in four parts:
 
 1. **Run outcomes.** The runs that ENDED in the last 14 days, by outcome:
-   completed, failed, stopped, abandoned and released. A daily series feeds
-   the small stacked chart (Paperclip's Run Activity).
+   completed, failed, stopped, abandoned, released and closed by Metorite. A
+   daily series feeds the small stacked chart (Paperclip's Run Activity).
 2. **The success rate.** Completed over completed, failed and abandoned, with
-   the trend against the 14 days before. A stop and a release stay out. See
-   :func:`success_rate`.
+   the trend against the 14 days before. A stop, a release and a server close
+   stay out. See :func:`success_rate`.
 3. **Silent runs now.** The open runs in ``in_progress`` that the agent has
    not spoken in for :data:`analytics_agents.SILENT_RUN_AFTER_S`.
 4. **Run sizes.** The completed runs of the window, by agent time, and the
@@ -86,7 +86,19 @@ RUN_WINDOW_DAYS = 14
 #: `test_projects_report_agent_runs.py` holds the set equal to
 #: `agent_runs.TERMINAL_STATUSES`, so a sixth terminal status fails there
 #: before it goes uncounted.
-RUN_OUTCOMES: tuple[str, ...] = ("completed", "failed", "stopped", "abandoned", "released")
+RUN_OUTCOMES: tuple[str, ...] = (
+    "completed", "failed", "stopped", "abandoned", "released", "server_closed",
+)
+
+#: The outcomes that are a STATUS of a run (``agent_runs.TERMINAL_STATUSES``).
+#: ``server_closed`` is a status ``completed`` that the SERVER wrote, so it is
+#: an outcome of this panel and never a status.
+RUN_STATUS_OUTCOMES: tuple[str, ...] = RUN_OUTCOMES[:-1]
+
+#: RA-4b. A run that Metorite closed: the sweep after its task was done,
+#: cancelled or archived (``task_close``), or the approved archive
+#: (``archive_close``). The agent did not finish it, so it is no success.
+OUTCOME_SERVER_CLOSED = "server_closed"
 
 #: The outcome that is a success.
 OUTCOME_SUCCESS = "completed"
@@ -103,7 +115,11 @@ RATED_OUTCOMES: tuple[str, ...] = ("completed", "failed", "abandoned")
 #: with no claim of an outcome: the holder, a person or an admin may do it,
 #: and the MCP protocol tells an agent to release a task it will not finish.
 #: Neither says whether the agent could do the work.
-UNRATED_OUTCOMES: tuple[str, ...] = ("stopped", "released")
+#:
+#: ⚠️ **A server close is not an agent's success** (RA-4b). A sweep that
+#: closes the run of a task that a person cancelled says nothing of the
+#: agent's work, and it would raise the rate.
+UNRATED_OUTCOMES: tuple[str, ...] = ("stopped", "released", "server_closed")
 
 #: The four sizes of a completed run, as ``(key, the first hour that is too
 #: long for it)``. The last size has no upper edge.
@@ -259,6 +275,38 @@ def window_start_day(clock: datetime) -> date:
     return clock.astimezone(UTC).date() - timedelta(days=RUN_WINDOW_DAYS - 1)
 
 
+#: RA-4b. True when the run ``r`` ended by a server close: it is ``completed``,
+#: and the newest of its server-close lines and member prompts is a server
+#: close. ⚠️ A prompt after the close REOPENED the run, so the later end is the
+#: agent's, and the close line is not the last word. A late summary of the
+#: agent after the close is neither, so the run stays closed by Metorite.
+#: `agent_runs._system_activity` writes ``content.server_close`` on the system
+#: line of ``task_close`` and ``archive_close``, and no column holds it.
+SERVER_CLOSED_SQL = (
+    "(r.status = 'completed' AND coalesce((SELECT a.content->>'server_close' IS NOT NULL"
+    " FROM pm_agent_run_activities a WHERE a.run_id = r.id"
+    " AND (a.content->>'server_close' IS NOT NULL OR a.type = 'prompt')"
+    " ORDER BY a.seq DESC LIMIT 1), false))"
+)
+
+#: The outcome of the run ``r``: its status, or ``server_closed``.
+OUTCOME_SQL = (
+    f"CASE WHEN {SERVER_CLOSED_SQL} THEN '{OUTCOME_SERVER_CLOSED}' ELSE r.status END"
+)
+
+
+def server_closed(acts: Iterable[tuple[int, str, bool]], status: str) -> bool:
+    """The Python twin of :data:`SERVER_CLOSED_SQL`. ``acts`` holds ``(seq,
+    type, has the server_close marker)`` for each activity of the run."""
+    if status != "completed":
+        return False
+    last = None
+    for _seq, kind, marked in sorted(acts, key=lambda a: a[0]):
+        if marked or kind == "prompt":
+            last = marked
+    return bool(last)
+
+
 def _ended_runs(past_where: str) -> str:
     """The runs on the tasks of ``past_where`` with an outcome. It binds
     ``:outcomes``."""
@@ -279,7 +327,7 @@ def outcome_series_sql(past_where: str) -> str:
     the first day of the series. It binds ``:run_days`` and ``:outcomes``.
     """
     counts = ", ".join(
-        f"count(e.id) FILTER (WHERE e.status = '{o}') AS {o}" for o in RUN_OUTCOMES
+        f"count(e.id) FILTER (WHERE e.outcome = '{o}') AS {o}" for o in RUN_OUTCOMES
     )
     return (
         f"WITH days AS ("
@@ -288,7 +336,8 @@ def outcome_series_sql(past_where: str) -> str:
         f")"
         f" SELECT d.day AS day, {counts}"
         f"   FROM days d"
-        f"   LEFT JOIN (SELECT r.id, r.status, r.ended_at {_ended_runs(past_where)}"
+        f"   LEFT JOIN (SELECT r.id, {OUTCOME_SQL} AS outcome, r.ended_at"
+        f"                {_ended_runs(past_where)}"
         f"                AND r.ended_at >= {window_start_sql()}) e"
         f"     ON date_trunc('day', e.ended_at AT TIME ZONE 'UTC') = d.day"
         f"  GROUP BY d.day"
@@ -299,10 +348,10 @@ def outcome_series_sql(past_where: str) -> str:
 def outcomes_before_sql(past_where: str) -> str:
     """The outcomes of the window before, for the trend of the success rate."""
     return (
-        f"SELECT r.status AS status, count(*) AS n {_ended_runs(past_where)}"
+        f"SELECT {OUTCOME_SQL} AS status, count(*) AS n {_ended_runs(past_where)}"
         f"   AND r.ended_at >= {window_start_sql(before=True)}"
         f"   AND r.ended_at < {window_start_sql()}"
-        f" GROUP BY r.status"
+        f" GROUP BY 1"
     )
 
 
@@ -357,6 +406,7 @@ def _sized_runs_sql(past_where: str) -> str:
         f" {run_time_joins_sql()}"
         f" WHERE ({past_where})"
         f"   AND r.status = '{OUTCOME_SUCCESS}'"
+        f"   AND NOT {SERVER_CLOSED_SQL}"
         f"   AND r.ended_at >= {window_start_sql()}"
     )
 
@@ -443,7 +493,7 @@ async def agent_runs_body(
     params: dict[str, Any] = {
         **load_params(vis, project_id),
         "run_days": RUN_WINDOW_DAYS,
-        "outcomes": list(RUN_OUTCOMES),
+        "outcomes": list(RUN_STATUS_OUTCOMES),
         "silent_s": SILENT_RUN_AFTER_S,
         "max_named": MAX_NAMED,
         "long_hours": LONG_RUN_HOURS,

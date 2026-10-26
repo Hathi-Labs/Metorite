@@ -696,6 +696,112 @@ async def test_an_uncapped_source_past_the_cap_becomes_capped_with_no_delete(
     assert _nodes(kc, sid)["deck-U1"].state == "gone"
 
 
+# ── KC-3i: a re-consent keeps a converted source capped (K-23) ──────────────
+
+async def test_a_reconsent_ends_the_cap_of_a_converted_source_with_a_gone_folder(
+    kc, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """K-23. A source grew past the cap and became capped. A folder was then
+    trashed, so it is ``gone`` and ``explored = false``. A re-consent lists
+    the whole tree again (it fits), and that folder is not in it. The gone
+    row must not keep the source capped."""
+    from fastapi import BackgroundTasks
+    from gateway.kb_sync import discovery
+
+    _assert_non_priv(app_engine)
+    monkeypatch.setattr(discovery, "NODE_CAP", 6)
+    monkeypatch.setattr(discovery, "LEVELS", 1)
+    ana, sid, feed = await _source(kc, "K23")
+    feed.google.files += [
+        {"id": f"extra{i}-K23", "name": f"Extra {i}.pdf", "parents": ["root-K23"],
+         "mimeType": "application/pdf"} for i in (1, 2)]
+    out = await _run(kc, sid, "reconcile", feed)
+    assert out.status == "ok" and out.counts["over_cap"] is True, out
+    # The folder is trashed in Drive: gone, and still unexplored.
+    feed.pages["spt-K23"] = {"newStartPageToken": "spt-K23b", "changes": [_trash("fold-K23")]}
+    out = await _run(kc, sid, "changes", feed)
+    assert out.status == "ok", out
+    feed.google.files = [f for f in feed.google.files if f["id"] not in ("fold-K23", "file-K23")]
+    background = BackgroundTasks()
+    async with tenant_engine_scope(_app_dsn(kc)):
+        back = await _reconsent(ana, "K23", background)()
+    assert back.status_code == 302, back
+    await _discover_after(kc, background)
+    assert _src(kc, sid).state == "ready"
+    row = _nodes(kc, sid)["fold-K23"]
+    assert (row.state, row.explored) == ("gone", False), "the precondition is gone"
+    assert len(_nodes(kc, sid)) == 8 and sum(
+        1 for v in _nodes(kc, sid).values() if v.state == "live") == 6
+    feed.calls.clear()
+    again = await _run(kc, sid, "reconcile", feed)
+    assert again.status == "ok" and "over_cap" not in again.counts, again
+    phases = {ph for verb, ph in feed.calls if verb == "discover"}
+    assert "children" not in phases, f"the re-consented source stayed capped: {phases}"
+    # A live unexplored folder still makes a source capped.
+    with kc.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_source_nodes SET explored = false WHERE "
+                       "source_id = CAST(:s AS uuid) AND ext_id = 'root-K23'"), {"s": sid})
+    feed.calls.clear()
+    await _run(kc, sid, "reconcile", feed)
+    assert {ph for verb, ph in feed.calls if verb == "discover"} == {"children"}
+
+
+# ── KC-3i: a moved folder's children in a capped relist (K-25) ──────────────
+
+async def _capped_with_moved_folder(kc, monkeypatch, tag: str, folder: str, dest: str) -> Any:  # noqa: F811
+    """A capped source. Folder *folder* sat in ``root-<tag>`` (read) with a
+    child. Drive moved it into *dest*, and the capped relist runs."""
+    from gateway.kb_sync import discovery
+
+    monkeypatch.setattr(discovery, "NODE_CAP", 5)
+    monkeypatch.setattr(discovery, "LEVELS", 1)
+    _ana, sid, feed = await _source(kc, tag)
+    root = f"root-{tag}"
+    with kc.admin_engine.begin() as c:
+        for ext, parent, kind, explored in ((folder, root, "folder", True),
+                                            (f"kid-{tag}", folder, "file", True)):
+            c.execute(text(
+                "INSERT INTO kb_source_nodes (organization_id, source_id, ext_id, "
+                "parent_ext_id, kind, name, explored, updated_at) VALUES (CAST(:o AS uuid), "
+                "CAST(:s AS uuid), :e, :p, :k, :e, :x, now() - interval '1 day')"),
+                {"o": kc.org_a, "s": sid, "e": ext, "p": parent, "k": kind, "x": explored})
+    mime = FOLDER
+    feed.google.files += [
+        {"id": folder, "name": folder, "parents": [dest], "mimeType": mime},
+        {"id": f"kid-{tag}", "name": "kid", "parents": [folder], "mimeType": "application/pdf"}]
+    out = await _run(kc, sid, "reconcile", feed)
+    assert out.status == "ok", out
+    return _nodes(kc, sid)
+
+
+def _orphans(nodes: dict[str, Any]) -> list[str]:
+    return [k for k, v in nodes.items() if v.state == "live"
+            and v.parent_ext_id in nodes and nodes[v.parent_ext_id].state == "gone"]
+
+
+@pytest.mark.parametrize(("tag", "folder"), [("K25a", "aaF-K25a"), ("K25z", "zzF-K25z")])
+async def test_a_folder_moved_out_of_the_read_tree_leaves_no_live_child(
+    kc, app_engine, monkeypatch, tag: str, folder: str,  # noqa: F811
+) -> None:
+    """K-25, in both ext_id orders: the folder is read before its old parent,
+    and after it. The new parent is an unexplored folder, which the relist
+    does not read."""
+    after = await _capped_with_moved_folder(kc, monkeypatch, tag, folder, f"fold-{tag}")
+    assert after[folder].state == "gone", "the old parent did not sweep the moved folder"
+    assert _orphans(after) == [], "a live node sits under a gone folder"
+    assert after[f"kid-{tag}"].state == "gone"
+
+
+@pytest.mark.parametrize(("tag", "folder"), [("K25b", "aaF-K25b"), ("K25y", "zzF-K25y")])
+async def test_a_folder_moved_into_a_read_folder_keeps_its_children(
+    kc, app_engine, monkeypatch, tag: str, folder: str,  # noqa: F811
+) -> None:
+    after = await _capped_with_moved_folder(kc, monkeypatch, tag, folder, f"sd-{tag}")
+    assert after[folder].state == "live" and after[folder].parent_ext_id == f"sd-{tag}"
+    assert after[f"kid-{tag}"].state == "live", "a child that moved with its folder went gone"
+    assert _orphans(after) == []
+
+
 # ── Review round: the consent race ──────────────────────────────────────────
 
 async def test_the_loop_waits_for_a_reconsent_and_runs_nothing(kc, app_engine) -> None:  # noqa: F811
