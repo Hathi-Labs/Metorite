@@ -130,6 +130,13 @@ Ten rules on top of the three above. Each one exists because it was broken:
    a touch. `overviewShown` hides the panel when the scope has no agent run,
    by RA-3's rule. Fences: `app/projects/lib/agentRunsReport.test.ts` and
    `app/projects/components/agentRunsPanel.test.ts`.
+   **The forecast by count has one home** (WS-27bn RA-6).
+   `app/projects/lib/outlook.ts` holds its words, the rule of each verdict
+   (`forecastRule`), the band (`forecastBand`) and its explicit ramp slot
+   (`FORECAST_SLOT`). `app/projects/lib/needsOwner.ts` holds the words of
+   "Needs an owner". The server decides each figure and the order. Fences:
+   `app/projects/lib/outlook.test.ts`, `app/projects/lib/needsOwner.test.ts`
+   and `app/projects/components/forecastPanel.test.ts`.
    Since WS-27bn R5f round 1, `app/projects/lib/sectionIcons.ts` is the one
    icon map of the report sections. `app/projects/lib/sectionEmpty.ts` holds
    the one friendly line of a clear section, and the app, the email and the

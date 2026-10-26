@@ -953,12 +953,21 @@ async def analytics_load(project_id: str = "", offset: int = 0) -> str:
         # WS-27bn R5a. The rows below are not every person: say so, so the
         # model never ranks people across rows it did not receive.
         out.append(f"  {line}. Do not compare the rows below with them.")
+    # WS-27bn RA-6. "Needs an owner" comes first when it leads the open
+    # work (§6.8 B), and after the people when it does not. It is not a page
+    # of people, so only the first page prints it (fix round 1).
+    owners = needs_owner_lines(payload) if start == 0 else []
+    leads = bool((payload.get("needs_owner") or {}).get("leads"))
+    if leads:
+        out.extend(owners)
     for p in payload.get("people") or []:
         who = data(p["assignee"]) if p.get("assignee") else "unassigned"
         out.append(
             f"- {who} · open {p.get('open_tasks', 0)} · overdue {p.get('overdue', 0)}"
             f" · next 7 days {p.get('due_next_7d', p.get('due_soon', 0))} · later {p.get('later', 0)}"
         )
+    if not leads:
+        out.extend(owners)
     listed = payload.get("people_listed")
     if isinstance(listed, int) and (line := page_line(
             listed, start, len(payload.get("people") or []), noun="people")):
@@ -1032,6 +1041,11 @@ async def analytics_outlook(project_id: str = "") -> str:
     dates with its coverage, and who is holding open work."""
     payload = await get("/projects/analytics/outlook", _scope_params(project_id))
     out = [f"Forecast for {_scope_title(payload)}:"]
+    # WS-27bn RA-6. The server's sentence first (§6.8 E5): the 50% and 85%
+    # dates, or why there is no date. It holds no member text.
+    summary = (payload.get("velocity") or {}).get("summary")
+    if isinstance(summary, str) and summary:
+        out.append(f"  {summary}")
     for name in ("velocity", "capacity"):
         block = payload.get(name) or {}
         if block:
@@ -1980,7 +1994,7 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "throughput": ("series", "week_start", ("completed", "cancelled", "median_hours", "measured")),
     # `people_total`: the route cuts the rows to 20, so the count says how
     # many people the section left out (2026-10-14).
-    "load": ("people", "assignee", ("total_tasks", "people_total")),
+    "load": ("people", "assignee", ("total_tasks", "people_total", "needs_owner.total")),
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
@@ -1992,6 +2006,7 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # `_dig`. A generic fallback would print nothing for a nested dict.
     "outlook": ("", "", (
         "velocity.verdict", "plan.planned_finish", "velocity.finish_date",
+        "velocity.p85_date", "velocity.converge_per_week",
         "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
     )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
@@ -2035,6 +2050,8 @@ _REPORT_LABELS: dict[str, str] = {
     "outlook:velocity.verdict": "forecast",
     "outlook:plan.planned_finish": "planned finish",
     "outlook:velocity.finish_date": "forecast finish",
+    "outlook:velocity.p85_date": "85% finish",
+    "outlook:velocity.converge_per_week": "finished tasks a week to converge",
     "outlook:plan.slip_days": "slip days",
     "outlook:velocity.remaining_tasks": "tasks left",
     "outlook:capacity.verdict": "capacity",
@@ -2051,6 +2068,7 @@ _REPORT_LABELS: dict[str, str] = {
     "hygiene:stale_days": "stale after days",
     "pulse:people_total": "people",
     "load:people_total": "people with open work",
+    "load:needs_owner.total": "tasks that need an owner",
     "pulse:hidden_people": "hidden people",
     "waiting:questions_total": "agent questions with no answer",
     "waiting:reviews_total": "tasks waiting for a review",
@@ -2122,6 +2140,40 @@ def _waiting_lines(section: dict[str, Any]) -> list[str]:
         more = (total if isinstance(total, int) else len(rows)) - len(rows)
         if more > 0:
             out.append(f"  (and {more} more of the {key}{past})")
+    return out
+
+
+def _needs_owner_row(row: dict[str, Any]) -> str:
+    """One task that needs an owner, as one line. The title is member text,
+    so it prints as data, and a newline in it cannot forge a second row."""
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    due = f" · due {_day(row.get('due_at'))}" if row.get("due_at") else ""
+    return f"- needs an owner · {task}{data(row.get('title'))}{due}"
+
+
+def needs_owner_lines(section: dict[str, Any]) -> list[str]:
+    """WS-27bn RA-6. The open tasks with no assignee and no open run
+    (§6.8 F), one line each.
+
+    ⚠️ No cut here (`test_read_tool_paging.py`): the server names 20 at most
+    (`analytics.NEEDS_OWNER_NAMED`), so the text prints each row it got. The
+    line after the rows says how many the server's cap left out, from the
+    total."""
+    owner = section.get("needs_owner")
+    if not isinstance(owner, dict):
+        return []
+    total = owner.get("total")
+    if not isinstance(total, int) or isinstance(total, bool) or total <= 0:
+        return []
+    rows = [r for r in owner.get("tasks") or [] if isinstance(r, dict)]
+    head = "first, because it leads the open work" if owner.get("leads") else "after the people"
+    out = [f"  Needs an owner: {total} open {'task' if total == 1 else 'tasks'}"
+           f" with no assignee and no open run ({head})."]
+    out.extend(_needs_owner_row(r) for r in rows)
+    more = total - len(rows)
+    if more > 0:
+        out.append(f"  (and {more} more that need an owner, past the {len(rows)} named)")
     return out
 
 
@@ -2355,16 +2407,37 @@ def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
     return f"- {shown} · {facts}"
 
 
+def _section_extras(name: str, section: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """WS-27bn RA-6. The lines a section prints before its rows, and after.
+
+    The outlook prints the server's sentence first (§6.8 E5). Open work
+    prints "Needs an owner" first when it leads the open work (§6.8 B), and
+    after the people when it does not.
+    """
+    if name == "outlook":
+        summary = (section.get("velocity") or {}).get("summary")
+        return ([f"  {summary}"] if isinstance(summary, str) and summary else []), []
+    if name == "load":
+        owners = needs_owner_lines(section)
+        if (section.get("needs_owner") or {}).get("leads"):
+            return owners, []
+        return [], owners
+    return [], []
+
+
 def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     """One report section as lines: its totals, then one line per row."""
     list_key, label_key, scalar_keys = _REPORT_SECTIONS.get(
         name,
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
+    # RA-6 fix round 1: a figure the server sent as null prints nothing. A
+    # converging forecast sends `converge_per_week: null`, and "to converge
+    # None" is a word the model must not repeat.
     totals = ", ".join(
         f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
         for k in scalar_keys
-        if (v := _dig(section, k)) is not _MISSING
+        if (v := _dig(section, k)) is not _MISSING and v is not None
     )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
     if section.get("hr_visible") is False and name in _REPORT_HINTS:
@@ -2380,6 +2453,8 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         # WS-27bn RA-4. Two lists, each with its own cap.
         out.extend(_agent_runs_lines(section))
         return out
+    before, after = _section_extras(name, section)
+    out.extend(before)
     rows = section.get(list_key) if list_key else None
     rows = rows or []
     if not isinstance(rows, list):
@@ -2399,4 +2474,5 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         out.append(_report_row(name, label_key, row))
     if len(rows) > 25:
         out.append(f"  (and {len(rows) - 25} more rows)")
+    out.extend(after)
     return out

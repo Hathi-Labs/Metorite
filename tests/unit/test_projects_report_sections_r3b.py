@@ -207,20 +207,26 @@ def test_h185_2_the_outlook_says_slip_days_once_and_uses_plain_labels() -> None:
 
 @pytest.mark.parametrize(
     ("remaining", "finished", "created"),
-    [(10, [3, 3, 3], [1, 1, 1]), (1, [4, 0, 2], [0, 0, 0]), (200, [5] * 6, [4] * 6)],
+    [(10, [3, 3, 3, 3], [1, 1, 1, 1]), (1, [4, 1, 2, 1], [0] * 4), (40, [5] * 6, [4] * 6)],
 )
 def test_h185_3_the_forecast_is_today_plus_whole_weeks(
     remaining: int, finished: list[int], created: list[int],
 ) -> None:
-    """`lib/outlook.ts` `slipRange` places the plan at `weeks_remaining` times 7
-    less `slip_days`. That holds only while the forecast is today plus whole
-    weeks, so this pins it."""
+    """`lib/outlook.ts` `forecastBand` places the plan at `p50_weeks` times 7
+    less `slip_days` (WS-27bn RA-6, `slipRange` before it). That holds only
+    while each date is today plus whole weeks, and while the 50% figure is
+    the `finish_date` that the slip reads, so this pins both."""
     got = ana.project_forecast(
         remaining_tasks=remaining, finished=finished, created=created,
     )
     assert got["verdict"] == "converging"
     assert got["finish_date"] == (
         date.today() + timedelta(days=7 * got["weeks_remaining"])
+    ).isoformat()
+    assert got["p50_weeks"] == got["weeks_remaining"]
+    assert got["p50_date"] == got["finish_date"]
+    assert got["p85_date"] == (
+        date.today() + timedelta(days=7 * got["p85_weeks"])
     ).isoformat()
 
 
