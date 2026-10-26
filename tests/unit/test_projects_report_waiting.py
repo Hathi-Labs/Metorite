@@ -437,3 +437,18 @@ def test_the_chat_prints_every_row_it_got_and_counts_the_servers_cut() -> None:
     assert not any("more of the" in line for line in lines)
     capped = _waiting_lines({"questions": rows * 3, "questions_total": 23, "max_rows": 20})
     assert "  (and 2 more of the questions, past the 20 the report names)" in capped
+
+
+def test_with_runs_off_nothing_waiting_is_not_said_as_a_clear_sentence() -> None:
+    """RA-4b. The questions and the answer time read nothing while runs are
+    off, so "Nobody is waiting on a person" claims more than the section knows."""
+    off = wt.summary_line(questions=0, oldest_hours=None, reviews=0, handoffs=0, on=False)
+    assert off == wt.RUNS_OFF_LINE and "off for this organization" in off
+    assert wt.summary_line(questions=0, oldest_hours=None, reviews=0, handoffs=0) == (
+        "Nobody is waiting on a person."
+    )
+    # A review or a handoff still reads with runs off, and it is still said.
+    assert wt.summary_line(
+        questions=0, oldest_hours=None, reviews=2, handoffs=0, on=False
+    ) == "2 tasks wait for a review."
+    assert '"on": runs_on' in inspect.getsource(wt.waiting_body)

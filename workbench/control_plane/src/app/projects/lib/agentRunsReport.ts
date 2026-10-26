@@ -35,13 +35,12 @@ import type {
 import { asList } from "./analyticsRead";
 import { type WaitingLine, agentLine, taskLabel, waitedFor } from "./waiting";
 
-/** The five outcomes, in the server's order, with the rule of each. */
+/** The six outcomes, in the server's order, with the rule of each. */
 export const RUN_OUTCOME_SEGMENTS: readonly { key: RunOutcome; label: string; title: string }[] = [
   {
     key: "completed",
     label: "Completed",
-    title:
-      "Completed: the agent finished the run, or Metorite closed it after its task closed or was archived.",
+    title: "Completed: the agent finished the run.",
   },
   { key: "failed", label: "Failed", title: "Failed: the agent reported an error, and the run ended." },
   { key: "stopped", label: "Stopped", title: "Stopped: a person told the agent to stop." },
@@ -56,10 +55,16 @@ export const RUN_OUTCOME_SEGMENTS: readonly { key: RunOutcome; label: string; ti
     label: "Released",
     title: "Released: the agent or a person gave the task back, with no outcome.",
   },
+  {
+    key: "server_closed",
+    label: "Closed by Metorite",
+    title:
+      "Closed by Metorite: the task was done, cancelled or archived, and Metorite closed the run. The agent did not finish it, so it is no success.",
+  },
 ];
 
 /**
- * The hue of each outcome. ⚠️ An explicit pick of five slots of the ramp, as
+ * The hue of each outcome. ⚠️ An explicit pick of six slots of the ramp, as
  * RA-2's `actorAccent` picks its three, never an index of a changing list.
  * The keys are fixed words, so the hues never move. The label beside each
  * dot carries the meaning, never the hue alone.
@@ -70,6 +75,7 @@ const OUTCOME_SLOT: Readonly<Record<RunOutcome, number>> = {
   stopped: 1,
   abandoned: 6,
   released: 7,
+  server_closed: 9,
 };
 
 export function outcomeAccent(key: RunOutcome): CategoricalAccent {
@@ -90,13 +96,13 @@ export const LONG_SIZE: RunSize = "over_4h";
 /** The rule of each figure, said once. The InfoTips and the test read it. */
 export const AGENT_RUN_RULES = {
   outcomes: (days: number) =>
-    `The agent runs that ended in the last ${days} days, today included, by outcome. A day starts at midnight UTC. A run ends when it reaches one of the five outcomes.`,
+    `The agent runs that ended in the last ${days} days, today included, by outcome. A day starts at midnight UTC. A run ends when it reaches one of the six outcomes.`,
   success: (days: number) =>
-    `Completed runs over the runs that completed, failed or were abandoned in the last ${days} days. A stop and a release are left out: a person chose the stop, and a release gives the task back with no outcome. The trend compares the ${days} days before.`,
+    `Completed runs over the runs that completed, failed or were abandoned in the last ${days} days. A stop, a release and a run that Metorite closed are left out: a person chose the stop, a release gives the task back with no outcome, and a server close says nothing of the agent's work. The trend compares the ${days} days before.`,
   silent: (minutes: number) =>
     `Open runs in progress on open tasks whose agent sent no activity for ${minutes} minutes or more. A run with no activity yet counts from its start. The longest silence comes first.`,
   sizes: (days: number, hours: number) =>
-    `The runs that completed in the last ${days} days, by agent time: from the start of the run to the last act of its agent, less each wait for an answer from a person. A run of ${hours} hours or more can mean a poorly specified task.`,
+    `The runs that completed in the last ${days} days, by agent time: from the start of the run to the last act of its agent, less each wait for an answer from a person and each idle time before a member reopened the run. A run of ${hours} hours or more can mean a poorly specified task.`,
 } as const;
 
 /** How many rows of each list the panel shows. The table shows them all. */
@@ -171,6 +177,9 @@ export function agentRunsRowCount(section: AgentRunsReport): number {
 /** True when no run ended in the window and none is silent now. */
 export function agentRunsIsClear(section: AgentRunsReport | null | undefined): boolean {
   if (!section) return false;
+  // RA-4b. With runs off the section counts nothing, so it knows nothing: the
+  // panel draws and says so, and it never says "clear".
+  if (section.on === false) return false;
   return (section.ended_total ?? 0) === 0 && (section.silent_total ?? 0) === 0;
 }
 
@@ -181,5 +190,8 @@ export function agentRunsIsClear(section: AgentRunsReport | null | undefined): b
  * row in its place.
  */
 export function agentRunsHidden(section: AgentRunsReport | null | undefined): boolean {
-  return !!section && section.agent_runs_seen === false && agentRunsIsClear(section);
+  // RA-4b. Empty by the old rule, whatever the flag: the Overview shows no
+  // empty card for an org with runs off. Only the clear ROW needs the flag.
+  if (!section || section.agent_runs_seen !== false) return false;
+  return (section.ended_total ?? 0) === 0 && (section.silent_total ?? 0) === 0;
 }

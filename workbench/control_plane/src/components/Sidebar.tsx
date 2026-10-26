@@ -91,7 +91,7 @@ export default function Sidebar() {
   // The shell nav (NS-2, `lib/shell/shellNav.ts`). Read once: the flag is
   // build-time, and the dev override must not flip mid-session.
   const [shellNav] = useState(() => shellNavOn());
-  // WS-63 PZ-25: the "Assistant" account row, only with the profile on for this org.
+  // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
   const assistant = useAssistantProfileEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only

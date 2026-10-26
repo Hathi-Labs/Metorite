@@ -166,6 +166,9 @@ export function waitingRowCount(section: WaitingReport): number {
 /** True when nothing waits and no question came in the period. */
 export function waitingIsClear(section: WaitingReport | null | undefined): boolean {
   if (!section) return false;
+  // RA-4b. With runs off, no question and no answer time is read. The section
+  // is not clear then: the panel draws and prints the server's summary.
+  if (section.on === false) return false;
   return (
     (section.questions_total ?? 0) === 0 &&
     (section.reviews_total ?? 0) === 0 &&
@@ -181,7 +184,15 @@ export function waitingIsClear(section: WaitingReport | null | undefined): boole
  * RA-4's rule for an agent panel). A report and the builder never hide it.
  */
 export function waitingHidden(section: WaitingReport | null | undefined): boolean {
-  return !!section && section.agent_runs_seen === false && waitingIsClear(section);
+  // RA-4b. Empty by the old rule, whatever the flag. With runs off a review
+  // wait or a handoff blocker still shows the panel, as a row of the section.
+  if (!section || section.agent_runs_seen !== false) return false;
+  return (
+    (section.questions_total ?? 0) === 0 &&
+    (section.reviews_total ?? 0) === 0 &&
+    (section.handoffs_total ?? 0) === 0 &&
+    (section.answer_time?.asked ?? 0) === 0
+  );
 }
 
 /** The answer time as one line, or `null` when no question had an answer. */

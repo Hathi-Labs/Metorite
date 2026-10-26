@@ -2022,8 +2022,8 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # only. The outcomes and the success rate are nested.
     "agent_runs": ("silent", "title", (
         "outcomes.completed", "outcomes.failed", "outcomes.stopped",
-        "outcomes.abandoned", "outcomes.released", "success.rate",
-        "success.rate_before", "silent_total", "long_total",
+        "outcomes.abandoned", "outcomes.released", "outcomes.server_closed",
+        "success.rate", "success.rate_before", "silent_total", "long_total",
     )),
     # WS-27bn R3c. One row per task, each with its kind. The four counts sit
     # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
@@ -2046,6 +2046,21 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
 #: A key with no entry prints as itself, as before. Each entry is
 #: ``section:key``, so it labels the key in that section only, and an older
 #: section keeps its words (H-186 item 4).
+#: RA-4b. A figure that is a share from 0 to 1 prints as a whole percent, as
+#: the panel prints it. "success rate 0.6" reads as 0.6 percent. Each entry is
+#: ``section:key``. Fence: ``test_projects_chat_coverage.py``.
+_REPORT_PERCENT: frozenset[str] = frozenset({
+    "agent_runs:success.rate", "agent_runs:success.rate_before",
+})
+
+
+def _percent_words(value: Any) -> Any:
+    """A share from 0 to 1 as ``60%``. Any other value stays as it is."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return f"{round(value * 100)}%"
+    return value
+
+
 _REPORT_LABELS: dict[str, str] = {
     "outlook:velocity.verdict": "forecast",
     "outlook:plan.planned_finish": "planned finish",
@@ -2081,6 +2096,7 @@ _REPORT_LABELS: dict[str, str] = {
     "agent_runs:outcomes.stopped": "runs stopped by a person in 14 days",
     "agent_runs:outcomes.abandoned": "runs abandoned in 14 days",
     "agent_runs:outcomes.released": "runs released in 14 days",
+    "agent_runs:outcomes.server_closed": "runs closed by Metorite in 14 days",
     "agent_runs:success.rate": "success rate",
     "agent_runs:success.rate_before": "success rate of the 14 days before",
     "agent_runs:silent_total": "silent runs now",
@@ -2435,7 +2451,8 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     # converging forecast sends `converge_per_week: null`, and "to converge
     # None" is a word the model must not repeat.
     totals = ", ".join(
-        f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
+        f"{_REPORT_LABELS.get(f'{name}:{k}', k)}"
+        f" {_percent_words(v) if f'{name}:{k}' in _REPORT_PERCENT else v}"
         for k in scalar_keys
         if (v := _dig(section, k)) is not _MISSING and v is not None
     )

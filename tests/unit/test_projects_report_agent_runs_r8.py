@@ -146,6 +146,7 @@ def _ended(w: Any, status: str, minutes_ago: int, **kw: Any) -> str:
 
 def _run_act(
     w: Any, rid: str, tid: str, kind: str, *, minutes_ago: int, reply_to: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """One run activity at a chosen time. A prompt may answer a question."""
     aid = str(uuid.uuid4())
@@ -157,7 +158,7 @@ def _run_act(
             ":k, CAST(:c AS jsonb), :e, :via, CAST(:reply AS uuid), "
             "now() - make_interval(mins => :ago))"),
             {"id": aid, "o": w.p.org_a, "r": rid, "t": tid, "k": kind,
-             "c": json.dumps({"body": kind}), "e": A_EMAIL,
+             "c": json.dumps({"body": kind, **(extra or {})}), "e": A_EMAIL,
              "via": None if kind == "prompt" else b.VIA, "reply": reply_to,
              "ago": minutes_ago})
     return aid
@@ -220,10 +221,12 @@ class TestOutcomes:
         assert sec["on"] is True and sec["agent_runs_seen"] is True
         assert sec["outcomes"] == {
             "completed": 3, "failed": 1, "stopped": 1, "abandoned": 1, "released": 1,
+            "server_closed": 0,
         }
         assert sec["ended_total"] == 7
         assert sec["outcomes_before"] == {
             "completed": 1, "failed": 1, "stopped": 0, "abandoned": 0, "released": 0,
+            "server_closed": 0,
         }
         series = sec["series"]
         assert len(series) == 14 == sec["days"]
@@ -378,6 +381,7 @@ class TestVisibility:
         mine = await _section(w, w.m, project=False)
         assert mine["outcomes"] == {
             "completed": 1, "failed": 0, "stopped": 0, "abandoned": 0, "released": 0,
+            "server_closed": 0,
         }
         assert mine["success"]["rate"] == 1.0
         assert mine["silent_total"] == 1
@@ -416,3 +420,205 @@ class TestVisibility:
         assert sec["summary"] == (
             "Agent runs are off for this organization, so no run is counted."
         )
+
+
+# ── RA-4b: a reopened run's idle gap, and a server close ─────────────────────
+
+
+def _iso_ago(w: Any, minutes_ago: int) -> str:
+    with w.p.admin_engine.begin() as c:
+        return c.execute(text(
+            "SELECT (now() - make_interval(mins => :m))::text"), {"m": minutes_ago}).scalar()
+
+
+def _reopen_prompt(w: Any, rid: str, tid: str, *, minutes_ago: int, ended_ago: int,
+                   reply_to: str | None = None) -> str:
+    """The prompt that REOPENS a run: it carries the end it reopened."""
+    return _run_act(w, rid, tid, "prompt", minutes_ago=minutes_ago, reply_to=reply_to,
+                    extra={"reopens": {"ended_at": _iso_ago(w, ended_ago)}})
+
+
+def _reopened(w: Any) -> tuple[str, str]:
+    """The run of the brief: start 09:00, complete 09:20, a member prompt
+    reopens it at 10:00, complete 10:15. Times are minutes before now, with
+    the last finish ten minutes ago, so the run ended inside the window."""
+    tid = _task(w, "done")
+    rid = _run(w, tid, "completed", started=85, ended=10, last_agent=10)
+    _run_act(w, rid, tid, "thought", minutes_ago=80)
+    _run_act(w, rid, tid, "response", minutes_ago=65)  # complete at 09:20
+    _reopen_prompt(w, rid, tid, minutes_ago=25, ended_ago=65)  # reopened at 10:00
+    _run_act(w, rid, tid, "response", minutes_ago=10)  # complete again at 10:15
+    return tid, rid
+
+
+class TestReopenedRunGap:
+    async def test_g4_a_steering_prompt_mid_run_makes_no_gap(self, w):
+        """The ephemeral cap deleted the rows between a response and a steering
+        prompt. The prompt has no marker, so 60 minutes of work stay in."""
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=130, ended=10, last_agent=10)
+        _run_act(w, rid, tid, "response", minutes_ago=100)
+        _run_act(w, rid, tid, "prompt", minutes_ago=40)  # steering: no marker
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        sec = await _section(w, w.a)
+        assert sec["sizes"]["under_4h"] == 1 and sec["sizes"]["under_1h"] == 0
+
+    async def test_g5_a_gap_never_overlaps_the_wait_that_the_prompt_answers(self, w):
+        """Asked at -100, the run ended at -90, and the prompt at -30 answers
+        the question: the wait covers the gap. 110 - 70 = 40 minutes."""
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=120, ended=10, last_agent=10)
+        q = _run_act(w, rid, tid, "elicitation", minutes_ago=100)
+        _run_act(w, rid, tid, "response", minutes_ago=90,
+                 extra={"system": True, "server_close": "done"})
+        _reopen_prompt(w, rid, tid, minutes_ago=30, ended_ago=90, reply_to=q)
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        with w.p.admin_engine.begin() as c:
+            from gateway.routes.projects import analytics_agents as ag
+
+            secs = c.execute(text(
+                f"SELECT {ag.RUN_AGENT_SECONDS_SQL} FROM pm_agent_runs r"
+                f" {ag.run_time_joins_sql()} WHERE r.id = CAST(:r AS uuid)"),
+                {"r": rid}).scalar()
+        assert float(secs) / 60.0 == pytest.approx(40, abs=1)
+
+    async def test_g6_an_agent_act_that_ended_the_wait_leaves_the_gap_whole(self, w):
+        """Asked at -100, the agent went on at -95, the run ended at -90, and
+        the prompt at -30 answers the old question: wait 5, gap 60."""
+        from gateway.routes.projects import analytics_agents as ag
+
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=120, ended=10, last_agent=10)
+        q = _run_act(w, rid, tid, "elicitation", minutes_ago=100)
+        _run_act(w, rid, tid, "thought", minutes_ago=95)
+        _run_act(w, rid, tid, "response", minutes_ago=90)
+        _reopen_prompt(w, rid, tid, minutes_ago=30, ended_ago=90, reply_to=q)
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        with w.p.admin_engine.begin() as c:
+            secs = c.execute(text(
+                f"SELECT {ag.RUN_AGENT_SECONDS_SQL} FROM pm_agent_runs r"
+                f" {ag.run_time_joins_sql()} WHERE r.id = CAST(:r AS uuid)"),
+                {"r": rid}).scalar()
+        assert float(secs) / 60.0 == pytest.approx(110 - 5 - 60, abs=1)
+
+    async def test_g1_the_idle_gap_of_a_reopened_run_is_not_agent_time(self, w):
+        """35 minutes, not 75: the 40 minutes between the first finish and the
+        prompt are the member's. It is not long, and the twin agrees."""
+        from gateway.routes.projects import analytics_agents as ag
+
+        _, rid = _reopened(w)
+        sec = await _section(w, w.a)
+        assert sec["sizes"]["under_1h"] == 1 and sec["sizes"]["over_4h"] == 0
+        assert sec["long_total"] == 0 and sec["long_runs"] == []
+        with w.p.admin_engine.begin() as c:
+            prompts = [(r[0], r[1], None) for r in c.execute(text(
+                "SELECT created_at, CAST(content->'reopens'->>'ended_at' AS timestamptz)"
+                " FROM pm_agent_run_activities WHERE run_id = CAST(:r AS uuid)"
+                " AND type = 'prompt'"), {"r": rid})]
+            started, ended = c.execute(text(
+                "SELECT started_at, ended_at FROM pm_agent_runs"
+                " WHERE id = CAST(:r AS uuid)"), {"r": rid}).one()
+        hours = ag.run_hours(started, ended, ended, gaps=ag.reopen_gaps(prompts))
+        assert hours == pytest.approx(35 / 60, abs=0.01)
+        # The SQL text gives the same figure.
+        with w.p.admin_engine.begin() as c:
+            secs = c.execute(text(
+                f"SELECT {ag.RUN_AGENT_SECONDS_SQL} FROM pm_agent_runs r"
+                f" {ag.run_time_joins_sql()} WHERE r.id = CAST(:r AS uuid)"),
+                {"r": rid}).scalar()
+        assert float(secs) / 3600.0 == pytest.approx(hours, abs=0.01)
+
+    async def test_g2_a_day_long_gap_stays_out_of_over_4h(self, w):
+        """A member reopens a run a day later. Without the gap it reads 25 h."""
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=DAY + 50, ended=10, last_agent=10)
+        _run_act(w, rid, tid, "response", minutes_ago=DAY + 30)
+        _reopen_prompt(w, rid, tid, minutes_ago=25, ended_ago=DAY + 30)
+        _run_act(w, rid, tid, "response", minutes_ago=10)
+        sec = await _section(w, w.a)
+        assert sec["sizes"]["over_4h"] == 0 and sec["long_runs"] == []
+        assert sec["sizes"]["under_1h"] == 1
+
+    async def test_g3_a_run_with_no_reopen_keeps_its_whole_time(self, w):
+        tid = _task(w, "done")
+        rid = _run(w, tid, "completed", started=300, ended=100, last_agent=100)
+        _run_act(w, rid, tid, "thought", minutes_ago=200)
+        _run_act(w, rid, tid, "response", minutes_ago=100)
+        sec = await _section(w, w.a)
+        assert sec["sizes"]["under_4h"] == 1
+
+
+def _closed(w: Any, marker: str | None, minutes_ago: int, *, late: bool = False,
+            reopen: bool = False) -> str:
+    """A completed run on a cancelled task that ended ``minutes_ago`` with a
+    response line. ``marker`` is the ``server_close`` value of that line, or
+    None for an agent finish."""
+    tid = _task(w, "done")
+    rid = _run(w, tid, "completed", started=minutes_ago + 20, ended=minutes_ago,
+               last_agent=minutes_ago)
+    _run_act(w, rid, tid, "thought", minutes_ago=minutes_ago + 5)
+    extra = {"system": True, "server_close": marker} if marker else None
+    _run_act(w, rid, tid, "response", minutes_ago=minutes_ago, extra=extra)
+    if late:
+        _run_act(w, rid, tid, "response", minutes_ago=max(0, minutes_ago - 1))
+    if reopen:
+        _run_act(w, rid, tid, "prompt", minutes_ago=max(0, minutes_ago - 2))
+        _run_act(w, rid, tid, "response", minutes_ago=max(0, minutes_ago - 3))
+    return rid
+
+
+class TestServerClose:
+    async def test_c1_a_sweep_close_is_its_own_outcome_and_raises_no_rate(self, w):
+        _ended(w, "completed", 2 * DAY)
+        _ended(w, "failed", 3 * DAY)
+        base = (await _section(w, w.a))["success"]["rate"]
+        assert base == 0.5
+        # task_close for each of the three reasons, and archive_close.
+        _closed(w, "cancelled", 1 * DAY)
+        _closed(w, "done", 1 * DAY + 5)
+        _closed(w, "archived", 1 * DAY + 10)
+        _closed(w, "archive", 1 * DAY + 15)
+        # A late summary after the close leaves it closed by Metorite.
+        _closed(w, "done", 1 * DAY + 20, late=True)
+        sec = await _section(w, w.a)
+        assert sec["outcomes"]["server_closed"] == 5
+        assert sec["outcomes"]["completed"] == 1
+        assert sec["success"]["rate"] == base == 0.5
+        assert (sec["success"]["completed"], sec["success"]["rated"]) == (1, 2)
+        assert sum(d["server_closed"] for d in sec["series"]) == 5
+        assert sec["ended_total"] == 7
+        # Not an agent completion: it joins no size.
+        assert sec["sized_total"] == sec["outcomes"]["completed"]
+        # The window before counts the same way.
+        _closed(w, "cancelled", 17 * DAY)
+        again = await _section(w, w.a)
+        assert again["outcomes_before"]["server_closed"] == 1
+        assert again["success"]["rated_before"] == 0
+
+    async def test_c2_a_reopened_close_is_the_agents_own_end(self, w):
+        _closed(w, "cancelled", 1 * DAY, reopen=True)
+        sec = await _section(w, w.a)
+        assert sec["outcomes"]["server_closed"] == 0
+        assert sec["outcomes"]["completed"] == 1
+        assert sec["success"]["rate"] == 1.0
+
+    async def test_c3_the_python_twin_agrees_with_the_sql(self, w):
+        from gateway.routes.projects import analytics_agent_runs as ar
+
+        cases = {
+            _closed(w, "done", 1 * DAY): True,
+            _closed(w, None, 1 * DAY + 30): False,
+            _closed(w, "done", 1 * DAY + 60, late=True): True,
+            _closed(w, "done", 1 * DAY + 90, reopen=True): False,
+        }
+        with w.p.admin_engine.begin() as c:
+            for rid, want in cases.items():
+                sql = c.execute(text(
+                    f"SELECT {ar.SERVER_CLOSED_SQL} FROM pm_agent_runs r"
+                    " WHERE r.id = CAST(:r AS uuid)"), {"r": rid}).scalar()
+                acts = [(r[0], r[1], r[2]) for r in c.execute(text(
+                    "SELECT seq, type, content->>'server_close' IS NOT NULL"
+                    " FROM pm_agent_run_activities WHERE run_id = CAST(:r AS uuid)"
+                    " ORDER BY seq"), {"r": rid})]
+                assert sql is want
+                assert ar.server_closed(acts, "completed") is want
