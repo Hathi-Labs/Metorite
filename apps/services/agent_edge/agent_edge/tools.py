@@ -1089,10 +1089,11 @@ def _held_by(value: Any) -> dict[str, Any] | None:
 #: The keys of one ``list_tasks`` row (§9.1), and ``held_by`` (EA-14a).
 LIST_TASK_KEYS: tuple[str, ...] = (
     "id", "task_number", "title", "project_id", "status", "assignees",
-    "due_at", "version", "held_by",
+    "due_at", "version", "held_by", "parent_task_id", "depth",
 )
 
 LIST_TASKS_ROUTE = "/projects/tasks"
+TEXT_DESCENDANTS_NEED_PARENT = "include_descendants needs parent_task_id."
 STATUSES_ROUTE = "/projects/nodes/{project_id}/statuses"
 LIST_LIMIT_MAX = 100
 LIST_LIMIT_DEFAULT = 50
@@ -1113,6 +1114,16 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
         "unheld": {"type": "boolean",
                    "description": "True: only tasks that no AI session holds now."
                                   " A task whose holder is stale counts as free."},
+        "parent_task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                           "description": "Only the direct subtasks of this task."
+                                          " An id from list_tasks or get_task."},
+        "include_descendants": {
+            "type": "boolean",
+            "description": "True: all the tasks under parent_task_id, down to 10"
+                           " levels, and not only the direct subtasks. Needs"
+                           " parent_task_id. Each row has a depth, and 1 is a"
+                           " direct subtask. A subtask that this member cannot"
+                           " see, and the tasks under it, are not in the list."},
         "limit": {"type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
                   "default": LIST_LIMIT_DEFAULT,
                   "description": "Rows on one page. Ignored when a cursor is sent."},
@@ -1139,6 +1150,8 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
                     "due_at": _NULLABLE_STRING,
                     "version": _NULLABLE_STRING,
                     "held_by": _HELD_BY_SCHEMA,
+                    "parent_task_id": _NULLABLE_STRING,
+                    "depth": _NULLABLE_INTEGER,
                 },
                 "required": list(LIST_TASK_KEYS),
                 "additionalProperties": False,
@@ -1159,6 +1172,8 @@ _LIST_TASKS_PARAMS: dict[str, str] = {
     "assignee": "assignee",
     "text": "q",
     "unheld": "unheld",
+    "parent_task_id": "parent_task_id",
+    "include_descendants": "include_descendants",
     "limit": "page_size",
     "cursor": "page",
 }
@@ -1235,6 +1250,9 @@ def _list_task_row(
         "due_at": row.get("due_at"),
         "version": row.get("updated_at"),
         "held_by": _held_by(row.get("held_by")),
+        "parent_task_id": (
+            str(row["parent_task_id"]) if row.get("parent_task_id") is not None else None),
+        "depth": row["depth"] if isinstance(row.get("depth"), int) else None,
     }
 
 
@@ -1242,14 +1260,22 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     page, size = _page_of(ctx, "list_tasks", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
 
     query: list[tuple[str, str]] = []
-    for name in ("project_id", "status_id", "tag", "assignee", "text"):
+    for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
         if name in args:
             query.append((_LIST_TASKS_PARAMS[name], str(args[name])))
     if args.get("unheld") is True:
         query.append((_LIST_TASKS_PARAMS["unheld"], "true"))
+    if args.get("include_descendants") is True:
+        if "parent_task_id" not in args:
+            raise ToolError(TEXT_DESCENDANTS_NEED_PARENT)
+        query.append((_LIST_TASKS_PARAMS["include_descendants"], "true"))
     query += [("page", str(page)), ("page_size", str(size))]
 
-    body = await _get(ctx, LIST_TASKS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query)
+    # A 404 names the task when only the parent was sent, so an unseen parent
+    # reads as get_task reads an unseen task.
+    missing = (TEXT_TASK_NOT_FOUND if "parent_task_id" in args and "project_id" not in args
+               else TEXT_PROJECT_NOT_FOUND)
+    body = await _get(ctx, LIST_TASKS_ROUTE, missing, query=query)
     rows = body.get("rows") if isinstance(body, dict) else None
     total = body.get("total") if isinstance(body, dict) else None
     if not isinstance(rows, list) or not isinstance(total, int):
@@ -1270,9 +1296,15 @@ LIST_TASKS = Tool(
     description=(
         "List the tasks this member can see, newest first, one page at a time."
         " Filter by project, status, tag, assignee or text. Send unheld true to"
-        " see only tasks that no AI session holds. Each row has the"
+        " see only tasks that no AI session holds. Send parent_task_id to get"
+        " only the direct subtasks of one task. Add include_descendants true to"
+        " get every task under it, down to 10 levels, with the top level first."
+        " Then each row has a depth, and 1 is a direct subtask. A subtask that"
+        " this member cannot see is not shown, and neither are the tasks under"
+        " it. Each row has the"
         " task id, number, title, project, status, assignees, due date,"
-        " version and held_by. held_by is null for a free task. Never claim a"
+        " version, held_by, parent_task_id and depth. depth is null unless you"
+        " send include_descendants. held_by is null for a free task. Never claim a"
         " task that has held_by, unless held_by.stale is true. Send"
         " nextCursor back as cursor to read the next page. The"
         " pages are offsets, so a task that changes between two calls can be"
