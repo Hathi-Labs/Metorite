@@ -680,16 +680,18 @@ feed is not due and one of these holds:
 - The last access pass stopped at its call cap.
 
 A pass that failed or stopped waits 15 minutes before the next try. A pass
-that began more than 12 hours ago starts again from the first page, so a
-cursor that no run can finish does not last for ever.
+that began more than 12 hours ago starts again from the first page. So a
+cursor that no run can finish does not stay for ever.
 
 **OQ5, the cost.** One `files.list` call reads a page of files with the
 `permissions` field mask. Google leaves the field out for an item of a
 shared drive, and only such an item gets a `permissions.list` call. An item
-with no field that is not in a shared drive writes no row. Each Drive call
-sends `prettyPrint=false`. If the readers of a page still pass the 64 KiB
-cap of the guard at the smallest page size, the page is read again with no
-readers. Each item then calls `permissions.list`, inside the call budget.
+with no field that is not in a shared drive writes no row.
+
+Each Drive call sends `prettyPrint=false`. The readers of a page can still
+pass the 64 KiB cap of the guard at the smallest page size. Then the page is
+read again with no readers. Each item then calls `permissions.list`, inside
+the call budget.
 An item past the budget is written as not listed, and it proves the owner
 only.
 
