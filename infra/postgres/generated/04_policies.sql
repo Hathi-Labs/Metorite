@@ -768,6 +768,13 @@ CREATE POLICY pm_agent_run_activities_tenant_isolation ON pm_agent_run_activitie
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_agent_run_strands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_run_strands FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands;
+CREATE POLICY pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_agent_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_agent_runs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_agent_runs_tenant_isolation ON pm_agent_runs;
@@ -1409,5 +1416,19 @@ ALTER TABLE reminder_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reminder_events FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS reminder_events_tenant_isolation ON reminder_events;
 CREATE POLICY reminder_events_tenant_isolation ON reminder_events
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_sync_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_sync_cursors FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_sync_cursors_tenant_isolation ON kb_sync_cursors;
+CREATE POLICY kb_sync_cursors_tenant_isolation ON kb_sync_cursors
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE kb_sync_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_sync_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS kb_sync_runs_tenant_isolation ON kb_sync_runs;
+CREATE POLICY kb_sync_runs_tenant_isolation ON kb_sync_runs
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

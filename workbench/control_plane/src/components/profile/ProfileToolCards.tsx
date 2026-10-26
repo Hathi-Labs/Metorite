@@ -43,10 +43,24 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   profile_set: { icon: "SlidersHorizontal", label: "Profile preference set" },
   profile_alias: { icon: "Users", label: "Profile alias changed" },
   profile_undo: { icon: "Undo2", label: "Undid your last profile change" },
+  // PZ-27. Only a write has a machine line. The reads (`next`, `next_sitting`)
+  // have none, so `ProfileToolCards` draws nothing for them.
+  profile_interview: { icon: "ClipboardList", label: "Interview updated" },
 };
 
 /** Every tool name this file routes. The placement fence reads it. */
 export const PROFILE_CARD_TOOLS: readonly string[] = Object.keys(ACTION_META);
+
+/**
+ * True when this event draws a receipt. A `profile_interview` read has no
+ * machine line, so its result is "unknown" and the card draws nothing. An
+ * error still draws, so a failed write is not silent.
+ */
+export function drawsReceipt(e: ToolEvent): boolean {
+  if (!isProfileCardTool(e.name)) return false;
+  if (e.name !== "profile_interview" || e.status === "error") return true;
+  return readProfileResult(e.result || "").status !== "unknown";
+}
 
 /** True when a tool of this name draws a profile receipt. */
 export function isProfileCardTool(name: string): boolean {
@@ -116,6 +130,7 @@ export function parseStatus(line: string): { status: ProfileStatus; reason: stri
   if (!isRecord(raw) || raw.v !== 1) return null;
   const reason = typeof raw.reason === "string" ? raw.reason : "";
   if (raw.status === "undone") return { status: "undone", reason: "" };
+  if (raw.status === "saved") return { status: "saved", reason: "" };
   if (raw.status !== "refused") return null;
   return { status: reason === "duplicate" ? "duplicate" : "refused", reason };
 }
@@ -243,7 +258,7 @@ export function ProfileResultCard({ event: e }: { event: ToolEvent }) {
 export default function ProfileToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
   const dismissed = useDismissedToolCards();
   const all = (toolEvents ?? []).filter(
-    (e) => !dismissed.has(e.id) && isProfileCardTool(e.name) && (e.status === "done" || e.status === "error"),
+    (e) => !dismissed.has(e.id) && drawsReceipt(e) && (e.status === "done" || e.status === "error"),
   );
   if (all.length === 0) return null;
   return (

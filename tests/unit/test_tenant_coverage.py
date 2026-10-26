@@ -215,11 +215,13 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE pm_task_refs FORCE  ROW LEVEL SECURITY" in policies
 
 
-@pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities"])
+@pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities",
+                                   "pm_agent_run_strands"])
 def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
     """WS-55 EA-12a (``external_agent_access.md`` §12.1, EA12-1). The runs of
     an outside agent and their activities hold one organization's work. Neither
-    may be exempt, and the committed policy phase must carry each (R5)."""
+    may be exempt, and the committed policy phase must carry each (R5). SW-10a
+    (§12.6) adds the strands of a run: a nudge and a recovery record."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT
@@ -309,15 +311,17 @@ def test_the_fill_rank_table_is_tenant_scoped() -> None:
     "table",
     ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
      "kb_chunks", "kb_favorites", "kb_page_proposals", "kb_gaps",
-     "kb_sources", "kb_source_nodes", "kb_entities"],
+     "kb_sources", "kb_source_nodes", "kb_entities",
+     "kb_sync_cursors", "kb_sync_runs"],
 )
 def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
-    """WS-61 KB-1, KB-3, KB-2f, KB-5a, KB-9a and KC-1a (``knowledge_base.md``
-    §6.1, §8.4, §12, §14 and §21.7, ``knowledge_curation.md`` §16). The spaces,
-    grants, pages, versions, links, the chunks of the index, the favourites of
-    a member, the proposed edits of the assistant, the questions that
-    Knowledge could not answer, and the connected file sources with their
-    folder trees hold what
+    """WS-61 KB-1, KB-3, KB-2f, KB-5a, KB-9a, KC-1a and KC-3
+    (``knowledge_base.md`` §6.1, §8.4, §12, §14 and §21.7,
+    ``knowledge_curation.md`` §16). The spaces, grants, pages, versions,
+    links, the chunks of the index, the favourites of a member, the proposed
+    edits of the assistant, the questions that Knowledge could not answer, the
+    connected file sources with their folder trees, and the cursors and runs
+    of their sync hold what
     one organization wrote down. None may be exempt, and the committed policy phase must carry each
     (R5)."""
     gen = _generator()

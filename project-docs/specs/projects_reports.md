@@ -53,8 +53,25 @@ Throughput and Finished reads carry `actor_split`, and the Load read carries
 **RA-3 BUILT 2026-10-25, not merged** (§6.8 C, §8 RA-3). The `waiting`
 section lists agent questions with no answer, agent work that waits for a
 review, and blocked handoffs. It gives the answer time too. Overview shows
-the panel by default, and hides it when the scope has no agent run. RA-2 and
-RA-4 to RA-8 are not built.
+the panel by default, and hides it when the scope has no agent run.
+
+**RA-2 BUILT 2026-10-25, not merged** (§6.8 B, §8 RA-2). The live Overview
+draws a KPI strip of six tiles, and each tile carries its rule as its
+tooltip. "Who did the work" replaces "What we finished" in the Overview of
+one project. "How long it took" splits its median and p90 by people and
+agents.
+
+**RA-4 BUILT 2026-10-25, not merged** (§6.8 B, §8 RA-4). The `agent_runs`
+section gives 14 days of run outcomes, the success rate and its trend, the
+silent runs now and the run sizes. It flags a long run. Overview shows the
+panel by default, and hides it when the scope has no agent run.
+
+**RA-6 BUILT 2026-10-25, not merged** (§6.8 B and F, §8 RA-6). The Forecast
+runs the past weeks again 2,000 times and gives the 50% and 85% dates, with
+no estimate. When work arrives as fast as it finishes, "Not converging"
+says the finishes a week that would converge it. "Needs an owner" shows
+first in Open work when it leads. Fix round 1 BUILT 2026-10-26. RA-5, RA-7
+and RA-8 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -346,9 +363,20 @@ next to each status, as `classify` already does.
 | **Person act** | A timeline row that a person made: no agent act (`is_agent_act`), and no actor that starts with `system:`, such as a workflow or GitHub. | `analytics_waiting.py` `is_person_act` (RA-3) |
 | **Handoff blocker** | An open `blocks` link where an agent holds one task and a person holds the other. "Holds" is RA-1's holder rule. | `analytics_waiting.py` `handoff_side` and `handoffs_sql` (RA-3) |
 | **Answer time** | The time from an agent's question to the prompt that answers it, for the questions of the report period. A question with no answer stays out of the median and the p90, and the section counts it. | `analytics_waiting.py` `answer_time` and `answer_time_sql` (RA-3) |
-| **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more | RA-4, not built |
+| **Silent run** | An open run in `in_progress` with no agent activity for 15 minutes or more. A run with no agent activity yet counts from its start. | `analytics_agents.py` `SILENT_RUN_AFTER_S` and `silent_run_sql` (RA-2). RA-4 reads the same constant. It is not the idle state of the pill, `filters.AGENT_RUN_STALE_AFTER_S` (5 minutes), which reads every activity. |
+| **Agents**, **People** | The two groups of a done task. Agents holds the agent-finished and the agent-assisted tasks. People holds the tasks that no agent worked before the finish. | `analytics_agents.py` `actor_group` and `actor_group_sql` (RA-2) |
+| **Agents working now** | An open run in `in_progress` on an open task, that is not silent. "Working" is the rule of the board strip, `agent_summary.WORKING_STATES`. | `analytics_agents.py` `runs_now_sql` (RA-2) |
+| **Agent PR merge rate** | The pull requests on tasks that an agent worked before the close, merged or closed in the last 14 days. The rate is the merged ones over the merged and the closed ones. A merge reads its `merged_at`. A close with no merge reads `pr_updated_at`, the last update of the pull request on GitHub. A pull request with no time from GitHub does not count, because the token path of TR-1 moves the row's own `updated_at` on each read. An open or draft pull request does not count. The trend compares the 14 days before. | `analytics_agents.py` `merge_sql`, `pr_closed_at` and `merge_rate` (RA-2) |
+| **Agent time** | The time that agents worked on a finished task. Each run lasts from its start to the last act of its agent, and never past its end. A takeover or a server close stamps its end later than that. Each wait on a person comes out: from a question to its answer, or to the next act of the agent if that comes first. Only a run made at or before the finish counts. The tile gives the median over the finished tasks with a measured run. | `analytics_agents.py` `run_hours` and `run_time_sql` (RA-2). The answer of a question is `analytics_waiting.answered_at_sql`. |
+| **Run outcome** | How an agent run ended: completed, failed, stopped, abandoned or released. These are the terminal statuses of a run. A run counts on the UTC day of its `ended_at`, which each terminal move stamps. The window is the last 14 UTC days, today included. | `analytics_agent_runs.py` `RUN_OUTCOMES` and `outcome_series_sql` (RA-4) |
+| **Success rate** | The completed runs divided by the completed, failed and abandoned runs of the window. A stop and a release stay out, because a person chose the stop, and a release gives the task back with no outcome. With no such run, there is no rate. The trend compares the 14 days before. No text calls 100% the goal. | `analytics_agent_runs.py` `success_rate` (RA-4) |
+| **Run size** | The agent time of a completed run of the window, in one of four sizes: under 15 minutes, under 1 hour, under 4 hours, and 4 hours or more. "Agent time" is the §5 row above, for one run. A run with no agent time has no size, and the section counts it. | `analytics_agent_runs.py` `size_bucket` and `size_bucket_sql` (RA-4). The agent time is `analytics_agents.run_time_joins_sql`. |
+| **Long run** | A completed run of 4 hours of agent time or more. The panel flags it as "maybe a poorly specified task", with the count, and names the longest five. | `analytics_agent_runs.py` `is_long_run` and `long_line` (RA-4) |
 | **Rework** | A task that went back from done to an open status, or a failed run followed by a new run on the same task | RA-5, not built |
-| **Needs an owner** | An open task with no assignee and no open run | RA-2, not built. The `none` count of RA-1's `holder_split` is near it, but it reads the lease of a run. |
+| **Forecast by count** | 2,000 runs play the history weeks again. Each simulated week is one past week, taken at random. Its finished tasks come off the open count, and its new tasks go back on. The 50% date is the week by which half the runs empty the open count. The 85% date is the week by which 85% of them do. Each date is today plus whole weeks. The same seed gives the same dates. The seed is the scope and the last week of the history. | `analytics_forecast.py` `count_forecast`, `simulate_weeks`, `percentile_weeks` and `forecast_seed` (RA-6). The weeks are `analytics.velocity_sql`, the spine of Throughput. |
+| **Not converging** | One of two things gives no date. In the first, new work arrives, and it arrives at least as fast as work finishes. That is the rule of 2026-09-17. The panel then gives the finished tasks a week that would converge it: the new tasks of a week, plus the open count divided by 52, rounded up to one decimal. In the second, fewer than 85% of the runs empty the open count within 52 weeks. The panel then says that the 85% date is more than 52 weeks away. It says that a steadier flow of finished tasks, or smaller tasks, brings that date closer. It names no rate, because an 85% test has no mean rate. | `analytics_forecast.py` `converge_per_week`, `REASON_ARRIVALS` and `REASON_CAP` (RA-6, fix round 1) |
+| **Not enough history** | Fewer than 3 finished tasks in the history weeks, or fewer than 2 weeks with a finish. The forecast gives no date. It says how many tasks finished, and in how many weeks. A project that grows is "Not converging" before this rule runs. | `analytics_forecast.py` `MIN_FINISHED_FOR_FORECAST` and `MIN_FINISH_WEEKS` (RA-6, fix round 1) |
+| **Needs an owner** | An open task with no assignee and no open run. An open run has the status `created`, `in_progress`, `awaiting` or `stopping`, with no regard to its lease. Each such task is in the `none` count of RA-1's `holder_split`. `none` also holds an unassigned task whose open run lost its lease, and that task has an owner. | `analytics.py` `needs_owner_sql` and `is_needs_owner` (RA-6). Load's `needs_owner` carries the total and `leads`. |
 
 ⚠️ **"Needs help" is a flag, not a sixth pill.** `PILLS` is a closed vocabulary
 that the People dashboard also draws. A sixth pill changes two apps. So the
@@ -2074,14 +2102,35 @@ first-name match.
 3. An agent holds an open task when a live run keeps it (`NOT filters.unheld_clause`) or when an assignee is `agent:<name>`. Else a person holds it when it has an assignee that is not blank. Else nobody holds it.
 4. `actor_split` (`agent_finished`, `agent_assisted`, `person`) is on `GET /projects/analytics/throughput`, `GET /projects/analytics/finished` and the `finished` and `throughput` report sections. Its counts add up to the `completed` figure of the same window. A render runs the split query once for the two sections.
 5. `holder_split` (`agent`, `person`, `none`) is on `GET /projects/analytics/load` and the `load` report section. Its counts add up to `total_tasks`.
+6. **`none` is not "Needs an owner" (RA-6).** `none` reads the lease, so a run whose lease ended no longer holds its task. "Needs an owner" reads every open run, with no regard to the lease. So each task that needs an owner is in `none`. `none` also holds an unassigned task whose open run lost its lease. That task has an owner that went quiet, and Needs attention shows it. The two rules share one assignee text, `any_assignee_sql`.
 
 Fences: `tests/unit/test_projects_analytics_actor.py` (hermetic) and `tests/unit/test_projects_analytics_actor_r8.py` (R8).
 
-### RA-2 — The KPI strip and "Who did the work" · AGENT-SAFE
+### RA-2 — The KPI strip and "Who did the work" · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** the six tiles of §6.8 B, and weekly finishes stacked by people and agents, with each agent under its member. "How long it took" splits its median and p90 by people and agents. "What we finished" stays for a scope of more than one project.
 
 **Done when:** `visual-review` passes at four widths, in light mode and at compact density, and each tile's rule is in its tooltip.
+
+**Built.** The server half lives in `routes/projects/analytics_agents.py`. It joins rules that exist, and §5 holds each new word.
+
+1. **Agents and people.** Agents holds `agent_finished` AND `agent_assisted`. §6.8 B asks if agent tasks are faster end to end. Merge-to-Done gives `agent_assisted` to each task that it moves, so that label is agent work.
+2. **The `finished` section** gains `actor_series`, each week of the window by label. The weeks add up to `actor_split`. It gains `agent_members` too: each agent finish under its member, by the rule of `analytics_waiting.agent_of`. The members sort by name, never by count (E1). §7.1 rule 3 hides the rows of other people from a reader who is not an admin, and `hidden_people` counts them.
+3. **The `throughput` section** gains `actor_cycle`, the median and the p90 of each group, over the `cyc` hours of Throughput.
+4. **Summary first (E5).** Both sections gain `actor_summary`. The server writes the sentence, and the panel prints it first.
+5. **The `waiting` section** gains `waiting_total` and `oldest_hours`, from its own three lists. A task that waits in two ways counts two times.
+6. **The KPI strip.** `POST /projects/reports/preview` with `kpis: true` adds a `kpis` block. Only the Overview sends it, so a saved report, the email and the chat run none of its queries. The block holds the runs now, the merge rate of 14 days, the run time and the cost.
+7. **The six tiles.** Finished this week reads the last week of `actor_series`. Median cycle time reads `actor_cycle`. Waiting on a person reads `waiting_total` and `oldest_hours`. The other three read `kpis`. Each tile names its split of people and agents. Its rule is its tooltip, and an `InfoTip` beside its label gives the same rule to a keyboard and a touch.
+8. **The silent rule.** §5 says 15 minutes, and the tile uses 15. `SILENT_RUN_AFTER_S` is the one constant, and `analytics_agents.py` owns it. The 5-minute idle state of the pill (`filters.AGENT_RUN_STALE_AFTER_S`) stays as it was.
+9. **Cost.** SW-20 captures no usage yet. So the tile reads "Unknown", never $0, beside "0% of finished tasks have cost data". The measured fallback is the agent time of §5, with the waits on a person taken out (§6.8 D item 3). `basis` is `agent_time_less_waits`.
+10. **"Who did the work"** replaces "What we finished" in the live Overview when the scope is a node and its finished work sits in one project or none. The organization and a scope of many projects keep "What we finished". A saved report keeps it too.
+11. **The flag.** While `agent_runs_enabled` is off, the runs tile reads "Off" and counts no run. The pull requests do not depend on the flag.
+12. **Live, with no flag.** Every API change is a new key. RA-2 adds no table and no migration.
+13. **Review fix round (2026-10-25).** The merge rate reads only a time from GitHub (P1). A run ends at the last act of its agent (P2). The waits come out of the agent time. Each tile has an `InfoTip`. A subject hides the waiting tile, because `waiting` refuses a subject and `sectionsFor` drops it.
+14. **The merge rate and the board strip.** Both read `merged_at` for a merge, so both skip the token path. They still differ on purpose. The strip of the board counts every merged pull request of 7 days, in one project. The tile counts the pull requests of agent work, merged or closed, in 14 days, in the scope of the Overview.
+15. **Known cost, filed as a follow-up.** `actor_series`, `agent_members`, `actor_cycle` and the run time each build the window of `cycle_cte_sql` again, so a render runs that walk four times. One shared statement needs the four answers from one query, and that is not a small change.
+
+Fences: `tests/unit/test_projects_report_kpis.py` (hermetic) and `tests/unit/test_projects_report_kpis_r8.py` (R8), and in the client `lib/kpiStrip.test.ts` and `components/kpiStrip.test.ts`.
 
 ### RA-3 — Waiting on people · AGENT-SAFE · BUILT 2026-10-25, not merged
 
@@ -2106,11 +2155,27 @@ Fences: `tests/unit/test_projects_analytics_actor.py` (hermetic) and `tests/unit
 
 Fences: `tests/unit/test_projects_report_waiting.py` (hermetic), `tests/unit/test_projects_report_waiting_r8.py` (R8), and in the client `lib/waiting.test.ts` and `components/waitingPanel.test.ts`.
 
-### RA-4 — Agent runs · AGENT-SAFE
+### RA-4 — Agent runs · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** 14 days of run outcomes, the success rate and silent runs now (the §6.8 F rule). Run sizes: under 15 minutes, under 1 hour, under 4 hours, and longer. A long run is flagged as "maybe a poorly specified task".
 
 **Done when:** the panel hides itself when the scope has no agent runs.
+
+**Built.** The report section `agent_runs` lives in `routes/projects/analytics_agent_runs.py`. It joins rules that exist, and §5 holds each new word.
+
+1. **Outcomes.** The runs that ended in the last 14 UTC days, today included, by outcome. "Ended" is `ended_at`, the time of the terminal move. RA-2's run end is the end of the agent's time, so only the sizes read it. A daily series feeds a small stacked chart, and its days add up to the outcomes.
+2. **The success rate.** Completed over completed, failed and abandoned. A failure is the agent's error, and an abandoned run is an agent that went quiet past its lease. A stop and a release stay out. The trend is RA-2's `merge_trend`, against the 14 days before.
+3. **Silent runs now.** RA-2's `silent_run_sql` and its one constant, on Load's open-work predicate. So the total equals the silent count of the KPI tile. The list names 20 runs at most, the longest silence first. Each row names its task, the agent and its member (E2).
+4. **Run sizes.** The completed runs of the window, by RA-2's agent time of a run. `analytics_agents.run_time_joins_sql` is now the one text of that time, and the KPI tile reads it too. A long run is 4 hours or more. The panel names the longest five.
+5. **Summary first (E5).** The server writes the sentence and the flag of the long runs. The panel, the email, the download and the chat print them.
+6. **§7 rule 1.** The outcomes and the sizes read Throughput's history predicate. A run on a task that is done or archived now still counts in its window.
+7. **The period.** The section reads its own window and never the report period, as the merge rate does. The builder lists it as period-free. It refuses a subject, as `waiting` does.
+8. **Overview.** The section is on by default. Overview hides the panel when the scope has no agent run and nothing is in it, by RA-3's rule. A saved report shows one clear row in its place.
+9. **UI.** The chart takes Throughput's style. Each outcome takes an explicit slot of the categorical ramp, beside its label. Each figure has an `InfoTip` with its rule, and a keyboard or a touch opens it.
+10. **The chat.** A saved report prints the section through `report_render`. The text fences each title, agent name and member name with `data()`. A direct question to the assistant is RA-8.
+11. While `agent_runs_enabled` is off, the section reads no run. Live, with no flag. Every API change is a new key, with no table and no migration.
+
+Fences: `tests/unit/test_projects_report_agent_runs.py` (hermetic) and `tests/unit/test_projects_report_agent_runs_r8.py` (R8), and in the client `lib/agentRunsReport.test.ts` and `components/agentRunsPanel.test.ts`.
 
 ### RA-5 — Quality · AGENT-SAFE
 
@@ -2118,11 +2183,37 @@ Fences: `tests/unit/test_projects_report_waiting.py` (hermetic), `tests/unit/tes
 
 **Done when:** the merge rate shows a trend, with no 100% target in its text.
 
-### RA-6 — The forecast by count · AGENT-SAFE
+### RA-6 — The forecast by count · AGENT-SAFE · BUILT 2026-10-25, not merged
 
 **What:** a Monte Carlo of weekly finishes. It gives the 50% and 85% dates for the open count, with no estimates needed. It keeps "Not converging" and adds the finishes a week that would converge it. "Needs an owner" shows first in Open work when unassigned tasks lead.
 
 **Done when:** the same seed gives the same dates, and a pure test pins the converge line.
+
+**Built.** The forecast lives in `routes/projects/analytics_forecast.py`, and it is pure. `analytics.project_forecast` calls it. §5 holds each new word.
+
+1. **One series.** The forecast reads the weeks of `analytics.velocity_sql`, which is the spine of Throughput. The R8 suite pins its six weeks to the closed weeks of the `throughput` section. No second count of a finish exists.
+2. **The runs.** Each of 2,000 runs samples one past week at a time, with replacement. The finishes and the arrivals of that week go together. The rule of 2026-09-17 binds: scope growth is part of the answer. A run that read finishes only would print the date that the mean net rate refused.
+3. **The seed.** The seed is SHA-256 of the scope and the last week of the history. A reload gives the same dates, and a new week gives new ones. `hash()` changes in each process, so the seed does not use it. The generator is a local `random.Random`, never the global state.
+4. **2,000 runs and a cap of 52 weeks.** At 2,000 runs the 85% figure has a standard error under one point. So two seeds differ by a week at most. A run stops at 52 weeks, because a date past a year is no forecast. The cap also bounds the work to 104,000 draws, near 12 ms.
+5. **The verdicts, in order.** First comes no open task, then "Not converging" for arrivals, then "Not enough history". Then comes "Not converging" for the cap, and last the two dates. The arrivals rule runs before the history gate, so a project that grows stays red with a thin history. Only the arrivals verdict carries `converge_per_week`. Each `not_converging` answer carries `reason`.
+6. **The estimates.** The simpler choice: the estimates add a second line only when they exist. "Nothing sized" no longer draws. "No capacity on file" still draws, because it says that estimates exist and hours do not. The server still sends the `capacity` block.
+7. **The API.** Every change is a new key. `velocity` gains the two dates, the weeks, the runs, the cap, the converge line, `reason` and `summary`. `finish_date` and `weeks_remaining` carry the 50% figure, so the slip, the email and the chat keep working. No key goes. Load gains `needs_owner`.
+8. **Summary first (E5).** The server writes the sentence. The panel, the email and the chat print it first.
+9. **Needs an owner.** `analytics.needs_owner_sql` over Load's open-work predicate, so a reader sees only the tasks they can open. The server names 20, the soonest due first, beside the total. `leads` is true when the total is at least the open count of each holder. It reads every row before the reader's row filter, because it compares totals only. RA-1's item 6 says how it differs from `none`.
+10. **UI.** The Forecast draws one band from today. It is solid to the 50% date and an outline to the 85% date, with a tick at the plan. The band takes the explicit ramp slot 9. An `InfoTip` beside the headline gives the rule of the verdict. "Needs an owner" is the first group of Open work when it leads. It is the last group when it does not lead. Each row opens its task.
+11. **The chat.** `analytics_outlook` prints the sentence first. `analytics_load` and a report's `load` section print the tasks that need an owner, each title through `data()`. The text prints each row the server sent, so the paging fence holds. The card gains "85% finish" and "Need an owner".
+12. Live, with no flag. RA-6 adds no table and no migration.
+
+**Fix round 1 (2026-10-26), after the review.**
+
+1. **No rate for the cap.** The converge line is a mean rate, and the cap verdict is an 85% test. In about one cap verdict in five, the line asked a team for a rate it already had. So only the arrivals verdict names a rate. The cap verdict says what helps.
+2. **The history gate.** It needs 3 finished tasks, in 2 weeks or more. So a team that finishes work every second week gets a date. The arrivals rule runs before the gate.
+3. **Three weeks.** `GET /analytics/outlook` takes 2 to 26 weeks. Three weeks of history can now give a date.
+4. **The chat.** A figure that the server sends as null prints nothing. `analytics_load` prints "Needs an owner" on the first page only.
+5. **The band.** The 85% part is an outline in the full hue, with a fill of 20%. The outline is 3.96:1 against the dark track and 6.90:1 against the light one. The solid part is 3.08:1 against the fill in dark mode and 4.91:1 in light mode.
+6. **The table.** The table of Open work puts "Needs an owner" first when it leads.
+
+Fences: `tests/unit/test_projects_report_forecast.py` (hermetic) and `tests/unit/test_projects_report_forecast_r8.py` (R8), and in the client `lib/outlook.test.ts`, `lib/needsOwner.test.ts` and `components/forecastPanel.test.ts`.
 
 ### RA-7 — Cost · BLOCKED on SW-20 usage capture
 
@@ -2241,7 +2332,12 @@ uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_analytics_rebalance.py \
   tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py \
   tests/unit/test_projects_analytics_actor.py tests/unit/test_projects_analytics_actor_r8.py \
-  tests/unit/test_projects_report_waiting.py tests/unit/test_projects_report_waiting_r8.py -q -rs
+  tests/unit/test_projects_report_waiting.py tests/unit/test_projects_report_waiting_r8.py \
+  tests/unit/test_projects_report_kpis.py tests/unit/test_projects_report_kpis_r8.py \
+  tests/unit/test_projects_report_agent_runs.py \
+  tests/unit/test_projects_report_agent_runs_r8.py \
+  tests/unit/test_projects_report_forecast.py \
+  tests/unit/test_projects_report_forecast_r8.py -q -rs
 
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
@@ -2274,6 +2370,15 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_waiting.py` and `test_projects_report_waiting_r8.py`
   are RA-3's files. Its client files are `waiting.test.ts` and
   `waitingPanel.test.ts`.
+- `test_projects_report_kpis.py` and `test_projects_report_kpis_r8.py` are
+  RA-2's files. Its client files are `lib/kpiStrip.test.ts` and
+  `components/kpiStrip.test.ts`.
+- `test_projects_report_agent_runs.py` and
+  `test_projects_report_agent_runs_r8.py` are RA-4's files. Its client files
+  are `lib/agentRunsReport.test.ts` and `components/agentRunsPanel.test.ts`.
+- `test_projects_report_forecast.py` and `test_projects_report_forecast_r8.py`
+  are RA-6's files. Its client files are `lib/needsOwner.test.ts` and
+  `components/forecastPanel.test.ts`, and it changed `lib/outlook.test.ts`.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 - R5g has no server file. Its files are `overviewLive.test.ts` and

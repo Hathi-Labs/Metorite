@@ -1012,21 +1012,26 @@ register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KIN
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
-# ── Knowledge (WS-61 KB-9a, knowledge_base.md §9, feed only, gated) ─────────
+# ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
 #
-# `kb_gap`: a question that two members or more asked inside 30 days, that
-# Knowledge could not answer, and that nobody closed. It keys on
-# `knowledge:gap:<id>`. Its first act opens the Gaps view with the New page
-# form, the question as the title. The source names `knowledge:manage` as
-# its permission, because a gap stores no space. A closed Knowledge switch or
-# a closed `KNOWLEDGE_GAPS` raises `SourceAbsent` before any read.
-# `gaps.my_day_rows` opens ONE tenant session, and this file opens none.
-# KB-9b adds `doc_needs_review`, `doc_shared_with_me` and
-# `source_sync_failed` to this source. Fences: `tests/unit/test_kb_gaps.py`
-# and `tests/unit/test_kb_gaps_r8.py` (R8).
+# Three kinds, one source. `kb_gap` keys on `knowledge:gap:<id>`: a question
+# that two members or more asked inside 30 days, that Knowledge could not
+# answer, and that nobody closed. `doc_needs_review` and `doc_shared_with_me`
+# key on `knowledge:page:<id>`, so one page makes one card. The first is a
+# page of the member past its review date. The second is a page that another
+# author published in the last 24 hours, in a space the member reads.
+#
+# The source names no `permission`. A plain member gets the page cards, and
+# only a manager gets `kb_gap`. So the gates live HERE: a closed Knowledge
+# switch raises `SourceAbsent` before any read, and the gap read runs only
+# with `KNOWLEDGE_GAPS` open and `knowledge:manage` held. `hash_permission`
+# keeps `knowledge:manage` in the read cache key (`cache.features_hash`).
+# `my_day.read` opens ONE tenant session, and this file opens none.
+# `source_sync_failed` is KB-9b slice 2. Fences: `tests/unit/test_kb_my_day.py`,
+# `tests/unit/test_kb_gaps.py` and the `_r8` twins (R8).
 
-#: The kinds of the source. KB-9a builds the first.
-KNOWLEDGE_KINDS = frozenset({"kb_gap"})
+#: The kinds of the source.
+KNOWLEDGE_KINDS = frozenset({"kb_gap", "doc_needs_review", "doc_shared_with_me"})
 
 
 def _gap_signal(row: dict[str, Any]) -> Signal:
@@ -1049,23 +1054,59 @@ def _gap_signal(row: dict[str, Any]) -> Signal:
     )
 
 
+def _page_signal(row: dict[str, Any], kind: str) -> Signal:
+    """``doc_needs_review`` or ``doc_shared_with_me``: one page. The title is
+    the page title. The facts are the space and one time. No person name and
+    no read count (KB-9b OQ2 to OQ4)."""
+    from gateway.routes.knowledge import my_day
+
+    page_id = str(row["id"])
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    href = f"/knowledge/pages/{page_id}"
+    space = str(row.get("space") or "").strip()
+    if kind == "doc_needs_review":
+        review_at = _iso(row.get("review_at"))
+        return Signal(
+            signal_id=f"knowledge:page:{page_id}", app="knowledge", kind=kind,
+            entity={"type": "page", "id": page_id, "label": title}, title=title,
+            facts={"space": space, "review_at": review_at}, href=href,
+            acts=(link("review", "Review", href),), at=review_at,
+        )
+    published = row.get("published_at")
+    expires = published + timedelta(hours=my_day.NEW_HOURS) if published else None
+    return Signal(
+        signal_id=f"knowledge:page:{page_id}", app="knowledge", kind=kind,
+        entity={"type": "page", "id": page_id, "label": title}, title=title,
+        facts={"space": space, "published_at": _iso(published)}, href=href,
+        acts=(link("read-page", "Read", href),), at=_iso(published),
+        expires_at=_iso(expires),
+    )
+
+
 async def _knowledge(user: UserContext) -> Found:
     from gateway.routes.knowledge import flags as kb_flags
-    from gateway.routes.knowledge.gaps import my_day_rows
+    from gateway.routes.knowledge import my_day
 
-    if not kb_flags.knowledge_gaps_allowed(user.organization_id):
-        raise needs.SourceAbsent("KNOWLEDGE_GAPS does not name the org")
-    rows = await my_day_rows(user, PER_APP + 1)
-    signals = [_gap_signal(r) for r in rows]
+    if not kb_flags.knowledge_org_allowed(user.organization_id):
+        raise needs.SourceAbsent("Knowledge does not name the org")
+    found = await my_day.read(
+        user, gaps_on=kb_flags.knowledge_gaps_allowed(user.organization_id),
+        limit=PER_APP + 1,
+    )
+    # The order before the cut of PER_APP: review, then gaps, then shared.
+    signals = ([_page_signal(r, "doc_needs_review") for r in found.review]
+               + [_gap_signal(r) for r in found.gaps]
+               + [_page_signal(r, "doc_shared_with_me") for r in found.shared])
     return Found([], 0, capped=len(signals) > PER_APP,
                  signals=lambda: signals[:PER_APP])
 
 
-# The gate (§9): `feature:knowledge` and `knowledge:manage`. Gated, so it
-# runs only while MY_DAY_PROVIDERS lists `knowledge` (§5.8 item 1). The
-# source id is the app id, and it has no Handled read.
+# The gate (§9): `feature:knowledge` holds the source. The rest is in
+# `_knowledge`. Gated, so it runs only while MY_DAY_PROVIDERS lists
+# `knowledge` (§5.8 item 1). The source id is the app id, and it has no
+# Handled read.
 register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, needs=False,
-                  gated=True, permission="knowledge:manage"))
+                  gated=True, hash_permission="knowledge:manage"))
 
 
 # ── Reminders (WS-66 RM-2, calendar_events_reminders.md §5.6, feed only, gated) ─
@@ -1328,12 +1369,30 @@ def _gap_line(facts: dict[str, Any]) -> str:
     return f"{who} in the last 30 days. Nobody has written it down in Knowledge."
 
 
-#: The why line of each card of the org, a CRM card or a Knowledge gap
+def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
+    """The why line of ``doc_needs_review`` (KB-9b). It names the review date
+    and nothing else: no person."""
+    when = _when(facts.get("review_at"), tz, today)
+    return f"The review date was {when}. Check that the page is still right."
+
+
+def _shared_line(facts: dict[str, Any]) -> str:
+    """The why line of ``doc_shared_with_me`` (KB-9b). It names the space and
+    nothing else: no person and no read count."""
+    space = facts.get("space")
+    where = f"in {space}" if space else "in a space you read"
+    return f"A new page went live {where} in the last day."
+
+
+#: The why line of each card of the org, a CRM card or a Knowledge card
 #: (KB-9a): its template id and its line.
 _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
-    "digest_ready": ("digest_ready", _digest_line),
-    "crm_open_questions": ("open_questions", _questions_line),
-    "kb_gap": ("gap", _gap_line),
+    "digest_ready": ("digest_ready", lambda f, _tz, _today: _digest_line(f)),
+    "crm_open_questions": ("open_questions", lambda f, _tz, _today: _questions_line(f)),
+    "kb_gap": ("gap", lambda f, _tz, _today: _gap_line(f)),
+    # KB-9b: the two page cards.
+    "doc_needs_review": ("review_due", _review_line),
+    "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
 }
 
 
@@ -1382,7 +1441,7 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         # Knowledge gap (KB-9a): one template each over the facts, never a
         # word of a model.
         template, line = _ORG_CARD_LINES[kind]
-        return template, line(facts)
+        return template, line(facts, tz, today)
     if kind == "agent_asks":
         at = facts.get("waiting_since")
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "

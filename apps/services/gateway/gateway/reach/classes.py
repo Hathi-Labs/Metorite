@@ -57,6 +57,11 @@ REACH_CLASS: dict[str, str] = {
     # WS-61 KB-9a (knowledge_base.md §9): a question that Knowledge could not
     # answer. A thing to know for a manager, so it goes in the brief.
     "kb_gap": "brief",
+    # WS-61 KB-9b (knowledge_base.md §9): a page past its review date, and a
+    # page that another author published. Each is a thing to know, so each
+    # goes in the brief and interrupts nobody.
+    "doc_needs_review": "brief",
+    "doc_shared_with_me": "brief",
     # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
     # reminders stay in My Day for now. Reach sends only on WhatsApp, and
     # D114.7 keeps reminders off WhatsApp. RE-9 raises them to `urgent`,

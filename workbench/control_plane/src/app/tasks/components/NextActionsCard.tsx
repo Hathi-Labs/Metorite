@@ -146,13 +146,13 @@ export default function NextActionsCard({
     <HomeCard
       title="Next actions"
       icon="ListChecks"
-      source="My Tasks"
+      source="My work"
       testId="next-actions"
       className={className}
       footer={
         <>
           <FooterLink href="/tasks" icon="CheckSquare">
-            Open My Tasks
+            Open My work
           </FooterLink>
           <FooterLink href="/tasks?do=capture" icon="Plus">
             New task

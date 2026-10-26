@@ -160,6 +160,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "report_recipients": [{"report_id": UUID}],
     # WS-64 OP-6e: the agent requests that wait for the member.
     "waiting_agent_requests": [{}],
+    # WS-55 SW-11a: what needs a person, for one project, and the member's own.
+    "needs_attention": [{"project_id": UUID}, {"mine": True, "offset": 25}],
     "report_render": [{"report_id": UUID}],
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],
@@ -1980,8 +1982,9 @@ def test_the_outlook_card_reads_its_nested_figures() -> None:
     assert table is not None and table["title"] == "Forecast"
     # H-185 item 1: the card prints a timestamp as its date, as the app does.
     # H-185 item 2: "Slip days" is a tile, and the table does not repeat it.
-    assert table["rows"][0]["cells"] == ["Not converging", "2026-11-02", ""]
-    assert table["columns"] == ["Forecast", "Planned finish", "Forecast finish"]
+    assert table["rows"][0]["cells"] == ["Not converging", "2026-11-02", "", ""]
+    # WS-27bn RA-6: the 85% date of the forecast by count, beside the 50%.
+    assert table["columns"] == ["Forecast", "Planned finish", "Forecast finish", "85% finish"]
     lines = _report_section("outlook", section)
     # H-185 item 2: plain labels, never a dotted key.
     assert lines[0].startswith("outlook: forecast not_converging")

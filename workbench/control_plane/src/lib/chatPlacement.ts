@@ -105,6 +105,7 @@ const EVIDENCE: readonly string[] = [
   "report_list",
   "report_recipients",
   "waiting_agent_requests",
+  "needs_attention",
   "report_render",
   "open_in_app",
   "show_view",
@@ -315,6 +316,7 @@ const WRITE: readonly string[] = [
   "profile_set",
   "profile_alias",
   "profile_undo",
+  "profile_interview",
 ];
 
 function build(): Readonly<Record<string, Placement>> {

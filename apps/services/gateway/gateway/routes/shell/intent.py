@@ -37,7 +37,7 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlencode
 
@@ -87,6 +87,13 @@ class Job:
     #: True for the job of an `adminOnly` pane (`nav.ts`). Only an admin holds
     #: it, so only an admin's prompt names it (§6.4 rule 1).
     admin: bool = False
+    #: WS-64. A member who lacks `feature` but holds `fallback_feature` gets the
+    #: job at `fallback_href`. "New task" moved to Projects, and a member with
+    #: `feature:tasks` and no `feature:projects` keeps it at the old target.
+    #: `registry.ts` names the same fallback, and `test_shell_intent.py` holds
+    #: the two equal.
+    fallback_feature: str | None = None
+    fallback_href: str | None = None
 
 
 #: The admin test of the tenant plane. ``GET /auth/me`` reports the same test
@@ -102,7 +109,8 @@ ADMIN_PERMISSION = "admin:members:read"
 JOBS: tuple[Job, ...] = (
     Job("capture", "New task", "add a task, a to-do or a reminder for themselves",
         "projects", "/projects?do=capture",
-        {"title": "the task itself, in the member's own words, without 'remind me to'"}),
+        {"title": "the task itself, in the member's own words, without 'remind me to'"},
+        fallback_feature="tasks", fallback_href="/tasks?do=capture"),
     Job("compose", "Write an email", "write, send or reply to an email",
         "email", "/email?do=compose",
         {"to": "who the email goes to: a name or an email address",
@@ -170,11 +178,17 @@ def held_jobs(user: UserContext) -> list[Job]:
     job's feature, and for an admin job the admin permission.
     """
     is_admin = user.has_permission(ADMIN_PERMISSION)
-    return [
-        j for j in JOBS
-        if (j.feature is None or user.has_permission(f"feature:{j.feature}"))
-        and (not j.admin or is_admin)
-    ]
+    held: list[Job] = []
+    for j in JOBS:
+        if j.admin and not is_admin:
+            continue
+        if j.feature is None or user.has_permission(f"feature:{j.feature}"):
+            held.append(j)
+        elif j.fallback_feature and j.fallback_href and user.has_permission(
+            f"feature:{j.fallback_feature}"
+        ):
+            held.append(replace(j, feature=j.fallback_feature, href=j.fallback_href))
+    return held
 
 
 class IntentRequest(BaseModel):
@@ -285,7 +299,8 @@ def _cache_key(user: UserContext, words: str, scope: str | None, jobs: list[Job]
     (verifier of NS-4b, 2026-10-08). With them in the key, a changed grant is
     a new key.
     """
-    held = ",".join(sorted(j.id for j in jobs))
+    # The href is in the key: a fallback job has its own (WS-64).
+    held = ",".join(sorted(f"{j.id}={j.href}" for j in jobs))
     raw = "\x1f".join([(user.email or "").lower(), scope or "", held, words.lower()])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 

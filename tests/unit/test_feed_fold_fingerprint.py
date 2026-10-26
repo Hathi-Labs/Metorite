@@ -68,6 +68,16 @@ def _note(nid: str, at: datetime) -> dict:
             "task_title": "One", "task_number": None, "excerpt": None, "created_at": at}
 
 
+def _knowledge_signal(kind: str) -> shell.Signal:
+    """WS-61 KB-9a: a question that Knowledge could not answer. KB-9b: the two
+    page kinds key on one page, so they fold."""
+    if kind == "kb_gap":
+        return feed._gap_signal({"id": "g-1", "question": "how do we raise a credit note",
+                                 "ask_count": 3, "last_asked_at": NOW})
+    return feed._page_signal({"id": "p-1", "title": "Refund policy", "space": "Finance",
+                              "review_at": NOW, "published_at": NOW}, kind)
+
+
 def _real(kind: str) -> shell.Signal | None:
     """The signal of ``kind`` from its REAL builder, on one entity of its
     family. None for a kind of ``NO_BUILDER``."""
@@ -114,10 +124,8 @@ def _real(kind: str) -> shell.Signal | None:
     if kind == "crm_open_questions":
         # WS-53 CRM-Q32-4: the open questions of the CRM, for a CRM admin.
         return feed._questions_signal({"new_at": NOW, "count": 2, "open": 5, "money": True})
-    if kind == "kb_gap":
-        # WS-61 KB-9a: a question that Knowledge could not answer.
-        return feed._gap_signal({"id": "g-1", "question": "how do we raise a credit note",
-                                 "ask_count": 3, "last_asked_at": NOW})
+    if kind in ("kb_gap", "doc_needs_review", "doc_shared_with_me"):
+        return _knowledge_signal(kind)
     if kind == "no_answer":
         return feed._no_answer_signal({
             "thread_id": THREAD, "message_id": "m-2", "subject": "S", "who": "dana",

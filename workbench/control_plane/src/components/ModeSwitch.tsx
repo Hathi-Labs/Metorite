@@ -48,7 +48,11 @@ export function ModeSwitch<Id extends string>({
   label = "View mode",
 }: {
   modes: readonly ModeOption<Id>[];
-  mode: Id;
+  /**
+   * The mode on screen. `null` selects none: a lens that takes the place of
+   * the canvas (Projects' Needs attention) is not one of these modes.
+   */
+  mode: Id | null;
   onPick: (next: Id) => void;
   layout?: "toolbar" | "sheet";
   /** The group's accessible name. */

@@ -45,6 +45,7 @@ import {
   type FinishedReport,
   type ViewRow,
   agentRunsApi,
+  attentionApi,
   projectsApi,
   projectsKey,
   projectWatchersApi,
@@ -56,6 +57,8 @@ import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { NeedsAttentionList } from "./components/NeedsAttentionList";
+import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
 import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
@@ -125,7 +128,9 @@ import {
   SidePanelFitContext,
   sidePanelFits,
 } from "@/lib/sidePanelFit";
-import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { drawerStep } from "./lib/drawerOwner";
+import { moveFollowUp } from "./lib/moveRefresh";
+import { useLiveRefresh } from "./lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -785,6 +790,8 @@ function ProjectsWorkspace() {
   const [railOpen, setRailOpen] = useState(true);
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
   const [sheet, setSheet] = useState<Sheet>(null);
+  /** The page put a sheet in the shell drawer (WS-64 #8). Only then may it close it. */
+  const ownsDrawer = useRef(false);
 
   /**
    * ── The tree, read through the shared cache ────────────────────────────
@@ -1060,6 +1067,24 @@ function ProjectsWorkspace() {
     counts: AgentSummary;
   } | null>(null);
   const [askingTasks, setAskingTasks] = useState<string[] | null>(null);
+  /**
+   * WS-55 SW-11a — the "Needs attention" lens (`external_agent_access.md`
+   * §12.7). Page state like "Waiting on me", never a view mode: while it is
+   * on, the list takes the place of the canvas, and a pick in the view switch
+   * turns it off. `attentionFor` is the project the lens is on for, so a new
+   * project opens on its board with no effect to reset it. `attention` holds
+   * the last answer, and the header badge and the toggle read its total.
+   */
+  const [attentionFor, setAttentionFor] = useState<string | null>(null);
+  const [attention, setAttention] = useState<{
+    projectId: string;
+    page: AttentionPage;
+  } | null>(null);
+  const [attentionError, setAttentionError] = useState<{
+    projectId: string;
+    text: string;
+  } | null>(null);
+  const [attentionVersion, setAttentionVersion] = useState(0);
   useEffect(() => {
     let live = true;
     void agentRunsApi.enabled().then((on) => {
@@ -1646,6 +1671,17 @@ function ProjectsWorkspace() {
     app === "ai-chat" ||
     app === "settings" ||
     isMyWorkId(app);
+  // WS-55 SW-11a — the project the Needs attention lens reads, and whether the
+  // lens is on for it. A new project opens on its board, never on the lens of
+  // the last one. While the lens is on, the view switch selects no mode.
+  const attentionProject = selected && !dashboardOnly ? selected.id : null;
+  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
+  const shownMode: ViewMode | null = attentionLens ? null : mode;
+  /** A pick of a view mode leaves the lens, from every door. */
+  const pickMode = (next: ViewMode) => {
+    setAttentionFor(null);
+    setChosenMode(next);
+  };
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1751,9 +1787,16 @@ function ProjectsWorkspace() {
   useEffect(() => {
     if (!isMobile) return;
     if (!sheet) {
-      closeDrawer();
+      // WS-64 #8 — close the drawer only when THIS page opened it. The shell's
+      // Menu tab opens the same drawer with `sheet` null, and a tree refetch
+      // changes a dependency below: closing then shut the Menu by itself.
+      if (drawerStep(false, ownsDrawer.current) === "close") {
+        ownsDrawer.current = false;
+        closeDrawer();
+      }
       return;
     }
+    ownsDrawer.current = true;
     openDrawer(
       <div className="p-2">
         {/* ⚠️ The tree sheet has NO header of its own (2026-10-10). It drew a
@@ -1804,9 +1847,11 @@ function ProjectsWorkspace() {
         ) : (
           <ModeSwitch
             modes={MODE_OPTIONS}
-            mode={mode}
+            mode={shownMode}
             layout="sheet"
             onPick={(next) => {
+              // A pick leaves the Needs attention lens, as on a desktop.
+              setAttentionFor(null);
               setChosenMode(next);
               setSheet(null);
             }}
@@ -1817,7 +1862,7 @@ function ProjectsWorkspace() {
     // `creating` is here so the drawer re-injects when a draft opens or
     // closes. Without it, the "+" in the drawer drew nothing: the snapshot
     // kept the tree as it was before the tap (2026-10-10).
-  }, [isMobile, sheet, mode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
+  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
@@ -1829,6 +1874,7 @@ function ProjectsWorkspace() {
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
   useEffect(() => {
+    if (!drawerOpen) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!drawerOpen) setSheet(null);
   }, [drawerOpen]);
@@ -2347,6 +2393,38 @@ function ProjectsWorkspace() {
       live = false;
     };
   }, [agentRunsOn, summaryProject, agentSig]);
+
+  // WS-55 SW-11a — the Needs attention list of the project on screen. One
+  // read when the project changes, when an agent fact of a loaded row changes,
+  // and after an act of the list (`attentionVersion`). It only reads, and it
+  // is live with no flag of its own. A space or a folder has no board, so it
+  // reads nothing there.
+  useEffect(() => {
+    if (!attentionProject) return;
+    let live = true;
+    void attentionApi
+      .list(attentionProject)
+      .then((page) => {
+        if (!live) return;
+        setAttention({ projectId: attentionProject, page });
+        setAttentionError(null);
+      })
+      .catch((err: unknown) => {
+        if (!live) return;
+        setAttentionError({
+          projectId: attentionProject,
+          text: `Could not read the list. ${String((err as Error).message)}`,
+        });
+      });
+    return () => {
+      live = false;
+    };
+  }, [attentionProject, agentSig, attentionVersion]);
+  const attentionHere =
+    attention && attention.projectId === attentionProject ? attention.page : null;
+  const attentionErrorHere =
+    attentionError && attentionError.projectId === attentionProject ? attentionError.text : null;
+  const attentionBadge = badgeText(attentionHere?.total);
 
   const projectName = useCallback(
     (id: string) =>
@@ -2869,7 +2947,10 @@ function ProjectsWorkspace() {
       if (!row) return "not visible";
       setApp(null);
       setSelected(row.node as ProjectRow);
-      if (plan.mode) setChosenMode(plan.mode);
+      if (plan.mode) {
+        setAttentionFor(null);
+        setChosenMode(plan.mode);
+      }
       let nextGroup = groupBy;
       let nextLanes = lanes;
       if (plan.view) {
@@ -2904,17 +2985,19 @@ function ProjectsWorkspace() {
   // the board reloads the selected project so the member sees the change
   // without a click. The chat never reaches the page's state; this event
   // is the one seam.
-  useEffect(() => {
-    const onChanged = () => {
-      // The app's own writes invalidate the family in `api.ts`; a chat write
-      // ran server-side, so this is where the same drop happens. It notifies
-      // the tree and the summaries too, not only the selected board.
-      invalidate(PROJECTS_CACHE);
-      if (selected) void loadProject(selected);
-    };
-    window.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
-  }, [selected, loadProject]);
+  // WS-64 #128 — the same reload runs when the tab returns to sight or the
+  // window gets focus (throttled), so a write by an MCP client or an agent
+  // run in another process shows up too. `useLiveRefresh` owns the rule.
+  const myWorkOpen = isMyWorkId(app);
+  useLiveRefresh(() => {
+    // The app's own writes invalidate the family in `api.ts`; a chat write
+    // ran server-side, so this is where the same drop happens. It notifies
+    // the tree and the summaries too, not only the selected board.
+    invalidate(PROJECTS_CACHE);
+    // My work reloads itself (`MyWorkHost`). The board reloads here, in the
+    // mode the member is looking at.
+    if (!myWorkOpen) void refreshRef.current();
+  });
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,
@@ -2979,7 +3062,10 @@ function ProjectsWorkspace() {
   const actions: CommandActions = useMemo(
     () => ({
       navigate: (href) => router.push(href),
-      setMode: (next) => setChosenMode(next),
+      setMode: (next) => {
+        setAttentionFor(null);
+        setChosenMode(next);
+      },
       setPanelMode,
       clearFilters: () => setFilters(EMPTY_FILTERS),
       toggleRail: () => setRailOpen((open) => !open),
@@ -3468,6 +3554,21 @@ function ProjectsWorkspace() {
       // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
       await refreshRef.current();
+      // WS-64 #11 — in My work nothing is selected, so the line above read no
+      // list. Read the task store again, and point an open panel at the moved
+      // task in its new project (its statuses are the new project's).
+      const follow = moveFollowUp({
+        myWork: isMyWorkId(app),
+        openTaskId: openTask?.id ?? null,
+        movedIds: ids,
+      });
+      if (follow.reloadMyWork) {
+        const store = useTaskStore.getState();
+        void store.reloadItems().then(() => {
+          if (useTaskStore.getState().selectedView === "done") void store.loadDone();
+        });
+      }
+      if (follow.reopenTaskId) void openTaskById(follow.reopenTaskId, isMyWorkId(app));
       // "Moved 4 tasks to Website relaunch" — the subtasks the move took
       // along are counted, from the server's answer.
       const moved = moveReceipt(
@@ -4189,9 +4290,43 @@ function ProjectsWorkspace() {
         renderState("loading", "Counting the work below…")
       )}
     </>
+  ) : attentionLens && selected ? (
+    // WS-55 SW-11a — the Needs attention lens. It takes the place of the
+    // canvas, and the filter bar, the strip, the bulk bar, the composer and the
+    // triage rail hide, as on the Overview: none of them acts on this list.
+    <>
+      {shownError ? renderState("error", shownError) : null}
+      {/* No second `LayoutBoundary` here: `layoutBoundary.test.ts` holds the
+          one boundary of the page around the canvases. `attentionPage` drops
+          a row it cannot read before the list draws it. */}
+      <NeedsAttentionList
+        page={attentionHere}
+        error={attentionErrorHere}
+        personLabels={personLabels}
+        onOpenTask={(id) => void openTaskById(id)}
+        onBack={() => setAttentionFor(null)}
+        onChanged={() => setAttentionVersion((v) => v + 1)}
+      />
+    </>
   ) : (
     <>
       {shownError ? renderState("error", shownError) : null}
+
+      {/* WS-55 SW-11a — a phone has no project header, so the count of the
+          Needs attention lens sits above the board and opens it. */}
+      {selected && isMobile && attentionBadge ? (
+        <div className="border-b border-border px-3 py-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="TriangleAlert"
+            data-attention-open=""
+            onClick={() => setAttentionFor(selected.id)}
+          >
+            {attentionBadge}
+          </Button>
+        </div>
+      ) : null}
 
       {selected && !overview ? (
         <FilterChrome
@@ -5150,6 +5285,22 @@ function ProjectsWorkspace() {
                   {subtitle}
                 </p>
               ) : null}
+              {/* WS-55 SW-11a — the count of the Needs attention lens. It
+                  shows only while something waits, and a click opens the
+                  lens. */}
+              {!noProjectChrome && selected && attentionBadge && !attentionLens ? (
+                <Button
+                  className="shrink-0 self-center"
+                  variant="ghost"
+                  size="sm"
+                  icon="TriangleAlert"
+                  data-attention-badge=""
+                  title="Open the work that stopped and waits for a person"
+                  onClick={() => setAttentionFor(selected.id)}
+                >
+                  {attentionBadge}
+                </Button>
+              ) : null}
             </div>
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
@@ -5164,10 +5315,32 @@ function ProjectsWorkspace() {
               <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
                 <ModeSwitch
                   modes={MODE_OPTIONS}
-                  mode={mode}
+                  mode={shownMode}
                   layout="toolbar"
-                  onPick={(next) => setChosenMode(next)}
+                  onPick={pickMode}
                 />
+                {/* WS-55 SW-11a — the lens beside the board's other lenses.
+                    Pressed while the list is on screen. */}
+                {selected ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="TriangleAlert"
+                    selected={attentionLens}
+                    data-attention-toggle=""
+                    title={
+                      attentionLens
+                        ? "Back to the board"
+                        : "Show the work that stopped and waits for a person"
+                    }
+                    onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
+                  >
+                    {LENS_LABEL}
+                    {attentionHere && attentionHere.total > 0 ? (
+                      <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
+                    ) : null}
+                  </Button>
+                ) : null}
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {projectActions(false)}
                 </div>

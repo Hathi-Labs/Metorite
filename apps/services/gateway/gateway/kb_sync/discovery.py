@@ -1,4 +1,4 @@
-"""Discovery at connect: the folder tree of one source (WS-61 KC-1a).
+"""Discovery at connect: the folder tree of one source (WS-61 KC-1a and KC-3).
 
 Spec: ``project-docs/specs/knowledge_curation.md`` §7.2 step 1 and §19, and
 ``project-docs/specs/knowledge_base.md`` §7.1 and §7.2.
@@ -26,8 +26,27 @@ roots instead: the first :data:`LEVELS` levels below each root. A folder on
 the last level, or a folder the cap stopped, keeps ``explored = false``, and
 a later slice expands it on demand.
 
-**No run lock and no scheduler.** KC-3 adds both. Two jobs for one source at
-one time each write the same idempotent upserts.
+**The run lock and the cursor (KC-3).** Discovery takes the run lock of the
+source (``kb_sync_runs``, kind ``discover``). It ends a live loop run of the
+source, because a consent must never leave the source in ``discovering``
+(``runs.py``). A second discovery that finds the lock held returns, and the
+first one sets the end state. Each page write also beats the heartbeat, so a
+long discovery keeps its lock. Discovery asks the provider for the change
+cursor of "now" BEFORE it lists the tree, and stores it in the transaction
+that sets ``ready``. So a change made during the listing is read again by
+the loop, and none is lost.
+
+**The lock order (KC-3h).** The module doc of ``kb_sync/engine.py`` holds the
+one lock order of the source rows. Each write transaction here takes the
+source row before the nodes, the cursors and the run row. Most take it with
+:func:`lock_source`. The start of a discovery and ``_mark`` take it with
+their UPDATE of ``kb_sources``. Discovery keeps its rule for a disconnected
+source: a write writes nothing, and the run goes on to its end state.
+
+**The engine reuses two parts.** ``kb_sync/engine.py`` relists an uncapped
+source with :func:`_flat` and its own *read* and *write*, and writes each
+node with :func:`upsert_rows`. It never calls :func:`_walk`, which DELETES
+every node of the source first.
 
 **Metadata only.** The adapter returns :class:`SourceNode` values, which hold
 no text. Nothing here reads a document.
@@ -36,7 +55,7 @@ no text. Nothing here reads a document.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from acb_common import get_logger
@@ -47,6 +66,7 @@ from gateway.db import tenant_session
 from gateway.kb_sources.base import (
     KIND_FOLDER,
     DiscoverCursor,
+    DiscoverPage,
     KbSource,
     NeedsReconnect,
     SourceCredential,
@@ -55,6 +75,7 @@ from gateway.kb_sources.base import (
 )
 from gateway.kb_sources.google_drive import auth as google_auth
 from gateway.kb_sources.google_drive import client as google_client
+from gateway.kb_sync import runs
 
 _log = get_logger("kb_sync.discovery")
 
@@ -71,6 +92,11 @@ STATE_READY = "ready"
 STATE_FAILED = "failed"
 STATE_NEEDS_RECONNECT = "needs_reconnect"
 STATE_DISCONNECTED = "disconnected"
+
+#: One page write of the tree. The engine passes its own, with its run.
+Write = Callable[[list[dict[str, Any]]], Awaitable[None]]
+#: One page read of the tree. The engine passes its own, with its retry.
+Read = Callable[[DiscoverCursor | None], Awaitable[DiscoverPage]]
 
 _SOURCE_SQL = (
     "SELECT id, provider, owner_email, kind, state FROM kb_sources "
@@ -90,25 +116,72 @@ _START_SQL = (
 #: and then reads the row again, so it sees ``disconnected`` and the upsert
 #: writes nothing. Without the lock it read the old state and left orphan
 #: nodes. Fence, R8: ``test_an_upsert_that_waits_on_a_disconnect_writes_no_node``.
-UPSERT_NODES_SQL = (
+#: The engine's change upsert uses this same guard (``engine.py``).
+SOURCE_GUARD_SQL = (
+    "EXISTS (SELECT 1 FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR KEY SHARE OF s)"
+)
+
+#: ⚠️ The FIRST statement of each write transaction of the sync (KC-3h, the
+#: lock order of ``engine.py``). ``state <> 'disconnected'`` is the guard: a
+#: lock that waits on a disconnect reads the row again and finds no live row.
+#: ``FOR KEY SHARE`` is for a transaction that writes only the children of
+#: the source. It conflicts with the ``FOR UPDATE`` of a disconnect only.
+LOCK_SOURCE_SHARE_SQL = (
+    "SELECT s.id FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR KEY SHARE OF s"
+)
+
+#: ``FOR NO KEY UPDATE`` is for a transaction that also writes the source
+#: row: a run close, the end of a discovery, and a node upsert, which can
+#: stamp ``last_new_at``. A lock that starts as ``FOR KEY SHARE`` and becomes
+#: an UPDATE later in the transaction is a deadlock of its own.
+LOCK_SOURCE_UPDATE_SQL = (
+    "SELECT s.id FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
+    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
+    "FOR NO KEY UPDATE OF s"
+)
+
+#: The INSERT half of every node upsert, from a JSON array of
+#: :func:`node_rows`. ``content_hash`` is the provider's version (KC-3).
+NODE_INSERT_SQL = (
     "INSERT INTO kb_source_nodes (organization_id, source_id, ext_id, parent_ext_id, "
-    "drive_id, kind, name, mime, size, modified_at, web_url, state, explored, "
-    "created_at, updated_at) "
+    "drive_id, kind, name, mime, size, modified_at, content_hash, web_url, state, "
+    "explored, created_at, updated_at) "
     "SELECT CAST(:org AS uuid), CAST(:source AS uuid), r.ext_id, r.parent_ext_id, "
-    "r.drive_id, r.kind, r.name, r.mime, r.size, r.modified_at, r.web_url, 'live', "
-    "r.explored, now(), now() "
+    "r.drive_id, r.kind, r.name, r.mime, r.size, r.modified_at, r.content_hash, "
+    "r.web_url, 'live', r.explored, now(), now() "
     "FROM jsonb_to_recordset(CAST(:rows AS jsonb)) AS r(ext_id text, parent_ext_id text, "
     "drive_id text, kind text, name text, mime text, size bigint, "
-    "modified_at timestamptz, web_url text, explored boolean) "
-    "WHERE EXISTS (SELECT 1 FROM kb_sources s WHERE s.id = CAST(:source AS uuid) "
-    "AND s.organization_id = CAST(:org AS uuid) AND s.state <> 'disconnected' "
-    "FOR KEY SHARE OF s) "
-    "ON CONFLICT (organization_id, source_id, ext_id) DO UPDATE SET "
+    "modified_at timestamptz, content_hash text, web_url text, explored boolean) "
+)
+
+#: The columns an upsert sets again on a known node. The id stays, so a
+#: rename or a move keeps the node and its children (KC-3).
+NODE_SET_SQL = (
     "parent_ext_id = EXCLUDED.parent_ext_id, drive_id = EXCLUDED.drive_id, "
     "kind = EXCLUDED.kind, name = EXCLUDED.name, mime = EXCLUDED.mime, "
     "size = EXCLUDED.size, modified_at = EXCLUDED.modified_at, "
-    "web_url = EXCLUDED.web_url, state = 'live', explored = EXCLUDED.explored, "
-    "updated_at = now()"
+    "content_hash = EXCLUDED.content_hash, web_url = EXCLUDED.web_url, "
+    "state = 'live', updated_at = now()"
+)
+
+#: ``inserted`` is true for a new node and false for a known one, so a run
+#: can stamp ``kb_sources.last_new_at`` (KC-3).
+UPSERT_NODES_SQL = (
+    NODE_INSERT_SQL + "WHERE " + SOURCE_GUARD_SQL + " "
+    "ON CONFLICT (organization_id, source_id, ext_id) DO UPDATE SET "
+    + NODE_SET_SQL + ", explored = EXCLUDED.explored "
+    "RETURNING (xmax = 0) AS inserted"
+)
+
+#: When a run last added a node (KC-3, migration 308). CX-5 reads it.
+_LAST_NEW_SQL = (
+    "UPDATE kb_sources SET last_new_at = now() "
+    "WHERE id = CAST(:source AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND state <> 'disconnected'"
 )
 
 _UNEXPLORED_SQL = (
@@ -123,7 +196,7 @@ _CLEAR_SQL = (
 )
 
 #: A complete run marks each node it did not write again as ``gone``.
-_GONE_SQL = (
+GONE_SQL = (
     "UPDATE kb_source_nodes SET state = 'gone', updated_at = now() "
     "WHERE organization_id = CAST(:org AS uuid) AND source_id = CAST(:source AS uuid) "
     "AND state = 'live' AND updated_at < CAST(:started AS timestamptz)"
@@ -168,29 +241,65 @@ def node_rows(nodes: Sequence[SourceNode], *, explored: bool = True,
             "mime": n.mime,
             "size": n.size,
             "modified_at": n.modified_at.isoformat() if n.modified_at else None,
+            "content_hash": n.content_hash,
             "web_url": n.web_url,
             "explored": not (unexplored_folders and n.kind == KIND_FOLDER) and explored,
         }
     return list(rows.values())
 
 
+async def upsert_rows(
+    db: Any, org: str, source_id: str, rows: list[dict[str, Any]], *,
+    sql: str = UPSERT_NODES_SQL, params: dict[str, Any] | None = None,
+) -> int:
+    """One node upsert in the caller's transaction. Returns how many nodes it
+    INSERTED, and stamps ``kb_sources.last_new_at`` when that is one or more."""
+    if not rows:
+        return 0
+    result = await db.execute(text(sql), {
+        "org": org, "source": source_id, "rows": json.dumps(rows), **(params or {}),
+    })
+    inserted = sum(1 for r in result.fetchall() if r.inserted)
+    if inserted:
+        await db.execute(text(_LAST_NEW_SQL), {"org": org, "source": source_id})
+    return inserted
+
+
+async def lock_source(db: Any, org: str, source_id: str, *, update: bool = False) -> bool:
+    """Lock the source row. It is the FIRST statement of a write transaction.
+
+    The one lock helper of the sync (KC-3h, the lock order of ``engine.py``).
+    *update* takes ``FOR NO KEY UPDATE``, for a transaction that writes the
+    source row too. Else it takes ``FOR KEY SHARE``. Returns False when no
+    live row is left: the source is disconnected, or gone.
+    """
+    sql = LOCK_SOURCE_UPDATE_SQL if update else LOCK_SOURCE_SHARE_SQL
+    row = (await db.execute(text(sql), {"org": org, "source": source_id})).first()
+    return row is not None
+
+
 async def _upsert(org: str, source_id: str, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     async with tenant_session(org) as db:
-        await db.execute(text(UPSERT_NODES_SQL), {
-            "org": org, "source": source_id, "rows": json.dumps(rows),
-        })
+        # An upsert can stamp last_new_at, so the source lock is the strong one.
+        await lock_source(db, org, source_id, update=True)
+        await upsert_rows(db, org, source_id, rows)
 
 
-async def _credential(org: str, owner: str, source: KbSource) -> SourceCredential:
-    """A fresh token of the member's connection. A gone connection stops the run."""
+async def _credential(org: str, owner: str, source: KbSource, *,
+                      force: bool = False) -> SourceCredential:
+    """A fresh token of the member's connection. A gone connection stops the run.
+
+    *force* (KC-3) refreshes the token even when it is not due: the engine's
+    one retry after Google refused a token with HTTP 401.
+    """
     cred = await shared_token.fresh_credential(
         org,
         provider=source.provider,
         owning_app=OWNING_APP,
         refresh=source.refresh,
-        needs_refresh=google_auth.needs_refresh,
+        needs_refresh=(lambda _c, _n: True) if force else google_auth.needs_refresh,
         now=google_auth.utcnow,
         scope_kind=store.SCOPE_MEMBER,
         member_email=owner,
@@ -200,24 +309,46 @@ async def _credential(org: str, owner: str, source: KbSource) -> SourceCredentia
     return cred
 
 
-async def _flat(org: str, source_id: str, owner: str, source: KbSource) -> bool:
-    """Read the whole tree page by page. False when it passed the cap."""
+async def _flat(org: str, source_id: str, owner: str, source: KbSource, *,
+                read: Read | None = None, write: Write | None = None) -> bool:
+    """Read the whole tree page by page. False when it passed the cap.
+
+    *read* and *write* default to this module's own. The engine passes its
+    read, with the 401 retry, and its write, with the heartbeat of its run.
+    """
+    async def _read(cursor: DiscoverCursor | None) -> DiscoverPage:
+        return await source.discover(await _credential(org, owner, source), cursor)
+
+    async def _write(rows: list[dict[str, Any]]) -> None:
+        await _upsert(org, source_id, rows)
+
+    reader = read or _read
+    writer = write or _write
     total = 0
     cursor: DiscoverCursor | None = None
     while True:
-        page = await source.discover(await _credential(org, owner, source), cursor)
+        page = await reader(cursor)
         if total + len(page.nodes) > NODE_CAP:
             return False
-        await _upsert(org, source_id, node_rows(page.nodes))
+        await writer(node_rows(page.nodes))
         total += len(page.nodes)
         if page.next_cursor is None:
             return True
         cursor = page.next_cursor
 
 
-async def _walk(org: str, source_id: str, owner: str, source: KbSource) -> None:
-    """The first :data:`LEVELS` levels below each root, at most :data:`NODE_CAP`."""
+async def _walk(org: str, source_id: str, owner: str, source: KbSource, *,
+                write: Write | None = None) -> None:
+    """The first :data:`LEVELS` levels below each root, at most :data:`NODE_CAP`.
+
+    ⚠️ It DELETES every node of the source first. Only discovery calls it.
+    """
+    async def _write(rows: list[dict[str, Any]]) -> None:
+        await _upsert(org, source_id, rows)
+
+    writer = write or _write
     async with tenant_session(org) as db:
+        await lock_source(db, org, source_id)
         await db.execute(text(_CLEAR_SQL), {"org": org, "source": source_id})
     total = 0
     queue: list[tuple[str, int]] = []
@@ -226,7 +357,7 @@ async def _walk(org: str, source_id: str, owner: str, source: KbSource) -> None:
     while cursor is not None and cursor.phase in (
             google_client.PHASE_ROOT, google_client.PHASE_DRIVES):
         page = await source.discover(await _credential(org, owner, source), cursor)
-        await _upsert(org, source_id, node_rows(page.nodes))
+        await writer(node_rows(page.nodes))
         total += len(page.nodes)
         queue.extend((n.ext_id, 0) for n in page.nodes if n.kind == KIND_FOLDER)
         cursor = page.next_cursor
@@ -243,7 +374,7 @@ async def _walk(org: str, source_id: str, owner: str, source: KbSource) -> None:
             page = await source.discover(await _credential(org, owner, source), child)
             room = NODE_CAP - total
             nodes = page.nodes[:room]
-            await _upsert(org, source_id, node_rows(nodes, unexplored_folders=last))
+            await writer(node_rows(nodes, unexplored_folders=last))
             total += len(nodes)
             if not last:
                 queue.extend((n.ext_id, depth + 1) for n in nodes if n.kind == KIND_FOLDER)
@@ -253,17 +384,43 @@ async def _walk(org: str, source_id: str, owner: str, source: KbSource) -> None:
             child = page.next_cursor
     if stopped:
         async with tenant_session(org) as db:
+            await lock_source(db, org, source_id)
             await db.execute(text(_UNEXPLORED_SQL), {
                 "org": org, "source": source_id, "ids": stopped,
             })
 
 
-async def _mark(org: str, source_id: str, state: str, code: str) -> None:
+class _Run:
+    """The run lock of one discovery: its id, its counts and its page write."""
+
+    def __init__(self, org: str, source_id: str, run_id: str) -> None:
+        self.org, self.source_id, self.id = org, source_id, run_id
+        self.counts: dict[str, Any] = {"nodes": 0, "inserted": 0}
+
+    async def write(self, rows: list[dict[str, Any]]) -> None:
+        """One page of nodes and the heartbeat, in ONE transaction. A run
+        that lost its lock raises :class:`runs.RunLost` and writes nothing."""
+        if not rows:
+            return
+        async with tenant_session(self.org) as db:
+            # An upsert can stamp last_new_at, so the source lock is the strong one.
+            await lock_source(db, self.org, self.source_id, update=True)
+            inserted = await upsert_rows(db, self.org, self.source_id, rows)
+            self.counts["nodes"] += len(rows)
+            self.counts["inserted"] += inserted
+            await runs.progress(db, self.org, self.id, self.counts)
+
+
+async def _mark(org: str, source_id: str, state: str, code: str,
+                run: _Run | None) -> None:
+    safe = store.safe_error_code(code)[:64]
     async with tenant_session(org) as db:
         await db.execute(text(_FAIL_SQL), {
-            "org": org, "source": source_id, "state": state,
-            "code": store.safe_error_code(code)[:64],
+            "org": org, "source": source_id, "state": state, "code": safe,
         })
+        if run is not None:
+            status = runs.STATUS_STOPPED if state == STATE_NEEDS_RECONNECT else runs.STATUS_FAILED
+            await runs.finish(db, org, run.id, status, safe, run.counts)
 
 
 async def discover_source(org: str, source_id: str, source: KbSource) -> str:
@@ -273,6 +430,7 @@ async def discover_source(org: str, source_id: str, source: KbSource) -> str:
     request value. *source* is the adapter, built by the route on the one
     Google client. Returns the state it left, for the tests and the log.
     """
+    run: _Run | None = None
     try:
         async with tenant_session(org) as db:
             row = (await db.execute(text(_SOURCE_SQL), {"id": source_id, "org": org})).first()
@@ -280,50 +438,87 @@ async def discover_source(org: str, source_id: str, source: KbSource) -> str:
                 return STATE_DISCONNECTED
             owner = str(row.owner_email)
             started = (await db.execute(text(_START_SQL), {"id": source_id, "org": org})).first()
-        if started is None:
-            return STATE_DISCONNECTED
-        if await _flat(org, source_id, owner, source):
+            if started is None:
+                return STATE_DISCONNECTED
+            lock = await runs.start(db, org, source_id, runs.KIND_DISCOVER, preempt=True)
+        run = _Run(org, source_id, lock.id)
+        # KC-3: the cursor of "now", BEFORE the listing (the module doc).
+        token = await source.changes_start_token(await _credential(org, owner, source))
+        if await _flat(org, source_id, owner, source, write=run.write):
             async with tenant_session(org) as db:
-                await db.execute(text(_GONE_SQL), {
+                await lock_source(db, org, source_id)
+                await db.execute(text(GONE_SQL), {
                     "org": org, "source": source_id,
                     "started": started.started_at,
                 })
+                await runs.progress(db, org, run.id, run.counts)
         else:
-            await _walk(org, source_id, owner, source)
+            await _walk(org, source_id, owner, source, write=run.write)
         async with tenant_session(org) as db:
+            # KC-3h: the source row before the run row. Before KC-3h this
+            # wrote the run row first, so a stale takeover (the source row
+            # FOR SHARE, then the run row) could deadlock it.
+            await lock_source(db, org, source_id, update=True)
+            await runs.progress(db, org, run.id, run.counts)
             await db.execute(text(_FINISH_SQL), {"org": org, "source": source_id})
+            # A discovery is a full listing, so it also counts as the relist.
+            await runs.write_cursor(db, org, source_id, runs.CURSOR_CHANGES,
+                                    {"page_token": token}, runs.CURSOR_OK)
+            await runs.write_cursor(db, org, source_id, runs.CURSOR_RECONCILE,
+                                    None, runs.CURSOR_OK)
+            await runs.finish(db, org, run.id, runs.STATUS_OK, None, run.counts)
         _log.info("knowledge.source_discovered", organization_id=org, source_id=source_id)
         return STATE_READY
+    except runs.SyncRunning:
+        # Another discovery holds the lock, and it sets the end state.
+        _log.info("knowledge.source_discovery_running", organization_id=org,
+                  source_id=source_id)
+        return STATE_DISCOVERING
+    except runs.RunLost:
+        # A newer discovery took the lock over, and it sets the end state.
+        _log.warning("knowledge.source_discovery_lost", organization_id=org,
+                     source_id=source_id)
+        return STATE_DISCOVERING
     except _Stopped:
-        await _safe_mark(org, source_id, STATE_FAILED, "no_connection")
+        await _safe_mark(org, source_id, STATE_FAILED, "no_connection", run)
         return STATE_FAILED
     except NeedsReconnect as exc:
-        await _safe_mark(org, source_id, STATE_NEEDS_RECONNECT, exc.code or "invalid_grant")
+        await _safe_mark(org, source_id, STATE_NEEDS_RECONNECT, exc.code or "invalid_grant", run)
         return STATE_NEEDS_RECONNECT
     except SourceError as exc:
-        await _safe_mark(org, source_id, STATE_FAILED, exc.code or type(exc).__name__)
+        await _safe_mark(org, source_id, STATE_FAILED, exc.code or type(exc).__name__, run)
         return STATE_FAILED
     except Exception as exc:  # a background job must not raise
-        await _safe_mark(org, source_id, STATE_FAILED, type(exc).__name__)
+        await _safe_mark(org, source_id, STATE_FAILED, type(exc).__name__, run)
         return STATE_FAILED
 
 
-async def _safe_mark(org: str, source_id: str, state: str, code: str) -> None:
-    """Store the end state. A failure here is logged, and never raised."""
+async def _safe_mark(org: str, source_id: str, state: str, code: str,
+                     run: _Run | None = None) -> None:
+    """Store the end state and close the run. A failure here is logged, and
+    never raised."""
     _log.warning("knowledge.source_discovery_failed", organization_id=org,
                  source_id=source_id, state=state, code=store.safe_error_code(code))
     try:
-        await _mark(org, source_id, state, code)
+        await _mark(org, source_id, state, code, run)
     except Exception as exc:
         _log.warning("knowledge.source_state_write_failed", organization_id=org,
                      source_id=source_id, error=type(exc).__name__)
 
 
 __all__ = [
+    "GONE_SQL",
     "LEVELS",
+    "LOCK_SOURCE_SHARE_SQL",
+    "LOCK_SOURCE_UPDATE_SQL",
     "NODE_CAP",
+    "NODE_INSERT_SQL",
+    "NODE_SET_SQL",
     "OWNING_APP",
+    "SOURCE_GUARD_SQL",
     "UPSERT_NODES_SQL",
     "discover_source",
+    "lock_source",
     "node_rows",
+    "upsert_rows",
 ]

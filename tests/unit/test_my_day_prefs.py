@@ -208,9 +208,11 @@ class TestTheLimits:
         assert {"block_soon", "overdue", "colleague_out", "agent_asks"} <= prefs.feed_kinds()
         # §5.9 item 10.6: the table holds exactly the cap. 20 after MD-3,
         # 21 since WS-53 CRM-Q28 added `digest_ready`, 22 since WS-53
-        # CRM-Q32-4 added `crm_open_questions`, 23 since WS-61 KB-9a added
-        # `kb_gap`, and 26 since WS-66 RM-2 added the three reminder kinds.
-        assert len(prefs.feed_kinds()) == prefs.MAX_KINDS == 26
+        # CRM-Q32-4 added `crm_open_questions`, 23 since WS-61 KB-9a
+        # added `kb_gap`, 25 since WS-61 KB-9b added `doc_needs_review`
+        # and `doc_shared_with_me`, and 28 since WS-66 RM-2 added the
+        # three reminder kinds.
+        assert len(prefs.feed_kinds()) == prefs.MAX_KINDS == 28
 
     def test_a_list_keeps_its_order_and_loses_its_repeats(self, fake: _FakeDB) -> None:
         res = _put({"key": "mutes", "value": ["block_soon", "overdue", "block_soon"]})

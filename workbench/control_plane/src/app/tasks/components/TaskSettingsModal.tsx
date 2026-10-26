@@ -65,7 +65,7 @@ const MODEL_FIELDS: {
     title: "Email → task drafting model",
     description:
       "Turns an email into an actionable capture title + context when you " +
-      "use “Add to My Tasks” in the email app.",
+      "use “Add to My work” in the email app.",
     def: "tier-fast",
   },
   {

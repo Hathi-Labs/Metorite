@@ -559,9 +559,15 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: is the ONE destructive pair. The route refuses it unless the member's
 #: switch is on, and it checks the version and the exact title. ⚠️ The plain
 #: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
+#: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
+#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: of the ``parent_task_id`` of ``update_task``, and the route refuses a
+#: signed move to another project.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
+    ("PUT", "/projects/tasks/{task_id}/assignees"),
+    ("POST", "/projects/tasks/{task_id}/move"),
     ("POST", "/projects/tasks/{task_id}/refs"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),

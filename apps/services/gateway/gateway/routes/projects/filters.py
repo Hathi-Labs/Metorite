@@ -796,19 +796,34 @@ async def attach_parent_context(
             row["parent"] = seen.get(str(parent), {"hidden": True})
     return rows
 
+def open_block_sql(link: str, blocker_status: str) -> str:
+    """The ONE SQL text of an open ``blocks`` link: the link *link* is a
+    ``blocks`` link, and the status *blocker_status* of its SOURCE task is not
+    in a closed category. A finished blocker blocks nothing (WS-27p).
+
+    ``blocked_by_count`` (:data:`_BLOCKER_COUNTS_SQL`) and the "blocked by
+    parked work" kind of Needs attention (``needs_attention.py``, WS-55
+    SW-11a, spec §12.7) read it, so a card and the list cannot disagree about
+    what blocks. It binds ``:closed``, a list of :data:`CLOSED_CATEGORIES`.
+    """
+    return (
+        f"({link}.link_type = 'blocks'"
+        f" AND NOT ({blocker_status}.category = ANY(:closed)))"
+    )
+
+
 #: How many still-OPEN tasks block each of these.
 #:
 #: Filtered to open blockers in SQL rather than counted and filtered after: a
 #: finished blocker blocks nothing (WS-27p), and a card that stays marked
 #: blocked after its dependency shipped is a card people learn to ignore.
-_BLOCKER_COUNTS_SQL = """
+_BLOCKER_COUNTS_SQL = f"""
 SELECT l.target_task_id AS blocked, count(*) AS blockers
   FROM pm_task_links l
   JOIN pm_tasks t ON t.id = l.source_task_id
   JOIN pm_task_statuses s ON s.id = t.status_id
- WHERE l.link_type = 'blocks'
+ WHERE {open_block_sql('l', 's')}
    AND l.target_task_id = ANY(CAST(:ids AS uuid[]))
-   AND NOT (s.category = ANY(:closed))
  GROUP BY l.target_task_id
 """
 
@@ -981,29 +996,164 @@ def holder_free(status: str, idle_s: float, connection_gone: bool) -> bool:
     """True when an open run no longer keeps its task, so the next claim
     takes it over (EA-14a, SW-13c): its lease ended, or its connection is
     revoked or expired. The ONE Python rule of the gate and of
-    ``held_by.stale``. :func:`unheld_clause` is its SQL twin."""
+    ``held_by.stale``. :func:`holder_free_sql` is its SQL twin."""
     return connection_gone is True or lease_expired(status, idle_s)
+
+
+def lease_held_sql(alias: str) -> str:
+    """True in SQL while the lease of the open run *alias* holds: its last
+    activity is newer than the lease, or three leases while it waits on a
+    question. The SQL twin of NOT :func:`lease_expired`. ONE text for the
+    ``unheld`` filter (:func:`unheld_clause`) and :func:`holder_free_sql`.
+    The idle time is ``last_activity_at``, so ANY activity renews it, a
+    member's answer too.
+
+    The lease is read when the text is built, never at import, so the
+    environment override works in a running process.
+    """
+    lease = agent_run_lease_s()
+    hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
+    return (
+        f"{alias}.last_activity_at >= now() - (CASE WHEN {alias}.status = 'awaiting'"
+        f" THEN {hold} ELSE {lease} END) * interval '1 second'"
+    )
+
+
+def holder_free_sql(alias: str) -> str:
+    """The SQL twin of :func:`holder_free` over the open run *alias*: its
+    lease ended (:func:`lease_held_sql` fails), or its connection is revoked
+    or expired. The stranded rule (:func:`stranded_clause`) and the close of
+    a run of a closed task (``agent_runs``, SW-10a) read it, and the
+    ``unheld`` filter reads its two parts."""
+    return f"(NOT ({lease_held_sql(alias)}) OR {connection_gone_sql(alias)})"
+
+
+#: SW-10a (spec §12.6). The RAW answered rule over the alias ``r``: the newest
+#: activity of the run is a member's prompt, and no agent activity followed
+#: it. ONE text: the derived state, the ``needs_agent`` filter
+#: (``agent_runs._NEEDS_AGENT_SQL``) and the strand reason all read it.
+AGENT_RUN_ANSWER_WAITS_SQL = (
+    "(r.last_agent_activity_at IS NULL"
+    " OR r.last_activity_at > r.last_agent_activity_at)"
+)
 
 #: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
 #: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
 #: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
 #:
-#: * ``answered`` comes BEFORE ``stale`` (EA12-5): the newest activity is a
-#:   member's prompt when ``last_activity_at`` is later than the agent's.
 #: * Only ``in_progress`` goes ``stale``. ``created`` reads ``queued``, and an
 #:   ``awaiting`` run waits for a person, not for the agent.
+#: * SW-10a (spec §12.6): ``stale`` comes BEFORE ``answered``. An answer is
+#:   the newest activity of its run, so an answered run reads ``answered``
+#:   for :data:`AGENT_RUN_STALE_AFTER_S` after the answer, and ``stale``
+#:   after that, while no agent activity follows. Before SW-10a an answer
+#:   that no agent read stayed ``answered`` for ever (EA12-5 as amended).
+#:   The age limit is the stale band and not the lease: the state says
+#:   whether an agent works on the task NOW, and the lease is read from the
+#:   environment, which this import-time constant cannot follow.
 #: * Every other status reads as itself.
 AGENT_RUN_STATE_SQL = (
     "CASE r.status"
     " WHEN 'created' THEN 'queued'"
     " WHEN 'in_progress' THEN CASE"
-    "   WHEN r.last_agent_activity_at IS NULL"
-    "     OR r.last_activity_at > r.last_agent_activity_at THEN 'answered'"
     f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
     "     THEN 'stale'"
+    f"   WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answered'"
     "   ELSE 'working' END"
     " ELSE r.status END"
 )
+
+# ── WS-55 SW-10a: stranded runs (external_agent_access.md §12.6) ───────────
+
+#: The two reasons of a strand. ``answer_unread``: a member answered and no
+#: agent read it. ``agent_quiet``: the agent sent nothing. The CHECK of the
+#: ``pm_agent_run_strands`` migration lists the same two.
+STRAND_REASONS: tuple[str, ...] = ("agent_quiet", "answer_unread")
+
+#: The reason of a stranded run, in SQL, over the alias ``r``.
+STRAND_REASON_SQL = (
+    f"(CASE WHEN {AGENT_RUN_ANSWER_WAITS_SQL} THEN 'answer_unread'"
+    " ELSE 'agent_quiet' END)"
+)
+
+
+def task_closed_sql(alias: str) -> str:
+    """The ONE SQL text of "the task of run *alias* is closed" (SW-10a fix
+    round): the task is archived, or its status is in a closed category
+    (:data:`CLOSED_CATEGORIES`). Such a run is never stranded, and the sweep
+    closes it instead (``agent_runs.closed_task_run_ids``)."""
+    closed = ", ".join(f"'{c}'" for c in CLOSED_CATEGORIES)
+    return (
+        "EXISTS (SELECT 1 FROM pm_tasks ct"
+        " LEFT JOIN pm_task_statuses cs ON cs.id = ct.status_id"
+        f" WHERE ct.id = {alias}.task_id"
+        f" AND (ct.archived_at IS NOT NULL OR cs.category IN ({closed})))"
+    )
+
+
+def stranded_clause() -> str:
+    """The ONE SQL text of a stranded run, over the alias ``r`` (SW-10a).
+
+    A run is stranded when its status is ``in_progress``, its derived state
+    is ``stale`` (a quiet run, or an answer older than the stale band), and
+    it has no live path: its lease ended, or its connection is revoked or
+    expired. That last part is the SQL twin of :func:`holder_free` for an
+    ``in_progress`` run. An ``awaiting`` run waits on a person and never
+    matches, and neither does a ``created`` or a ``stopping`` run.
+
+    Fix round: a run whose task is closed (:func:`task_closed_sql`) is never
+    stranded. Nobody can claim a closed task, so a bell that says "start a
+    session" would be false. The sweep closes such a run instead.
+
+    The lease is read when the clause is built, never at import, as
+    :func:`unheld_clause` reads it.
+    """
+    return (
+        "(r.status = 'in_progress'"
+        f" AND ({AGENT_RUN_STATE_SQL}) = 'stale'"
+        f" AND {holder_free_sql('r')}"
+        f" AND NOT {task_closed_sql('r')})"
+    )
+
+
+def strand_fits_sql(strand: str, run: str) -> str:
+    """True in SQL when the strand row *strand* still fits the run *run*
+    (SW-10a): the strand is not cleared, the run is still ``in_progress``,
+    and no activity came on the run since the first miss. ONE text for
+    ``needs_agent`` (:func:`open_strand_sql`) and for ``stranded`` on the runs
+    wire (``agent_runs._OPEN_STRANDS_SQL``)."""
+    return (
+        f"({strand}.run_id = {run}.id AND {strand}.organization_id = {run}.organization_id"
+        f" AND {strand}.cleared_at IS NULL AND {run}.status = 'in_progress'"
+        f" AND {strand}.seen_activity_at = {run}.last_activity_at)"
+    )
+
+
+def open_strand_sql(alias: str) -> str:
+    """True in SQL when the run *alias* has an open strand that still fits
+    it (:func:`strand_fits_sql`). ``needs_agent`` reads it, so a strand stops
+    at once when an activity comes, before the next tick writes
+    ``cleared_at``."""
+    return (
+        "EXISTS (SELECT 1 FROM pm_agent_run_strands fs"
+        f" WHERE {strand_fits_sql('fs', alias)})"
+    )
+
+
+def open_recovery_sql(strand: str, run: str) -> str:
+    """True in SQL when the strand row *strand* is an OPEN RECOVERY RECORD of
+    the run *run* (WS-55 SW-11a, spec §12.7): the second miss of SW-10a
+    happened (``recovered_at``), and the strand still fits the run
+    (:func:`strand_fits_sql`: not cleared, the run is ``in_progress``, and no
+    activity came after it).
+
+    ONE text for the "stalled" kind of Needs attention and for the check of
+    the Resume route (``agent_runs.resume_agent_run``). So a row that the list
+    shows is a row that Resume takes, and a row that left the list is one
+    that Resume refuses. A new activity ends it at once, before the next tick
+    of the sweep writes ``cleared_at``.
+    """
+    return f"({strand}.recovered_at IS NOT NULL AND {strand_fits_sql(strand, run)})"
 
 _OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 
@@ -1032,14 +1182,11 @@ def unheld_clause() -> str:
     environment override works in a running process.
     """
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
-    lease = agent_run_lease_s()
-    hold = lease * AGENT_RUN_QUESTION_LEASE_FACTOR
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
         " WHERE h.task_id = t.id"
         f"   AND h.status IN ({open_list})"
-        f"   AND h.last_activity_at >= now() - (CASE WHEN h.status = 'awaiting'"
-        f"        THEN {hold} ELSE {lease} END) * interval '1 second'"
+        f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
     )
 

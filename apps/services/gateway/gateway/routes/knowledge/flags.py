@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader in the gateway of the nine settings below.
+This module is the ONE reader in the gateway of the ten settings below.
 Nothing else in the gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
@@ -36,6 +36,10 @@ Nothing else in the gateway reads them.
   Google Drive, in the same grammar. It needs ``KNOWLEDGE_SOURCES`` too.
   Empty, the default, means no organization: the Drive connect and callback
   answer 404.
+* ``KNOWLEDGE_SYNC`` (KC-3, ``knowledge_curation.md`` §17) — the organization
+  ids whose ready sources the sync loop reads, in the same grammar. It needs
+  ``KNOWLEDGE_SOURCES`` too. Empty, the default, means no organization:
+  ``kb_sync/scheduler.start_kb_sync`` starts no task.
 
 :func:`require_knowledge_enabled` is the first router dependency in
 ``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
@@ -197,6 +201,38 @@ def knowledge_source_google_allowed(organization_id: str | None) -> bool:
     """
     return knowledge_sources_allowed(organization_id) and _named(
         get_settings().knowledge_source_google, organization_id)
+
+
+def knowledge_provider_allowed(organization_id: str | None, provider: str) -> bool:
+    """True when the flag of *provider* names the org (KC-3 review).
+
+    The sync loop asks this for each source, so an org off
+    ``KNOWLEDGE_SOURCE_GOOGLE`` gets no Google call. It reads no setting of
+    its own: it asks the reader of that provider. A provider with no reader
+    here is off for each org (OneDrive waits for KC-2).
+    """
+    if provider == "google_drive":
+        return knowledge_source_google_allowed(organization_id)
+    return False
+
+
+def knowledge_sync_named() -> bool:
+    """True when Knowledge is on and ``KNOWLEDGE_SYNC`` names any org (KC-3).
+
+    ``start_kb_sync`` asks this before it starts the loop, so with no org
+    named no task exists and no session opens.
+    """
+    return knowledge_enabled() and bool(_parse_orgs(str(get_settings().knowledge_sync or "")))
+
+
+def knowledge_sync_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SOURCES`` AND ``KNOWLEDGE_SYNC`` name the org (KC-3).
+
+    False means the loop reads no source of the org and opens no session for
+    it. No organization is false, also with ``*``.
+    """
+    return knowledge_sources_allowed(organization_id) and _named(
+        get_settings().knowledge_sync, organization_id)
 
 
 async def require_knowledge_sources(

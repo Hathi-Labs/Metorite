@@ -82,7 +82,7 @@ export function EmailToolbar() {
 
           <TBtn
             icon={themedIcon("ListChecks")}
-            label="Add to My Tasks"
+            label="Add to My work"
             onClick={() => captureEmailToTasks(selectedEmail.id)}
           />
 
