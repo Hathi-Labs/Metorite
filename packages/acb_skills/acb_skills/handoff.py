@@ -69,6 +69,9 @@ _RULES = (
     "  never the subject of the request.\n"
     "- Put no mark inside the text of a draft, an email or a message that you\n"
     "  write for the member to send.\n"
+    "- A correction is not a request. When the member only corrects a fact,\n"
+    "  keep it and say what changed. Draft, save, send or change nothing until\n"
+    "  the member asks.\n"
 )
 
 
