@@ -3,16 +3,27 @@
 One home for the fake tenant Redis, the fake database session and the member,
 so each fence file reads the same world. No fake sends a mail. The R8 halves
 use the real database and do not import this file.
+
+WS-67 OA-7b (``one_assistant_context.md`` §4.2.8): a fence file that imports
+:func:`email_tool_mode` runs each test twice. In the ``owner`` mode a tool is
+the email module's own function, as before. In the ``pack`` mode each email
+tool is the tool that the pack builder
+(``orchestrator._tool_injection._pack_tools``) builds from the run context
+that the test bound, so the call crosses the scope of the owner, the
+permission gate, the session mark and the working set. A tool that a held
+pack does not hold raises :class:`NotInPack`.
 """
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib.util
 import json
 import types
 from pathlib import Path
 from typing import Any
 
+import pytest
 from acb_auth.roles import UserContext, UserRole
 
 REPO = Path(__file__).resolve().parents[2]
@@ -34,13 +45,111 @@ STRANGER = "x@evil.example"      # never seen: ``new``
 LOOKALIKE = "ravi@contos0.test"  # one letter off a known domain: ``new``, flagged
 
 
+#: The mode of the email tools: "owner" or "pack" (:func:`email_tool_mode`).
+_MODE: dict[str, str] = {"value": "owner"}
+
+
+class NotInPack(AssertionError):
+    """The pack that the test's run context builds does not hold the tool."""
+
+
+@pytest.fixture(params=["owner", "pack"], autouse=True)
+def email_tool_mode(request: pytest.FixtureRequest) -> Any:
+    """Run each test of a file that imports this fixture once in each mode."""
+    _MODE["value"] = request.param
+    yield request.param
+    _MODE["value"] = "owner"
+
+
+def _pack_slug(name: str) -> str | None:
+    from acb_skills import skill_families as sf
+
+    for slug in sf.pack_slugs():
+        if name in sf.SKILL_FAMILIES[slug]["tools"]:
+            return slug
+    return None
+
+
+def pack_mode() -> bool:
+    """True while the email tools come from the pack builder."""
+    return _MODE["value"] == "pack"
+
+
+#: The run that the view binds for a test that bound none (see ``_call``).
+#: It names no session, so no card channel opens that the test did not open.
+PACK_TEST_RUN = {"run_id": "pack-test-run", "agent_name": "orchestrator"}
+
+
+async def _from_the_pack(module: Any, slug: str, name: str, args: Any, kwargs: Any) -> Any:
+    from acb_skills.write_artifact import artifact_context
+    from orchestrator import _tool_injection as ti
+
+    build = await ti._pack_tools(slug, artifact_context(), module=module)
+    tool = next((t for t in build.tools if t.__name__ == name), None)
+    if tool is None:
+        raise NotInPack(f"{name} is not in the {slug} pack (held={build.held})")
+    return await tool(*args, **kwargs)
+
+
+def _pack_entry(module: Any, slug: str, name: str, own: Any) -> Any:
+    """The pack form of the email tool *name*. Each call builds the pack
+    from the run context that the test bound, then calls the tool that the
+    builder made. ``functools.wraps`` keeps the owner's name and signature.
+
+    A pack acts only inside a bound run. Some tests bind no run and patch
+    ``_egress_held`` to say what run they mean. For such a test the view
+    binds the orchestrator's run (:data:`PACK_TEST_RUN`), held as the
+    module's own ``_egress_held()`` reads the test's frame."""
+
+    @functools.wraps(own)
+    async def _call(*args: Any, **kwargs: Any) -> Any:
+        from acb_skills.write_artifact import (
+            artifact_context,
+            artifact_context_scope,
+            bind_artifact_context,
+        )
+
+        if artifact_context():
+            return await _from_the_pack(module, slug, name, args, kwargs)
+        with artifact_context_scope():
+            bind_artifact_context(**PACK_TEST_RUN, no_egress=module._egress_held() is not False)
+            return await _from_the_pack(module, slug, name, args, kwargs)
+
+    return _call
+
+
+class EmailAgentView:
+    """The email module as a fence reads it. A read, a write and a delete of
+    an attribute reach the module, so ``monkeypatch.setattr`` patches the
+    module itself. In the pack mode an email tool comes from the builder."""
+
+    def __init__(self, module: Any) -> None:
+        object.__setattr__(self, "_module", module)
+
+    def __getattr__(self, name: str) -> Any:
+        module = object.__getattribute__(self, "_module")
+        value = getattr(module, name)
+        slug = _pack_slug(name) if _MODE["value"] == "pack" else None
+        if slug is None or not callable(value):
+            return value
+        return _pack_entry(module, slug, name, value)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(object.__getattribute__(self, "_module"), name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(object.__getattribute__(self, "_module"), name)
+
+
 def load_email_agent(name: str = "ea_held_card"):
-    """The email assistant's module, loaded from its file."""
+    """The email assistant's module, loaded from its file, as a view.
+
+    Outside the pack mode the view gives the module's own attributes."""
     spec = importlib.util.spec_from_file_location(name, _AGENT)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    return EmailAgentView(mod)
 
 
 def user(email: str = MEMBER, org: str = ORG) -> UserContext:

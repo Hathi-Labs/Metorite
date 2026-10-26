@@ -38,6 +38,7 @@ from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.transport import metorite_files as mf
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 
 PAGE = "0a0a0a0a-1111-4000-8000-00000000000a"
 TASK_FILE = "0b0b0b0b-2222-4000-8000-00000000000b"
