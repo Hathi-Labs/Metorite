@@ -34,6 +34,7 @@ the member cannot see is never found.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -328,3 +329,95 @@ async def query(
         now=datetime.now(UTC) if reviewed else None,
     )
     return {"hits": [_hit(r, reviewed=reviewed) for r in fused], "degraded": degraded}
+
+
+# ── The text of a connected document (KC-5a) ────────────────────────────────
+
+#: The chunks of one document in an answer (the rule of :data:`PER_PAGE`).
+PER_DOCUMENT = 2
+
+#: The keys of ``kb_chunks.metadata`` that say where in the file a chunk sits.
+_LOCATOR_KEYS = ("slide", "sheet", "row_from", "row_to", "page")
+
+
+def _locator(metadata: Any) -> dict[str, Any]:
+    """Where in the file a chunk sits: a slide, the rows of a sheet, or a page."""
+    if isinstance(metadata, str):  # a raw statement gives jsonb back as text
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return {}
+    if not isinstance(metadata, dict):
+        return {}
+    return {k: metadata[k] for k in _LOCATOR_KEYS if k in metadata}
+
+
+async def query_documents(
+    db: Any,
+    user: UserContext,
+    q: str,
+    k: int = 8,
+    spaces: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """The lexical hits for *q* over the connected documents the member may read.
+
+    KC-5a, ``knowledge_curation.md`` §7.3 and §8.4. LEXICAL only: the ``tsv``
+    column, ranked by ``ts_rank_cd``. The vector half waits for KC-5c.
+
+    **The one visibility rule.** The read joins ``kb_documents`` and
+    ``kb_source_nodes`` and puts in ``core.visible_documents_clause(user, "n",
+    "c.space_id")``: the member reads the space of the chunk AND is a proven
+    reader of the node at the provider. ``tests/unit/test_kb_visibility_one_seam.py``
+    fails on a statement that leaves the clause out. A page read does not
+    change: :func:`query` stays as it is.
+
+    A hit has ``document_id``, ``node_id``, ``name``, ``web_url``,
+    ``heading_path``, ``text``, ``locator`` and ``score``. At most
+    :data:`PER_DOCUMENT` chunks of one document. *spaces* narrows the read to
+    those spaces and never widens it.
+    """
+    words = " ".join(str(q or "").split())
+    if not words:
+        return {"hits": []}
+    pool = max(int(k) * 4, 20)
+    extra = ""
+    params: dict[str, Any] = {"q": words, "n": pool}
+    if spaces:
+        extra = " AND c.space_id = ANY(CAST(:spaces AS uuid[]))"
+        params["spaces"] = [str(s) for s in spaces]
+    vis, vparams = core.visible_documents_clause(user, "n", "c.space_id")
+    rows = (await db.execute(
+        text("SELECT c.id AS chunk_id, d.id AS document_id, n.id AS node_id, n.name, "
+             "n.web_url, c.heading_path, c.raw, c.metadata, "
+             "ts_rank_cd(c.tsv, websearch_to_tsquery('english', :q)) AS rank "
+             "FROM kb_chunks c "
+             "JOIN kb_documents d ON d.id = c.source_id "
+             "AND d.organization_id = CAST(:kb_org AS uuid) "
+             "JOIN kb_source_nodes n ON n.id = d.node_id "
+             "AND n.organization_id = CAST(:kb_org AS uuid) "
+             "WHERE c.organization_id = CAST(:kb_org AS uuid) "
+             f"AND c.source_kind = 'document' AND {vis}{extra} "
+             "AND c.tsv @@ websearch_to_tsquery('english', :q) "
+             "ORDER BY rank DESC, c.id LIMIT :n"),
+        {**vparams, **params},
+    )).mappings().all()
+    hits: list[dict[str, Any]] = []
+    per: dict[str, int] = {}
+    for row in rows:
+        doc = str(row["document_id"])
+        if per.get(doc, 0) >= PER_DOCUMENT:
+            continue
+        per[doc] = per.get(doc, 0) + 1
+        hits.append({
+            "document_id": doc,
+            "node_id": str(row["node_id"]),
+            "name": row["name"],
+            "web_url": row["web_url"],
+            "heading_path": row["heading_path"],
+            "text": _clip(row["raw"]),
+            "locator": _locator(row["metadata"]),
+            "score": round(float(row["rank"]), 6),
+        })
+        if len(hits) >= max(1, int(k)):
+            break
+    return {"hits": hits}

@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/knowledge_base.md`` §13.
 
-This module is the ONE reader in the gateway of the ten settings below.
+This module is the ONE reader in the gateway of the eleven settings below.
 Nothing else in the gateway reads them.
 
 * ``KNOWLEDGE_ENABLED`` — the kill switch, default OFF.
@@ -40,6 +40,11 @@ Nothing else in the gateway reads them.
   ids whose ready sources the sync loop reads, in the same grammar. It needs
   ``KNOWLEDGE_SOURCES`` too. Empty, the default, means no organization:
   ``kb_sync/scheduler.start_kb_sync`` starts no task.
+* ``KNOWLEDGE_INDEX`` (KC-5a, ``knowledge_curation.md`` §17) — the organization
+  ids whose included Drive folders the index pass reads, in the same grammar.
+  It needs ``KNOWLEDGE_SYNC`` too, and the provider flag is checked for each
+  source. Empty, the default, means no organization: no index run, no provider
+  call and no session.
 
 :func:`require_knowledge_enabled` is the first router dependency in
 ``core.py``. It runs BEFORE ``require_feature_router("knowledge")``, so an
@@ -233,6 +238,18 @@ def knowledge_sync_allowed(organization_id: str | None) -> bool:
     """
     return knowledge_sources_allowed(organization_id) and _named(
         get_settings().knowledge_sync, organization_id)
+
+
+def knowledge_index_allowed(organization_id: str | None) -> bool:
+    """True when ``KNOWLEDGE_SYNC`` AND ``KNOWLEDGE_INDEX`` name the org (KC-5a).
+
+    False means the loop starts no index run for the org, makes no provider
+    call for it and opens no session for it. The provider flag is checked for
+    each source, as for the other kinds. No organization is false, also with
+    ``*``.
+    """
+    return knowledge_sync_allowed(organization_id) and _named(
+        get_settings().knowledge_index, organization_id)
 
 
 async def require_knowledge_sources(

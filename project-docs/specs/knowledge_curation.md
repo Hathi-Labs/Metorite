@@ -84,6 +84,16 @@ with the two clauses `document_reader_clause` and
 search arm, and KC-6 adds the conflict status and the `filing_conflict`
 card. The live Google checks are owner checks after the Google setup (§21).
 
+**KC-5a BUILT 2026-10-26, dark** (branch `kc-5a-index`, migration 310,
+Metorite task #378, `KNOWLEDGE_INDEX` empty). The index pass reads the text of
+the folders that a member chose. It writes `kb_documents` and the document
+chunks of `kb_chunks`. `query_documents` finds them for a member who passes
+`visible_documents_clause`.
+
+A fake adapter serves every test. The real Google fetch is KC-5b. So on a real
+source the pass ends `stopped` with the code `fetch_unavailable`. The search
+routes and `search_company` show no document until KC-5b (§22).
+
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
 and person resolvers, and the directory routes under the rule of §6.4.
@@ -518,7 +528,16 @@ the Marketplace, which reaches every user's drive, is a later slice (§21 Q2).
 2. **Capture access** for each node (§8.1). Since KC-4a the first access
    pass runs after discovery, between two reads of the change feed (§8.5).
 3. **Classify by name** (§9.1), with no text read.
-4. **Include** a folder when a person accepts its filing plan (§9.3).
+4. **Include** a folder when a person accepts its filing plan (§9.3). Since
+   KC-5a an include is a row in `kb_source_includes`. The row holds the
+   provider id of the folder. It is never a flag on a node, because a capped
+   discovery deletes every node. A file is in scope when it is `live` and of
+   kind `file`. Also, an ancestor folder of the file must have an include row.
+   The walk is cycle-safe and stops at 100 levels. The index pass puts the
+   text in the `me` space of the source owner. So only the owner reads it
+   until a filing plan moves it (KC-6). With no include row, nothing is read.
+   KC-6 writes the same row when a person accepts a plan. The include route
+   is KC-5b.
 5. **Read changes** every 15 minutes from the cursor. Google uses
    `changes.list` with the page token. Microsoft uses `delta` with the delta
    link. Track by provider id, never by path.
@@ -550,14 +569,44 @@ module doc of `kb_sync/engine.py` holds the rule. The fences are the
 ### 7.3 Extraction and chunks
 
 - **The one extractor** reads Word, Excel, PowerPoint, PDF, ODT, RTF, HTML
-  and text. Google Docs, Sheets and Slides export as text or CSV first.
-- **The hash decides.** A document whose hash did not change is not read
-  again, not chunked again and not embedded again.
-- **A chunk template per type.** A deck chunks by slide. A sheet chunks by
-  row groups under its header row. Prose chunks by heading. The chunker of
-  `kb_index/` gains the three templates, and keeps one table.
-- **The caps of `knowledge_base.md` §7.3 hold.** 25 MB, 100 pages, and a
-  type the extractor cannot read is a node with a name only.
+  and text. Google Docs, Sheets and Slides export as OOXML (docx, xlsx and
+  pptx) first, and the one extractor reads the export. They do not export as
+  text or CSV. Google limits an export to 10 MB, so a larger export becomes a
+  refusal row. KC-5b builds the real fetch and writes this limit into code.
+- **The provider stamp decides (KC-5a).** `kb_documents.sha` holds the stamp
+  of the node: `content_hash`, else `m:<modified_at>` in UTC. It is not a hash
+  of the text. A node with neither is name only and is never read. A file is
+  pending while it has no document row, or while the sha differs from its
+  stamp. So an unchanged file is not fetched, not extracted, not chunked and
+  not embedded again.
+- **A chunk template per type.** A deck chunks by slide, with its notes. A
+  sheet chunks in groups of 40 rows under its header row, and a csv or tsv is
+  one sheet. Prose chunks by paragraph, a PDF by page, and only Markdown and
+  HTML by heading. `kb_index/chunk_doc.py` holds the three templates. The path
+  text is part of the sha, and a document keeps 512 chunks at most.
+- **The caps of `knowledge_base.md` §7.3 hold.** A node over 25 MB is never
+  fetched. A PDF keeps 100 pages and then says `truncated`. A type the
+  extractor cannot read gets a refusal row.
+- **A refusal row.** A permanent refusal for one file writes a `kb_documents`
+  row with `parser = 'none'`, empty text, the stamp as sha, `truncated` true
+  and no chunk. The refusals are: a size over 25 MB, a type or a file the
+  extractor refuses, and an HTTP 403 or 404 on that file. The file is read
+  again only when its stamp changes. A transient error writes no row. It ends
+  the run `stopped` or `failed`.
+- **The budget of a run.** 50 files, 100 MB of fetched bytes and 45 seconds,
+  checked between files. The next tick goes on from the pending read. One
+  extraction runs at a time in a gateway worker, in a worker thread, with the
+  20 second deadline of `extract_text`.
+
+**The split of KC-5 (D7 of the KC-5a audit).**
+
+- **KC-5a (built).** The migration, the three templates, the index pass, the
+  `KNOWLEDGE_INDEX` flag, `query_documents`, and a fake adapter for every
+  test.
+- **KC-5b.** The include route, the bounded streaming download in
+  `outbound_guard`, the Google export and the `alt=media` fetch. Also the
+  `search_company` and frontend wiring, and the live check on staging.
+- **KC-5c.** The embedding of document chunks.
 
 ### 7.4 What a source never does
 
@@ -677,8 +726,11 @@ tests (KC-4a). `tests/unit/test_kb_visibility_one_seam.py` fails a read of
 `kb_node_access` or `kb_documents` that does not put it in. A chunk read
 passes with this clause or with the page clause. `test_kc_access_r8.py`
 proves that a member of a space who is not a reader at the provider gets no
-row. KC-5 adds the search arm, and its test proves that such a member gets
-no hit.
+row.
+
+KC-5a adds the search arm, `query_documents` in `kb_index/query.py`. It is
+lexical only. Its R8 test, `test_kc_index_r8.py`, proves that such a member
+gets no hit. KC-5b shows the hits in `search_company`.
 
 ### 8.5 The access pass (KC-4a)
 
@@ -1026,12 +1078,13 @@ nullable with a default (R6).
 | `kb_sources` | `connection_id`, `provider`, `kind` (`member`, `org`), `owner_email`, `state` (`discovering`, `ready`, `failed`, `needs_reconnect`, `disconnected`), `default_space_id`, `account_email`, `account_id`, `node_count`, `discovered_at`, `last_error` | KC-1 (built at KC-1a, migration 300) |
 | `kb_source_nodes` | `source_id`, `ext_id`, `parent_ext_id`, `drive_id`, `kind`, `name`, `mime`, `size`, `modified_at`, `content_hash`, `web_url`, `state` (`live`, `gone`), `explored` | KC-1 (built at KC-1a, migration 300) |
 | `kb_sync_cursors` | `source_id`, `kind` (`changes`, `reconcile`, and `access` since KC-4a), `cursor_state`, `last_run_at`, `last_status`. UNIQUE (`organization_id`, `source_id`, `kind`) | KC-3 (built at KC-3, migration 308). KC-4a widened the kind, migration 309 |
-| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`, and `access` since KC-4a), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 308). KC-4a widened the kind, migration 309 |
+| `kb_sync_runs` | `source_id`, `kind` (`discover`, `changes`, `reconcile`, `access` since KC-4a, and `index` since KC-5a), `status` (`running`, `ok`, `failed`, `stopped`), `started_at`, `finished_at`, `heartbeat_at`, `counts`, `error` (64 characters at most). A partial unique index on `source_id` where `status = 'running'` is the run lock | KC-3 (built at KC-3, migration 308). KC-4a and KC-5a widened the kind, migrations 309 and 310 |
 | `kb_sources.last_new_at` | When a run last inserted a node. CX-5 reads it for Knowledge | KC-3 (built at KC-3, migration 308) |
 | `kb_watch_channels` | `source_id`, `provider_channel_id`, `resource_id`, `expires_at` | KC-3b |
 | `kb_node_access` | `node_id` (cascades from `kb_source_nodes`), `principal_kind` (`user`, `group`, `domain`, `anyone`), `principal`, `role` (32 characters at most), `synced_at`. UNIQUE (`organization_id`, `node_id`, `principal_kind`, `principal`), and an index on (`organization_id`, `principal_kind`, `principal`) | KC-4a (built at KC-4a, migration 309) |
 | `kb_sources.access_read_at` | When the last full access pass ended. Empty until one ends | KC-4a (built at KC-4a, migration 309) |
-| `kb_documents` | `node_id`, `text`, `sha`, `extracted_at`, `parser`, `truncated`, `summary` | KC-5 |
+| `kb_documents` | `node_id` (UNIQUE, cascades from `kb_source_nodes`), `text`, `sha` (the provider stamp), `extracted_at`, `parser`, `truncated`, `summary` (empty until a later slice). No vector column. An AFTER DELETE trigger removes the document chunks of `kb_chunks` | KC-5a (built at KC-5a, migration 310) |
+| `kb_source_includes` | `source_id` (cascades from `kb_sources`), `folder_ext_id` (the provider id), `included_by`, `created_at`. UNIQUE (`organization_id`, `source_id`, `folder_ext_id`) | KC-5a (built at KC-5a, migration 310) |
 | `kb_filings` | `node_id`, `page_type`, `space_id`, `entity_ids`, `sensitivity`, `confidence`, `status` (`proposed`, `accepted`, `corrected`, `rejected`, `conflict`), `decided_by` | KC-6 |
 | `kb_entities` | `type`, `ref_table`, `ref_id`, `name`, `aliases`, `page_id`, `space_id` | KC-8 |
 | `kb_episodes` | `kind`, `ref_id`, `audience`, `occurred_at`, `closed_at` | KC-9 |
@@ -1081,6 +1134,7 @@ inside its module, never in `main.py`.
 | `KNOWLEDGE_SOURCES` | Connect, discovery and the Sources view | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_SOURCE_GOOGLE`, `KNOWLEDGE_SOURCE_MICROSOFT` | One provider each | Owner. Google waits for §21 Q1 outside the test users |
 | `KNOWLEDGE_SYNC` | The sync loop of KC-3: the change feed every 15 minutes and the daily reconcile, for each ready source of a named org. Since KC-4a it also runs the 6-hour access pass (§8.5). It needs `KNOWLEDGE_SOURCES` too. Empty, `start_kb_sync()` starts no task | Agent, on staging. Owner, on production |
+| `KNOWLEDGE_INDEX` | The index pass of KC-5a: the loop fetches the files of the included folders, extracts the text and writes the document chunks, for each ready source of a named org. It needs `KNOWLEDGE_SYNC` and the provider flag too. Empty, the loop counts nothing, starts no index run, calls no provider and opens no session for it | Agent, on staging. Owner, on production |
 | `KNOWLEDGE_FILING` | Pass one and pass two of the classifier | Owner (spends credits) |
 | `KC_FACTS` | The update step and the fact tables | Owner (spends credits) |
 | `KC_CAPTURE_CHAT`, `KC_CAPTURE_MEETINGS`, `KC_CAPTURE_TASKS`, `KC_CAPTURE_EMAIL` | One feed each (§13) | Owner |
@@ -1247,7 +1301,9 @@ keeps the brain current.
 | **KC-3** (was KB-7b) | The sync loop of the METADATA tree: `kb_sync_cursors`, `kb_sync_runs`, the run lock of each source, the Drive `changes.list`, track by id, the expired-cursor path, the daily reconcile, and the health columns (`kb_sources.last_error`, `kb_sources.last_new_at`, `integration_connections.last_sync_at`). KC-3 reads no text and builds no hook for KC-5. KC-5 pulls: it compares `kb_source_nodes.content_hash` with `kb_documents.sha`. OneDrive `delta` is KC-2. The `source_sync_failed` card is KB-9b | The loop reads the Drive change feed every 15 minutes for each ready source and keeps `kb_source_nodes` current. (1) A rename or a move keeps the node id and updates the name and `parent_ext_id`. A renamed folder keeps every child node. (2) A deletion or a trash sets `state = 'gone'` within one change read. A file that the daily reconcile finds missing also becomes `gone`. (3) A revoked token sets `kb_sources.state` and `integration_connections.status` to `needs_reconnect`. The next ticks make no provider call. (4) Two runs of one source cannot run at the same time. A new run takes over a running row older than 15 minutes with the error `stale`, and the old run cannot write. (5) `RateLimited` ends the run `stopped`, with the cursor at the last committed page. The next run starts at that cursor. (6) A page and its cursor commit together, or neither commits. (7) An expired cursor gets a new start token, then a slim relist and a hash compare. Nothing reads text. (8) Org B can read, write and run nothing of org A in `kb_sync_cursors`, `kb_sync_runs` and `kb_source_nodes`. Both new tables have FORCE RLS. (9) With `KNOWLEDGE_SYNC` empty, `start_kb_sync()` returns False and no task exists. The text re-index and the rule of one embed for each changed chunk move to KC-5 | AGENT-SAFE to build. The loop on production (`KNOWLEDGE_SYNC`): owner |
 | **KC-3b** | Push hints: Drive `changes.watch` and Graph subscriptions, `kb_watch_channels`, renewal, the validation answer | A push moves the next cursor read forward. A missed push changes nothing, because the 15-minute read still runs | AGENT-SAFE |
 | **KC-4a** (was KC-4, Metorite task #377). **BUILT 2026-10-26, dark** | Permission capture: `kb_node_access` (migration 309), `kb_sources.access_read_at`, the `access` kind of a run and a cursor, and `KbSource.list_access` for Google Drive. Also the resolver of §8.2, the 6-hour access pass of §8.5, the filing rule of §8.3, and the two clauses of §8.4. No route, no flag and no frontend | (A1) A member who reads space S and is no proven reader of node N gets no row from `visible_documents_clause`. A proven reader with a read of S gets N, and without one gets nothing. (A2) A node shared with four members does not fit `company`, and `unproven` names the others. A space whose readers are those four, or fewer, fits. (A3) A pass in which the provider drops reader R deletes the row of R, and R then does not see N. (A4) Resolver tests: an outside email, a group, a link-only share, a deleted row, each domain rule (OQ1) and anyone (OQ2). (A5) Org B reads and writes no row of org A, with FORCE RLS. (A6) With `KNOWLEDGE_SYNC` empty, no access run starts and nothing calls the provider. (A7) A listing with no permission list writes no row and proves only the source owner. (A8) `test_kc_sources_read_only_scopes.py` holds, unchanged. (A9) An access page and a disconnect run at the same time, in both orders, and neither fails. Tests: `test_kc_document_visibility.py` and, R8, `test_kc_access_r8.py` | AGENT-SAFE. HIGH tier (tenancy and visibility). The flag on production (`KNOWLEDGE_SYNC`): owner |
-| **KC-5** | Inclusion and extraction: `kb_documents`, the three chunk templates, the hash skip, document chunks in `kb_chunks`. The re-index of a changed file: KC-5 compares `kb_source_nodes.content_hash`, which KC-3 keeps current, with `kb_documents.sha`. From KC-4: the search arm of §8.4 in `kb_index/query.py`, which joins a chunk to its node under `visible_documents_clause` | An included folder of 50 files is searchable within one tick. An unchanged file is never read twice. A deck hit names its slide. A file edited at the provider re-indexes within 15 minutes, with one embed call for each changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile. From KC-4: a member of the space who is not a reader at the provider gets no hit, also through `search_company` | AGENT-SAFE. HIGH tier (visibility) |
+| **KC-5a** (Metorite task #378). **BUILT 2026-10-26, dark** | The document index: `kb_documents` and `kb_source_includes` (migration 310), the three chunk templates, the index pass with the stamp skip, the run kind `index`, the `KNOWLEDGE_INDEX` flag, and the lexical `query_documents` under `visible_documents_clause`. The chunks go to the `me` space of the source owner. A fake adapter serves every test | (A1) An included folder of 50 files: after ONE `run_tick`, `query_documents` finds them for the owner. (A2) An unchanged file makes zero fetch calls and zero extract calls. (A3) A deck hit ends in `Slide N`, and its metadata holds the slide. (A4) A node over 25 MB is not fetched, and a 120-page PDF is stored `truncated` with 100 pages. (A5) An edited file is read again, and only its changed chunks are replaced. The unchanged chunks keep their ids. (A6) A gone node loses its document and chunks in one pass. A disconnect, a member purge and a discovery clear leave no document chunk. (A7) A member of space S who is no proven reader of the node gets no hit. A proven reader and the source owner do. A `synced_at` over 24 hours old gets none. (A8) With `KNOWLEDGE_INDEX` empty: no index run, no provider call and no session. (A9) With no include row, nothing is fetched. (A10) Org B reads and writes nothing in either table, and FORCE RLS is on. (A11) The include walk handles a deep tree and a cycle. Tests: `test_kb_chunk_documents.py`, `test_kb_index_pass.py`, `TestTheLockOrder` and, R8, `test_kc_index_r8.py` | AGENT-SAFE. HIGH tier (it decides who can read document text). The flag on production (`KNOWLEDGE_INDEX`): owner |
+| **KC-5b** | The include route, the bounded streaming download in `outbound_guard`, the Google export (OOXML, 10 MB) and the `alt=media` fetch, the document arm of `search_company`, the frontend, and the live check on staging | A member includes a folder, and the files become searchable in chat and in the Search view. A member of the space who is not a reader at the provider gets no hit, also through `search_company`. A download over its cap stops before it reads the whole body | AGENT-SAFE. HIGH tier (visibility). The live Google check: owner |
+| **KC-5c** | The embedding of document chunks, with one embed call for each changed chunk, and the semantic arm of `query_documents` | A file edited at the provider re-indexes within 15 minutes, with one embed call for each changed chunk. A rename of a folder keeps every document. A deleted file leaves the index within one reconcile | AGENT-SAFE. The flag spends credits: owner |
 
 ### Phase 2 — the AI files
 
@@ -1327,6 +1383,7 @@ node .claude/hooks/ste-lint.test.mjs
 uv run pytest tests/unit/test_kc_sources_read_only_scopes.py tests/unit/test_kb_sources_no_global_creds.py -q  # KC-1
 uv run pytest tests/unit/test_kb_sync_engine.py tests/unit/test_kb_sync_tenancy.py -q   # KC-3
 uv run pytest tests/unit/test_kc_document_visibility.py -q   # KC-4a
+uv run pytest tests/unit/test_kb_chunk_documents.py tests/unit/test_kb_index_pass.py -q   # KC-5a
 uv run pytest tests/unit/test_kc_entities.py -q              # KC-8a
 uv run pytest tests/unit/test_kc_fact_audience.py -q         # KC-9
 
@@ -1335,6 +1392,7 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_kc_sources_r8.py -p no:xdist -rs -q    # KC-1, KC-3
 uv run pytest tests/unit/test_kc_sync_r8.py -p no:xdist -rs -q       # KC-3
 uv run pytest tests/unit/test_kc_access_r8.py -p no:xdist -rs -q     # KC-4a
+uv run pytest tests/unit/test_kc_index_r8.py -p no:xdist -rs -q      # KC-5a
 uv run pytest tests/unit/test_kc_entities_r8.py -p no:xdist -rs -q   # KC-8a
 uv run pytest tests/unit/test_kc_facts_r8.py -p no:xdist -rs -q      # KC-9, KC-10, KC-13
 uv run pytest tests/unit/test_kc_eval_r8.py -p no:xdist -rs -q       # KC-15

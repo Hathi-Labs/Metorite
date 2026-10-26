@@ -2437,3 +2437,27 @@ ALTER TABLE kb_node_access ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE kb_node_access ADD CONSTRAINT kb_node_access_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS kb_node_access_org_idx ON kb_node_access (organization_id);
+
+-- kb_documents
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_documents WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_documents still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_documents ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_documents ADD CONSTRAINT kb_documents_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_documents_org_idx ON kb_documents (organization_id);
+
+-- kb_source_includes
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_source_includes WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_source_includes still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_source_includes ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_source_includes ADD CONSTRAINT kb_source_includes_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_source_includes_org_idx ON kb_source_includes (organization_id);

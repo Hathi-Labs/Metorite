@@ -166,6 +166,17 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "the text to the embed door only, and it returns no page, no chunk "
         "and no text to a person. The author columns name who pays."
     ),
+    ("index.py", "<module>"): (
+        "The index pass of KC-5a (kb_sync/index.py, knowledge_curation.md §7.3) "
+        "has two module-level statements that read kb_documents: the pending "
+        "read and the pending count. Each compares the sha of a document with "
+        "the provider stamp of its node, to find the files to read again. They "
+        "run in the background loop with no member to apply the clause for. "
+        "They return node columns and a count to the pass only, never a "
+        "document text, a chunk or a hit to a person. "
+        "test_the_indexer_reads_of_documents_are_the_two_sha_compares pins the "
+        "list to those two, so a third read does not hide here."
+    ),
     ("resolve.py", "load_node"): (
         "The filing rule of KC-4a (knowledge_curation.md §8.3) reads the "
         "provider readers of ONE node, to compare them with the readers of a "
@@ -592,3 +603,83 @@ def test_the_writes_of_the_access_pass_are_not_reads() -> None:
         "INS = 'INSERT INTO kb_node_access (node_id) SELECT n.id FROM kb_source_nodes n'\n"
     )
     assert _page_reads(src) == []
+
+
+# ── KC-5a: query_documents reads the text through the documents clause ──────
+
+_QUERY = _GATEWAY / "kb_index" / "query.py"
+_INDEX_PASS = _GATEWAY / "kb_sync" / "index.py"
+
+
+def test_query_documents_is_in_the_sweep_and_goes_through_the_documents_clause() -> None:
+    """Not vacuous: the fence finds the statement, and it passes."""
+    found = _page_reads(_QUERY.read_text(encoding="utf-8"))
+    mine = [(func, line, ok) for func, line, ok in found if func == "query_documents"]
+    assert len(mine) == 1, found
+    assert mine[0][2] is True, "query_documents does not put in visible_documents_clause"
+
+
+def test_a_query_documents_without_the_clause_fails_the_fence() -> None:
+    """The mutation: drop ``visible_documents_clause`` from ``query_documents``."""
+    source = _QUERY.read_text(encoding="utf-8")
+    needle = "AND c.source_kind = 'document' AND {vis}{extra} "
+    assert needle in source, "the statement moved: update this mutation"
+    mutated = source.replace(needle, "AND c.source_kind = 'document'{extra} ")
+    got = [(func, ok) for func, _line, ok in _page_reads(mutated) if func == "query_documents"]
+    assert got == [("query_documents", False)], got
+
+
+def test_the_fence_flags_a_document_read_with_only_the_page_clause() -> None:
+    src = (
+        "async def search(db, user, q):\n"
+        "    vis, params = visible_pages_clause(user, 'p')\n"
+        "    return f'SELECT c.raw FROM kb_chunks c JOIN kb_documents d "
+        "ON d.id = c.source_id WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("search", 3, False)]
+
+
+def test_the_fence_flags_a_document_read_with_only_the_reader_clause() -> None:
+    src = (
+        "async def search(db, user, q):\n"
+        "    vis, params = document_reader_clause(user, 'n')\n"
+        "    return f'SELECT c.raw FROM kb_chunks c JOIN kb_documents d "
+        "ON d.id = c.source_id WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("search", 3, False)]
+
+
+def test_a_document_read_through_the_documents_clause_passes() -> None:
+    src = (
+        "async def search(db, user, q):\n"
+        "    vis, params = visible_documents_clause(user, 'n', 'c.space_id')\n"
+        "    return f'SELECT c.raw FROM kb_chunks c JOIN kb_documents d "
+        "ON d.id = c.source_id WHERE {vis}'\n"
+    )
+    assert _page_reads(src) == [("search", 3, True)]
+
+
+def test_the_document_delete_of_the_indexer_is_not_a_read() -> None:
+    src = "SQL = 'DELETE FROM kb_documents d USING kb_source_nodes n WHERE d.node_id = n.id'\n"
+    assert _page_reads(src) == []
+
+
+def test_the_indexer_reads_of_documents_are_the_two_sha_compares() -> None:
+    """``_INTEGRITY_READS`` lists ``("index.py", "<module>")``. That entry may
+    cover the pending read and the pending count of the index pass, and nothing
+    else, so a third read of ``kb_documents`` there fails this test."""
+    reads = _page_reads(_INDEX_PASS.read_text(encoding="utf-8"))
+    assert [func for func, _line, _ok in reads] == ["<module>", "<module>"], reads
+    assert all(not ok for _func, _line, ok in reads), "the reads now use a clause: drop the entry"
+
+
+def test_the_text_of_a_document_is_read_in_one_module_only() -> None:
+    """Only ``query_documents`` hands the text of a document to a caller. The
+    pass reads node columns and a count. No other module of the gateway reads
+    ``kb_documents`` (KC-5b adds the search provider, with the clause)."""
+    readers = set()
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        if re.search(r"\b(?:FROM|JOIN)\s+kb_documents\b", src, re.IGNORECASE):
+            readers.add(path.name)
+    assert readers == {"index.py", "query.py"}, readers
