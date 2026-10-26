@@ -673,7 +673,10 @@ async def _project_ref(value: str) -> tuple[str, str | None]:
 def _project_nodes(payload: Any) -> list[dict[str, Any]]:
     """Every project and subproject of the tree that is not archived.
 
-    A folder holds no task, so it is never a match.
+    A folder holds no task, so it is never a match. The whole tree the member
+    can see, the personal tree too (``GET /projects/tree`` key ``personal``).
+    The open page never narrows it (owner, 2026-10-26): a name means the
+    same thing whichever space is open, and two matches ask the member.
     """
     out: list[dict[str, Any]] = []
 
@@ -686,6 +689,7 @@ def _project_nodes(payload: Any) -> list[dict[str, Any]]:
             walk(node.get("children") or [])
 
     walk((payload or {}).get("rows") or [])
+    walk((payload or {}).get("personal") or [])
     return out
 
 
@@ -919,6 +923,10 @@ async def create_task(
     )
     if isinstance(repeating, str):
         return repeating
+    # After the argument checks, which answer with no call, and before the card.
+    stop = await space_refusal(pid, (await _node(pid))[1])
+    if stop:
+        return stop
     new = await _prepare_new_task(
         pid,
         name,
@@ -2017,6 +2025,9 @@ async def _plan_move(
     wanted = _subtasks_wanted(include_subtasks)
     dest = uuid_of(destination, "destination_project_id")
     dest_node = await get(f"/projects/nodes/{dest}")
+    stop = await space_refusal(dest, dest_node, act="moved")
+    if stop:
+        return stop
     # The card NAMES every task it moves (class B may list many rows),
     # so the member sees which three, not "3 tasks". Read before the
     # card, like every other row a card names.
@@ -2557,6 +2568,11 @@ async def _file_destinations(rows: list[_FileRow]) -> None:
                 why = f"{data(name)} is archived. Restore it first, or pick another project"
             elif node.get("kind") == "folder":
                 why = f"{data(name)} is a folder. A folder holds projects, not tasks"
+            elif is_team_space(node):
+                why = (
+                    f"{data(name)} is a space. A space holds projects, not tasks. "
+                    "Pick a project inside it"
+                )
         for r in rows:
             if r.dest == dest:
                 r.where = name
@@ -3357,11 +3373,12 @@ async def update_project(
 
 #: The route's `reports.SECTIONS`, held equal by
 #: `tests/unit/test_projects_report_sections_lockstep.py`. `outlook`,
-#: `capacity`, `pulse`, `waiting`, `agent_runs`, `hygiene`, `conflicts` and
-#: `rebalance` are opt-in: a report carries one only when the member asks.
+#: `capacity`, `pulse`, `waiting`, `agent_runs`, `quality`, `hygiene`,
+#: `conflicts` and `rebalance` are opt-in: a report carries one only when the
+#: member asks.
 REPORT_SECTIONS = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse", "stuck",
-    "waiting", "agent_runs", "hygiene", "conflicts", "rebalance",
+    "waiting", "agent_runs", "quality", "hygiene", "conflicts", "rebalance",
 )
 
 #: WS-27bn R5d (§9 Q13). The words of the server's 403, in
@@ -3417,9 +3434,10 @@ async def report_save(
     """Save a report definition, or change one (pass report_id). A report
     stores the question: scope (project_id, or empty for the portfolio),
     sections (comma-separated from finished, throughput, outlook, load,
-    capacity, pulse, stuck, waiting, agent_runs, hygiene, conflicts,
-    rebalance; outlook, capacity, pulse, waiting, agent_runs, hygiene,
-    conflicts and rebalance are never there unless asked for) and
+    capacity, pulse, stuck, waiting, agent_runs, quality, hygiene,
+    conflicts, rebalance; outlook, capacity, pulse, waiting, agent_runs,
+    quality, hygiene, conflicts and rebalance are never there unless asked
+    for) and
     weeks. Render it
     with report_render. Delivery and schedules stay in the Reports app."""
     label = str(name or "").strip()
@@ -3517,6 +3535,79 @@ def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
 async def _node(project_id: str) -> tuple[str, dict[str, Any]]:
     pid = uuid_of(project_id, "project_id")
     return pid, await get(f"/projects/nodes/{pid}")
+
+
+def is_team_space(node: dict[str, Any]) -> bool:
+    """True for a team SPACE: a root of kind project that is not personal.
+
+    The gateway's rule (``core.is_team_space``). A space holds projects, not
+    tasks. The member's own root (``personal`` true) holds the Inbox, so it
+    is not a space here.
+    """
+    # The gateway's node read always carries the key. A read without it is
+    # not judged here, and the gateway still refuses the write.
+    if "parent_project_id" not in node or node.get("parent_project_id"):
+        return False
+    if node.get("personal"):
+        return False
+    return str(node.get("kind") or "project") == "project"
+
+
+async def _projects_inside(space_id: str) -> list[dict[str, Any]]:
+    """The live projects and subprojects inside one space, in tree order."""
+    try:
+        roots = ((await get("/projects/tree")) or {}).get("rows") or []
+    except GatewayRefusal:
+        return []
+    space = next((r for r in roots if str(r.get("id")) == space_id), None)
+    if space is None:
+        return []
+    out: list[dict[str, Any]] = []
+
+    def walk(nodes: list[dict[str, Any]], path: str) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict) or node.get("archived_at"):
+                continue
+            name = str(node.get("name") or "")
+            if str(node.get("kind") or "project") != "folder":
+                out.append({**node, "_path": f"{path}{name}"})
+            walk(node.get("children") or [], f"{path}{name} / ")
+
+    walk(space.get("children") or [], "")
+    return out
+
+
+async def space_refusal(pid: str, node: dict[str, Any], *, act: str = "created") -> str:
+    """``""`` when ``node`` may hold tasks. Else the text the model reads.
+
+    Said BEFORE any card (2026-10-26). The chat once filed six tasks on a
+    space because the page named the space, and the member found none of
+    them. The text lists the projects inside, so the model can pick one the
+    member named, or ask which one. The gateway refuses the same write.
+    """
+    if not is_team_space(node):
+        return ""
+    name = data(node.get("name"))
+    inside = await _projects_inside(pid)
+    lines = [
+        f"{name} is a space. A space holds projects, not tasks, so nothing was {act}.",
+    ]
+    if inside:
+        lines.append(f"The projects inside {name}:")
+        # Every project, with no cap: the model must not pick from a part.
+        for row in inside:
+            lines.append(f"- {data(row['_path'])} · full_id: {row.get('id')}")
+        lines.append(
+            "Next: use one of these only when the member's words name it. "
+            "Otherwise ask the member which project, and list these names. "
+            "Do not pick one yourself."
+        )
+    else:
+        lines.append(
+            "Next: the space has no project yet. Ask the member which project to use, "
+            "or whether to create one with create_project."
+        )
+    return "\n".join(lines)
 
 
 async def _vocab(project_id: str, kind: str) -> list[dict[str, Any]]:

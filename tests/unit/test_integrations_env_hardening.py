@@ -827,6 +827,8 @@ class TestLayerBRefusesPlatformKeys:
         "OBJECT_STORE_SECRET_ACCESS_KEY", "OBJECT_STORE_AUTH_PASSWORD",
         "SHELLOPTS", "BASHOPTS", "LIVE_ASR_URL", "SKILLS_FAIL_CLOSED",
         "SKILLS_INDEX_ONLY", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE",
+        # WS-67 OA-7a: the tool packs. Owner-only (work_plan.md §6 D4).
+        "TOOL_PACKS", "TOOL_PACKS_ORGS",
         "FORWARDED_ALLOW_IPS", "MEET_GOOGLE_PASSWORD", "SHERPA_SEG_MODEL",
         "GODEBUG", "CC", "GO",
         # The operator-only family.

@@ -150,6 +150,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
     "NARROWING_AGENTS",
+    # WS-67 OA-7a: the tool packs of the one assistant, and the orgs that may
+    # use them. A pack moves the egress guards and spends model tokens, so
+    # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
+    # covers both too.
+    "TOOL_PACKS", "TOOL_PACKS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

@@ -192,24 +192,59 @@ async def projects_tree(include_archived: bool = False) -> str:
     if not roots:
         return "You can see no projects yet."
 
-    levels = ("space", "folder", "project", "subproject")
     out = [legend(), f"Projects you can see ({(payload or {}).get('total', 0)} nodes):"]
 
-    def walk(nodes: list[dict[str, Any]], depth: int) -> None:
+    def walk(nodes: list[dict[str, Any]], depth: int, above: int) -> None:
+        # `above` counts the PROJECT ancestors. A folder never adds one.
         for node in nodes:
             if node.get("archived_at") and not include_archived:
                 continue
-            kind = node.get("kind") or "project"
-            level = "folder" if kind == "folder" else levels[min(depth, 3)]
-            if depth == 0:
-                level = "space"
+            is_folder = (node.get("kind") or "project") == "folder"
+            mine = above
+            if depth == 0 and node.get("parent_project_id"):
+                # A top row whose parent the member cannot see. It is not a
+                # root, so it is not a space: count one hidden project above.
+                mine = 1
+            level = tree_level(is_folder, mine + (0 if is_folder else 1))
             head, ident = _project_line(node, level)
+            head += _tree_counts(node)
             out.append("  " * depth + head)
             out.append("  " * depth + ident)
-            walk(node.get("children") or [], depth + 1)
+            walk(node.get("children") or [], depth + 1, mine + (0 if is_folder else 1))
 
-    walk(roots, 0)
+    walk(roots, 0, 0)
     return "\n".join(out)
+
+
+def _tree_counts(node: dict[str, Any]) -> str:
+    """`` · tasks N (done D, cancelled C)``, or ``""`` when the row has none.
+
+    The SUBTREE counts the sidebar draws (``tree._attach_progress``). Said on
+    every row, so a read never infers "empty" from a missing number.
+    """
+    total = node.get("tasks")
+    if not isinstance(total, int):
+        return ""
+    done = node.get("done") if isinstance(node.get("done"), int) else 0
+    cancelled = node.get("cancelled") if isinstance(node.get("cancelled"), int) else 0
+    return f" · tasks {total} (done {done}, cancelled {cancelled}), with everything under it"
+
+
+def tree_level(is_folder: bool, generation: int) -> str:
+    """The level the app draws for a node, from its kind and its ancestry.
+
+    The rule of ``core.node_level`` and ``lib/tree.ts`` ``nodeLevel``.
+    ``generation`` counts the PROJECT ancestors with the node itself, so a
+    folder is transparent. Generation 1 is a space, 2 a project, and 3 or
+    more a subproject. It is never the depth: a project directly in a space
+    was once labelled a folder here (2026-10-26), and the model read five
+    full projects as "empty folders".
+    """
+    if is_folder:
+        return "folder"
+    if generation <= 1:
+        return "space"
+    return "project" if generation == 2 else "subproject"
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
@@ -2025,6 +2060,18 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "outcomes.abandoned", "outcomes.released", "outcomes.server_closed",
         "success.rate", "success.rate_before", "silent_total", "long_total",
     )),
+    # WS-27bn RA-5. One list: the open agent pull requests whose checks
+    # fail. `_quality_lines` prints it after the summary. The figures are
+    # nested, so the scalar keys are dotted paths.
+    "quality": ("checks.failing", "title", (
+        "prs.merged", "prs.closed", "prs.rate", "prs.rate_before", "prs.open",
+        "checks.failing_total", "checks.merged_red",
+        "rework.reopened.agents.reopened", "rework.reopened.agents.undone",
+        "rework.reopened.agents.finished",
+        "rework.reopened.people.reopened", "rework.reopened.people.undone",
+        "rework.reopened.people.finished",
+        "rework.retried.failed", "rework.retried.retried",
+    )),
     # WS-27bn R3c. One row per task, each with its kind. The four counts sit
     # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
     "hygiene": ("rows", "title", (
@@ -2101,6 +2148,21 @@ _REPORT_LABELS: dict[str, str] = {
     "agent_runs:success.rate_before": "success rate of the 14 days before",
     "agent_runs:silent_total": "silent runs now",
     "agent_runs:long_total": "completed runs of 4 hours or more",
+    "quality:prs.merged": "agent pull requests merged in 14 days",
+    "quality:prs.closed": "agent pull requests closed with no merge in 14 days",
+    "quality:prs.rate": "merge rate",
+    "quality:prs.rate_before": "merge rate of the 14 days before",
+    "quality:prs.open": "agent pull requests open now",
+    "quality:checks.failing_total": "open agent pull requests with failing checks",
+    "quality:checks.merged_red": "agent pull requests merged while their checks failed",
+    "quality:rework.reopened.agents.reopened": "different tasks reopened after an agent finish",
+    "quality:rework.reopened.agents.undone": "finishes by agents that a later reopen undid",
+    "quality:rework.reopened.agents.finished": "tasks that agents finished in 14 days",
+    "quality:rework.reopened.people.reopened": "different tasks reopened after a person finish",
+    "quality:rework.reopened.people.undone": "finishes by people that a later reopen undid",
+    "quality:rework.reopened.people.finished": "tasks that people finished in 14 days",
+    "quality:rework.retried.failed": "runs that failed in 14 days",
+    "quality:rework.retried.retried": "failed runs that got a new run",
 }
 
 #: The three waiting lists, in the panel's order, with the words of each.
@@ -2240,6 +2302,43 @@ def _agent_runs_lines(section: dict[str, Any]) -> list[str]:
         more = (total if isinstance(total, int) else len(rows)) - len(rows)
         if more > 0:
             out.append(f"  (and {more} more {kind} rows that the report does not name)")
+    return out
+
+
+def _quality_row(row: dict[str, Any]) -> str:
+    """One failing pull request as one line: the task, the agent and its
+    member. The task title, the pull request title, the agent and the member
+    print as data, for the reason that `_waiting_row` gives."""
+    number = row.get("task_number")
+    task = f"#{number} " if isinstance(number, int) else ""
+    facts = [f"agent {data(row.get('agent') or 'Agent')}"]
+    member = row.get("member_name") or row.get("member")
+    if member:
+        facts.append(f"for {data(member)}")
+    if row.get("ref"):
+        facts.append(f"pull request {data(row['ref'])}")
+    if isinstance(row.get("age_hours"), int | float):
+        facts.append(f"linked {row['age_hours']} hours ago")
+    return f"- failing checks · {task}{data(row.get('title'))} · " + ", ".join(facts)
+
+
+def _quality_lines(section: dict[str, Any]) -> list[str]:
+    """The summary of the panel, then every failing pull request it named.
+
+    The summary is the server's sentence, so the chat says the words that
+    the panel says (§6.8 E5). ⚠️ No cut here (`test_read_tool_paging.py`):
+    the server names five rows at most, so the text prints each row it got,
+    and a line says how many the cap left out."""
+    out: list[str] = []
+    if isinstance(section.get("summary"), str):
+        out.append(f"  {section['summary']}")
+    checks = section.get("checks") if isinstance(section.get("checks"), dict) else {}
+    rows = [r for r in checks.get("failing") or [] if isinstance(r, dict)]
+    out.extend(_quality_row(r) for r in rows)
+    total = checks.get("failing_total")
+    more = (total if isinstance(total, int) else len(rows)) - len(rows)
+    if more > 0:
+        out.append(f"  (and {more} more failing rows that the report does not name)")
     return out
 
 
@@ -2469,6 +2568,10 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     if name == "agent_runs":
         # WS-27bn RA-4. Two lists, each with its own cap.
         out.extend(_agent_runs_lines(section))
+        return out
+    if name == "quality":
+        # WS-27bn RA-5. The summary, then the failing pull requests.
+        out.extend(_quality_lines(section))
         return out
     before, after = _section_extras(name, section)
     out.extend(before)
