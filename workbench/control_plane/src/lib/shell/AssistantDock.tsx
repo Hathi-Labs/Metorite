@@ -112,6 +112,7 @@ import {
   DOCK_MAX,
   DOCK_MIN,
   briefAskedToday,
+  assistantState,
   closeAssistant,
   holdsForBrief,
   consumeAsk,
@@ -239,6 +240,11 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useEffect(() => {
     const ask = st.ask;
     if (!open || !ask || !st.sessionId || decided?.seq === ask.seq) return;
+    // A fresh open with words ("Yes, start" in the empty chat) changes the
+    // chat in the effect above, in this same pass. This render still names
+    // the old chat. A decision for it is lost when the new chat mounts, so
+    // the next render decides (owner report, 2026-10-26).
+    if (assistantState().sessionId !== st.sessionId) return;
     const cur = getSessions().find((s) => s.id === st.sessionId);
     // An empty chat of the member's own takes the words. Any other chat
     // takes them only if the bar may join it: never a room, never an
