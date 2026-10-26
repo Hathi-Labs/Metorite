@@ -478,6 +478,52 @@ def assert_run_state_allowed(level: str) -> None:
     )
 
 
+def is_team_space(node: Any) -> bool:
+    """True when ``node`` is a team SPACE: a team root of kind project.
+
+    A personal root is a root too, and it is NOT a space here. It is the
+    member's own tree, and it holds the Inbox by design
+    (``personal.create_personal_task``). A folder is never a root.
+    """
+    if getattr(node, "parent_project_id", None) is not None:
+        return False
+    if getattr(node, "personal_owner", None):
+        return False
+    return node_kind(getattr(node, "kind", None)) == "project"
+
+
+def assert_holds_tasks(node: Any, *, then: str) -> None:
+    """Refuse a task placed on a node that holds no tasks (one rule, D-PM).
+
+    ``project_management_app.md`` §"What each level does": a space and a
+    folder hold no tasks. A space shows a dashboard of its subtree and no
+    board, so a task filed on one sits where no project view draws it.
+    Measured 2026-10-26: the chat filed six tasks on a space, and the member
+    found none of them.
+
+    ``then`` finishes the advice, for example ``"Create the task in"``. It
+    must read before ``" a project inside it."``.
+
+    Call it AFTER the visibility load, so a caller who cannot see the node
+    gets 404 and never learns from a 422 that it exists (R5). It judges a
+    NEW placement only. A task that already sits on a space still reads,
+    edits and moves out, because none of those place it.
+    """
+    if node_kind(getattr(node, "kind", None)) == "folder":
+        raise HTTPException(
+            status_code=422,
+            detail=f"A folder holds projects, not tasks. {then} a project "
+                   f"inside it.",
+        )
+    if is_team_space(node):
+        name = str(getattr(node, "name", "") or "").strip() or "This node"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} is a space. A space holds projects, not tasks. "
+                   f"{then} a project inside it.",
+        )
+
+
 def assert_node_grammar(
     *,
     kind: str,

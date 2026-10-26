@@ -56,13 +56,13 @@ from gateway.routes.projects.core import (
     TRIAGE_CATEGORY,
     _tenant_session,
     actor,
+    assert_holds_tasks,
     assert_move_keeps_privacy,
     emit,
     from_jsonb,
     load_visible_project,
     load_visible_task,
     next_task_number,
-    node_kind,
     record_activity,
     remap_one_type,
     require_status_in_project,
@@ -226,12 +226,7 @@ async def _destination(db: Any, vis: Any, project_id: str) -> Any:
     dest = await load_visible_project(db, vis, project_id)
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
-    if node_kind(getattr(dest, "kind", None)) == "folder":
-        raise HTTPException(
-            status_code=422,
-            detail="A folder holds projects, not tasks. Move into a project "
-                   "inside it.",
-        )
+    assert_holds_tasks(dest, then="Move into")
     return dest
 
 

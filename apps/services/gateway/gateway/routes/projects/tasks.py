@@ -63,6 +63,7 @@ from gateway.routes.projects.core import (
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
     clean_payload,
@@ -78,7 +79,6 @@ from gateway.routes.projects.core import (
     load_visible_task,
     lock_task,
     next_task_number,
-    node_kind,
     now,
     parent_lane_status,
     parse_precondition,
@@ -762,14 +762,10 @@ async def create_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         target = await load_visible_project(db, vis, str(project_id))
-        # Migration 193 — a folder is a grouping node. Tasks live on
-        # projects; a task filed on a folder would sit outside every board.
-        if node_kind(getattr(target, "kind", None)) == "folder":
-            raise HTTPException(
-                status_code=422,
-                detail="A folder holds projects, not tasks. Create the "
-                       "task in a project inside it.",
-            )
+        # Migration 193 and the space rule — a folder groups and a space
+        # summarises. Tasks live on projects. A task filed on either would
+        # sit outside every board (`core.assert_holds_tasks`).
+        assert_holds_tasks(target, then="Create the task in")
         root = await root_project_id(db, str(project_id))
         values["root_project_id"] = root
         # The values pass the gate a PATCH puts them through
@@ -1119,14 +1115,10 @@ async def move_task_in(
 
     if payload.project_id and str(payload.project_id) != str(task.project_id):
         dest = await load_visible_project(db, vis, str(payload.project_id))
-        # Migration 193 — after the visibility load, same as the privacy
-        # guard below: a caller who cannot see the folder still gets 404.
-        if node_kind(getattr(dest, "kind", None)) == "folder":
-            raise HTTPException(
-                status_code=422,
-                detail="A folder holds projects, not tasks. Move the "
-                       "task into a project inside it.",
-            )
+        # Migration 193 and the space rule — after the visibility load, same
+        # as the privacy guard below: a caller who cannot see the folder or
+        # the space still gets 404.
+        assert_holds_tasks(dest, then="Move the task into")
         # Before anything is computed: a task may only move INTO a personal
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never
