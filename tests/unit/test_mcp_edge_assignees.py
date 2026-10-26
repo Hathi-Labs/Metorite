@@ -534,7 +534,8 @@ def world():
     a.member(ADA, ["feature:projects", "data:org:read"])
     a.one("UPDATE app_user SET status = 'suspended' WHERE email = :e RETURNING id", e=SAM)
     w._Seeder(eng, org2).member(EVE, ["feature:projects"])
-    team, other = a.project("Team"), a.project("Other team")
+    # In spaces: a space holds no tasks (`core.assert_holds_tasks`).
+    team, other = a.project("Team", in_space=True), a.project("Other team", in_space=True)
     for who in (ANN, BOB, CAROL):
         a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
               " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"

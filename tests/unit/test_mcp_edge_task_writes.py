@@ -865,7 +865,8 @@ def world():
     # The seeded tasks start far above, so the two never meet.
     a.number = 100_000
     a.member(MEMBER, ["feature:projects"])
-    team, other = a.project("Team"), a.project("Other team")
+    # In spaces: a space holds no tasks (`core.assert_holds_tasks`).
+    team, other = a.project("Team", in_space=True), a.project("Other team", in_space=True)
     s = SimpleNamespace(
         todo=a.status(team, "To do", "todo", 0),
         doing=a.status(team, "Doing", "in_progress", 1),
@@ -876,7 +877,7 @@ def world():
     types = SimpleNamespace(**{
         name: str(a.one("INSERT INTO pm_task_types (project_id, name, organization_id)"
                         " VALUES (CAST(:p AS uuid), :n, CAST(:o AS uuid)) RETURNING id",
-                        p=project, n="Bug", o=org))
+                        p=a.root(project), n="Bug", o=org))
         for name, project in (("team", team), ("other", other))})
     # Fix round 2 (F2): an ORG-WIDE type, `project_id IS NULL` (migration 175).
     # It is in the vocabulary of every project of the organization.
