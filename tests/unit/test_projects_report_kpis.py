@@ -386,3 +386,53 @@ def test_no_new_read_of_via() -> None:
     `activity_via_sql` only."""
     src = Path(ag.__file__).read_text(encoding="utf-8")
     assert not re.search(r"->>\s*'via'", src)
+
+
+# ── RA-4b: the idle gap of a reopened run is not agent time ──────────────────
+
+
+def test_a_reopened_run_takes_out_the_idle_gap() -> None:
+    """Start 09:00, complete 09:20, a member reopens it at 10:00, complete
+    10:15: 35 minutes of agent time, never 75."""
+    acts = [(1, "thought", _t(5)), (2, "response", _t(20)), (3, "prompt", _t(60)),
+            (4, "response", _t(75))]
+    gaps = ag.reopen_gaps(acts)
+    assert gaps == [(_t(20), _t(60))]
+    assert ag.run_hours(_t(0), _t(75), _t(75), gaps=gaps) == pytest.approx(35 / 60)
+    # With no gap the run still reads 75 minutes. The gap is what fixes it.
+    assert ag.run_hours(_t(0), _t(75), _t(75)) == pytest.approx(75 / 60)
+
+
+def test_a_gap_starts_at_the_first_row_of_the_reply_trail() -> None:
+    """The finish, a late summary and a system line are one trail."""
+    acts = [(1, "response", _t(10)), (2, "response", _t(15)), (3, "prompt", _t(100)),
+            (4, "response", _t(110))]
+    assert ag.reopen_gaps(acts) == [(_t(10), _t(100))]
+
+
+def test_a_prompt_after_work_or_after_a_prompt_starts_no_gap() -> None:
+    acts = [(1, "thought", _t(1)), (2, "prompt", _t(2)), (3, "elicitation", _t(3)),
+            (4, "prompt", _t(30)), (5, "prompt", _t(31))]
+    assert ag.reopen_gaps(acts) == []
+    # Unordered rows are read by seq.
+    assert ag.reopen_gaps([(2, "prompt", _t(9)), (1, "response", _t(1))]) == [(_t(1), _t(9))]
+
+
+def test_two_reopens_take_out_two_gaps_and_a_gap_is_cut_to_the_run() -> None:
+    acts = [(1, "response", _t(10)), (2, "prompt", _t(40)), (3, "response", _t(50)),
+            (4, "prompt", _t(90)), (5, "thought", _t(95))]
+    gaps = ag.reopen_gaps(acts)
+    assert gaps == [(_t(10), _t(40)), (_t(50), _t(90))]
+    # The run ends at 100: 100 - 30 - 40 = 30 minutes.
+    assert ag.run_hours(_t(0), _t(100), _t(100), gaps=gaps) == pytest.approx(30 / 60)
+    # A gap that starts after the end of the run takes out nothing.
+    assert ag.run_hours(_t(0), _t(30), _t(30), gaps=[(_t(40), _t(90))]) == pytest.approx(0.5)
+
+
+def test_the_sql_joins_the_gaps_into_the_one_agent_time_text() -> None:
+    joins = ag.run_time_joins_sql()
+    assert ag._REOPEN_GAPS_JOIN in joins
+    assert "rg.gap_s" in ag.RUN_AGENT_SECONDS_SQL
+    assert "type = 'prompt'" in ag._REOPEN_GAPS_JOIN
+    assert "type = 'response'" in ag._REOPEN_GAPS_JOIN
+    assert ag._REOPEN_GAPS_JOIN in ag.run_time_sql("SCOPE")

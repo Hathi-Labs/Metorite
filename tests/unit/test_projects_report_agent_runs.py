@@ -46,8 +46,11 @@ _SOURCE = Path(ar.__file__).read_text(encoding="utf-8")
 
 def test_the_outcomes_are_the_terminal_statuses_of_a_run() -> None:
     """A sixth terminal status must fail here before it goes uncounted."""
-    assert frozenset(ar.RUN_OUTCOMES) == runs_mod.TERMINAL_STATUSES
-    assert len(ar.RUN_OUTCOMES) == len(set(ar.RUN_OUTCOMES)) == 5
+    assert frozenset(ar.RUN_STATUS_OUTCOMES) == runs_mod.TERMINAL_STATUSES
+    assert len(ar.RUN_STATUS_OUTCOMES) == len(set(ar.RUN_STATUS_OUTCOMES)) == 5
+    # RA-4b. The sixth outcome is a status `completed` that the SERVER wrote.
+    assert (*ar.RUN_STATUS_OUTCOMES, ar.OUTCOME_SERVER_CLOSED) == ar.RUN_OUTCOMES
+    assert ar.OUTCOME_SERVER_CLOSED not in runs_mod.TERMINAL_STATUSES
 
 
 def test_each_outcome_counts_and_an_open_status_does_not() -> None:
@@ -55,7 +58,10 @@ def test_each_outcome_counts_and_an_open_status_does_not() -> None:
         ("completed", 3), ("failed", 1), ("in_progress", 9), ("awaiting", 2),
         ("released", None), (None, 4),
     ])
-    assert got == {"completed": 3, "failed": 1, "stopped": 0, "abandoned": 0, "released": 0}
+    assert got == {
+        "completed": 3, "failed": 1, "stopped": 0, "abandoned": 0, "released": 0,
+        "server_closed": 0,
+    }
 
 
 def test_no_row_is_zeros_and_never_absent() -> None:
@@ -392,3 +398,82 @@ def test_the_chat_lists_the_section_and_may_save_it() -> None:
 
     assert "agent_runs" in reads._REPORT_SECTIONS
     assert "agent_runs" in writes.REPORT_SECTIONS
+
+
+# ── RA-4b: a server close is not an agent success ────────────────────────────
+
+
+def test_a_server_close_is_left_out_of_both_sides_of_the_rate() -> None:
+    """A sweep close on a cancelled task must not raise the rate."""
+    base = _counts(completed=3, failed=1)
+    swept = _counts(completed=3, failed=1, server_closed=9)
+    assert ar.success_rate(base) == ar.success_rate(swept) == 0.75
+    assert ar.OUTCOME_SERVER_CLOSED in ar.UNRATED_OUTCOMES
+    assert ar.OUTCOME_SERVER_CLOSED not in ar.RATED_OUTCOMES
+    assert ar.success_rate(_counts(server_closed=4)) is None
+    assert ar._success(swept, base)["rated"] == 4
+
+
+def test_the_series_and_the_trend_read_the_outcome_not_the_status() -> None:
+    series = ar.outcome_series_sql("PAST")
+    assert "server_closed" in series and "e.outcome" in series
+    assert ar.SERVER_CLOSED_SQL in series
+    assert ar.SERVER_CLOSED_SQL in ar.outcomes_before_sql("PAST")
+    # No column holds the close: the marker is on the system activity.
+    assert "content->>'server_close'" in ar.SERVER_CLOSED_SQL
+    # The sizes are the runs that the agent completed.
+    assert f"NOT {ar.SERVER_CLOSED_SQL}" in ar.sizes_sql("PAST")
+
+
+def test_the_marker_of_a_close_is_the_one_that_agent_runs_writes() -> None:
+    src = Path(runs_mod.__file__).read_text(encoding="utf-8")
+    assert 'content["server_close"] = server_close' in src
+    assert "server_close=why" in src and 'server_close="archive"' in src
+
+
+@pytest.mark.parametrize(("acts", "status", "want"), [
+    # task_close: the agent worked, the server closed it.
+    ([(1, "thought", False), (2, "response", True)], "completed", True),
+    # A late summary of the agent after the close leaves it closed by Metorite.
+    ([(1, "response", True), (2, "response", False)], "completed", True),
+    # A member prompt reopened it, then the agent finished: the agent's end.
+    ([(1, "response", True), (2, "prompt", False), (3, "response", False)], "completed", False),
+    # Closed again after a reopen: closed by Metorite.
+    ([(1, "response", True), (2, "prompt", False), (3, "response", True)], "completed", True),
+    ([(1, "response", False)], "completed", False),
+    ([(1, "response", True)], "failed", False),
+])
+def test_server_closed_reads_the_newest_close_or_prompt(acts, status, want) -> None:
+    assert ar.server_closed(acts, status) is want
+
+
+def test_the_sixth_outcome_has_a_label_a_slot_and_a_legend_entry() -> None:
+    from gateway.routes.projects import analytics_agent_runs as mod
+
+    assert "server_closed" in mod.RUN_OUTCOMES
+    ts = Path(__file__).resolve().parents[2] / (
+        "workbench/control_plane/src/app/projects/lib/agentRunsReport.ts"
+    )
+    text = ts.read_text(encoding="utf-8")
+    assert 'key: "server_closed"' in text and "Closed by Metorite" in text
+    assert "server_closed: 9" in text
+
+
+def test_the_chat_prints_the_success_rate_as_a_percent() -> None:
+    """RA-4b. "success rate 0.6" read as 0.6 percent. The chat says 60%."""
+    pytest.importorskip("skill_projects", reason="skill-projects not installed")
+    from skill_projects.reads import _report_section
+
+    section = {
+        "outcomes": {"completed": 3, "server_closed": 2},
+        "success": {"rate": 0.6, "rate_before": 0.5},
+        "silent_total": 0, "long_total": 0,
+    }
+    text = "\n".join(_report_section("agent_runs", section))
+    assert "success rate 60%" in text
+    assert "success rate of the 14 days before 50%" in text
+    assert "0.6" not in text and "0.5" not in text
+    assert "runs closed by Metorite in 14 days 2" in text
+    # A null rate prints nothing, as before.
+    none = {"outcomes": {}, "success": {"rate": None, "rate_before": None}}
+    assert "success rate" not in "\n".join(_report_section("agent_runs", none))

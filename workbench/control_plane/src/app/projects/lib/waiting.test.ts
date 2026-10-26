@@ -233,6 +233,14 @@ describe("clear, and hidden in the Overview", () => {
     expect(waitingIsClear(undefined)).toBe(false);
   });
 
+  it("is never clear while agent runs are off (RA-4b)", () => {
+    expect(waitingIsClear(section({ on: false }))).toBe(false);
+    expect(waitingIsClear(section({ on: true }))).toBe(true);
+    // An older body has no `on`, and reads as before.
+    expect(waitingIsClear(section())).toBe(true);
+    expect(waitingHidden(section({ on: false, agent_runs_seen: false }))).toBe(false);
+  });
+
   it("hides only a clear section of a scope with no agent run", () => {
     expect(waitingHidden(section({ agent_runs_seen: false }))).toBe(true);
     expect(waitingHidden(section({ agent_runs_seen: true }))).toBe(false);

@@ -49,9 +49,9 @@ function section(over: Partial<AgentRunsReport> = {}): AgentRunsReport {
     agent_runs_seen: true,
     days: 14,
     window_start: "2026-10-12",
-    outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+    outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
     ended_total: 0,
-    outcomes_before: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+    outcomes_before: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
     series: [],
     success: { rate: null, completed: 0, rated: 0, rate_before: null, rated_before: 0, trend: null },
     silent: [],
@@ -69,31 +69,48 @@ function section(over: Partial<AgentRunsReport> = {}): AgentRunsReport {
 }
 
 describe("the outcomes", () => {
-  it("are the five outcomes of the server, in its order", () => {
+  it("are the six outcomes of the server, in its order", () => {
     expect(RUN_OUTCOME_SEGMENTS.map((s) => s.key)).toEqual([
       "completed",
       "failed",
       "stopped",
       "abandoned",
       "released",
+      "server_closed",
     ]);
     for (const seg of RUN_OUTCOME_SEGMENTS) expect(seg.title.startsWith(`${seg.label}:`)).toBe(true);
   });
 
   it("take an explicit slot of the ramp each, and no two share one", () => {
     const dots = RUN_OUTCOME_SEGMENTS.map((s) => outcomeAccent(s.key).dot);
-    expect(new Set(dots).size).toBe(5);
+    expect(new Set(dots).size).toBe(6);
+    // RA-4b. A server close has its own slot and its own legend words.
+    expect(outcomeAccent("server_closed")).toBe(accentForSlot(9));
+    expect(RUN_OUTCOME_SEGMENTS.find((s) => s.key === "server_closed")?.label).toBe(
+      "Closed by Metorite"
+    );
     expect(outcomeAccent("completed")).toBe(accentForSlot(2));
     expect(outcomeAccent("failed")).toBe(accentForSlot(4));
   });
 
   it("say themselves in one line", () => {
-    const s = section({ outcomes: { completed: 9, failed: 2, stopped: 1, abandoned: 0, released: 3 } });
-    expect(outcomeLine(s)).toBe("9 completed · 2 failed · 1 stopped · 0 abandoned · 3 released");
+    const s = section({
+      outcomes: {
+        completed: 9,
+        failed: 2,
+        stopped: 1,
+        abandoned: 0,
+        released: 3,
+        server_closed: 4,
+      },
+    });
+    expect(outcomeLine(s)).toBe(
+      "9 completed · 2 failed · 1 stopped · 0 abandoned · 3 released · 4 closed by metorite"
+    );
   });
 
   it("scale the chart to the busiest day, and never to zero", () => {
-    const day = { day: "2026-10-20", completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 };
+    const day = { day: "2026-10-20", completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 };
     expect(peakDay([])).toBe(1);
     expect(peakDay([{ ...day, total: 3 }, { ...day, total: 7 }])).toBe(7);
   });
@@ -116,7 +133,7 @@ describe("the success rate", () => {
   it("names the rule: a stop and a release are left out", () => {
     const rule = AGENT_RUN_RULES.success(14);
     expect(rule).toContain("completed, failed or were abandoned");
-    expect(rule).toContain("A stop and a release are left out");
+    expect(rule).toContain("A stop, a release and a run that Metorite closed are left out");
     const source = readFileSync(join(__dirname, "agentRunsReport.ts"), "utf-8").toLowerCase();
     for (const phrase of ["target of 100", "aim for 100", "goal of 100", "should be 100"]) {
       expect(source).not.toContain(phrase);
@@ -168,6 +185,10 @@ describe("the clear rule and the hide rule (the done-when of RA-4)", () => {
     expect(agentRunsIsClear(section({ ended_total: 1 }))).toBe(false);
     expect(agentRunsIsClear(section({ silent_total: 1 }))).toBe(false);
     expect(agentRunsIsClear(undefined)).toBe(false);
+    // RA-4b. With runs off the section counts nothing, so it is never clear.
+    expect(agentRunsIsClear(section({ on: false }))).toBe(false);
+    expect(sectionIsClear("agent_runs", section({ on: false }))).toBe(false);
+    expect(agentRunsHidden(section({ on: false, agent_runs_seen: false }))).toBe(false);
     expect(sectionIsClear("agent_runs", section())).toBe(true);
     expect(SECTION_CLEAR_LINES.agent_runs).toBe("No run ended in 14 days, and none is silent.");
   });
