@@ -852,6 +852,11 @@ CARD_STEPS: tuple[str, ...] = ("fired", "check_back", "gave_up")
 
 #: My rows that make a card, each with its last ladder step. The ledger has
 #: no member column, so the read joins it through my own rows only.
+#:
+#: ⚠️ The order decides which cards survive the LIMIT (review of RM-2, P1).
+#: `due` rows come first, then the newest step, so a reminder that just
+#: fired is never cut by old `unconfirmed` ones. A row with no ladder step
+#: takes its `fire_at`.
 _CARDS_SQL = (
     "SELECT r.id, r.title, r.kind, r.state, r.fire_at, r.next_check_at, "
     "r.cycles, r.important, s.step, s.step_at "
@@ -860,7 +865,8 @@ _CARDS_SQL = (
     "   WHERE e.reminder_id = r.id AND e.event = ANY(CAST(:steps AS text[])) "
     "   ORDER BY e.at DESC, e.id DESC LIMIT 1) s ON true "
     "WHERE r.member_email = :me AND r.state IN ('due', 'unconfirmed') "
-    "ORDER BY r.fire_at, r.id LIMIT :limit"
+    "ORDER BY (r.state = 'due') DESC, COALESCE(s.step_at, r.fire_at) DESC, r.id "
+    "LIMIT :limit"
 )
 
 #: The next instant at which the loop changes one of my rows: a fire, or the
@@ -878,8 +884,8 @@ async def my_open_cards(
 ) -> tuple[list[dict[str, Any]], datetime | None]:
     """My reminders that make a My Day card, and the next edge (RM-2).
 
-    The rows are the ``due`` and ``unconfirmed`` ones, oldest ``fire_at``
-    first, at most *limit*. The edge is the next ``fire_at`` or
+    The rows are the ``due`` and ``unconfirmed`` ones, ``due`` first and
+    then the newest step first, at most *limit*. The edge is the next ``fire_at`` or
     ``next_check_at`` after *now*, or None. The member comes from the
     session (:func:`_member`), and one tenant session reads both. The
     caller checks the flag: the feed provider raises ``SourceAbsent`` first.

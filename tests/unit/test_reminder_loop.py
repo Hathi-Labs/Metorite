@@ -724,3 +724,31 @@ def test_r8_the_feed_shows_the_card_of_each_state(world, monkeypatch) -> None:
     for card in cards.values():
         assert card["href"] == f"/chat?reminder={card['entity']['id']}"
         assert card["app"] == "calendar" and card["acts"][0]["way"] == "open"
+
+
+def test_r8_a_new_fire_is_never_cut_by_old_unconfirmed_cards(world, monkeypatch) -> None:
+    """Review of RM-2, P1: the read took the oldest 16 rows, so 16 old
+    ``unconfirmed`` reminders cut a reminder that had just fired."""
+    from tests.unit._projects_fakes import member_user
+
+    old = [_seed(world, ALICE, _utc(1, 9) + timedelta(minutes=n), title=f"Old {n}",
+                 state="unconfirmed", cycles=2) for n in range(feed.PER_APP + 1)]
+    new = _seed(world, ALICE, _utc(10, 15), title="Get a haircut")
+    _ticks(world, _utc(10, 15))
+    assert _events(world, new) == ["fired"]
+    monkeypatch.setattr(needs, "_now", lambda: _utc(10, 15, 5))
+
+    async def go() -> needs.Found:
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            token = bind_tenant(world.p.org_b)
+            try:
+                return await feed._reminders(member_user(ALICE))
+            finally:
+                release_tenant(token)
+
+    found = asyncio.run(go())
+    shown = [s.entity["id"] for s in found.signals()]
+    assert shown[0] == new and len(shown) == feed.PER_APP
+    assert found.capped is True
+    assert {s.kind for s in found.signals()} == {"reminder_due", "reminder_unconfirmed"}
+    assert set(shown[1:]) <= set(old)
