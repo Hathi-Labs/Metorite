@@ -678,9 +678,10 @@ class TestOneTableForEveryKind:
     def test_the_stable_facts_of_md3(self):
         assert {"delegated_at", "blocker_ids", "absence_day", "out",
                 "request_ids"} <= set(feed.STABLE_FACTS)
-        # STATE_FACTS grows only by `review_at` (§5.9 item 4, then KB-9b).
+        # STATE_FACTS grows only by `review_at` (§5.9 item 4, then KB-9b)
+        # and `failed_since` (KB-9b slice 2).
         assert state.STATE_FACTS == ("due_at", "note_ids", "waiting_since", "message_id",
-                                     "review_at")
+                                     "review_at", "failed_since")
 
     @pytest.mark.parametrize(("kind", "facts", "key", "line"), [
         ("promise_due", {"due_at": "2026-10-13T09:00:00+00:00"}, "promised",

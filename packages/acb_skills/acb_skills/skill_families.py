@@ -18,12 +18,24 @@ tasks-gtd / calendar / notes / web-research / diagrams families, but
   list was drafted) — they are the non-toggleable ``core`` family;
 * email / whatsapp / tasks-gtd / calendar tools are agents' OWN repo-baked
   tools (governed by ``own_tool_scope``), never injected by
-  ``_tool_injection.py`` — so they have no place in an *injected*-skills
-  registry until the WS-8 manifest work lands;
+  ``_tool_injection.py``. Since WS-67 OA-7a (D117) the email tools join as
+  TOOL PACKS (below), not as injected families;
 * ``diagrams`` was explicitly "(future)" in the spec and stays out.
 
 What remains outside the core floor: memory, history, crm, coding extras,
 workflows, and the dynamic Custom-App action tools.
+
+**Tool packs (WS-67 OA-7a, ``specs/one_assistant_context.md`` §4.2.1).** A
+family with an ``owner`` key is a PACK. Its tools are the OWNER agent's own
+tools (``own_tool_scope``), which injection never offers. The main assistant
+loads a pack for the turns that need it (OA-7c), and
+``acb_skills.tool_packs`` holds its rules block, references, words and the
+flag reader. Until OA-7c no run loads a pack, so every consumer that speaks
+about INJECTED tools reads :func:`injected_families` and skips a pack: the
+injected scope resolve, the skill index, the per-agent matrix and the
+``total_injected_tokens`` of the catalog. ``build_catalog`` still prices a
+pack, from its owner's tools and its rules block, and an admin toggle of a
+pack is stored and changes nothing yet.
 
 This module is pure data + dependency-injected helpers: it never imports the
 orchestrator or gateway (packages sit below apps in the import graph). The
@@ -48,6 +60,12 @@ from typing import Any, Callable, Mapping
 # not a platform tool a static scope names).
 # ``dynamic`` — tools exist only at run time (per-grant ``app_<slug>_<action>``
 # functions); the static ``tools`` tuple is empty and drift-checking skips it.
+# ``owner`` — WS-67 OA-7a: the agent whose OWN tools the family holds. A family
+# with an owner is a tool pack (see the module docstring). Its tools are in the
+# owner's ``config.json: own_tool_scope``, each in one pack only, and a pack
+# holds at most ``tool_packs.MAX_PACK_TOOLS``. The drift gate checks them
+# against the owner, never against injection (tests/unit/test_skills_registry.py
+# and tests/unit/test_tool_packs_registry.py).
 
 SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     "core": {
@@ -266,6 +284,114 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "dynamic": True,
         "tool_pattern": "app_<slug>_<action>",
     },
+    # ── Tool packs (WS-67 OA-7a, one_assistant_context.md §4.2.1) ──────────
+    # The email assistant's 59 own tools, split in two so that a mail turn
+    # does not carry the setup tools (OA-5 measured about 20,800 input tokens
+    # for 58 of them). ``scope_governed`` is True only so that no surface
+    # calls a pack "always injected": every scope helper skips a pack before
+    # it reads that key. No run loads a pack until OA-7c, and the description
+    # says so, because the admin reads it beside the toggle.
+    "email": {
+        "label": "Email",
+        "summary": (
+            "The member's mailboxes: find, read and summarise mail, reply, "
+            "send, forward, drafts, send later, follow-ups and inbox acts."
+        ),
+        "description": (
+            "A tool pack: the Email Assistant's own tools for daily mail "
+            "work, for the main assistant to load in an email turn. It holds "
+            "the tools to read, find, summarise, reply, send, forward, keep "
+            "drafts, send later, follow up and act on the inbox. No run loads "
+            "a pack yet, so this switch has no effect for now."
+        ),
+        "tools": (
+            "bulk_manage_inbox",
+            "cancel_scheduled_send",
+            "compose_reply",
+            "create_label",
+            "digest",
+            "draft_reply",
+            "edit_draft",
+            "find_contact",
+            "find_follow_ups",
+            "find_priority",
+            "forward_email",
+            "get_account_overview",
+            "list_accounts",
+            "list_artifacts",
+            "list_labels",
+            "list_scheduled_sends",
+            "manage_inbox",
+            "mark_thread_done",
+            # Built only while NARROWING_AGENTS names the owner
+            # (agents.py ``_narrow_tool``). It is in own_tool_scope.
+            "narrow_and_read",
+            "present_email_groups",
+            "query_inbox",
+            "query_insights",
+            "read_email",
+            "read_email_attachment",
+            "read_thread",
+            "reclassify_reply_zero",
+            "schedule_send",
+            "send_draft",
+            "send_email",
+            "snooze_email",
+            "sync_account",
+        ),
+        "owner": "email-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "email-setup": {
+        "label": "Email setup",
+        "summary": (
+            "Set up the email assistant: rules, settings, knowledge, writing "
+            "voice, senders and categories."
+        ),
+        "description": (
+            "A tool pack: the Email Assistant's own tools to set it up, for "
+            "the main assistant to load when a turn needs them. It holds the "
+            "rules, the mailbox and assistant settings, the knowledge, the "
+            "writing voice, the senders and the categories. No run loads a "
+            "pack yet, so this switch has no effect for now."
+        ),
+        "tools": (
+            "apply_settings_to_mailboxes",
+            "auto_categorize_inbox",
+            "categorize_senders",
+            "copy_rules",
+            "create_rule",
+            "create_rules_from_prompt",
+            "delete_knowledge",
+            "delete_rule",
+            "forget_pattern",
+            "generate_writing_style",
+            "get_rules_and_settings",
+            "install_default_rules",
+            "learn_rule_pattern",
+            "list_knowledge",
+            "list_patterns",
+            "list_rule_history",
+            "list_senders",
+            "resolve_execution",
+            "rule_guidance",
+            "run_rules",
+            "save_knowledge",
+            "set_sender_status",
+            "test_rule_match",
+            "unsubscribe_sender",
+            "update_account",
+            "update_assistant_settings",
+            "update_rule",
+            "voice_profile",
+        ),
+        "owner": "email-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 
@@ -295,7 +421,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
 # Deliberately EXCLUDED (specialised — per-agent tool_scope/toggle only):
 # ``history`` (only the orchestrator declares query_history) and ``coding``
 # extras (only apis-config declares install_dependency; nobody declares the
-# GitHub search pair).
+# GitHub search pair). A tool pack (WS-67 OA-7a) never joins the profile: its
+# tools are its owner's, and injection never offers them.
 
 DEFAULT_PROFILE: tuple[str, ...] = ("core", "memory", "crm", "workflows", "apps")
 
@@ -329,9 +456,44 @@ def family_of(tool_name: str) -> str | None:
 
 
 def all_registered_tool_names() -> frozenset[str]:
-    """Every statically-declared tool name across all families."""
+    """Every statically-declared tool name across all families, packs too.
+
+    The answer to "is this name in any family?". For the names that
+    injection can offer, read :func:`injected_tool_names`.
+    """
     return frozenset(
         name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
+    )
+
+
+def is_pack(slug: str) -> bool:
+    """True when family *slug* is a tool pack: it names an ``owner`` (OA-7a)."""
+    fam = SKILL_FAMILIES.get(slug)
+    return bool(fam and fam.get("owner"))
+
+
+def pack_slugs() -> tuple[str, ...]:
+    """The slug of each tool pack, in registry order."""
+    return tuple(slug for slug in SKILL_FAMILIES if is_pack(slug))
+
+
+def injected_families() -> dict[str, dict[str, Any]]:
+    """The families that injection offers: every family that is not a pack.
+
+    The ONE view for each consumer that speaks about injected tools: the
+    scope resolve in ``orchestrator._tool_injection``, the skill index, the
+    per-agent matrix and the catalog total. With no pack in the registry it
+    equals ``SKILL_FAMILIES``, so each of them stays byte-identical.
+    """
+    return {
+        slug: fam for slug, fam in SKILL_FAMILIES.items() if not is_pack(slug)
+    }
+
+
+def injected_tool_names() -> frozenset[str]:
+    """Every static tool name that injection can offer (no pack tool)."""
+    return frozenset(
+        name for fam in injected_families().values() for name in fam["tools"]
     )
 
 
@@ -489,6 +651,12 @@ def build_catalog(
 
     Dependencies are parameters so this package never imports the orchestrator
     (the gateway route composes the real ones; tests inject fakes).
+
+    A tool pack (WS-67 OA-7a) is priced as a turn that loads it pays: its
+    rules block (``acb_skills.tool_packs``) plus the schemas of its owner's
+    tools. The caller puts the owner's tools in *tools_by_name*; injection
+    never offers them, so a name that is absent prices nothing. A pack is not
+    in ``total_injected_tokens``, because no run is injected with it.
     """
     rhash = registry_content_hash()
     core_floor = frozenset(core_tool_names)
@@ -505,6 +673,14 @@ def build_catalog(
         if key not in _COST_CACHE:
             if fam.get("dynamic"):
                 cost = 0
+            elif is_pack(slug):
+                # No addendum section names a pack tool, so the addendum
+                # delta is not what a pack costs. Its rules block is.
+                from acb_skills.tool_packs import rules_for
+
+                cost = count_tokens(rules_for(slug)) + _schema_tokens(
+                    fam["tools"], tools_by_name, count_tokens,
+                )
             elif fam.get("core"):
                 cost = baseline + _schema_tokens(
                     fam["tools"], tools_by_name, count_tokens,
@@ -528,16 +704,19 @@ def build_catalog(
             "dynamic": bool(fam.get("dynamic")),
             **({"tool_pattern": fam["tool_pattern"]}
                if "tool_pattern" in fam else {}),
+            # WS-67 OA-7a: the agent whose own tools a pack holds.
+            **({"owner": fam["owner"]} if is_pack(slug) else {}),
             "token_cost": _COST_CACHE[key],
         })
 
     total_key = ("__total__", rhash)
     if total_key not in _COST_CACHE:
-        # The WS-12 baseline: the full unscoped addendum + every static schema.
+        # The WS-12 baseline: the full unscoped addendum + every static
+        # schema that injection offers (no pack tool, WS-67 OA-7a).
         _COST_CACHE[total_key] = count_tokens(
             addendum_for_scope(None)
         ) + _schema_tokens(
-            all_registered_tool_names(), tools_by_name, count_tokens,
+            injected_tool_names(), tools_by_name, count_tokens,
         )
     return {
         "registry_hash": rhash,
@@ -558,10 +737,14 @@ def families_for_scope(
     and — injection being fail-open today (spec rule 3) — receives every
     family. Families that are not scope-governed (core floor, workflows,
     apps) are always present.
+
+    A tool pack is never in the list (WS-67 OA-7a): no agent is injected
+    with one. Its owner holds the tools as own tools, which this matrix of
+    injected families does not show.
     """
     del tool_scope  # reserved for S2 (declared-vs-effective display)
     out: list[str] = []
-    for slug, fam in SKILL_FAMILIES.items():
+    for slug, fam in injected_families().items():
         if not fam.get("scope_governed"):
             out.append(slug)
         elif resolved_scope is None:

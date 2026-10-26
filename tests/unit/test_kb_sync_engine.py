@@ -788,10 +788,21 @@ class TestTheEnginePage:
         world.explored = ["root-1"]
         world.swept = {"root-1": ["old-dir"]}
         assert _run(runs.KIND_RECONCILE, FakeAdapter(world, {})).status == runs.STATUS_OK
-        [c] = world.cascades
+        c, last = world.cascades
         assert c["ids"] == ["old-dir"] and c["kept"] == [] and c["before"] is not None
         sweep = next(t for t in _txns(world.events) if "gone_folder" in t)
         assert sweep[:4] == ["guard", "gone_folder", "cascade", "progress"]
+        # K-25: the last cascade has no start time, and it is a node-only write
+        # that takes the source guard first.
+        assert last["ids"] == ["old-dir"] and last["kept"] == [] and last["before"] is None
+        txns = _txns(world.events)
+        assert txns[txns.index(sweep) + 1] == ["guard", "cascade", "progress", "commit"], txns
+
+    def test_a_capped_relist_with_no_gone_folder_runs_no_last_cascade(self, world) -> None:
+        world.capped = True
+        world.explored = ["root-1"]
+        assert _run(runs.KIND_RECONCILE, FakeAdapter(world, {})).status == runs.STATUS_OK
+        assert world.cascades == []
 
     def test_an_uncapped_relist_past_the_cap_becomes_capped(self, world, monkeypatch) -> None:
         monkeypatch.setattr(discovery, "NODE_CAP", 1)

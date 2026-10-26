@@ -150,6 +150,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
     "NARROWING_AGENTS",
+    # WS-67 OA-7a: the tool packs of the one assistant, and the orgs that may
+    # use them. A pack moves the egress guards and spends model tokens, so
+    # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
+    # covers both too.
+    "TOOL_PACKS", "TOOL_PACKS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -165,6 +170,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # text that every member's assistant reads, so only the operator writes
     # it (company_context.md §11).
     "CONTEXT_RECENCY",
+    # WS-67 OA-3: OCR of a scanned file. It starts a child process for each
+    # scan that any member reads, so only the operator writes it
+    # (one_assistant_context.md §4).
+    "ATTACHMENT_OCR",
     # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
     # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
     "MY_DAY_CACHE",

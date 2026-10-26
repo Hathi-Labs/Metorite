@@ -89,6 +89,13 @@ import {
   successFigure,
   successTrend,
 } from "../lib/agentRunsReport";
+import {
+  failingLines,
+  mergeFigure,
+  mergeTrend,
+  qualityRowCount,
+  retriedLine,
+} from "../lib/qualityReport";
 import { WHO_DID_THE_WORK, overviewTiles, whoDidTheWorkShown } from "../lib/kpiStrip";
 import { PANEL_HINTS } from "../lib/panelHints";
 import {
@@ -115,6 +122,7 @@ import {
   loadPanelData,
   outlookPanelData,
   pulsePanelData,
+  qualityPanelData,
   rebalancePanelData,
   reportTiles,
   stuckPanelData,
@@ -219,6 +227,7 @@ import {
   OutlookPanel,
   PanelChromeContext,
   PulsePanel,
+  QualityPanel,
   RebalancePanel,
   Stat,
   StuckPanel,
@@ -925,6 +934,46 @@ export function RenderedBody({
           >
             <LayoutBoundary layout="agent runs">
               <AgentRunsPanel data={agentRunsPanelData(sections.agent_runs)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {/* WS-27bn RA-5. Is the speed real (§6.8 B)? The pull requests and the
+          rework read their own 14 days back from now. The table names every
+          failing pull request the server sent. */}
+      {sections.quality &&
+        cell(
+          "quality",
+          sectionIsClear("quality", sections.quality) ? (
+          <ClearRow sectionKey="quality" title="Quality" />
+        ) : (
+          <SectionFrame
+            sectionKey="quality"
+            fill={grid}
+            table={
+              <Table title="Quality" count={qualityRowCount(sections.quality)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.quality.summary}</p>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  Merge rate {mergeFigure(sections.quality)}
+                  {mergeTrend(sections.quality) ? `, ${mergeTrend(sections.quality)}` : ""} ·{" "}
+                  {retriedLine(sections.quality)}
+                </p>
+                <ul className="space-y-1.5">
+                  {failingLines(sections.quality, (e) => personDisplayName(null, e)).map((r) => (
+                    <li
+                      key={r.key}
+                      className="truncate pr-px text-xs text-muted-foreground"
+                      title={r.label}
+                    >
+                      <span className="text-foreground">{r.label}</span> · {r.detail}
+                    </li>
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="quality">
+              <QualityPanel data={qualityPanelData(sections.quality)} />
             </LayoutBoundary>
           </SectionFrame>
         ))}

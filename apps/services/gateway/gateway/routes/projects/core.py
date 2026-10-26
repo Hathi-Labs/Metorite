@@ -478,6 +478,52 @@ def assert_run_state_allowed(level: str) -> None:
     )
 
 
+def is_team_space(node: Any) -> bool:
+    """True when ``node`` is a team SPACE: a team root of kind project.
+
+    A personal root is a root too, and it is NOT a space here. It is the
+    member's own tree, and it holds the Inbox by design
+    (``personal.create_personal_task``). A folder is never a root.
+    """
+    if getattr(node, "parent_project_id", None) is not None:
+        return False
+    if getattr(node, "personal_owner", None):
+        return False
+    return node_kind(getattr(node, "kind", None)) == "project"
+
+
+def assert_holds_tasks(node: Any, *, then: str) -> None:
+    """Refuse a task placed on a node that holds no tasks (one rule, D-PM).
+
+    ``project_management_app.md`` §"What each level does": a space and a
+    folder hold no tasks. A space shows a dashboard of its subtree and no
+    board, so a task filed on one sits where no project view draws it.
+    Measured 2026-10-26: the chat filed six tasks on a space, and the member
+    found none of them.
+
+    ``then`` finishes the advice, for example ``"Create the task in"``. It
+    must read before ``" a project inside it."``.
+
+    Call it AFTER the visibility load, so a caller who cannot see the node
+    gets 404 and never learns from a 422 that it exists (R5). It judges a
+    NEW placement only. A task that already sits on a space still reads,
+    edits and moves out, because none of those place it.
+    """
+    if node_kind(getattr(node, "kind", None)) == "folder":
+        raise HTTPException(
+            status_code=422,
+            detail=f"A folder holds projects, not tasks. {then} a project "
+                   f"inside it.",
+        )
+    if is_team_space(node):
+        name = str(getattr(node, "name", "") or "").strip() or "This node"
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} is a space. A space holds projects, not tasks. "
+                   f"{then} a project inside it.",
+        )
+
+
 def assert_node_grammar(
     *,
     kind: str,
@@ -1550,9 +1596,20 @@ async def require_organization_of(db: Any, email: str) -> str:
 
 
 async def load_visible_project(
-    db: Any, vis: Visibility, project_id: str,
+    db: Any, vis: Visibility, project_id: str, *, lock_share: bool = False,
 ) -> Any:
     """One project the caller may see, or 404.
+
+    ``lock_share`` reads the row ``FOR SHARE``, the lock idiom of
+    ``tree._lock_ancestor_chain``. A write that places a task on this
+    project passes it (review of 2026-10-26). ``move_node`` takes the moved
+    row ``FOR UPDATE`` and then counts its tasks before it makes the project
+    a space. Without the share lock, a task insert could pass the
+    ``assert_holds_tasks`` guard on the old shape and land on the new space.
+    With it, the move waits for the insert to commit and then sees the task.
+    The lock lasts to the end of the caller's transaction, so call it inside
+    the transaction that inserts. Postgres re-reads the row after a wait,
+    so the guard sees the row the move left.
 
     404 and not 403 (R5): "no such project" and "not yours" must be the same
     answer, or the error code becomes an oracle for what exists in another
@@ -1562,6 +1619,7 @@ async def load_visible_project(
         text(
             f"SELECT * FROM pm_projects "
             f"WHERE id = CAST(:project_id AS uuid) AND {vis.project_clause()}"
+            + (" FOR SHARE" if lock_share else "")
         ),
         {"project_id": project_id, **vis.params},
     )).fetchone()

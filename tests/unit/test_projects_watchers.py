@@ -60,7 +60,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeProjectsDB:
 
 
 def _task(db: FakeProjectsDB, *, subject: str | None = "org"):
-    project = db.seed_project(name="Ops", subject=subject)
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`).
+    project = db.seed_in_space(name="Ops", subject=subject)
     todo = db.seed_status(project.id, name="To do", category="todo")
     task = db.seed_task(project.id, todo.id)
     return project, todo, task

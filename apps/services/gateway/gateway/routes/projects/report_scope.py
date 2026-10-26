@@ -49,7 +49,11 @@ SUBJECT_KINDS: tuple[str, ...] = ("person", "team")
 #: WS-27bn RA-3 adds `waiting`: it reads the coordination of a whole scope,
 #: and a subject narrows a scope to the tasks that a person holds. RA-4 adds
 #: `agent_runs` for the same reason: it reads the runs of a whole scope.
-NO_SUBJECT_SECTIONS: tuple[str, ...] = ("outlook", "waiting", "agent_runs", "hygiene")
+#: RA-5 adds `quality`: it reads the pull requests and the rework of a whole
+#: scope, and it never ranks a person.
+NO_SUBJECT_SECTIONS: tuple[str, ...] = (
+    "outlook", "waiting", "agent_runs", "quality", "hygiene",
+)
 NO_SUBJECT_REASON = "not available for a person or team scope"
 
 #: The conflict kinds that are about a PAIR of tasks, not about one person.

@@ -328,6 +328,16 @@ describe("the bar joins only the member's own private chat (review of 2026-10-12
     expect(dock).toMatch(/ask\.join && cur && !cur\.archivedAt && cur\.isOwner !== false && \(cur\.participantCount \?\? 0\) <= 1/);
   });
 
+  it("an ask is decided only for the chat the store shows now (owner report, 2026-10-26)", () => {
+    // "Yes, start" opens a fresh chat with words. The fresh effect changes
+    // the chat in the same pass, so a decision for the render's chat was
+    // for the old one, and the words never went. The browser twin is
+    // `e2e/interview-offer-start.spec.ts`.
+    const dock = read("lib/shell/AssistantDock.tsx");
+    const ask = dock.slice(dock.indexOf("const ask = st.ask;"), dock.indexOf("setDecided({ seq: ask.seq"));
+    expect(ask).toContain("if (assistantState().sessionId !== st.sessionId) return;");
+  });
+
   it("the app switch needs the assistant open", () => {
     expect(read("lib/shell/AssistantDock.tsx")).toContain("if (!live.open || !threadId || threadId !== live.activeId) return;");
   });
