@@ -205,8 +205,8 @@ ORG_B = "0b0b0b0b-0000-4000-8000-00000000000b"
 
 
 def test_packs_on_fails_closed_with_the_flag_empty(_flag) -> None:
-    """Mutation: ``if not slugs and not orgs`` in place of ``or``, which turns
-    a pack on when one of the two settings is empty."""
+    """Mutation: an empty setting read as ``*``, which turns each pack on, or
+    on for each org, when the owner set only the other setting."""
     _flag("", "")
     assert tp.packs_on(ORG_A) == frozenset()
     _flag("", "*")
