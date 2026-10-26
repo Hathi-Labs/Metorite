@@ -330,3 +330,13 @@ def test_the_refresh_deploys_with_acb_s_path() -> None:
 def test_a_docker_proxy_port_is_not_staging_s() -> None:
     body = _code(_BOOT)
     assert '[ "$comm" = "docker-proxy" ] && [ "$p" != "5435" ]' in body
+
+
+def test_the_staging_apply_installs_the_flag_tool_as_root() -> None:
+    """H-416. The sudoers line runs /usr/local/sbin/acb-staging-flag as root,
+    so the apply must refresh that copy, or an allowlist change never arrives."""
+    apply_text = (_ROOT / "scripts/vps_apply.sh").read_text(encoding="utf-8")
+    assert (
+        'sudo install -m 0755 -o root -g root "$APP_DIR/deploy/hostinger/staging/acb-staging-flag" '
+        "/usr/local/sbin/acb-staging-flag"
+    ) in apply_text

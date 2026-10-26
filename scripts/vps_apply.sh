@@ -2400,6 +2400,10 @@ if [ "$DEPLOY_ENV" = "staging" ]; then
   # The nightly rebuild runs as root, so it runs a ROOT-OWNED copy (BH-6).
   sudo install -d -m 0755 -o root -g root /usr/local/lib/acb-staging
   sudo install -m 0755 -o root -g root "$APP_DIR/scripts/staging_refresh.sh" /usr/local/lib/acb-staging/staging_refresh.sh
+  # H-416: the flag tool runs as root through sudoers, so it runs a ROOT-OWNED
+  # copy too. Each change to its allowlist reaches the box with the apply, and
+  # no owner root step is needed. Fence: tests/unit/test_staging_box.py.
+  sudo install -m 0755 -o root -g root "$APP_DIR/deploy/hostinger/staging/acb-staging-flag" /usr/local/sbin/acb-staging-flag
   sudo systemctl enable --now acb-staging-db.service acb-staging-refresh.timer >/dev/null 2>&1 \
     || echo "    !! staging: could not enable acb-staging-db or acb-staging-refresh.timer"
   sudo systemctl enable --now acb-console-tunnel.service >/dev/null 2>&1 \
