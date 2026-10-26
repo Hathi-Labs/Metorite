@@ -224,8 +224,10 @@ async def send_brief(org: str, member: str, snap: Snapshot, *, key: str,
 
     *template* is the brief template the channel uses when the window is
     closed. ``POST /reach/brief`` passes the setting. The loop passes it only
-    when it chose the template itself."""
-    body = plan.compose_brief(snap.cards, app_url(), snap.local_date, now=snap.now)
+    when it chose the template itself. Only the cards that may go on
+    WhatsApp are in it (``plan.on_whatsapp``, D114.7)."""
+    cards = plan.on_whatsapp(snap.cards)
+    body = plan.compose_brief(cards, app_url(), snap.local_date, now=snap.now)
     if body is None:
         if record_empty:
             # The day's brief had nothing to say. A row says so, or the first
@@ -239,9 +241,9 @@ async def send_brief(org: str, member: str, snap: Snapshot, *, key: str,
     sends = None
     if template:
         name = await first_name(org, member)
-        sends = Template(template, plan.brief_params(name, snap.cards, snap.local_date,
+        sends = Template(template, plan.brief_params(name, cards, snap.local_date,
                                                      snap.now))
-    return await _send(org, member, kind="brief", cards=plan.brief_items(snap.cards),
+    return await _send(org, member, kind="brief", cards=plan.brief_items(cards),
                        key=key, body=body, local_date=snap.local_date,
                        template=sends, reach=reach)
 
@@ -272,10 +274,11 @@ async def _brief_step(org: str, member: str, snap: Snapshot,
         return "brief:held", "none"
     full_key = plan.full_brief_key(member, due)
     if is_open and await outbox.full_brief_due(org, member, due, full_key):
-        body = plan.compose_brief(snap.cards, app_url(), due, now=snap.now)
+        cards = plan.on_whatsapp(snap.cards)
+        body = plan.compose_brief(cards, app_url(), due, now=snap.now)
         if body is None:
             return None, "none"
-        got = await _send(org, member, kind="brief", cards=plan.brief_items(snap.cards),
+        got = await _send(org, member, kind="brief", cards=plan.brief_items(cards),
                           key=full_key, body=body, local_date=due, reach=reach)
         return f"brief_full:{got}", "free_text" if got == "sent" else "none"
     return None, "none"
@@ -307,7 +310,9 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
 
     did: list[str] = []
     logged = await outbox.logged_pairs(org, member)
-    candidates = plan.interrupt_candidates(snap.cards, logged, snap.now)
+    # WhatsApp only: a reminder never interrupts there, whatever its class
+    # (D114.7, RM-9 lifts it).
+    candidates = plan.interrupt_candidates(plan.on_whatsapp(snap.cards), logged, snap.now)
 
     brief, how = await _brief_step(org, member, snap, reach)
     if brief is not None:

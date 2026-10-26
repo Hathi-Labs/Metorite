@@ -228,15 +228,17 @@ def test_the_loop_writes_only_events_and_states_of_the_migration() -> None:
     assert {"due", "scheduled", "unconfirmed"} <= states
 
 
-def test_the_three_card_kinds_reach_nobody_until_re_9() -> None:
+def test_the_reminders_source_is_registered() -> None:
+    """The source and its three kinds. That no reminder reaches WhatsApp is a
+    behaviour, and ``test_reach_loop.py::TestRemindersStayOffWhatsApp`` holds
+    it: a class in ``REACH_CLASS`` keeps a card out of an interrupt only."""
     provider = needs.REGISTRY["reminders"]
-    assert provider.kinds == feed.REMINDER_KINDS == frozenset(
+    assert provider.kinds == feed.REMINDER_KINDS == classes.NOT_ON_WHATSAPP == frozenset(
         {"reminder_due", "reminder_check", "reminder_unconfirmed"})
     assert provider.features == ("projects",) and provider.needs is False
     assert provider.gated is True and provider.app == "calendar"
     for kind in feed.REMINDER_KINDS:
-        assert classes.REACH_CLASS[kind] == "none"
-        assert kind in feed_rank.BASE
+        assert kind in feed_rank.BASE and kind in classes.REACH_CLASS
 
 
 # ── The ladder (§5.4) ──────────────────────────────────────────────────────

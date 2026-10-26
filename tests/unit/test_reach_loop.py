@@ -1144,3 +1144,120 @@ class TestTheReviewFixes:
         world.asks = [ask("r2")]
         await loop.member_pass(ORG, ME)
         assert world.sent.calls[1]["record"] == world.sent.calls[1]["body"]
+
+
+# ── WS-66 RM-2: the member's reminders stay off WhatsApp (D114.7) ───────────
+
+#: A reminder title that must never reach WhatsApp. The review's own probe.
+SECRET = "Pick up the biopsy result"
+
+
+def reminder(rid: str, kind: str = "reminder_due") -> dict:
+    """A reminder card as the feed builds it, from its real builder."""
+    from gateway.routes.shell import feed
+
+    state_, step = {"reminder_due": ("due", "fired"),
+                    "reminder_check": ("due", "check_back"),
+                    "reminder_unconfirmed": ("unconfirmed", "gave_up")}[kind]
+    signal = feed._reminder_signal({
+        "id": rid, "title": SECRET, "kind": "action", "state": state_, "step": step,
+        "step_at": NOW - timedelta(hours=1), "fire_at": NOW - timedelta(hours=1),
+        "cycles": 0})
+    [built] = feed.build_cards([signal], NOW, ZoneInfo("UTC"), NOW.date())
+    return {**built, "state": "new"}
+
+
+def every_reminder() -> list[dict]:
+    return [reminder("r-1"), reminder("r-2", "reminder_check"),
+            reminder("r-3", "reminder_unconfirmed")]
+
+
+def _words(world) -> str:
+    """Every text that went to the channel: the bodies, the records and the
+    template parameters."""
+    out = []
+    for call in world.sent.calls:
+        out += [str(call["body"]), str(call["record"]), *map(str, call["params"] or ())]
+    return "\n".join(out)
+
+
+class TestRemindersStayOffWhatsApp:
+    """The class ``none`` keeps a card out of an interrupt only. The brief
+    took every open card of Now and Needs you, so the review put a reminder
+    title into a WhatsApp brief. ``plan.on_whatsapp`` keeps each reminder out
+    of each WhatsApp message, its template and its preview. The chat brief
+    still shows it."""
+
+    async def test_a_free_text_brief_names_no_reminder(self, world, monkeypatch):
+        planned: list[list[str]] = []
+        fake_plan = world.outbox.plan
+
+        async def plan_row(org, member, *, kind, signal_ids, key, body, local_date):
+            planned.append(list(signal_ids))
+            return await fake_plan(org, member, kind=kind, signal_ids=signal_ids, key=key,
+                                   body=body, local_date=local_date)
+
+        monkeypatch.setattr(outbox, "plan", plan_row)
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.cards = [*every_reminder(), card("tasks:1", "overdue", title="Pay the rent")]
+        assert await loop.member_pass(ORG, ME) == "brief:sent"
+        assert "Pay the rent" in _words(world)  # non-vacuity: the brief went
+        assert SECRET not in _words(world)
+        # The outbox row names the cards of the brief: the task, no reminder.
+        assert planned[-1] == ["tasks:1"]
+
+    async def test_a_template_brief_names_no_reminder(self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_brief_template", "daily_brief")
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(9, 30)
+        # The reminder is in Now, so it would lead the brief and the template.
+        world.cards = [*every_reminder(), card("tasks:1", "overdue", title="Pay the rent")]
+        assert await loop.member_pass(ORG, ME) == "brief:sent"
+        [call] = world.sent.calls
+        assert call["template"] == "daily_brief"
+        assert call["params"][2] == "1" and "Pay the rent" in call["params"][3]
+        assert SECRET not in _words(world)
+
+    async def test_reminders_alone_give_no_brief(self, world):
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.cards = every_reminder()
+        assert await loop.member_pass(ORG, ME) == "brief:empty"
+        assert world.sent.calls == []
+
+    async def test_a_reminder_never_interrupts_whatever_its_class(self, world, monkeypatch):
+        # RE-9 raises the class of a reminder for web push. WhatsApp still
+        # gets nothing until RM-9.
+        from gateway.reach import classes
+
+        await loop.member_pass(ORG, ME)
+        for kind in ("reminder_due", "reminder_check", "reminder_unconfirmed"):
+            monkeypatch.setitem(classes.REACH_CLASS, kind, "urgent")
+        world.cards = every_reminder()
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert world.sent.calls == []
+
+    def test_the_preview_names_no_reminder(self, world, monkeypatch):
+        from gateway.reach import classes
+
+        for kind in ("reminder_due", "reminder_check", "reminder_unconfirmed"):
+            monkeypatch.setitem(classes.REACH_CLASS, kind, "urgent")
+        world.cards = [*every_reminder(), card("tasks:1", "overdue", title="Pay the rent")]
+        body = TestTheRoutes()._client(ME, ORG).get("/reach/preview").json()
+        assert "Pay the rent" in body["brief"] and body["interrupts"] is None
+        assert SECRET not in str(body)
+
+    def test_the_chat_brief_still_shows_a_reminder(self):
+        # The chat is a channel that D114.7 allows (`routes/chat_brief.py`).
+        parts = plan.brief_parts(every_reminder(), TODAY, now=NOW)
+        assert parts is not None and any(SECRET in line for line in parts.lines)
+        assert plan.compose_brief(every_reminder(), "https://app.test", TODAY, now=NOW) is None
+        assert plan.on_whatsapp(every_reminder()) == []
+
+    def test_the_kinds_kept_off_whatsapp_are_the_reminder_kinds(self):
+        from gateway.reach import classes
+        from gateway.routes.shell import feed
+
+        assert classes.NOT_ON_WHATSAPP == feed.REMINDER_KINDS
