@@ -60,6 +60,12 @@ Two checks against a live Google account are open. The first is the HTTP code
 of a dead page token. The second is the order of the change feed on a real
 drive.
 
+**KC-3h BUILT 2026-10-25, dark** (branch `kc-3h-locks`, no migration,
+Metorite task #456). The rows of a Knowledge source take one lock order, as
+§7.2 says. It closes the hardening rows K-21 and K-22, and a third deadlock
+of the same shape between a disconnect and a re-consent. `KNOWLEDGE_SYNC`
+stays empty.
+
 **KC-8a BUILT 2026-10-25** (branch `kc-8a-entities`, migration 301, dark
 under `KNOWLEDGE_ENABLED`). It adds `kb_entities`, `ensure_entity`, the alias
 and person resolvers, and the directory routes under the rule of §6.4.
@@ -506,6 +512,15 @@ lifecycle URL. Each push only moves the next read of the cursor forward. The
 **The expired cursor.** Google gives a new start token, and Graph answers
 `410`. The engine then runs one slim listing, compares hashes, and reads only
 what changed. A full text re-read never happens because of a lost cursor.
+
+**The lock order (KC-3h).** A transaction that touches more than one row of
+a source takes the rows in one order. The order is the advisory lock of the
+consent callback, the connection row, the `kb_sources` row, and then the
+nodes, the cursors and the runs. A transaction takes each lock at the
+strongest strength it needs, the first time that it touches the row. The
+module doc of `kb_sync/engine.py` holds the rule. The fences are the
+`test_the_lock_order_*` tests of `test_kc_sync_r8.py` and
+`test_kb_sync_engine.py::TestTheLockOrder`.
 
 ### 7.3 Extraction and chunks
 

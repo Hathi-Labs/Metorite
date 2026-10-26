@@ -60,6 +60,7 @@ from gateway.routes.projects.analytics import (
     stale_bands_sql,
     weekly_sql,
 )
+from gateway.routes.projects.analytics_agent_runs import agent_runs_body
 from gateway.routes.projects.analytics_agents import (
     finished_actor_body,
     finished_summary,
@@ -131,10 +132,11 @@ from sqlalchemy import text
 #: R3d adds `pulse` after `capacity`: both read the same person rows, and
 #: pulse says who needs help today. RA-3 adds `waiting` after `stuck`
 #: (`projects_reports.md` §6.8 A, question 3): stuck says what stalls, and
-#: waiting says on whom it waits.
+#: waiting says on whom it waits. RA-4 adds `agent_runs` after `waiting`:
+#: both read the agent runs of the scope, and agent_runs says how they end.
 SECTIONS: tuple[str, ...] = (
     "finished", "throughput", "outlook", "load", "capacity", "pulse",
-    "stuck", "waiting", "hygiene", "conflicts", "rebalance",
+    "stuck", "waiting", "agent_runs", "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -862,7 +864,7 @@ async def delete_report(
         )
 
 
-async def render_body(
+async def render_body(  # noqa: C901 - one branch for each section, which the lockstep test reads
     db: Any,
     vis: Any,
     user: UserContext,
@@ -1214,6 +1216,19 @@ async def render_body(
                 include_subtree=bool(config["include_subtree"]),
                 weeks=int(config["weeks"]),
                 skip_current_week=skip,
+            )
+        elif name == "agent_runs":
+            # WS-27bn RA-4. `agent_runs_body`, imported, as `waiting` does.
+            #
+            # ⚠️ **No period here, on purpose.** The outcomes and the sizes
+            # read their own window of 14 days, as the merge rate of RA-2
+            # does, and the silent runs read the state now. A report of one
+            # week would else show a success rate of one week, and the KPI
+            # strip beside it would read 14 days.
+            sections[name] = await agent_runs_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
             )
         elif name == "stuck":
             # What is overdue, by project, and (WS-27bn R3a) how long open

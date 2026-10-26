@@ -57,6 +57,11 @@ REACH_CLASS: dict[str, str] = {
     # WS-61 KB-9a (knowledge_base.md §9): a question that Knowledge could not
     # answer. A thing to know for a manager, so it goes in the brief.
     "kb_gap": "brief",
+    # WS-61 KB-9b (knowledge_base.md §9): a page past its review date, and a
+    # page that another author published. Each is a thing to know, so each
+    # goes in the brief and interrupts nobody.
+    "doc_needs_review": "brief",
+    "doc_shared_with_me": "brief",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).

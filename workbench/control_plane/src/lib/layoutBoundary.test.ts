@@ -272,9 +272,11 @@ describe("every report panel renders inside its own boundary (WS-27bm S12, WS-27
   });
 
   // WS-27bn RA-2 adds `WhoDidTheWorkPanel`, which replaces `FinishedPanel`
-  // in the Overview of one project. It gets its own boundary too.
-  it("renders the twelve panels", () => {
+  // in the Overview of one project. It gets its own boundary too. RA-4 adds
+  // `AgentRunsPanel`.
+  it("renders the thirteen panels", () => {
     expect(panels.map((m) => m[1]).sort()).toEqual([
+      "AgentRunsPanel",
       "CapacityPanel",
       "ConflictsPanel",
       "FinishedPanel",

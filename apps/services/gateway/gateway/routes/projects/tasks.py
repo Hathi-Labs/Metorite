@@ -21,13 +21,16 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
+from datetime import date
 from typing import Annotated, Any, Literal, NoReturn
 
 from acb_auth import UserContext, get_current_user
-from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE
+from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, client_label
 from acb_common import get_logger
+from acb_common.priority import importance_for
 from fastapi import Depends, Header, HTTPException, Query
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
@@ -119,6 +122,7 @@ from gateway.routes.projects.landing import (
 )
 from gateway.routes.projects.notifications import (
     excerpt_of,
+    grant_holders,
     new_mentions,
     notify,
 )
@@ -150,18 +154,197 @@ _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
 #: the route refuses any other key with 422 when `UserContext.agent` is set.
 #: So a holder of the signing key cannot skip the edge's rules with a body
 #: that the edge would never build. A human request is not narrowed.
-#: The create set is the input of `create_task`.
+#: The create set is the input of `create_task`. MCP-G2 adds the four
+#: planning fields and `assignees`.
 AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
     "project_id", "title", "description", "parent_task_id", "type_id",
     "status_id", "tags", "due_at",
+    "importance", "leveraged", "estimate_mins", "start_date", "assignees",
 })
 #: The PATCH set is the union of `set_task_status` (`status_id`) and
-#: `update_task` (the other five).
+#: `update_task` (the other fields). MCP-G2 adds the four planning fields.
 AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
     "status_id", "title", "description", "tags", "due_at", "custom_fields",
+    "importance", "leveraged", "estimate_mins", "start_date",
 })
+#: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
+#: project stays a person's step in the app, so `project_id`,
+#: `custom_fields`, `assignees` and `include_subtasks` are refused.
+AGENT_MOVE_FIELDS: frozenset[str] = frozenset({"parent_task_id"})
 #: The `pm_tasks.source` that the server stamps on a task an agent makes.
 AGENT_TASK_SOURCE = "mcp"
+
+#: WS-55 MCP-G2 (D78). The `importance` values that an agent may write: the
+#: two that the app writes for Important and for not Important
+#: (`acb_common.priority.importance_for`). A stored 1 or 3 is from before
+#: D78, and no screen writes one now.
+AGENT_IMPORTANCE_VALUES: frozenset[int] = frozenset(
+    {importance_for(False), importance_for(True)})
+#: The largest `estimate_mins` of an agent write: the INT limit of the
+#: column, so a large number is a 422 and never the 500 of an overflow.
+AGENT_MAX_ESTIMATE_MINS = 2_147_483_647
+#: A `start_date` of an agent write: a calendar date, as the app's date
+#: input sends it.
+_START_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+#: The code of the 422 when an agent names a new assignee who cannot already
+#: open the task through a project grant or the admin read right (MCP-G2,
+#: fix round 1).
+#: The detail names the refused entries of the caller's own list, and says
+#: nothing more, so it does not tell a hidden member from a made-up address.
+AGENT_ASSIGNEE_REFUSED = "assignee_refused"
+#: The code of the 422 when an agent assigns another person to a task in a
+#: personal project (``core.assert_assignable_here``). A member's request
+#: keeps the plain text of that guard.
+AGENT_ASSIGNEE_PERSONAL = "assignee_personal_project"
+#: The most assignees in one agent write, the cap of the edge too
+#: (``agent_edge.tools.MAX_ASSIGNEES``).
+AGENT_MAX_ASSIGNEES = 50
+
+
+def _refuse_agent_values(user: UserContext, values: dict[str, Any]) -> None:
+    """The limits of the planning fields of a signed agent write (MCP-G2).
+
+    The edge refuses first. This is the gateway's own copy, for a request
+    that did not come through the edge's tools. A null passes: it clears
+    the field, as it does for a member. A human request is not checked.
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    importance = values.get("importance")
+    if importance is not None and importance not in AGENT_IMPORTANCE_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail="An agent sets importance to 2 (Important) or 0.",
+        )
+    estimate = values.get("estimate_mins")
+    if estimate is not None and not 0 <= estimate <= AGENT_MAX_ESTIMATE_MINS:
+        raise HTTPException(
+            status_code=422,
+            detail="estimate_mins is a whole number of minutes, 0 or more.",
+        )
+    start = values.get("start_date")
+    if start is not None and not _is_calendar_date(start):
+        raise HTTPException(
+            status_code=422,
+            detail="start_date is a calendar date, such as 2026-10-31.",
+        )
+
+
+def _check_version(task: Any, if_match: str | None) -> None:
+    """``If-Match`` of the move and of the PUT of the assignees (MCP-G2).
+
+    The rule is ``core.require_precondition``, so ``precondition_holds``.
+    The 412 body (the row as ``TaskModel``) is built only when the caller
+    sent a header. An absent header passes (D-PM-20), so a call of the app,
+    which sends none, does exactly what it did before.
+    """
+    if isinstance(if_match, str):
+        require_precondition(task, if_match, row_to_dict(task, TaskModel))
+
+
+async def _require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
+    """Strict ``If-Match`` for an agent that replaces the assignee set.
+
+    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
+    ``fields_at``, so ``precondition_holds`` passes a token from before
+    somebody else's assignment. A replaced set would then drop that person
+    in silence. So an agent's PUT keeps strict equality, as
+    ``agent_delete_task`` does: any change after the read, a comment too,
+    stales the token. The caller reads the assignees first, so the stamp
+    read here is at least as new as the set it replaces. A member's PUT
+    keeps :func:`_check_version`. An absent header passes (D-PM-20).
+    """
+    if not isinstance(if_match, str):
+        return
+    expected = parse_precondition(if_match)
+    stamp = (await db.execute(
+        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
+    if stamp != expected:
+        raise HTTPException(status_code=412, detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+        })
+
+
+def _is_calendar_date(value: Any) -> bool:
+    """True for ``YYYY-MM-DD`` that names a real day."""
+    if not isinstance(value, str) or not _START_DATE_RE.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _agent_via_note(user: UserContext) -> str | None:
+    """The second line of an agent's assignment in the bell (MCP-G2).
+
+    ``via Claude Code``: the label of the connection's stamp, which
+    ``record_activity`` also writes as ``meta.via`` on the timeline row. The
+    stamp comes from the connection row (``AgentScope.actor_via``), never
+    from a body. ``None`` for a member, so a member's bell is unchanged.
+    """
+    agent = getattr(user, "agent", None)
+    via = str(getattr(agent, "actor_via", "") or "") if agent is not None else ""
+    return f"via {client_label(via)}" if via else None
+
+
+async def _refuse_agent_assignees(db: Any, user: UserContext, task_id: str,
+                                  added: set[str]) -> None:
+    """An agent never widens who can open a task (MCP-G2, fix round 1).
+
+    Each person that an agent ADDS must already open the task through the
+    GRANT arm (``notifications.grant_holders``: a project grant of any
+    subject, a grant on a parent project, or ``data:org:read``), and the
+    check runs BEFORE the insert. The assignee arm does not count: an
+    assignment opens the task to its assignee, so an agent that leaned on it
+    could show the title and the task to anybody whom text in a task named.
+    Assigning a person outside the task's audience stays a member's act in
+    the app, where the member can still delegate outward.
+
+    So the rule refuses a made-up address, a suspended member, a member of
+    another organization and a member with no grant and no admin read
+    right, all with one text. A
+    person who stays on the task is not checked again, and a removal is not
+    checked. ``agent:<name>`` is not checked, as in the app. A no-op for a
+    member.
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    people = sorted(a for a in added if not a.startswith("agent:"))
+    if not people:
+        return
+    allowed = set(await grant_holders(db, people, task_id))
+    refused = [who for who in people if who not in allowed]
+    if refused:
+        raise HTTPException(status_code=422, detail={
+            "error": AGENT_ASSIGNEE_REFUSED,
+            "assignees": refused,
+            "message": "An agent can assign only a person who can already "
+                       "open the task. Assign anybody else in the app.",
+        })
+
+
+async def _assert_agent_may_assign_here(db: Any, user: UserContext,
+                                        project_id: str, added: set[str]) -> None:
+    """``core.assert_assignable_here``, with a coded refusal for an agent.
+
+    The guard and its rule are the app's. For a signed agent the 422 carries
+    :data:`AGENT_ASSIGNEE_PERSONAL`, so the edge can give its fixed text. A
+    member keeps the plain text of the guard.
+    """
+    try:
+        await assert_assignable_here(db, project_id, added)
+    except HTTPException as exc:
+        if getattr(user, "agent", None) is None or exc.status_code != 422:
+            raise
+        raise HTTPException(status_code=422, detail={
+            "error": AGENT_ASSIGNEE_PERSONAL,
+            "message": "A task in a personal project takes only its owner.",
+        }) from None
 
 
 def _narrow_agent_body(user: UserContext, values: dict[str, Any],
@@ -275,6 +458,20 @@ class MoveTask(BaseModel):
 
 class AssigneesIn(BaseModel):
     assignees: list[str]
+
+
+class TaskCreateIn(TaskIn):
+    """The body of ``POST /tasks``: :class:`TaskIn`, and the first assignees.
+
+    WS-55 MCP-G2. ``assignees`` lands in the create's own transaction,
+    through the one writer of ``set_assignees`` (:func:`_write_assignees`),
+    so a task never exists without the people the call named. It is a
+    create field only: ``TaskIn`` is the PATCH body too, and a PATCH that
+    took it would try to write a column that ``pm_tasks`` does not have.
+    ``None`` writes no assignee, as before.
+    """
+
+    assignees: list[str] | None = None
 
 
 class LinkIn(BaseModel):
@@ -540,11 +737,14 @@ async def time_spent_mins(db: Any, task_id: str) -> int:
 
 @router.post("/tasks", status_code=201)
 async def create_task(
-    payload: TaskIn, user: UserContext = Depends(get_current_user),
+    payload: TaskCreateIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
     # WS-55 EA-6d. A signed agent write sends only the keys of `create_task`.
     _narrow_agent_body(user, values, AGENT_CREATE_FIELDS)
+    _refuse_agent_values(user, values)
+    # MCP-G2. Not a column: the assignees land after the insert, below.
+    first_assignees = _clean_assignees(values.pop("assignees", None) or ())
     title = str(values.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=422, detail="A task needs a title.")
@@ -638,11 +838,24 @@ async def create_task(
         # WS-27j author-hears-about-comments behaviour once the audience is
         # watchers ∪ assignees (migration 165 seeds the same for older tasks).
         await ensure_watchers(db, task_id, [actor(user)], by=actor(user))
+        # WS-55 MCP-G2. The first assignees, in THIS transaction and through
+        # the writer of `set_assignees`, so a refused assignee leaves no task.
+        assigned = (
+            await _write_assignees(
+                db, user, task_id=task_id, project_id=str(project_id),
+                wanted=first_assignees, current=set(),
+            ) if first_assignees else None
+        )
         result = row_to_dict(row, TaskModel)
 
     await emit("pm.task.created", {
         "task_id": task_id, "project_id": str(project_id), "title": title,
     })
+    if assigned is not None and assigned.added:
+        await emit("pm.task.assigned", {
+            "task_id": task_id, "assignees": sorted(assigned.added),
+            "organization_id": str(getattr(row, "organization_id", "") or ""),
+        })
     # WS-57 TR-5 — `#N` and GitHub or document URLs in the new text, after
     # the commit and in a transaction of its own (`text_links.py`).
     await link_from_text(user, [(task_id, [(title, False, None), (values.get("description"), True, None)])])
@@ -676,6 +889,7 @@ async def patch_task(
     # `set_task_status` and `update_task`, and never the cascade.
     _narrow_agent_body(user, values, AGENT_PATCH_FIELDS,
                        include_subtasks=include_subtasks)
+    _refuse_agent_values(user, values)
     validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
     for guarded, endpoint in (
         ("project_id", "move"), ("parent_task_id", "move"),
@@ -893,7 +1107,10 @@ async def move_task_in(
     if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
         new_parent = payload.parent_task_id
         if new_parent:
-            await load_visible_task(db, vis, str(new_parent))
+            parent_row = await load_visible_task(db, vis, str(new_parent))
+            # WS-55 MCP-G2. An agent moves a task inside its project only. A
+            # no-op for a member and for a carried subtask (`user` None).
+            _refuse_agent_parent(user, parent_row, str(task.project_id))
         await assert_no_task_cycle(db, task_id, new_parent)
         await assert_epic_has_no_parent(
             db, getattr(task, "type_id", None), new_parent,
@@ -1092,6 +1309,7 @@ async def move_task_in(
 async def move_task(
     task_id: str, payload: MoveTask,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Re-parent a task, move it to another project, or both.
 
@@ -1099,12 +1317,25 @@ async def move_task(
     the status, because statuses are per-root: carrying the old status across
     would leave the task in a lane the destination board does not render.
 
-    The work is :func:`move_task_in`. This route only opens the session and
-    emits the event.
+    The work is :func:`move_task_in`. This route only opens the session,
+    checks ``If-Match`` and emits the event.
+
+    WS-55 MCP-G2. ``If-Match`` is the version rule of the PATCH
+    (``core.require_precondition``, so ``precondition_holds``). An absent
+    header passes (D-PM-20), so each app call, which sends none, is
+    unchanged. A signed agent move sends ``parent_task_id`` only
+    (:data:`AGENT_MOVE_FIELDS`), and its new parent is in the same project.
     """
+    # MCP-G2. The keys the caller SENT, so a stated `include_subtasks: false`
+    # is refused too. A no-op for a member.
+    _narrow_agent_body(user, dict.fromkeys(payload.model_fields_set),
+                       AGENT_MOVE_FIELDS)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # After the visibility load, before any write: a caller who cannot
+        # see the task gets 404 and never learns from a 412 that it exists.
+        _check_version(task, if_match)
         result = await move_task_in(
             db, vis, task, payload, by=actor(user), user=user,
         )
@@ -1669,10 +1900,110 @@ async def unarchive_task(
 
 # ── Assignees ───────────────────────────────────────────────────────────────
 
+def _clean_assignees(raw: Any) -> set[str]:
+    """The assignee set a body names: each non-blank entry, in lower case."""
+    return {a.strip().lower() for a in raw if (a or "").strip()}
+
+
+@dataclass(frozen=True)
+class _Assigned:
+    """What :func:`_write_assignees` changed, and whom it told."""
+
+    added: set[str]
+    removed: set[str]
+    notified: dict[str, list[str]]
+
+
+async def _write_assignees(
+    db: Any, user: UserContext, *, task_id: str, project_id: str,
+    wanted: set[str], current: set[str],
+) -> _Assigned:
+    """Make the assignee set *wanted*, inside the caller's transaction.
+
+    The ONE writer of a replaced set: ``set_assignees`` and, since WS-55
+    MCP-G2, the first assignees of ``create_task``. The order is the one the
+    claim mirrors: the assignee keys, then the timeline row (whose
+    ``touch_task`` bumps the task row), then the watcher keys.
+
+    * The personal-project guard runs before the first write, so a refusal
+      leaves the set as it was. Removals are not guarded.
+    * A signed agent call names at most :data:`AGENT_MAX_ASSIGNEES` people,
+      and it refuses a NEW person who cannot already open the task through
+      a project grant or the admin read right (:func:`_refuse_agent_assignees`).
+      Both checks come before the first write (fix round 1), so an agent
+      never widens who can open a task.
+    * Each NEW person gets one ``assigned`` notification. A signed agent
+      call writes ``via <client>`` as its excerpt (:func:`_agent_via_note`).
+    * *wanted* is lower case. A stored row may not be (a legacy row, or a
+      copy that ``recurrence.py`` made as it found it), so the two sides
+      compare in lower case. A person whose row differs only in case stays,
+      keeps the row as it is, and is neither checked nor notified again.
+
+    The caller emits ``pm.task.assigned`` after the commit.
+    """
+    stored: dict[str, list[str]] = {}
+    for raw in current:
+        stored.setdefault(str(raw).strip().lower(), []).append(raw)
+    added = wanted - set(stored)
+    removed = {raw for low, raws in stored.items() if low not in wanted for raw in raws}
+    if getattr(user, "agent", None) is not None and len(wanted) > AGENT_MAX_ASSIGNEES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"An agent names at most {AGENT_MAX_ASSIGNEES} assignees.",
+        )
+
+    # Requirement 5 (owner, 2026-08-26). Checked before the first write, so
+    # a refused assignment leaves the set exactly as it was rather than
+    # half-applied. REMOVALS are deliberately not guarded: taking somebody
+    # off a task can never be the thing that strands them.
+    await _assert_agent_may_assign_here(db, user, project_id, added)
+    # MCP-G2 fix round 1: BEFORE the insert, so the assignee arm cannot count.
+    await _refuse_agent_assignees(db, user, task_id, added)
+
+    for who in sorted(removed):
+        await db.execute(
+            text(
+                "DELETE FROM pm_task_assignees "
+                "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
+            ),
+            {"tid": task_id, "who": who},
+        )
+    await insert_assignees(db, task_id, added, by=actor(user))
+    if added or removed:
+        await record_activity(
+            db, activity_type="assignment", created_by=actor(user),
+            task_id=task_id,
+            meta={"added": sorted(added), "removed": sorted(removed)},
+        )
+    # WS-27j — the notification is written INSIDE this transaction, not
+    # emitted on the bus afterwards. `emit` is best-effort by construction
+    # so a broken workflow can never fail a task edit; that is right for
+    # agent dispatch, where a missed run is recoverable, and wrong here.
+    # An assignment that committed while its notification did not is
+    # exactly the silent assignment §11.2 filed.
+    #
+    # Only `added`: a re-assert of somebody already on the task must not
+    # ping them again, the same reason the event carries added rather than
+    # the whole set.
+    notified = await notify(
+        db, recipients=sorted(added), kind="assigned",
+        task_id=task_id, actor_id=actor(user),
+        excerpt=_agent_via_note(user),
+    )
+    # WS-27v — a newly added assignee becomes a watcher. Idempotent, and
+    # only `added` for the same reason the event carries added: a re-assert
+    # is not a touch. Agents are dropped inside the helper (they are
+    # dispatched, never subscribed), and the rows survive a later
+    # unassignment — having held the work is a reason to keep hearing.
+    await ensure_watchers(db, task_id, sorted(added), by=actor(user))
+    return _Assigned(added=added, removed=removed, notified=notified)
+
+
 @router.put("/tasks/{task_id}/assignees")
 async def set_assignees(
     task_id: str, payload: AssigneesIn,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Replace a task's assignee set.
 
@@ -1686,10 +2017,20 @@ async def set_assignees(
     carries the task's ``organization_id`` (WS-27aa): the sink runs with no
     request behind it, so this is the one place its tenant can come from a
     stored fact instead of an ambient binding.
+
+    WS-55 MCP-G2. For a member, ``If-Match`` is the version rule of the
+    PATCH (``precondition_holds``). For a signed agent it is strict equality
+    (:func:`_require_exact_version`, fix round 1), checked after the read of
+    the current set. An absent header passes (D-PM-20), so the app's calls
+    are unchanged. The writer is :func:`_write_assignees`.
     """
+    agent_call = getattr(user, "agent", None) is not None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # MCP-G2. After the visibility load, so a hidden task stays a 404.
+        if not agent_call:
+            _check_version(task, if_match)
         # WS-27aa / H4 — the tenant the dispatch sink will bind, read HERE:
         # inside the request's already-bound session, off the task's own
         # `organization_id` (NOT NULL since migration 161). It is a stored
@@ -1700,9 +2041,7 @@ async def set_assignees(
         # an unbound session — the exact thing H4 forbids.
         task_org = str(getattr(task, "organization_id", "") or "")
 
-        wanted = {
-            a.strip().lower() for a in payload.assignees if (a or "").strip()
-        }
+        wanted = _clean_assignees(payload.assignees)
         current = {
             r.assignee for r in (await db.execute(
                 text(
@@ -1712,49 +2051,16 @@ async def set_assignees(
                 {"tid": task_id},
             )).fetchall()
         }
-        added, removed = wanted - current, current - wanted
-
-        # Requirement 5 (owner, 2026-08-26). Checked before the first write, so
-        # a refused assignment leaves the set exactly as it was rather than
-        # half-applied. REMOVALS are deliberately not guarded: taking somebody
-        # off a task can never be the thing that strands them.
-        await assert_assignable_here(db, str(task.project_id), added)
-
-        for who in sorted(removed):
-            await db.execute(
-                text(
-                    "DELETE FROM pm_task_assignees "
-                    "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
-                ),
-                {"tid": task_id, "who": who},
-            )
-        await insert_assignees(db, task_id, added, by=actor(user))
-        if added or removed:
-            await record_activity(
-                db, activity_type="assignment", created_by=actor(user),
-                task_id=task_id,
-                meta={"added": sorted(added), "removed": sorted(removed)},
-            )
-        # WS-27j — the notification is written INSIDE this transaction, not
-        # emitted on the bus afterwards. `emit` is best-effort by construction
-        # so a broken workflow can never fail a task edit; that is right for
-        # agent dispatch, where a missed run is recoverable, and wrong here.
-        # An assignment that committed while its notification did not is
-        # exactly the silent assignment §11.2 filed.
-        #
-        # Only `added`: a re-assert of somebody already on the task must not
-        # ping them again, the same reason the event carries added rather than
-        # the whole set.
-        notified = await notify(
-            db, recipients=sorted(added), kind="assigned",
-            task_id=task_id, actor_id=actor(user),
+        if agent_call:
+            # After the read of `current`: an assignment that this read saw
+            # moved `updated_at` in the same commit, so it stales the token.
+            await _require_exact_version(db, task_id, if_match)
+        assigned = await _write_assignees(
+            db, user, task_id=task_id, project_id=str(task.project_id),
+            wanted=wanted, current=current,
         )
-        # WS-27v — a newly added assignee becomes a watcher. Idempotent, and
-        # only `added` for the same reason the event carries added: a re-assert
-        # is not a touch. Agents are dropped inside the helper (they are
-        # dispatched, never subscribed), and the rows survive a later
-        # unassignment — having held the work is a reason to keep hearing.
-        await ensure_watchers(db, task_id, sorted(added), by=actor(user))
+        added, removed, notified = (
+            assigned.added, assigned.removed, assigned.notified)
 
     if added:
         await emit("pm.task.assigned", {

@@ -32,6 +32,12 @@ discovery stores a token taken before its listing in the transaction that
 sets ``ready``, a capped source skips a change inside an unexplored folder,
 a disconnect wins the race with a page and with a cursor write, and the
 migration replays with no change.
+
+KC-3h, the lock order of ``engine.py``: the ``test_the_lock_order_*`` tests run
+two real paths at the same time (a removal-only page, a run close, a
+disconnect and a re-consent, in four pairs). Each pair runs in both orders,
+and each proves no DeadlockDetected and the right end state. Each test went
+red on the old order before the fix.
 """
 
 from __future__ import annotations
@@ -856,6 +862,352 @@ async def test_the_disconnect_deletes_the_cursors_and_keeps_the_runs(
     assert [r.kind for r in _runs(kc, sid)] == ["discover", "changes"]
     skipped = await _run(kc, sid, "changes", feed)
     assert skipped.status == "skipped", "a disconnected source started a run"
+
+
+# ── KC-3h: one lock order, two paths at the same time ───────────────────────
+#
+# The lock order is in the module doc of ``engine.py``: the advisory lock, the
+# connection row, the source row, then the children. Each test runs two REAL
+# paths at the same time, in one event loop and one engine. The HOLDER path
+# stops at a pause inside the real code, with its row locks held. The WAITER
+# path runs until Postgres shows it waiting on a lock. Then the holder goes on.
+# On the old order the two paths wait on each other, and Postgres ends one of
+# them with DeadlockDetected (40P01). On the one order the waiter waits, and
+# then it runs. ``first`` names the path that holds.
+
+
+class _Pause:
+    """A pause in the real code. The FIRST call waits until :attr:`go` is set."""
+
+    def __init__(self) -> None:
+        self.reached = asyncio.Event()
+        self.go = asyncio.Event()
+        self.calls = 0
+
+    async def wait(self) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            self.reached.set()
+            await self.go.wait()
+
+
+def _pause(monkeypatch: Any, owner: Any, name: str, *, after: bool = False) -> _Pause:
+    """Wrap ``owner.name``. Its first call stops at a pause: before it runs,
+    or with *after*, after it ran, so its locks are held."""
+    pause = _Pause()
+    real = getattr(owner, name)
+
+    async def wrapped(*a: Any, **k: Any) -> Any:
+        if not after:
+            await pause.wait()
+        out = await real(*a, **k)
+        if after:
+            await pause.wait()
+        return out
+
+    monkeypatch.setattr(owner, name, wrapped)
+    return pause
+
+
+def _run_errors(monkeypatch: Any) -> list[BaseException]:
+    """Each exception that a run closed on. ``run_source`` swallows it, so
+    this reads it in ``close``, which runs inside the ``except`` block."""
+    import sys
+
+    from gateway.kb_sync import engine
+
+    seen: list[BaseException] = []
+    real = engine._SourceRun.close
+
+    async def close(self: Any, *a: Any, **k: Any) -> Any:
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            seen.append(exc)
+        return await real(self, *a, **k)
+
+    monkeypatch.setattr(engine._SourceRun, "close", close)
+    return seen
+
+
+def _lock_waits(p: Any) -> int:
+    """How many sessions of the app role wait on a lock now."""
+    with p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+            "AND usename = :role AND wait_event_type = 'Lock'"), {"role": _APP_ROLE}).scalar())
+
+
+async def _reached(pause: _Pause, task: asyncio.Future[Any]) -> None:
+    """Wait until *task* stops at *pause*. It must not end first."""
+    reached = asyncio.ensure_future(pause.reached.wait())
+    await asyncio.wait({task, reached}, timeout=20, return_when=asyncio.FIRST_COMPLETED)
+    reached.cancel()
+    if not pause.reached.is_set():
+        outcome = task.exception() or task.result() if task.done() else "still running"
+        raise AssertionError(f"the path did not reach its pause: {outcome!r}")
+
+
+async def _until_waiting(p: Any, task: asyncio.Future[Any]) -> None:
+    """Wait until Postgres shows a session waiting on a lock. The waiter
+    must not end first: then the test would prove nothing."""
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if _lock_waits(p) >= 1:
+            return
+        if task.done():
+            outcome = task.exception() or task.result()
+            raise AssertionError(f"the waiter waited on no lock: {outcome!r}")
+        await asyncio.sleep(0.05)
+    raise AssertionError("the waiter never waited on a lock")
+
+
+async def _overlap(p: Any, holder: Any, hold: _Pause, waiter: Any,
+                   start: _Pause | None = None) -> tuple[Any, Any]:
+    """Run *holder* to *hold*, then *waiter* until it waits on a lock, then
+    let the holder go on. *start*, when given, is a pause that the waiter
+    reaches FIRST, with no lock held, before the holder starts."""
+    async with tenant_engine_scope(_app_dsn(p)):
+        waiting: asyncio.Future[Any] | None = None
+        if start is not None:
+            waiting = asyncio.ensure_future(waiter())
+            await _reached(start, waiting)
+        holding = asyncio.ensure_future(holder())
+        await _reached(hold, holding)
+        if waiting is None:
+            waiting = asyncio.ensure_future(waiter())
+        else:
+            assert start is not None
+            start.go.set()
+        await _until_waiting(p, waiting)
+        hold.go.set()
+        got = await asyncio.wait_for(
+            asyncio.gather(holding, waiting, return_exceptions=True), 60)
+    return got[0], got[1]
+
+
+def _deadlocks(*seen: Any) -> list[str]:
+    """Each DeadlockDetected (40P01) in a result, an error or a run error."""
+    out: list[str] = []
+    for item in seen:
+        exc: Any = item
+        while isinstance(exc, BaseException):
+            orig = getattr(exc, "orig", None)
+            codes = {getattr(exc, "sqlstate", None), getattr(orig, "sqlstate", None)}
+            if "40P01" in codes or "deadlock detected" in str(exc).lower():
+                out.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+                break
+            exc = exc.__cause__ or exc.__context__
+    return out
+
+
+def _as(user: Any, fn: Any, *a: Any, **k: Any) -> Any:
+    """Call a route function as *user*: the tenant comes from the user, as
+    ``_with_resolved_access`` binds it for a real request."""
+    async def go() -> Any:
+        from acb_common.db import bind_tenant, release_tenant
+
+        token = bind_tenant(user.organization_id)
+        try:
+            return await fn(*a, **k, user=user)
+        finally:
+            release_tenant(token)
+    return go
+
+
+def _disconnect(user: Any, sid: str) -> Any:
+    from gateway.routes.knowledge import sources
+
+    return _as(user, sources.disconnect_source, sid)
+
+
+def _reconsent(user: Any, account_id: str, background: Any) -> Any:
+    """The consent callback of a member who connects the SAME account again."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from gateway.routes.knowledge import sources
+
+    async def callback(user: Any) -> Any:
+        started = await sources.connect_google_drive(user=user)
+        state = parse_qs(urlsplit(started.url).query)["state"][0]
+        return await sources.google_drive_callback(
+            background, code=f"c-{account_id}", state=state, error=None, user=user)
+
+    return _as(user, callback)
+
+
+def _loop_run(p: Any, sid: str, feed: Feed) -> Any:
+    from gateway.kb_sync import engine
+
+    async def go() -> Any:
+        return await engine.run_source(p.org_a, sid, "changes", source=feed)
+    return go
+
+
+def _assert_disconnected(p: Any, sid: str) -> None:
+    row = _src(p, sid)
+    assert (row.state, row.conn_status) == ("disconnected", "disconnected"), row
+    assert _nodes(p, sid) == {}, "a node outlived the disconnect"
+    assert _cursor(p, sid) is None and _cursor(p, sid, "reconcile") is None
+
+
+async def _discover_after(p: Any, background: Any) -> None:
+    """The discovery that the callback queued, run to its end."""
+    async with tenant_engine_scope(_app_dsn(p)):
+        await background()
+
+
+@pytest.mark.parametrize("first", ["page", "disconnect"])
+async def test_the_lock_order_a_removal_only_page_and_a_disconnect(
+    kc, app_engine, monkeypatch, first: str,  # noqa: F811
+) -> None:
+    """K-21. The page locks the source row before its nodes. Old order: the
+    page locked the nodes, then asked for the source row that the
+    disconnect held, while the disconnect waited on the nodes."""
+    from gateway.connections import store
+    from gateway.kb_sync import runs
+
+    _assert_non_priv(app_engine)
+    tag = f"L1{first[0]}"
+    ana, sid, feed = await _source(kc, tag)
+    feed.pages[f"spt-{tag}"] = {"newStartPageToken": f"spt-{tag}b",
+                                "changes": [_rm(f"fold-{tag}")]}
+    errors = _run_errors(monkeypatch)
+    if first == "page":
+        # The page holds the source lock and the node locks, before its cursor.
+        hold = _pause(monkeypatch, runs, "write_cursor")
+        page, gone = await _overlap(kc, _loop_run(kc, sid, feed), hold,
+                                    _disconnect(ana, sid))
+    else:
+        # The disconnect holds its locks; the page has read Google already.
+        hold = _pause(monkeypatch, store, "disconnect")
+        feed.gate = _Pause()  # type: ignore[assignment]
+        gone, page = await _overlap(kc, _disconnect(ana, sid), hold,
+                                    _loop_run(kc, sid, feed), start=feed.gate)
+    assert _deadlocks(page, gone, *errors) == [], "DeadlockDetected (40P01)"
+    assert isinstance(gone, dict) and gone["state"] == "disconnected", gone
+    want = ("ok", None) if first == "page" else ("stopped", "disconnected")
+    assert (page.status, page.error) == want, (page, errors)
+    _assert_disconnected(kc, sid)
+    assert [r.kind for r in _runs(kc, sid)] == ["discover", "changes"], "a run row went"
+
+
+@pytest.mark.parametrize("first", ["close", "callback"])
+async def test_the_lock_order_a_run_close_and_a_reconsent(
+    kc, app_engine, monkeypatch, first: str,  # noqa: F811
+) -> None:
+    """K-22. ``close_ok`` locks the connection row before the source row, as
+    the consent callback does. Old order: ``close_ok`` held the source row
+    and asked for the connection row that the callback held."""
+    from fastapi import BackgroundTasks
+    from gateway.connections import store
+    from gateway.kb_sync import engine
+    from gateway.routes.knowledge import sources
+
+    _assert_non_priv(app_engine)
+    tag = f"L2{first[0]}"
+    ana, sid, feed = await _source(kc, tag)
+    feed.pages[f"spt-{tag}"] = {"newStartPageToken": f"spt-{tag}b", "changes": []}
+    errors = _run_errors(monkeypatch)
+    background = BackgroundTasks()
+    if first == "close":
+        # close_ok holds its locks, before it marks the connection.
+        hold = _pause(monkeypatch, store, "mark_synced")
+        closed, back = await _overlap(kc, _loop_run(kc, sid, feed), hold,
+                                      _reconsent(ana, tag, background))
+    else:
+        # The callback holds the connection row; the run waits at close_ok.
+        start = _pause(monkeypatch, engine._SourceRun, "close_ok")
+        hold = _pause(monkeypatch, store, "save_credential", after=True)
+        back, closed = await _overlap(kc, _reconsent(ana, tag, background), hold,
+                                      _loop_run(kc, sid, feed), start=start)
+    assert _deadlocks(closed, back, *errors) == [], "DeadlockDetected (40P01)"
+    assert not isinstance(back, BaseException), back
+    assert back.headers["location"] == sources.RETURN_OK
+    assert not isinstance(closed, BaseException), closed
+    assert (closed.status, closed.error) == ("ok", None), (closed, errors)
+    row = _src(kc, sid)
+    assert (row.state, row.conn_status) == ("discovering", "connected"), row
+    assert row.last_sync_at is not None, "close_ok did not mark the connection"
+    # The discovery that the re-consent queued still runs to its end.
+    await _discover_after(kc, background)
+    assert _src(kc, sid).state == "ready"
+
+
+@pytest.mark.parametrize("first", ["disconnect", "callback"])
+async def test_the_lock_order_a_disconnect_and_a_reconsent(
+    kc, app_engine, monkeypatch, first: str,  # noqa: F811
+) -> None:
+    """The third pair, not in the backlog. The disconnect locks the
+    connection row before the source row, as the callback does. Old order:
+    the disconnect held the source row and asked for the connection row."""
+    from fastapi import BackgroundTasks
+    from gateway.connections import store
+    from gateway.routes.knowledge import sources
+
+    _assert_non_priv(app_engine)
+    tag = f"L3{first[0]}"
+    ana, sid, _feed = await _source(kc, tag)
+    background = BackgroundTasks()
+    if first == "disconnect":
+        hold = _pause(monkeypatch, store, "disconnect")
+        gone, back = await _overlap(kc, _disconnect(ana, sid), hold,
+                                    _reconsent(ana, tag, background))
+    else:
+        hold = _pause(monkeypatch, store, "save_credential", after=True)
+        back, gone = await _overlap(kc, _reconsent(ana, tag, background), hold,
+                                    _disconnect(ana, sid))
+    assert _deadlocks(gone, back) == [], "DeadlockDetected (40P01)"
+    assert isinstance(gone, dict) and gone["state"] == "disconnected", gone
+    assert not isinstance(back, BaseException), back
+    assert back.headers["location"] == sources.RETURN_OK
+    if first == "disconnect":
+        # The re-consent came second, so it wins: the source reads its tree again.
+        row = _src(kc, sid)
+        assert (row.state, row.conn_status) == ("discovering", "connected"), row
+        await _discover_after(kc, background)
+        assert _src(kc, sid).state == "ready" and _nodes(kc, sid), "no tree after the consent"
+    else:
+        # The disconnect came second, so it wins, and the discovery finds it.
+        _assert_disconnected(kc, sid)
+        await _discover_after(kc, background)
+        _assert_disconnected(kc, sid)
+
+
+@pytest.mark.parametrize("first", ["close", "disconnect"])
+async def test_the_lock_order_a_run_close_and_a_disconnect(
+    kc, app_engine, monkeypatch, first: str,  # noqa: F811
+) -> None:
+    """``close_ok`` and the disconnect both lock the connection row first.
+    The old order took the source row first in BOTH, so it did not
+    deadlock. This test keeps the two in step: reorder one of them and not
+    the other, and it deadlocks. ``close`` catches an old ``close_ok``, and
+    ``disconnect`` catches an old disconnect."""
+    from gateway.connections import store
+    from gateway.kb_sync import engine
+
+    _assert_non_priv(app_engine)
+    tag = f"L4{first[0]}"
+    ana, sid, feed = await _source(kc, tag)
+    feed.pages[f"spt-{tag}"] = {"newStartPageToken": f"spt-{tag}b", "changes": []}
+    errors = _run_errors(monkeypatch)
+    if first == "close":
+        hold = _pause(monkeypatch, store, "mark_synced")
+        closed, gone = await _overlap(kc, _loop_run(kc, sid, feed), hold,
+                                      _disconnect(ana, sid))
+    else:
+        start = _pause(monkeypatch, engine._SourceRun, "close_ok")
+        hold = _pause(monkeypatch, store, "disconnect")
+        gone, closed = await _overlap(kc, _disconnect(ana, sid), hold,
+                                      _loop_run(kc, sid, feed), start=start)
+    assert _deadlocks(closed, gone, *errors) == [], "DeadlockDetected (40P01)"
+    assert isinstance(gone, dict) and gone["state"] == "disconnected", gone
+    assert not isinstance(closed, BaseException), closed
+    assert (closed.status, closed.error) == ("ok", None), (closed, errors)
+    _assert_disconnected(kc, sid)
+    [*_, last] = _runs(kc, sid)
+    assert (last.kind, last.status) == ("changes", "ok"), "the run row did not stay"
+    if first == "close":
+        assert _src(kc, sid).last_sync_at is not None, "close_ok did not mark the connection"
 
 
 # ── 8. Tenancy: org B reads, writes and runs nothing of org A ───────────────
