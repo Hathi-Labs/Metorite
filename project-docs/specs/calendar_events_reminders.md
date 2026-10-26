@@ -376,6 +376,12 @@ sets `promoted_task_id`, and ends the reminder in state `done` with
 `snoozes`: a snooze, a named time and "Not yet". Only a move that Metorite
 makes with no answer adds 1 to `cycles`. The give-up limit reads `cycles`.
 
+**Every member move restarts the 72-hour window** (decision of
+2026-10-26). A snooze, a named time, "Not yet" and a PATCH of `fire_at`
+each clear `first_fired_at`, so the limit counts from the next fire. A move
+out of `unconfirmed` also sets `cycles` to 0. A move that Metorite makes
+keeps both. The ledger row of the move records the old `first_fired_at`.
+
 **Two rules for RM-2, decided in the RM-1 review (2026-10-25).**
 
 - **A member move out of `unconfirmed` is a fresh start.** It sets `cycles`
@@ -404,7 +410,8 @@ while `CALENDAR_REMINDERS` is off.
   belong together.
 - **Step 5.** At the brief, a reminder that Metorite moved twice gives up. At
   any step of the ladder, a reminder that first fired 72 hours ago or more
-  gives up. The `gave_up` row names the reason, `cycles` or `72h`.
+  gives up. The `gave_up` row names the reason, `cycles` or `72h`. A member
+  move clears `first_fired_at`, so the 72 hours start again at the next fire.
 - **`important`.** The loop checks back after 15 minutes, then every hour, 4
   times in all. The brief comes after the fourth check-back.
 - **The member check** is `my_day_loop.departed`, read once for each member
@@ -483,6 +490,14 @@ allowlist, and D114.7 keeps reminders off WhatsApp. RE-9 raises the three
 kinds to `urgent`, `interrupt` and `brief` on web push. RE-9 also adds the
 D114.3 exception to the Reach budget.
 
+**A class does not keep a card out of the WhatsApp brief** (review of
+RM-2, 2026-10-26). The class gates an interrupt only, and the brief takes
+every open card of Now and Needs you. So `reach/classes.NOT_ON_WHATSAPP`
+holds the three kinds, and `reach/plan.on_whatsapp` keeps them out of each
+WhatsApp brief, its template parameters, each interrupt and the preview.
+The brief in the chat still shows them, because D114.7 allows the chat.
+RM-9 lifts the rule.
+
 - **The bell does not show reminders yet** (decision B2 of 2026-10-25). That
   is ticket RM-2b. The bell reads `/api/shell/needs`, so RM-2b needs a needs
   provider and a `KIND_ORDER` row for each kind.
@@ -512,21 +527,28 @@ when the feed reads it, and nothing stores a card.
   last ladder step of each, in one tenant session. The source needs
   `feature:projects`. With `CALENDAR_REMINDERS` off, the source is `absent`
   before any read.
+- **The cut.** The read puts `due` rows first, then the newest step. So old
+  `unconfirmed` cards never push out a reminder that just fired.
 - **The gate of the feed.** The source runs only while `MY_DAY_PROVIDERS`
   lists `reminders`, as each feed source since MD-3b does.
   `test_shell_feed.py` holds the feed answer the same while that list is
   empty. So the flip of reminders sets `CALENDAR_REMINDERS` AND adds
   `reminders` to `MY_DAY_PROVIDERS`.
 - **The card.** The app is the Calendar, and the client calls the three kinds
-  "Reminder", "Check-back" and "Unconfirmed". The one act is a link to
-  `/chat?reminder=<id>` (§5.7). RM-4 makes the chat read it. The actions in
-  place of the table wait for the client (D101).
+  "Reminder", "Check-back" and "Unconfirmed". The actions in place of the
+  table wait for the client (D101).
+- **The link.** The one act opens `/chat?do=new-chat&reminder=<id>`. Before
+  RM-4 the chat reads only `do`, so the link opens a new chat in the one
+  assistant. A bare `/chat?reminder=<id>` would open the chat that was open
+  last. RM-4 makes the chat read `reminder` and write the first message
+  (§5.7).
 - **The order.** `reminder_due` is in the group `now`. The other two are in
-  `needs_you`. Each kind has its row in `feed_rank.BASE`, below every needs
-  kind.
+  `needs_you`. The ranks in `feed_rank.BASE` are 31, 29 and 25, below every
+  needs kind. `reminder_unconfirmed` sits just above `digest_ready` (24).
 - **The refresh.** After each write, the loop bumps the member's My Day
-  version (`cache.bump_member_safe`). The next `fire_at` or `next_check_at`
-  is the edge of the read cache.
+  version (`cache.bump_member_safe`). After its commit, each answer and each
+  move of the member does the same, with the session's org. The next
+  `fire_at` or `next_check_at` is the edge of the read cache.
 
 ### 5.7 A tap opens the chat
 
