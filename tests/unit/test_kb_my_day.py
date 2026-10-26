@@ -320,7 +320,9 @@ class TestTheCards:
     def test_the_limits_hold_every_kind(self) -> None:
         from gateway.routes.shell import prefs
 
-        assert prefs.MAX_KINDS == 26 == len(prefs.feed_kinds())
+        # 26 after KB-9b slice 2, and 29 since WS-66 RM-2 added the three
+        # reminder kinds (§5.9 item 10.6: a ticket that adds a kind raises the cap).
+        assert prefs.MAX_KINDS == 29 == len(prefs.feed_kinds())
 
 
 # ── The bump after the commit (A6) ──────────────────────────────────────────

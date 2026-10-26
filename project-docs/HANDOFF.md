@@ -193,12 +193,19 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-413 · Build WS-67 OA-1 to OA-5: the member's words survive the handoff, OCR, chat constraints, then measure · [AGENT]
-- **Check:** the WS-67 row of `project-docs/work_plan.md` says that OA-3, OA-4 and OA-5 are each BUILT. Then delete this entry. OA-1, OA-2 and OA-5 are BUILT (2026-10-25).
-- **Why:** D116. The Navy-order chat of 2026-10-25 lost the member's note between the orchestrator and the email assistant, and named parts from a sample file's name.
-- **Do this:** follow `specs/one_assistant_context.md` §4 and §5 in order: OA-1 and OA-2 in one PR, then OA-3 (OCR, HIGH tier), then OA-4, then OA-5 (the report). Stop at OA-6, which is the owner's decision. Update the Metorite tasks #446 to #450 as each slice merges (epic #445).
-- **Authority:** `specs/one_assistant_context.md` · D116 · board WS-67.
-- **Added:** 2026-10-25 · email single-mailbox session
+### H-417 · Build WS-67 OA-7b to OA-10: one chat, tool packs, dynamic sub-agents · [AGENT]
+- **Check:** the WS-67 row of `project-docs/work_plan.md` says OA-10 is BUILT. Then delete this entry. OA-1 to OA-5, OA-6 (D117), OA-7a, OA-7g and the design are done.
+- **Why:** D117. The owner chose one chat for the whole app, tools loaded per turn, and dynamic sub-agents for parallel work (2026-10-26). OA-5 measured the pack at 2.3 times faster and half the cost, with the same accuracy.
+- **Do this:**
+  1. OA-7b: branch `ws67-oa7b-pack-builder` (worktree `C:\wt-ws67-oa7b-pack-builder`) holds the guarded pack builder, built but NOT verified and NOT pushed. Resume agent `ac945216808ad1e74` if it is alive. Then run an independent verifier and a diff-reviewer (HIGH tier), open the PR, and merge it dark.
+  2. OA-7c (sticky packs and layer (a)), OA-7d to OA-7f, OA-7h: follow spec §4.2.8 and the narrowings of §4.5.
+  3. OA-9a parser: build beside OA-7. The OA-9a worker and OA-9b stay NO-GO until the §4.5 edits land in the spec.
+  4. OA-8a to OA-8e, then OA-8e passes before OA-10. OA-10 also moves the Email and Projects rails to the one assistant, with their pack pinned.
+  5. `TOOL_PACKS`, `TOOL_PACKS_ORGS` and `SPAWN_SUBAGENTS_ORGS` are owner-only (`work_plan.md` §6 D4). Do not flip them.
+  6. After a release, confirm in the logs that `AI_REASONING_OFF_AGENTS=orchestrator` works (`ai_route.reasoning_off`), and read `agent.run_timing` and `email.list_messages_ms`.
+  7. OCR (`ATTACHMENT_OCR`) stays off. Spec §4.1 lists three conditions before the flip.
+- **Authority:** `specs/one_assistant_context.md` · D116 · D117 · board WS-67. Metorite epic #445, slices #452 to #455.
+- **Added:** 2026-10-26 · chat-speed session
 
 ### H-415 · After single mailbox: the shared mailbox SM-3 to SM-9, then multiple mailboxes · [AGENT]
 - **Check:** the WS-65 row of `work_plan.md` says SM-9 is BUILT. Then delete this entry.
@@ -6387,23 +6394,3 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `docs/multiplayer/memory-clearance.md` · `specs/personalization.md` §5.1
 - **Added:** 2026-10-24 · WS-63 PZ-2 repair round
 
-### H-410 · Check a real web push on an installed iPhone app and on Android Chrome · [OWNER]
-- **Check:** the owner says that a test push reached both phones. Then delete this entry.
-- **Why:** WS-66 PN-1 is built and tested, but no test can prove delivery to a real
-  phone. iOS delivers web push only to a web app on the Home Screen, on iOS 16.4
-  or later.
-- **Do this (owner), on dev.metorite.com after the agent turns `WEB_PUSH_ENABLED`
-  on there:**
-  1. iPhone: open dev.metorite.com in Safari, tap Share, then "Add to Home Screen".
-     Open Metorite from the Home Screen icon and sign in.
-  2. Open My Profile, find Notifications, turn it on, and allow notifications.
-  3. Tap "Send a test". A notification must show on the lock screen.
-  4. Android: open dev.metorite.com in Chrome, sign in, and do steps 2 and 3.
-- **Authority:** `specs/calendar_events_reminders.md` §10.1 PN-1 and §10.2
-- **Added:** 2026-10-25 · branch `ws66-pn1-mt-d09a41c2`
-
-# DONE — deleted, not archived
-
-Nothing lives here. When an entry's Check passes, **delete the block**. Git
-history is the archive; a "done" section in a loaded-into-context file is just
-tokens that make the open items harder to find.

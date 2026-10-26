@@ -136,7 +136,19 @@ def _real(kind: str) -> shell.Signal | None:
     return None
 
 
+def _reminder(kind: str) -> shell.Signal:
+    """WS-66 RM-2: one reminder, in the state that gives *kind*."""
+    state, step = {"reminder_due": ("due", "fired"),
+                   "reminder_check": ("due", "check_back"),
+                   "reminder_unconfirmed": ("unconfirmed", "gave_up")}[kind]
+    return feed._reminder_signal({
+        "id": "r-1", "title": "Get a haircut", "kind": "action", "state": state,
+        "step": step, "step_at": NOW, "fire_at": NOW - timedelta(hours=1), "cycles": 0})
+
+
 def _signal_of(kind: str) -> shell.Signal:
+    if kind in feed.REMINDER_KINDS:
+        return _reminder(kind)
     real = _real(kind)
     if real is not None:
         return real

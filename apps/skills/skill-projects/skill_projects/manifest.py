@@ -294,11 +294,11 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tasks/{task_id}/nudge", "nudge_task", "C"),
     # ── reminders.py (WS-66 RM-1, D114) ──────────────────────────────────
     # The member's private reminders (calendar_events_reminders.md §5.8).
-    # Each tool is PLANNED for RM-3. A write acts at once with Undo, as
-    # D-CF-5 allows for a reversible write on the member's own record, so
-    # the writes are class B. `reopen` is the Undo of a done or a drop. The
-    # promote makes a task and has no undo, so it is class C. The route
-    # finds a reminder by its OWNER only.
+    # RM-3 built the tools. The writes are class B, because each one is a
+    # reversible write on the member's own record, and `reopen` is the Undo
+    # of a done or a drop. Each write shows one card until CF-6 gives it an
+    # act-at-once door with Undo (D-CF-5). The promote makes a task and has
+    # no undo, so it is class C. The route finds a reminder by its OWNER only.
     Route("GET", "/projects/my/reminders", "list_reminders", "A"),
     Route("POST", "/projects/my/reminders", "set_reminder", "B"),
     Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B"),
@@ -527,16 +527,7 @@ PLANNED: dict[str, str] = {
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
-    # WS-66 RM-1 (2026-10-25) added the reminder routes. RM-3 builds the
-    # tools of calendar_events_reminders.md §5.8. `reschedule_reminder`
-    # reaches both member moves, the snooze and the reschedule.
-    "list_reminders": "WS-66 RM-3, the reminder tools",
-    "set_reminder": "WS-66 RM-3, the reminder tools",
-    "update_reminder": "WS-66 RM-3, the reminder tools",
-    "resolve_reminder": "WS-66 RM-3, the reminder tools",
-    "reschedule_reminder": "WS-66 RM-3, the reminder tools",
-    "reopen_reminder": "WS-66 RM-3, the reminder tools",
-    "promote_reminder": "WS-66 RM-3, the reminder tools",
+    # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
 }
 
 
@@ -607,6 +598,17 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "link_tasks_batch": frozenset({"link_tasks"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
+    # WS-66 RM-3 (D114): the reminder tools read the member's saved zone
+    # (my_work's `GET /projects/my/today`), and the writes read the member's
+    # own list (list_reminders' route) to name the reminder on the card. No
+    # route reads one reminder. `reschedule_reminder` reaches both moves.
+    "list_reminders": frozenset({"my_work"}),
+    "set_reminder": frozenset({"my_work"}),
+    "update_reminder": frozenset({"list_reminders", "my_work"}),
+    "reschedule_reminder": frozenset({"list_reminders", "my_work"}),
+    "resolve_reminder": frozenset({"list_reminders"}),
+    "reopen_reminder": frozenset({"list_reminders"}),
+    "promote_reminder": frozenset({"list_reminders"}),
     # WS-46 P11 — what the page shows: the node read, and the views read for a
     # saved view by name. It writes nothing.
     "show_view": frozenset({"project_summary", "project_views"}),
@@ -1082,6 +1084,48 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/reports"): {"payload": "report_save.name"},
     ("PATCH", "/projects/reports/{report_id}"): {"payload": "report_save.report_id"},
     ("POST", "/projects/reports/preview"): {"payload": "render_report.template"},
+    # ── the member's reminders (WS-66 RM-3, D114, G24) ───────────────────
+    # The tool sets `tz` by itself: the member's saved zone, sent with each
+    # time. `at` is the tool's word for `fire_at`.
+    ("GET", "/projects/my/reminders"): {
+        "state": "list_reminders.state",
+        "start": "list_reminders.start",
+        "end": "list_reminders.end",
+        "limit": "list_reminders.limit",
+    },
+    ("POST", "/projects/my/reminders"): {
+        "title": "set_reminder.title",
+        "fire_at": "set_reminder.at",
+        "tz": "set_reminder",
+        "kind": "set_reminder.kind",
+        "notes": "set_reminder.notes",
+        "subject_kind": "set_reminder.subject_kind",
+        "subject_id": "set_reminder.subject_id",
+        "estimate_minutes": "set_reminder.estimate_minutes",
+        "important": "set_reminder.important",
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
+        "title": "update_reminder.title",
+        "fire_at": "update_reminder.at",
+        "tz": "update_reminder",
+        "kind": "update_reminder.kind",
+        "notes": "update_reminder.notes",
+        "subject_kind": "update_reminder.subject_kind",
+        "subject_id": "update_reminder.subject_id",
+        "estimate_minutes": "update_reminder.estimate_minutes",
+        "important": "update_reminder.important",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {
+        "action": "resolve_reminder.answer",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
+        "fire_at": "reschedule_reminder.in_minutes",
+        "tz": "reschedule_reminder",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
+        "fire_at": "reschedule_reminder.at",
+        "tz": "reschedule_reminder",
+    },
 }
 
 _ORDER_REASON = "The order of rows on screen, which a person drags in the app."
@@ -1305,15 +1349,9 @@ FIELD_GAPS: dict[str, str] = {
     # SENDS or FIELD_EXEMPT.
     # WS-55 EA-12a (EA12-9): the agent-run routes, for the chat in EA-12e.
     "G23": "EA-12e",
-    # WS-66 RM-1 (D114): the reminder routes, for the tools of RM-3.
-    "G24": "RM-3",
+    # G24 (the reminder routes of WS-66 RM-1) closed in RM-3 (2026-10-25).
+    # Its rows are in SENDS.
 }
-
-#: The body of a new reminder and of a PATCH, one decision each (G24).
-_REMINDER_BODY = (
-    "title", "fire_at", "tz", "kind", "notes", "subject_kind", "subject_id",
-    "estimate_minutes", "important",
-)
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
@@ -1342,23 +1380,6 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
     # WS-55 SW-11a: the resume of a stalled run, with the other run tools.
     ("POST", "/projects/agent-runs/{run_id}/resume"): {"idempotency_key": "G23"},
-    # G24 (WS-66 RM-1, D114): the member's reminders. RM-3 builds the tools of
-    # calendar_events_reminders.md §5.8, and moves each row to SENDS as its
-    # tool starts to send the field. `/reopen` and `/promote` take no body.
-    ("GET", "/projects/my/reminders"): {
-        name: "G24" for name in ("state", "start", "end", "limit")
-    },
-    ("POST", "/projects/my/reminders"): {name: "G24" for name in _REMINDER_BODY},
-    ("PATCH", "/projects/my/reminders/{reminder_id}"): {
-        name: "G24" for name in _REMINDER_BODY
-    },
-    ("POST", "/projects/my/reminders/{reminder_id}/resolve"): {"action": "G24"},
-    ("POST", "/projects/my/reminders/{reminder_id}/snooze"): {
-        name: "G24" for name in ("fire_at", "tz")
-    },
-    ("POST", "/projects/my/reminders/{reminder_id}/reschedule"): {
-        name: "G24" for name in ("fire_at", "tz")
-    },
 }
 
 

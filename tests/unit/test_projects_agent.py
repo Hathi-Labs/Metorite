@@ -206,6 +206,9 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
         {"project_id": UUID, "state": "closed", "tags": "bug"},
         {"group_by": "tag", "measure": "cycle_hours_median"},
     ],
+    # WS-66 RM-3 — the member's own reminders: the open ones, and a closed
+    # list in a window with an offset (this fake saves no zone).
+    "list_reminders": [{}, {"state": "done", "start": "2026-10-01T00:00:00+05:30", "limit": 5}],
     # S6 — navigation
     "open_in_app": [
         {"target": "task", "target_id": UUID},

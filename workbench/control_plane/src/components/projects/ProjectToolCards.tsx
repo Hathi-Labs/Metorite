@@ -195,6 +195,15 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
   set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
+  // WS-66 RM-3: the member's reminders. A reminder is not a task, so its
+  // receipt prints `reminder_id:` and no `full_id:`. Only the promote prints
+  // the `full_id:` of the task it made, which opens in Projects.
+  set_reminder: { icon: "Bell", label: "Reminder set" },
+  update_reminder: { icon: "PenLine", label: "Reminder changed" },
+  resolve_reminder: { icon: "CheckCircle2", label: "Reminder answered" },
+  reopen_reminder: { icon: "Undo2", label: "Reminder reopened" },
+  reschedule_reminder: { icon: "CalendarClock", label: "Reminder moved" },
+  promote_reminder: { icon: "Plus", label: "Reminder made a task" },
   delete_area: { icon: "Trash2", label: "Area removed" },
   // S4 — the forms. The receipt is the wrapped tool's.
   edit_task: { icon: "PenLine", label: "Task updated" },
@@ -299,6 +308,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
+  "promote_reminder",
 ]);
 
 /**

@@ -61,10 +61,12 @@ from skill_projects.reads import (
     DELIVERY_MAY_BE_OFF,
     DELIVERY_OFF,
     DELIVERY_ON,
+    REMINDERS,
     SCHEDULE_WORDS,
     _day,
     _names_of,
     _task_line,
+    for_the_model,
 )
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
@@ -81,11 +83,16 @@ from skill_projects.writes import (
     _field_of,
     _fields_block,
     _int_or_none,
+    _my_reminder,
     _node,
     _one_named,
     _org_wide,
     _overlay_values,
     _ref,
+    _reminder_card,
+    _reminder_gate,
+    _reminder_named,
+    _reminder_not_found,
     _resolve_assignee,
     _resolve_assignee_name,
     _same_chase,
@@ -2451,6 +2458,51 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
     )
 
 
+# ── A reminder becomes a task (WS-66 RM-3, D114) ─────────────────────────────
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+async def promote_reminder(reminder_id: str) -> str:
+    """Make one of the member's OPEN reminders a private task in their own
+    personal project ("make it a task"). The task takes the reminder's
+    title and notes. The reminder ends, and it cannot reopen, so the card
+    asks first. Use it when the reminder is real work to track. Pass the
+    reminder_id that list_reminders or set_reminder printed."""
+    if _many(reminder_id):
+        return f"promote_reminder {ONE_ACT}"
+    gate = await _reminder_gate("promote_reminder")
+    if gate:
+        return gate
+    rid, row, whole = await _my_reminder(reminder_id)
+    if row is None and whole:
+        return _reminder_not_found()
+    impact = (
+        f"1 private task in your personal project, made from {_reminder_named(row)} · "
+        "the reminder ends, and it cannot reopen"
+    )
+    rest: dict[str, Any] = dict(_reminder_card(row))
+    if row is not None and row.get("notes"):
+        rest["notes"] = row["notes"]
+    rest["visible to"] = "you only"
+    if not await _confirm(
+        title="Make this reminder a task?", detail=_reminder_named(row), context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    saved = (await post(f"{REMINDERS}/{rid}/promote")) or {}
+    task_id = saved.get("promoted_task_id")
+    if not task_id:
+        # No `reminder_id:` line: the receipt reads an id line as "done".
+        return (
+            "The server answered with no task id, so the task may not exist.\n"
+            + for_the_model("Do not tell the member that the task exists. Check with list_reminders.")
+        )
+    return (
+        f"Made a private task from {data(saved.get('title'))} in your personal project. "
+        f"The reminder is closed, and it cannot reopen.\n  full_id: {task_id}\n"
+        f"  reminder_id: {rid}"
+    )
+
+
 __all__ = [  # noqa: RUF022 — grouped by what they act on
     "archive_project",
     "unarchive_project",
@@ -2479,4 +2531,5 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",
+    "promote_reminder",
 ]

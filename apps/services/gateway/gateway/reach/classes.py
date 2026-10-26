@@ -65,11 +65,27 @@ REACH_CLASS: dict[str, str] = {
     # KB-9b slice 2: a source stopped syncing, for the member who connected it
     # (only that member gets the card). It may interrupt, inside the budget.
     "source_sync_failed": "interrupt",
+    # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
+    # reminders interrupt nobody for now. RE-9 raises them to `urgent`,
+    # `interrupt` and `brief` on web push, with the D114.3 budget exception.
+    # ⚠️ A class does not keep a card out of the brief: the brief takes every
+    # open card of Now and Needs you. `NOT_ON_WHATSAPP` below does that.
+    "reminder_due": "none",
+    "reminder_check": "none",
+    "reminder_unconfirmed": "none",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).
     "notify_me": "interrupt",
 }
+
+#: The kinds that never go on WhatsApp: no brief, no template parameter, no
+#: interrupt and no preview names them (D114.7). They are the member's own
+#: reminders, which can hold private text, and RM-9 lifts this. The chat
+#: brief (``routes/chat_brief.py``) still shows them: the chat is a channel
+#: that D114.7 allows. ``plan.on_whatsapp`` applies it, and
+#: ``tests/unit/test_reach_loop.py`` holds it.
+NOT_ON_WHATSAPP = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
 
 #: The notification reasons that interrupt. A comment or a change does not.
 INTERRUPTING_NOTIFICATIONS = frozenset({"assigned", "mention"})

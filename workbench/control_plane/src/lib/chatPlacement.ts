@@ -109,6 +109,8 @@ const EVIDENCE: readonly string[] = [
   "report_render",
   "open_in_app",
   "show_view",
+  // WS-66 RM-3: the member's own reminders, a read.
+  "list_reminders",
   // ── Tasks (skill-my-tasks) ─────────────────────────────────────────────
   "my_tasks_list",
   "my_tasks_list_schedule",
@@ -237,6 +239,13 @@ const WRITE: readonly string[] = [
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
+  // WS-66 RM-3: the member's reminders. The promote is class C.
+  "set_reminder",
+  "update_reminder",
+  "resolve_reminder",
+  "reopen_reminder",
+  "reschedule_reminder",
+  "promote_reminder",
   // ── Tasks ──────────────────────────────────────────────────────────────
   "my_tasks_capture",
   "my_tasks_capture_many",

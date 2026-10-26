@@ -614,6 +614,15 @@ async def _claim_rows(db: Any, member: str, items: list[StateItem]) -> set[str]:
     return {str(r[0]) for r in result}
 
 
+def settings_day(settings: Any) -> Day:
+    """The ``Day`` of a member's settings row (``UserSettingsModel``): the
+    zone, and the day hours kept inside 0 to 23 and 0 to 24. The one rule of
+    :func:`_hours`, which the reminder loop also reads (WS-66 RM-2)."""
+    return Day(zone_of(getattr(settings, "timezone", None)),
+               _hour(getattr(settings, "day_start_hour", None), DEFAULT_DAY_START, 23),
+               _hour(getattr(settings, "day_end_hour", None), DEFAULT_DAY_END, 24))
+
+
 async def _hours(user: UserContext, db: Any | None) -> Day:
     """The zone and the day hours (§6.8 item 8). A member who holds
     ``feature:tasks`` reads them from ``get_user_settings``. Any other member
@@ -621,10 +630,7 @@ async def _hours(user: UserContext, db: Any | None) -> Day:
     if user.has_permission("feature:tasks"):
         from gateway.routes.tasks.settings import get_user_settings
 
-        settings = await get_user_settings(user=user)
-        return Day(zone_of(getattr(settings, "timezone", None)),
-                   _hour(getattr(settings, "day_start_hour", None), DEFAULT_DAY_START, 23),
-                   _hour(getattr(settings, "day_end_hour", None), DEFAULT_DAY_END, 24))
+        return settings_day(await get_user_settings(user=user))
     from gateway.routes.projects.personal import stored_zone
 
     zone = await stored_zone(db, user.email) if db is not None else None
