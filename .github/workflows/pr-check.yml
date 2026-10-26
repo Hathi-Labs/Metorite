@@ -156,6 +156,14 @@ jobs:
       - name: session-handoff queue injection (blocking)
         run: node .claude/hooks/session-handoff.test.mjs
 
+      # CLAUDE.md §0 names ste-lint.mjs as the STE fence on every markdown
+      # write. Until Metorite #465 no job ran its test, so PR #1362 changed the
+      # hook and showed 18 green checks with none of them testing it. A lint
+      # that nobody tests can go blind silently, as `--staged` did in a
+      # worktree (#460). R7 — the rule names its fence.
+      - name: ste-lint hook (blocking)
+        run: node .claude/hooks/ste-lint.test.mjs
+
       # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
       #
       # These tests read files as text and guard consistency: naming, docs,
