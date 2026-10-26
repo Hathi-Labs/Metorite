@@ -682,10 +682,32 @@ async def _remember_text(
 #: rest is for the database query, the Redis cache and the reply. The OCR
 #: child, its slot wait and its reap all end before this deadline.
 TEXT_ROUTE_BUDGET_S = 55.0
-#: The seconds that the owned fetch (the query, the bytes cache and the mail
-#: provider) may take in a read with OCR. A read with no OCR keeps its old,
-#: unbounded fetch, so the flag off changes nothing.
-FETCH_TIMEOUT_S = 15.0
+#: The seconds that the route waits for the owned fetch (the query, the bytes
+#: cache and the mail provider) in a read with OCR. The fetch itself goes on
+#: after that and fills the bytes cache, so the next read is fast (fix round
+#: 3, P2-2). A read with no OCR keeps its old, unbounded fetch, so the flag
+#: off changes nothing. 30 s and the 22 s of the text parse still end before
+#: the deadline of :data:`TEXT_ROUTE_BUDGET_S`.
+FETCH_TIMEOUT_S = 30.0
+
+#: The fetches that run on after their route gave up. Each task stays here
+#: until it ends, so nothing collects it half done.
+_BACKGROUND_FETCHES: set[asyncio.Task[Any]] = set()
+
+
+def _keep_fetch(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    """Hold *task* until it ends, and read its result so that no "exception
+    was never retrieved" line reaches the log."""
+    _BACKGROUND_FETCHES.add(task)
+
+    def _done(done: asyncio.Task[Any]) -> None:
+        _BACKGROUND_FETCHES.discard(done)
+        if not done.cancelled() and done.exception() is not None:
+            _log.info("attachment_text.fetch_ended_badly",
+                      error=type(done.exception()).__name__)
+
+    task.add_done_callback(_done)
+    return task
 
 
 def _route_reads_with_ocr() -> bool:
@@ -722,8 +744,10 @@ async def attachment_text(
     session has closed. Spec: ``email_app_master_plan.md`` §10.4.12.
 
     With ``ATTACHMENT_OCR`` on, the route reads with OCR (WS-67 OA-3). It
-    bounds the fetch to :data:`FETCH_TIMEOUT_S`, and gives OCR a deadline of
-    :data:`TEXT_ROUTE_BUDGET_S` from the start. A busy OCR slot answers
+    waits :data:`FETCH_TIMEOUT_S` for the fetch and then answers 504, while
+    the fetch goes on in its own session and fills the bytes cache (fix
+    round 3). OCR gets a deadline of :data:`TEXT_ROUTE_BUDGET_S` from the
+    start. A busy OCR slot answers
     ``kind="busy"``. *ocr* ``False`` reads as with the flag off (fix round 2):
     no OCR child, the flag-off cache namespace, the flag-off answers and no
     time bound on the fetch. The reply drafter (``draft_files.py``) passes
@@ -739,6 +763,9 @@ async def attachment_text(
     namespace = _cache_namespace(ocr=ocr)
     org_id = user.organization_id
     hold = _ReadHold(user)
+    #: Set when this request ends. A fetch that runs on after it takes no
+    #: hold (fix round 3), or the member's hold would never come free.
+    ended: list[bool] = []
 
     async def _answer_first(row: Any) -> AttachmentTextModel | None:
         """An answer with no fetch: a refused type, the cache, or busy."""
@@ -748,20 +775,41 @@ async def attachment_text(
         cached = await _cached_text(org_id, row, namespace)
         if cached is not None:
             return cached
-        if not hold.take():
+        if ended or not hold.take():
             return AttachmentTextModel(**_base(row), kind="unreadable", reason=_BUSY_REASON)
         return None
 
-    try:
-        # ⚠️ The session opens OUTSIDE the try (review round 1), so
-        # `TenantUnbound` and a refused connect reach main.py's handlers.
-        async with _tenant_session() as db:
-            got = await _fetch_for_text(
-                _fetch_owned_attachment(
-                    db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
-                ),
-                aid, FETCH_TIMEOUT_S if use_ocr else None,
+    async def _fetch_alone() -> Any:
+        """The owned fetch in a tenant session of its own (fix round 3).
+
+        It runs as a task that outlives the route, so the session must be
+        its own: the route closes its session when it answers 504.
+        ``TenantUnbound`` and a refused connect still reach main.py's
+        handlers, because ``_fetch_for_text`` raises each fault of the
+        database as it is.
+        """
+        async with _tenant_session() as own:
+            return await _fetch_owned_attachment(
+                own, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
             )
+
+    try:
+        if use_ocr:
+            # P2-2: the route waits FETCH_TIMEOUT_S, and the fetch goes on.
+            # It ends in the bytes cache, so the next read does not fetch
+            # again and time out again.
+            fetch = _keep_fetch(asyncio.ensure_future(_fetch_alone()))
+            got = await _fetch_for_text(asyncio.shield(fetch), aid, FETCH_TIMEOUT_S)
+        else:
+            # ⚠️ The session opens OUTSIDE the try (review round 1), so
+            # `TenantUnbound` and a refused connect reach main.py's handlers.
+            async with _tenant_session() as db:
+                got = await _fetch_for_text(
+                    _fetch_owned_attachment(
+                        db, aid, user, max_bytes=MAX_TEXT_INPUT_BYTES, stop=_answer_first,
+                    ),
+                    aid, None,
+                )
         if got.stopped:
             return _text_part(got.stopped, offset)
         row = got.row
@@ -789,6 +837,7 @@ async def attachment_text(
         await _remember_text(org_id, row, answer, namespace)
         return _text_part(answer, offset)
     finally:
+        ended.append(True)
         hold.release()
 
 

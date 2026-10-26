@@ -380,10 +380,12 @@ class TestThePageCap:
         assert found, "read_email_attachment no longer names its wait for the text route"
         wait = float(found.group(1))
         assert wait - 5 >= route.TEXT_ROUTE_BUDGET_S, (route.TEXT_ROUTE_BUDGET_S, wait)
-        # Before OCR: the fetch bound and the parse bound. OCR still gets its
-        # least time inside the deadline.
+        # Fix round 3: the fetch wait is 30 s. The fetch wait and the parse
+        # bound end before the deadline. When they leave OCR less than its
+        # least time, ocr_bounded answers "too slow" and starts no child
+        # (test_a_deadline_with_too_little_time_starts_no_child).
         before_ocr = route.FETCH_TIMEOUT_S + at.DEADLINE_SECONDS + tools._WAIT_MARGIN
-        assert before_ocr + ocr._MIN_OCR_S + ocr._REAP_S <= route.TEXT_ROUTE_BUDGET_S
+        assert before_ocr <= route.TEXT_ROUTE_BUDGET_S, before_ocr
         # With no deadline (the chat tool), the sum of the parts stays under it.
         no_deadline = (at.DEADLINE_SECONDS + tools._WAIT_MARGIN
                        + ocr.OCR_SLOT_WAIT_S + ocr.OCR_TIMEOUT_S + ocr._REAP_S)
@@ -771,19 +773,34 @@ class TestTheWorker:
         this fence holds on Windows too. Each denied call gets EPERM, an x32
         call gets EPERM, a read passes, and another architecture is killed."""
         program = _W.seccomp_program()
-        errno_eperm = _W._SECCOMP_RET_ERRNO | _W._EPERM
+        eperm = _W._SECCOMP_RET_ERRNO | _W._EPERM
+        allow = _W._SECCOMP_RET_ALLOW
         x86 = _W._AUDIT_ARCH_X86_64
         for name, number in _W.SECCOMP_DENIED.items():
-            assert _run_bpf(program, number, x86) == errno_eperm, name
-            assert _run_bpf(program, number | _W._X32_SYSCALL_BIT, x86) == errno_eperm, name
+            assert _run_bpf(program, number, x86) == eperm, name
+            assert _run_bpf(program, number | _W._X32_SYSCALL_BIT, x86) == eperm, name
         for allowed in (0, 1, 3, 9, 60, 231, 13):  # read, write, close, mmap, exit, ...
-            assert _run_bpf(program, allowed, x86) == _W._SECCOMP_RET_ALLOW, allowed
+            assert _run_bpf(program, allowed, x86) == allow, allowed
         assert _run_bpf(program, 0, 0x40000028) == _W._SECCOMP_RET_KILL_PROCESS  # i386
         assert set(_W.SECCOMP_DENIED) == {
             "kill", "tkill", "tgkill", "rt_sigqueueinfo", "rt_tgsigqueueinfo", "pidfd_open",
             "pidfd_send_signal", "ptrace", "process_vm_readv", "process_vm_writev",
             "socket", "socketpair",
+            # Fix round 3.
+            "io_uring_setup", "io_uring_enter", "io_uring_register", "setpriority",
+            "sched_setparam", "sched_setscheduler", "sched_setaffinity", "ioprio_set",
+            "sched_setattr",
         }
+        # Fix round 3: fcntl and ioctl by command, prlimit64 by pid.
+        fcntl_nr, ioctl_nr, prlimit_nr = 72, 16, 302
+        for command, verdict in ((8, eperm), (10, eperm), (15, eperm), (3, allow), (4, allow),
+                                 (1, allow), (0x1_0000_0008, eperm)):
+            assert _run_bpf(program, fcntl_nr, x86, (5, command)) == verdict, command
+        for request, verdict in ((0x8901, eperm), (0x8902, eperm), (0x5401, allow),
+                                 (0x541B, allow)):
+            assert _run_bpf(program, ioctl_nr, x86, (5, request)) == verdict, request
+        for pid, verdict in ((0, allow), (1234, eperm), (1 << 32, eperm), (-1, eperm)):
+            assert _run_bpf(program, prlimit_nr, x86, (pid, 0)) == verdict, pid
 
     def test_the_spec_asks_for_landlock_abi_four(self) -> None:
         assert ocr.MIN_LANDLOCK_ABI == 4
@@ -793,30 +810,39 @@ class TestTheWorker:
             _W._spec(json.dumps(bad))
 
     def test_the_child_confines_itself_before_it_reads_the_bytes(self) -> None:
-        """The order of main() is the control: check, preload, confine, then
-        stdin. A refactor that reads stdin earlier fails here."""
+        """The order of main() is the control (fix round 3): check, confine
+        while the child has one thread, preload, close the limits, then
+        stdin. A refactor that preloads first, or reads stdin earlier, fails
+        here."""
         tree = ast.parse(WORKER.read_text(encoding="utf-8"))
         main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
         calls = [
             ast.unparse(n.func) for n in ast.walk(main) if isinstance(n, ast.Call)
         ]
-        order = [c for c in calls if c in {
-            "_limit_self", "_check_landlock", "_preload", "_confine",
-            "sys.stdin.buffer.read", "_read",
-        }]
-        assert order == [
-            "_limit_self", "_check_landlock", "_preload", "_confine",
-            "sys.stdin.buffer.read", "_read",
-        ], order
+        steps = ["_limit_self", "_check_landlock", "_confine", "_preload", "_close_limits",
+                 "sys.stdin.buffer.read", "_read"]
+        order = [c for c in calls if c in set(steps)]
+        assert order == steps, order
 
 
-def _run_bpf(program: list[tuple[int, int, int, int]], nr: int, arch: int) -> int:
-    """Run a seccomp filter of the worker's four opcodes, for one call."""
+def _run_bpf(
+    program: list[tuple[int, int, int, int]], nr: int, arch: int, args: tuple[int, ...] = (),
+) -> int:
+    """Run a seccomp filter of the worker's four opcodes, for one call.
+
+    *args* are the call's arguments, as 64-bit values. The filter reads the
+    low and high 32-bit words of each, as the kernel lays them out.
+    """
+    data = {0: nr, 4: arch}
+    for index, value in enumerate(args):
+        value &= (1 << 64) - 1
+        data[16 + 8 * index] = value & 0xFFFFFFFF
+        data[20 + 8 * index] = value >> 32
     pc, acc = 0, 0
     for _ in range(len(program) + 1):
         code, jt, jf, k = program[pc]
         if code == 0x20:  # BPF_LD | BPF_W | BPF_ABS
-            acc = {0: nr, 4: arch}[k]
+            acc = data.get(k, 0)
             pc += 1
         elif code == 0x15:  # BPF_JMP | BPF_JEQ | BPF_K
             pc += 1 + (jt if acc == k else jf)
@@ -996,7 +1022,7 @@ class TestTheBlockingPath:
 #: The probe child. It loads the worker by path, confines itself with the
 #: worker's own `_confine` (or not, for the control), then tries each attack.
 _PROBE = r'''
-import errno, importlib.util, json, os, socket, sys
+import ctypes, errno, fcntl, importlib.util, json, os, resource, socket, struct, sys
 spec = importlib.util.spec_from_file_location("w", sys.argv[1])
 w = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(w)
@@ -1005,6 +1031,10 @@ mode, abi, secret, out_path, port = sys.argv[2], int(sys.argv[3]), sys.argv[4], 
 # because the seccomp filter refuses socket() itself.
 pre = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 pre.settimeout(3)
+# A pipe made before the confinement, for the fcntl and ioctl attacks.
+pipe_r, pipe_w = os.pipe()
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
 
 def attempt(fn):
     try:
@@ -1042,6 +1072,40 @@ def udp():
 def unix():
     socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()
 
+def prlimit_parent():
+    # The get form: the filter refuses the call for any pid but 0, and the
+    # control must not cap the stand-in of the gateway.
+    resource.prlimit(os.getppid(), resource.RLIMIT_CPU)
+
+def prlimit_self():
+    resource.prlimit(0, resource.RLIMIT_CPU)
+
+def fcntl_setown():
+    fcntl.fcntl(pipe_r, fcntl.F_SETOWN, os.getppid())
+
+def fcntl_getfl():
+    fcntl.fcntl(pipe_r, fcntl.F_GETFL)
+
+def ioctl_fiosetown():
+    # FIOSETOWN is a socket request: a pipe answers ENOTTY.
+    fcntl.ioctl(pre.fileno(), 0x8901, struct.pack("i", os.getppid()))
+
+def uring():
+    params = (ctypes.c_char * 120)()
+    fd = libc.syscall(ctypes.c_long(425), ctypes.c_uint32(1), ctypes.byref(params))
+    if fd < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    os.close(fd)
+
+def setpriority_parent():
+    ppid = os.getppid()
+    os.setpriority(os.PRIO_PROCESS, ppid, os.getpriority(os.PRIO_PROCESS, ppid))
+
+def setaffinity_parent():
+    ppid = os.getppid()
+    os.sched_setaffinity(ppid, os.sched_getaffinity(ppid))
+
 def lazy_import():
     try:
         import sqlite3  # noqa: F401  (a module and a library that no step loaded)
@@ -1049,9 +1113,14 @@ def lazy_import():
     except ImportError:
         raise OSError(errno.EACCES, "import refused") from None
 
-if mode == "confine":
+if mode == "thread":
+    # A thread that runs before the confinement would stay free of it.
+    import threading, time
+    threading.Thread(target=time.sleep, args=(30,), daemon=True).start()
+if mode in ("confine", "thread"):
     try:
         w._confine({"landlock_abi": abi})
+        w._close_limits()
     except w._Refused as exc:
         print(json.dumps({"confine": exc.reason}))
         sys.exit(0)
@@ -1066,6 +1135,14 @@ print(json.dumps({
     "udp_socket": attempt(udp),
     "unix_socket": attempt(unix),
     "fork": attempt(fork),
+    "prlimit_parent": attempt(prlimit_parent),
+    "prlimit_self": attempt(prlimit_self),
+    "fcntl_setown": attempt(fcntl_setown),
+    "fcntl_getfl": attempt(fcntl_getfl),
+    "ioctl_fiosetown": attempt(ioctl_fiosetown),
+    "io_uring_setup": attempt(uring),
+    "setpriority_parent": attempt(setpriority_parent),
+    "setaffinity_parent": attempt(setaffinity_parent),
     "stdlib_read": attempt(lambda: read(os.path.join(os.path.dirname(os.__file__), "json", "__init__.py"))),
     "lazy_import": attempt(lazy_import),
 }))
@@ -1079,6 +1156,15 @@ _SHIM = (
     " env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')}, capture_output=True, timeout=60)\n"
     "sys.stdout.write(done.stdout.decode())\n"
 )
+
+
+def _io_uring_open_to_all() -> bool:
+    """False when the kernel refuses io_uring to everyone (sysctl 1 or 2)."""
+    try:
+        with open("/proc/sys/kernel/io_uring_disabled", encoding="ascii") as fh:
+            return fh.read().strip() == "0"
+    except OSError:
+        return True  # the sysctl came with Linux 6.6. Before it, io_uring is open.
 
 
 @pytest.fixture
@@ -1125,6 +1211,11 @@ class TestTheConfinement:
         assert got["udp_socket"] == "allowed", got
         assert got["unix_socket"] == "allowed", got
         assert got["fork"] == "allowed", got
+        for name in ("prlimit_parent", "prlimit_self", "fcntl_setown", "fcntl_getfl",
+                     "ioctl_fiosetown", "setpriority_parent", "setaffinity_parent"):
+            assert got[name] == "allowed", (name, got)
+        if _io_uring_open_to_all():
+            assert got["io_uring_setup"] == "allowed", got
 
     def test_the_confined_child_reads_only_the_python_and_library_dirs(
         self, tmp_path, listener,
@@ -1152,6 +1243,34 @@ class TestTheConfinement:
         assert got["udp_socket"] == "refused:EPERM", got
         assert got["unix_socket"] == "refused:EPERM", got
         assert got["tcp_connect"] == "refused:EPERM", got
+
+    @pytest.mark.skipif(sys.platform == "linux" and os.uname().machine != "x86_64",
+                        reason="the seccomp filter is built for x86-64; another machine fails closed")
+    def test_the_confined_child_cannot_reach_its_parent_another_way(
+        self, tmp_path, listener,
+    ) -> None:
+        """Fix round 3, P2-1. The gateway shares the child's uid, so each of
+        these could kill it or slow it: a CPU limit on it (prlimit64), SIGIO
+        through F_SETOWN or FIOSETOWN, its priority, its CPUs, and an
+        io_uring socket. The filter refuses each one. The same calls on the
+        child itself still pass, so the filter is not a blanket refusal."""
+        got = _probe(tmp_path, "confine", min(LANDLOCK_ABI, ocr.MIN_LANDLOCK_ABI), listener)
+        assert got["confine"] == "done", got
+        for name in ("prlimit_parent", "fcntl_setown", "ioctl_fiosetown", "io_uring_setup",
+                     "setpriority_parent", "setaffinity_parent"):
+            assert got[name] == "refused:EPERM", (name, got)
+        assert got["prlimit_self"] == "allowed", got
+        assert got["fcntl_getfl"] == "allowed", got
+
+    def test_a_thread_that_runs_before_the_confinement_fails_closed(
+        self, tmp_path, listener,
+    ) -> None:
+        """Fix round 3, LOW-1. Landlock and seccomp bind the calling thread
+        and the threads that it starts later. A thread that runs already
+        stays free, so the child refuses to confine with two threads."""
+        got = _probe(tmp_path, "thread", min(LANDLOCK_ABI, ocr.MIN_LANDLOCK_ABI), listener)
+        assert got == {"confine": "unavailable"}, got
+        assert _W.thread_count() >= 1
 
     @pytest.mark.skipif(sys.platform == "linux" and LANDLOCK_ABI < 4, reason=(
         f"Landlock ABI {LANDLOCK_ABI} has no network rules; ABI 4 (Linux 6.7) adds TCP. "
@@ -1251,6 +1370,11 @@ def _asks_for_no_ocr(call: ast.Call) -> bool:
 
 
 class TestTheCallers:
+    """Fix round 2, P1. The scan reads the source, so it finds DIRECT calls
+    only: ``parse_bounded(...)`` or ``x.parse_bounded(...)``. A call through
+    another name (``f = parse_bounded``, ``getattr``, ``functools.partial``,
+    a callback) is not found. A review must catch that form."""
+
     def test_every_call_of_a_read_that_can_reach_ocr_is_listed(self) -> None:
         found = {key for key, _call in _read_calls()}
         assert found == set(CALLERS), (
@@ -1365,6 +1489,7 @@ class TestTheCallers:
         with pytest.raises(HTTPException) as refused:
             await _text()
         assert refused.value.status_code == 504
+        assert await _wait_until(lambda: not route._BACKGROUND_FETCHES, 5.0)
         # With the flag off, the fetch keeps its old, unbounded wait.
         monkeypatch.setattr(get_settings(), "attachment_ocr", False, raising=False)
         assert (await _text()).reason == "fetched late"
@@ -1425,4 +1550,121 @@ class TestNoFalseNoWords:
         assert got.kind == "no_text", got
         assert got.reason == (
             "I read the first 15 of 200 pages of this file by OCR, and OCR found no words in them."
+        )
+
+
+
+# ── 14. Fix round 3 ─────────────────────────────────────────────────────────
+
+
+class TestFixRoundThree:
+    async def test_a_slow_fetch_goes_on_and_fills_the_bytes_cache(
+        self, ocr_on, monkeypatch,
+    ) -> None:
+        """P2-2. The route gives up at its fetch bound, and the fetch goes on
+        in its own session. It ends in the bytes cache, so the next read is
+        served from it and fetches nothing. Before the fix, each try fetched
+        again and timed out again."""
+        from contextlib import asynccontextmanager
+
+        _fake_child(monkeypatch, _ok_child(text="ocr words"))
+        h = _Harness(monkeypatch, filename="big.pdf", payload=_scan([["x"]]))
+        calls: list[int] = []
+
+        class _SlowProvider:
+            async def get_attachment(self, _msg: str, _att: str) -> bytes:
+                calls.append(1)
+                await asyncio.sleep(0.8)
+                return h.payload
+
+        @asynccontextmanager
+        async def _session(*_args: Any, **_kwargs: Any):
+            yield SimpleNamespace(provider=_SlowProvider())
+
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(route, "provider_session", _session)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        with pytest.raises(HTTPException) as refused:
+            await _text()
+        assert refused.value.status_code == 504
+        assert await _wait_until(lambda: not route._BACKGROUND_FETCHES, 5.0)
+        assert f"cc:{ORG_A}:email-att:{ATT_ID}" in h.redis.store, "the fetch did not fill the cache"
+        assert not route._READING, "a hold stayed taken"
+        got = await _text()
+        assert got.kind == "pdf" and "ocr words" in got.text, got
+        assert len(calls) == 1, "the second read fetched again"
+
+    async def test_a_fetch_that_runs_on_takes_no_hold(self, ocr_on, monkeypatch) -> None:
+        """P2-2. When the ownership query itself outlasts the bound, the
+        fetch reaches its stop step after the route answered. It must not
+        take the member's hold then, or the member could never read again."""
+        from fastapi import HTTPException
+
+        _Harness(monkeypatch, filename="big.pdf", payload=b"%PDF-1.7")
+        row = SimpleNamespace(id=ATT_ID, filename="big.pdf", mime_type="application/pdf",
+                              provider="microsoft")
+
+        async def _slow_query(_db: Any, _aid: str, _user: Any, *, max_bytes: int, stop: Any) -> Any:
+            await asyncio.sleep(0.6)
+            stopped = await stop(row)
+            assert stopped, "the late stop step took the hold"
+            return SimpleNamespace(stopped=stopped, row=row, content=b"")
+
+        monkeypatch.setattr(route, "_fetch_owned_attachment", _slow_query)
+        monkeypatch.setattr(route, "FETCH_TIMEOUT_S", 0.2)
+        with pytest.raises(HTTPException):
+            await _text()
+        assert await _wait_until(lambda: not route._BACKGROUND_FETCHES, 5.0)
+        assert not route._READING, "the member's hold leaked"
+
+    def test_a_bad_line_stops_the_stream_at_once(self) -> None:
+        """Note 5. The first line out of the contract ends the read. The
+        stream parses no more, and the caller kills the child."""
+        stream = ocr._Stream()
+        assert stream.feed(b"not json" + bytes([10]) + _lines({"total": 1}).encode()) is False
+        assert stream.bad and stream.total is None
+        assert stream.feed(_lines({"total": 1}).encode()) is False
+
+    async def test_a_child_that_writes_junk_is_killed_at_once(
+        self, ocr_on, monkeypatch, spawned,
+    ) -> None:
+        monkeypatch.setattr(ocr, "OCR_TIMEOUT_S", 20.0)
+        _fake_child(monkeypatch, (
+            "import sys, time; sys.stdin.buffer.read(); "
+            "sys.stdout.write('junk' + chr(10)); sys.stdout.flush(); time.sleep(120)"
+        ))
+        start = time.monotonic()
+        assert await ocr.ocr_bounded(_image(["x"], "PNG"), ".png") == ocr._FAILED
+        assert time.monotonic() - start < 10, "the parent waited for the timeout"
+        assert spawned and spawned[0].returncode is not None
+
+    async def test_the_reap_keeps_a_page_that_ended_before_the_kill(self) -> None:
+        """Note 5. After a time kill, the reap reads the rest of stdout. A
+        page line that waited in the pipe goes to the stream, not away."""
+        stream = ocr._Stream()
+        stream.feed(_lines({"total": 3}, {"page": "first"}).encode())
+        reader = asyncio.StreamReader()
+        reader.feed_data(_lines({"page": "late page"}).encode())
+        reader.feed_eof()
+
+        async def _wait() -> int:
+            return -9
+
+        proc = SimpleNamespace(stdout=reader, wait=_wait, pid=1)
+        await ocr._reap(proc, stream)
+        assert stream.pages == ["first", "late page"]
+        assert reader.at_eof()
+
+    def test_the_chat_tool_says_how_many_pages_ocr_read(
+        self, ocr_on, ws, monkeypatch,  # noqa: F811
+    ) -> None:
+        """LOW-2. A capped read with no words names its counts in the chat
+        too, as the route does."""
+        pages = _lines({"total": 200}, *[{"page": ""}] * ocr.MAX_OCR_PAGES, {"end": "pages"})
+        _fake_child(monkeypatch, f"import sys; sys.stdin.buffer.read(); sys.stdout.write({pages!r})")
+        _attach(ws, SID_A, "blank.pdf", _scan([[]]))
+        assert _read(ws, SID_A, "blank.pdf") == (
+            "I could not read blank.pdf. I read the first 15 of 200 pages of this file by OCR, "
+            "and OCR found no words in them."
         )

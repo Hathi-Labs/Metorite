@@ -250,18 +250,28 @@ clone cache.
    and no secret. Each library in it runs on one thread, and it never
    downloads a model.
 
-   ⚠️ The order of `main()` is the control (fix rounds 1 and 2). The child
-   checks Landlock, preloads every library and model, and confines itself
-   with `_confine`. Only then does it read the bytes. Landlock lets it read
-   only the Python and library dirs, never a dir that holds the cwd. It may
-   write nowhere, and with ABI 4 it may not bind or connect TCP. A seccomp
-   filter refuses each signal to another process, `ptrace` and each socket.
+   ⚠️ The order of `main()` is the control (fix rounds 1 to 3). The child
+   checks Landlock, then confines itself with `_confine` while it has ONE
+   thread, then preloads every library and model, then closes its limits
+   (`_close_limits`). Only then does it read the bytes. Landlock and seccomp
+   bind only the calling thread and its later threads, so a second thread
+   before `_confine` answers `unavailable`. The onnxruntime helper thread
+   starts in `_preload`, so it starts confined.
+
+   Landlock lets the child read only the Python and library dirs, never a
+   dir that holds the cwd. It may write nowhere, and with ABI 4 it may not
+   bind or connect TCP. The seccomp filter is a DENY list
+   (`seccomp_program`). It refuses each signal to another process,
+   `ptrace`, each socket, io_uring, and each call that sets the priority or
+   the CPUs of a process. It refuses `fcntl` and `ioctl` that make the
+   kernel signal another process, and `prlimit64` for any pid but 0.
 
    `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_AS` and `RLIMIT_CPU` cap the rest.
    A kernel below ABI 4, another machine than x86-64, or a filter that does
-   not install answers `unavailable`, so it fails closed. A new lazy import
-   or lazy thread in the parse breaks under the confinement, so put it in
-   `_preload`. The fence `TestTheConfinement` runs on Linux only.
+   not install answers `unavailable`, so it fails closed. A new library in
+   the parse must load from a Python or library dir, and a new lazy thread
+   must start in `_preload`. The fence `TestTheConfinement` runs on Linux
+   only. Spec §4.1 lists what its probe proved, and the deny-list risk.
 
    At most one child lives in the process (`_SLOT`, process-wide). The wait
    for it is an `await`, and a wait past 3 s answers busy (`ReaderBusy`).

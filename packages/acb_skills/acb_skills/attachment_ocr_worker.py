@@ -25,7 +25,7 @@ line, and exits 0 (fix round 2):
 * ``{"refused": "<code>"}`` in place of the rest. The parent owns every
   sentence for the member, so the child sends a code only.
 
-**The order of the steps** is the control (fix round 1, P1). The child runs
+**The order of the steps** is the control (fix rounds 1 to 3). The child runs
 as the gateway's user, with the gateway's file system and network. So a bug
 in a native parser must find nothing to read and nowhere to send it:
 
@@ -33,26 +33,34 @@ in a native parser must find nothing to read and nowhere to send it:
 2. ``_check_landlock``: on Linux, a kernel with Landlock below the ABI that
    the spec asks for (4: the file system, and TCP bind and connect) refuses
    with ``unavailable``. It fails closed.
-3. ``_preload``: every native library loads, all three models load, and one
-   small OCR run warms the engine. After this step no library needs to open
-   a new file or start a thread.
-4. ``_confine``: Landlock lets the child READ only the Python dirs and the
-   shared library dirs, and write nowhere. With ABI 4 or later it refuses
-   each TCP bind and connect. Then a seccomp filter (fix round 2) answers
-   EPERM to each call that reaches another process or opens a socket:
-   ``kill``, ``tkill``, ``tgkill``, the two ``rt_*sigqueueinfo`` calls, the
-   two ``pidfd`` calls, ``ptrace``, ``process_vm_readv``,
-   ``process_vm_writev``, ``socket`` and ``socketpair``. So a parser bug
-   cannot kill the gateway or send a UDP or Unix packet. A glibc ``abort()``
-   still ends the child, because abort falls back to a fault. The filter
-   checks the architecture, and refuses an x32 call. Then ``RLIMIT_NPROC``
-   is 0, so no fork and no new thread, and ``RLIMIT_FSIZE`` is 0, so no
-   file grows.
-5. Only then does the child read the untrusted bytes from stdin.
+3. ``_confine``, while the child has ONE thread (fix round 3). Landlock and a
+   seccomp filter bind the calling thread and each thread that it starts
+   later, and not a thread that runs already. So the child counts its
+   threads first, and answers ``unavailable`` for any count but 1. Landlock
+   lets the child READ only the Python dirs and the shared library dirs, and
+   write nowhere. With ABI 4 or later it refuses each TCP bind and connect.
+   The seccomp filter is :func:`seccomp_program`, a DENY list.
+4. ``_preload``: every native library loads, all three models load, and one
+   small OCR run warms the engine. Loading onnxruntime starts a helper
+   thread, which now starts confined.
+5. ``_close_limits``: ``RLIMIT_NPROC`` is 0, so no fork and no new thread,
+   and ``RLIMIT_FSIZE`` is 0, so no file grows. The filter lets
+   ``prlimit64`` act on the child itself only, so these two calls pass.
+6. Only then does the child read the untrusted bytes from stdin.
+
+The probe of ``TestTheConfinement`` proves each of these on a confined child,
+on Linux 6.8 with Landlock ABI 4: it cannot read a file of the app dir or
+its parent's environ, write a file, fork, open a TCP, UDP or Unix socket, or
+set up io_uring. It cannot send a signal to its parent, set the parent's
+limits or priority, or make the kernel send the parent SIGIO through
+``F_SETOWN`` or ``FIOSETOWN``. A glibc ``abort()`` still ends the child,
+because abort falls back to a fault. The filter refuses each call that it
+names. It does not refuse a call that it does not name, so it is no proof
+against a call that nobody listed (spec §4.1, the residual risk).
 
 Landlock and seccomp are Linux features. On Windows, the dev box only, steps
-2 and 4 do nothing, and the parent logs ``attachment_ocr.unconfined``. On a
-Linux box that is not x86-64, the filter cannot be built, so the child
+2, 3 and 5 do nothing, and the parent logs ``attachment_ocr.unconfined``. On
+a Linux box that is not x86-64, the filter cannot be built, so the child
 answers ``unavailable``.
 
 **The limits.** Every library runs on one thread: the parent sets the thread
@@ -155,11 +163,17 @@ _BPF_LD_W_ABS = 0x20
 _BPF_JEQ_K = 0x15
 _BPF_JGE_K = 0x35
 _BPF_RET_K = 0x06
-#: The offsets of ``nr`` and ``arch`` in ``struct seccomp_data``.
+#: The offsets in ``struct seccomp_data`` (x86-64 is little-endian): the call
+#: number, the architecture, and the low and high words of ``args[0]`` and
+#: the low word of ``args[1]``.
 _DATA_NR = 0
 _DATA_ARCH = 4
+_DATA_ARG0_LOW = 16
+_DATA_ARG0_HIGH = 20
+_DATA_ARG1_LOW = 24
 #: The x86-64 calls that the confined child never needs, each with its
-#: number. Each one reaches another process, or opens a socket.
+#: number. Each one reaches another process, opens a socket, or changes the
+#: scheduling of a process. The filter answers EPERM to each of them.
 SECCOMP_DENIED: dict[str, int] = {
     "kill": 62,
     "tkill": 200,
@@ -173,7 +187,27 @@ SECCOMP_DENIED: dict[str, int] = {
     "process_vm_writev": 311,
     "socket": 41,
     "socketpair": 53,
+    # Fix round 3. io_uring can make a socket with no socket() call
+    # (IORING_OP_SOCKET), so no ring is set up at all.
+    "io_uring_setup": 425,
+    "io_uring_enter": 426,
+    "io_uring_register": 427,
+    # Fix round 3. Each can act on the gateway's pid, which has our uid.
+    "setpriority": 141,
+    "sched_setparam": 142,
+    "sched_setscheduler": 144,
+    "sched_setaffinity": 203,
+    "ioprio_set": 251,
+    "sched_setattr": 314,
 }
+_SYS_FCNTL = 72
+_SYS_IOCTL = 16
+_SYS_PRLIMIT64 = 302
+#: The ``fcntl`` commands that make the kernel send a signal to another
+#: process when the file is ready: F_SETOWN, F_SETSIG, F_SETOWN_EX.
+FCNTL_DENIED: tuple[int, ...] = (8, 10, 15)
+#: The ``ioctl`` requests that do the same: FIOSETOWN, SIOCSPGRP.
+IOCTL_DENIED: tuple[int, ...] = (0x8901, 0x8902)
 
 
 class _SockFilter(ctypes.Structure):
@@ -192,24 +226,57 @@ class _SockFprog(ctypes.Structure):
 def seccomp_program() -> list[tuple[int, int, int, int]]:
     """The filter, as ``(code, jt, jf, k)`` instructions.
 
-    A call of another architecture kills the child. A call with the x32 bit
-    and each call of :data:`SECCOMP_DENIED` answers EPERM. Every other call
-    passes. A jump counts from the next instruction.
+    A call of another architecture kills the child. These answer EPERM: a
+    call with the x32 bit, each call of :data:`SECCOMP_DENIED`, ``fcntl``
+    with a command of :data:`FCNTL_DENIED`, ``ioctl`` with a request of
+    :data:`IOCTL_DENIED`, and ``prlimit64`` for any pid but 0 (the child
+    itself). Every other call passes. A jump counts from the next
+    instruction. The kernel reads ``cmd`` and ``request`` as 32-bit values,
+    so the low word of ``args[1]`` decides.
     """
-    denied = sorted(SECCOMP_DENIED.values())
-    refuse_at = 6 + len(denied)
-    program = [
-        (_BPF_LD_W_ABS, 0, 0, _DATA_ARCH),
-        (_BPF_JEQ_K, 1, 0, _AUDIT_ARCH_X86_64),
-        (_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL_PROCESS),
-        (_BPF_LD_W_ABS, 0, 0, _DATA_NR),
-        (_BPF_JGE_K, refuse_at - 5, 0, _X32_SYSCALL_BIT),
-    ]
-    for index, number in enumerate(denied, start=5):
-        program.append((_BPF_JEQ_K, refuse_at - (index + 1), 0, number))
-    program.append((_BPF_RET_K, 0, 0, _SECCOMP_RET_ALLOW))
-    program.append((_BPF_RET_K, 0, 0, _SECCOMP_RET_ERRNO | _EPERM))
-    return program
+    program: list[list[Any]] = []
+    labels: dict[str, int] = {}
+
+    def emit(code: int, k: int, jt: int | str = 0, jf: int | str = 0) -> None:
+        program.append([code, jt, jf, k])
+
+    emit(_BPF_LD_W_ABS, _DATA_ARCH)
+    emit(_BPF_JEQ_K, _AUDIT_ARCH_X86_64, jt=1)
+    emit(_BPF_RET_K, _SECCOMP_RET_KILL_PROCESS)
+    emit(_BPF_LD_W_ABS, _DATA_NR)
+    emit(_BPF_JGE_K, _X32_SYSCALL_BIT, jt="refuse")
+    for number in sorted(SECCOMP_DENIED.values()):
+        emit(_BPF_JEQ_K, number, jt="refuse")
+    emit(_BPF_JEQ_K, _SYS_FCNTL, jt="fcntl")
+    emit(_BPF_JEQ_K, _SYS_IOCTL, jt="ioctl")
+    emit(_BPF_JEQ_K, _SYS_PRLIMIT64, jt="prlimit")
+    emit(_BPF_RET_K, _SECCOMP_RET_ALLOW)
+    labels["fcntl"] = len(program)
+    emit(_BPF_LD_W_ABS, _DATA_ARG1_LOW)
+    for command in FCNTL_DENIED:
+        emit(_BPF_JEQ_K, command, jt="refuse")
+    emit(_BPF_RET_K, _SECCOMP_RET_ALLOW)
+    labels["ioctl"] = len(program)
+    emit(_BPF_LD_W_ABS, _DATA_ARG1_LOW)
+    for request in IOCTL_DENIED:
+        emit(_BPF_JEQ_K, request, jt="refuse")
+    emit(_BPF_RET_K, _SECCOMP_RET_ALLOW)
+    labels["prlimit"] = len(program)
+    emit(_BPF_LD_W_ABS, _DATA_ARG0_LOW)
+    emit(_BPF_JEQ_K, 0, jf="refuse")
+    emit(_BPF_LD_W_ABS, _DATA_ARG0_HIGH)
+    emit(_BPF_JEQ_K, 0, jf="refuse")
+    emit(_BPF_RET_K, _SECCOMP_RET_ALLOW)
+    labels["refuse"] = len(program)
+    emit(_BPF_RET_K, _SECCOMP_RET_ERRNO | _EPERM)
+    out: list[tuple[int, int, int, int]] = []
+    for index, (code, jt, jf, k) in enumerate(program):
+        jt = labels[jt] - (index + 1) if isinstance(jt, str) else jt
+        jf = labels[jf] - (index + 1) if isinstance(jf, str) else jf
+        if not (0 <= jt <= 255 and 0 <= jf <= 255):
+            raise ValueError("a seccomp jump is out of range")
+        out.append((code, jt, jf, k))
+    return out
 
 
 def _install_seccomp(libc: Any) -> None:
@@ -349,19 +416,36 @@ def _handled_fs(abi: int) -> int:
     return bits
 
 
-def _confine(spec: dict[str, Any]) -> None:
-    """Landlock and the process caps, after the preload, before the bytes.
+def thread_count() -> int:
+    """The threads of this process, from ``/proc/self/status``, or 0."""
+    try:
+        with open("/proc/self/status", encoding="ascii", errors="replace") as status:
+            for line in status:
+                if line.startswith("Threads:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
 
-    It raises ``_Refused("unavailable")`` when a step fails, so the child
-    never parses unconfined on Linux. It does nothing on other systems.
+
+def _confine(spec: dict[str, Any]) -> None:
+    """Landlock and the seccomp filter, BEFORE the preload and the bytes.
+
+    Landlock and seccomp bind the calling thread and the threads that it
+    starts later. A thread that runs already stays free, and a parser bug
+    shares its memory (fix round 3, LOW-1). So the child must have exactly
+    one thread here, and it confines itself before any native library can
+    start one. The onnxruntime helper thread of ``_preload`` then starts
+    confined. It raises ``_Refused("unavailable")`` when a step fails, so
+    the child never parses unconfined on Linux. It does nothing on other
+    systems.
     """
     if sys.platform != "linux":
         return
-    import resource
-    import signal
-
     abi = landlock_abi()
     if abi < spec["landlock_abi"]:
+        raise _Refused("unavailable")
+    if thread_count() != 1:
         raise _Refused("unavailable")
     libc = _libc()
     attr = _RulesetAttr(
@@ -395,8 +479,22 @@ def _confine(spec: dict[str, Any]) -> None:
             raise _Refused("unavailable")
     finally:
         os.close(ruleset)
-    # No signal to another process, no ptrace, no new socket (fix round 2).
+    # No signal to another process, no ptrace, no new socket (fix rounds 2, 3).
     _install_seccomp(libc)
+
+
+def _close_limits() -> None:
+    """No fork, no new thread and no file growth, after the preload.
+
+    ``RLIMIT_NPROC`` 0 must come after ``_preload``, because onnxruntime
+    starts a thread there. ``setrlimit`` is ``prlimit64`` on the child
+    itself, which the filter lets pass (pid 0). It does nothing off Linux.
+    """
+    if sys.platform != "linux":
+        return
+    import resource
+    import signal
+
     # A write past the cap fails with EFBIG and does not kill the child.
     signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
@@ -524,8 +622,10 @@ def _preload(kind: str) -> Any:
     """Load every library and model that the read uses, and warm the engine.
 
     rapidocr loads each model at its first use, and onnxruntime sets up its
-    threads at its first run. Both must happen here, before ``_confine``
-    stops new files and new threads.
+    threads at its first run. Both happen here, inside the confinement of
+    ``_confine`` and before ``_close_limits`` stops new threads. Landlock
+    lets each library and model file be read here, because each one lies in
+    a Python dir or a library dir.
     """
     from PIL import Image, ImageDraw, ImageFont, ImageOps, TiffImagePlugin  # noqa: F401
 
@@ -587,8 +687,10 @@ def main(argv: list[str]) -> int:
         spec = _spec(argv[1] if len(argv) > 1 else "")
         _limit_self(spec)
         _check_landlock(spec)
-        engine = _preload(spec["kind"])
+        # One thread here, so the confinement binds each thread (round 3).
         _confine(spec)
+        engine = _preload(spec["kind"])
+        _close_limits()
         # The untrusted bytes arrive only now, after the confinement.
         data = sys.stdin.buffer.read(spec["max_bytes"] + 1)
         if len(data) > spec["max_bytes"]:

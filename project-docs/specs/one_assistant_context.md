@@ -47,7 +47,7 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
 - Open: the visible chip in the chat is a later slice.
 
 **OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
-on, and it is off by default. §4.1 records what was built, and the two
+on, and it is off by default. §4.1 records what was built, and the three
 conditions to meet before the flag turns on.
 
 **Owner:** WS-67. **Amends:** nothing yet. OA-6 decides if D99's
@@ -137,7 +137,8 @@ With the flag off, each path is byte-identical.
 
 **Who gets OCR.** Only a caller that can wait for it. A caller with a short
 budget reads with `ocr=False`. `TestTheCallers` in the fence fails on a new
-caller, and on a short-budget caller that can reach OCR.
+caller, and on a short-budget caller that can reach OCR. It finds direct
+calls only.
 
 | Caller | Its budget | OCR |
 |---|---|---|
@@ -150,34 +151,70 @@ text" answer where an OCR read looks, and it never reads an OCR answer.
 
 **How the child stays apart.** The OCR runs in a child process
 (`acb_skills/attachment_ocr_worker.py`), never in the gateway. The child gets
-the `child_env` allowlist and no secret. Before it reads one byte of the
-file, it confines itself on Linux:
+the `child_env` allowlist and no secret. On Linux it confines itself in this
+order, before it reads one byte of the file:
 
-- Landlock lets it read only the Python and shared library dirs. It may
-  write nowhere, and it may not bind or connect a TCP socket (ABI 4).
-- A seccomp filter answers EPERM to each signal to another process, to
-  `ptrace` and to each new socket. It also refuses the two calls that read
-  or write the memory of another process.
-  So a parser bug cannot kill the gateway, or send a UDP or Unix packet.
-- A kernel below Landlock ABI 4 makes the child answer "unavailable". So
-  does another machine than x86-64, and a filter that does not install. It
-  fails closed. The box runs kernel 6.8 on x86-64, which has ABI 4.
-- `RLIMIT_NPROC` is 0 (no fork), `RLIMIT_FSIZE` is 0, and `RLIMIT_AS` and
-  `RLIMIT_CPU` cap memory and CPU.
+1. It counts its threads, and answers "unavailable" for any count but 1.
+   Landlock and seccomp bind the calling thread and the threads that it
+   starts later. A thread that runs already stays free.
+2. Landlock lets it read only the Python and shared library dirs. It may
+   write nowhere, and it may not bind or connect a TCP socket (ABI 4).
+3. A seccomp filter answers EPERM to each call on its deny list.
+4. It loads its libraries and models. The helper thread of onnxruntime
+   starts here, so it starts confined.
+5. `RLIMIT_NPROC` and `RLIMIT_FSIZE` go to 0. `RLIMIT_AS` and `RLIMIT_CPU`
+   cap memory and CPU from the start.
+
+A kernel below Landlock ABI 4 makes the child answer "unavailable". So does
+another machine than x86-64, and a filter that does not install. It fails
+closed. The box runs kernel 6.8 on x86-64, which has ABI 4.
+
+**What the probes proved.** `TestTheConfinement` runs one probe child twice:
+unconfined, and confined by the worker's own code. The table holds the
+confined result on the dev VPS (kernel 6.8, Landlock ABI 4, x86-64). Each
+attack worked unconfined.
+
+| Attack on the gateway or the box | Confined |
+|---|---|
+| Read a file of the app dir, or the parent's environ | EACCES (Landlock) |
+| Write a file | EACCES (Landlock) |
+| Connect a TCP socket made before the confinement | EACCES (Landlock) |
+| Open a TCP, UDP or Unix socket | EPERM (seccomp) |
+| Set up io_uring | EPERM (seccomp) |
+| Send a signal to the parent | EPERM (seccomp) |
+| Read or set the parent's limits (`prlimit64`) | EPERM (seccomp) |
+| Make the kernel signal the parent (`F_SETOWN`, `FIOSETOWN`) | EPERM (seccomp) |
+| Set the parent's priority or CPUs | EPERM (seccomp) |
+| Fork | EAGAIN (`RLIMIT_NPROC`) |
+| Confine while a second thread runs | refused: "unavailable" |
+
+The same calls on the child itself still pass (`prlimit64` on pid 0,
+`fcntl` with `F_GETFL`). So the filter refuses by call and by argument, not
+in a block.
 
 **Time.** The child writes each page when it ends it. The parent kills the
 child's process group at 28 s, on a cancel, and when its answer passes
 4 MiB. After a time kill, the parent keeps the pages that arrived and says
-how many it read. The email text route bounds the provider fetch at 15 s,
-and gives OCR a deadline of 55 s from its start. So the route answers inside
-the 60 s of `read_email_attachment`.
+how many it read.
 
-**Residual risk.** A child that the confinement holds can still read the
-Python and library dirs, which hold no secret. A Windows dev box runs the
-child unconfined, because Windows has no Landlock and no seccomp.
+The route for the text of an email waits 30 s for the provider fetch,
+and answers 504 after that. The fetch goes on in its own session and fills the bytes cache,
+so the next read is fast. OCR gets a deadline of 55 s from the start of the
+route. With less time left, OCR answers "too slow" and starts no child. So
+the route answers inside the 60 s of `read_email_attachment`.
+
+**Residual risk.**
+
+- The seccomp filter is a DENY list. It refuses each call that it names, and
+  it passes each call that nobody named. The probes prove the calls in the
+  table, and no more. Condition 3 replaces this with an allow list.
+- A confined child can still read the Python and library dirs, which hold no
+  secret.
+- A Windows dev box runs the child unconfined, because Windows has no
+  Landlock and no seccomp.
 
 **Conditions before the flag turns on.** The fix rounds of 2026-10-25 record
-these two, and build neither:
+these three, and build none of them:
 
 1. **A share for each organization.** One child slot serves the whole
    process. A long scan holds it for up to 30 s. In that time each other
@@ -187,8 +224,11 @@ these two, and build neither:
    that it reads no image. The docstring of `read_attachment` names only
    document, sheet and text files. `addendum.ATTACHMENT_FAILURE_RULE` tells
    the model to suggest a .docx or a .pdf. So the model does not try an
-   image. The pull request that turns the flag on changes these three texts,
-   because they are prompt text.
+   image. The pull request that turns the flag on changes these texts.
+3. **An allow list from a trace.** Trace the system calls of a real OCR read
+   on the box, for a PDF scan and for an image. Build an allow list from
+   that trace. Then review the deny list against it, or replace the deny
+   list with it.
 
 Fence: `tests/unit/test_attachment_ocr.py`. Its Linux class
 `TestTheConfinement` runs on the Linux CI.

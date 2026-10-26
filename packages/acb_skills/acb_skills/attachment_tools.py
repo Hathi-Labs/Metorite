@@ -407,7 +407,8 @@ async def read_attachment(name: str, offset: int = 0) -> str:
         _log.info("attachment.refused", kind=where.suffix, size=len(found.data))
         return f"I could not read {where.name}. {got}"
     if got.ocr and text_state(got) != "words":
-        return f"I could not read {where.name}. {attachment_ocr.NO_WORDS_SENTENCE}"
+        # A capped read says how many pages OCR read (fix round 3, LOW-2).
+        return f"I could not read {where.name}. {attachment_ocr.no_words_sentence(got)}"
     _log.info(
         "attachment.read", kind=where.suffix, size=len(found.data), chars=len(got.text),
         legacy=found.legacy, stopped=got.stopped,

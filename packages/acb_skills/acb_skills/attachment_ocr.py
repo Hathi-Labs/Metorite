@@ -22,15 +22,15 @@ gets the bytes on stdin and writes one JSON line for each step on stdout
 its CPU time (``RLIMIT_CPU``) and its priority. Every library in it runs on
 one thread, because the box has two cores.
 
-**Confinement** (fix rounds 1 and 2). The child runs as the gateway's user.
-So before it reads one untrusted byte, it confines itself. Landlock lets it
-read only the Python and library dirs, write nowhere, and not bind or connect
-a TCP socket (Landlock ABI :data:`MIN_LANDLOCK_ABI`). A seccomp filter refuses
-each signal to another process, ``ptrace``, the cross-process memory calls
-and each new socket. It may not fork or grow a file. A Linux kernel below that
-ABI, another architecture than x86-64, or a filter that does not install makes
-the child answer ``unavailable``, so it fails closed. The worker's docstring
-gives the steps.
+**Confinement** (fix rounds 1 to 3). The child runs as the gateway's user.
+So before it loads a library or reads one untrusted byte, it confines itself,
+while it has one thread. Landlock lets it read only the Python and library
+dirs, write nowhere, and not bind or connect a TCP socket (Landlock ABI
+:data:`MIN_LANDLOCK_ABI`). A seccomp DENY list refuses the calls that reach
+another process or open a socket, as spec §4.1 lists them. It may not fork
+or grow a file. A Linux kernel below that ABI, a second thread, another
+machine than x86-64, or a filter that does not install makes the child answer
+``unavailable``, so it fails closed. The worker's docstring gives the steps.
 
 **The child dies with its read.** It starts in a new session. The parent
 kills its process group at the timeout, on a cancel, and when its answer
@@ -349,17 +349,21 @@ class _Stream:
         self.timed_out = False
 
     def feed(self, chunk: bytes) -> bool:
-        """Take *chunk*. ``False`` when the answer passed the cap."""
+        """Take *chunk*. ``False`` when the answer passed the cap, or when a
+        line broke the contract: the caller then kills the child at once,
+        and parses no more of it (fix round 3)."""
+        if self.flooded or self.bad:
+            return False
         self.size += len(chunk)
         if self.size > _MAX_ANSWER_BYTES:
             self.flooded = True
             return False
         self._buffer += chunk
-        while (cut := self._buffer.find(b"\n")) >= 0:
+        while not self.bad and (cut := self._buffer.find(b"\n")) >= 0:
             line = bytes(self._buffer[:cut])
             del self._buffer[: cut + 1]
             self._line(line)
-        return True
+        return not self.bad
 
     def _line(self, raw: bytes) -> None:
         if self.bad or self.ended or self.refused is not None:
@@ -448,7 +452,8 @@ def _feed_blocking(stdin: Any, data: bytes) -> None:
 
 
 def _read_blocking(stdout: Any, stream: _Stream) -> None:
-    """Feed stdout to *stream* until the end, or until it passes the cap."""
+    """Feed stdout to *stream* until the end, or until it passes the cap or
+    a line breaks the contract. The caller then kills the child."""
     while chunk := stdout.read1(_CHUNK):
         if not stream.feed(chunk):
             return
@@ -527,20 +532,23 @@ async def _talk(proc: Any, data: bytes, stream: _Stream) -> None:
             await feed
 
 
-async def _reap(proc: Any) -> None:
+async def _reap(proc: Any, stream: _Stream | None = None) -> None:
     """Wait for a killed child, within :data:`_REAP_S`.
 
-    After a flood kill, stdout holds bytes that nobody read. On Windows,
+    After a kill, stdout holds bytes that nobody read. On Windows,
     ``Process.wait()`` then returns only when that pipe closes, so the wait
     ran to the reap bound (the flood fence found it there). On Linux the
-    wait ends without it. So the rest of stdout is read and thrown away on
-    every system: the child is dead, so that ends.
-    ``test_the_reap_drains_the_pipe`` checks that the pipe is at its end.
+    wait ends without it. So the rest of stdout is read on every system: the
+    child is dead, so that ends. ``test_the_reap_drains_the_pipe`` checks
+    that the pipe is at its end. The bytes go to *stream* (fix round 3), so
+    a page that ended just before a time kill is kept. A stream that is
+    flooded or bad takes no more, and the bytes are thrown away.
     """
     async def _drain_and_wait() -> None:
         with contextlib.suppress(Exception):
-            while await proc.stdout.read(_CHUNK):
-                pass
+            while chunk := await proc.stdout.read(_CHUNK):
+                if stream is not None:
+                    stream.feed(chunk)
         await proc.wait()
 
     try:
@@ -594,7 +602,7 @@ async def _run_child(
         if proc.returncode is None:
             _kill_group(proc)
         # Always: a child that exited can still hold an unread pipe open.
-        await _reap(proc)
+        await _reap(proc, stream)
     return stream
 
 
