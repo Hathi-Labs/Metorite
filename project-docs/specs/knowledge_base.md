@@ -1143,28 +1143,48 @@ off, no source statement runs and the page cards still come. With it on, the
 read of the viewer's own sources runs in the SAME one session.
 
 The read names the org, `lower(owner_email) = :kb_viewer` and
-`state <> 'disconnected'`. It reads 10 sources at most (`SOURCES_MAX`). A source
-fails when its state is `needs_reconnect`. A source also fails when its three
-newest finished runs of kind `changes` or `reconcile` all have status `failed`
-with an error other than `stale` or `superseded`. A stopped run is finished and
-is not failed, so it breaks the three. A running run is not finished. Fewer
-than three finished runs never fail. The read uses `kb_sync_runs_source_started_idx`.
+`state <> 'disconnected'`. It reads 10 sources at most (`SOURCES_MAX`). It uses
+`kb_sync_runs_source_started_idx`.
+
+A source fails when its state is `needs_reconnect`. It also fails when its
+three newest finished runs are all `failed`. Those runs are of kind `changes`
+or `reconcile`. Their error is not `stale` and not `superseded`.
+
+A stopped run is
+finished and is not failed, so it breaks the three. A running run is not
+finished. Fewer than three finished runs never fail.
 
 The card keys on `knowledge:source:<source id>`. Its one act opens
-`/knowledge/sources`. The why line is "Your Google Drive stopped syncing.
-Reconnect it in Knowledge." for `needs_reconnect`, and "The last three syncs
-failed." for the rest. The row holds the id, the provider and the state. So the
-card holds no provider error, no account address and no token. The rank is 31,
-the group is `needs_you`, and the reach class is `interrupt`. `MAX_KINDS` is 26.
-The order before the cut of 15 is source failures, review, gaps, shared.
+`/knowledge/sources`. The why line for `needs_reconnect` is "Your Google Drive
+stopped syncing. Reconnect it in Knowledge." The line for the rest is "The last
+three syncs failed." The row holds the id, the provider, the state and
+`failed_since`.
+
+So the card holds no provider error, no account address and no token.
+
+`failed_since` is a state fact (`state.STATE_FACTS`), and it is the `at` of the
+signal. It changes once for each failure episode. For `needs_reconnect` it is
+`kb_sources.updated_at`, because the loop skips a source that is not `ready`.
+
+For failed runs it is the `started_at` of the newest run before the streak.
+That run is an ok, stopped, stale or superseded run. It stays fixed when a 4th
+or 5th failed run lands. It also stays fixed when the retention sweep prunes
+old failed runs. So a dismissed card returns in a new episode, and a new
+episode gets one new push.
+
+The rank is 31, the group is `needs_you`, and the reach class is `interrupt`.
+`MAX_KINDS` is 26. The order before the cut of 15 is source failures, review,
+gaps, shared.
 
 The bump is `cache.bump_member_safe(org, owner_email)` through
 `kb_sync/owner_bump.py`. `run_source` calls it after `close()` returned, when
 the run closed `failed` or the source went `needs_reconnect`. The discovery
 `_mark` calls it after its session closed. It is never inside a session, because
-of the lock order of KC-3h. A bump failure never fails the run. Fences:
-`tests/unit/test_kb_my_day.py` (`TestTheSourceCard`, `TestTheSourceSignal`,
-`TestTheSyncBump`) and `tests/unit/test_kb_my_day_r8.py` (R8).
+of the lock order of KC-3h. A bump failure never fails the run.
+
+Fences: `tests/unit/test_kb_my_day.py` (`TestTheSourceCard`,
+`TestTheSourceSignal`, `TestTheEpisodeOfASourceCard`, `TestTheSyncBump`) and
+`tests/unit/test_kb_my_day_r8.py` (R8).
 
 The decisions of slice 1:
 

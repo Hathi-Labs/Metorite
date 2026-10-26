@@ -1098,12 +1098,14 @@ def _source_signal(row: dict[str, Any]) -> Signal:
     source_id = str(row["id"])
     name = _PROVIDER_NAMES.get(str(row.get("provider") or ""), "A source")
     reconnect = row.get("state") == "needs_reconnect"
+    since = _iso(row.get("failed_since"))
     return Signal(
         signal_id=f"knowledge:source:{source_id}", app="knowledge",
         kind="source_sync_failed",
         entity={"type": "source", "id": source_id, "label": name}, title=name,
-        facts={"reason": "reconnect" if reconnect else "runs", "provider": name},
-        href=SOURCES_HREF,
+        facts={"reason": "reconnect" if reconnect else "runs", "provider": name,
+               "failed_since": since},
+        href=SOURCES_HREF, at=since,
         acts=(link("open-sources", "Reconnect" if reconnect else "Open Sources",
                    SOURCES_HREF),),
     )

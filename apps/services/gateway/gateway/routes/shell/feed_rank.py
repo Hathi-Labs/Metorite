@@ -97,7 +97,8 @@ BASE: dict[str, int] = {
     "doc_needs_review": 21,
     "doc_shared_with_me": 19,
     # WS-61 KB-9b slice 2: a source that the member connected stopped syncing.
-    # Above every kind of Knowledge, and below the stale task.
+    # Above every kind of Knowledge and the stale task (30), below the
+    # overbooked day (32).
     "source_sync_failed": 31,
 }
 
@@ -201,8 +202,8 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     ``today`` is the member's own date. An unknown kind raises, as ``base``
     does."""
     if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
-                "source_sync_failed", "waiting_quiet", "absent_on_due", "no_answer", "deal_close_passed",
-                "agent_asks"):
+                "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
+                "deal_close_passed", "agent_asks"):
         return "needs_you"
     if kind == "unblocked":
         return "ready"

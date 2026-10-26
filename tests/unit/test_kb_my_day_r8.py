@@ -416,7 +416,7 @@ async def test_the_card_holds_no_code_no_address_and_no_token(conns, app_engine)
     ana = _principal(CONNECTOR, conns.org_a)
     _source(conns, conns.org_a, CONNECTOR, "needs_reconnect", runs=_failed("http_500"))
     rows = await _cards(conns, ana)
-    assert rows and set(rows[0]) == {"id", "provider", "state"}
+    assert rows and set(rows[0]) == {"id", "provider", "state", "failed_since"}
     sig = feed._source_signal(rows[0])
     from datetime import UTC, datetime
     from zoneinfo import ZoneInfo
@@ -457,3 +457,56 @@ async def test_the_provider_reads_in_one_session_with_sources_on(
     opened.clear()
     found = await _bound(conns, ana, lambda: feed._knowledge(ana))
     assert found.signals() == [] and opened == ["kb"]
+
+
+def _add_runs(p: Any, org: str, sid: str,
+              runs: tuple[tuple[str, str, str | None, int], ...]) -> None:
+    with p.admin_engine.begin() as c:
+        for kind, status, error, ago in runs:
+            c.execute(text(
+                "INSERT INTO kb_sync_runs (organization_id, source_id, kind, status, error, "
+                "started_at, finished_at) VALUES (CAST(:o AS uuid), CAST(:s AS uuid), :k, "
+                ":st, :e, now() - make_interval(mins => :a), now() - make_interval(mins => :a))"),
+                {"o": org, "s": sid, "k": kind, "st": status, "e": error, "a": ago})
+
+
+async def test_failed_since_holds_inside_an_episode_and_moves_in_the_next(
+        conns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    ana = _principal(CONNECTOR, conns.org_a)
+    # The last good run is 100 minutes ago. Three failures follow it.
+    sid = _source(conns, conns.org_a, CONNECTOR, runs=(
+        ("changes", "ok", None, 100), *_failed("x", "y", "z", start=10)[::-1]))
+    [first] = await _cards(conns, ana)
+    assert first["id"] == sid and first["failed_since"] is not None
+    # A 4th and a 5th failed run land: the same episode, the same value.
+    _add_runs(conns, conns.org_a, sid, (("reconcile", "failed", "x", 5),))
+    [four] = await _cards(conns, ana)
+    _add_runs(conns, conns.org_a, sid, (("changes", "failed", "x", 2),))
+    [five] = await _cards(conns, ana)
+    assert first["failed_since"] == four["failed_since"] == five["failed_since"]
+    # The source recovers on one ok run and fails three times again: a new value.
+    _add_runs(conns, conns.org_a, sid, (("changes", "ok", None, 1),))
+    assert await _cards(conns, ana) == []
+    with conns.admin_engine.begin() as c:
+        c.execute(text("INSERT INTO kb_sync_runs (organization_id, source_id, kind, status, "
+                       "error, started_at, finished_at) SELECT CAST(:o AS uuid), "
+                       "CAST(:s AS uuid), 'changes', 'failed', 'x', now() + make_interval(secs "
+                       "=> i), now() + make_interval(secs => i) FROM generate_series(1, 3) i"),
+                  {"o": conns.org_a, "s": sid})
+    [again] = await _cards(conns, ana)
+    assert again["failed_since"] > five["failed_since"]
+
+
+async def test_failed_since_of_a_reconnect_is_the_state_change(conns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    ana = _principal(CONNECTOR, conns.org_a)
+    sid = _source(conns, conns.org_a, CONNECTOR, "needs_reconnect")
+    with conns.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_sources SET updated_at = now() - interval '3 days' "
+                       "WHERE id = CAST(:s AS uuid)"), {"s": sid})
+    [row] = await _cards(conns, ana)
+    with conns.admin_engine.connect() as c:
+        stored = c.execute(text("SELECT updated_at FROM kb_sources WHERE id = CAST(:s AS uuid)"),
+                           {"s": sid}).scalar()
+    assert row["failed_since"] == stored

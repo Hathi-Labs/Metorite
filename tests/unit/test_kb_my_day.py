@@ -397,7 +397,7 @@ class TestTheBump:
 
 def _src(n: int = 1, state: str = "ready") -> SimpleNamespace:
     return SimpleNamespace(id=f"00000000-0000-4000-8000-{n:012d}", provider="google_drive",
-                           state=state)
+                           state=state, failed_since=NOW - timedelta(days=n))
 
 
 @pytest.fixture
@@ -512,13 +512,14 @@ class TestTheSourceSignal:
         text = repr(card) + repr(sig)
         for leak in ("invalid_grant", "ana@gmail.example", "ya29.secret", "@"):
             assert leak not in text, leak
-        assert set(sig.facts) == {"reason", "provider"}
+        assert set(sig.facts) == {"reason", "provider", "failed_since"}
 
     def test_the_select_names_no_error_and_no_address(self) -> None:
         sql = my_day._SOURCES_SQL
         assert "last_error" not in sql and "account_email" not in sql
-        assert "account_id" not in sql
-        assert sql.split(" FROM ")[0] == "SELECT s.id, s.provider, s.state"
+        assert "account_id" not in sql and "error_text" not in sql
+        assert sql.startswith("SELECT s.id, s.provider, s.state, (CASE")
+        assert ") AS failed_since FROM kb_sources s " in sql
 
     def test_rank_group_class_and_label(self) -> None:
         from gateway.reach import classes
@@ -724,7 +725,8 @@ class TestTheStateOfAPageCard:
     def test_only_the_page_kinds_carry_review_at(self) -> None:
         assert "review_at" in state.STATE_FACTS
         assert set(state.STATE_FACTS) == {
-            "due_at", "note_ids", "waiting_since", "message_id", "review_at"}
+            "due_at", "note_ids", "waiting_since", "message_id", "review_at",
+            "failed_since"}
 
 
 # ── The review cap (F2), the cache key (F3) and the reads (F4) ──────────────
@@ -768,3 +770,54 @@ class TestTheCapAndTheKey:
             assert "p.state = 'published'" in sql
             assert "s.kind <> 'me'" in sql
             assert "s.archived_at IS NULL" in sql
+
+
+# ── KB-9b slice 2, F1: a dismissed source card returns in a NEW episode ─────
+
+class TestTheEpisodeOfASourceCard:
+    DAY = state.Day(UTC)
+    CTX = state.Context(now=NOW, day=DAY)
+
+    def _card(self, since: datetime, source_state: str = "ready") -> dict[str, Any]:
+        sig = feed._source_signal({"id": "src-1", "provider": "google_drive",
+                                   "state": source_state, "failed_since": since})
+        [card] = feed.build_cards([sig], NOW, UTC, NOW.date())
+        return {**card, "state_fp": state.state_fp(card["signal_id"], card["facts"])}
+
+    def _dismissed(self, card: dict[str, Any]) -> dict[str, Any]:
+        return {"state": "dismissed", "kind": "source_sync_failed",
+                "fingerprint": card["state_fp"]}
+
+    def test_failed_since_is_a_state_fact_and_the_signal_time(self) -> None:
+        assert "failed_since" in state.STATE_FACTS
+        since = NOW - timedelta(days=2)
+        sig = feed._source_signal({"id": "src-1", "provider": "google_drive",
+                                   "state": "ready", "failed_since": since})
+        assert sig.facts["failed_since"] == since.isoformat() == sig.at
+
+    def test_the_same_episode_stays_hidden_a_new_one_returns(self) -> None:
+        first = self._card(NOW - timedelta(days=30))
+        dismissed = self._dismissed(first)
+        # A 4th and a 5th failed run leave the anchor where it was.
+        again = self._card(NOW - timedelta(days=30))
+        assert again["state_fp"] == first["state_fp"]
+        assert state.decide(again, dismissed, self.CTX).visible is False
+        # Weeks later the source fails again: a new anchor, a new card.
+        later = self._card(NOW - timedelta(hours=1))
+        assert later["state_fp"] != first["state_fp"]
+        assert state.decide(later, dismissed, self.CTX).visible is True
+
+    def test_a_reconnect_episode_returns_too(self) -> None:
+        first = self._card(NOW - timedelta(days=9), "needs_reconnect")
+        later = self._card(NOW - timedelta(hours=2), "needs_reconnect")
+        assert later["state_fp"] != first["state_fp"]
+        assert state.decide(
+            later, self._dismissed(first), self.CTX).visible is True
+
+    def test_the_push_print_follows_the_episode(self) -> None:
+        from gateway.reach import plan
+
+        first = self._card(NOW - timedelta(days=30))
+        later = self._card(NOW - timedelta(hours=1))
+        assert plan.reach_print(first) != plan.reach_print(later)
+        assert plan.reach_print(first) == plan.reach_print(self._card(NOW - timedelta(days=30)))

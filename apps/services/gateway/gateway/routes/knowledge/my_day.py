@@ -38,7 +38,15 @@ who connected a Drive, and for nobody else: the read names
 than ``stale`` or ``superseded``. A stopped run is finished and is not
 failed, so it breaks the three. A running run is not finished. The read runs
 only with ``sources_on`` (``KNOWLEDGE_SOURCES`` names the org), in the SAME
-session, and gives no error text and no account address. It reads at most
+session, and gives no error text and no account address. Each row also holds
+``failed_since``, the one fact that changes once for each failure EPISODE:
+for ``needs_reconnect`` it is ``kb_sources.updated_at`` (the only write while
+that state holds is the transition, because the loop skips a source that is
+not ``ready``), and for failed runs it is the ``started_at`` of the newest run
+BEFORE the streak (an ok, stopped, stale or superseded run). That anchor stays
+fixed when a 4th or 5th failed run lands, and it does not move when the
+retention sweep prunes the oldest failed runs. It falls back to
+``discovered_at`` when the sweep took the anchor. It reads at most
 :data:`SOURCES_MAX` sources, and uses ``kb_sync_runs_source_started_idx``.
 
 Fences: ``tests/unit/test_kb_my_day.py`` and ``tests/unit/test_kb_my_day_r8.py``.
@@ -125,7 +133,14 @@ async def _shared_rows(db: Any, user: UserContext, limit: int) -> list[dict[str,
 #: ``FAILED_RUNS`` finished runs through ``kb_sync_runs_source_started_idx``.
 #: A running row is not finished. A stopped row is, and it is not failed.
 _SOURCES_SQL = (
-    "SELECT s.id, s.provider, s.state FROM kb_sources s "
+    "SELECT s.id, s.provider, s.state, (CASE WHEN s.state = 'needs_reconnect' "
+    "THEN s.updated_at ELSE COALESCE(( "
+    "SELECT b.started_at FROM kb_sync_runs b "
+    "WHERE b.source_id = s.id AND b.organization_id = s.organization_id "
+    "AND b.kind IN ('changes', 'reconcile') AND b.status IN ('ok', 'stopped', 'failed') "
+    "AND NOT (b.status = 'failed' AND COALESCE(b.error, '') NOT IN ('stale', 'superseded')) "
+    "ORDER BY b.started_at DESC LIMIT 1), s.discovered_at, s.created_at) END) "
+    "AS failed_since FROM kb_sources s "
     "WHERE s.organization_id = CAST(:kb_org AS uuid) "
     "AND lower(s.owner_email) = :kb_viewer AND s.state <> 'disconnected' "
     "AND (s.state = 'needs_reconnect' OR COALESCE(( "
@@ -146,8 +161,8 @@ async def _source_rows(db: Any, user: UserContext) -> list[dict[str, Any]]:
         "kb_org": core.org_of(user), "kb_viewer": core.viewer_email(user),
         "kb_runs": FAILED_RUNS, "kb_limit": SOURCES_MAX,
     })).fetchall()
-    return [{"id": str(r.id), "provider": str(r.provider), "state": str(r.state)}
-            for r in rows]
+    return [{"id": str(r.id), "provider": str(r.provider), "state": str(r.state),
+             "failed_since": r.failed_since} for r in rows]
 
 
 async def read(user: UserContext, *, gaps_on: bool, limit: int,
