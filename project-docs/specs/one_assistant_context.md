@@ -8,7 +8,7 @@ is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 OA-3 is in review, dark behind `ATTACHMENT_OCR`. OA-6 is DECIDED (D117,
 2026-10-26): yes, for all apps. §4.2 (OA-7), §4.3 (OA-8) and §6 (OA-9) hold
 the design of 2026-10-26, with the owner's answers. Each slice waits for an
-audit. OA-7g shipped live ahead of the rest. Metorite: epic #445 in *AI Chat Interface*,
+audit. OA-7g shipped live (PR #1356, `344cad4fc`). The auditor's gates and narrowings are in §4.5. Verified against code on 2026-10-26 at `1e43fc5c0`. Metorite: epic #445 in *AI Chat Interface*,
 with slices #446 (OA-1) to #455 (OA-10).
 
 **As built, OA-5.** `evals/one_assistant_measure` runs 13 email chats (18
@@ -343,7 +343,7 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
 - **`TOOL_PACKS`** is a comma list of pack slugs, or `*`. Empty means off.
 - **`TOOL_PACKS_ORGS`** lists the organization ids that may use packs, or `*`. Empty allows none.
 - **The one reader** is `acb_skills.tool_packs.packs_on(org)`. It fails closed.
-- **The gate** is OWNER-GATE in production. The flag moves the guards and the spend.
+- **The gate** is OWNER-GATE in production, and `work_plan.md` §6 D4 names it. The flag moves the guards and the spend.
 
 **Off leaves these byte-identical:**
 - the tool names of the orchestrator, their order and each specialist tool
@@ -360,7 +360,7 @@ Each slice merges alone, in this order.
 
 | Slice | What | Risk |
 |---|---|---|
-| OA-7g | The rule against an unasked draft. Shipped live ahead of OA-7, owner 2026-10-26 | LOW |
+| OA-7g | The rule against an unasked draft. Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`) | LOW |
 | OA-7a | The pack key in WS-23, the email split, the rules, the flag reader | LOW |
 | OA-7b | The guarded pack builder, with no live caller | HIGH |
 | OA-7c | Layer (a) and sticky state: packs in live runs | HIGH |
@@ -452,7 +452,7 @@ Each slice merges alone, in this order.
   - With the flag off, the request body is byte-identical.
 - **Fence.** `tests/unit/test_tier_policy.py` counts the requests and checks the items.
 
-**OA-7g. The rule against an unasked draft.** Shipped live ahead of OA-7, owner 2026-10-26 (§4.2.6).
+**OA-7g. The rule against an unasked draft.** Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`) (§4.2.6).
 - **Files.** `orchestrator/agents.py` (rule 12) and `acb_skills/handoff.py` (`_RULES`).
 - **Acceptance.** OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
 - **Fence.** Unit tests pin both texts, in `tests/unit/test_handoff_words.py` and `tests/unit/test_orchestrator_one_source.py`.
@@ -598,6 +598,106 @@ OA-10 starts only after OA-8e passes, with OA-8 and OA-9 done. It does four thin
 
 **The rails until OA-10.** The Email rail and the Projects rail run their specialist directly (`cp/app/email/components/EmailAssistantChat.tsx:5-14`, `cp/app/projects/components/AssistantRail.tsx:7-15`). They keep that specialist until OA-10. At OA-10, a new chat in a rail goes to the one assistant, and the surface of the rail pins its pack. An old rail chat keeps its agent, as an old chat in the dock does (`navigation_shell.md:1224-1226`).
 
+### 4.5 Audit of 2026-10-26: gates, commands and narrowings
+
+A spec auditor checked this design against the code at `1e43fc5c0`. Every
+slice below is AGENT-SAFE to build. Each one ships dark or has no live
+caller. No flag flip is cleared. `TOOL_PACKS`, `TOOL_PACKS_ORGS` and
+`SPAWN_SUBAGENTS_ORGS` are owner-only (`work_plan.md` §6 D4). The §3a
+window does not open them, because they move the guards and spend model
+tokens. OA-7g shipped live (PR #1356, `344cad4fc`).
+
+**OA-7a. GO, narrowed.**
+- Add `apps/services/gateway/gateway/routes/integrations_skills.py`. It
+  builds `tools_by_name` for `build_catalog` from injected tools only, so a
+  pack has no price without this edit.
+- Say how a pack family acts in the skill index. With `SKILLS_INDEX_ONLY`
+  on, `skill_index._indexed_families` lists every family, and
+  `test_skill_index.py` expects that.
+- Put `narrow_and_read` in one family. It is in `own_tool_scope` (59 names)
+  and not in `_TOOLS` (58).
+- The Skills catalog shows two new toggles at merge. They do nothing until
+  OA-7c. Say so in the toggle text.
+- Update the WS-23 board row and `skills_registry.md` lines 116 to 122. Both
+  still say that own tools join only through the WS-8 manifest.
+- Verify: `uv run pytest tests/unit/test_skills_registry.py
+  tests/unit/test_tool_packs_registry.py tests/unit/test_skill_index.py
+  tests/unit/test_chat_upload_every_agent.py
+  tests/unit/test_one_assistant_measure.py -q`.
+
+**OA-7b. GO, narrowed.**
+- The "each test runs twice" list was wrong. `load_email_agent` has 13
+  callers. `test_email_chat_reply.py` uses its own loader. Three named
+  groups never call it. Run the 13 callers in both modes, and the reply
+  suite through its own loader.
+- The `agent_name` fence must also read `pending_ask.py` (the card row),
+  `write_artifact.py`, `system_one.py` and `whatsapp_acts.py`.
+- `EgressGuardProvider` adds two middlewares, `WithholdEgressTools` and
+  `RefuseEgressTools`. A pack run gets neither. The drop at load is the only
+  held-set control in a pack run, and a test must say so.
+- The builder calls `_is_egress`, `_run_no_egress`, `_gate_injected_tool`
+  and `artifact_context_scope`. It copies none of their bodies. A fence
+  patches `_is_egress` and checks that the pack drop follows it.
+- Verify: `bash scripts/dev_db.sh`, then `uv run pytest
+  tests/unit/test_pack_guards.py tests/unit/test_egress_card_bound_pin.py
+  tests/unit/test_no_egress_tool_audit.py
+  tests/unit/test_delegation_no_egress.py tests/unit/test_email_chat_reply.py
+  tests/unit/test_held_*.py -q`.
+
+**OA-7c. GO, narrowed. Start after OA-7a, OA-7b and OA-7g.**
+- Layer (a) takes three inputs here: sticky packs, references and words.
+  The surface input waits for OA-7d.
+- Name the file that refuses a delegation to `email-assistant` when the pack
+  is on: `agent_tools.call_agent`, the streaming seam, or the specialist
+  tool.
+- The apply point puts pack tools in the list before `_inject_agent_tools`.
+  Then `_gate_own_maf_tools` wraps each tool with no `__cc_gated__` mark. In
+  a marked chat that could show two cards. Add a case: a pack send in a
+  marked chat, built through the real assembly, shows one card.
+- Say whether pack names join `run_tools`. OA-9c depends on the answer.
+- The sticky key keeps the member hash, as the email working set key does.
+- Verify: `uv run pytest tests/unit/test_tool_packs_choice.py
+  tests/unit/test_tool_packs_off.py tests/unit/test_chat_constraints.py
+  tests/unit/test_handoff_words.py tests/unit/test_orchestrator_one_source.py
+  tests/unit/test_native_session_persistence.py -q`.
+
+**OA-9a. GO for the parser only.** Build `subagent_contract.py` and
+`tests/unit/test_subagent_contract.py`. The `worker` half is NO-GO until
+these edits land in this spec:
+1. Move the OA-9a fence case from `test_tool_packs_off.py` to
+   `test_subagent_contract.py`.
+2. Name the open and held tool sets of the worker. A `worker` entry turns
+   `test_no_egress_tool_audit.py` red until they are pinned.
+3. Say if the no-job refusal happens at build or at run. A raise at build
+   turns `test_egress_card_bound_pin.py` red.
+4. Name the worker `config.json`: `tool_scope`, `floor_opt_out`, `sharing`
+   and the tier. Without opt-outs, the worker gets the whole core floor.
+5. Say how the picker hides the worker. `_AGENT_REGISTRY` has no internal
+   key.
+
+**OA-9b. NO-GO** until the worker half is cleared and these are fixed:
+1. `emit_generative_ui` stays in every run, and it is not read-only. Name
+   the mechanism that gives a child read tools only. The seam is
+   `tool_guard.WithholdTools` and `RefuseTools`.
+2. Name how a child stops at 4 model rounds.
+3. A job that names `packs` is refused until OA-9c.
+4. `spawn_subagents` goes to the main assistant only, not to every agent.
+5. The batch-write acceptance line waits for OA-8b. Today the main assistant
+   holds no batch write tool.
+6. Keep these tests green: `test_delegation_no_egress.py`,
+   `test_read_tool_paging.py`, `test_chat_hardening.py`,
+   `test_core_tool_floor.py`, `test_floor_opt_out.py`,
+   `test_copilot_specialist_refused.py`, `test_background_ai_member.py` and
+   `test_tool_schema_diet.py`.
+
+**Build order.** The slices share files: `settings.py`, `_tool_injection.py`
+and `orchestrator/agents.py`. Build OA-7a, then OA-7b, then OA-7c. OA-9a
+(the parser) can build beside OA-7a.
+
+**OA-7e facts.** `FunctionInvocationContext.add_tools` raises `ValueError`
+for a different object with a duplicate name, and `RuntimeError` when the
+context has no live tool list. The decorator emits `ExperimentalWarning`.
+
 ## 5. Acceptance
 
 - **OA-1.** A recorded replay of session `de64d903` turn 3 sends a task that
@@ -620,7 +720,7 @@ OA-10 starts only after OA-8e passes, with OA-8 and OA-9 done. It does four thin
 - **OA-7d.** A turn from `/email` loads the `email` pack with no email words. A forged `surface` adds only a pack that the flag allows.
 - **OA-7e.** In one run, a scripted model loads the `email` pack and then calls `compose_reply` with the held answer of the pack. A load past the cap refuses. Fence: `tests/unit/test_load_skill_tools.py`.
 - **OA-7f.** A long email turn with no email words loads the pack with one System-1 request. A short turn and a Max turn send none. Fence: `tests/unit/test_tier_policy.py`.
-- **OA-7g.** Shipped live ahead of OA-7, owner 2026-10-26. The orchestrator persona and `handoff._RULES` carry the rule against an unasked draft, both always on. OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
+- **OA-7g.** Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`). The orchestrator persona and `handoff._RULES` carry the rule against an unasked draft, both always on. OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
 - **OA-7h.** On the 18 email turns, 3 runs each, with the tier flags of production, the pack arm passes at least as many turns as delegation. From turn 2, each email chat sends through the held card. No act shows two cards.
 - **OA-8a.** Each CRM write asks its card in the stream of the orchestrator. Mirror mode drops the 3 record writes. A held pack drops the 4 writes. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8b.** The Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer. In a covered org, no Projects pack loads. Fences: `tests/unit/test_projects_agent.py` and `tests/unit/test_pack_guards.py`.
