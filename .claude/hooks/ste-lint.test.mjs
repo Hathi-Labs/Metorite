@@ -230,7 +230,38 @@ for (const [name, payload, expected] of HOOK_CASES) {
   if (!ok && res.stderr) console.log(`        ${res.stderr.split('\n')[0]}`)
 }
 
-const total = CASES.length + HOOK_CASES.length
+// --- `--staged` reads the index of the checkout the caller stands in ----------
+// Metorite #460 (2026-10-25). CLAUDE_PROJECT_DIR names the session's MAIN
+// checkout, even when the session commits from a worktree. `--staged` read that
+// checkout's index, so in a worktree it reported nothing. REPO is a fresh repo
+// that stands in for the worktree, and CLAUDE_PROJECT_DIR points elsewhere.
+const REPO = mkdtempSync(path.join(tmpdir(), 'ste-staged-'))
+const git = (...args) => spawnSync('git', args, { cwd: REPO, encoding: 'utf8' })
+git('init', '-q')
+mkdirSync(path.join(REPO, 'docs'), { recursive: true })
+const staged = (text) => {
+  writeFileSync(path.join(REPO, 'docs', 'x.md'), text)
+  git('add', 'docs/x.md')
+  return spawnSync(process.execPath, [LINT, '--staged'], {
+    cwd: REPO,
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: OUTSIDE },
+  })
+}
+const STAGED_CASES = [
+  ['staged error in another checkout fails', 'However, it is open.\n', 1],
+  ['staged clean text in it passes', 'It is open.\n', 0],
+]
+for (const [name, text, expected] of STAGED_CASES) {
+  const res = staged(text)
+  const ok = res.status === expected
+  if (!ok) failed++
+  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name.padEnd(38)} exit=${res.status} expected=${expected}`)
+  if (!ok) console.log(`        ${(res.stdout || res.stderr || '').split('\n')[0]}`)
+}
+rmSync(REPO, { recursive: true, force: true })
+
+const total = CASES.length + HOOK_CASES.length + STAGED_CASES.length
 console.log(failed === 0 ? `\nall ${total} cases passed` : `\n${failed} of ${total} FAILED`)
 rmSync(OUTSIDE, { recursive: true, force: true })
 rmSync(WORKTREE, { recursive: true, force: true })

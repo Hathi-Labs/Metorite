@@ -112,10 +112,10 @@ describe("the account menu holds pages about the member", () => {
   });
 });
 
-// WS-63 PZ-25 (`personalization.md` §14.2): "Assistant" is a static account
-// link beside My access, and never a pane. Mutation: add it always, and the
+// WS-63 PZ-25 and PZ-28 (`personalization.md` §14.2): "Assistant settings" is
+// a static account link in the Settings group, and never a pane. Mutation: add it always, and the
 // "absent when off" test fails. Drop it, and the "shown when on" test fails.
-describe("the Assistant row of the account menu (PZ-25)", () => {
+describe("the Assistant settings row of the account menu (PZ-25, PZ-28)", () => {
   const member = visibleSections(ALL, false);
 
   it("is absent with the profile off, and by default", () => {
@@ -124,26 +124,32 @@ describe("the Assistant row of the account menu (PZ-25)", () => {
     }
   });
 
-  it("shows right after My access with the profile on", () => {
+  it("shows once, after Appearance, with the profile on", () => {
     expect(accountLinks(member, { assistant: true }).map((l) => l.href)).toEqual([
       "/people/me",
       MY_ACCESS.href,
-      "/settings/assistant",
       "/settings/appearance",
+      "/settings/assistant",
     ]);
-    expect(ASSISTANT_LINK).toEqual({ href: "/settings/assistant", label: "Assistant", icon: "Sparkles" });
+    expect(ASSISTANT_LINK).toEqual({
+      href: "/settings/assistant",
+      label: "Assistant settings",
+      icon: "SlidersHorizontal",
+    });
   });
 
   it("an unresolved viewer gets no row, also with the profile on", () => {
     expect(accountLinks(visibleSections(null, true), { assistant: true })).toEqual([]);
   });
 
-  it("sits in You, not in Settings, in the foot menu", () => {
+  it("sits in Settings, not in You, in the foot menu", () => {
     const groups = accountMenu(member, { layout: true, switcher: false, others: 0, assistant: true });
     const hrefs = (id: string) =>
       (groups.find((g) => g.id === id)?.items ?? []).flatMap((i) => (i.kind === "link" ? [i.href] : []));
-    expect(hrefs("you")).toEqual(["/people/me", "/people/access", "/settings/assistant"]);
-    expect(hrefs("settings")).toEqual(["/settings/appearance"]);
+    expect(hrefs("you")).toEqual(["/people/me", "/people/access"]);
+    expect(hrefs("settings")).toEqual(["/settings/appearance", "/settings/assistant"]);
+    const all = groups.flatMap((g) => g.items).filter((i) => i.kind === "link" && i.href === "/settings/assistant");
+    expect(all).toHaveLength(1);
     const off = accountMenu(member, { layout: true, switcher: false, others: 0 });
     expect(off.flatMap((g) => g.items).some((i) => i.kind === "link" && i.href === "/settings/assistant")).toBe(false);
   });

@@ -185,17 +185,25 @@ export interface AccountLink {
 export const MY_ACCESS: AccountLink = { href: "/people/access", label: "My access", icon: "KeyRound" };
 
 /**
- * "Assistant" opens Settings → Assistant, what the assistant keeps about the
- * member (WS-63 PZ-25, `personalization.md` §14.2). It is a static link, as
- * My access is, and NOT a pane in `PANES`, so the live set of
- * `launch_surface.md` §2 stays as it is. It shows only when
- * `useAssistantProfileEnabled` says yes for the member's organization.
+ * "Assistant settings" opens Settings → Assistant settings, what the assistant
+ * keeps about the member (WS-63 PZ-25 and PZ-28, `personalization.md` §14.2).
+ * The name says "settings" so a member does not take it for the chat. It is a
+ * setting about the member, so the account menu draws it in the Settings
+ * group (`SETTINGS_PAGES`). It is a static link, as My access is, and NOT a
+ * pane in `PANES`, so the live set of `launch_surface.md` §2 stays as it is.
+ * It shows only when `useAssistantProfileEnabled` says yes for the member's
+ * organization.
  */
-export const ASSISTANT_LINK: AccountLink = { href: "/settings/assistant", label: "Assistant", icon: "Sparkles" };
+export const ASSISTANT_LINK: AccountLink = {
+  href: "/settings/assistant",
+  label: "Assistant settings",
+  icon: "SlidersHorizontal",
+};
 
 /**
  * The account menu's rows: the member's own pages, with "My access" after My
- * Profile, and "Assistant" after My access when `opts.assistant` is true. A
+ * Profile, and "Assistant settings" after Appearance when `opts.assistant` is
+ * true. That order puts Appearance first in the Settings group. A
  * member sees only what `visibleSections` gave. An `account` pane of another
  * team would follow them, and none exists since Organisation became an app in
  * Admin (owner, 2026-10-09).
@@ -214,8 +222,8 @@ export function accountLinks(
   const org = panes.filter((p) => p.team !== "personal").map(row);
   // Right after My Profile, because both describe the member.
   const at = mine.findIndex((l) => l.href === "/people/me") + 1;
-  const about = opts.assistant === true ? [MY_ACCESS, ASSISTANT_LINK] : [MY_ACCESS];
-  return [...mine.slice(0, at), ...about, ...mine.slice(at), ...org];
+  const assistant = opts.assistant === true ? [ASSISTANT_LINK] : [];
+  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), ...assistant, ...org];
 }
 
 /**
@@ -257,7 +265,7 @@ export interface AccountMenuGroup {
 const APP_MENU_ONLY: ReadonlySet<AccountMenuGroup["id"]> = new Set(["you", "settings", "brand"]);
 
 /** The account pages that are settings, not facts about the member. */
-const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance"]);
+const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance", "/settings/assistant"]);
 
 /** NS-7: ask the first sign-in question again (§8.4 rule 3). */
 export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
@@ -275,10 +283,10 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  * 1. **The current account**, marked "Signed in".
  * 2. **The other accounts**, each a switch, then "Add another account". Both
  *    need the switcher flag, so `switcher: false` drops the group.
- * 3. **You**: My Profile, My access, and "Assistant" when `opts.assistant`
- *    is true (PZ-25).
- * 4. **Settings**: Appearance, the colour mode, and "Change my layout" while
- *    the shell nav is on (NS-7 asks the question only then).
+ * 3. **You**: My Profile and My access.
+ * 4. **Settings**: Appearance, "Assistant settings" when `opts.assistant` is
+ *    true (PZ-25, PZ-28), the colour mode, and "Change my layout" while the
+ *    shell nav is on (NS-7 asks the question only then).
  * 5. **Sign out**, then "Sign out of all accounts" with another account held.
  * 6. **Our signature**: the comet and the word "Metorite", a quiet row at the
  *    end (owner, 2026-10-14). It is not a control.

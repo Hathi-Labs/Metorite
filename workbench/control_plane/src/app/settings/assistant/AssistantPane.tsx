@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Settings → Assistant (WS-63 PZ-7, `personalization.md` §4.3, §7).
+ * Settings → Assistant settings (WS-63 PZ-7, `personalization.md` §4.3, §7).
  *
  * The member sees and controls everything the assistant keeps about them:
  * one learning switch, how the assistant addresses them, how it answers,
