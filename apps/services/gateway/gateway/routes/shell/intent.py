@@ -154,6 +154,14 @@ JOBS: tuple[Job, ...] = (
     Job("write-page", "Write a page",
         "write a new page of company knowledge, such as a policy, a handbook entry or a how-to",
         "knowledge", "/knowledge?do=write-page"),
+    # WS-61 KC-8e. Two link jobs that open the Add a product and Add a topic
+    # form. No fields: the form saves nothing, and the member presses Add.
+    Job("add-product", "Add a product",
+        "add a product of the company to the Knowledge directory, with a name and other names",
+        "knowledge", "/knowledge?do=add-product"),
+    Job("add-topic", "Add a topic",
+        "add a topic to the Knowledge directory, with a name and other names",
+        "knowledge", "/knowledge?do=add-topic"),
     Job("edit-profile", "Update my profile", "change their own profile, skills, CV or working hours",
         None, "/people/me"),
     Job("appearance", "Change how Metorite looks", "change the theme, dark or light mode, density or accent",

@@ -41,6 +41,8 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from gateway.kb_entities import registry, resolver
 from gateway.routes.knowledge import core, pages
 from gateway.routes.knowledge.core import router
@@ -142,7 +144,11 @@ async def get_entity(
 async def create_entity(
     body: EntityCreate, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Make a product or a topic in a space the caller can write in."""
+    """Make a product or a topic in a space the caller can write in.
+
+    409 with the existing entity when the space holds one of that type with
+    the same folded name or alias (KC-8e).
+    """
     kind = _kind(body.type)
     if kind not in registry.CREATABLE_TYPES:
         raise HTTPException(
@@ -153,6 +159,18 @@ async def create_entity(
     aliases = registry.clean_aliases(body.aliases)
     async with core._tenant_session() as db:
         space = await pages.writable_space(db, user, body.space_id)
+        # One name for each type in a space (KC-8e). The lock and the check
+        # run in this transaction, so two posts at once make one entity.
+        taken = await registry.same_name_entity(db, kind, str(space.id), name)
+        if taken is not None:
+            existing = await registry.get_entity(db, user, taken)
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=409,
+                content=jsonable_encoder({
+                    "detail": f"A {kind} named {name} already exists in this space.",
+                    "entity": existing,
+                }),
+            )
         made = await registry.ensure_entity(
             db, registry.KNOWLEDGE_TABLE, None, type=kind, name=name,
             space_id=str(space.id), aliases=aliases,

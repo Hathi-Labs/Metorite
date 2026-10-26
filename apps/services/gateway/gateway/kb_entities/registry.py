@@ -296,6 +296,39 @@ async def ensure_entity(
     return str(found.id) if found is not None else None
 
 
+#: One create at a time for each org, space, type and folded name, until the commit.
+_NAME_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
+
+async def same_name_entity(db: Any, type: str, space_id: str, name: str) -> str | None:
+    """The id of a live entity of *type* in the space that already holds *name*.
+
+    A name or an alias of that entity matches when ``fold()`` of it equals
+    ``fold()`` of *name*. The fold is the Python one, because the SQL fold
+    and the Python fold disagree (hardening backlog K-13), so no unique
+    index can hold the rule. This takes a transaction lock on the key, so
+    two creates of one name wait on each other, and the second one sees the
+    first. The caller creates in the same transaction. It returns one id and
+    never a name.
+    """
+    from gateway.kb_entities.resolver import fold
+
+    wanted = fold(name)
+    org = (await db.execute(text(f"SELECT {_BOUND} AS org"))).scalar()
+    await db.execute(text(_NAME_LOCK_SQL),
+                     {"key": f"kb.entity.name:{org}:{space_id}:{type}:{wanted}"})
+    rows = (await db.execute(
+        text("SELECT id, name, aliases FROM kb_entities "
+             f"WHERE organization_id = {_BOUND} AND type = :ke_type "
+             "AND space_id = CAST(:ke_space AS uuid) ORDER BY created_at, id"),
+        {"ke_type": type, "ke_space": space_id},
+    )).all()
+    for row in rows:
+        if wanted in {fold(row.name or ""), *(fold(a) for a in row.aliases or [])}:
+            return str(row.id)
+    return None
+
+
 async def set_page(db: Any, user: UserContext, entity_id: str, page_id: str) -> None:
     """Point the entity at its page. The caller holds the row locked."""
     await db.execute(
