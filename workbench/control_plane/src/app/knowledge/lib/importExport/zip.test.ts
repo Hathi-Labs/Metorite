@@ -113,7 +113,7 @@ describe("collectSources", () => {
   it("carries a refused zip entry to the plan, which names it in the report (K-6)", async () => {
     const { prepareImport } = await import("./prepare");
     const zip = forgeSize(await zipOf({ "lie.md": "x".repeat(5000) }), 10);
-    const plan = await prepareImport([{ name: "z.zip", size: zip.length, read: async () => zip }], (h) => h);
+    const plan = await prepareImport([{ name: "z.zip", size: zip.length, read: async () => zip }], (h) => ({ title: null, markdown: h, images: 0 }));
     expect(plan.pages).toEqual([]);
     expect(plan.unreadable.map((u) => u.file)).toEqual(["lie.md"]);
   });
