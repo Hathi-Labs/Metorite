@@ -93,7 +93,7 @@ import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useAssistantFacts } from "@/lib/shell/assistant";
 import { projectsAssistantFacts } from "./lib/assistantFacts";
-import { describeFilters } from "./lib/assistantPersona";
+import { assistantLevel, describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
@@ -3933,7 +3933,7 @@ function ProjectsWorkspace() {
               ? {
                   id: selected.id,
                   name: selected.name,
-                  level: selectedLevel,
+                  level: assistantLevel(selectedLevel, selected),
                   archived: Boolean(selected.archived_at),
                   personal: isPersonalNode(selected),
                 }
@@ -4188,8 +4188,9 @@ function ProjectsWorkspace() {
       ? {
           id: selected.id,
           name: selected.name,
-          level: selectedLevel,
+          level: assistantLevel(selectedLevel, selected),
           archived: Boolean(selected.archived_at),
+          personal: isPersonalNode(selected),
         }
       : null,
     filters,

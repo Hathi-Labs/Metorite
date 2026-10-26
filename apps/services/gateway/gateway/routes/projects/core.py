@@ -1592,9 +1592,20 @@ async def require_organization_of(db: Any, email: str) -> str:
 
 
 async def load_visible_project(
-    db: Any, vis: Visibility, project_id: str,
+    db: Any, vis: Visibility, project_id: str, *, lock_share: bool = False,
 ) -> Any:
     """One project the caller may see, or 404.
+
+    ``lock_share`` reads the row ``FOR SHARE``, the lock idiom of
+    ``tree._lock_ancestor_chain``. A write that places a task on this
+    project passes it (review of 2026-10-26). ``move_node`` takes the moved
+    row ``FOR UPDATE`` and then counts its tasks before it makes the project
+    a space. Without the share lock, a task insert could pass the
+    ``assert_holds_tasks`` guard on the old shape and land on the new space.
+    With it, the move waits for the insert to commit and then sees the task.
+    The lock lasts to the end of the caller's transaction, so call it inside
+    the transaction that inserts. Postgres re-reads the row after a wait,
+    so the guard sees the row the move left.
 
     404 and not 403 (R5): "no such project" and "not yours" must be the same
     answer, or the error code becomes an oracle for what exists in another
@@ -1604,6 +1615,7 @@ async def load_visible_project(
         text(
             f"SELECT * FROM pm_projects "
             f"WHERE id = CAST(:project_id AS uuid) AND {vis.project_clause()}"
+            + (" FOR SHARE" if lock_share else "")
         ),
         {"project_id": project_id, **vis.params},
     )).fetchone()

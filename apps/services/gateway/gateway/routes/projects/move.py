@@ -223,7 +223,9 @@ async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:
 
 
 async def _destination(db: Any, vis: Any, project_id: str) -> Any:
-    dest = await load_visible_project(db, vis, project_id)
+    # FOR SHARE: a concurrent move of the destination to the top waits for
+    # this move (`core.load_visible_project`).
+    dest = await load_visible_project(db, vis, project_id, lock_share=True)
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
     assert_holds_tasks(dest, then="Move into")

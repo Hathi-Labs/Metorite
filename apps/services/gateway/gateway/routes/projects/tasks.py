@@ -761,7 +761,11 @@ async def create_task(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        target = await load_visible_project(db, vis, str(project_id))
+        # FOR SHARE: a concurrent move of this project to the top (a space)
+        # waits for this insert (`core.load_visible_project`).
+        target = await load_visible_project(
+            db, vis, str(project_id), lock_share=True,
+        )
         # Migration 193 and the space rule — a folder groups and a space
         # summarises. Tasks live on projects. A task filed on either would
         # sit outside every board (`core.assert_holds_tasks`).
@@ -1114,7 +1118,9 @@ async def move_task_in(
         values["parent_task_id"] = new_parent
 
     if payload.project_id and str(payload.project_id) != str(task.project_id):
-        dest = await load_visible_project(db, vis, str(payload.project_id))
+        dest = await load_visible_project(
+            db, vis, str(payload.project_id), lock_share=True,
+        )
         # Migration 193 and the space rule — after the visibility load, same
         # as the privacy guard below: a caller who cannot see the folder or
         # the space still gets 404.

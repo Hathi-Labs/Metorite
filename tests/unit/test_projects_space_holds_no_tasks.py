@@ -184,3 +184,79 @@ async def test_a_project_with_tasks_cannot_become_a_space(db: FakeProjectsDB) ->
         )
     assert exc.value.status_code == 422
     assert "HR holds 1 task of its own" in exc.value.detail
+
+
+# ── The race: the destination row is read FOR SHARE (review, 2026-10-26) ───
+#
+# ``move_node`` takes the moved row FOR UPDATE, counts its tasks, then moves
+# it to the top. A task insert that read the project without a lock could pass
+# the guard on the old shape. Each door that places a task now reads the target
+# FOR SHARE, the lock idiom of ``tree._lock_ancestor_chain``, so the move waits.
+
+def _share_locked_project_reads(db: FakeProjectsDB) -> list[str]:
+    return [
+        s for s in db.statements
+        if s.startswith("SELECT * FROM pm_projects WHERE id = CAST(:project_id AS uuid)")
+        and s.endswith("FOR SHARE")
+    ]
+
+
+async def test_create_task_reads_its_project_for_share(db: FakeProjectsDB) -> None:
+    _space, project, _todo = _space_and_project(db)
+    await pm_tasks.create_task(
+        pm_tasks.TaskIn(project_id=str(project.id), title="Onboard Priya"), user=USER,
+    )
+    assert len(_share_locked_project_reads(db)) == 1
+
+
+async def test_a_single_move_reads_its_destination_for_share(db: FakeProjectsDB) -> None:
+    space, project, todo = _space_and_project(db)
+    other = db.seed_project(
+        name="Finance", parent=space.id, personal_owner=None, owns_statuses=False,
+    )
+    task = db.seed_task(project.id, todo.id, root=space.id, title="A")
+    await pm_tasks.move_task(
+        str(task.id), pm_tasks.MoveTask(project_id=str(other.id)), user=USER,
+    )
+    assert len(_share_locked_project_reads(db)) == 1
+
+
+async def test_the_bulk_destination_reads_its_row_for_share(db: FakeProjectsDB) -> None:
+    _space, project, _todo = _space_and_project(db)
+    await pm_move._destination(db, SimpleNamespace(project_clause=lambda: "TRUE", params={}), str(project.id))
+    assert len(_share_locked_project_reads(db)) == 1
+
+
+async def test_the_lock_is_plain_sql_on_one_table() -> None:
+    """The lock needs no join: ``FOR SHARE`` on a query with one table."""
+    class Recorder:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+
+        async def execute(self, sql, params=None):
+            self.sql.append(" ".join(str(sql).split()))
+            return SimpleNamespace(fetchone=lambda: SimpleNamespace(id="x"))
+
+    rec = Recorder()
+    vis = SimpleNamespace(project_clause=lambda: "TRUE", params={})
+    await pm_core.load_visible_project(rec, vis, "p", lock_share=True)
+    await pm_core.load_visible_project(rec, vis, "p")
+    assert rec.sql[0].endswith("AND TRUE FOR SHARE")
+    assert "FOR SHARE" not in rec.sql[1], "a plain read takes no lock"
+
+
+# ── An EMPTY project may still go to the top ───────────────────────────────
+
+async def test_an_empty_project_can_still_move_to_the_top(db: FakeProjectsDB) -> None:
+    space, project, _todo = _space_and_project(db)
+    # The fake does not run the lane copy of a promotion. The project owns
+    # its lanes already, including one Done lane.
+    db.seed_status(project.id, name="To do", category="todo", is_default=True)
+    db.seed_status(project.id, name="Done", category="done")
+    moved = await pm_tree.move_node(
+        str(project.id), pm_tree.MoveProject(parent_project_id=None), user=USER,
+    )
+    assert moved is not None
+    assert [r for r in db.rows("pm_projects") if str(r["id"]) == str(project.id)][0][
+        "parent_project_id"
+    ] is None

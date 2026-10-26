@@ -13,7 +13,7 @@
  */
 
 import { dataText, type AssistantFacts } from "@/lib/shell/assistant";
-import { holdsNoTasksNote, type PersonaInput } from "./assistantPersona";
+import { holdsNoTasksNote, holdsTasksNote, type PersonaInput } from "./assistantPersona";
 
 /** The most selected ids the facts name. */
 const MAX_PICKED = 50;
@@ -38,7 +38,7 @@ export function projectsAssistantFacts(input: Omit<PersonaInput, "today" | "time
         `(project_id: ${input.node.id}${input.node.archived ? ", archived" : ""}). ` +
         `"This project" or "here" means it.`,
     );
-    const note = holdsNoTasksNote(input.node);
+    const note = holdsNoTasksNote(input.node) ?? holdsTasksNote(input.node);
     if (note) facts.push(note);
   } else {
     facts.push("They are looking at every space they can see, with no project selected.");
