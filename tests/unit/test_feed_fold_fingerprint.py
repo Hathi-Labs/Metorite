@@ -74,6 +74,9 @@ def _knowledge_signal(kind: str) -> shell.Signal:
     if kind == "kb_gap":
         return feed._gap_signal({"id": "g-1", "question": "how do we raise a credit note",
                                  "ask_count": 3, "last_asked_at": NOW})
+    if kind == "source_sync_failed":
+        return feed._source_signal({"id": "s-1", "provider": "google_drive",
+                                    "state": "needs_reconnect", "failed_since": NOW})
     return feed._page_signal({"id": "p-1", "title": "Refund policy", "space": "Finance",
                               "review_at": NOW, "published_at": NOW}, kind)
 
@@ -124,7 +127,7 @@ def _real(kind: str) -> shell.Signal | None:
     if kind == "crm_open_questions":
         # WS-53 CRM-Q32-4: the open questions of the CRM, for a CRM admin.
         return feed._questions_signal({"new_at": NOW, "count": 2, "open": 5, "money": True})
-    if kind in ("kb_gap", "doc_needs_review", "doc_shared_with_me"):
+    if kind in ("kb_gap", "doc_needs_review", "doc_shared_with_me", "source_sync_failed"):
         return _knowledge_signal(kind)
     if kind == "no_answer":
         return feed._no_answer_signal({
@@ -247,3 +250,14 @@ class TestADismissedCardStaysDismissed:
         newer = shell._note_signals([_note("n-1", NOW - timedelta(hours=1)),
                                      _note("n-2", NOW - timedelta(minutes=5))])[0]
         assert self._shown(row, newer)
+
+
+class TestASourceEpisodeIsAStateFact:
+    def test_the_episode_moves_the_fingerprint_and_a_fold_cannot(self):
+        a = _signal_of("source_sync_failed")
+        b = feed._source_signal({"id": "s-1", "provider": "google_drive",
+                                 "state": "needs_reconnect",
+                                 "failed_since": NOW + timedelta(days=9)})
+        assert _fp(a) != _fp(b)
+        # The kind is a main kind of its own entity: no other kind folds in.
+        assert [m for m, f in _pairs() if "source_sync_failed" in (m, f)] == []
