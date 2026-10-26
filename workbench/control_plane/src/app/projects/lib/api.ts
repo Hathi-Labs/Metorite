@@ -15,6 +15,13 @@ import {
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import {
+  ATTENTION_LIMIT,
+  type AttentionPage,
+  type ResumeResult,
+  attentionPage,
+  resumeBody,
+} from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
 
 /**
@@ -724,6 +731,220 @@ export interface WaitingReport {
     p90_hours: number | null;
   };
   max_rows: number;
+  /**
+   * WS-27bn RA-2. The three totals added on the server, for the KPI tile. A
+   * task that waits in two ways counts two times. Absent before RA-2.
+   */
+  waiting_total?: number;
+  /** WS-27bn RA-2. The age of the oldest wait in hours, or null for none. */
+  oldest_hours?: number | null;
+}
+
+/** WS-27bn RA-4. The five outcomes of an agent run, in the panel's order. */
+export type RunOutcome = "completed" | "failed" | "stopped" | "abandoned" | "released";
+
+/** WS-27bn RA-4. Each outcome with its count of runs. */
+export type RunOutcomeCounts = Record<RunOutcome, number>;
+
+/** WS-27bn RA-4. One UTC day of the outcome series. */
+export interface RunOutcomeDay extends RunOutcomeCounts {
+  /** The day, as `YYYY-MM-DD`, in UTC. */
+  day: string;
+  total: number;
+}
+
+/** WS-27bn RA-4. The four sizes of a completed run, by agent time. */
+export type RunSize = "under_15m" | "under_1h" | "under_4h" | "over_4h";
+
+/**
+ * WS-27bn RA-4. One run of the `agent_runs` section: the task it works on,
+ * the agent, and the member the agent works for (§6.8 E2).
+ */
+export interface AgentRunRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** The run. The client keys the row on it. */
+  run_id: string;
+  /** The client name, from the one client map of the server. */
+  agent: string;
+  client_via: string | null;
+  member: string | null;
+  member_name: string | null;
+}
+
+/** A silent run: since when the agent said nothing, and for how long. */
+export interface SilentRunRow extends AgentRunRow {
+  since: string | null;
+  age_hours: number | null;
+}
+
+/** A long run: its agent time, and when it ended. */
+export interface LongRunRow extends AgentRunRow {
+  hours: number | null;
+  ended_at: string | null;
+}
+
+/**
+ * WS-27bn RA-4 — the `agent_runs` section (`analytics_agent_runs.py`
+ * `agent_runs_body`). The outcomes and the sizes read the last `days` UTC
+ * days, today included, and never the report period. The silent runs read
+ * the state now.
+ */
+export interface AgentRunsReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** False while agent runs are off for the organization. */
+  on: boolean;
+  /** False when no task of the scope has an agent run. */
+  agent_runs_seen: boolean;
+  days: number;
+  /** The first UTC day of the window, as `YYYY-MM-DD`. */
+  window_start: string;
+  /** The runs that ended in the window, by outcome. */
+  outcomes: RunOutcomeCounts;
+  ended_total: number;
+  /** The runs that ended in the window before, by outcome. */
+  outcomes_before: RunOutcomeCounts;
+  /** Each UTC day of the window, oldest first. The days add up to `outcomes`. */
+  series: RunOutcomeDay[];
+  success: {
+    /** Completed over completed, failed and abandoned. Null with none. */
+    rate: number | null;
+    completed: number;
+    rated: number;
+    rate_before: number | null;
+    rated_before: number;
+    trend: "up" | "down" | "flat" | null;
+  };
+  silent: SilentRunRow[];
+  silent_total: number;
+  silent_after_minutes: number;
+  /** The completed runs of the window by size, and those with no agent time. */
+  sizes: Record<RunSize | "unmeasured", number>;
+  sized_total: number;
+  /** The longest runs of 4 hours or more, the longest first. */
+  long_runs: LongRunRow[];
+  long_total: number;
+  long_after_hours: number;
+  /** The flag of the long runs, with its count, or null with none. */
+  long_line: string | null;
+  max_rows: number;
+}
+
+/** WS-27bn RA-1. The done tasks of a window, by finish label. */
+export interface ActorSplit {
+  agent_finished: number;
+  agent_assisted: number;
+  person: number;
+}
+
+/**
+ * WS-27bn RA-2. One week of `actor_series`: each label, the two groups and
+ * the total, all added on the server. `agents` is `agent_finished` plus
+ * `agent_assisted`, and `people` is `person`.
+ */
+export interface ActorWeek extends ActorSplit {
+  week_start: string;
+  agents: number;
+  people: number;
+  completed: number;
+}
+
+/** WS-27bn RA-2. The cycle time of one group. A median is null, never 0. */
+export interface ActorCycleGroup {
+  completed: number;
+  /** The `agent_assisted` tasks of the group. Always 0 for people. */
+  assisted: number;
+  measured: number;
+  median_hours: number | null;
+  p90_hours: number | null;
+}
+
+/** WS-27bn RA-2. One agent of a member, with its finishes of the window. */
+export interface MemberAgent {
+  agent: string;
+  client_via: string | null;
+  agent_finished: number;
+  agent_assisted: number;
+  total: number;
+}
+
+/**
+ * WS-27bn RA-2. The agent finishes of one member (§6.8 E2). `member` is
+ * null for the in-app agents, which work for no member. The server sorts
+ * the rows by name, never by count (§6.8 E1).
+ */
+export interface AgentMember {
+  member: string | null;
+  member_name: string | null;
+  total: number;
+  agents: MemberAgent[];
+}
+
+/** WS-27bn RA-2. "Who did the work", as `WhoDidTheWorkPanel` takes it. */
+export interface WhoDidTheWorkReport {
+  period_start: string;
+  period_end: string;
+  actor_summary: string;
+  actor_series: ActorWeek[];
+  actor_split: ActorSplit;
+  agent_members: AgentMember[];
+  agent_members_total?: number;
+  hidden_people?: number;
+  /** The last week of the series is the running week. */
+  current_week_partial: boolean;
+}
+
+/**
+ * WS-27bn RA-2. The figures of the Overview's KPI strip that no section
+ * holds (`analytics_agents.kpis_body`). Only a preview with `kpis: true`
+ * carries them.
+ */
+export interface KpisReport {
+  runs: {
+    /** False while `agent_runs_enabled` is off. Then every count is 0. */
+    on: boolean;
+    working: number;
+    silent: number;
+    failed_today: number;
+    silent_after_minutes: number;
+    members: { member: string; member_name: string | null; working: number; silent: number }[];
+    hidden_people?: number;
+  };
+  merge: {
+    days: number;
+    merged: number;
+    closed: number;
+    /** Merged over merged plus closed, 0 to 1, or null when none closed. */
+    rate: number | null;
+    merged_before: number;
+    closed_before: number;
+    rate_before: number | null;
+    trend: "up" | "down" | "flat" | null;
+  };
+  time: {
+    finished: number;
+    run_tasks: number;
+    median_hours: number | null;
+    total_hours: number | null;
+    /** `agent_time_less_waits`: start to the agent's last act, less the waits. */
+    basis: string;
+  };
+  cost: {
+    /** Always null until usage capture (SW-20) exists. Never 0. */
+    per_task: number | null;
+    source: string | null;
+    known_tasks: number;
+    finished: number;
+    share: number | null;
+    reason: string;
+  };
 }
 
 /** WS-27bn R3d — the three reasons a person needs help. */
@@ -964,6 +1185,10 @@ export interface ThroughputReport {
   /** The last bucket is the current week, and the week is not over. */
   current_week_partial: boolean;
   summary: Partial<Omit<ThroughputWeek, "week_start">>;
+  /** WS-27bn RA-2. A report's section only: the split of people and agents. */
+  actor_cycle?: { people: ActorCycleGroup; agents: ActorCycleGroup };
+  /** WS-27bn RA-2. The one sentence of the split (§6.8 E5), from the server. */
+  actor_summary?: string;
 }
 
 export interface FinishedProject {
@@ -1118,6 +1343,11 @@ export interface ReportStub {
 /** What `POST /projects/reports/preview` answers: a render with a stub. */
 export type PreviewReportBody = Omit<RenderedReportBody, "report"> & {
   report: ReportStub;
+  /**
+   * WS-27bn RA-2. The KPI strip's own figures. Only the Overview asks for
+   * them (`kpis: true`), so a saved report and the builder never get them.
+   */
+  kpis?: KpisReport;
 };
 
 /** What `GET /projects/reports/{id}/render` answers. */
@@ -1142,6 +1372,15 @@ export interface RenderedReportBody {
       }[];
       total_completed: number;
       total_cancelled: number;
+      /** WS-27bn RA-1. Who finished `total_completed`, by label. */
+      actor_split?: ActorSplit;
+      /** WS-27bn RA-2. "Who did the work": its sentence, weeks and members. */
+      actor_summary?: string;
+      actor_series?: ActorWeek[];
+      agent_members?: AgentMember[];
+      agent_members_total?: number;
+      /** WS-27bn RA-2. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     throughput?: {
       /**
@@ -1157,6 +1396,11 @@ export interface RenderedReportBody {
       p90_hours?: number | null;
       no_start?: number;
       cancelled?: number;
+      /** WS-27bn RA-1. Who finished `completed`, by label. */
+      actor_split?: ActorSplit;
+      /** WS-27bn RA-2. The median and the p90 of people and of agents. */
+      actor_cycle?: { people: ActorCycleGroup; agents: ActorCycleGroup };
+      actor_summary?: string;
     };
     /**
      * WS-27bn R3a. Opt-in. The outlook route's own body, for the report's
@@ -1216,6 +1460,11 @@ export interface RenderedReportBody {
      * a review and blocked handoffs, with the answer time of the period.
      */
     waiting?: WaitingReport;
+    /**
+     * WS-27bn RA-4. How agent runs end: 14 days of outcomes, the success
+     * rate, the silent runs now and the run sizes.
+     */
+    agent_runs?: AgentRunsReport;
     /**
      * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
      * estimate, and tasks in progress with no change. It reads the state now.
@@ -1844,6 +2093,8 @@ export const projectsApi = {
     project_id: string | null;
     name: string;
     config: ReportConfig;
+    /** WS-27bn RA-2. The Overview asks for its KPI strip. */
+    kpis?: boolean;
   }) =>
     call<PreviewReportBody>("reports/preview", {
       method: "POST",
@@ -2692,6 +2943,18 @@ export const agentRunsApi = {
     ),
 
   /**
+   * WS-55 SW-11a. Hand a stalled run back to an agent: one member prompt with
+   * the server's text, so the run reads `needs_agent` `answered`. The rule
+   * of Release decides who may. 409 when no open recovery record fits the
+   * run, or when its task is closed. A retry with the same key writes once.
+   */
+  resume: (runId: string, idempotencyKey?: string) =>
+    call<ResumeResult & { run: AgentRun }>(
+      `agent-runs/${encodeURIComponent(runId)}/resume`,
+      { method: "POST", body: JSON.stringify(resumeBody(idempotencyKey)) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -2721,6 +2984,22 @@ export const agentRunsApi = {
    */
   summary: (projectId: string) =>
     call<AgentSummary>(`${encodeURIComponent(projectId)}/agent-summary`),
+};
+
+/**
+ * WS-55 SW-11a — Needs attention (`external_agent_access.md` §12.7). The
+ * stalled runs, the open runs of closed tasks and the tasks blocked by parked
+ * work of one project and its subprojects, over the tasks the caller can see.
+ * The rules and the words are in `needsAttention.ts`.
+ */
+export const attentionApi = {
+  /** The whole list of one project, the oldest first inside each kind. */
+  list: async (projectId: string): Promise<AttentionPage> =>
+    attentionPage(
+      await call<unknown>(
+        `needs-attention?project_id=${encodeURIComponent(projectId)}&limit=${ATTENTION_LIMIT}`,
+      ),
+    ),
 };
 
 export interface NotificationRow {

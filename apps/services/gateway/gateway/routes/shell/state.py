@@ -86,7 +86,8 @@ DEFAULT_DAY_END = 22
 #: The facts the state fingerprint hashes (§6.8 item 1). ⚠️ No block fact
 #: and no countdown: a block that folds in, or a day more late, must not
 #: bring a dismissed card back.
-STATE_FACTS = ("due_at", "note_ids", "waiting_since", "message_id")
+# ``review_at`` (KB-9b): a page past its review date again, after a verify, is a new card.
+STATE_FACTS = ("due_at", "note_ids", "waiting_since", "message_id", "review_at")
 
 #: The columns of one state row, in the order of the table.
 COLUMNS = ("kind", "state", "dismiss_reason", "fingerprint", "visits", "visits_day",

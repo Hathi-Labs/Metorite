@@ -80,6 +80,15 @@ import {
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
 import { answerLine, waitingLists, waitingRowCount } from "../lib/waiting";
+import {
+  agentRunsRowCount,
+  longLines,
+  outcomeLine,
+  silentLines,
+  successFigure,
+  successTrend,
+} from "../lib/agentRunsReport";
+import { WHO_DID_THE_WORK, overviewTiles, whoDidTheWorkShown } from "../lib/kpiStrip";
 import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
@@ -97,6 +106,7 @@ import {
   rebalanceTasks,
 } from "../lib/rebalance";
 import {
+  agentRunsPanelData,
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
@@ -109,6 +119,7 @@ import {
   stuckPanelData,
   throughputPanelData,
   waitingPanelData,
+  whoDidTheWorkPanelData,
 } from "../lib/reportPanels";
 import {
   AS_OF_TODAY,
@@ -197,6 +208,7 @@ import {
 import { allClear, clearLine, sectionIsClear } from "../lib/sectionEmpty";
 import { sectionIcon } from "../lib/sectionIcons";
 import {
+  AgentRunsPanel,
   CapacityPanel,
   ConflictsPanel,
   FinishedPanel,
@@ -211,6 +223,7 @@ import {
   StuckPanel,
   ThroughputPanel,
   WaitingPanel,
+  WhoDidTheWorkPanel,
 } from "./AnalyticsPanels";
 import { ReportFileButtons } from "./ReportFileButtons";
 import SpaceSummary from "./SpaceSummary";
@@ -465,6 +478,11 @@ export function RenderedBody({
       node
     );
   const tiles = reportTiles(sections);
+  // WS-27bn RA-2 (§6.8 B). The live Overview draws the six tiles of its KPI
+  // strip when the server sent them. A saved report keeps its four tiles.
+  const strip = grid ? overviewTiles({ ...body, sections }) : [];
+  // §6.8 B. "Who did the work" replaces "What we finished" for one project.
+  const who = grid && whoDidTheWorkShown({ ...body, sections });
   const tone = { done: done.text, late: late.text };
   // §6.6 D item 3. Every chosen section is clear: one calm card, and no row
   // for each section.
@@ -484,7 +502,31 @@ export function RenderedBody({
         </header>
       )}
 
-      {tiles.length > 0 && (
+      {strip.length > 0 ? (
+        // Six tiles divide by 2 and by 3, so no tile sits alone on a row.
+        // `@container`: the columns follow the width of the pane, not of the
+        // window, because the rails take most of a tablet (the visual
+        // review). Six in one row wrapped each split line in three.
+        <div className="@container">
+        <div
+          className="grid grid-cols-2 gap-2 @2xl:grid-cols-3"
+          role="group"
+          aria-label="Key figures"
+        >
+          {strip.map((t) => (
+            <Stat
+              key={t.key}
+              label={t.label}
+              display={t.display}
+              detail={t.detail}
+              tone={t.tone ? tone[t.tone] : undefined}
+              title={t.title}
+              help={t.title}
+            />
+          ))}
+        </div>
+        </div>
+      ) : tiles.length > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {tiles.map((t) => (
             <Stat
@@ -522,6 +564,33 @@ export function RenderedBody({
           "finished",
           sectionIsClear("finished", sections.finished) ? (
           <ClearRow sectionKey="finished" title="What we finished" />
+        ) : who ? (
+          <SectionFrame
+            sectionKey="finished"
+            fill={grid}
+            table={
+              <Table title={WHO_DID_THE_WORK} count={sections.finished.actor_series?.length ?? 0}>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {sections.finished.actor_summary}
+                </p>
+                <ul className="space-y-0.5">
+                  {(sections.finished.actor_series ?? []).map((w) => (
+                    <Row
+                      key={w.week_start}
+                      name={`Week of ${w.week_start}`}
+                      value={w.completed}
+                      aside={`${w.people} people · ${w.agents} agents`}
+                      title={`${w.completed} finished in the week of ${w.week_start}: ${w.people} by people, ${w.agents} by agents`}
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="who did the work">
+              <WhoDidTheWorkPanel data={whoDidTheWorkPanelData(sections.finished, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
         ) : (
           <SectionFrame
             sectionKey="finished"
@@ -745,6 +814,73 @@ export function RenderedBody({
           >
             <LayoutBoundary layout="waiting on people">
               <WaitingPanel data={waitingPanelData(sections.waiting, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {/* WS-27bn RA-4. How agent runs end (§6.8 B). The outcomes and the
+          sizes read their own 14 days, and the silent runs read the state
+          now. The table names every silent run and long run the server
+          sent. */}
+      {sections.agent_runs &&
+        cell(
+          "agent_runs",
+          sectionIsClear("agent_runs", sections.agent_runs) ? (
+          <ClearRow sectionKey="agent_runs" title="Agent runs" />
+        ) : (
+          <SectionFrame
+            sectionKey="agent_runs"
+            fill={grid}
+            table={
+              <Table title="Agent runs" count={agentRunsRowCount(sections.agent_runs)}>
+                <p className="mb-1 text-xs text-muted-foreground">{sections.agent_runs.summary}</p>
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {outcomeLine(sections.agent_runs)} · success rate{" "}
+                  {successFigure(sections.agent_runs)}
+                  {successTrend(sections.agent_runs) ? `, ${successTrend(sections.agent_runs)}` : ""}
+                </p>
+                <ul className="space-y-1.5">
+                  {[
+                    {
+                      key: "silent",
+                      heading: "Silent now",
+                      total: sections.agent_runs.silent_total,
+                      rows: silentLines(sections.agent_runs, (e) => personDisplayName(null, e)),
+                    },
+                    {
+                      key: "long",
+                      heading: "Runs of 4 hours or more",
+                      total: sections.agent_runs.long_total,
+                      rows: longLines(sections.agent_runs, (e) => personDisplayName(null, e)),
+                    },
+                  ]
+                    .filter((l) => l.total > 0)
+                    .map((l) => (
+                      <li key={l.key} className="text-xs">
+                        <span className="font-medium text-foreground">{l.heading}</span>
+                        <span className="text-muted-foreground" title={`${l.total} in total`}>
+                          {" "}
+                          · {l.total}
+                        </span>
+                        <ul className="mt-0.5 space-y-0.5">
+                          {l.rows.map((r) => (
+                            <li
+                              key={r.key}
+                              className="truncate pr-px text-muted-foreground"
+                              title={r.label}
+                            >
+                              <span className="text-foreground">{r.label}</span> · {r.detail}
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="agent runs">
+              <AgentRunsPanel data={agentRunsPanelData(sections.agent_runs)} />
             </LayoutBoundary>
           </SectionFrame>
         ))}
@@ -1241,7 +1377,14 @@ export function ReportBuilder({
   const [ctl] = useState(() =>
     createPreviewController<PreviewReportBody>({
       initial: initialPreview,
-      fetch: ({ project_id, config }) => projectsApi.previewReport({ project_id, name: "", config }),
+      // WS-27bn RA-2. The Overview asks for the figures of its KPI strip.
+      fetch: ({ project_id, config }) =>
+        projectsApi.previewReport({
+          project_id,
+          name: "",
+          config,
+          ...(mode === "reportsOverview" ? { kpis: true } : {}),
+        }),
       now: () => Date.now(),
       errorMessage: (e) => message(e, "The preview could not be drawn."),
     })

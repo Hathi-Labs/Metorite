@@ -19,6 +19,12 @@
 export const FINISHED_HINT_LEAD = "Completed by project";
 
 /**
+ * WS-27bn RA-2. The start of the sentence of "Who did the work", which
+ * replaces the `finished` panel for one project. The panel adds the dates.
+ */
+export const WHO_HINT_LEAD = "Weekly finishes, by people and by agents";
+
+/**
  * The short sentence of each section (`projects_reports.md` §6.6 C). The panel
  * prints it under its title, and the builder's section tile prints it under
  * the label. It is short on purpose: one line in a tile.
@@ -32,6 +38,7 @@ export const PANEL_HINTS: Readonly<Record<string, string>> = {
   pulse: "Each person today, and who needs help.",
   stuck: "Stalled work, and work past due.",
   waiting: "What agents wait for from a person.",
+  agent_runs: "How agent runs end, and which are silent.",
   hygiene: "Tasks with no owner, date or size.",
   conflicts: "Late blockers, and people spread thin.",
   rebalance: "Tasks at risk, and who could help.",

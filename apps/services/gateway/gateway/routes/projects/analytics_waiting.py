@@ -205,6 +205,17 @@ def answer_time(pairs: Iterable[tuple[datetime, datetime | None]]) -> dict[str, 
     }
 
 
+def oldest_wait(*heads: float | None) -> float | None:
+    """The age of the oldest wait, from the head row of each list.
+
+    Each list sorts the longest wait first, so its first row is its oldest.
+    WS-27bn RA-2's KPI tile "Waiting on a person" prints it. None when no
+    list has a row, never a zero.
+    """
+    ages = [h for h in heads if h is not None]
+    return max(ages) if ages else None
+
+
 def age_words(hours: float | None) -> str:
     """An age as a person reads it: "under an hour", "5 hours", "3 days"."""
     if hours is None or hours < 1:
@@ -452,6 +463,21 @@ def handoffs_sql(blocked_where: str, blocking_where: str) -> str:
     )
 
 
+def answered_at_sql(question: str) -> str:
+    """When the question ``question`` (a `pm_agent_run_activities` alias of
+    an ``elicitation``) got its answer, or NULL for no answer.
+
+    The answer is the first prompt whose ``in_reply_to`` names the question.
+    The server sets that link, and never takes it from input (EA12-7).
+    :func:`answer_time_sql` reads it, and so does WS-27bn RA-2's run time,
+    which takes each wait on a person out of the agent's time.
+    """
+    return (
+        "(SELECT min(p.created_at) FROM pm_agent_run_activities p"
+        f"  WHERE p.in_reply_to = {question}.id AND p.type = 'prompt')"
+    )
+
+
 def answer_time_sql(past_where: str, *, skip_current_week: bool = False) -> str:
     """The SQL twin of :func:`answer_time`, over the questions asked in the
     report window on the tasks of ``past_where``.
@@ -463,10 +489,7 @@ def answer_time_sql(past_where: str, *, skip_current_week: bool = False) -> str:
     ``:weeks``, so the period is the one that Throughput reads.
     """
     start, end = _window(skip_current_week)
-    answered = (
-        "(SELECT min(p.created_at) FROM pm_agent_run_activities p"
-        "  WHERE p.in_reply_to = e.id AND p.type = 'prompt')"
-    )
+    answered = answered_at_sql("e")
     return (
         f"SELECT count(*) AS asked, count(q.answered_at) AS answered,"
         f"       percentile_cont(0.5) WITHIN GROUP (ORDER BY q.hours)"
@@ -683,4 +706,13 @@ async def waiting_body(
         "handoffs_total": handoffs_total,
         "answer_time": answer,
         "max_rows": MAX_NAMED,
+        # WS-27bn RA-2. The KPI tile "Waiting on a person" reads these two,
+        # from the three lists above and no second rule. A task that waits
+        # in two ways counts in two lists, and so in this total two times.
+        "waiting_total": questions_total + reviews_total + handoffs_total,
+        "oldest_hours": oldest_wait(
+            oldest,
+            reviews[0]["age_hours"] if reviews else None,
+            handoffs[0]["age_hours"] if handoffs else None,
+        ),
     }

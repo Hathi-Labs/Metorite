@@ -31,6 +31,7 @@ import pytest
 from gateway.routes.projects import activities as pm_activities
 from gateway.routes.projects import admin as pm_admin
 from gateway.routes.projects import core as pm_core
+from gateway.routes.projects import filters as pm_filters
 from gateway.routes.projects import me as pm_me
 from gateway.routes.projects import tasks as pm_tasks
 from gateway.routes.projects import tree as pm_tree
@@ -280,20 +281,19 @@ def test_the_subtask_roll_up_excludes_archived_children_in_SQL() -> None:
 
 def test_the_blocker_roll_up_filters_closed_blockers_in_SQL() -> None:
     """⚠️ Counted in SQL and filtered in Python would be correct and slow — but
-    filtered *nowhere* looks identical until a blocker is finished."""
-    source = FILTERS.read_text(encoding="utf-8")
-    match = re.search(r"_BLOCKER_COUNTS_SQL = \"\"\"(.*?)\"\"\"", source, re.S)
-    assert match is not None
-    body = match.group(1)
+    filtered *nowhere* looks identical until a blocker is finished.
+
+    WS-55 SW-11a: the statement takes its link rule from
+    ``filters.open_block_sql``, the one text that Needs attention reads too.
+    So the check reads the BUILT statement, not the source literal."""
+    body = pm_filters._BLOCKER_COUNTS_SQL
     assert "NOT (s.category = ANY(:closed))" in body
     assert "l.link_type = 'blocks'" in body
+    assert pm_filters.open_block_sql("l", "s") in body
 
 
 def test_neither_roll_up_scans_the_whole_table() -> None:
     """Both are bounded by the page's ids. Losing that bound is a query that
     grows with the workspace and returns rows nobody asked for."""
-    source = FILTERS.read_text(encoding="utf-8")
     for name in ("_SUBTASK_COUNTS_SQL", "_BLOCKER_COUNTS_SQL"):
-        match = re.search(rf"{name} = \"\"\"(.*?)\"\"\"", source, re.S)
-        assert match is not None, name
-        assert "= ANY(CAST(:ids AS uuid[]))" in match.group(1), name
+        assert "= ANY(CAST(:ids AS uuid[]))" in getattr(pm_filters, name), name

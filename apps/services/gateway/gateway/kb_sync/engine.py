@@ -17,14 +17,58 @@ of its code.
 **The steps.**
 
 (a) ONE session reads the source row ``FOR SHARE``, takes the run lock and
-    reads the cursor. The member comes from the source row, never from a
-    request. The share lock orders the loop and a re-consent.
+    reads the cursor. The member and the connection id come from the source
+    row, never from a request. The share lock orders the loop and a
+    re-consent.
 (b) For each page: the provider call with NO session open, then ONE
-    transaction that applies the page, upserts the cursor and beats the
-    heartbeat. A page and its cursor commit together, or neither commits.
+    transaction that locks the source row, applies the page, upserts the
+    cursor and beats the heartbeat. A page and its cursor commit together,
+    or neither commits.
 (c) The last page stores ``new_start_token``, the cursor of the next run.
-(d) ONE transaction closes the run, clears ``kb_sources.last_error`` and
-    calls ``store.mark_synced``.
+(d) ONE transaction locks the connection row and the source row, closes the
+    run, clears ``kb_sources.last_error`` and calls ``store.mark_synced``.
+
+**The lock order (KC-3h).** This is the ONE lock order of the rows of a
+Knowledge source. Each transaction that touches more than one of these rows
+takes them in this order:
+
+1. the advisory lock of the consent callback;
+2. the connection row (``connections/store.py``);
+3. the ``kb_sources`` row;
+4. the children: ``kb_sync_runs``, ``kb_sync_cursors`` and
+   ``kb_source_nodes``.
+
+Each row lock has, at its FIRST touch, the strongest strength that the
+transaction needs. A lock that starts as ``FOR KEY SHARE`` and becomes an
+UPDATE later is a deadlock of its own. The transactions:
+
+* **Each write transaction of this module and of** ``discovery.py`` takes
+  the source row before any child row. Most take it with
+  ``discovery.lock_source``. A few take it another way: step (a) reads it
+  ``FOR SHARE``, and the start and ``_mark`` of a discovery UPDATE it. A run
+  close that writes only the run row takes no source lock.
+  ``discovery.lock_source`` takes ``FOR NO KEY UPDATE`` when the transaction
+  writes the source row too: :meth:`_SourceRun.close_ok`,
+  :meth:`_SourceRun.close`, the end of a discovery, and a node upsert, which
+  can stamp ``last_new_at``. Else it takes ``FOR KEY SHARE``, as a page with
+  removals only does. In a page write of this module, no live row raises
+  :class:`_Disconnected`. ``close_ok`` and ``close`` ignore that answer,
+  because each of their writes has its own ``state <> 'disconnected'`` guard.
+* **close_ok** locks the connection row first (``store.lock_by_id``, with
+  the ``connection_id`` of step (a)), then the source row, then the run row.
+* **The disconnect** (``routes/knowledge/sources.py``) reads the source row
+  with no lock, locks the connection row, then locks the source row
+  ``FOR UPDATE`` and reads its state again. ``FOR UPDATE`` stays, because
+  the guards rely on ``FOR KEY SHARE`` and ``FOR UPDATE`` in conflict.
+* **The consent callback** takes the advisory lock, the connection row
+  (``store.save_credential``), the source row ``FOR UPDATE``, then the nodes.
+* **The member purge** deletes the connection row (``store.delete``), and
+  the foreign keys cascade to the source row and its children, in order.
+
+Fences: R8, the ``test_the_lock_order_*`` tests of
+``tests/unit/test_kc_sync_r8.py``, which run two paths at the same time and
+prove no deadlock. Hermetic, the statement order of each transaction,
+``tests/unit/test_kb_sync_engine.py::TestTheLockOrder``.
 
 **The session rule.** Each step opens its own ``tenant_session(org)``, and no
 session is open during a provider call. The one exception is the refresh of
@@ -35,10 +79,11 @@ Fence: ``tests/unit/test_kb_sync_tenancy.py``.
 changes the name and ``parent_ext_id`` and keeps every child. A removal sets
 ``state = 'gone'`` and never deletes the row. A gone folder takes each live
 node below it, to a fixed point, in the same transaction, because the feed
-reports a trashed folder as ONE event. Each write has the guard of
-``discovery.SOURCE_GUARD_SQL``, and the cursor write has the same guard. So a
-disconnect that holds the source row ``FOR UPDATE`` wins, and the page and the
-cursor write nothing.
+reports a trashed folder as ONE event. A disconnect that holds the source row
+``FOR UPDATE`` wins: the source lock of the page waits, finds no live row,
+and the run stops with no write. The guard of ``discovery.SOURCE_GUARD_SQL``
+in each upsert, and the same guard in the cursor write, stay as a second
+wall.
 
 **A capped source** (a folder with ``explored = false``) stores a change only
 when the node is already known, or its parent is a stored folder with
@@ -310,11 +355,21 @@ class _SourceRun:
 
     # ── The writes, each in one transaction with the heartbeat ───────────
 
+    async def _guard(self, db: Any, *, update: bool = False) -> None:
+        """The FIRST statement of each write transaction: the source row
+        lock of the lock order (the module doc). *update* is for a
+        transaction that writes the source row too. No live row raises
+        :class:`_Disconnected`, before any write."""
+        if not await discovery.lock_source(db, self.org, self.source_id, update=update):
+            raise _Disconnected()
+
     async def _write_nodes(self, rows: list[dict[str, Any]]) -> None:
         """One page of a relist: the nodes and the heartbeat, in ONE
         transaction. A capped relist uses the change upsert, so a new folder
         starts unexplored."""
         async with tenant_session(self.org) as db:
+            # An upsert can stamp last_new_at, so the source lock is the strong one.
+            await self._guard(db, update=bool(rows))
             inserted = await discovery.upsert_rows(
                 db, self.org, self.source_id, rows,
                 sql=UPSERT_CHANGES_SQL if self.capped else discovery.UPSERT_NODES_SQL,
@@ -341,6 +396,10 @@ class _SourceRun:
         transaction (the module doc, step b)."""
         rows = discovery.node_rows(page.upserts, unexplored_folders=self.capped)
         async with tenant_session(self.org) as db:
+            # K-21: the source lock comes first, before any node lock. A page
+            # with removals only writes children only, so FOR KEY SHARE. An
+            # upsert can stamp last_new_at, so FOR NO KEY UPDATE.
+            await self._guard(db, update=bool(rows))
             inserted = await discovery.upsert_rows(
                 db, self.org, self.source_id, rows,
                 sql=UPSERT_CHANGES_SQL, params={"capped": self.capped},
@@ -412,6 +471,7 @@ class _SourceRun:
         """The reconcile cursor, and the new change cursor when *token* is
         given, with the heartbeat, in ONE transaction."""
         async with tenant_session(self.org) as db:
+            await self._guard(db)
             if token is not None:
                 wrote = await runs.write_cursor(db, self.org, self.source_id,
                                                 runs.CURSOR_CHANGES, {"page_token": token},
@@ -442,6 +502,7 @@ class _SourceRun:
                 # relist takes the capped path (review P2).
                 self.counts["over_cap"] = True
                 async with tenant_session(self.org) as db:
+                    await self._guard(db)
                     result = await db.execute(text(_CAP_SQL), {
                         "org": self.org, "source": self.source_id,
                         "levels": discovery.LEVELS,
@@ -451,6 +512,7 @@ class _SourceRun:
                 self.capped = True
                 return
             async with tenant_session(self.org) as db:
+                await self._guard(db)
                 result = await db.execute(text(discovery.GONE_SQL), {
                     "org": self.org, "source": self.source_id, "started": started,
                 })
@@ -474,6 +536,7 @@ class _SourceRun:
             # A gone child folder takes each node below it that this relist
             # did not see again.
             async with tenant_session(self.org) as db:
+                await self._guard(db)
                 gone = [str(r.ext_id) for r in (await db.execute(text(_GONE_IN_FOLDER_SQL), {
                     "org": self.org, "source": self.source_id, "folder": folder,
                     "started": started,
@@ -485,8 +548,16 @@ class _SourceRun:
     # ── The end ──────────────────────────────────────────────────────────
 
     async def close_ok(self) -> RunOutcome:
-        """Step (d): close the run, clear the error, and mark the connection."""
+        """Step (d): close the run, clear the error, and mark the connection.
+
+        K-22, the lock order of the module doc: the connection row, then the
+        source row, then the run row. Each lock is at the strength of the
+        UPDATE that follows. The consent callback and the disconnect take the
+        connection row first too, so neither waits in a cycle with this one.
+        """
         async with tenant_session(self.org) as db:
+            await store.lock_by_id(db, self.org, self.connection_id)
+            await discovery.lock_source(db, self.org, self.source_id, update=True)
             owned = await runs.finish(db, self.org, self.run_id, runs.STATUS_OK, None,
                                       self.counts)
             if owned:
@@ -494,7 +565,8 @@ class _SourceRun:
                     "org": self.org, "source": self.source_id,
                 })).first()
                 if row is not None:
-                    await store.mark_synced(db, self.org, str(row.connection_id))
+                    # The row that the first lock took: connection_id never changes.
+                    await store.mark_synced(db, self.org, self.connection_id)
         return RunOutcome(runs.STATUS_OK, None, self.counts, self.run_id)
 
     async def close(self, status: str, code: str, *, reconnect: bool = False,
@@ -502,10 +574,14 @@ class _SourceRun:
         """Close the run with a safe code. The source keeps its state, except
         for ``needs_reconnect``. A failure to write is logged, never raised."""
         safe = _safe(code)
+        writes_source = reconnect or source_error
         try:
             async with tenant_session(self.org) as db:
+                if writes_source:
+                    # The lock order: the source row before the run row.
+                    await discovery.lock_source(db, self.org, self.source_id, update=True)
                 owned = await runs.finish(db, self.org, self.run_id, status, safe, self.counts)
-                if owned and (reconnect or source_error):
+                if owned and writes_source:
                     await db.execute(
                         text(_SOURCE_RECONNECT_SQL if reconnect else _SOURCE_ERROR_SQL),
                         {"org": self.org, "source": self.source_id, "code": safe})

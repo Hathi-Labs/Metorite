@@ -449,6 +449,10 @@ MANIFEST: tuple[Route, ...] = (
     # WS-55 EA-14a. The holder, the run's member, an assignee or an admin gives
     # a task up. The task keeps its status and its assignees, so class B.
     Route("POST", "/projects/agent-runs/{run_id}/release", "release_agent_run", "B"),
+    # WS-55 SW-11a (spec §12.7). A person hands a stalled run back to an agent:
+    # one member prompt, with the rule of Release. The task does not change, so
+    # class B. The chat gets the tool with the other run tools in EA-12e.
+    Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
     # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
     # request writes a question and archives nothing, so it is class B. The
     # run's member answers on the task. The approval archives, so it is
@@ -465,6 +469,11 @@ MANIFEST: tuple[Route, ...] = (
     # Five counts over the tasks the caller can see. A read, so class A. The
     # chat reads the same counts through a tool after EA-12e.
     Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A"),
+    # ── needs_attention.py — Needs attention (WS-55 SW-11a, spec §12.7) ──────
+    # Stalled runs, open runs of closed tasks and tasks blocked by parked work,
+    # over the tasks the caller can see. A read, so class A, and the chat asks
+    # nothing for it.
+    Route("GET", "/projects/needs-attention", "needs_attention", "A"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -505,6 +514,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
+    # chat gets the tool with the other run tools in EA-12e.
+    "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
@@ -651,6 +663,13 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("GET", "/projects/agent-runs"): {
         "status": "waiting_agent_requests",
         "limit": "waiting_agent_requests",
+    },
+    # ── Needs attention (WS-55 SW-11a) ───────────────────────────────────
+    ("GET", "/projects/needs-attention"): {
+        "project_id": "needs_attention.project_id",
+        "mine": "needs_attention.mine",
+        "offset": "needs_attention.offset",
+        "limit": "needs_attention",
     },
     # ── tasks ────────────────────────────────────────────────────────────
     ("GET", "/projects/tasks"): {
@@ -1143,6 +1162,23 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "Promote-and-assign is the Clarify card's one transaction. The chat "
             "assigns through assign."
         ),
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
+            "write reads the row first."
+        ),
+    },
+    # WS-55 MCP-G2: the two fields an outside agent sends and the chat does not.
+    ("POST", "/projects/tasks"): {
+        "assignees": (
+            "An outside agent assigns in the create's own transaction. The chat "
+            "assigns through assign, after the create."
+        ),
+    },
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
+            "write reads the row first."
+        ),
     },
     ("POST", "/projects/tasks/move/preview"): {
         "status_map": _MAPPING_CARD_REASON,
@@ -1300,6 +1336,8 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-55 EA-6g (EA3-40): the archive request. Its approval is class X (D-OP-13).
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
+    # WS-55 SW-11a: the resume of a stalled run, with the other run tools.
+    ("POST", "/projects/agent-runs/{run_id}/resume"): {"idempotency_key": "G23"},
     # G24 (WS-66 RM-1, D114): the member's reminders. RM-3 builds the tools of
     # calendar_events_reminders.md §5.8, and moves each row to SENDS as its
     # tool starts to send the field. `/reopen` and `/promote` take no body.
@@ -1443,6 +1481,10 @@ UI_ACTIONS: dict[str, str] = {
     "agentRunsApi.summary": "agent_summary",
     # WS-55 EA-14a: a person releases a run from the card (`release_agent_run`, PLANNED for EA-12e).
     "agentRunsApi.release": "release_agent_run",
+    # WS-55 SW-11a: a person resumes a stalled run from Needs attention
+    # (`resume_agent_run`, PLANNED for EA-12e), and the list itself.
+    "agentRunsApi.resume": "resume_agent_run",
+    "attentionApi.list": "needs_attention",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────
