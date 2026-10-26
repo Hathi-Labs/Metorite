@@ -59,12 +59,14 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
     if not snap.complete:
         raise HTTPException(status_code=503, detail="My Day could not be read in full")
     logged = await outbox.logged_pairs(org, email)
-    candidates = plan.interrupt_candidates(snap.cards, logged, snap.now)
+    # The preview shows what WhatsApp would get, so no reminder (D114.7).
+    cards = plan.on_whatsapp(snap.cards)
+    candidates = plan.interrupt_candidates(cards, logged, snap.now)
     wa_id, is_open = await channel.reach_state(org, email)
     held = (wa_id is not None and not is_open and bool(candidates)
             and flags.needs_you_template() is None)
     return {
-        "brief": plan.compose_brief(snap.cards, loop.app_url(), snap.local_date,
+        "brief": plan.compose_brief(cards, loop.app_url(), snap.local_date,
                                     now=snap.now),
         "interrupts": (plan.compose_interrupt(candidates, loop.app_url(), now=snap.now)
                        if candidates else None),

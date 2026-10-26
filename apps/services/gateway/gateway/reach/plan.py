@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from gateway.reach.classes import REACHING, reach_class, reach_kind
+from gateway.reach.classes import NOT_ON_WHATSAPP, REACHING, reach_class, reach_kind
 from gateway.routes.shell import feed_rank
 from gateway.routes.shell.needs import _instant
 
@@ -82,6 +82,14 @@ def reach_print(card: dict[str, Any]) -> str:
 def pair(card: dict[str, Any]) -> Pair:
     """The identity of one card at one reason to reach (:func:`reach_print`)."""
     return str(card["signal_id"]), reach_print(card)
+
+
+def on_whatsapp(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The cards that may go on WhatsApp: each card whose main kind and
+    folded kinds are all outside ``classes.NOT_ON_WHATSAPP`` (D114.7). Each
+    WhatsApp message reads its cards through this. The chat brief does not."""
+    return [c for c in cards
+            if not ({c.get("kind"), *(c.get("folded") or ())} & NOT_ON_WHATSAPP)]
 
 
 def is_open(card: dict[str, Any]) -> bool:
@@ -361,8 +369,10 @@ def brief_lead(parts: BriefParts) -> str:
 
 def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *,
                   now: datetime) -> str | None:
-    """The morning brief, or None when no open card is in Now or Needs you."""
-    parts = brief_parts(cards, local_date, now=now)
+    """The morning brief on WhatsApp, or None when no open card is in Now or
+    Needs you. A card that may not go on WhatsApp is not in it
+    (:func:`on_whatsapp`)."""
+    parts = brief_parts(on_whatsapp(cards), local_date, now=now)
     if parts is None:
         return None
     tail = f"My Day: {app_url.rstrip('/')}/"
@@ -410,8 +420,9 @@ def needs_you_params(name: str, cards: list[dict[str, Any]], now: datetime) -> l
 def brief_params(name: str, cards: list[dict[str, Any]], local_date: date,
                  now: datetime) -> list[str]:
     """The parameters of the brief template: the name, the date, the count of
-    brief items and the first line. *cards* must hold a brief item."""
-    items = brief_items(cards)
+    brief items and the first line, over the cards that may go on WhatsApp
+    (:func:`on_whatsapp`). They must hold a brief item."""
+    items = brief_items(on_whatsapp(cards))
     return [template_param(name, 40), _date_words(local_date), str(len(items)),
             template_param(line(items[0], now))]
 
