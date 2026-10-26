@@ -87,7 +87,9 @@ DEFAULT_DAY_END = 22
 #: and no countdown: a block that folds in, or a day more late, must not
 #: bring a dismissed card back.
 # ``review_at`` (KB-9b): a page past its review date again, after a verify, is a new card.
-STATE_FACTS = ("due_at", "note_ids", "waiting_since", "message_id", "review_at")
+# ``failed_since`` (KB-9b slice 2): a source that fails again, in a new episode, is a new card.
+STATE_FACTS = ("due_at", "note_ids", "waiting_since", "message_id", "review_at",
+               "failed_since")
 
 #: The columns of one state row, in the order of the table.
 COLUMNS = ("kind", "state", "dismiss_reason", "fingerprint", "visits", "visits_day",

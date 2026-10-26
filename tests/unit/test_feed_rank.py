@@ -53,6 +53,8 @@ class TestTheTable:
             "kb_gap": 20,
             # WS-61 KB-9b: the review above the gap, the new page below it.
             "doc_needs_review": 21, "doc_shared_with_me": 19,
+            # WS-61 KB-9b slice 2: a source stopped syncing.
+            "source_sync_failed": 31,
             # WS-66 RM-2: the member's own reminders.
             "reminder_due": 31, "reminder_check": 29, "reminder_unconfirmed": 25,
         }

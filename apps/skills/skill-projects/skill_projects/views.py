@@ -398,6 +398,7 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("outcomes.completed", "Completed"),
             ("outcomes.failed", "Failed"),
             ("outcomes.abandoned", "Abandoned"),
+            ("outcomes.server_closed", "Closed by Metorite"),
             ("silent_total", "Silent now"),
             ("long_total", "4 hours or more"),
         ],
@@ -408,6 +409,30 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("member", "For"),
             # `_card_section` copies `since` here, so the date cut applies.
             ("since_at", "Silent since"),
+        ],
+    },
+    # WS-27bn RA-5. The pull requests and the rework in numbers, then one row
+    # for each open agent pull request whose checks fail. `_card_rows` names
+    # the member over the address. The summary sits in the text beside it.
+    "quality": {
+        "title": "Quality",
+        "stats": [
+            ("prs.merged", "Agent PRs merged"),
+            ("prs.closed", "Closed, not merged"),
+            ("prs.open", "Open now"),
+            ("checks.failing_total", "Failing checks"),
+            ("checks.merged_red", "Merged while red"),
+            ("rework.reopened.agents.reopened", "Tasks reopened after agents"),
+            ("rework.reopened.people.reopened", "Tasks reopened after people"),
+            ("rework.reopened.agents.undone", "Agent finishes reopened later"),
+            ("rework.reopened.people.undone", "Person finishes reopened later"),
+        ],
+        "rows": "checks.failing",
+        "columns": [
+            ("title", "Task"),
+            ("agent", "Agent"),
+            ("member", "For"),
+            ("ref", "Pull request"),
         ],
     },
     # WS-27bn R3c. The four counts, then one row for each named task.
@@ -567,13 +592,28 @@ def _card_rows(name: str, rows: Any) -> Any:
     The rows then go through the one table of :func:`_card_section`, with
     its one cut. Every other section keeps its rows as they are.
     """
-    if name != "agent_runs" or not isinstance(rows, list):
+    if name not in ("agent_runs", "quality") or not isinstance(rows, list):
         return rows
+    if name == "quality":
+        return [
+            {**r, "member": r.get("member_name") or r.get("member")}
+            for r in rows
+            if isinstance(r, dict)
+        ]
     return [
         {**r, "member": r.get("member_name") or r.get("member"), "since_at": r.get("since")}
         for r in rows
         if isinstance(r, dict)
     ]
+
+
+def _spec_rows(section: dict[str, Any], spec: dict[str, Any]) -> Any:
+    """The list a card spec names. WS-27bn RA-5: a dotted key reads a nested
+    list (``checks.failing``), and a key that is absent reads as no list."""
+    if not spec.get("rows"):
+        return None
+    rows = _dig(section, spec["rows"])
+    return None if rows is _MISSING else rows
 
 
 def _card_section(
@@ -600,7 +640,7 @@ def _card_section(
             rows = [section]
             columns = spec["fields"]
         else:
-            rows = section.get(spec["rows"]) if spec.get("rows") else None
+            rows = _spec_rows(section, spec)
             columns = spec.get("columns") or []
     else:
         stats = [

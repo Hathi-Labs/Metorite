@@ -20,8 +20,9 @@ Three fences, each with a self-test that proves it is not vacuous:
    ``get_db()``, and no other function of the package calls ``get_db``.
 4. **Each tenant table names the org** (R7 fence ``kb-sync-org-predicate``,
    verifier F4). Each ``*_SQL`` constant of ``gateway/kb_sync/`` that reads
-   or writes ``kb_sources``, ``kb_source_nodes``, ``kb_sync_cursors`` or
-   ``kb_sync_runs`` carries an ``organization_id`` predicate for EACH such
+   or writes ``kb_sources``, ``kb_source_nodes``, ``kb_sync_cursors``,
+   ``kb_sync_runs`` or (KC-4a) ``kb_node_access`` carries an
+   ``organization_id`` predicate for EACH such
    reference: ``<alias>.organization_id =`` for an alias, and a bare
    ``organization_id =`` for a reference with no alias. An INSERT names
    ``CAST(:org AS uuid)``. Row level security is the first wall. This is the
@@ -57,9 +58,12 @@ _PROVIDER_CALLS = frozenset({
     # The adapter protocol (kb_sources/base.py).
     "consent_url", "exchange_code", "refresh", "revoke", "account_identity",
     "discover", "changes_start_token", "list_changed", "fetch_text", "fetch_bytes",
+    "list_access",
     # The helpers of kb_sync that make a provider call.
     "_call", "_discover", "_credential", "_flat", "_walk", "fresh_credential",
     "relist", "bootstrap", "changes", "reconcile", "run_source",
+    # KC-4a, the access pass.
+    "_read_access", "run_access",
 })
 
 
@@ -106,9 +110,9 @@ def commits_inside_sessions(source: str) -> list[int]:
 
 def test_the_scan_sees_the_package() -> None:
     names = {p.name for p in _FILES}
-    assert {"discovery.py", "engine.py", "runs.py", "scheduler.py"} <= names, names
+    assert {"access.py", "discovery.py", "engine.py", "runs.py", "scheduler.py"} <= names
     # Each file that writes opens sessions, so the scan has blocks to read.
-    for name in ("discovery.py", "engine.py", "scheduler.py"):
+    for name in ("access.py", "discovery.py", "engine.py", "scheduler.py"):
         tree = ast.parse((_PKG / name).read_text(encoding="utf-8"))
         assert _session_blocks(tree), f"{name} has no tenant_session block"
 
@@ -181,12 +185,16 @@ def test_the_get_db_count_is_not_vacuous() -> None:
 
 import re  # noqa: E402
 
-_TENANT = r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs)"
+_TENANT = r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs|kb_node_access)"
 #: A read or a write of a tenant table, and its alias. SQL words are upper
 #: case here, and an alias is lower case, so a keyword is never an alias.
-_REF = re.compile(rf"\b(FROM|JOIN|UPDATE|DELETE FROM)\s+{_TENANT}\b(?:\s+(?:AS\s+)?([a-z]\w*))?")
+#: K-24 (a): a comma also starts a table reference (``FROM dead d, kb_source_nodes c``).
+_REF = re.compile(rf"(?:\b(FROM|JOIN|UPDATE|DELETE FROM)\s+|(,)\s*){_TENANT}\b"
+                  rf"(?:\s+(?:AS\s+)?([a-z]\w*))?")
 _INSERT = re.compile(rf"\bINSERT INTO\s+{_TENANT}\b")
-_BARE_PRED = re.compile(r"(?<![\w.])organization_id\s*=")
+#: K-24 (b): ``organization_id = organization_id`` binds nothing, so the right
+#: side may not be the same bare column.
+_BARE_PRED = re.compile(r"(?<![\w.])organization_id\s*=(?!\s*organization_id\b)")
 _ORG = "CAST(:org AS uuid)"
 
 
@@ -197,12 +205,14 @@ def org_predicate_findings(name: str, sql: str) -> list[str]:
     for m in _REF.finditer(sql):
         if m.group(1) == "UPDATE" and sql[max(0, m.start() - 3):m.start()] == "DO ":
             continue  # ON CONFLICT ... DO UPDATE SET names no table
-        refs[m.group(3)] = refs.get(m.group(3), 0) + 1
+        refs[m.group(4)] = refs.get(m.group(4), 0) + 1
     for alias, n in refs.items():
         if alias is None:
             preds = len(_BARE_PRED.findall(sql))
         else:
-            preds = len(re.findall(rf"\b{re.escape(alias)}\.organization_id\s*=", sql))
+            a = re.escape(alias)
+            preds = len(re.findall(
+                rf"\b{a}\.organization_id\s*=(?!\s*{a}\.organization_id\b)", sql))
         if preds < n:
             out.append(f"{name}: {n} reference(s) as {alias or 'no alias'} and "
                        f"{preds} organization_id predicate(s)")
@@ -214,10 +224,10 @@ def org_predicate_findings(name: str, sql: str) -> list[str]:
 
 
 def _sql_constants() -> dict[str, str]:
-    from gateway.kb_sync import discovery, engine, runs
+    from gateway.kb_sync import access, discovery, engine, runs
 
     out: dict[str, str] = {}
-    for mod in (discovery, engine, runs, scheduler):
+    for mod in (access, discovery, engine, runs, scheduler):
         for attr in dir(mod):
             value = getattr(mod, attr)
             if attr.endswith("_SQL") and isinstance(value, str):
@@ -253,6 +263,18 @@ def test_each_tenant_table_reference_names_the_org() -> None:
     ("SELECT 1 FROM kb_sync_runs r WHERE r.organization_id = CAST(:org AS uuid)", False),
     ("UPDATE kb_sources SET x = 1 WHERE organization_id = CAST(:org AS uuid)", False),
     ("SELECT id FROM organization ORDER BY id", False),
+    # K-24 (a): a tenant table after a comma needs its own predicate.
+    ("UPDATE kb_source_nodes g SET x = 1 FROM dead d, kb_source_nodes c "
+     "WHERE g.organization_id = CAST(:org AS uuid)", True),
+    ("SELECT 1 FROM dead d, kb_source_nodes c WHERE c.organization_id = CAST(:org AS uuid)",
+     False),
+    # K-24 (b): a predicate that compares a column with itself binds nothing.
+    ("SELECT 1 FROM kb_source_nodes r WHERE r.organization_id = r.organization_id "
+     "AND CAST(:org AS uuid) IS NOT NULL", True),
+    ("SELECT 1 FROM kb_source_nodes WHERE organization_id = organization_id "
+     "AND CAST(:org AS uuid) IS NOT NULL", True),
+    ("SELECT 1 FROM kb_source_nodes r JOIN kb_sources s ON s.organization_id = r.organization_id "
+     "WHERE r.organization_id = CAST(:org AS uuid)", False),
 ])
 def test_the_org_fence_is_not_vacuous(sql: str, found: bool) -> None:
     assert bool(org_predicate_findings("planted", sql)) is found

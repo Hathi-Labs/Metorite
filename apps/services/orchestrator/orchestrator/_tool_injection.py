@@ -675,15 +675,14 @@ def _registered_platform_surface() -> set[str]:
     """Every registered platform tool name, plus the core floor.
 
     The declared side of an unscoped agent's scope, once something must
-    narrow it (a disabled family, or the D85 withheld shell tools).
+    narrow it (a disabled family, or the D85 withheld shell tools). A tool
+    pack's names are not platform tools (WS-67 OA-7a), so they are not here.
     """
     try:
-        from acb_skills.skill_families import SKILL_FAMILIES
+        from acb_skills.skill_families import injected_tool_names
     except ImportError:
         return set(_CORE_STANDARD_TOOL_NAMES)
-    return set(_CORE_STANDARD_TOOL_NAMES) | {
-        name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
-    }
+    return set(_CORE_STANDARD_TOOL_NAMES) | set(injected_tool_names())
 
 
 def _resolve_injected_scope(
@@ -759,23 +758,26 @@ def _resolve_declared_scope(
     if not disabled_families:
         return base
     try:
-        from acb_skills.skill_families import SKILL_FAMILIES  # noqa: PLC0415
+        from acb_skills.skill_families import injected_families  # noqa: PLC0415
     except ImportError:
         return base  # registry unavailable — settings cannot apply safely
     # Only families that are real, not the core floor, and carry static tools
     # can narrow the injected set. ('apps' is dynamic — the API refuses it;
     # 'workflows' tools are appended per-agent, and _inject_agent_tools also
-    # honors the toggle at that append site.)
+    # honors the toggle at that append site.) A tool pack is not an injected
+    # family (WS-67 OA-7a): a disabled pack narrows nothing here. It stops
+    # the pack itself from OA-7c (one_assistant_context.md §4.2.1).
+    families = injected_families()
     relevant = {
         slug for slug in disabled_families
-        if slug in SKILL_FAMILIES
-        and not SKILL_FAMILIES[slug].get("core")
-        and SKILL_FAMILIES[slug].get("tools")
+        if slug in families
+        and not families[slug].get("core")
+        and families[slug].get("tools")
     }
     if not relevant:
         return base  # nothing narrowing ⇒ byte-identical to today (rule 3)
     enabled_tools = set(_CORE_STANDARD_TOOL_NAMES)
-    for slug, fam in SKILL_FAMILIES.items():
+    for slug, fam in families.items():
         if slug not in relevant:
             enabled_tools |= set(fam["tools"])
     if base is None:

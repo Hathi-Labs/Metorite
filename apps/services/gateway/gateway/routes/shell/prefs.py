@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 #: The three keys of ``my_day_prefs`` (§16 MD-2d).
 PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
-MAX_KINDS = 28
+MAX_KINDS = 29
 #: The most lines that ``corrections`` takes.
 MAX_CORRECTIONS = 10
 #: The longest correction line.
@@ -77,7 +77,8 @@ def feed_kinds() -> frozenset[str]:
     after MD-3, 21 after WS-53 CRM-Q28 added ``digest_ready``, 22 after
     WS-53 CRM-Q32-4 added ``crm_open_questions``, 23 after WS-61 KB-9a
     added ``kb_gap``, 25 after WS-61 KB-9b added ``doc_needs_review``
-    and ``doc_shared_with_me``, and 28 after WS-66 RM-2 added the three
+    and ``doc_shared_with_me``, 26 after KB-9b slice 2 added
+    ``source_sync_failed``, and 29 after WS-66 RM-2 added the three
     reminder kinds, which is ``MAX_KINDS``
     (§5.9 item 10.6: a ticket that adds a kind raises the cap)."""
     return frozenset(feed_rank.BASE)

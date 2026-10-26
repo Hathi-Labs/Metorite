@@ -40,6 +40,7 @@ from skill_projects.writes import (
     _split,
     _task,
     mailbox_line,
+    space_refusal,
 )
 
 try:
@@ -624,6 +625,9 @@ async def capture_intake(
     payload: dict[str, Any] = {"title": label}
     if project_id.strip():
         pid, node = await _node(project_id)
+        stop = await space_refusal(pid, node)
+        if stop:
+            return stop
         payload["project_id"] = pid
         where = data(node.get("name"))
     else:

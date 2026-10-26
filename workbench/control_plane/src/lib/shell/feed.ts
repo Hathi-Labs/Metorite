@@ -937,6 +937,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   // WS-61 KB-9b: a page of mine is past its review date, and a new page.
   doc_needs_review: "Page to review",
   doc_shared_with_me: "New page",
+  // WS-61 KB-9b slice 2: a source that I connected stopped syncing.
+  source_sync_failed: "Source stopped syncing",
   // WS-66 RM-2: the member's own reminders (calendar_events_reminders.md §5.6).
   reminder_due: "Reminder",
   reminder_check: "Check-back",

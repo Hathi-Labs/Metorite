@@ -55,7 +55,8 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
 
 
 def _project_with_statuses(db: FakeProjectsDB) -> tuple:
-    project = db.seed_project(name="Ops")
+    # In a space: a space holds no tasks (`core.assert_holds_tasks`).
+    project = db.seed_in_space(name="Ops")
     todo = db.seed_status(project.id, name="To do", category="todo", is_default=True)
     done = db.seed_status(
         project.id, name="Done", category="done", is_default=False, position=40,
@@ -373,17 +374,19 @@ async def test_a_subproject_inherits_the_roots_task_numbering(
     """``root_project_id`` is what scopes the counter, the statuses and the
     types — a subproject with its own sequence would give two tasks the same
     human id inside one department."""
-    root, _todo, _ = _project_with_statuses(db)
-    child = db.seed_project(name="Child", parent=root.id, subject=None)
+    project, _todo, _ = _project_with_statuses(db)
+    root = project.parent_project_id
+    child = db.seed_project(name="Child", parent=project.id, subject=None)
 
     first = await pm_tasks.create_task(
-        pm_tasks.TaskIn(project_id=str(root.id), title="One"), user=USER,
+        pm_tasks.TaskIn(project_id=str(project.id), title="One"), user=USER,
     )
     second = await pm_tasks.create_task(
         pm_tasks.TaskIn(project_id=str(child.id), title="Two"), user=USER,
     )
 
-    assert second["root_project_id"] == str(root.id)
+    assert first["root_project_id"] == str(root)
+    assert second["root_project_id"] == str(root)
     assert second["task_number"] == first["task_number"] + 1
 
 

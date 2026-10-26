@@ -5,9 +5,14 @@ The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-25.
 
+**KB-9b slice 2 is BUILT, 2026-10-26** (branch `kb-9b2-sync-card`, no
+migration, dark behind `MY_DAY_PROVIDERS` and `KNOWLEDGE_SOURCES`, Metorite
+task #461). The card `source_sync_failed` for the member who connected a
+Drive, and the cache bump of a failed sync (§9).
+
 **KB-9b slice 1 is BUILT, 2026-10-26** (branch `kb-9b-my-day`, no
 migration, dark behind `MY_DAY_PROVIDERS`). The cards `doc_needs_review` and
-`doc_shared_with_me` (§9). `source_sync_failed` is slice 2 and is open (§17).
+`doc_shared_with_me` (§9).
 
 **KB-4b is BUILT, 2026-10-25** (branch `kb-4b-chips`, no migration, frontend
 only, no flag). A link in an assistant answer draws as a chip when the same
@@ -1131,6 +1136,56 @@ proposal call `cache.bump_org_safe` after the session closes. Fences:
 `tests/unit/test_kb_my_day.py` and `tests/unit/test_kb_my_day_r8.py` (R8). The
 restore of a page and a verify call no bump (OQ9).
 
+**KB-9b slice 2 as built (2026-10-26).** `source_sync_failed` is a card for
+the member who connected a Drive, and for no one else. `my_day.read` takes
+`sources_on`, which is true when `KNOWLEDGE_SOURCES` names the org. With it
+off, no source statement runs and the page cards still come. With it on, the
+read of the viewer's own sources runs in the SAME one session.
+
+The read names the org, `lower(owner_email) = :kb_viewer` and
+`state <> 'disconnected'`. It reads 10 sources at most (`SOURCES_MAX`). It uses
+`kb_sync_runs_source_started_idx`.
+
+A source fails when its state is `needs_reconnect`. It also fails when its
+three newest finished runs are all `failed`. Those runs are of kind `changes`
+or `reconcile`. Their error is not `stale` and not `superseded`.
+
+A stopped run is
+finished and is not failed, so it breaks the three. A running run is not
+finished. Fewer than three finished runs never fail.
+
+The card keys on `knowledge:source:<source id>`. Its one act opens
+`/knowledge/sources`. The why line for `needs_reconnect` is "Your Google Drive
+stopped syncing. Reconnect it in Knowledge." The line for the rest is "The last
+three syncs failed." The row holds the id, the provider, the state and
+`failed_since`.
+
+So the card holds no provider error, no account address and no token.
+
+`failed_since` is a state fact (`state.STATE_FACTS`), and it is the `at` of the
+signal. It changes once for each failure episode. For `needs_reconnect` it is
+`kb_sources.updated_at`, because the loop skips a source that is not `ready`.
+
+For failed runs it is the `started_at` of the newest run before the streak.
+That run is an ok, stopped, stale or superseded run. It stays fixed when a 4th
+or 5th failed run lands. It also stays fixed when the retention sweep prunes
+old failed runs. So a dismissed card returns in a new episode, and a new
+episode gets one new push.
+
+The rank is 31, the group is `needs_you`, and the reach class is `interrupt`.
+`MAX_KINDS` is 26. The order before the cut of 15 is source failures, review,
+gaps, shared.
+
+The bump is `cache.bump_member_safe(org, owner_email)` through
+`kb_sync/owner_bump.py`. `run_source` calls it after `close()` returned, when
+the run closed `failed` or the source went `needs_reconnect`. The discovery
+`_mark` calls it after its session closed. It is never inside a session, because
+of the lock order of KC-3h. A bump failure never fails the run.
+
+Fences: `tests/unit/test_kb_my_day.py` (`TestTheSourceCard`,
+`TestTheSourceSignal`, `TestTheEpisodeOfASourceCard`, `TestTheSyncBump`) and
+`tests/unit/test_kb_my_day_r8.py` (R8).
+
 The decisions of slice 1:
 
 - **OQ1.** The owner is `COALESCE(owner_email, author_email)`. A page past its
@@ -1417,7 +1472,7 @@ its own branch, three or four in flight at most.
 | **KB-7d** — folded into KC-1 (`knowledge_curation.md` §22). KC-1a BUILT 2026-10-25, backend and dark. KC-1b (the Sources view) is open | The Google Drive adapter on the one Google client, with the shared-grant rule of §7.4 | Same checks on a test user. Disconnecting Drive leaves Gmail connected, and the test proves it | AGENT-SAFE to build. The verification: owner (Q2) |
 | **KB-8** | Replaced on 2026-10-18 by CX-3 of `company_context.md`: a digest per page on `tier-fast`, behind `KNOWLEDGE_DISTILL`, with `raw` kept. `tier-cheap` does not exist | See `company_context.md` §12 | AGENT-SAFE to build. The flip: owner |
 | **KB-9a** ✅ BUILT 2026-10-22 (branch `kb-gaps`, migration 293) | Gaps and the `kb_gap` card (§8.4 door 3, §9). The migration of `kb_gaps` (the next free number, R1). The gap write after `GET /search/company`, behind `KNOWLEDGE_GAPS`, as a background job. `GET /knowledge/gaps`, `POST /knowledge/gaps/{id}/dismiss`, `POST /knowledge/gaps/{id}/answered` and, from the H-402 follow-up, `POST /knowledge/gaps/{id}/reopen`. The gated provider `knowledge` with `kb_gap`, its reach class and its cache bumps. The Gaps view in the rail, and "Write a page" with the question as the title. The member purge takes the address out of `askers`. No model | A zero-hit search writes one row. A second asker adds one to the count, and the same asker twice counts once. A search with a Knowledge hit, a short question, an id, a URL and an email write nothing, and so does an org off `KNOWLEDGE_GAPS`. Org B sees no gap of org A, under row level security. A member sees only the gaps the member asked, and a manager sees all. Dismiss needs `knowledge:manage`. "I wrote it" needs a visible page that the caller can write. The card shows to a manager only, at 2 askers or more inside 30 days. Tests: `test_kb_gaps.py` and `test_kb_gaps_r8.py` (R8), and the Gaps e2e | AGENT-SAFE. `KNOWLEDGE_GAPS` and `MY_DAY_PROVIDERS`: MD-3's flip rule |
-| **KB-9b** slice 1 ✅ BUILT 2026-10-26 (branch `kb-9b-my-day`, no migration), slice 2 open | Slice 1: `doc_needs_review` and `doc_shared_with_me`, with their reach classes, rank rows, labels and the cache bump of a publish and of an accept (§9). `source_sync_failed` is slice 2. It reads the `failed` and `stopped` rows of `kb_sync_runs` and `kb_sources.last_error`, which KC-3 writes (`knowledge_curation.md` §22) | Slice 1: a page past review shows a card to its owner, or to its author when it has no owner. A new page in a space the member reads shows a card to a reader who did not write it, 5 at most. A plain member gets the page cards and no `kb_gap`. `test_reach_plan.py` pins the classes. Slice 2 done-when: the connector (`kb_sources.owner_email`) gets one card when the source is `needs_reconnect`, or when its three newest finished changes or reconcile runs failed with an error other than stale or superseded. A stopped run never counts. No other member gets a card, and a disconnected source gives none. The key is `knowledge:source:<id>`, and the one act opens `/knowledge/sources`. With `KNOWLEDGE_SOURCES` off, no read runs. A reconnect close and a failed close call `bump_member_safe` for the owner, after the session closes. The class is `interrupt`. R8 proves org isolation. Slice 2 waits for KC-4a to merge its `kb_sync/` edits | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-3's flip rule |
+| **KB-9b** slice 1 ✅ BUILT 2026-10-26 (branch `kb-9b-my-day`, no migration), slice 2 ✅ BUILT 2026-10-26 (branch `kb-9b2-sync-card`, no migration, task #461) | Slice 1: `doc_needs_review` and `doc_shared_with_me`, with their reach classes, rank rows, labels and the cache bump of a publish and of an accept (§9). `source_sync_failed` is slice 2 (built). It reads the `failed` and `stopped` rows of `kb_sync_runs` and the state of `kb_sources`, which KC-3 writes (`knowledge_curation.md` §22) | Slice 1: a page past review shows a card to its owner, or to its author when it has no owner. A new page in a space the member reads shows a card to a reader who did not write it, 5 at most. A plain member gets the page cards and no `kb_gap`. `test_reach_plan.py` pins the classes. Slice 2 done-when: the connector (`kb_sources.owner_email`) gets one card when the source is `needs_reconnect`, or when its three newest finished changes or reconcile runs failed with an error other than stale or superseded. A stopped run never counts. No other member gets a card, and a disconnected source gives none. The key is `knowledge:source:<id>`, and the one act opens `/knowledge/sources`. With `KNOWLEDGE_SOURCES` off, no read runs. A reconnect close and a failed close call `bump_member_safe` for the owner, after the session closes. The class is `interrupt`. R8 proves org isolation. Slice 2 is built, and the cards stay dark until `MY_DAY_PROVIDERS` lists `knowledge` | AGENT-SAFE. `MY_DAY_PROVIDERS`: MD-3's flip rule |
 | **KB-10** | `kb:read` on `/mcp`: the scope, the two tools, the route pairs, the second manifest in `test_mcp_edge_coverage.py` | Claude Desktop, connected with `kb:read`, searches and reads a page the member can see, and gets 404 on one they cannot | AGENT-SAFE. The scope amendment: owner |
 | **KB-11** | The narrowing adapter, "Make this a page" on a report, the Markdown export zip | A report becomes a page. An org exports its pages. `narrow_and_read` answers a question over 60 documents on `tier-decide` | AGENT-SAFE |
 | **KB-12** ✅ DONE 2026-10-18, by owner decision in chat (H-21) | Promotion to `live`: the launch table, `LIVE_SET`, `APP_BAR_HOME`, the two jobs of §11 on both job lists, and Knowledge in the bar's `BAR_APPS` and `SCOPE_APPS`. `NEXT_PUBLIC_KNOWLEDGE` never existed, and §13 says so | The pane shows to every member with `feature:knowledge`. "Find in Knowledge" and "Write a page" answer in the command bar, and a Knowledge page answers in its search | **OWNER-GATE** (H-21), granted in chat on 2026-10-18 |
@@ -1479,6 +1534,8 @@ uv run pytest tests/unit/test_kb_my_day.py tests/unit/test_kb_gaps.py \
   tests/unit/test_reach_plan.py tests/unit/test_my_day_prefs.py \
   tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py -q
 uv run pytest tests/unit/test_kb_my_day_r8.py -p no:xdist -q -rs
+# KB-9b slice 2 adds its tests to the same two files, and the engine fence.
+uv run pytest tests/unit/test_kb_my_day.py tests/unit/test_kb_sync_engine.py -q
 
 # Wave 1 of §21.7 (KB-2d, KB-2f, KB-2g, KB-2i)
 uv run pytest tests/unit/test_third_party_notices.py -q

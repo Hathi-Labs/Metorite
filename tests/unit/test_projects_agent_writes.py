@@ -2613,7 +2613,7 @@ async def test_the_plan_writes_in_rule_8_order_under_exactly_one_card(monkeypatc
             kinds.append("link")
         else:
             kinds.append(c["path"])
-    assert kinds == ["card", "node", "task", "task", "task", "owner", "owner", "owner",
+    assert kinds == ["card", "node", "node", "task", "task", "task", "owner", "owner", "owner",
                      "link", "link"]
     for c in writes([c for c in calls if c["method"] != "CARD"]):
         row = m.route_for(c["method"], c["path"])
@@ -3206,7 +3206,7 @@ async def test_a_plan_with_no_phase_draws_no_phase_key(monkeypatch) -> None:
     fake_gateway(monkeypatch, _plan_gateway())
     await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
     assert all("phase" not in r for r in drawn[0]["props"]["data"]["tasks"])
-    assert drawn[0]["props"]["data"]["description"] == "Under the top level (a new space)."
+    assert drawn[0]["props"]["data"]["description"] == "Under a new space «Frame» with a project «Frame»."
 
 
 async def test_a_plan_named_like_its_parent_is_refused_and_names_create_tasks(monkeypatch) -> None:

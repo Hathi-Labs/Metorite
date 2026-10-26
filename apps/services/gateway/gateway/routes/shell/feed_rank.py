@@ -96,6 +96,10 @@ BASE: dict[str, int] = {
     # review sits above the gap, and the new page sits below it.
     "doc_needs_review": 21,
     "doc_shared_with_me": 19,
+    # WS-61 KB-9b slice 2: a source that the member connected stopped syncing.
+    # Above every kind of Knowledge and the stale task (30), below the
+    # overbooked day (32).
+    "source_sync_failed": 31,
     # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
     # reminder. Each one is alone on its entity, so the base orders it
     # against other cards only. A fired reminder also carries `urgent_at`.
@@ -204,8 +208,8 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     ``today`` is the member's own date. An unknown kind raises, as ``base``
     does."""
     if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
-                "waiting_quiet", "absent_on_due", "no_answer", "deal_close_passed",
-                "agent_asks"):
+                "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
+                "deal_close_passed", "agent_asks"):
         return "needs_you"
     if kind == "unblocked":
         return "ready"

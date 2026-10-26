@@ -130,6 +130,15 @@ Ten rules on top of the three above. Each one exists because it was broken:
    a touch. `overviewShown` hides the panel when the scope has no agent run,
    by RA-3's rule. Fences: `app/projects/lib/agentRunsReport.test.ts` and
    `app/projects/components/agentRunsPanel.test.ts`.
+   **The "Quality" panel has one home** (WS-27bn RA-5).
+   `app/projects/lib/qualityReport.ts` holds its words, the rule of each
+   figure and the explicit ramp slot of each mark. Agents and People keep the
+   slots of RA-2. `QualityPanel` draws the server's figures, and an `InfoTip`
+   gives each rule to a keyboard and a touch. `overviewShown` hides the panel
+   when the scope has no agent pull request, no reopen and no failed run.
+   No text calls 100% the goal, and `qualityCopy` lets a test scan the words.
+   Fences: `app/projects/lib/qualityReport.test.ts` and
+   `app/projects/components/qualityPanel.test.ts`.
    **The forecast by count has one home** (WS-27bn RA-6).
    `app/projects/lib/outlook.ts` holds its words, the rule of each verdict
    (`forecastRule`), the band (`forecastBand`) and its explicit ramp slot

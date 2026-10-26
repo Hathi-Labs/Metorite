@@ -130,13 +130,19 @@ def test_index_has_one_line_per_family_with_summary_and_pointer(
 ) -> None:
     text = sx.render_skill_index(effective_scope=None)
     lines = [ln for ln in text.splitlines() if ln.startswith("- **")]
-    assert len(lines) == len(sf.SKILL_FAMILIES), (
-        "an unscoped agent's index must list every family, once"
+    # Every INJECTED family. A tool pack (WS-67 OA-7a) is injected into no
+    # agent, so it is never in the index; OA-7e's loader lists it instead.
+    injected = sf.injected_families()
+    assert len(lines) == len(injected), (
+        "an unscoped agent's index must list every injected family, once"
     )
-    for fam in sf.SKILL_FAMILIES.values():
+    for fam in injected.values():
         line = next(ln for ln in lines if ln.startswith(f"- **{fam['label']}**"))
         assert str(fam["summary"]) in line
         assert "Full guide:" in line
+    for slug in sf.pack_slugs():
+        label = sf.SKILL_FAMILIES[slug]["label"]
+        assert not any(ln.startswith(f"- **{label}**") for ln in lines), slug
 
 
 def test_every_family_declares_a_one_sentence_summary() -> None:

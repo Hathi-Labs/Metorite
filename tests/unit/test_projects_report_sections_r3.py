@@ -87,10 +87,12 @@ def test_outlook_is_an_opt_in_section_in_the_declared_order() -> None:
     assert "outlook" not in rep.normalise_report_config({})["sections"]
     # §8 R3 declares the whole order. Each slice adds its name in its place.
     # WS-27bn RA-3 adds `waiting` after `stuck` (§6.8 A, question 3), and
-    # RA-4 adds `agent_runs` after `waiting`.
+    # RA-4 adds `agent_runs` after `waiting`, and RA-5 adds `quality` after
+    # `agent_runs`.
     declared = (
         "finished", "throughput", "outlook", "load", "capacity", "pulse",
-        "stuck", "waiting", "agent_runs", "hygiene", "conflicts", "rebalance",
+        "stuck", "waiting", "agent_runs", "quality", "hygiene", "conflicts",
+        "rebalance",
     )
     assert list(rep.SECTIONS) == [s for s in declared if s in rep.SECTIONS]
     got = rep.normalise_report_config({"sections": ["stuck", "outlook", "finished"]})

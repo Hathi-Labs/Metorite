@@ -1129,6 +1129,10 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "WS-55 EA-14a: an outside agent skips a task that another agent holds. "
             "The chat does not claim tasks, and no screen sends it."
         ),
+        "include_descendants": (
+            "MCP-G5: an outside agent reads a whole subtree in one call. The chat "
+            "reads subtasks through task_detail, and no screen sends it."
+        ),
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {

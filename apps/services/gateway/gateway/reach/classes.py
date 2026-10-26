@@ -62,6 +62,9 @@ REACH_CLASS: dict[str, str] = {
     # goes in the brief and interrupts nobody.
     "doc_needs_review": "brief",
     "doc_shared_with_me": "brief",
+    # KB-9b slice 2: a source stopped syncing, for the member who connected it
+    # (only that member gets the card). It may interrupt, inside the budget.
+    "source_sync_failed": "interrupt",
     # WS-66 RM-2 (calendar_events_reminders.md §5.6): the member's own
     # reminders interrupt nobody for now. RE-9 raises them to `urgent`,
     # `interrupt` and `brief` on web push, with the D114.3 budget exception.

@@ -707,6 +707,24 @@ class Settings(BaseSettings):
     # tests/unit/test_company_search_recency.py.
     context_recency: bool = False
 
+    # ── OCR of a scanned file (WS-67 OA-3, D116) ────────────────────────────
+    #
+    # ON lets the one attachment reader read a PDF with no text layer, and a
+    # .png, .jpg or .jpeg image, by OCR in a child process. The chat tool
+    # `read_attachment` and the email text route both get it, because both
+    # call `acb_skills.attachment_tools.parse_bounded`. OFF leaves both paths
+    # byte-identical: a scan answers "no text" and an image is refused. The
+    # one reader is `acb_skills.attachment_ocr.ocr_enabled`. The flip is the
+    # agent's under the dev-phase `enforcement-flip` grant. It spends CPU on
+    # the box and no money, and it sends nothing to a third party. ⚠️ Before
+    # the flip, meet the three conditions of `one_assistant_context.md` §4.1:
+    # a share of the one OCR slot for each organization (or the owner accepts
+    # one slot in writing), the three prompt texts that still say "no image",
+    # and a review of the seccomp deny list against an allow list from a
+    # syscall trace of a real OCR read on the box. Fence:
+    # tests/unit/test_attachment_ocr.py.
+    attachment_ocr: bool = False
+
     # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
     #
     # ON gives the orchestrator `keep_correction` and `drop_correction` and
@@ -718,6 +736,23 @@ class Settings(BaseSettings):
     # spends nothing and sends nothing out (one_assistant_context.md §4).
     # Fence: tests/unit/test_chat_constraints.py.
     chat_constraints: bool = False
+
+    # ── The tool packs of the one assistant (WS-67 OA-7a, D117) ─────────────
+    #
+    # `tool_packs` is a comma list of pack slugs (`email`, `email-setup`), or
+    # `*` for each pack. `tool_packs_orgs` lists the organization ids that may
+    # use packs, or `*` for each one. Empty means off, and an empty list
+    # allows no organization. The one reader of both is
+    # `acb_skills.tool_packs.packs_on`, and it fails closed. OA-7a ships no
+    # caller, so neither value changes a run yet (one_assistant_context.md
+    # §4.2.7).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it, because a pack moves the
+    # egress guards and spends model tokens (one_assistant_context.md §4.5).
+    # Fence: tests/unit/test_tool_packs_registry.py.
+    tool_packs: str = ""
+    tool_packs_orgs: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #

@@ -15,7 +15,8 @@
  * line is a defect. Fence: `reportsRedesign.test.ts`.
  */
 import { agentRunsIsClear } from "./agentRunsReport";
-import type { AgentRunsReport, RenderedReportBody, WaitingReport } from "./api";
+import { qualityIsClear } from "./qualityReport";
+import type { AgentRunsReport, QualityReport, RenderedReportBody, WaitingReport } from "./api";
 import { waitingIsClear } from "./waiting";
 
 type Sections = RenderedReportBody["sections"];
@@ -31,6 +32,7 @@ export const SECTION_CLEAR_LINES: Readonly<Record<string, string>> = {
   stuck: "Nothing is stuck.",
   waiting: "Nobody is waiting on a person.",
   agent_runs: "No run ended in 14 days, and none is silent.",
+  quality: "No agent pull request, reopen or failed run.",
   hygiene: "The data looks tidy.",
   conflicts: "No conflicts. The plan lines up.",
   rebalance: "Nothing is at risk, and nobody is idle.",
@@ -90,6 +92,10 @@ export function sectionIsClear(key: string, section: unknown): boolean {
       // WS-27bn RA-4. Clear only when no run ended in the window and none is
       // silent now. A run that is open and working is in neither list.
       return agentRunsIsClear(section as AgentRunsReport);
+    case "quality":
+      // WS-27bn RA-5. Clear only when no agent pull request is in the window or
+      // open, none fails, no task was reopened and no run failed.
+      return qualityIsClear(section as QualityReport);
     case "hygiene": {
       const kinds = Object.values((s.by_kind ?? {}) as Record<string, number>);
       return kinds.every((n) => n === 0) && count(s.rows) === 0;

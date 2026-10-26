@@ -422,8 +422,10 @@ class TestAgentRunsOnARealDatabase:
             assert answered.status_code == 201, answered.text
             assert answered.json()["run"]["status"] == "in_progress"
             # A member reply on in_progress keeps in_progress.
-            assert (await _act(call, w.a, rid, type="prompt", body="And add an index"
-                               )).json()["run"]["status"] == "in_progress"
+            steer = await _act(call, w.a, rid, type="prompt", body="And add an index")
+            assert steer.json()["run"]["status"] == "in_progress"
+            # RA-4b. A prompt to an OPEN run is no reopen: it has no marker.
+            assert "reopens" not in steer.json()["activity"]["content"]
             # Finish: completed. A member prompt opens it again.
             done = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/finish",
                               {"summary": "Done", "idempotency_key": _key()})
@@ -432,6 +434,12 @@ class TestAgentRunsOnARealDatabase:
             reopened = await _act(call, w.a, rid, type="prompt", body="One more thing")
             assert reopened.json()["run"]["status"] == "in_progress"
             assert reopened.json()["run"]["ended_at"] is None
+            # RA-4b. The reopening prompt carries the end it reopened.
+            stamp = reopened.json()["activity"]["content"]["reopens"]["ended_at"]
+            from datetime import datetime
+
+            assert datetime.fromisoformat(stamp) == datetime.fromisoformat(
+                done.json()["run"]["ended_at"].replace("Z", "+00:00"))
             # Finish from awaiting.
             await _act(call, w.agent_a, rid, type="elicitation", body="Free question?")
             assert await _status(call, w.a, rid) == ("awaiting", "awaiting")
