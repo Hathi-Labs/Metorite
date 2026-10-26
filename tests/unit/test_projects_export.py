@@ -277,6 +277,9 @@ NOT_ON_THE_EXPORT = {
     # a second would make the file's row order depend on who last dragged a
     # card. Excluded rather than added, deliberately.
     "view_id",
+    # MCP-G5. An outside agent reads a subtree in one call. The export reads
+    # subtasks through task_detail, and no screen sends this.
+    "include_descendants",
     # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
     # no other AI session holds. The board never sends it, and a file of
     # "tasks no agent holds" is a snapshot that is stale on download.
