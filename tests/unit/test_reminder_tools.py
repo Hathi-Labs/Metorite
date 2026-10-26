@@ -10,15 +10,24 @@ with no offset is refused. Read with the RM-3 audit, that is two rules:
 2. **The TOOL attaches the member's SAVED zone** to a wall time before it
    calls the route, or refuses when no zone is saved. It never guesses one.
 
-And three more that this file holds:
+And more that this file holds:
 
 3. **The reply quotes the SAVED row.** The time and the zone come from the
    route's answer (``reads.saved_when``), never from the tool's argument.
 4. **Each write asks first.** One card through ``writes._confirm``, and no
    write before the member's yes. ``test_projects_agent_writes.py`` holds
    that for every class B and C tool; the cases here pin the reminder words.
-5. **A reminder is not a task.** Its receipt prints ``reminder_id:``, never
-   ``full_id:``, because a ``full_id:`` line opens a task in the app.
+5. **Two gates before any card** (review round 1). With
+   ``CALENDAR_REMINDERS`` off the routes answer 404, and a run with no card
+   channel (WhatsApp) cannot ask. Either way the tool refuses before the card
+   and sends the model to a private task with a block.
+6. **A reminder is not a task.** Its receipt prints ``reminder_id:``, never
+   ``full_id:``, because a ``full_id:`` line opens a task in the app. And the
+   member's receipt shows no line meant for the model.
+7. **The clock is real.** A date or an hour that does not exist is refused,
+   a time in a gap of the clock shows its real time on the card and in the
+   receipt, "morning" is the member's ``day_start_hour``, and a saved zone of
+   exactly UTC gets a note on the card.
 
 Red first (R7), each run against the built code and then reverted:
 
@@ -29,13 +38,18 @@ Red first (R7), each run against the built code and then reverted:
   its own argument (``when.shown``) instead of ``saved_when(row)`` ->
   ``test_the_reply_quotes_the_route_answer_not_the_input`` and two more
   fail.
+* M3. ``writes._reminder_gate``: drop ``reminders_off`` ->
+  ``test_with_the_flag_off_a_write_shows_no_card`` fails for each write.
+* M4. ``writes._reminder_gate``: drop ``no_card_channel`` ->
+  ``test_a_whatsapp_run_refuses_before_the_card`` fails for each write.
 
 No database and no gateway process: the client is patched at httpx.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -92,12 +106,23 @@ def _as_utc(value: str) -> str:
     return datetime.fromisoformat(value).astimezone(UTC).isoformat()
 
 
+def _member_view(result: str) -> str:
+    """What the member's receipt shows of a result: the client drops each line
+    that starts with the legend and each ``<kind>_id:`` line
+    (``ProjectToolCards.forPeopleFenced``)."""
+    return "\n".join(
+        line for line in result.split("\n")
+        if not line.startswith(R.DATA_LEGEND[:40]) and not re.match(r"^\s*[a-z_]+_id:", line)
+    )
+
+
 class Gateway:
     """The member's zone, their reminders, and the RM-1 routes, recorded.
 
     ``today`` is the answer of ``GET /projects/my/today``. ``saved`` changes
     what the create route answers, so a test can make the server store a time
-    that the tool did not send.
+    that the tool did not send. ``off`` is ``CALENDAR_REMINDERS`` off: every
+    reminder route answers 404 (``reminders._require_on``).
     """
 
     def __init__(
@@ -106,16 +131,21 @@ class Gateway:
         zone: str | None = KOLKATA,
         stored: bool = True,
         valid: bool = True,
+        day_start: int | None = 8,
+        off: bool = False,
         rows: list[dict[str, Any]] | None = None,
         saved: dict[str, Any] | None = None,
         refuse: dict[str, FakeResponse] | None = None,
     ) -> None:
-        self.today = {
+        self.today: dict[str, Any] = {
             "today": datetime.now(UTC).date().isoformat(),
             "timezone": zone or "UTC",
             "stored": stored,
             "valid": valid,
         }
+        if day_start is not None:
+            self.today["day_start_hour"] = day_start
+        self.off = off
         self.rows = rows if rows is not None else [_row()]
         self.saved = saved or {}
         self.refuse = refuse or {}
@@ -127,6 +157,8 @@ class Gateway:
             return self.refuse[path]
         if path == "/projects/my/today":
             return self.today
+        if self.off and path.startswith(BASE):
+            return FakeResponse({"detail": "Not Found"}, 404)
         if path == BASE and method == "GET":
             state = (call["params"] or {}).get("state")
             rows = [r for r in self.rows if state is None or r["state"] == state]
@@ -158,6 +190,22 @@ class Gateway:
 
 def _posts(calls: list[dict], path: str) -> list[dict]:
     return [c for c in writes(calls) if c["path"] == path]
+
+
+#: One call of each write. A done or a drop is reopened, so its fake row is done.
+WRITES: list[tuple[str, dict[str, Any]]] = [
+    ("set_reminder", {"title": "Get a haircut", "at": "2099-10-30 17:00"}),
+    ("update_reminder", {"reminder_id": REM, "title": "Get a short haircut"}),
+    ("resolve_reminder", {"reminder_id": REM}),
+    ("reopen_reminder", {"reminder_id": REM}),
+    ("reschedule_reminder", {"reminder_id": REM, "at": "2099-11-02 10:00"}),
+    ("promote_reminder", {"reminder_id": REM}),
+]
+
+
+def _fake_for(tool: str, **kw: Any) -> Gateway:
+    rows = [_row(state="done", resolution="done")] if tool == "reopen_reminder" else None
+    return Gateway(rows=rows, **kw)
 
 
 # ── 1. The route refuses a naive time (unchanged) ──────────────────────────
@@ -244,6 +292,66 @@ async def test_a_wall_time_takes_the_offset_of_its_own_date(monkeypatch) -> None
     assert sent == ["2099-07-01T09:00:00-04:00", "2099-12-01T09:00:00-05:00"]
 
 
+async def test_a_time_in_the_gap_of_the_clock_shows_one_time_on_card_and_receipt(
+    monkeypatch,
+) -> None:
+    """02:30 on 14 March 2027 does not exist in New York: the clock jumps from
+    02:00 to 03:00. The tool sends the real instant, and the card and the
+    receipt both say 03:30 EDT."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway(zone="America/New_York"))
+    out = await skill_projects.set_reminder("Call home", at="2027-03-14 02:30")
+    assert _posts(calls, BASE)[0]["json"]["fire_at"] == "2027-03-14T03:30:00-04:00"
+    assert "Sun 14 Mar 2027, 03:30 EDT" in asked[0]["context"]
+    assert "Sun 14 Mar 2027, 03:30 EDT" in out
+
+
+@pytest.mark.parametrize("wall", ["2099-02-30 09:00", "2026-10-31 24:00", "2099-13-01 09:00"])
+async def test_a_date_or_hour_that_does_not_exist_is_refused_never_raised(
+    wall: str, monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway())
+    for call in (
+        skill_projects.set_reminder("Get a haircut", at=wall),
+        skill_projects.update_reminder(REM, at=wall),
+        skill_projects.reschedule_reminder(REM, at=wall),
+    ):
+        out = await call
+        assert "is not a real date and time" in out, out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_morning_is_the_hour_my_day_starts(monkeypatch) -> None:
+    """"Tomorrow morning" with no hour: the member's ``day_start_hour``."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway(day_start=8))
+    await skill_projects.set_reminder("Call the bank", at="2099-10-31 morning")
+    assert _posts(calls, BASE)[0]["json"]["fire_at"] == "2099-10-31T08:00:00+05:30"
+
+
+async def test_morning_with_no_day_start_from_the_gateway_is_refused(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway(day_start=None))
+    out = await skill_projects.set_reminder("Call the bank", at="2099-10-31 morning")
+    assert "cannot read the hour your day starts" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_saved_zone_of_utc_saves_with_a_note_on_the_card(monkeypatch) -> None:
+    """UTC is the column default, so it may not be the member's choice. The
+    card says so in one line, and the tool still saves."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway(zone="UTC"))
+    await skill_projects.set_reminder("Get a haircut", at="2099-10-30 17:00")
+    assert f"note: «{R.UTC_NOTE}»" in asked[0]["context"]
+    assert _posts(calls, BASE)[0]["json"]["tz"] == "UTC"
+    asked.clear()
+    fake_gateway(monkeypatch, Gateway())
+    await skill_projects.set_reminder("Get a haircut", at="2099-10-30 17:00")
+    assert R.UTC_NOTE not in asked[0]["context"]
+
+
 async def test_a_time_in_the_past_is_refused_with_the_time_now(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, Gateway())
@@ -269,6 +377,7 @@ async def test_in_minutes_is_a_time_from_now(monkeypatch) -> None:
         ({"at": "2099-10-30 17:00", "in_minutes": 20}, "not both"),
         ({"at": "2099-10-30"}, "a date and a time"),
         ({"at": "at five"}, "a date and a time"),
+        ({"at": "smart"}, "only a move takes it"),
         ({"at": "2099-10-30 17:00", "kind": "alarm"}, "action or notice"),
         ({"at": "2099-10-30 17:00", "subject_kind": "task"}, "both"),
         ({"at": "2099-10-30 17:00", "estimate_minutes": 99999}, "estimate_minutes"),
@@ -303,6 +412,7 @@ async def test_a_reply_with_no_id_never_says_saved(monkeypatch) -> None:
     fake_gateway(monkeypatch, Gateway(saved={"id": None}))
     out = await skill_projects.set_reminder("Get a haircut", at="2099-10-30 17:00")
     assert "Do not tell the member it is saved" in out
+    assert "Do not tell" not in _member_view(out)
     assert "reminder_id:" not in out
 
 
@@ -315,22 +425,30 @@ def test_the_quote_format_is_day_date_time_and_zone() -> None:
     assert str(this_year) not in R.when_text(f"{this_year}-06-01T03:30:00+00:00", KOLKATA)
 
 
+@pytest.mark.parametrize(("tool", "kwargs"), WRITES)
+async def test_the_members_receipt_shows_no_line_for_the_model(
+    tool: str, kwargs: dict, monkeypatch,
+) -> None:
+    """The guidance for the model rides a legend line, which the receipt
+    drops. The model still reads it."""
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _fake_for(tool))
+    out = await getattr(skill_projects, tool)(**kwargs)
+    shown = _member_view(out)
+    assert "Tell the member" not in shown and "reopen_reminder" not in shown, shown
+    if tool != "promote_reminder":
+        assert W.QUOTE_THE_TIME in out
+    if tool == "resolve_reminder":
+        assert "reopen_reminder undoes this answer" in out
+
+
 # ── 4. Each write asks first ───────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    ("tool", "kwargs"),
-    [
-        ("set_reminder", {"title": "Get a haircut", "at": "2099-10-30 17:00"}),
-        ("update_reminder", {"reminder_id": REM, "title": "Get a short haircut"}),
-        ("resolve_reminder", {"reminder_id": REM}),
-        ("reschedule_reminder", {"reminder_id": REM, "at": "2099-11-02 10:00"}),
-        ("promote_reminder", {"reminder_id": REM}),
-    ],
-)
+@pytest.mark.parametrize(("tool", "kwargs"), WRITES)
 async def test_a_declined_card_writes_nothing(tool: str, kwargs: dict, monkeypatch) -> None:
     asked = deny(monkeypatch)
-    calls = fake_gateway(monkeypatch, Gateway())
+    calls = fake_gateway(monkeypatch, _fake_for(tool))
     out = await getattr(skill_projects, tool)(**kwargs)
     assert out == W.CANCELLED
     assert len(asked) == 1 and writes(calls) == []
@@ -342,7 +460,7 @@ async def test_reopen_asks_first_and_reads_the_closed_lists(monkeypatch) -> None
     calls = fake_gateway(monkeypatch, Gateway(rows=[done]))
     assert await skill_projects.reopen_reminder(REM) == W.CANCELLED
     assert len(asked) == 1 and writes(calls) == []
-    states = [c["params"].get("state") for c in calls if c["path"] == BASE]
+    states = [c["params"].get("state") for c in calls if c["path"] == BASE and "state" in c["params"]]
     assert states == ["done"], "the done list held it, so the dropped list is not read"
 
 
@@ -422,6 +540,21 @@ async def test_smart_passes_through_and_a_422_says_nothing_moved(monkeypatch) ->
     assert "nothing moved" in out and "Name a time" in out
 
 
+async def test_smart_and_a_far_time_are_refused_for_a_snooze_before_the_card(
+    monkeypatch,
+) -> None:
+    """``/snooze`` refuses ``smart`` and a time past 366 days, so the tool
+    does too, and the member sees no card that the route then refuses."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway())
+    smart = await skill_projects.reschedule_reminder(REM, at="smart", snooze="yes")
+    far = await skill_projects.reschedule_reminder(REM, at="2099-11-02 10:00", snooze="yes")
+    patched = await skill_projects.update_reminder(REM, at="smart")
+    assert "only a move takes it" in smart and "only a move takes it" in patched
+    assert "at most 366 days" in far
+    assert asked == [] and writes(calls) == []
+
+
 async def test_the_promote_prints_the_task_it_made_and_the_reminder(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, Gateway())
@@ -432,24 +565,113 @@ async def test_the_promote_prints_the_task_it_made_and_the_reminder(monkeypatch)
     assert f"full_id: {TASK_ID}" in out and f"reminder_id: {REM}" in out
 
 
-# ── 5. The read ────────────────────────────────────────────────────────────
+# ── 5. The two gates: the flag, and the card channel ───────────────────────
+
+
+@pytest.mark.parametrize(("tool", "kwargs"), WRITES)
+async def test_with_the_flag_off_a_write_shows_no_card(
+    tool: str, kwargs: dict, monkeypatch,
+) -> None:
+    """``CALENDAR_REMINDERS`` off: the routes answer 404. The tool refuses
+    before any card, writes nothing, and sends the model to a private task
+    with a block. Mutation M3 fails here."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _fake_for(tool, off=True))
+    out = await getattr(skill_projects, tool)(**kwargs)
+    assert R.REMINDERS_OFF in out and R.FALLBACK in out, out
+    assert R.FALLBACK not in _member_view(out), "the tool name is for the model only"
+    assert asked == [] and writes(calls) == []
+
+
+async def test_with_the_flag_off_the_list_says_so(monkeypatch) -> None:
+    fake_gateway(monkeypatch, Gateway(off=True))
+    out = await skill_projects.list_reminders()
+    assert R.REMINDERS_OFF in out and R.FALLBACK in out
+
+
+@pytest.mark.parametrize("cards_refused", [True, False])
+@pytest.mark.parametrize(("tool", "kwargs"), WRITES)
+async def test_a_whatsapp_run_refuses_before_the_card(
+    tool: str, kwargs: dict, cards_refused: bool, monkeypatch,
+) -> None:
+    """No reminder act is in ``whatsapp_acts.ALLOWED_ACTS`` until RM-9, so a
+    WhatsApp run cannot confirm one. The tool refuses before any read and any
+    card. Mutation M4 fails here."""
+    import contextlib
+
+    from acb_skills import ask_tools
+    from acb_skills import whatsapp_ui as wui
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _fake_for(tool))
+    scope = ask_tools.refuse_cards() if cards_refused else contextlib.nullcontext()
+    with scope, wui.whatsapp_run("orchestrator", writes=True):
+        out = await getattr(skill_projects, tool)(**kwargs)
+    assert R.REMINDERS_NO_CARD in out and R.FALLBACK in out, out
+    assert asked == [] and calls == []
+
+
+async def test_a_run_with_no_card_channel_refuses_too(monkeypatch) -> None:
+    from acb_skills import ask_tools
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Gateway())
+    with ask_tools.refuse_cards():
+        out = await skill_projects.set_reminder("Get a haircut", at="2099-10-30 17:00")
+    assert R.REMINDERS_NO_CARD in out
+    assert asked == [] and calls == []
+
+
+async def test_an_allowed_act_passes_the_card_gate(monkeypatch) -> None:
+    """RM-9 adds the reminder acts to ``ALLOWED_ACTS``. Then the gate lets the
+    tool reach its card, with no change in the skill."""
+    from acb_skills import whatsapp_acts as wacts
+    from acb_skills import whatsapp_ui as wui
+
+    monkeypatch.setitem(wacts.ALLOWED_ACTS, "set_reminder", "skill_projects.writes")
+    with wui.whatsapp_run("orchestrator", writes=True):
+        assert R.no_card_channel("set_reminder") == ""
+        assert R.no_card_channel("update_reminder") != ""
+
+
+def test_the_create_personal_task_description_takes_the_fallback() -> None:
+    """The gates send the model back to a private task with a block."""
+    doc = " ".join((skill_projects.create_personal_task.__doc__ or "").split())
+    assert "set_reminder" in doc and "block_start" in doc
+
+
+# ── 6. The read ────────────────────────────────────────────────────────────
 
 
 async def test_the_list_states_my_time_and_prints_reminder_ids(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, Gateway())
     out = await skill_projects.list_reminders()
     assert "Your time now:" in out and "(Asia/Kolkata)" in out
+    assert "Your day starts at 08:00." in out
     assert "«Get a haircut» · Fri 30 Oct 2099, 17:00 IST · scheduled" in out
     assert f"reminder_id: {REM}" in out and "full_id:" not in out
     assert writes(calls) == []
 
 
-async def test_the_list_reads_a_date_as_my_midnight(monkeypatch) -> None:
+async def test_the_list_reads_a_start_date_as_my_midnight(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, Gateway())
     await skill_projects.list_reminders(start="2099-10-30", end="2099-10-31 12:00")
     params = next(c["params"] for c in calls if c["path"] == BASE)
     assert params["start"] == "2099-10-30T00:00:00+05:30"
     assert params["end"] == "2099-10-31T12:00:00+05:30"
+
+
+async def test_an_end_date_includes_that_whole_day(monkeypatch) -> None:
+    """An end date is the midnight that starts the NEXT day, as the
+    ``calendar`` tool reads it. So start and end of one date read that day."""
+    calls = fake_gateway(monkeypatch, Gateway())
+    today = date.today().isoformat()
+    out = await skill_projects.list_reminders(start=today, end=today)
+    params = next(c["params"] for c in calls if c["path"] == BASE)
+    next_day = (date.fromisoformat(today) + timedelta(days=1)).isoformat()
+    assert params["start"] == f"{today}T00:00:00+05:30"
+    assert params["end"] == f"{next_day}T00:00:00+05:30"
+    assert "My reminders" in out
 
 
 async def test_the_list_refuses_a_date_when_no_zone_is_saved(monkeypatch) -> None:
@@ -461,7 +683,7 @@ async def test_the_list_refuses_a_date_when_no_zone_is_saved(monkeypatch) -> Non
     assert not [c for c in calls if c["path"] == BASE]
 
 
-# ── 6. The model is told what a reminder is ────────────────────────────────
+# ── 7. The model is told what a reminder is ────────────────────────────────
 
 
 def test_the_descriptions_tell_the_model_the_rules() -> None:
@@ -469,5 +691,5 @@ def test_the_descriptions_tell_the_model_the_rules() -> None:
     assert "remind me to" in doc and "NOT a task" in doc
     assert "quote the time and the zone" in doc
     assert "best guess" in doc and "one correction" in doc
-    task_doc = " ".join((skill_projects.create_personal_task.__doc__ or "").split())
-    assert "set_reminder" in task_doc
+    assert "YYYY-MM-DD morning" in doc and "07:00" not in doc
+    assert "create_personal_task" in doc

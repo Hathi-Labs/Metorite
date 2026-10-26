@@ -66,6 +66,7 @@ from skill_projects.reads import (
     _day,
     _names_of,
     _task_line,
+    for_the_model,
 )
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
@@ -89,6 +90,7 @@ from skill_projects.writes import (
     _overlay_values,
     _ref,
     _reminder_card,
+    _reminder_gate,
     _reminder_named,
     _reminder_not_found,
     _resolve_assignee,
@@ -2468,6 +2470,9 @@ async def promote_reminder(reminder_id: str) -> str:
     reminder_id that list_reminders or set_reminder printed."""
     if _many(reminder_id):
         return f"promote_reminder {ONE_ACT}"
+    gate = await _reminder_gate("promote_reminder")
+    if gate:
+        return gate
     rid, row, whole = await _my_reminder(reminder_id)
     if row is None and whole:
         return _reminder_not_found()
@@ -2486,9 +2491,10 @@ async def promote_reminder(reminder_id: str) -> str:
     saved = (await post(f"{REMINDERS}/{rid}/promote")) or {}
     task_id = saved.get("promoted_task_id")
     if not task_id:
+        # No `reminder_id:` line: the receipt reads an id line as "done".
         return (
-            "The server answered with no task id. Do not tell the member that the "
-            f"task exists. Check with list_reminders.\n  reminder_id: {rid}"
+            "The server answered with no task id, so the task may not exist.\n"
+            + for_the_model("Do not tell the member that the task exists. Check with list_reminders.")
         )
     return (
         f"Made a private task from {data(saved.get('title'))} in your personal project. "

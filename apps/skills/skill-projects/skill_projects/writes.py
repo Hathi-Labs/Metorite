@@ -70,13 +70,18 @@ from skill_projects.priority import (
 from skill_projects.reads import (
     REMINDER_PAGE_MAX,
     REMINDERS,
+    SNOOZE_MAX,
     SUBJECT_WORDS,
+    UTC_NOTE,
     WEEKDAYS,
     _number,
     _rule_text,
     _task_line,
     clock_of,
-    member_zone,
+    for_the_model,
+    no_card_channel,
+    reminder_clock,
+    reminders_off,
     resolve_at,
     saved_when,
     when_text,
@@ -4553,17 +4558,25 @@ async def create_personal_task(
 # table (D114.1). The route finds a reminder by its owner only, so another
 # member's reminder is NOT FOUND, and the card is a brake, not the authority.
 #
+# **Two gates before any card** (``_reminder_gate``). A run with no card
+# channel (WhatsApp) refuses, because no reminder act is in
+# ``whatsapp_acts.ALLOWED_ACTS`` until RM-9. And with ``CALENDAR_REMINDERS``
+# off the routes answer 404, so the tool refuses. Both refusals send the
+# model to a private task with a block (``create_personal_task``).
+#
 # **Confirm, for now.** Each write shows ONE card through ``_confirm``, the
 # one door, until the act-at-once seam of CF-6 exists
 # (``chat_first_surface.md``). Then set, update, resolve, reopen and
 # reschedule act at once with Undo. The promote keeps its card: it is class C
 # and lives in ``guarded.py``.
 #
-# **Time.** The tool resolves it. ``at`` is ISO 8601 with an offset, or a
-# wall time with no offset, read in the member's SAVED zone
-# (``reads.member_zone``). With no saved zone a wall time is refused, never
-# read as UTC. The reply quotes the SAVED row (``reads.saved_when``): the
-# route's ``fire_at`` in the route's ``tz``, never the tool's argument.
+# **Time.** The tool resolves it. ``at`` is ISO 8601 with an offset, a wall
+# time with no offset read in the member's SAVED zone, or a date and the word
+# morning, read at the member's ``day_start_hour`` (``reads.reminder_clock``).
+# With no saved zone a wall time is refused, never read as UTC. The reply
+# quotes the SAVED row (``reads.saved_when``): the route's ``fire_at`` in the
+# route's ``tz``, never the tool's argument. What the model must do next is
+# on a line that only the model reads (``reads.for_the_model``).
 
 _REMINDER_KINDS = ("action", "notice")
 #: The link kinds whose id is a row UUID (``reminders._UUID_SUBJECTS``).
@@ -4585,7 +4598,23 @@ _REMINDER_CLEAR: dict[str, tuple[tuple[str, ...], str]] = {
 #: The answers of ``resolve_reminder`` -> the route's ``action``.
 _REMINDER_ANSWERS = {"done": "done", "drop": "drop", "dropped": "drop"}
 #: What a reply tells the model to say, so the words match the saved row.
+#: The member never reads it (``reads.for_the_model``).
 QUOTE_THE_TIME = "Tell the member this time and zone exactly as written."
+#: ``smart`` lets the route pick the slot (RM-2). Only ``/reschedule`` takes
+#: it: the create, the PATCH and the snooze refuse it.
+_SMART_REFUSED = (
+    "smart lets Metorite pick the time, and only a move takes it: call "
+    "reschedule_reminder with snooze no. Give this call a named time."
+)
+
+
+async def _reminder_gate(tool: str) -> str:
+    """The refusal of a reminder write before its card, or ``""``.
+
+    First the card channel (``reads.no_card_channel``), which costs no read.
+    Then the flag (``reads.reminders_off``), one read of the list route.
+    """
+    return no_card_channel(tool) or await reminders_off()
 
 
 class _When:
@@ -4601,13 +4630,30 @@ class _When:
         self.zone = zone
         self.shown = shown
 
+    def card_lines(self) -> dict[str, Any]:
+        """The time lines of a card: the time, the zone, and the UTC note.
 
-async def _reminder_when(at: str, in_minutes: Any, *, smart: bool = False) -> _When | str:
+        A member whose saved zone is exactly UTC may never have chosen it:
+        it is the column default. So the card says so, and asks nothing.
+        """
+        lines: dict[str, Any] = {"when": self.shown}
+        if self.zone:
+            lines["timezone"] = self.zone
+        if self.zone == "UTC":
+            lines["note"] = UTC_NOTE
+        return lines
+
+
+async def _reminder_when(
+    at: str, in_minutes: Any, *, smart: bool = False, snooze: bool = False,
+) -> _When | str:
     """The time of a set or a move, or the refusal the model reads.
 
     One of ``at`` and ``in_minutes``. A time in the past is refused with the
     member's time now, so the model can pick the next day and say so. With
-    *smart*, ``at="smart"`` asks the route to pick the slot (RM-2).
+    *smart*, ``at="smart"`` asks the route to pick the slot (RM-2), and every
+    other caller refuses it. With *snooze*, a time past
+    :data:`reads.SNOOZE_MAX` is refused, as the route refuses it.
     """
     raw = str(at or "").strip()
     minutes = _int_or_none(in_minutes)
@@ -4615,8 +4661,11 @@ async def _reminder_when(at: str, in_minutes: Any, *, smart: bool = False) -> _W
         return "Give at or in_minutes, not both."
     if not raw and not minutes:
         return "A reminder needs a time: at (a date and a time), or in_minutes."
-    zone = await member_zone()
-    if smart and raw.lower() == "smart":
+    if raw.lower() == "smart" and not smart:
+        return _SMART_REFUSED
+    clock = await reminder_clock()
+    zone = clock.zone
+    if raw.lower() == "smart":
         return _When("smart", zone, "a time that Metorite picks")
     now = datetime.now(UTC)
     if minutes:
@@ -4624,7 +4673,7 @@ async def _reminder_when(at: str, in_minutes: Any, *, smart: bool = False) -> _W
             return f"in_minutes is 1 to {_IN_MINUTES_MAX}, not {minutes}."
         instant = now + timedelta(minutes=minutes)
     else:
-        resolved = resolve_at(raw, zone)
+        resolved = resolve_at(raw, zone, clock.day_start)
         if isinstance(resolved, str):
             return resolved
         instant = resolved
@@ -4633,6 +4682,11 @@ async def _reminder_when(at: str, in_minutes: Any, *, smart: bool = False) -> _W
             f"{when_text(instant, zone)} is in the past. It is now "
             f"{when_text(now, zone)}. Name a later time, and tell the member "
             "which day you chose."
+        )
+    if snooze and instant > now + SNOOZE_MAX:
+        return (
+            f"A snooze moves a reminder at most {SNOOZE_MAX.days} days ahead, and "
+            f"{when_text(instant, zone)} is later. Move it to that time with snooze no."
         )
     return _When(instant.isoformat(), zone, when_text(instant, zone))
 
@@ -4708,12 +4762,12 @@ def _reminder_not_found(closed: bool = False) -> str:
     if closed:
         return (
             "You have no done or dropped reminder with this id, so nothing can "
-            "reopen. A reminder that became a task cannot reopen. Use "
-            "list_reminders to find the id."
+            "reopen. A reminder that became a task cannot reopen.\n"
+            + for_the_model("Use list_reminders to find the id.")
         )
     return (
-        "You have no open reminder with this id. It is closed, or it is not "
-        "yours. Use list_reminders to find the id."
+        "You have no open reminder with this id. It is closed, or it is not yours.\n"
+        + for_the_model("Use list_reminders to find the id.")
     )
 
 
@@ -4734,17 +4788,18 @@ def _reminder_card(row: dict[str, Any] | None) -> dict[str, Any]:
     return card
 
 
-def _reminder_receipt(head: str, row: dict[str, Any]) -> str:
+def _reminder_receipt(head: str, row: dict[str, Any], hint: str = "") -> str:
     """The reply after a write: the SAVED row, in the route's own words.
 
     The time is ``saved_when(row)``, so it is the instant and the zone that
-    the server stored. It is never the argument the tool was given.
+    the server stored. It is never the argument the tool was given. The last
+    line is for the model only: the member's receipt does not show it.
     """
     rid = row.get("id")
     if not rid:
         return (
-            "The server answered with no reminder id. Do not tell the member it "
-            "is saved. Check with list_reminders."
+            "The server answered with no reminder id, so this reminder may not be saved.\n"
+            + for_the_model("Do not tell the member it is saved. Check with list_reminders.")
         )
     facts = [f"state {row.get('state') or '?'}", f"kind {row.get('kind') or 'action'}"]
     if row.get("important"):
@@ -4753,7 +4808,7 @@ def _reminder_receipt(head: str, row: dict[str, Any]) -> str:
         f"{head}: {data(row.get('title'))} at {saved_when(row)}.",
         "  " + " · ".join(facts) + " · private, yours. A reminder, not a task.",
         f"  reminder_id: {rid}",
-        QUOTE_THE_TIME,
+        for_the_model(f"{QUOTE_THE_TIME} {hint}".strip()),
     ])
 
 
@@ -4777,8 +4832,8 @@ async def set_reminder(
     the zone they saved), or ISO 8601 with an offset. in_minutes is the
     other way, for "in 20 minutes". "At 5" is 17:00, unless the member says
     morning. A time that has passed is refused with the time now: then take
-    the next day, and say so. "Tomorrow morning" with no hour is the start of
-    the member's day. The tool cannot read that hour yet, so take 07:00.
+    the next day, and say so. "Tomorrow morning" with no hour is at
+    "YYYY-MM-DD morning": the tool takes the hour the member's day starts.
     When the time is unclear, do not ask first. Save your best guess, and
     say it with one correction: "09:00 tomorrow, or did you mean tonight?".
     kind is action (the default: the member confirms that they did it) or
@@ -4788,7 +4843,12 @@ async def set_reminder(
     of how long the act takes. important is yes or no.
     The member answers one card first. Then quote the time and the zone of
     the reply exactly, such as "Fri 31 Oct, 09:00 IST". Never say that a
-    reminder is set when the reply does not say so."""
+    reminder is set when the reply does not say so. When reminders are not
+    on, or this chat cannot ask the member, the reply says so: then make a
+    private task with a block instead (create_personal_task)."""
+    gate = await _reminder_gate("set_reminder")
+    if gate:
+        return gate
     label = _reminder_title(title)
     if not label:
         return "A reminder needs a title: the one line the member reads when it fires."
@@ -4808,11 +4868,9 @@ async def set_reminder(
     if isinstance(when, str):
         return when
     payload: dict[str, Any] = {"title": label, "fire_at": when.fire_at, "kind": kind_word}
-    card: dict[str, Any] = {"title": label, "when": when.shown}
     if when.zone:
         payload["tz"] = when.zone
-        card["timezone"] = when.zone
-    card["kind"] = kind_word
+    card: dict[str, Any] = {"title": label, **when.card_lines(), "kind": kind_word}
     if str(notes or "").strip():
         payload["notes"] = card["notes"] = str(notes).strip()
     if link:
@@ -4853,6 +4911,9 @@ async def update_reminder(
     estimate. Pass the reminder_id that list_reminders or set_reminder
     printed. The card shows the old and the new value. Then quote the time
     and the zone of the reply exactly."""
+    gate = await _reminder_gate("update_reminder")
+    if gate:
+        return gate
     rid, row, whole = await _my_reminder(reminder_id)
     if row is None and whole:
         return _reminder_not_found()
@@ -4868,9 +4929,9 @@ async def update_reminder(
         if isinstance(when, str):
             return when
         payload["fire_at"] = when.fire_at
-        card["when"] = when.shown
         if when.zone:
-            payload["tz"] = card["timezone"] = when.zone
+            payload["tz"] = when.zone
+        card.update(when.card_lines())
     if not payload:
         return "Nothing to change. Pass at least one field."
     shown = card if row is not None else {**_reminder_card(None), **card}
@@ -4945,7 +5006,7 @@ def _reminder_before(row: dict[str, Any] | None, card: dict[str, Any]) -> dict[s
     """The stored value of each card line, so the card shows old and new.
 
     ``None`` when the read could not show the row: the card then claims no
-    old value that it never read.
+    old value that it never read. The UTC note has no old value.
     """
     if row is None:
         return None
@@ -4971,6 +5032,9 @@ async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     word = _REMINDER_ANSWERS.get(str(answer or "").strip().lower())
     if word is None:
         return "answer is done or drop. To make it a task, use promote_reminder."
+    gate = await _reminder_gate("resolve_reminder")
+    if gate:
+        return gate
     rid, row, whole = await _my_reminder(reminder_id)
     if row is None and whole:
         return _reminder_not_found()
@@ -4983,7 +5047,7 @@ async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
         return _not_confirmed()
     saved = await post(f"{REMINDERS}/{rid}/resolve", {"action": word}) or {}
     head = "Done" if word == "done" else "Dropped"
-    return _reminder_receipt(head, saved) + "\nreopen_reminder undoes this answer."
+    return _reminder_receipt(head, saved, "reopen_reminder undoes this answer.")
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -4991,6 +5055,9 @@ async def reopen_reminder(reminder_id: str) -> str:
     """Undo a done or a drop: the reminder is open again, in the state it
     had before the answer. A reminder that became a task (promote_reminder)
     cannot reopen. Pass the reminder_id of the done or dropped reminder."""
+    gate = await _reminder_gate("reopen_reminder")
+    if gate:
+        return gate
     rid, row, whole = await _my_reminder(reminder_id, closed=True)
     if row is None and whole:
         return _reminder_not_found(closed=True)
@@ -5011,22 +5078,26 @@ async def reschedule_reminder(
 ) -> str:
     """Move one of the member's OPEN reminders to a new time. at takes the
     time as set_reminder does, or in_minutes from now. snooze is yes for
-    "later" or "snooze it for an hour": then the time must be within a year.
-    With no snooze it is a move to a named time. at="smart" asks Metorite to
-    pick the next good slot. If the server cannot pick one yet, the reply
-    says so and nothing moves: then name a time. The card shows the old and
-    the new time. Then quote the time and the zone of the reply exactly."""
+    "later" or "snooze it for an hour": then the time must be within 366
+    days, and smart is refused. With no snooze it is a move to a named time.
+    at="smart" asks Metorite to pick the next good slot. If the server cannot
+    pick one yet, the reply says so and nothing moves: then name a time. The
+    card shows the old and the new time. Then quote the time and the zone of
+    the reply exactly."""
     is_snooze = bool(_yes_no(snooze, "snooze"))
+    gate = await _reminder_gate("reschedule_reminder")
+    if gate:
+        return gate
     rid, row, whole = await _my_reminder(reminder_id)
     if row is None and whole:
         return _reminder_not_found()
-    when = await _reminder_when(at, in_minutes, smart=not is_snooze)
+    when = await _reminder_when(at, in_minutes, smart=not is_snooze, snooze=is_snooze)
     if isinstance(when, str):
         return when
     payload: dict[str, Any] = {"fire_at": when.fire_at}
-    card = {**_reminder_card(row), "when": when.shown}
     if when.zone:
-        payload["tz"] = card["timezone"] = when.zone
+        payload["tz"] = when.zone
+    card = {**_reminder_card(row), **when.card_lines()}
     before = {"when": saved_when(row)} if row is not None else None
     if not await _confirm(
         title="Snooze this reminder?" if is_snooze else "Move this reminder?",
@@ -5040,9 +5111,9 @@ async def reschedule_reminder(
     except GatewayRefusal as exc:
         if when.fire_at == "smart" and exc.status == 422:
             return (
-                "The server cannot pick a smart time yet (it answered 422), so "
-                "nothing moved. Name a time, and I move the reminder there."
+                "The server cannot pick a time yet, so nothing moved."
                 + (f"\nGateway said: {data(exc.detail)}" if exc.detail else "")
+                + "\n" + for_the_model("Name a time, and move the reminder there.")
             )
         raise
     return _reminder_receipt("Moved" if not is_snooze else "Snoozed", saved)
