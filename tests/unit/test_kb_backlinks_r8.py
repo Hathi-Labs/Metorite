@@ -264,3 +264,30 @@ async def test_a_save_leaves_the_links_of_other_kinds(kb, app_engine) -> None:  
     assert _target_rows(kb, source, "url") == ["https://example.test/x"]
     got = await _ok(kb, admin, "GET", f"/knowledge/pages/{source}")
     assert [x["target_kind"] for x in got["links"]] == ["url"]
+
+
+@_DB_GATE
+async def test_a_save_by_a_member_who_cannot_see_the_target_keeps_the_row(kb, app_engine) -> None:  # noqa: F811
+    """K-1 P1: the blanket delete erased S->T when a member without T saved S."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), kb.org_a, CAPABILITY)
+    e_email, editor = await _member(kb, kb.org_a, "e")
+    shared = await _space(kb, admin, "Shared", [{"subject": "org", "level": "read"},
+                                                {"subject": e_email, "level": "write"}])
+    board = await _space(kb, admin, "Board", [])
+    secret = await _page(kb, admin, board, "Secret")
+    seen = await _page(kb, admin, shared, "Seen")
+    body = f"[s](/knowledge/pages/{secret}) [v](/knowledge/pages/{seen})"
+    source = await _page(kb, admin, shared, "Source", body)
+    assert set(_target_rows(kb, source)) == {secret, seen}
+
+    # The editor cannot see the secret target. A typo fix keeps the row.
+    await _ok(kb, editor, "PATCH", f"/knowledge/pages/{source}", {"body_md": body + " fix"})
+    assert set(_target_rows(kb, source)) == {secret, seen}
+    assert await _from(kb, admin, secret) == [source]
+
+    # An edit that drops the hidden link removes that row, and only that row.
+    await _ok(kb, editor, "PATCH", f"/knowledge/pages/{source}",
+              {"body_md": f"[v](/knowledge/pages/{seen})"})
+    assert _target_rows(kb, source) == [seen]
+    assert await _from(kb, admin, secret) == []

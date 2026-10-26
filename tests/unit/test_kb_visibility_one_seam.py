@@ -142,6 +142,11 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "carries a stored position: each gives the rank among the siblings "
         "the caller sees (pages._rank, page_dict)."
     ),
+    ("backlinks.py", "backfill_org_links"): (
+        "The operator backfill of kb_links (K-2) reads the source pages of ONE "
+        "org to run the write path's sync_page_links. It returns counts only. "
+        "No row reaches a caller, and the backlinks read keeps the clause."
+    ),
     ("proposal_expiry.py", "<module>"): (
         "The KB-5c expiry bounds its archive with a CTE that reads the ids "
         "of old agent drafts, in the same statement as the UPDATE. It runs "

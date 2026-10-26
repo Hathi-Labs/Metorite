@@ -75,6 +75,10 @@ MAX_LIST = 100
 #: :data:`MAX_LIST` rows or the rows end.
 _EDIT_BATCH = 500
 
+#: The most batches one list call reads (K-7), so 10 x 500 rows. A member who keeps
+#: few rows cannot make the list read every pending row of the org.
+MAX_EDIT_BATCHES = 10
+
 #: The columns of a proposal row.
 _PROPOSAL_COLUMNS = (
     "pr.id, pr.page_id, pr.base_version, pr.title, pr.body_md, pr.summary, "
@@ -335,7 +339,9 @@ async def _writable_space_ids(
     }
 
 
-async def _edit_rows(db: Any, user: UserContext, status: str) -> list[dict[str, Any]]:
+async def _edit_rows(
+    db: Any, user: UserContext, status: str,
+) -> tuple[list[dict[str, Any]], bool]:
     """The edit proposals with *status* that the caller may see (F1), oldest first.
 
     The caller sees a row when they see its page AND they are its proposer
@@ -345,14 +351,22 @@ async def _edit_rows(db: Any, user: UserContext, status: str) -> list[dict[str, 
     read takes rows in batches of :data:`_EDIT_BATCH`, by a key on
     ``(created_at, id)``, filters each batch, and stops at :data:`MAX_LIST`
     kept rows or at the end. A LIMIT before the filter would let rows the
-    caller cannot decide fill the page and hide the ones they can.
+    caller cannot decide fill the page and hide the ones they can. It reads at
+    most :data:`MAX_EDIT_BATCHES` batches (K-7). Returns the kept rows and a
+    flag that is true when the cap ended the read with rows left unread.
     """
     vis, vparams = core.visible_pages_clause(user, "p")
     me = core.viewer_email(user)
     kept: list[dict[str, Any]] = []
     writable: dict[str, bool] = {}
     after: tuple[Any, str] | None = None
+    batches = 0
+    truncated = False
     while len(kept) < MAX_LIST:
+        if batches >= MAX_EDIT_BATCHES:
+            truncated = True
+            break
+        batches += 1
         page_after = (
             "AND (pr.created_at, pr.id) > (CAST(:after_at AS timestamptz), CAST(:after_id AS uuid)) "
             if after is not None else ""
@@ -381,7 +395,7 @@ async def _edit_rows(db: Any, user: UserContext, status: str) -> list[dict[str, 
         if len(rows) < _EDIT_BATCH:
             break
         after = (rows[-1].created_at, str(rows[-1].id))
-    return kept
+    return kept, truncated
 
 
 #: The draft state of a proposed page for each status. The expiry (KB-5c)
@@ -421,8 +435,9 @@ async def list_proposals(
     if status not in STATUSES:
         raise _unprocessable(f"Unknown status '{status}'. One of: {list(STATUSES)}.")
     async with core._tenant_session() as db:
-        out = [*await _page_rows(db, user, status), *await _edit_rows(db, user, status)]
-    return {"proposals": out}
+        pages_ = await _page_rows(db, user, status)
+        edits, truncated = await _edit_rows(db, user, status)
+    return {"proposals": [*pages_, *edits], "truncated": truncated}
 
 
 # ── The decisions ───────────────────────────────────────────────────────────

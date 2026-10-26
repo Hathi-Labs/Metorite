@@ -20,9 +20,9 @@ function reasonOf(err: unknown): string {
  * the others. Only a refusal over a limit (`ImportRefusal`) stops the run.
  */
 export async function prepareImport(files: readonly SourceFile[], html: HtmlConverter): Promise<ImportPlan> {
-  const { entries, skipped } = await collectSources(files);
+  const { entries, skipped, refused } = await collectSources(files);
   const drafts: PageDraft[] = [];
-  const unreadable: Unreadable[] = [];
+  const unreadable: Unreadable[] = [...refused];
   const notices = new Set<string>();
   for (const entry of entries) {
     const kind = pageKind(entry.path);
