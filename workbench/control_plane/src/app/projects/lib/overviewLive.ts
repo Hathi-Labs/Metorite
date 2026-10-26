@@ -24,6 +24,7 @@ import {
   previewNeeded,
 } from "./reportBuilder";
 import { agentRunsHidden } from "./agentRunsReport";
+import { qualityHidden } from "./qualityReport";
 import { waitingHidden } from "./waiting";
 
 /** A return to the tab refreshes an answer older than this. */
@@ -180,6 +181,7 @@ export const BODY_ORDER: readonly string[] = [
   "stuck",
   "waiting",
   "agent_runs",
+  "quality",
   "load",
   "capacity",
   "pulse",
@@ -201,10 +203,12 @@ export function overviewShown(
 ): RenderedReportBody["sections"] {
   const hideWaiting = waitingHidden(sections.waiting);
   const hideRuns = agentRunsHidden(sections.agent_runs);
-  if (!hideWaiting && !hideRuns) return sections;
+  const hideQuality = qualityHidden(sections.quality);
+  if (!hideWaiting && !hideRuns && !hideQuality) return sections;
   const rest = { ...sections };
   if (hideWaiting) delete rest.waiting;
   if (hideRuns) delete rest.agent_runs;
+  if (hideQuality) delete rest.quality;
   const others = Object.values(rest).some((s) => s !== undefined && s !== null);
   return others ? rest : sections;
 }

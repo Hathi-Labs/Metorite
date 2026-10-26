@@ -171,6 +171,7 @@ describe("sections", () => {
       "stuck",
       "waiting",
       "agent_runs",
+      "quality",
       "hygiene",
       "conflicts",
       "rebalance",

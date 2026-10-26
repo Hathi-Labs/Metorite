@@ -906,6 +906,107 @@ export interface AgentRunsReport {
   max_rows: number;
 }
 
+/** WS-27bn RA-5. The merged and closed agent pull requests, and the open ones. */
+export interface QualityPrs {
+  merged: number;
+  /** Closed with no merge. */
+  closed: number;
+  /** Merged over merged and closed. Null with none. RA-2's rule, so it equals the KPI tile's. */
+  rate: number | null;
+  merged_before: number;
+  closed_before: number;
+  rate_before: number | null;
+  trend: "up" | "down" | "flat" | null;
+  /** Open and draft agent pull requests on open tasks, now. */
+  open: number;
+}
+
+/** WS-27bn RA-5. An open agent pull request whose checks fail now. */
+export interface QualityFailingRow {
+  /** The task. A row opens it. */
+  id: string;
+  task_number: number | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  parent_task_id?: string | null;
+  parent?: ParentFact | null;
+  /** When the task linked the pull request. */
+  since: string | null;
+  age_hours: number | null;
+  /** `owner/repo#12`. */
+  ref: string;
+  url: string | null;
+  pr_title: string | null;
+  pr_state: string;
+  agent: string;
+  client_via: string | null;
+  member: string | null;
+  member_name: string | null;
+}
+
+/** WS-27bn RA-5. The CI figures of the agent pull requests. */
+export interface QualityChecks {
+  /** Open agent pull requests whose checks fail now, before the cap. */
+  failing_total: number;
+  /** Up to five, the oldest first. */
+  failing: QualityFailingRow[];
+  /** Merged in the window with a failing state read BEFORE the merge. */
+  merged_red: number;
+  merged_red_before: number;
+}
+
+/** WS-27bn RA-5. The tasks one group finished, and the ones reopened after. */
+export interface QualityReopened {
+  /** The finishes of the window, by this group. */
+  finished: number;
+  /** Of those finishes, the ones that a later reopen undid (the cohort). */
+  undone: number;
+  /** The DISTINCT tasks with a reopen in the window, by the finish it undid. */
+  reopened: number;
+  finished_before: number;
+  undone_before: number;
+  reopened_before: number;
+  /** Undone over finished, so never above 1. Null with no finish. */
+  rate: number | null;
+  rate_before: number | null;
+  trend: "up" | "down" | "flat" | null;
+}
+
+/** WS-27bn RA-5. Failed runs, and the ones that got a later run on the task. */
+export interface QualityRetried {
+  failed: number;
+  retried: number;
+  failed_before: number;
+  retried_before: number;
+  rate: number | null;
+  rate_before: number | null;
+  trend: "up" | "down" | "flat" | null;
+}
+
+/**
+ * WS-27bn RA-5 — the `quality` section (`analytics_quality.py`
+ * `quality_body`). It reads the last `days` days counted back from now, as
+ * the merge rate of the KPI tile does, and never the report period.
+ */
+export interface QualityReport {
+  /** The one plain sentence of the panel (§6.8 E5), from the server. */
+  summary: string;
+  /** False while agent runs are off for the organization. */
+  on: boolean;
+  /** False when the scope has no agent pull request, no reopen and no failed run. */
+  quality_seen: boolean;
+  days: number;
+  prs: QualityPrs;
+  checks: QualityChecks;
+  rework: {
+    /** Agents (agent-finished and agent-assisted) and people. Never one person. */
+    reopened: { agents: QualityReopened; people: QualityReopened };
+    retried: QualityRetried;
+  };
+  max_rows: number;
+}
+
 /** WS-27bn RA-1. The done tasks of a window, by finish label. */
 export interface ActorSplit {
   agent_finished: number;
@@ -1538,6 +1639,11 @@ export interface RenderedReportBody {
      * rate, the silent runs now and the run sizes.
      */
     agent_runs?: AgentRunsReport;
+    /**
+     * WS-27bn RA-5. Agent pull request outcomes, rework and CI red, over
+     * the last 14 days and the 14 days before.
+     */
+    quality?: QualityReport;
     /**
      * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
      * estimate, and tasks in progress with no change. It reads the state now.
