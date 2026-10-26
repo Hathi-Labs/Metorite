@@ -19,7 +19,9 @@ R7, the mutations (run after a commit, because ``git checkout`` restores HEAD):
 
 * **M1** ``DESCENDANTS_CTE`` drops ``{visible}`` from the recursive arm
   -> ``test_the_walk_does_not_pass_through_a_hidden_task``.
-* **M2** the recursive arm adds 1 to nothing (``w.depth``)
+* **M1b** ``DESCENDANTS_CTE`` drops ``{visible}`` from the first arm
+  -> the same test.
+* **M2** the recursive arm keeps ``w.depth`` and adds nothing
   -> ``test_descendants_carry_their_depth``.
 """
 
@@ -79,9 +81,12 @@ def world(promoted):  # noqa: F811 - a fixture
     ns.open_grand = t(root, "grandchild of the open child")
     ns.under_hidden = t(root, "visible grandchild of the hidden child")
     ns.deep = t(root, "great-grandchild of the open child")
+    ns.hidden_grand = t(sealed, "hidden grandchild", OWNER)
+    ns.under_hidden_grand = t(root, "visible great-grandchild of the hidden grandchild")
     for child, parent in ((ns.open_child, ns.epic), (ns.hidden_child, ns.epic),
                           (ns.open_grand, ns.open_child), (ns.under_hidden, ns.hidden_child),
-                          (ns.deep, ns.open_grand)):
+                          (ns.deep, ns.open_grand), (ns.hidden_grand, ns.open_child),
+                          (ns.under_hidden_grand, ns.hidden_grand)):
         _child_of(p, child, parent)
     ns.owner = b._principal(OWNER, p.org_a)
     ns.member = b._principal(MEMBER, p.org_a, unrestricted=False)
@@ -112,12 +117,15 @@ class TestTheSubtree:
         got = await _list(w, w.owner, f"parent_task_id={w.epic}&include_descendants=true")
         depth = {r["id"]: r["depth"] for r in got.json()["rows"]}
         assert depth == {w.open_child: 1, w.hidden_child: 1, w.open_grand: 2,
-                         w.under_hidden: 2, w.deep: 3}
+                         w.under_hidden: 2, w.deep: 3, w.hidden_grand: 2,
+                         w.under_hidden_grand: 3}
         parent = {r["id"]: r["parent_task_id"] for r in got.json()["rows"]}
         assert parent[w.deep] == w.open_grand
-        assert got.json()["total"] == 5
+        assert got.json()["total"] == 7
 
     async def test_the_walk_does_not_pass_through_a_hidden_task(self, world):
+        """The hidden child (level 1) and the hidden grandchild (level 2) each
+        hide a visible task below them. Both are absent."""
         w = world
         got = await _list(w, w.member, f"parent_task_id={w.epic}&include_descendants=true")
         assert set(_ids(got)) == {w.open_child, w.open_grand, w.deep}
@@ -146,13 +154,13 @@ class TestTheSubtree:
         base = f"parent_task_id={w.epic}&include_descendants=true&page_size=2"
         seen: list[str] = []
         depths: list[int] = []
-        for page in (1, 2, 3):
+        for page in (1, 2, 3, 4):
             got = await _list(w, w.owner, f"{base}&page={page}")
             assert got.status_code == 200, got.text
-            assert got.json()["total"] == 5
+            assert got.json()["total"] == 7
             seen += [r["id"] for r in got.json()["rows"]]
             depths += [r["depth"] for r in got.json()["rows"]]
-        assert len(seen) == 5 and len(set(seen)) == 5
+        assert len(seen) == 7 and len(set(seen)) == 7
         assert depths == sorted(depths), "shallow rows come first"
         again = await _list(w, w.owner, f"{base}&page=1")
         assert _ids(again) == seen[:2]
