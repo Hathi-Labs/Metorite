@@ -719,6 +719,23 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_chat_constraints.py.
     chat_constraints: bool = False
 
+    # ── The tool packs of the one assistant (WS-67 OA-7a, D117) ─────────────
+    #
+    # `tool_packs` is a comma list of pack slugs (`email`, `email-setup`), or
+    # `*` for each pack. `tool_packs_orgs` lists the organization ids that may
+    # use packs, or `*` for each one. Empty means off, and an empty list
+    # allows no organization. The one reader of both is
+    # `acb_skills.tool_packs.packs_on`, and it fails closed. OA-7a ships no
+    # caller, so neither value changes a run yet (one_assistant_context.md
+    # §4.2.7).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it, because a pack moves the
+    # egress guards and spends model tokens (one_assistant_context.md §4.5).
+    # Fence: tests/unit/test_tool_packs_registry.py.
+    tool_packs: str = ""
+    tool_packs_orgs: str = ""
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between
