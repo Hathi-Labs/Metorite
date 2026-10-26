@@ -32,8 +32,22 @@ hold:
   cap goes on at the next tick), or ended :data:`ACCESS_RETRY_SECONDS` ago or
   more, or never ran.
 
-The change feed comes first, and an access run never moves its 15 minutes.
-It rides ``KNOWLEDGE_SYNC`` and the provider flag, as the feed does. Each
+**The index pass (KC-5a).** A ready source with no live lock whose change feed
+is NOT due and whose access pass is NOT due gets an ``index`` run
+(``index.py``) when all of these hold:
+
+* ``KNOWLEDGE_INDEX`` names the org, as well as ``KNOWLEDGE_SYNC`` and the
+  provider flag. With the flag empty the loop counts nothing, starts no index
+  run and makes no provider call;
+* the pending count is above 0: the in-scope files with no document or with a
+  document of another stamp, and the documents of nodes that left scope;
+* the newest ``index`` run ended ``ok`` (a run that stopped at its budget goes
+  on at the next tick), or ended :data:`INDEX_RETRY_SECONDS` ago or more, or
+  never ran.
+
+The change feed comes first, and an access or index run never moves its 15
+minutes. The access pass comes before the index pass. Each rides
+``KNOWLEDGE_SYNC`` and the provider flag, as the feed does. Each
 gateway worker runs its own loop. In one worker, up to :data:`CONCURRENCY`
 sources run at the same time. Across the workers each source is
 single-flight by its run lock. One failure for one source or one org is
@@ -66,14 +80,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from collections.abc import Callable
+from typing import Any
 
 from acb_common import get_logger
 from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.kb_sources.base import KbSource
-from gateway.kb_sync import access, engine, runs
+from gateway.kb_sync import access, engine, index, runs
 from gateway.kb_sync.runs import DueRow, SyncRunning
 from gateway.routes.knowledge import flags
 
@@ -93,6 +109,9 @@ ACCESS_SECONDS = 6 * 60 * 60
 
 #: The wait before the next access run after one that failed or stopped.
 ACCESS_RETRY_SECONDS = 15 * 60
+
+#: The wait before the next index run after one that failed or stopped (KC-5a).
+INDEX_RETRY_SECONDS = 15 * 60
 
 #: Sources that run at the same time in ONE gateway worker. Each worker runs
 #: its own loop, and the run lock keeps each source single-flight across them.
@@ -132,29 +151,64 @@ def access_due(row: DueRow) -> bool:
     return (row.db_now - row.access_finished).total_seconds() >= ACCESS_RETRY_SECONDS
 
 
+def index_due(row: DueRow) -> bool:
+    """True when *row* is due for an index pass (the module doc). No I/O.
+
+    ``index_pending`` is ``None`` for an org that ``KNOWLEDGE_INDEX`` does not
+    name, so such a row is never due.
+    """
+    if not row.index_pending or row.index_pending < 0:
+        return False
+    if row.index_finished is None or row.index_status == runs.STATUS_OK:
+        return True
+    return (row.db_now - row.index_finished).total_seconds() >= INDEX_RETRY_SECONDS
+
+
 def due_kind(row: DueRow) -> str | None:
     """The kind of run that *row* is due for, or ``None``. No I/O."""
     if row.state != engine.STATE_READY or row.running:
         return None
     if (row.last_finished is not None
             and (row.db_now - row.last_finished).total_seconds() < INTERVAL_SECONDS):
-        return runs.KIND_ACCESS if access_due(row) else None
+        if access_due(row):
+            return runs.KIND_ACCESS
+        return runs.KIND_INDEX if index_due(row) else None
     if (row.reconciled_at is None
             or (row.db_now - row.reconciled_at).total_seconds() >= RECONCILE_SECONDS):
         return runs.KIND_RECONCILE
     return runs.KIND_CHANGES
 
 
+async def _with_pending(db: Any, org: str, row: DueRow) -> DueRow:
+    """*row* with its pending count, when an index pass could run for it now.
+
+    The count is a recursive read, so it runs only for a source that the
+    provider flag allows, that is ready, that is not locked, and whose feed
+    and access pass are not due. The test uses the due rule with a count of 1.
+    """
+    if not flags.knowledge_provider_allowed(org, row.provider):
+        return row
+    if due_kind(dataclasses.replace(row, index_pending=1)) != runs.KIND_INDEX:
+        return row
+    return dataclasses.replace(row, index_pending=await index.pending_count(
+        db, org, row.source_id))
+
+
 async def due_sources(org: str) -> list[tuple[str, str, str]]:
     """``(source_id, provider, kind)`` of each due source of *org*.
 
     A flag-off org opens no session. One session reads every source of the
-    org, and no provider call is made.
+    org, and no provider call is made. An org that ``KNOWLEDGE_INDEX`` names
+    also gets the pending count of each source that could run an index pass.
+    An org that it does not name gets no count and no index run.
     """
     if not flags.knowledge_sync_allowed(org):
         return []
+    counting = flags.knowledge_index_allowed(org)
     async with tenant_session(org) as db:
         rows = await runs.due_rows(db, org)
+        if counting:
+            rows = [await _with_pending(db, org, r) for r in rows]
     return [(r.source_id, r.provider, kind) for r in rows
             if flags.knowledge_provider_allowed(org, r.provider)
             and (kind := due_kind(r)) is not None]
@@ -206,6 +260,9 @@ async def _run_one(org: str, source_id: str, kind: str, adapter: KbSource,
             if kind == runs.KIND_ACCESS:
                 await access.run_access(org, source_id, source=adapter,
                                         should_stop=_stopping.is_set)
+            elif kind == runs.KIND_INDEX:
+                await index.run_index(org, source_id, source=adapter,
+                                      should_stop=_stopping.is_set)
             else:
                 await engine.run_source(org, source_id, kind, source=adapter,
                                         should_stop=_stopping.is_set)
@@ -301,6 +358,7 @@ __all__ = [
     "ACCESS_RETRY_SECONDS",
     "ACCESS_SECONDS",
     "CONCURRENCY",
+    "INDEX_RETRY_SECONDS",
     "INTERVAL_SECONDS",
     "RECONCILE_SECONDS",
     "STOP_GRACE_SECONDS",
@@ -309,6 +367,7 @@ __all__ = [
     "due_kind",
     "due_sources",
     "due_work",
+    "index_due",
     "loop_running",
     "prune_runs",
     "run_tick",

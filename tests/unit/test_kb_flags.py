@@ -117,6 +117,7 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_sources"].default == ""
     assert fields["knowledge_source_google"].default == ""
     assert fields["knowledge_sync"].default == ""
+    assert fields["knowledge_index"].default == ""
 
 
 def _template(path: str) -> str:
@@ -294,7 +295,8 @@ def test_only_the_flags_module_reads_the_source_settings() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in (
-                    "knowledge_sources", "knowledge_source_google", "knowledge_sync"):
+                    "knowledge_sources", "knowledge_source_google", "knowledge_sync",
+                    "knowledge_index"):
                 readers.add(path.name)
     assert readers == {"flags.py"}, readers
 
@@ -337,3 +339,49 @@ def test_sync_needs_the_sources_flag_and_knowledge_on(monkeypatch: pytest.Monkey
     _switch(monkeypatch, False, "*")
     assert not kb_flags.knowledge_sync_allowed(ORG)
     assert not kb_flags.knowledge_sync_named(), "Knowledge off names no sync org"
+
+
+# ── KC-5a: KNOWLEDGE_INDEX ──────────────────────────────────────────────────
+
+def _index(monkeypatch: pytest.MonkeyPatch, orgs: str) -> None:
+    monkeypatch.setattr(get_settings(), "knowledge_index", orgs, raising=False)
+
+
+def test_index_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "*", "*")
+    _sync(monkeypatch, "*")
+    _index(monkeypatch, "")
+    assert not kb_flags.knowledge_index_allowed(ORG)
+
+
+def test_index_reads_the_org_list_and_the_star(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "*", "*")
+    _sync(monkeypatch, "*")
+    _index(monkeypatch, f" {ORG.upper()} ")
+    assert kb_flags.knowledge_index_allowed(ORG)
+    assert not kb_flags.knowledge_index_allowed(OTHER)
+    _index(monkeypatch, "*")
+    assert kb_flags.knowledge_index_allowed(OTHER)
+    assert not kb_flags.knowledge_index_allowed(None)
+
+
+def test_index_needs_the_sync_flag_the_sources_flag_and_knowledge_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pass reads nothing for an org that the sync loop does not read."""
+    _switch(monkeypatch, True, "*")
+    _sources(monkeypatch, "*", "*")
+    _index(monkeypatch, "*")
+    _sync(monkeypatch, "")
+    assert not kb_flags.knowledge_index_allowed(ORG)
+    _sync(monkeypatch, OTHER)
+    assert not kb_flags.knowledge_index_allowed(ORG)
+    _sync(monkeypatch, "*")
+    assert kb_flags.knowledge_index_allowed(ORG)
+    _sources(monkeypatch, "", "*")
+    assert not kb_flags.knowledge_index_allowed(ORG)
+    _sources(monkeypatch, "*", "*")
+    _switch(monkeypatch, False, "*")
+    assert not kb_flags.knowledge_index_allowed(ORG)

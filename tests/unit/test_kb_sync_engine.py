@@ -63,6 +63,7 @@ from gateway.kb_sources.base import (
     ChangePage,
     CursorExpired,
     DiscoverPage,
+    FetchedFile,
     NeedsReconnect,
     NodeAccess,
     OAuthClientConfig,
@@ -74,7 +75,8 @@ from gateway.kb_sources.base import (
 from gateway.kb_sources.google_drive import client as gclient
 from gateway.kb_sources.google_drive.client import GoogleDriveSource
 from gateway.kb_sources.http import HttpAnswer, redact_page_tokens
-from gateway.kb_sync import access, discovery, engine, runs, scheduler
+from gateway.kb_sync import access, discovery, engine, index, runs, scheduler
+from gateway.routes.knowledge import core
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "apps/services/gateway/gateway/main.py"
@@ -362,6 +364,16 @@ _NAMES = {
     access._INSERT_ROWS_SQL: "insert_access",
     access._SWEEP_SQL: "sweep_access",
     access._ACCESS_READ_SQL: "access_read",
+    # KC-5a, the index pass.
+    index._DELETE_STALE_SQL: "delete_stale",
+    index._PENDING_SQL: "pending",
+    index.PENDING_COUNT_SQL: "pending_count",
+    index._NODE_NOW_SQL: "node_now",
+    index._UPSERT_DOC_SQL: "upsert_doc",
+    index._DELETE_CHUNKS_SQL: "delete_chunks",
+    index._UPSERT_CHUNKS_SQL: "upsert_chunks",
+    core.INSERT_ME_SPACE_SQL: "insert_me_space",
+    core.SELECT_ME_SPACE_SQL: "select_me_space",
 }
 
 
@@ -403,6 +415,9 @@ class World:
         self.discovered_at: datetime | None = None
         self.access_rows: list[list[dict[str, Any]]] = []
         self.access_sweeps: list[Any] = []
+        #: KC-5a: the pending rows of the index pass, and the documents it wrote.
+        self.index_rows: list[Any] = []
+        self.index_docs: list[dict[str, Any]] = []
 
     @contextlib.asynccontextmanager
     async def session(self, org: str):
@@ -480,6 +495,27 @@ class _Db:
         self.w.access_sweeps.append(p["started"])
         return _Result(rowcount=0)
 
+    # KC-5a, the index pass.
+    def _pending(self, p: dict[str, Any]) -> _Result:
+        return _Result(list(self.w.index_rows))
+
+    def _node_now(self, p: dict[str, Any]) -> _Result:
+        row = next(r for r in self.w.index_rows if r.id == p["node"])
+        return _Result([SimpleNamespace(id=row.id, stamp=row.stamp)])
+
+    def _upsert_doc(self, p: dict[str, Any]) -> _Result:
+        self.w.index_docs.append(dict(p))
+        return _Result([SimpleNamespace(id=f"doc-{p['node']}")])
+
+    def _upsert_chunks(self, p: dict[str, Any]) -> _Result:
+        return _Result([SimpleNamespace(content_sha=s, inserted=True) for s in p["shas"]])
+
+    def _select_me_space(self, p: dict[str, Any]) -> _Result:
+        return _Result([SimpleNamespace(id="space-1")])
+
+    def _delete_stale(self, p: dict[str, Any]) -> _Result:
+        return _Result(rowcount=1)
+
     def _cursor(self, p: dict[str, Any]) -> _Result:
         if p["kind"] == runs.CURSOR_ACCESS:
             if self.w.access_state is None:
@@ -543,8 +579,11 @@ class FakeAdapter:
 
     def __init__(self, world: World, pages: dict[str, Any], *,
                  tree: tuple[SourceNode, ...] = (),
-                 access: dict[str | None, Any] | None = None) -> None:
+                 access: dict[str | None, Any] | None = None,
+                 docs: dict[str, Any] | None = None) -> None:
         self.w, self.pages, self.tree = world, pages, tree
+        #: KC-5a: the bytes (or an exception) of each file, by ext id.
+        self.docs = docs or {}
         self.cursors: list[str | None] = []
         #: KC-4a: an access page (or an exception) for each page token.
         self.access = access or {}
@@ -581,6 +620,13 @@ class FakeAdapter:
     async def refresh(self, cred: Any) -> Any:
         self._enter("refresh")
         return cred
+
+    async def fetch_document(self, cred: Any, node: Any) -> FetchedFile:
+        self._enter("fetch_document")
+        item = self.docs[node.ext_id]
+        if isinstance(item, BaseException):
+            raise item
+        return FetchedFile(data=item[0], suffix=item[1])
 
     async def fetch_text(self, cred: Any, node: Any) -> str:
         raise AssertionError("KC-3 read the text of a document")
@@ -620,6 +666,7 @@ def _bind(monkeypatch: pytest.MonkeyPatch, w: World) -> World:
     monkeypatch.setattr(engine, "tenant_session", w.session)
     monkeypatch.setattr(discovery, "tenant_session", w.session)
     monkeypatch.setattr(access, "tenant_session", w.session)
+    monkeypatch.setattr(index, "tenant_session", w.session)
     monkeypatch.setattr(discovery, "_credential", fake_cred)
     w.creds = creds  # type: ignore[attr-defined]
     return w
@@ -893,13 +940,20 @@ _CHILD_AND_SOURCE = frozenset({"upsert_changes", "upsert_nodes", "upsert_cursor"
 _CHILD_ONLY = frozenset({
     "remove", "cascade", "gone", "gone_folder", "cap", "clear", "unexplored", "progress",
     "finish", "takeover", "preempt", "delete_access", "insert_access", "sweep_access",
+    # KC-5a: the documents and the chunks. The DELETE of ``delete_stale`` reads the
+    # nodes, deletes the documents, and its trigger deletes the chunks.
+    "delete_stale", "upsert_doc", "delete_chunks", "upsert_chunks",
 })
-#: The reads that lock nothing.
-_READS = frozenset({"capped", "cursor", "now", "explored_folders", "disc_source"})
+#: The reads that lock nothing. KC-5a: the pending read, the node re-read, and the
+#: ``kb_spaces`` statements (a table outside the source family).
+_READS = frozenset({"capped", "cursor", "now", "explored_folders", "disc_source",
+                    "pending", "node_now", "pending_count", "insert_me_space",
+                    "select_me_space"})
 #: The rows of nodes and cursors: a transaction that writes them is a page.
 _PAGE_WRITES = frozenset({"upsert_changes", "upsert_nodes", "remove", "cascade", "gone",
                           "gone_folder", "cap", "clear", "unexplored", "upsert_cursor",
-                          "delete_access", "insert_access", "sweep_access"})
+                          "delete_access", "insert_access", "sweep_access",
+                          "delete_stale", "upsert_doc", "delete_chunks", "upsert_chunks"})
 #: The statements that may open a write transaction of the engine.
 _ENGINE_FIRST = frozenset({"source", "guard", "lock_source", "lock_connection",
                            "access_source"})
@@ -947,6 +1001,15 @@ def lock_order_faults(txn: list[str], *, engine_txn: bool = False) -> list[str]:
     return faults
 
 
+def index_child_faults(txn: list[str]) -> list[str]:
+    """KC-5a: in a document write, the children come as nodes, documents, chunks,
+    then the run row. ``node_now`` is the node read, ``upsert_doc`` the document."""
+    order = ["node_now", "upsert_doc", "delete_chunks", "upsert_chunks", "progress"]
+    seen = [s for s in txn if s in order]
+    ranks = [order.index(s) for s in seen]
+    return [] if ranks == sorted(ranks) else [f"children out of order: {seen}"]
+
+
 def _scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     """Drive one path of the engine or of discovery on the fake world *w*."""
     if name == "pages":
@@ -992,6 +1055,8 @@ def _scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> None:
         assert asyncio.run(discovery.discover_source(ORG, SOURCE, adapter)) == "failed"
     elif name.startswith("access"):
         _access_scenario(name, w, monkeypatch)
+    elif name.startswith("index"):
+        _index_scenario(name, w, monkeypatch)
     else:
         raise AssertionError(name)
 
@@ -1048,10 +1113,45 @@ def _access_scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> No
         raise AssertionError(name)
 
 
+# ── KC-5a, the index pass on the fake world ─────────────────────────────────
+
+def _index_row(ext: str, *, size: int | None = 40) -> Any:
+    return SimpleNamespace(
+        id=f"node-{ext}", ext_id=ext, parent_ext_id="inc", name=f"{ext}.txt", mime=None,
+        size=size, modified_at=None, web_url=None, drive_id=None, content_hash=f"h-{ext}",
+        stamp=f"h-{ext}")
+
+
+def _run_index(adapter: Any) -> engine.RunOutcome:
+    return asyncio.run(index.run_index(ORG, SOURCE, source=adapter))
+
+
+def _index_scenario(name: str, w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    if name == "index":
+        w.index_rows = [_index_row("a"), _index_row("b"), _index_row("big", size=26 * 1024 * 1024)]
+        adapter = FakeAdapter(w, {}, docs={"a": (b"Alpha words", ".txt"),
+                                           "b": (b"Beta words", ".txt")})
+        out = _run_index(adapter)
+        assert out.status == runs.STATUS_OK and out.counts["files"] == 2, out
+        assert out.counts["refused"] == 1
+    elif name == "index_unavailable":
+        w.index_rows = [_index_row("a")]
+        out = _run_index(FakeAdapter(w, {}, docs={"a": NotImplementedError("KC-5b")}))
+        assert (out.status, out.error) == (runs.STATUS_STOPPED, "fetch_unavailable"), out
+    elif name == "index_disconnected":
+        w.disconnected = True
+        w.index_rows = [_index_row("a")]
+        out = _run_index(FakeAdapter(w, {}, docs={"a": (b"x", ".txt")}))
+        assert (out.status, out.error) == (runs.STATUS_STOPPED, "disconnected"), out
+    else:
+        raise AssertionError(name)
+
+
 _SCENARIOS = ("pages", "expired_cursor", "over_cap", "capped_sweep", "needs_reconnect",
               "source_error", "disconnected", "discovery", "discovery_capped",
               "discovery_failed", "access", "access_capped", "access_reconnect",
-              "access_disconnected", "access_expired")
+              "access_disconnected", "access_expired", "index", "index_unavailable",
+              "index_disconnected")
 
 
 class TestTheLockOrder:
@@ -1065,6 +1165,9 @@ class TestTheLockOrder:
         faults = {i: f for i, t in enumerate(_txns(w.events))
                   if (f := lock_order_faults(t, engine_txn=engine_txn))}
         assert faults == {}, (faults, _txns(w.events))
+        if name.startswith("index"):
+            order = {i: f for i, t in enumerate(_txns(w.events)) if (f := index_child_faults(t))}
+            assert order == {}, (order, _txns(w.events))
 
     def test_close_ok_locks_the_connection_before_the_source(self, world, monkeypatch) -> None:
         _scenario("pages", world, monkeypatch)
@@ -1161,6 +1264,71 @@ class TestTheLockOrder:
                                                         fault: str) -> None:
         faults = lock_order_faults(txn, engine_txn=True)
         assert any(fault in f for f in faults), faults
+
+    # ── KC-5a: the index pass keeps the one order ──────────────────────────
+
+    def test_each_index_transaction_takes_the_guard_first_and_the_children_in_order(
+            self, world, monkeypatch) -> None:
+        """The source row first (``FOR KEY SHARE``: the pass never writes the
+        source row), then the nodes, the documents, the chunks, the run row."""
+        _scenario("index", world, monkeypatch)
+        txns = _txns(world.events)
+        assert txns[0] == ["source", "takeover", "insert_run", "commit"], txns
+        assert txns[1] == ["guard", "delete_stale", "progress", "commit"], txns
+        assert txns[2] == ["guard", "pending", "insert_me_space", "select_me_space",
+                           "progress", "commit"], txns
+        file_txn = ["guard", "node_now", "upsert_doc", "delete_chunks", "upsert_chunks",
+                    "progress", "commit"]
+        assert [t for t in txns if "upsert_chunks" in t] == [file_txn, file_txn]
+        # A refusal row has no chunk to write, and keeps the same order.
+        assert [t for t in txns if "delete_chunks" in t and "upsert_chunks" not in t] == [
+            ["guard", "node_now", "upsert_doc", "delete_chunks", "progress", "commit"]]
+        assert txns[-1] == ["finish", "commit"], "the close of a pass took a source lock"
+        assert not {"lock_connection", "mark_synced", "lock_source", "lock_exclusive"} & {
+            s for t in txns for s in t}, "the index pass locked the connection row or went strong"
+
+    def test_a_run_that_cannot_fetch_writes_no_document(self, world, monkeypatch) -> None:
+        _scenario("index_unavailable", world, monkeypatch)
+        assert "upsert_doc" not in {s for t in _txns(world.events) for s in t}
+        assert world.index_docs == []
+
+    def test_a_disconnected_source_stops_at_the_first_guard(self, world, monkeypatch) -> None:
+        _scenario("index_disconnected", world, monkeypatch)
+        txns = _txns(world.events)
+        assert txns[1] == ["guard", "rollback"], txns
+        assert not {"delete_stale", "upsert_doc"} & {s for t in txns for s in t}
+
+    @pytest.mark.parametrize(("txn", "fault"), [
+        # A document write with no guard: the rows before the source lock.
+        (["node_now", "upsert_doc", "delete_chunks", "upsert_chunks", "progress"],
+         "not a lock"),
+        (["upsert_doc", "delete_chunks", "upsert_chunks", "progress"], "not a lock"),
+        # The clean-up with no guard.
+        (["delete_stale", "progress"], "not a lock"),
+        # A document write whose guard comes AFTER the document: the mutation.
+        (["upsert_doc", "guard", "delete_chunks", "progress"], "before the source"),
+    ])
+    def test_the_check_sees_an_index_write_out_of_order(self, txn: list[str],
+                                                        fault: str) -> None:
+        faults = lock_order_faults(txn, engine_txn=True)
+        assert any(fault in f for f in faults), faults
+
+    def test_the_check_passes_the_index_order(self) -> None:
+        assert lock_order_faults(["guard", "node_now", "upsert_doc", "delete_chunks",
+                                  "upsert_chunks", "progress", "commit"],
+                                 engine_txn=True) == []
+        assert lock_order_faults(["guard", "delete_stale", "progress", "commit"],
+                                 engine_txn=True) == []
+
+    @pytest.mark.parametrize("txn", [
+        ["guard", "upsert_chunks", "upsert_doc", "progress"],
+        ["guard", "delete_chunks", "upsert_doc", "progress"],
+        ["guard", "progress", "upsert_doc", "upsert_chunks"],
+    ])
+    def test_the_children_of_a_document_write_come_in_order(self, txn: list[str]) -> None:
+        """Documents before chunks before the run row. The lock-order fence
+        has one class for all children, so this is the finer check."""
+        assert index_child_faults(txn), txn
 
 
 class TestTheAccessPass:

@@ -53,6 +53,8 @@ KIND_CHANGES = "changes"
 KIND_RECONCILE = "reconcile"
 #: The access pass (KC-4a, migration 309): the readers of each node.
 KIND_ACCESS = "access"
+#: The index pass (KC-5a, migration 310): the text of the chosen folders.
+KIND_INDEX = "index"
 
 STATUS_RUNNING = "running"
 STATUS_OK = "ok"
@@ -154,6 +156,9 @@ _DELETE_CURSORS_SQL = (
 #: KC-4a: ``access_finished`` and ``access_status`` are the end and the
 #: status of the NEWEST ``access`` run, read the same way. An access run
 #: never moves ``last_finished``, so the change feed keeps its 15 minutes.
+#: KC-5a: ``index_finished`` and ``index_status`` are the same for the newest
+#: ``index`` run. The pending count is NOT here: ``kb_sync/index.py`` counts it
+#: for an org that ``KNOWLEDGE_INDEX`` names, and for no other.
 _DUE_SQL = (
     "SELECT s.id, s.provider, s.state, now() AS db_now, "
     "s.discovered_at, s.access_read_at, "
@@ -170,6 +175,14 @@ _DUE_SQL = (
     " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
     " AND r.kind = 'access' ORDER BY r.started_at DESC LIMIT 1) "
     "AS access_status, "
+    "(SELECT r.finished_at FROM kb_sync_runs r "
+    " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
+    " AND r.kind = 'index' ORDER BY r.started_at DESC LIMIT 1) "
+    "AS index_finished, "
+    "(SELECT r.status FROM kb_sync_runs r "
+    " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
+    " AND r.kind = 'index' ORDER BY r.started_at DESC LIMIT 1) "
+    "AS index_status, "
     "EXISTS (SELECT 1 FROM kb_sync_runs r "
     " WHERE r.organization_id = s.organization_id AND r.source_id = s.id "
     " AND r.status = 'running' "
@@ -237,6 +250,12 @@ class DueRow:
     access_read_at: datetime | None
     access_finished: datetime | None
     access_status: str | None
+    #: KC-5a: the end and the status of the newest index run. The files to
+    #: read, and the documents to delete (``None``: not counted, because
+    #: ``KNOWLEDGE_INDEX`` does not name the org).
+    index_finished: datetime | None = None
+    index_status: str | None = None
+    index_pending: int | None = None
 
 
 def _json(value: Any) -> dict[str, Any] | None:
@@ -342,7 +361,8 @@ async def due_rows(db: Any, org: str) -> list[DueRow]:
             db_now=r.db_now, last_finished=r.last_finished, running=bool(r.running),
             reconciled_at=r.reconciled_at, discovered_at=r.discovered_at,
             access_read_at=r.access_read_at, access_finished=r.access_finished,
-            access_status=r.access_status,
+            access_status=r.access_status, index_finished=r.index_finished,
+            index_status=r.index_status,
         )
         for r in rows
     ]
@@ -357,6 +377,7 @@ __all__ = [
     "KIND_ACCESS",
     "KIND_CHANGES",
     "KIND_DISCOVER",
+    "KIND_INDEX",
     "KIND_RECONCILE",
     "RUNS_KEPT",
     "STALE_AFTER_SECONDS",
