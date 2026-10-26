@@ -5,6 +5,7 @@
 
 import { ImportRefusal, MAX_FILE_BYTES, MAX_TOTAL_BYTES, mb } from "./limits";
 import { isDocumentKind, pageKind } from "./names";
+import type { Unreadable } from "./plan";
 import { readZip, type RawEntry } from "./zip";
 
 /** What the dialog hands over for each chosen file. */
@@ -17,6 +18,8 @@ export interface SourceFile {
 export interface Collected {
   entries: RawEntry[];
   skipped: string[];
+  /** Zip entries refused because the header lied about the size (K-6). */
+  refused: Unreadable[];
 }
 
 /** The most bytes a zip file may have on the disk. */
@@ -26,6 +29,7 @@ const MAX_ZIP_BYTES = MAX_TOTAL_BYTES;
 export async function collectSources(files: readonly SourceFile[]): Promise<Collected> {
   const entries: RawEntry[] = [];
   const skipped: string[] = [];
+  const refused: Unreadable[] = [];
   let bytes = 0;
   for (const file of files) {
     const lower = file.name.toLowerCase();
@@ -36,6 +40,7 @@ export async function collectSources(files: readonly SourceFile[]): Promise<Coll
       const zip = await readZip(await file.read(), bytes);
       entries.push(...zip.entries);
       skipped.push(...zip.skipped);
+      refused.push(...zip.refused);
       bytes += zip.bytes;
     } else if (pageKind(lower)) {
       if (file.size > MAX_FILE_BYTES) {
@@ -55,5 +60,5 @@ export async function collectSources(files: readonly SourceFile[]): Promise<Coll
       skipped.push(file.name);
     }
   }
-  return { entries, skipped };
+  return { entries, skipped, refused };
 }

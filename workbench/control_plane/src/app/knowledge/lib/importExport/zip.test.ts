@@ -53,10 +53,20 @@ describe("readZip", () => {
     const zip = forgeSize(await zipOf({ "bomb.md": "tiny" }), MAX_FILE_BYTES + 1);
     await expect(readZip(zip)).rejects.toThrow(/limit for one file/);
   });
-  it("cannot inflate more than the header declares", async () => {
-    const zip = forgeSize(await zipOf({ "lie.md": "x".repeat(5000) }), 10);
+  it("refuses an entry whose header declares less than its real size, and names it (K-6)", async () => {
+    const zip = forgeSize(await zipOf({ "lie.md": "x".repeat(5000), "ok.md": "fine" }), 10);
     const out = await readZip(zip);
-    expect(out.entries[0].text.length).toBeLessThanOrEqual(10);
+    // forgeSize lies about both entries. ok.md really has 4 bytes, so it is refused too.
+    expect(out.entries).toEqual([]);
+    expect(out.refused.map((r) => r.file).sort()).toEqual(["lie.md", "ok.md"]);
+    expect(out.refused.find((r) => r.file === "lie.md")?.reason).toMatch(/declares 10 bytes and holds 5000/);
+  });
+  it("keeps an honest entry beside a refused one (K-6)", async () => {
+    const lie = forgeSize(await zipOf({ "lie.md": "y".repeat(3000) }), 10);
+    const honest = await readZip(await zipOf({ "ok.md": "fine" }));
+    expect(honest.entries.map((e) => e.path)).toEqual(["ok.md"]);
+    expect(honest.refused).toEqual([]);
+    expect((await readZip(lie)).refused).toHaveLength(1);
   });
   it("refuses a real entry that is over the file limit", async () => {
     const big = new Uint8Array(MAX_FILE_BYTES + 1).fill(97);
@@ -99,6 +109,13 @@ describe("collectSources", () => {
     ]);
     expect(out.entries.map((e) => e.path)).toEqual(["a.md", "b.HTM", "z/in.md"]);
     expect(out.skipped).toEqual(["c.png"]);
+  });
+  it("carries a refused zip entry to the plan, which names it in the report (K-6)", async () => {
+    const { prepareImport } = await import("./prepare");
+    const zip = forgeSize(await zipOf({ "lie.md": "x".repeat(5000) }), 10);
+    const plan = await prepareImport([{ name: "z.zip", size: zip.length, read: async () => zip }], (h) => h);
+    expect(plan.pages).toEqual([]);
+    expect(plan.unreadable.map((u) => u.file)).toEqual(["lie.md"]);
   });
   it("refuses a loose file over 25 MB", async () => {
     await expect(collectSources([loose("big.md", MAX_FILE_BYTES + 1)])).rejects.toThrow(/limit for one file/);
