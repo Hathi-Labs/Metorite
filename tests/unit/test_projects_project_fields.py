@@ -804,10 +804,16 @@ async def test_the_route_names_a_saved_zone_that_is_not_valid(monkeypatch) -> No
     async def _stored(_db: Any, _email: str) -> str:
         return "America"
 
+    async def _day(_db: Any, _user: Any) -> tuple[str, int | None]:
+        return "UTC", None
+
     monkeypatch.setattr(personal, "_tenant_session", _session)
     monkeypatch.setattr(personal, "stored_zone", _stored)
+    monkeypatch.setattr(personal, "member_day", _day)
     out = await personal.my_today(user=projects_user("zone@p7.test"))
     assert out["timezone"] == "UTC" and out["stored"] is True and out["valid"] is False
+    # WS-66 RM-3: no saved hour reads as the shell's default day start.
+    assert out["day_start_hour"] == 7
 
 # ── R8 — the read of the member's zone, on asyncpg, under FORCE RLS ─────────
 #
@@ -913,6 +919,43 @@ async def test_r8_the_route_answers_the_members_own_date(zoned, monkeypatch) -> 
     finally:
         await eng.dispose()
     here = dt.datetime.now(ZoneInfo("Pacific/Kiritimati")).date().isoformat()
+    # WS-66 RM-3: the day start of the saved row, the column default here.
     assert out == {
-        "today": here, "timezone": "Pacific/Kiritimati", "stored": True, "valid": True
+        "today": here, "timezone": "Pacific/Kiritimati", "stored": True, "valid": True,
+        "day_start_hour": 7,
     }
+
+@_DB_GATE
+async def test_r8_the_route_answers_the_members_own_day_start(zoned, monkeypatch) -> None:
+    """WS-66 RM-3: a saved ``day_start_hour`` reaches the answer, through
+    ``member_day``, on the real row and as the app role. The reminder tools
+    read it for "tomorrow morning"."""
+    pytest.importorskip("asyncpg")
+    from contextlib import asynccontextmanager
+
+    from gateway.routes.projects import personal
+    from sqlalchemy import text
+
+    from tests.unit._projects_fakes import projects_user
+
+    with zoned.admin_engine.begin() as c:
+        c.execute(
+            text("UPDATE user_settings SET day_start_hour = 9 WHERE user_id = :u"),
+            {"u": EMAIL},
+        )
+    eng = _app_engine(zoned)
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any):
+        async with eng.begin() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.tenant_id', :t, true)"), {"t": zoned.org_a}
+            )
+            yield conn
+
+    monkeypatch.setattr(personal, "_tenant_session", _session)
+    try:
+        out = await personal.my_today(user=projects_user(EMAIL))
+    finally:
+        await eng.dispose()
+    assert out["day_start_hour"] == 9 and out["timezone"] == "Pacific/Kiritimati"
