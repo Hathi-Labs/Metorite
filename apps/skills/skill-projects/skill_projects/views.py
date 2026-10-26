@@ -398,6 +398,7 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("outcomes.completed", "Completed"),
             ("outcomes.failed", "Failed"),
             ("outcomes.abandoned", "Abandoned"),
+            ("outcomes.server_closed", "Closed by Metorite"),
             ("silent_total", "Silent now"),
             ("long_total", "4 hours or more"),
         ],

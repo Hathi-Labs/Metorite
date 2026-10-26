@@ -625,8 +625,9 @@ sidebar's foot (`MetoriteFoot.tsx`). This change deletes both.
      its own "Remove from this browser". A pick switches through `switchTo`.
    - "Add another account"
    - **You**: My Profile and My access
-   - **Settings**: Appearance, the colour mode and "Change my layout" while
-     the shell nav is on
+   - **Settings**: Appearance, "Assistant settings" (when the profile is on
+     for the organization, WS-63 PZ-28), the colour mode and "Change my
+     layout" while the shell nav is on
    - "Sign out". With one account it signs out. With more, it leaves this
      account and lands on the next one (`signOutThis`: the `switch` action,
      then `remove` of the same slot). "Sign out of all accounts" follows.

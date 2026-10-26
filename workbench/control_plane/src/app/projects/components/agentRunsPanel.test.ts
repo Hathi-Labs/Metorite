@@ -31,7 +31,7 @@ const ROW = {
   member_name: "Ana Rao",
 };
 
-const DAY = { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, total: 0 };
+const DAY = { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0, total: 0 };
 
 const BUSY: AgentRunsReport = {
   summary:
@@ -41,9 +41,9 @@ const BUSY: AgentRunsReport = {
   agent_runs_seen: true,
   days: 14,
   window_start: "2026-10-12",
-  outcomes: { completed: 6, failed: 1, stopped: 1, abandoned: 1, released: 0 },
+  outcomes: { completed: 6, failed: 1, stopped: 1, abandoned: 1, released: 0, server_closed: 0 },
   ended_total: 9,
-  outcomes_before: { completed: 4, failed: 1, stopped: 0, abandoned: 0, released: 0 },
+  outcomes_before: { completed: 4, failed: 1, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
   series: [
     { ...DAY, day: "2026-10-12" },
     { ...DAY, day: "2026-10-24", completed: 2, failed: 1, total: 3 },
@@ -69,7 +69,7 @@ const QUIET: AgentRunsReport = {
   ...BUSY,
   summary: "No agent run ended in the last 14 days.",
   agent_runs_seen: false,
-  outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0 },
+  outcomes: { completed: 0, failed: 0, stopped: 0, abandoned: 0, released: 0, server_closed: 0 },
   ended_total: 0,
   series: [],
   success: { rate: null, completed: 0, rated: 0, rate_before: null, rated_before: 0, trend: null },
@@ -223,6 +223,6 @@ describe("the Overview hides the panel when the scope has no agent run (RA-4 don
     const column = html(createElement(RenderedBody, { body: body({ agent_runs: BUSY }) }));
     expect(column).toContain("Silent now");
     expect(column).toContain("Runs of 4 hours or more");
-    expect(column).toContain("6 completed · 1 failed · 1 stopped · 1 abandoned · 0 released");
+    expect(column).toContain("6 completed · 1 failed · 1 stopped · 1 abandoned · 0 released · 0 closed by metorite");
   });
 });
