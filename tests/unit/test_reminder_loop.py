@@ -725,7 +725,8 @@ def test_r8_the_feed_shows_the_card_of_each_state(world, monkeypatch) -> None:
     assert cards[gone]["why_key"] == "reminder_stopped"
     assert {cards[r]["group"] for r in (check, moved, gone)} == {"needs_you"}
     for card in cards.values():
-        assert card["href"] == f"/chat?reminder={card['entity']['id']}"
+        # A new chat now (the chat's own `new-chat` door), with the id for RM-4.
+        assert card["href"] == f"/chat?do=new-chat&reminder={card['entity']['id']}"
         assert card["app"] == "calendar" and card["acts"][0]["way"] == "open"
 
 

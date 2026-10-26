@@ -1118,17 +1118,24 @@ register(Provider("knowledge", ("knowledge",), _knowledge, KNOWLEDGE_KINDS, need
 # loop gave up. A `scheduled` row has no card: it has not fired, or the loop
 # moved it to a new slot. The app is the Calendar. `reminders.my_open_cards`
 # opens ONE tenant session, and this file opens none. With CALENDAR_REMINDERS
-# off the source is absent before any read. The act is a link to the one URL
-# of §5.7, which RM-4 makes the chat read. The acts in place of §5.6 wait for
-# the client (D101). Fence: `tests/unit/test_reminder_loop.py`.
+# off the source is absent before any read. The act is a link that opens a new
+# chat now and carries the `reminder` id of §5.7 for RM-4 (`reminder_href`).
+# The acts in place of §5.6 wait for the client (D101). Fence:
+# `tests/unit/test_reminder_loop.py`.
 
 #: The kinds of the source (§5.6).
 REMINDER_KINDS = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
 
 
 def reminder_href(reminder_id: str) -> str:
-    """The one link of every reminder surface (§5.7 item 1)."""
-    return f"/chat?reminder={quote(reminder_id, safe='')}"
+    """The link of a reminder card (§5.7 item 1).
+
+    ``do=new-chat`` is the chat's own door to a fresh chat
+    (``app/chat/page.tsx`` ``ChatFullView``), so the link works before RM-4:
+    it opens a new chat, and never the chat that was open last. Today the
+    page drops the rest of the address. RM-4 makes it read ``reminder`` and
+    write the first message."""
+    return f"/chat?do=new-chat&reminder={quote(reminder_id, safe='')}"
 
 
 def _reminder_kind(row: dict[str, Any]) -> str:
