@@ -484,7 +484,11 @@ class TestTextLinksOnARealDatabase:
         source = _seed_task(w.p, org, rx, 1, "Source X")
         x12 = _seed_task(w.p, org, rx, 12, "Twelve, to move")
         y12 = _seed_task(w.p, org, ry, 12, "Twelve of Y")
-        moved = await _call(w.p, w.a, "POST", f"/projects/tasks/{x12}/move", {"project_id": ry[0]})
+        # Into a project of root Y: a root is a space, and a space holds no
+        # tasks (2026-10-26). The root, and so the numbering, is still Y's.
+        into_y = _seed_root(w.p, org, A_EMAIL, parent=ry[0])
+        moved = await _call(w.p, w.a, "POST", f"/projects/tasks/{x12}/move",
+                            {"project_id": into_y[0]})
         assert moved.status_code == 200, moved.text
         assert moved.json()["task_number"] != 12
         saved = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{source}",
@@ -628,8 +632,10 @@ class TestTextLinksOnARealDatabase:
         org = w.p.org_a
         fresh = _seed_root(w.p, org, A_EMAIL)
         fresh13 = _seed_task(w.p, org, fresh, 13, "Thirteen of the fresh root")
+        # In a project of the fresh root: a space holds no tasks (2026-10-26).
+        inside = _seed_root(w.p, org, A_EMAIL, parent=fresh[0])
         made = await _call(w.p, w.a, "POST", "/projects/tasks", {
-            "project_id": fresh[0], "title": "New, about #13",
+            "project_id": inside[0], "title": "New, about #13",
             "description": "and https://docs.google.com/document/d/1AbCdEfGhIjK/edit",
         })
         assert made.status_code == 201, made.text

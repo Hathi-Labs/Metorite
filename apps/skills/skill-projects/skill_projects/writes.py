@@ -905,9 +905,6 @@ async def create_task(
     name = str(title or "").strip()
     if not name:
         return "A task needs a title."
-    stop = await space_refusal(pid, (await _node(pid))[1])
-    if stop:
-        return stop
     flags = priority_fields(
         priority=priority, important=important, leveraged=leveraged, importance=importance
     )
@@ -926,6 +923,10 @@ async def create_task(
     )
     if isinstance(repeating, str):
         return repeating
+    # After the argument checks, which answer with no call, and before the card.
+    stop = await space_refusal(pid, (await _node(pid))[1])
+    if stop:
+        return stop
     new = await _prepare_new_task(
         pid,
         name,
