@@ -17,6 +17,7 @@
  *
  * The profile is read once through the data cache. Fence: `InterviewOffer.test.ts`.
  */
+import Link from "next/link";
 import { useCallback, useState } from "react";
 
 import Button from "@/components/ui/Button";
@@ -119,7 +120,11 @@ export default function InterviewOffer({
       <p className="pr-8 text-sm font-medium text-foreground">Want me to get to know you?</p>
       <p className="mt-0.5 text-xs text-muted-foreground">
         I ask one short question a day. Your answers help me write and plan the way you like. You
-        see and edit them in Settings.
+        see and edit them in{" "}
+        <Link href="/settings/assistant" className="text-foreground underline underline-offset-2">
+          Settings → Assistant settings
+        </Link>
+        .
       </p>
       <div className="mt-2 flex items-center gap-2">
         <Button size="sm" onClick={() => startGetToKnowMe()}>
